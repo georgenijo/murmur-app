@@ -38,7 +38,7 @@ CoreGraphics event posting has no delivery result, so a successful native post c
 
 ### Failure Notification
 
-When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipeline emits an `auto-paste-failed` Tauri event. A recording-target mismatch uses the specific message "App focus changed. Text is in your clipboard; paste it when ready." Other failures retain the manual-paste hint. The frontend displays this in the existing error banner and auto-clears it after 5 seconds.
+When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipeline emits an `auto-paste-failed` Tauri event. A recording-target mismatch uses the specific message "App focus changed. Text is in your clipboard; paste it when ready." Other failures retain the manual-paste hint. The main window displays the detailed message in its existing error banner, while the collapsed non-activating overlay shows a bounded `⌘V` cue with the accessible meaning "Text copied to clipboard. Paste manually." Both clear after 5 seconds; neither retries the paste, changes focus, or expands the overlay.
 
 ### Native path and compatibility fallback
 

@@ -15,6 +15,7 @@ const SECURE_FIELD_FLASH_MS = 800;
 /** How long the transform-busy refusal flash shows (issue #329). */
 const TRANSFORM_BUSY_FLASH_MS = 800;
 const MICROPHONE_FAILURE_FLASH_MS = 1200;
+export const CLIPBOARD_ONLY_FLASH_MS = 5000;
 
 export interface UseOverlayRuntimeArgs {
   /** Current dictation status (reactive value, not just a ref). */
@@ -48,6 +49,8 @@ export interface OverlayRuntime {
   showTransformBusy: boolean;
   /** Bounded microphone-initialization failure flash. */
   showMicrophoneFailure: boolean;
+  /** Text reached the clipboard, but automatic paste did not complete. */
+  showClipboardOnly: boolean;
   disabled: boolean;
   setDisabled: (value: boolean) => void;
   /** Ref mirror of `disabled`, read synchronously by useRecordingControls. */
@@ -76,6 +79,7 @@ export function useOverlayRuntime({
   const [showSecureField, setShowSecureField] = useState(false);
   const [showTransformBusy, setShowTransformBusy] = useState(false);
   const [showMicrophoneFailure, setShowMicrophoneFailure] = useState(false);
+  const [showClipboardOnly, setShowClipboardOnly] = useState(false);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -141,6 +145,30 @@ export function useOverlayRuntime({
         if (!cancelled) setShowCancelled(false);
         timeoutId = null;
       }, CANCELLED_FLASH_MS);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    });
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unlisten?.();
+    };
+  }, []);
+
+  // Clipboard-first delivery already succeeded when this event fires. Keep the
+  // overlay non-activating and show only a bounded manual-paste cue; the main
+  // window continues to render the event payload as its detailed error banner.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    listen('auto-paste-failed', () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      setShowClipboardOnly(true);
+      timeoutId = setTimeout(() => {
+        if (!cancelled) setShowClipboardOnly(false);
+        timeoutId = null;
+      }, CLIPBOARD_ONLY_FLASH_MS);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
@@ -242,6 +270,7 @@ export function useOverlayRuntime({
     showSecureField,
     showTransformBusy,
     showMicrophoneFailure,
+    showClipboardOnly,
     showHotkeyMiss,
     disabled,
     setDisabled,

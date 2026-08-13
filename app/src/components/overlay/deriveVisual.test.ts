@@ -168,4 +168,40 @@ describe('deriveVisual', () => {
       deriveVisual('idle', false, false, false, false, false, false, false, false, false, 'processing').indicator,
     ).toEqual({ kind: 'meeting', processing: true });
   });
+
+  it('shows clipboard-only only after active work returns to idle', () => {
+    expect(
+      deriveVisual('idle', false, false, false, false, false, false, false, false, false, 'idle', true).indicator,
+    ).toEqual({ kind: 'clipboardOnly' });
+    expect(
+      deriveVisual('processing', false, false, false, false, false, false, false, false, false, 'idle', true).indicator,
+    ).toEqual({ kind: 'processing' });
+    expect(
+      deriveVisual('idle', false, false, false, true, false, false, false, false, false, 'idle', true).indicator,
+    ).toEqual({ kind: 'transforming' });
+    expect(
+      deriveVisual('idle', false, false, false, false, false, false, false, false, false, 'recording', true).indicator,
+    ).toEqual({ kind: 'meeting', processing: false });
+  });
+
+  it('keeps failure and refusal flashes above clipboard-only', () => {
+    expect(
+      deriveVisual('idle', true, false, false, false, false, false, false, false, false, 'idle', true).indicator,
+    ).toEqual({ kind: 'cancelled' });
+    expect(
+      deriveVisual('idle', false, false, false, false, false, false, true, false, false, 'idle', true).indicator,
+    ).toEqual({ kind: 'microphoneFailure' });
+    expect(
+      deriveVisual('idle', false, true, false, false, false, false, false, false, false, 'idle', true).indicator,
+    ).toEqual({ kind: 'hotkeyMiss' });
+  });
+
+  it('clipboard-only does not add waveform or hotkey-miss decoration', () => {
+    const visual = deriveVisual(
+      'idle', false, false, false, false, false, false, false, false, false, 'idle', true,
+    );
+    expect(visual.indicator).toEqual({ kind: 'clipboardOnly' });
+    expect(visual.showTapMissedLabel).toBe(false);
+    expect(visual.waveformVisible).toBe(false);
+  });
 });

@@ -58,6 +58,15 @@ export function OverlayPill({
             <span className="w-3 h-3 rounded-full border border-red-400 text-red-300 text-[8px] leading-none flex items-center justify-center font-bold">
               !
             </span>
+          ) : indicator.kind === 'clipboardOnly' ? (
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label="Text copied to clipboard. Paste manually."
+              className="text-emerald-300 text-[9px] leading-none font-semibold tracking-[-0.04em]"
+            >
+              ⌘V
+            </span>
           ) : indicator.kind === 'starting' ? (
             <span
               className={`w-2.5 h-2.5 rounded-full block ${indicator.slow ? 'bg-amber-400' : 'bg-sky-400'}`}

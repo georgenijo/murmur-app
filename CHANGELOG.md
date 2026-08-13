@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Clipboard-only auto-paste outcomes now show a bounded `⌘V` cue in the
+  always-visible overlay, so a safe target-app focus refusal no longer looks
+  like a successful paste while the transcript remains ready to paste manually
+  (#564).
 - Every accepted live dictation now emits exactly one privacy-safe terminal
   outcome correlated from capture acceptance through final processing. Fleet
   diagnostics report stage drop-off plus missing or duplicate terminals using

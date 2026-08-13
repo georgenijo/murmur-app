@@ -20,6 +20,7 @@ export type OverlayIndicator =
   | { kind: 'transforming' }
   | { kind: 'calibrating' }
   | { kind: 'meeting'; processing: boolean }
+  | { kind: 'clipboardOnly' }
   | { kind: 'idle'; dimmed: boolean };
 
 export interface OverlayVisual {
@@ -41,7 +42,7 @@ export interface OverlayVisual {
  *
  * Priority: cancelled > secure-field flash > microphone failure >
  * transform-busy flash > hotkey-miss > starting > recording > recovering >
- * processing > transforming > idle.
+ * processing > transforming > clipboard-only > idle.
  *
  * `transforming` and `showSecureField` (issue #312 PR-C2) are the transform
  * flow's overlay affordances: the "transforming…" indicator shown while
@@ -63,6 +64,7 @@ export function deriveVisual(
   stillConnecting: boolean = false,
   calibrating: boolean = false,
   meetingPhase: MeetingRuntimePhase = 'idle',
+  showClipboardOnly: boolean = false,
 ): OverlayVisual {
   let indicator: OverlayIndicator;
   if (calibrating) {
@@ -89,6 +91,8 @@ export function deriveVisual(
     indicator = { kind: 'processing' };
   } else if (transforming) {
     indicator = { kind: 'transforming' };
+  } else if (showClipboardOnly) {
+    indicator = { kind: 'clipboardOnly' };
   } else {
     indicator = { kind: 'idle', dimmed: disabled };
   }
