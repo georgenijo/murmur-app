@@ -175,7 +175,7 @@ available for packaging and callback-boundary validation. See the
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 148 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 155 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
@@ -192,7 +192,9 @@ available for packaging and callback-boundary validation. See the
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
-| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout streaming, and exact-pass cancellation |
+| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout streaming, bounded stderr tail, and exact-pass cancellation |
+| `query_presets.rs` | Voice Query provider presets: binary discovery, auth preflight, failure-signature mapping, vendor login launch |
+| `query_env.rs` | Declared Voice Query environment variables: validation, owner-only store, allowlist-shadowing refusal |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |
@@ -381,7 +383,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-148 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+155 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

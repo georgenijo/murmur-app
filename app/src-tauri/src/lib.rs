@@ -36,7 +36,9 @@ mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
+mod query_env;
 mod query_flow;
+mod query_presets;
 mod resource_monitor;
 mod selection;
 mod smart_formatting;
@@ -308,6 +310,13 @@ pub fn run() {
             query_flow::cancel_query,
             query_flow::copy_query_answer,
             query_flow::get_query_review_content,
+            query_presets::list_query_presets,
+            query_presets::validate_query_command,
+            query_presets::probe_query_provider_auth,
+            query_presets::launch_query_provider_login,
+            query_presets::launch_query_pass_login,
+            query_env::load_query_env_vars,
+            query_env::save_query_env_vars,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,
