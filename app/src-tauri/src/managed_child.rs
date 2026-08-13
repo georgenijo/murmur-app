@@ -216,6 +216,14 @@ impl ManagedChild {
     }
 
     pub fn wait_for_exit(&mut self, deadline: Instant) -> Option<ConfirmedTermination> {
+        if !self.termination_armed {
+            return self
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .map(|status| self.confirmed(status));
+        }
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
@@ -235,6 +243,11 @@ impl ManagedChild {
     }
 
     pub fn hard_kill_confirmed(&mut self, deadline: Instant) -> Option<ConfirmedTermination> {
+        // Once normal exit and an empty process group have been confirmed, do
+        // not signal the numeric PGID again: the OS may eventually reuse it.
+        if !self.termination_armed {
+            return self.wait_for_exit(deadline);
+        }
         #[cfg(unix)]
         unsafe {
             // The direct child is the process-group leader created by setpgid().
@@ -330,6 +343,10 @@ mod tests {
             .expect("normal exit and empty process group must be confirmed");
         assert_eq!(termination.exit_code, Some(0));
         assert!(!child.termination_armed);
+        let repeated = child
+            .hard_kill_confirmed(Instant::now() + Duration::from_secs(1))
+            .expect("an already confirmed child remains confirmed without signalling");
+        assert_eq!(repeated.exit_code, Some(0));
         drop(child);
         assert_eq!(observer.load(Ordering::SeqCst), 0);
     }

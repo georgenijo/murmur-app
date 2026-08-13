@@ -186,7 +186,7 @@ impl QueryCoordinator {
 
     fn begin_cancel(&self, pass_id: u64) -> bool {
         let _ownership = self.ownership.lock_or_recover();
-        if self.active_pass_id() != Some(pass_id) {
+        if !self.is_active(pass_id) {
             return false;
         }
         self.cancelled_pass_id.fetch_max(pass_id, Ordering::SeqCst);
@@ -1196,6 +1196,10 @@ fn run_cli(
                         &stderr_tail,
                     ));
                 }
+                // The process group is now confirmed empty. Detach it before
+                // draining final pipe bytes so cancellation cannot address a
+                // numeric PID/PGID that the OS is free to reuse.
+                app.state::<crate::State>().query.clear_child(pass_id);
                 break status;
             }
             Ok(None) => std::thread::sleep(CHILD_POLL_INTERVAL),
@@ -1583,6 +1587,14 @@ mod tests {
         assert_eq!(second, 2);
         assert!(!query.set_status(first, QueryStatus::Failed));
         assert_eq!(query.active_pass_id(), Some(second));
+    }
+
+    #[test]
+    fn cancellation_has_one_owner_per_pass() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_cancel(pass_id));
+        assert!(!query.begin_cancel(pass_id));
     }
 
     #[test]
