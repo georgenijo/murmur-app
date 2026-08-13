@@ -227,7 +227,7 @@ impl QueryHistoryRepository {
         let next_epoch = self
             .clear_epoch()?
             .checked_add(1)
-            .ok_or_else(|| storage_error())?;
+            .ok_or_else(storage_error)?;
         self.clear_to_epoch(next_epoch)
     }
 

@@ -593,9 +593,9 @@ impl QueryCoordinator {
             ));
             Self::begin_diagnostics_locked(performance, pass_id);
         }
-        if !slot
+        if slot
             .as_ref()
-            .is_some_and(|tracker| tracker.pass_id == pass_id)
+            .is_none_or(|tracker| tracker.pass_id != pass_id)
         {
             return false;
         }
@@ -2638,15 +2638,14 @@ pub(crate) async fn finish_query_capture(
         if result
             .as_ref()
             .is_err_and(|error| error.code == "termination_unconfirmed")
+            && state.query.fail_cancel_termination(query_pass_id)
         {
-            if state.query.fail_cancel_termination(query_pass_id) {
-                emit_state(
-                    &app_handle,
-                    query_pass_id,
-                    QueryStatus::Failed,
-                    Some("termination_unconfirmed"),
-                );
-            }
+            emit_state(
+                &app_handle,
+                query_pass_id,
+                QueryStatus::Failed,
+                Some("termination_unconfirmed"),
+            );
         }
         finish_cancelled_query(&app_handle, &state, query_pass_id);
         return Ok(());
