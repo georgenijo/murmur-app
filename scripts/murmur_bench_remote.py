@@ -2,9 +2,10 @@
 """Run baseline and candidate Murmur refs on one trusted Fleet Mac.
 
 This helper is intended to be copied to the benchmark Mac and invoked there.
-It creates detached temporary worktrees, shares a release Cargo target cache,
-runs both refs against the same private corpus, writes local reports, compares
-them, and removes only the temporary worktrees it created.
+It creates detached temporary worktrees, shares release Cargo target caches
+between refs with identical lockfiles, runs both refs against the same private
+corpus, writes local reports, compares them, and removes only the temporary
+worktrees it created.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -67,7 +69,7 @@ def resolve_ref(repo: Path, ref: str) -> str:
     return output(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo)
 
 
-def benchmark_environment(cache_root: Path) -> dict[str, str]:
+def benchmark_environment(cache_root: Path, lockfile: Path) -> dict[str, str]:
     environment = os.environ.copy()
     environment["PATH"] = f"/opt/homebrew/bin:{environment.get('PATH', '')}"
     environment.setdefault("MACOSX_DEPLOYMENT_TARGET", "14.0")
@@ -79,7 +81,8 @@ def benchmark_environment(cache_root: Path) -> dict[str, str]:
         "-L native=/Applications/Xcode.app/Contents/Developer/Toolchains/"
         "XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin",
     )
-    environment["CARGO_TARGET_DIR"] = str(cache_root / "cargo-target")
+    lock_digest = hashlib.sha256(lockfile.read_bytes()).hexdigest()[:16]
+    environment["CARGO_TARGET_DIR"] = str(cache_root / "cargo-target" / lock_digest)
     return environment
 
 
@@ -526,7 +529,6 @@ def run_ref(
     models: str | None,
     machine_label: str,
     stamp: str,
-    environment: dict[str, str],
     runner: Path,
     binary_source: Path,
     order_position: int,
@@ -543,6 +545,9 @@ def run_ref(
     run(["git", "worktree", "add", "--detach", str(worktree), sha], cwd=repo)
     try:
         seed_external_binaries(binary_source, worktree)
+        environment = benchmark_environment(
+            cache_root, worktree / "app" / "src-tauri" / "Cargo.lock"
+        )
         report = report_root / f"{stamp}-{role}-{safe_label(ref)}-{sha[:12]}.json"
         run_conditioned_benchmark(
             runner=runner,
@@ -628,7 +633,6 @@ def main() -> int:
     if baseline_sha == candidate_sha:
         parser.error("baseline and candidate resolve to the same commit")
 
-    environment = benchmark_environment(cache_root)
     runner = Path(__file__).resolve().with_name("murmur_bench.py")
     if not runner.is_file():
         parser.error(f"murmur_bench.py must be installed beside this helper: {runner}")
@@ -654,7 +658,6 @@ def main() -> int:
             models=args.models,
             machine_label=args.machine_label,
             stamp=stamp,
-            environment=environment,
             runner=runner,
             binary_source=binary_source,
             order_position=order_position,

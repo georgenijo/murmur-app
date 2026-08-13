@@ -20,6 +20,22 @@ NOMINAL_SNAPSHOT = {
 
 
 class MurmurBenchRemoteTests(unittest.TestCase):
+    def test_benchmark_environment_namespaces_cargo_cache_by_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_lock = root / "first.lock"
+            second_lock = root / "second.lock"
+            first_lock.write_text("first", encoding="utf-8")
+            second_lock.write_text("second", encoding="utf-8")
+
+            first = remote.benchmark_environment(root, first_lock)["CARGO_TARGET_DIR"]
+            repeated = remote.benchmark_environment(root, first_lock)["CARGO_TARGET_DIR"]
+            second = remote.benchmark_environment(root, second_lock)["CARGO_TARGET_DIR"]
+
+            self.assertEqual(first, repeated)
+            self.assertNotEqual(first, second)
+            self.assertEqual(Path(first).parent, root / "cargo-target")
+
     def test_preflight_rejects_battery_low_power_and_thermal_pressure(self) -> None:
         cases = (
             ({**NOMINAL_SNAPSHOT, "powerSource": "Battery Power"}, "AC power"),
