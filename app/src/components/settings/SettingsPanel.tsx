@@ -517,15 +517,50 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [queryEnvironment, setQueryEnvironment] = useState<QueryEnvironmentVariable[]>([]);
   const [configuredQueryEnvironment, setConfiguredQueryEnvironment] = useState<string[]>([]);
   const [queryEnvironmentStatus, setQueryEnvironmentStatus] = useState<string | null>(null);
+  const [queryEnvironmentNeedsRepair, setQueryEnvironmentNeedsRepair] = useState(false);
   const [queryConfigBusy, setQueryConfigBusy] = useState(false);
   const [queryTestResult, setQueryTestResult] = useState<QueryProviderTestResult | null>(null);
   const [queryTestBusy, setQueryTestBusy] = useState(false);
   const [querySignInStatus, setQuerySignInStatus] = useState<string | null>(null);
   const signInPollRef = useRef(0);
+  const queryConfigGenerationRef = useRef(0);
+  const queryCommandFingerprint = JSON.stringify([
+    settings.queryProvider,
+    settings.queryExecutable,
+    settings.queryArguments,
+    settings.queryTimeoutSeconds,
+  ]);
+  const queryCommandFingerprintRef = useRef(queryCommandFingerprint);
+
+  const invalidateQueryRequests = () => {
+    queryConfigGenerationRef.current += 1;
+    signInPollRef.current += 1;
+    setQueryConfigBusy(false);
+    setQueryTestBusy(false);
+    setQueryTestResult(null);
+    setQuerySignInStatus(null);
+    return queryConfigGenerationRef.current;
+  };
+
+  const queryRequestIsCurrent = (generation: number) => (
+    queryConfigGenerationRef.current === generation
+  );
 
   useEffect(() => () => {
     signInPollRef.current += 1;
+    queryConfigGenerationRef.current += 1;
   }, []);
+
+  useLayoutEffect(() => {
+    if (queryCommandFingerprintRef.current === queryCommandFingerprint) return;
+    queryCommandFingerprintRef.current = queryCommandFingerprint;
+    queryConfigGenerationRef.current += 1;
+    signInPollRef.current += 1;
+    setQueryConfigBusy(false);
+    setQueryTestBusy(false);
+    setQueryTestResult(null);
+    setQuerySignInStatus(null);
+  }, [queryCommandFingerprint]);
 
   useEffect(() => {
     if (activeCat !== 'text') return;
@@ -544,18 +579,21 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (activeCat !== 'text') return;
     let cancelled = false;
     setQueryEnvironmentStatus(null);
+    setQueryEnvironmentNeedsRepair(false);
     void loadQueryEnvironment(settings.queryProvider)
       .then((names) => {
         if (!cancelled) {
           setConfiguredQueryEnvironment(Array.isArray(names) ? names : []);
           setQueryEnvironment([]);
+          setQueryEnvironmentNeedsRepair(false);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setQueryEnvironment([]);
           setConfiguredQueryEnvironment([]);
-          setQueryEnvironmentStatus('Could not load the protected environment file.');
+          setQueryEnvironmentNeedsRepair(true);
+          setQueryEnvironmentStatus('Could not load the protected environment file. Clear saved values to repair it.');
         }
       });
     return () => { cancelled = true; };
@@ -668,6 +706,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const toggleVoiceQuery = async () => {
     setQueryConfigError(null);
     if (settings.queryHotkey !== null) {
+      invalidateQueryRequests();
       onUpdateSettings({ queryHotkey: null });
       return;
     }
@@ -680,14 +719,22 @@ export const SettingsPanel = memo(function SettingsPanel({
       setQueryConfigError('No dedicated shortcut is available.');
       return;
     }
+    const command = queryCommand(settings);
+    const generation = invalidateQueryRequests();
     setQueryConfigBusy(true);
     try {
-      await validateQueryCommand(queryCommand(settings));
-      onUpdateSettings({ queryHotkey: key });
+      await validateQueryCommand(command);
+      if (queryRequestIsCurrent(generation)) {
+        onUpdateSettings({ queryHotkey: key });
+      }
     } catch (error) {
-      setQueryConfigError(queryConfigurationMessage(error));
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigError(queryConfigurationMessage(error));
+      }
     } finally {
-      setQueryConfigBusy(false);
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigBusy(false);
+      }
     }
   };
 
@@ -695,11 +742,12 @@ export const SettingsPanel = memo(function SettingsPanel({
     const selected = queryPresets.find((preset) => preset.id === provider)
       ?? (provider === 'custom' ? CUSTOM_QUERY_PRESET : null);
     if (!selected) return;
-    signInPollRef.current += 1;
+    invalidateQueryRequests();
     setQueryConfigError(null);
     setQueryTestResult(null);
     setQuerySignInStatus(null);
     setQueryEnvironmentStatus(null);
+    setQueryEnvironmentNeedsRepair(false);
     setQueryEnvironment([]);
     setConfiguredQueryEnvironment([]);
     onUpdateSettings({
@@ -717,93 +765,118 @@ export const SettingsPanel = memo(function SettingsPanel({
       setQueryEnvironmentStatus('Enter an absolute config-directory path to save.');
       return;
     }
+    const provider = settings.queryProvider;
+    const generation = invalidateQueryRequests();
     try {
-      await saveQueryEnvironment(settings.queryProvider, entered);
+      await saveQueryEnvironment(provider, entered);
+      if (!queryRequestIsCurrent(generation)) return;
       setConfiguredQueryEnvironment((current) => [
         ...new Set([...current, ...entered.map((variable) => variable.name)]),
       ]);
       setQueryEnvironment([]);
       setQueryEnvironmentStatus('Saved in Murmur’s protected app-data directory.');
+      setQueryEnvironmentNeedsRepair(false);
       setQueryTestResult(null);
       setQuerySignInStatus(null);
-      signInPollRef.current += 1;
     } catch (error) {
-      setQueryEnvironmentStatus(queryConfigurationMessage(error));
+      if (queryRequestIsCurrent(generation)) {
+        setQueryEnvironmentStatus(queryConfigurationMessage(error));
+      }
     }
   };
 
   const clearDeclaredEnvironment = async () => {
     setQueryEnvironmentStatus(null);
+    const provider = settings.queryProvider;
+    const generation = invalidateQueryRequests();
     try {
-      await saveQueryEnvironment(settings.queryProvider, []);
+      await saveQueryEnvironment(provider, []);
+      if (!queryRequestIsCurrent(generation)) return;
       setQueryEnvironment([]);
       setConfiguredQueryEnvironment([]);
       setQueryEnvironmentStatus('Saved config-directory values cleared.');
+      setQueryEnvironmentNeedsRepair(false);
       setQueryTestResult(null);
       setQuerySignInStatus(null);
-      signInPollRef.current += 1;
     } catch (error) {
-      setQueryEnvironmentStatus(queryConfigurationMessage(error));
+      if (queryRequestIsCurrent(generation)) {
+        setQueryEnvironmentStatus(queryConfigurationMessage(error));
+      }
     }
   };
 
   const runQueryTest = async (): Promise<QueryProviderTestResult | null> => {
     setQueryConfigError(null);
     setQuerySignInStatus(null);
-    signInPollRef.current += 1;
+    const command = queryCommand(settings);
+    const generation = invalidateQueryRequests();
     setQueryTestBusy(true);
     try {
-      const result = await testQueryProvider(queryCommand(settings));
+      const result = await testQueryProvider(command);
+      if (!queryRequestIsCurrent(generation)) return null;
       setQueryTestResult(result);
       return result;
     } catch (error) {
-      setQueryConfigError(queryConfigurationMessage(error));
-      setQueryTestResult(null);
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigError(queryConfigurationMessage(error));
+        setQueryTestResult(null);
+      }
       return null;
     } finally {
-      setQueryTestBusy(false);
+      if (queryRequestIsCurrent(generation)) {
+        setQueryTestBusy(false);
+      }
     }
   };
 
   const signInQueryProvider = async () => {
     const poll = signInPollRef.current + 1;
     signInPollRef.current = poll;
+    const command = queryCommand(settings);
+    const generation = queryConfigGenerationRef.current;
+    const ownsRequest = () => (
+      signInPollRef.current === poll && queryRequestIsCurrent(generation)
+    );
     setQueryConfigError(null);
     setQuerySignInStatus('Opening Terminal…');
     try {
-      await launchQueryProviderSignIn(queryCommand(settings));
-      if (signInPollRef.current !== poll) return;
+      await launchQueryProviderSignIn(command);
+      if (!ownsRequest()) return;
       setQuerySignInStatus('Terminal opened. Waiting for sign-in…');
       const deadline = Date.now() + 60_000;
-      while (signInPollRef.current === poll && Date.now() < deadline) {
+      while (ownsRequest() && Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        if (signInPollRef.current !== poll) return;
-        const result = await testQueryProvider(queryCommand(settings));
+        if (!ownsRequest()) return;
+        const result = await testQueryProvider(command);
+        if (!ownsRequest()) return;
         setQueryTestResult(result);
         if (result.ok) {
           setQuerySignInStatus('Signed in and ready.');
           return;
         }
       }
-      if (signInPollRef.current === poll) {
+      if (ownsRequest()) {
         setQuerySignInStatus('Sign-in is still pending. Finish in Terminal, then choose Test.');
       }
     } catch (error) {
-      setQuerySignInStatus(null);
-      setQueryConfigError(String(error).includes('sign_in')
-        ? 'Murmur could not open the provider sign-in in Terminal.'
-        : queryConfigurationMessage(error));
+      if (ownsRequest()) {
+        setQuerySignInStatus(null);
+        setQueryConfigError(String(error).includes('sign_in')
+          ? 'Murmur could not open the provider sign-in in Terminal.'
+          : queryConfigurationMessage(error));
+      }
     }
   };
 
   const chooseQueryExecutable = async () => {
+    const generation = queryConfigGenerationRef.current;
     try {
       const selected = await open({ directory: false, multiple: false });
-      if (typeof selected === 'string') {
+      if (typeof selected === 'string' && queryRequestIsCurrent(generation)) {
         setQueryConfigError(null);
         setQueryTestResult(null);
         setQuerySignInStatus(null);
-        signInPollRef.current += 1;
+        invalidateQueryRequests();
         onUpdateSettings({ queryExecutable: selected, queryHotkey: null });
       }
     } catch {
@@ -1076,7 +1149,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                       setQueryConfigError(null);
                       setQueryTestResult(null);
                       setQuerySignInStatus(null);
-                      signInPollRef.current += 1;
+                      invalidateQueryRequests();
                       onUpdateSettings({ queryExecutable: event.target.value, queryHotkey: null });
                     }}
                     placeholder="/absolute/path/to/agent"
@@ -1101,7 +1174,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   onChange={(event) => {
                     setQueryTestResult(null);
                     setQuerySignInStatus(null);
-                    signInPollRef.current += 1;
+                    invalidateQueryRequests();
                     onUpdateSettings({
                       queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0),
                       queryHotkey: null,
@@ -1199,6 +1272,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                           value={queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
                           onChange={(event) => {
                             const value = event.target.value;
+                            invalidateQueryRequests();
                             setQueryEnvironment((current) => [
                               ...current.filter((variable) => variable.name !== name),
                               ...(value ? [{ name, value }] : []),
@@ -1222,7 +1296,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                     >
                       Save environment
                     </button>
-                    {configuredQueryEnvironment.length > 0 && (
+                    {(configuredQueryEnvironment.length > 0 || queryEnvironmentNeedsRepair) && (
                       <button
                         type="button"
                         onClick={() => void clearDeclaredEnvironment()}
@@ -1260,7 +1334,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <label className="mb-1.5 block text-sm font-medium text-on-surface">Timeout</label>
                   <Select
                     value={String(settings.queryTimeoutSeconds)}
-                    onChange={(value) => onUpdateSettings({ queryTimeoutSeconds: Number(value) })}
+                    onChange={(value) => {
+                      invalidateQueryRequests();
+                      onUpdateSettings({ queryTimeoutSeconds: Number(value) });
+                    }}
                     items={[
                       { value: '30', label: '30 seconds' },
                       { value: '60', label: '1 minute' },

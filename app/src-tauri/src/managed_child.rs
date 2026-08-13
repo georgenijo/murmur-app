@@ -15,6 +15,26 @@ use std::time::{Duration, Instant};
 
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+pub(crate) const USER_CLI_BASE_ENVIRONMENT: [&str; 8] = [
+    "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
+];
+
+pub(crate) fn apply_user_cli_base_environment(command: &mut Command) {
+    command.env_clear();
+    for key in USER_CLI_BASE_ENVIRONMENT {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+}
+
+pub(crate) fn user_cli_base_environment() -> Vec<(String, std::ffi::OsString)> {
+    USER_CLI_BASE_ENVIRONMENT
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (key.to_string(), value)))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfirmedTermination {
     pub exit_code: Option<i32>,
@@ -90,14 +110,11 @@ impl ManagedChild {
         arguments: &[String],
         declared_environment: &[(String, String)],
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
-        const BASE_ENVIRONMENT: [&str; 8] = [
-            "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
-        ];
         const DECLARED_ENVIRONMENT: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
         let mut seen = std::collections::HashSet::new();
         for (key, value) in declared_environment {
             if !DECLARED_ENVIRONMENT.contains(&key.as_str())
-                || BASE_ENVIRONMENT.contains(&key.as_str())
+                || USER_CLI_BASE_ENVIRONMENT.contains(&key.as_str())
                 || !seen.insert(key.as_str())
                 || key.contains(['\0', '='])
                 || value.contains('\0')
@@ -114,13 +131,8 @@ impl ManagedChild {
             .current_dir("/")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env_clear();
-        for key in BASE_ENVIRONMENT {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
+            .stderr(Stdio::piped());
+        apply_user_cli_base_environment(&mut command);
         for (key, value) in declared_environment {
             command.env(key, value);
         }

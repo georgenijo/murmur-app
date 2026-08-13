@@ -122,6 +122,7 @@ struct ActiveQueryChild {
 }
 
 pub(crate) struct QueryCoordinator {
+    ownership: Mutex<()>,
     pass_sequence: AtomicU64,
     active_pass_id: AtomicU64,
     cancelled_pass_id: AtomicU64,
@@ -133,6 +134,7 @@ pub(crate) struct QueryCoordinator {
 impl Default for QueryCoordinator {
     fn default() -> Self {
         Self {
+            ownership: Mutex::new(()),
             pass_sequence: AtomicU64::new(0),
             active_pass_id: AtomicU64::new(0),
             cancelled_pass_id: AtomicU64::new(0),
@@ -147,6 +149,7 @@ impl QueryCoordinator {
     /// Called only from the shared rdev callback. A terminal review can be
     /// superseded; an in-flight pass is never replaced.
     pub(crate) fn allocate_keyboard_pass(&self) -> Option<u64> {
+        let _ownership = self.ownership.lock_or_recover();
         let status = *self.status.lock_or_recover();
         if !status.accepts_new_pass() || self.child.lock_or_recover().is_some() {
             return None;
@@ -173,6 +176,7 @@ impl QueryCoordinator {
     }
 
     fn set_status(&self, pass_id: u64, status: QueryStatus) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
             return false;
         }
@@ -180,17 +184,17 @@ impl QueryCoordinator {
         true
     }
 
-    fn mark_cancelled(&self, pass_id: u64) {
+    fn begin_cancel(&self, pass_id: u64) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if self.active_pass_id() != Some(pass_id) {
+            return false;
+        }
         self.cancelled_pass_id.fetch_max(pass_id, Ordering::SeqCst);
-    }
-
-    fn clear_pass(&self, pass_id: u64) -> bool {
-        self.active_pass_id
-            .compare_exchange(pass_id, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+        true
     }
 
     fn install_session(&self, pass_id: u64, session: QuerySession) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
             return false;
         }
@@ -199,6 +203,7 @@ impl QueryCoordinator {
     }
 
     fn session(&self, pass_id: u64) -> Option<QuerySession> {
+        let _ownership = self.ownership.lock_or_recover();
         self.is_active(pass_id)
             .then(|| self.session.lock_or_recover().clone())
             .flatten()
@@ -206,11 +211,15 @@ impl QueryCoordinator {
     }
 
     fn append_answer(&self, pass_id: u64, text: &str) -> Result<(), &'static str> {
+        let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
             return Err("stale_pass");
         }
         let mut slot = self.session.lock_or_recover();
-        let session = slot.as_mut().ok_or("stale_pass")?;
+        let session = slot
+            .as_mut()
+            .filter(|session| session.pass_id == pass_id)
+            .ok_or("stale_pass")?;
         if session.answer.len().saturating_add(text.len()) > MAX_ANSWER_BYTES {
             return Err("output_too_large");
         }
@@ -223,6 +232,7 @@ impl QueryCoordinator {
     }
 
     fn set_error_detail(&self, pass_id: u64, detail: Option<String>) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
             return false;
         }
@@ -235,6 +245,7 @@ impl QueryCoordinator {
     }
 
     fn install_child(&self, pass_id: u64, child: Arc<Mutex<ManagedChild>>) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
             return false;
         }
@@ -243,6 +254,7 @@ impl QueryCoordinator {
     }
 
     fn clear_child(&self, pass_id: u64) {
+        let _ownership = self.ownership.lock_or_recover();
         let mut slot = self.child.lock_or_recover();
         if slot
             .as_ref()
@@ -253,12 +265,14 @@ impl QueryCoordinator {
     }
 
     fn terminate_child(&self, pass_id: u64) -> bool {
-        let child = self
-            .child
-            .lock_or_recover()
-            .as_ref()
-            .filter(|active| active.pass_id == pass_id)
-            .map(|active| Arc::clone(&active.child));
+        let child = {
+            let _ownership = self.ownership.lock_or_recover();
+            self.child
+                .lock_or_recover()
+                .as_ref()
+                .filter(|active| active.pass_id == pass_id)
+                .map(|active| Arc::clone(&active.child))
+        };
         let Some(child) = child else {
             return true;
         };
@@ -287,6 +301,26 @@ impl QueryCoordinator {
                 self.clear_child(pass_id);
             }
         }
+    }
+
+    fn fail_cancel_termination(&self, pass_id: u64) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if self.active_pass_id() != Some(pass_id) {
+            return false;
+        }
+        *self.status.lock_or_recover() = QueryStatus::Failed;
+        true
+    }
+
+    fn complete_cancel(&self, pass_id: u64) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if self.active_pass_id() != Some(pass_id) {
+            return false;
+        }
+        *self.session.lock_or_recover() = None;
+        *self.status.lock_or_recover() = QueryStatus::Idle;
+        self.active_pass_id.store(0, Ordering::SeqCst);
+        true
     }
 }
 
@@ -924,6 +958,22 @@ fn accept_stdout(
     Ok(())
 }
 
+fn finish_stdout_after_reap(
+    query: &QueryCoordinator,
+    pass_id: u64,
+    decoder: Utf8Chunks,
+) -> Result<String, &'static str> {
+    // The direct child and owned process group have already been reaped. Drop
+    // that ownership before any final decoding/size check can return early, so
+    // cancellation never targets a stale PID/PGID after a terminal error.
+    query.clear_child(pass_id);
+    let tail = decoder.finish();
+    if !tail.is_empty() {
+        query.append_answer(pass_id, &tail)?;
+    }
+    Ok(tail)
+}
+
 fn discard_remaining_output(
     rx: &std::sync::mpsc::Receiver<CliOutput>,
     stdout_reader: std::thread::JoinHandle<()>,
@@ -1239,13 +1289,10 @@ fn run_cli(
         app.state::<crate::State>().query.clear_child(pass_id);
         return Err(QueryRunError::with_stderr(code, &stderr_tail));
     }
-    let tail = decoder.finish();
+    let state = app.state::<crate::State>();
+    let tail = finish_stdout_after_reap(&state.query, pass_id, decoder)
+        .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
     if !tail.is_empty() {
-        let state = app.state::<crate::State>();
-        state
-            .query
-            .append_answer(pass_id, &tail)
-            .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
         let _ = app.emit_to(
             "query-review",
             "query-answer-chunk",
@@ -1256,7 +1303,6 @@ fn run_cli(
             }),
         );
     }
-    app.state::<crate::State>().query.clear_child(pass_id);
     if !exit_status.success() {
         let answer = app
             .state::<crate::State>()
@@ -1389,10 +1435,9 @@ pub(crate) fn cancel_query(
     state: tauri::State<'_, crate::State>,
     query_pass_id: u64,
 ) -> Result<(), String> {
-    if state.query.active_pass_id() != Some(query_pass_id) {
+    if !state.query.begin_cancel(query_pass_id) {
         return Ok(());
     }
-    state.query.mark_cancelled(query_pass_id);
     crate::keyboard::set_query_recording_state(false);
     if matches!(
         state.query.status(),
@@ -1404,23 +1449,21 @@ pub(crate) fn cancel_query(
         );
     }
     if !state.query.terminate_child(query_pass_id) {
-        *state.query.status.lock_or_recover() = QueryStatus::Failed;
-        emit_state(
-            &app_handle,
-            query_pass_id,
-            QueryStatus::Failed,
-            Some("termination_unconfirmed"),
-        );
+        if state.query.fail_cancel_termination(query_pass_id) {
+            emit_state(
+                &app_handle,
+                query_pass_id,
+                QueryStatus::Failed,
+                Some("termination_unconfirmed"),
+            );
+        }
         return Err("The configured CLI could not be confirmed terminated.".to_string());
     }
     // A terminal pass can be superseded by a new hotkey while this command is
     // awaiting teardown. Never clear or hide the newer owner's session.
-    if state.query.active_pass_id() != Some(query_pass_id) {
+    if !state.query.complete_cancel(query_pass_id) {
         return Ok(());
     }
-    *state.query.session.lock_or_recover() = None;
-    *state.query.status.lock_or_recover() = QueryStatus::Idle;
-    state.query.clear_pass(query_pass_id);
     let _ = crate::commands::query_popover::hide_internal(&app_handle);
     let _ = app_handle.emit("query-review-hidden", ());
     Ok(())
@@ -1588,5 +1631,51 @@ mod tests {
         assert_eq!(decoder.push(&bytes[..8]), "hello ");
         assert_eq!(decoder.push(&bytes[8..]), "🦀");
         assert_eq!(decoder.finish(), "");
+    }
+
+    #[test]
+    fn incomplete_utf8_tail_clears_reaped_child_before_cap_error() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        let context = Arc::new(crate::dictation_context::resolve(
+            crate::dictation_context::ResolverInputs {
+                bundle_id: None,
+                global: &crate::state::DictationState::default(),
+                prompt: None,
+                correction_matcher: None,
+                ide_context_index: None,
+                vocabulary_version: 0,
+                voice_commands: None,
+                session_overrides: crate::dictation_context::SessionOverrides::default(),
+            },
+        ));
+        query.install_session(
+            pass_id,
+            QuerySession {
+                pass_id,
+                context,
+                command: ValidatedQueryCommand {
+                    provider: QueryProviderId::Custom,
+                    executable: PathBuf::from("/usr/bin/printf"),
+                    arguments: vec![],
+                    timeout: Duration::from_secs(5),
+                    environment: vec![],
+                },
+                answer: "a".repeat(MAX_ANSWER_BYTES - 1),
+                error_detail: None,
+            },
+        );
+        let (child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/true"), &[], &[]).unwrap();
+        drop((stdin, stdout, stderr));
+        assert!(query.install_child(pass_id, Arc::new(Mutex::new(child))));
+
+        let mut decoder = Utf8Chunks::new();
+        assert_eq!(decoder.push(&[0xf0]), "");
+        assert_eq!(
+            finish_stdout_after_reap(&query, pass_id, decoder),
+            Err("output_too_large")
+        );
+        assert!(query.child.lock_or_recover().is_none());
     }
 }

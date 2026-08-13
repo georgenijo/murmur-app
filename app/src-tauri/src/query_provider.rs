@@ -4,7 +4,10 @@
 //! `ManagedChild::spawn_user_cli`, which starts one exact executable without a
 //! shell and with a cleared, fail-closed environment.
 
-use crate::managed_child::ManagedChild;
+use crate::managed_child::{
+    apply_user_cli_base_environment, user_cli_base_environment, ManagedChild,
+    USER_CLI_BASE_ENVIRONMENT,
+};
 use crate::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -316,6 +319,13 @@ fn environment_temp_path(dir: &Path) -> PathBuf {
     dir.join(format!(".{ENVIRONMENT_FILE}.murmur-tmp"))
 }
 
+fn empty_environment_store() -> QueryEnvironmentStore {
+    QueryEnvironmentStore {
+        version: ENVIRONMENT_VERSION,
+        providers: BTreeMap::new(),
+    }
+}
+
 fn validate_environment(
     provider: QueryProviderId,
     variables: &[QueryEnvironmentVariable],
@@ -344,10 +354,7 @@ fn read_environment_store(dir: &Path) -> Result<QueryEnvironmentStore, &'static 
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(QueryEnvironmentStore {
-                version: ENVIRONMENT_VERSION,
-                providers: BTreeMap::new(),
-            })
+            return Ok(empty_environment_store())
         }
         Err(_) => return Err("environment_unavailable"),
     };
@@ -465,10 +472,26 @@ pub(crate) fn save_environment(
     validate_environment(provider, &variables)?;
     let _guard = ENVIRONMENT_WRITE_LOCK.lock_or_recover();
     let dir = app_data_dir(app)?;
-    let mut store = read_environment_store(&dir)?;
+    save_environment_in_dir(&dir, provider, variables)
+}
+
+fn save_environment_in_dir(
+    dir: &Path,
+    provider: QueryProviderId,
+    variables: Vec<QueryEnvironmentVariable>,
+) -> Result<(), &'static str> {
+    validate_environment(provider, &variables)?;
+    let mut store = match read_environment_store(dir) {
+        Ok(store) => store,
+        // Explicit Clear is the recovery path for a corrupt or future-version
+        // file. Its contents cannot be trusted enough to preserve selectively,
+        // so replace the whole store with a valid empty one atomically.
+        Err("invalid_environment") if variables.is_empty() => empty_environment_store(),
+        Err(error) => return Err(error),
+    };
     apply_environment_update(&mut store, provider, variables);
     store.version = ENVIRONMENT_VERSION;
-    write_environment_store(&dir, &store)
+    write_environment_store(dir, &store)
 }
 
 #[derive(Default)]
@@ -759,8 +782,27 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn applescript_quote(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+fn terminal_sign_in_command(
+    executable: &Path,
+    arguments: &[&str],
+    environment: &[QueryEnvironmentVariable],
+    base_environment: &[(String, String)],
+) -> String {
+    let mut elements = vec![shell_quote("/usr/bin/env"), shell_quote("-i")];
+    elements.extend(
+        base_environment
+            .iter()
+            .filter(|(name, _)| USER_CLI_BASE_ENVIRONMENT.contains(&name.as_str()))
+            .map(|(name, value)| shell_quote(&format!("{name}={value}"))),
+    );
+    elements.extend(
+        environment
+            .iter()
+            .map(|variable| shell_quote(&format!("{}={}", variable.name, variable.value))),
+    );
+    elements.push(shell_quote(&executable.to_string_lossy()));
+    elements.extend(arguments.iter().map(|argument| shell_quote(argument)));
+    elements.join(" ")
 }
 
 /// Launch the provider-owned interactive sign-in inside Terminal. This is a
@@ -775,27 +817,30 @@ pub(crate) fn launch_sign_in(
     if data.sign_in_arguments.is_empty() {
         return Err("sign_in_unavailable");
     }
-    let mut elements = vec![shell_quote("/usr/bin/env")];
-    elements.extend(
-        environment
-            .iter()
-            .map(|variable| shell_quote(&format!("{}={}", variable.name, variable.value))),
+    validate_environment(provider, environment)?;
+    let base_environment = user_cli_base_environment()
+        .into_iter()
+        .map(|(name, value)| {
+            value
+                .into_string()
+                .map(|value| (name, value))
+                .map_err(|_| "sign_in_failed")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let command = terminal_sign_in_command(
+        executable,
+        data.sign_in_arguments,
+        environment,
+        &base_environment,
     );
-    elements.push(shell_quote(&executable.to_string_lossy()));
-    elements.extend(
-        data.sign_in_arguments
-            .iter()
-            .map(|argument| shell_quote(argument)),
-    );
-    let command = elements.join(" ");
-    let script = format!(
-        "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
-        applescript_quote(&command)
-    );
-    let status = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .status()
-        .map_err(|_| "sign_in_failed")?;
+    // Keep user-controlled paths out of the AppleScript program itself. The
+    // generated command is one osascript argv value and `do script` receives
+    // it as data, so quotes or newlines cannot inject AppleScript statements.
+    let script = "on run argv\nset signInCommand to item 1 of argv\ntell application \"Terminal\"\nactivate\ndo script signInCommand\nend tell\nend run";
+    let mut osascript = std::process::Command::new("/usr/bin/osascript");
+    osascript.args(["-e", script, &command]);
+    apply_user_cli_base_environment(&mut osascript);
+    let status = osascript.status().map_err(|_| "sign_in_failed")?;
     status.success().then_some(()).ok_or("sign_in_failed")
 }
 
@@ -934,6 +979,41 @@ mod tests {
     }
 
     #[test]
+    fn explicit_clear_recovers_corrupt_or_future_environment_store() {
+        for (tag, contents) in [
+            ("corrupt", b"not-json".as_slice()),
+            ("future", br#"{"version":99,"providers":{}}"#.as_slice()),
+        ] {
+            let dir = temp_dir(tag);
+            std::fs::write(environment_path(&dir), contents).unwrap();
+            assert_eq!(
+                save_environment_in_dir(&dir, QueryProviderId::Claude, vec![]),
+                Ok(())
+            );
+            let recovered = read_environment_store(&dir).unwrap();
+            assert_eq!(recovered.version, ENVIRONMENT_VERSION);
+            assert!(recovered.providers.is_empty());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn nonempty_save_does_not_overwrite_a_corrupt_environment_store() {
+        let dir = temp_dir("corrupt_save");
+        std::fs::write(environment_path(&dir), b"not-json").unwrap();
+        let variables = vec![QueryEnvironmentVariable {
+            name: "CLAUDE_CONFIG_DIR".into(),
+            value: "/tmp/claude-config".into(),
+        }];
+        assert_eq!(
+            save_environment_in_dir(&dir, QueryProviderId::Claude, variables),
+            Err("invalid_environment")
+        );
+        assert_eq!(std::fs::read(environment_path(&dir)).unwrap(), b"not-json");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn stderr_tail_is_bounded_and_sanitized() {
         let mut tail = TailBuffer::new(8);
         tail.push(b"private-prefix");
@@ -991,7 +1071,34 @@ mod tests {
     #[test]
     fn terminal_command_quoting_cannot_break_out_of_one_shell_word() {
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
-        assert_eq!(applescript_quote("a\\\"b"), "a\\\\\\\"b");
+    }
+
+    #[test]
+    fn terminal_sign_in_command_starts_from_the_exact_allowlist() {
+        let base_environment = vec![
+            ("HOME".to_string(), "/Users/test".to_string()),
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            (
+                "MURMUR_SENTINEL_SECRET".to_string(),
+                "must-not-cross-boundary".to_string(),
+            ),
+        ];
+        let declared = vec![QueryEnvironmentVariable {
+            name: "CLAUDE_CONFIG_DIR".into(),
+            value: "/tmp/claude config".into(),
+        }];
+        let command = terminal_sign_in_command(
+            Path::new("/opt/homebrew/bin/claude"),
+            &["/login"],
+            &declared,
+            &base_environment,
+        );
+        assert!(command.starts_with("'/usr/bin/env' '-i' "));
+        assert!(command.contains("'HOME=/Users/test'"));
+        assert!(command.contains("'PATH=/usr/bin:/bin'"));
+        assert!(command.contains("'CLAUDE_CONFIG_DIR=/tmp/claude config'"));
+        assert!(command.ends_with("'/opt/homebrew/bin/claude' '/login'"));
+        assert!(!command.contains("MURMUR_SENTINEL_SECRET"));
     }
 
     #[test]

@@ -65,6 +65,10 @@ export function useQueryReviewDriver() {
   const [signInBusy, setSignInBusy] = useState(false);
   const passIdRef = useRef<number | null>(null);
   const nextSequenceRef = useRef(0);
+  const contentRefreshTicketRef = useRef(0);
+  const answerRecoveryRef = useRef(false);
+  const terminalPassIdRef = useRef<number | null>(null);
+  const terminalContentSnapshotRef = useRef(false);
   const signInAttemptRef = useRef(0);
 
   useEffect(() => {
@@ -73,13 +77,24 @@ export function useQueryReviewDriver() {
     let unlistenChunk: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
 
-    const refresh = async (expectedPassId: number) => {
+    const refresh = async (expectedPassId: number, terminal = false) => {
+      const ticket = contentRefreshTicketRef.current + 1;
+      contentRefreshTicketRef.current = ticket;
       try {
         const content = await invoke<QueryContent>('get_query_review_content');
-        if (!disposed && content.queryPassId === expectedPassId && typeof content.answer === 'string') {
+        if (
+          !disposed
+          && passIdRef.current === expectedPassId
+          && content.queryPassId === expectedPassId
+          && contentRefreshTicketRef.current === ticket
+          && typeof content.answer === 'string'
+        ) {
           setAnswer(content.answer);
           setErrorDetail(typeof content.errorDetail === 'string' ? content.errorDetail : null);
           setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
+          if (terminal || terminalPassIdRef.current === expectedPassId) {
+            terminalContentSnapshotRef.current = true;
+          }
         }
       } catch {
         flog.warn('query-review', 'could not refresh answer content');
@@ -93,16 +108,22 @@ export function useQueryReviewDriver() {
         if (passIdRef.current !== payload.queryPassId) {
           passIdRef.current = payload.queryPassId;
           nextSequenceRef.current = 0;
+          contentRefreshTicketRef.current += 1;
+          answerRecoveryRef.current = false;
+          terminalPassIdRef.current = null;
+          terminalContentSnapshotRef.current = false;
           setAnswer('');
           setErrorDetail(null);
           setSignInFix(null);
           setSignInStatus(null);
+          setSignInBusy(false);
           signInAttemptRef.current += 1;
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
         if (payload.state === 'ready' || payload.state === 'failed') {
-          void refresh(payload.queryPassId);
+          terminalPassIdRef.current = payload.queryPassId;
+          void refresh(payload.queryPassId, true);
         }
       });
       if (disposed) { unlistenState(); return; }
@@ -111,12 +132,28 @@ export function useQueryReviewDriver() {
         if (disposed || !isChunkPayload(event.payload)) return;
         const payload = event.payload;
         if (payload.queryPassId !== passIdRef.current) return;
+        if (terminalContentSnapshotRef.current) return;
+        if (answerRecoveryRef.current) {
+          nextSequenceRef.current = Math.max(nextSequenceRef.current, payload.sequence + 1);
+          void refresh(
+            payload.queryPassId,
+            terminalPassIdRef.current === payload.queryPassId,
+          );
+          return;
+        }
         if (payload.sequence !== nextSequenceRef.current) {
-          void refresh(payload.queryPassId);
+          answerRecoveryRef.current = true;
           nextSequenceRef.current = payload.sequence + 1;
+          void refresh(
+            payload.queryPassId,
+            terminalPassIdRef.current === payload.queryPassId,
+          );
           return;
         }
         nextSequenceRef.current += 1;
+        if (terminalPassIdRef.current !== payload.queryPassId) {
+          contentRefreshTicketRef.current += 1;
+        }
         setAnswer((current) => current + payload.text);
       });
       if (disposed) { unlistenState(); unlistenChunk(); return; }
@@ -124,6 +161,10 @@ export function useQueryReviewDriver() {
       unlistenHidden = await listen('query-review-hidden', () => {
         passIdRef.current = null;
         nextSequenceRef.current = 0;
+        contentRefreshTicketRef.current += 1;
+        answerRecoveryRef.current = false;
+        terminalPassIdRef.current = null;
+        terminalContentSnapshotRef.current = false;
         setState('idle');
         setErrorCode(null);
         setAnswer('');
@@ -169,33 +210,37 @@ export function useQueryReviewDriver() {
     if (queryPassId === null || errorCode !== 'provider_not_authenticated') return;
     const attempt = signInAttemptRef.current + 1;
     signInAttemptRef.current = attempt;
+    const ownsAttempt = () => (
+      signInAttemptRef.current === attempt && passIdRef.current === queryPassId
+    );
     setSignInBusy(true);
     setSignInStatus('Opening Terminal…');
     try {
       await invoke('launch_query_sign_in_for_pass', { queryPassId });
-      if (signInAttemptRef.current !== attempt) return;
+      if (!ownsAttempt()) return;
       setSignInStatus('Terminal opened. Waiting for sign-in…');
       const deadline = Date.now() + 60_000;
-      while (signInAttemptRef.current === attempt && Date.now() < deadline) {
+      while (ownsAttempt() && Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        if (signInAttemptRef.current !== attempt) return;
+        if (!ownsAttempt()) return;
         const authenticated = await invoke<boolean>('probe_query_sign_in_for_pass', {
           queryPassId,
         });
+        if (!ownsAttempt()) return;
         if (authenticated) {
           setSignInStatus('Signed in. Ask the query again.');
           return;
         }
       }
-      if (signInAttemptRef.current === attempt) {
+      if (ownsAttempt()) {
         setSignInStatus('Sign-in is still pending. Finish in Terminal, then try again.');
       }
     } catch {
-      if (signInAttemptRef.current === attempt) {
+      if (ownsAttempt()) {
         setSignInStatus('Murmur could not complete provider sign-in.');
       }
     } finally {
-      if (signInAttemptRef.current === attempt) setSignInBusy(false);
+      if (ownsAttempt()) setSignInBusy(false);
     }
   }, [errorCode]);
 

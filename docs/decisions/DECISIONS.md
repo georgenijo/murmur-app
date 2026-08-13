@@ -14,8 +14,11 @@ parent. A provider may additionally declare only `CLAUDE_CONFIG_DIR` or
 `CODEX_HOME`; it cannot override a base key. Values must be absolute directory
 paths, live in an owner-only Rust app-data file, and are never returned to a
 webview after Save. API keys, tokens, and arbitrary environment names are not
-accepted. Any future secret-bearing variable requires a separate storage and
-redaction design before implementation.
+accepted. The explicit Terminal sign-in repair is held to the same boundary:
+its AppleScript child receives only the base set, and the provider command
+starts with `env -i` before those base and declared values are added. Any future
+secret-bearing variable requires a separate storage and redaction design before
+implementation.
 
 **Rationale:** Full parent-environment inheritance silently exports unrelated
 credentials, while local CLI wrappers and credential stores still need the
