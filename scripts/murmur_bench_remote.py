@@ -2,10 +2,9 @@
 """Run baseline and candidate Murmur refs on one trusted Fleet Mac.
 
 This helper is intended to be copied to the benchmark Mac and invoked there.
-It creates detached temporary worktrees, shares release Cargo target caches
-between refs with identical lockfiles, runs both refs against the same private
-corpus, writes local reports, compares them, and removes only the temporary
-worktrees it created.
+It creates detached temporary worktrees, keeps a release Cargo target cache per
+immutable ref, runs both refs against the same private corpus, writes local
+reports, compares them, and removes only the temporary worktrees it created.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ EXTERNAL_BINARIES = (
     "murmur-capture-worker-aarch64-apple-darwin",
     "murmur-llm-sidecar-aarch64-apple-darwin",
 )
-CACHE_POLICY = "conditioned-timed-path-v2"
+CACHE_POLICY = "conditioned-timed-path-v3"
 CONDITIONING_PRESET = "quick"
 CONDITIONING_STAGES = (
     "all-selected-quick",
@@ -69,7 +68,9 @@ def resolve_ref(repo: Path, ref: str) -> str:
     return output(["git", "rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo)
 
 
-def benchmark_environment(cache_root: Path, lockfile: Path) -> dict[str, str]:
+def benchmark_environment(
+    cache_root: Path, lockfile: Path, git_commit: str
+) -> dict[str, str]:
     environment = os.environ.copy()
     environment["PATH"] = f"/opt/homebrew/bin:{environment.get('PATH', '')}"
     environment.setdefault("MACOSX_DEPLOYMENT_TARGET", "14.0")
@@ -81,8 +82,9 @@ def benchmark_environment(cache_root: Path, lockfile: Path) -> dict[str, str]:
         "-L native=/Applications/Xcode.app/Contents/Developer/Toolchains/"
         "XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin",
     )
-    lock_digest = hashlib.sha256(lockfile.read_bytes()).hexdigest()[:16]
-    environment["CARGO_TARGET_DIR"] = str(cache_root / "cargo-target" / lock_digest)
+    cache_material = lockfile.read_bytes() + b"\0" + git_commit.encode("ascii")
+    ref_digest = hashlib.sha256(cache_material).hexdigest()[:16]
+    environment["CARGO_TARGET_DIR"] = str(cache_root / "cargo-target" / ref_digest)
     return environment
 
 
@@ -282,6 +284,15 @@ def run_benchmark(
     machine_label: str,
     environment: dict[str, str],
 ) -> None:
+    # ui_lib emits lib, cdylib, and staticlib artifacts. Reusing its prior
+    # package outputs across feature-identical test invocations can make Cargo
+    # link two type identities for dependencies such as Tauri and Serde. Keep
+    # dependency artifacts cached, but rebuild the app package for every pass.
+    run(
+        ["cargo", "clean", "--release", "-p", "ui"],
+        cwd=worktree / "app" / "src-tauri",
+        env=environment,
+    )
     command = [
         sys.executable,
         str(runner),
@@ -546,7 +557,7 @@ def run_ref(
     try:
         seed_external_binaries(binary_source, worktree)
         environment = benchmark_environment(
-            cache_root, worktree / "app" / "src-tauri" / "Cargo.lock"
+            cache_root, worktree / "app" / "src-tauri" / "Cargo.lock", sha
         )
         report = report_root / f"{stamp}-{role}-{safe_label(ref)}-{sha[:12]}.json"
         run_conditioned_benchmark(

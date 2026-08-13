@@ -20,7 +20,7 @@ NOMINAL_SNAPSHOT = {
 
 
 class MurmurBenchRemoteTests(unittest.TestCase):
-    def test_benchmark_environment_namespaces_cargo_cache_by_lockfile(self) -> None:
+    def test_benchmark_environment_namespaces_cargo_cache_by_ref(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             first_lock = root / "first.lock"
@@ -28,12 +28,22 @@ class MurmurBenchRemoteTests(unittest.TestCase):
             first_lock.write_text("first", encoding="utf-8")
             second_lock.write_text("second", encoding="utf-8")
 
-            first = remote.benchmark_environment(root, first_lock)["CARGO_TARGET_DIR"]
-            repeated = remote.benchmark_environment(root, first_lock)["CARGO_TARGET_DIR"]
-            second = remote.benchmark_environment(root, second_lock)["CARGO_TARGET_DIR"]
+            first = remote.benchmark_environment(root, first_lock, "1" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+            repeated = remote.benchmark_environment(root, first_lock, "1" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+            new_ref = remote.benchmark_environment(root, first_lock, "2" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+            new_lock = remote.benchmark_environment(root, second_lock, "1" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
 
             self.assertEqual(first, repeated)
-            self.assertNotEqual(first, second)
+            self.assertNotEqual(first, new_ref)
+            self.assertNotEqual(first, new_lock)
             self.assertEqual(Path(first).parent, root / "cargo-target")
 
     def test_preflight_rejects_battery_low_power_and_thermal_pressure(self) -> None:
@@ -115,6 +125,7 @@ class MurmurBenchRemoteTests(unittest.TestCase):
                 "process_table",
                 return_value={100: (1, "Python"), 200: (1, "cargo")},
             ),
+            mock.patch.object(remote, "run") as run,
             mock.patch.object(remote, "terminate_process_group") as terminate,
         ):
             with self.assertRaisesRegex(ValueError, "unrelated build process"):
@@ -129,6 +140,11 @@ class MurmurBenchRemoteTests(unittest.TestCase):
                     environment={},
                 )
         terminate.assert_called_once_with(process)
+        run.assert_called_once_with(
+            ["cargo", "clean", "--release", "-p", "ui"],
+            cwd=Path("/tmp/worktree/app/src-tauri"),
+            env={},
+        )
 
     def test_run_lock_rejects_a_concurrent_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -221,7 +237,7 @@ class MurmurBenchRemoteTests(unittest.TestCase):
             self.assertNotEqual(calls[0][1], report_path)
             self.assertFalse(calls[0][1].exists(), "conditioning report must be temporary")
             meta = json.loads(report_path.with_suffix(".meta.json").read_text())
-            self.assertEqual(meta["cachePolicy"], "conditioned-timed-path-v2")
+            self.assertEqual(meta["cachePolicy"], "conditioned-timed-path-v3")
             self.assertEqual(meta["conditioningPreset"], "quick")
             self.assertEqual(
                 meta["conditioningStages"],
