@@ -465,6 +465,7 @@ fn launch_login_in_terminal(executable: &Path, arguments: &[&str]) -> Result<(),
 /// make sense for capture: the probe never touches the microphone, but it does
 /// start a provider CLI that can be a heavy inference runtime.
 fn is_pipeline_busy(state: &crate::State) -> bool {
+    use crate::MutexExt;
     use std::sync::atomic::Ordering;
 
     #[cfg(feature = "internal-benchmark")]
