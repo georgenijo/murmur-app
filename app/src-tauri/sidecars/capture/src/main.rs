@@ -63,7 +63,7 @@ mod supported {
                 let callback_state = Arc::clone(state);
                 let error_state = Arc::clone(state);
                 device.build_input_stream(
-                    stream_config.clone(),
+                    stream_config,
                     move |data: &[$sample], _| {
                         // Real-time boundary: atomics only. PCM is neither copied,
                         // retained, logged, serialized, nor written to disk.
