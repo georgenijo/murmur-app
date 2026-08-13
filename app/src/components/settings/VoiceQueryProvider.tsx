@@ -26,6 +26,8 @@ interface VoiceQueryProviderProps {
   executable: string;
   args: string[];
   timeoutSeconds: number;
+  /** Opens the host file picker; the chosen path is applied by the parent. */
+  onBrowse: () => void;
   onChange: (patch: { queryPresetId?: string; queryExecutable?: string; queryArguments?: string[] }) => void;
 }
 
@@ -44,6 +46,7 @@ export function VoiceQueryProvider({
   executable,
   args,
   timeoutSeconds,
+  onBrowse,
   onChange,
 }: VoiceQueryProviderProps) {
   const [presets, setPresets] = useState<QueryPresetInfo[] | null>(null);
@@ -193,6 +196,45 @@ export function VoiceQueryProvider({
               ? `${selected.summary} Found at ${selected.discoveredPath}.`
               : `${selected.summary} Murmur could not find ${selected.binaryName} — choose the path below.`
             : 'Configure the executable and arguments yourself. No provider-specific checks are available.'}
+        </p>
+      </div>
+
+      <div>
+        <label htmlFor="query-executable" className="mb-1.5 block text-sm font-medium text-on-surface">CLI executable</label>
+        <div className="flex gap-2">
+          <input
+            id="query-executable"
+            type="text"
+            value={executable}
+            onChange={(event) => onChange({ queryExecutable: event.target.value })}
+            placeholder="/absolute/path/to/agent"
+            spellCheck={false}
+            className="min-w-0 flex-1 rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
+          />
+          <button type="button" onClick={onBrowse} className="rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container">
+            Browse…
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-on-surface-variant">
+          Must be an absolute path to an executable file. No shell is ever invoked.
+        </p>
+      </div>
+
+      <div>
+        <label htmlFor="query-arguments" className="mb-1.5 block text-sm font-medium text-on-surface">Fixed arguments</label>
+        <textarea
+          id="query-arguments"
+          rows={3}
+          value={args.join('\n')}
+          onChange={(event) => onChange({
+            queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0),
+          })}
+          placeholder={'One argument per line\n--print'}
+          spellCheck={false}
+          className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
+        />
+        <p className="mt-1 text-xs text-on-surface-variant">
+          Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
         </p>
       </div>
 

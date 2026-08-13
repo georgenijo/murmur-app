@@ -864,6 +864,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               executable={settings.queryExecutable}
               args={settings.queryArguments}
               timeoutSeconds={settings.queryTimeoutSeconds}
+              onBrowse={() => void chooseQueryExecutable()}
               onChange={(patch) => {
                 setQueryConfigError(null);
                 onUpdateSettings(patch);
@@ -871,46 +872,6 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
 
             <div className="space-y-4">
-              <div>
-                <label htmlFor="query-executable" className="mb-1.5 block text-sm font-medium text-on-surface">CLI executable</label>
-                <div className="flex gap-2">
-                  <input
-                    id="query-executable"
-                    type="text"
-                    value={settings.queryExecutable}
-                    onChange={(event) => {
-                      setQueryConfigError(null);
-                      onUpdateSettings({ queryExecutable: event.target.value });
-                    }}
-                    placeholder="/absolute/path/to/agent"
-                    spellCheck={false}
-                    className="min-w-0 flex-1 rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
-                  />
-                  <button type="button" onClick={() => void chooseQueryExecutable()} className="rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container">
-                    Browse…
-                  </button>
-                </div>
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Must be an absolute path to an executable file. No shell is ever invoked.
-                </p>
-              </div>
-
-              <div>
-                <label htmlFor="query-arguments" className="mb-1.5 block text-sm font-medium text-on-surface">Fixed arguments</label>
-                <textarea
-                  id="query-arguments"
-                  rows={3}
-                  value={settings.queryArguments.join('\n')}
-                  onChange={(event) => onUpdateSettings({ queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0) })}
-                  placeholder={'One argument per line\n--print'}
-                  spellCheck={false}
-                  className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
-                />
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
-                </p>
-              </div>
-
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-on-surface">Query shortcut</label>
