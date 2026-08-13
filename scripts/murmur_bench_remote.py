@@ -82,7 +82,13 @@ def benchmark_environment(
         "-L native=/Applications/Xcode.app/Contents/Developer/Toolchains/"
         "XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin",
     )
-    cache_material = lockfile.read_bytes() + b"\0" + git_commit.encode("ascii")
+    cache_material = (
+        CACHE_POLICY.encode("ascii")
+        + b"\0"
+        + lockfile.read_bytes()
+        + b"\0"
+        + git_commit.encode("ascii")
+    )
     ref_digest = hashlib.sha256(cache_material).hexdigest()[:16]
     environment["CARGO_TARGET_DIR"] = str(cache_root / "cargo-target" / ref_digest)
     return environment
