@@ -2290,7 +2290,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            peek_receiver.recv_timeout(Duration::from_millis(100)).unwrap(),
+            peek_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap(),
             None,
             "starting capture must not expose a buffer"
         );
@@ -2313,7 +2315,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            peek_receiver.recv_timeout(Duration::from_millis(100)).unwrap(),
+            peek_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap(),
             Some(vec![0.25])
         );
         assert!(supervisor.public.is_active());
@@ -2327,7 +2331,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            stale_receiver.recv_timeout(Duration::from_millis(100)).unwrap(),
+            stale_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap(),
             None
         );
         assert!(supervisor.public.is_active());
