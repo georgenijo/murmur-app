@@ -160,15 +160,13 @@ export function useQueryFlow({
         void invoke('cancel_query', { queryPassId: passId }).catch(() => {});
       }
     };
+  // Command changes are intentionally excluded: the start event snapshots
+  // commandRef for the next pass, while an active pass keeps its Rust-owned
+  // immutable command and must not be cancelled by a Settings rerender.
   }, [
     enabled,
     initialized,
     accessibilityGranted,
     queryHotkey,
-    command.provider,
-    command.executable,
-    command.arguments,
-    command.timeoutSeconds,
-    command.contextLevel,
   ]);
 }
