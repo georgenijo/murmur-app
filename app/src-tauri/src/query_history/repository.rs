@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const DB_FILE: &str = "query-history.sqlite3";
 const LATEST_DB_SCHEMA_VERSION: u32 = 1;
 const MAX_ENTRIES: u32 = 200;
+const ECMASCRIPT_DATE_MAX_MS: i64 = 8_640_000_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InitializationOutcome {
@@ -306,7 +307,7 @@ fn validate_draft(draft: &QueryHistoryDraft) -> Result<(), String> {
         || draft.question.contains('\0')
         || draft.answer.contains('\0')
         || draft.timestamp_ms < 0
-        || draft.timestamp_ms as u64 > JS_MAX_SAFE_INTEGER
+        || draft.timestamp_ms > ECMASCRIPT_DATE_MAX_MS
         || draft.duration_ms > JS_MAX_SAFE_INTEGER
         || draft
             .error_code
@@ -924,12 +925,14 @@ mod tests {
             WrongAffinity,
             ExtraTokenField,
             InvalidFrontendNumbers,
+            DateBeyondEcmascriptMaximum,
         }
         for (index, mutation) in [
             Mutation::ExtraColumn,
             Mutation::WrongAffinity,
             Mutation::ExtraTokenField,
             Mutation::InvalidFrontendNumbers,
+            Mutation::DateBeyondEcmascriptMaximum,
         ]
         .into_iter()
         .enumerate()
@@ -995,6 +998,18 @@ mod tests {
                         )
                         .unwrap();
                 }
+                Mutation::DateBeyondEcmascriptMaximum => {
+                    connection
+                        .execute(
+                            "INSERT INTO query_history(
+                                id, record_version, timestamp_ms, provider, question, answer,
+                                tokens_json, duration_ms, error_code
+                             ) VALUES ('00000000000000000000000000000001', 1, ?, 'claude',
+                                'question', 'answer', NULL, 1, NULL)",
+                            [ECMASCRIPT_DATE_MAX_MS + 1],
+                        )
+                        .unwrap();
+                }
             }
             drop(connection);
             let (repository, outcome) = QueryHistoryRepository::initialize(root.clone()).unwrap();
@@ -1005,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn list_clamps_offset_and_token_counts_must_be_js_safe() {
+    fn list_clamps_offset_and_frontend_numbers_are_bounded() {
         let (_temp, repository) = repository();
         let epoch = repository.clear_epoch().unwrap();
         repository.insert_if_epoch(epoch, draft(1)).unwrap();
@@ -1018,6 +1033,18 @@ mod tests {
         unsafe_tokens.tokens.as_mut().unwrap().input_tokens = 9_007_199_254_740_992;
         assert!(repository
             .insert_if_epoch(epoch, unsafe_tokens)
+            .unwrap_err()
+            .contains("invalid record"));
+        let mut maximum_date = draft(3);
+        maximum_date.timestamp_ms = ECMASCRIPT_DATE_MAX_MS;
+        assert!(repository
+            .insert_if_epoch(epoch, maximum_date)
+            .unwrap()
+            .is_some());
+        let mut invalid_date = draft(4);
+        invalid_date.timestamp_ms = ECMASCRIPT_DATE_MAX_MS + 1;
+        assert!(repository
+            .insert_if_epoch(epoch, invalid_date)
             .unwrap_err()
             .contains("invalid record"));
         let mut unknown_error = draft(3);
