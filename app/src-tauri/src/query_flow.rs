@@ -4048,7 +4048,7 @@ mod tests {
         let query = QueryCoordinator::default();
         let first = query.allocate_keyboard_pass().unwrap();
         query.set_status(first, QueryStatus::Listening);
-        query.mark_cancelled(first);
+        query.begin_cancel(first);
         assert!(!query.is_listening(first));
         assert!(!query.try_begin_partial(first));
 
