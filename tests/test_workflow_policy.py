@@ -54,10 +54,29 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "          components: clippy, rustfmt\n",
             "      - name: Check Rust formatting\n"
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
-            "        run: cd app/src-tauri && cargo clippy --all-targets -- -D warnings\n",
+            "        run: cd app/src-tauri && cargo check --workspace --exclude murmur-llm-sidecar --all-targets\n",
+            "        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings\n",
         ):
             with self.subTest(policy=old.strip()):
                 mutated = workflow.replace(old, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_ci_clippy_and_check_cannot_drop_workspace_exclude(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            (
+                "--workspace --exclude murmur-llm-sidecar --all-targets",
+                "--all-targets",
+            ),
+            (
+                "--workspace --exclude murmur-llm-sidecar",
+                "--workspace",
+            ),
+        ):
+            with self.subTest(rewrite=new):
+                mutated = workflow.replace(old, new)
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)

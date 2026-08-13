@@ -173,9 +173,11 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        # --all-targets so `tests/` and `examples/` are type-checked too. Without
-        # it the integration suites below can rot without any signal.
-        run: cd app/src-tauri && cargo check --all-targets
+        # --workspace covers the capture worker and protocol crates; default-members
+        # is ["."] so a bare cargo check would skip them. Exclude the llama sidecar:
+        # CI stubs that externalBin and must not compile llama-cpp-2. --all-targets
+        # so `tests/` and `examples/` are type-checked too.
+        run: cd app/src-tauri && cargo check --workspace --exclude murmur-llm-sidecar --all-targets
 
       - name: Lint Rust
         env:
@@ -183,7 +185,9 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        run: cd app/src-tauri && cargo clippy --all-targets -- -D warnings
+        # Same workspace scope as Compile check. One clippy pass is enough; do not
+        # duplicate this into the MURMUR_CAPTURE_ROLE agent/worker matrix above.
+        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings
 
       - name: Run tests
         env:

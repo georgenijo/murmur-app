@@ -175,8 +175,17 @@ def validate_ci(ci: str) -> int:
     assert "components: clippy, rustfmt" in rust_install
     rust_format = named_step_block(rust_macos, "Check Rust formatting", 6)
     assert "cargo fmt --all -- --check" in rust_format
+    rust_check = named_step_block(rust_macos, "Compile check", 6)
+    assert (
+        "cargo check --workspace --exclude murmur-llm-sidecar --all-targets"
+        in rust_check
+    )
     rust_lint = named_step_block(rust_macos, "Lint Rust", 6)
-    assert "cargo clippy --all-targets -- -D warnings" in rust_lint
+    assert (
+        "cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings"
+        in rust_lint
+    )
+    assert "cargo clippy" not in capture_build
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build
