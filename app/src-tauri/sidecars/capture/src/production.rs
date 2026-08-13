@@ -281,7 +281,7 @@ fn start_cpal(
         ($sample:ty) => {
             build_cpal_for::<$sample>(
                 &device,
-                config.clone(),
+                config,
                 channels,
                 Arc::clone(&ring),
                 Arc::clone(&failed),

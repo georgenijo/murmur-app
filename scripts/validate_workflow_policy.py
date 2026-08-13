@@ -186,6 +186,16 @@ def validate_ci(ci: str) -> int:
         in rust_lint
     )
     assert "cargo clippy" not in capture_build
+    macos_lib_tests = named_step_block(rust_macos, "Run tests", 6)
+    assert (
+        "cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1"
+        in macos_lib_tests
+    )
+    linux_tests = named_step_block(job_block(ci, "linux"), "Run tests", 6)
+    assert (
+        "cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1"
+        in linux_tests
+    )
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build

@@ -56,6 +56,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo check --workspace --exclude murmur-llm-sidecar --all-targets\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings\n",
+            "        run: cd app/src-tauri && cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1\n",
         ):
             with self.subTest(policy=old.strip()):
                 mutated = workflow.replace(old, "", 1)
@@ -67,16 +68,32 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old, new in (
             (
-                "--workspace --exclude murmur-llm-sidecar --all-targets",
-                "--all-targets",
+                "cargo check --workspace --exclude murmur-llm-sidecar --all-targets",
+                "cargo check --all-targets",
             ),
             (
-                "--workspace --exclude murmur-llm-sidecar",
-                "--workspace",
+                "cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets",
+                "cargo clippy --all-targets",
+            ),
+            (
+                "cargo test --workspace --exclude murmur-llm-sidecar --lib",
+                "cargo test --lib",
+            ),
+            (
+                "cargo check --workspace --exclude murmur-llm-sidecar",
+                "cargo check --workspace",
+            ),
+            (
+                "cargo clippy --workspace --exclude murmur-llm-sidecar",
+                "cargo clippy --workspace",
+            ),
+            (
+                "cargo test --workspace --exclude murmur-llm-sidecar",
+                "cargo test --workspace",
             ),
         ):
-            with self.subTest(rewrite=new):
-                mutated = workflow.replace(old, new)
+            with self.subTest(rewrite=f"{old} -> {new}"):
+                mutated = workflow.replace(old, new, 1)
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
