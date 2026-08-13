@@ -39,6 +39,7 @@ pub enum PerformanceRunKindV1 {
     Dictation,
     FileTranscription,
     SelectedTextTransform,
+    VoiceQuery,
 }
 
 impl PerformanceRunKindV1 {
@@ -47,6 +48,7 @@ impl PerformanceRunKindV1 {
             Self::Dictation => "dictation",
             Self::FileTranscription => "fileTranscription",
             Self::SelectedTextTransform => "selectedTextTransform",
+            Self::VoiceQuery => "voiceQuery",
         }
     }
 }
@@ -61,6 +63,7 @@ pub enum RunCorrelationV1 {
     Dictation { recording_id: u64 },
     FileTranscription { file_run_id: u64 },
     SelectedTextTransform { transform_pass_id: u64 },
+    VoiceQuery { query_pass_id: u64 },
 }
 
 impl RunCorrelationV1 {
@@ -71,6 +74,7 @@ impl RunCorrelationV1 {
             Self::SelectedTextTransform { transform_pass_id } => {
                 ("selectedTextTransform", *transform_pass_id)
             }
+            Self::VoiceQuery { query_pass_id } => ("voiceQuery", *query_pass_id),
         }
     }
 }
@@ -352,16 +356,17 @@ pub struct ResourceSummaryV1 {
 impl ResourceSummaryV1 {
     pub fn unavailable_for(kind: PerformanceRunKindV1) -> Self {
         let no_samples = UnavailableReasonV1::NoSamples;
-        let sidecar = if kind == PerformanceRunKindV1::SelectedTextTransform {
-            SidecarResourceSummaryV1 {
+        let sidecar = match kind {
+            PerformanceRunKindV1::SelectedTextTransform => SidecarResourceSummaryV1 {
                 cpu_percent: ResourceRangeV1::unavailable(no_samples),
                 rss_bytes: ResourceRangeV1::unavailable(no_samples),
-            }
-        } else {
-            SidecarResourceSummaryV1 {
+            },
+            PerformanceRunKindV1::Dictation
+            | PerformanceRunKindV1::FileTranscription
+            | PerformanceRunKindV1::VoiceQuery => SidecarResourceSummaryV1 {
                 cpu_percent: ResourceRangeV1::not_applicable(),
                 rss_bytes: ResourceRangeV1::not_applicable(),
-            }
+            },
         };
         Self {
             sample_count: 0,
@@ -391,6 +396,14 @@ pub enum StableRunErrorV1 {
     DeliveryFailed,
     InternalEarlyExit,
     InterruptedByRestart,
+    QueryFailed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryProcessSummaryV1 {
+    pub exit_code: Option<i32>,
+    pub stderr_present: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +476,10 @@ pub struct PerformanceRunV1 {
     pub input: ContentFreeInputSummaryV1,
     pub resources: ResourceSummaryV1,
     pub follow_ups: Vec<TransformFollowUpV1>,
+    /// Voice Query's direct CLI result. Absent on older records and all other
+    /// run kinds so the V1 JSON envelope remains backward compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_process: Option<QueryProcessSummaryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -478,6 +495,8 @@ pub(crate) struct ActiveRunV1 {
     pub stages: Vec<StageTimingV1>,
     pub input: ContentFreeInputSummaryV1,
     pub clear_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_process: Option<QueryProcessSummaryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

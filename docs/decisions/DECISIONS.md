@@ -28,6 +28,96 @@ runtime metadata aligned with the shipped product.
 
 ---
 
+## 2026-08-12: Voice Query content retention is explicit, bounded, and isolated
+
+**Decision:** Supersede Voice Query's blanket “never in history” rule with one
+narrow exception: **Keep Voice Query history on this Mac** is off by default
+and is frozen independently for each pass. When enabled, a Rust-owned SQLite
+store may retain the original transcribed question, bounded answer, timestamp,
+provider preset, token counts, total duration, and stable error code. It keeps
+the newest 200 records and exposes main-window-only paging, provider filtering,
+and direct purge. Turning retention off stops new inserts but does not silently
+delete existing records. A clear epoch prevents a pass that began before purge
+from restoring deleted content.
+
+The exception does not include composed prompts, app/window/selected-text
+context, stderr or typed provider detail, executable paths, argv, environment
+values, or secrets. Query records never enter localStorage, dictation history,
+Correct and Teach, transcript exports, saved output, logs, telemetry, stats, or
+the performance database. Diagnostics remain unconditional and content-free:
+capture/transcription/provider-spawn/first-answer/total timings, stable outcome,
+exit code, and stderr presence only.
+
+Because any provider can quote its input, a pass that actually appended app
+context is display-only and skips the whole history row. Claude/Codex passes
+that degrade to raw JSONL fallback do the same because their raw archive can
+contain a user frame with the composed prompt. Context configured but not
+available—or explicitly excluded for the app—is not appended and does not by
+itself suppress history.
+
+**Rationale:** George wants local visibility into past questions and answers,
+but content persistence must remain a deliberate per-pass choice rather than a
+side effect of enabling Voice Query. A dedicated Rust store keeps that consent,
+retention, purge, and recovery boundary enforceable without widening any
+telemetry or frontend cache contract. Keeping diagnostics separate preserves
+useful failure evidence even when content history is disabled.
+
+**Status:** active
+
+**References:** #553; `query_history/`, `query_flow.rs`,
+`performance_metrics/`, `docs/features/voice-query.md`
+
+---
+
+## 2026-08-12: Voice Query environment additions are named, provider-scoped, and Rust-owned
+
+**Decision:** Keep `spawn_user_cli` fail-closed with only `HOME`, `PATH`,
+`TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` copied from the
+parent. A provider may additionally declare only `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME`; it cannot override a base key. Values must be absolute directory
+paths, live in an owner-only Rust app-data file, and are never returned to a
+webview after Save. API keys, tokens, and arbitrary environment names are not
+accepted. The explicit Terminal sign-in repair is held to the same boundary:
+its AppleScript child receives only the base set, and the provider command
+starts with `env -i` before those base and declared values are added. Any future
+secret-bearing variable requires a separate storage and redaction design before
+implementation.
+
+**Rationale:** Full parent-environment inheritance silently exports unrelated
+credentials, while local CLI wrappers and credential stores still need the
+small base set. Provider-scoped config roots solve the known multi-profile use
+case without turning Voice Query into a generic secret store or allowing a
+webview/localStorage copy of sensitive values.
+
+**Status:** active
+
+**References:** #550; `managed_child.rs`, `query_provider.rs`,
+`docs/features/voice-query.md`
+
+---
+
+## 2026-08-12: Voice Query stderr is bounded repair detail, never answer or telemetry
+
+**Decision:** Capture at most the final 16 KiB of provider stderr on query and
+auth-probe paths. A terminal query failure always renders its stable error ahead
+of any partial stdout, with sanitized stderr in a visually separate provider
+detail block available only through the requester-gated review window. Auth
+probe stdout/stderr is returned only to Settings. Neither stream enters logs,
+telemetry, stats, or history. Known provider signatures map to the content-free
+`provider_not_authenticated` code and an exact Terminal repair action.
+
+**Rationale:** Discarding stderr made authentication failures unactionable, but
+mixing it into answer content recreated the stdout-precedence bug and risked
+persisting CLI diagnostics. A small requester-only tail preserves enough vendor
+guidance while maintaining the query telemetry allowlist and output bounds.
+
+**Status:** active
+
+**References:** #550; `query_flow.rs`, `query_provider.rs`,
+`telemetry.rs`, `docs/features/voice-query.md`
+
+---
+
 ## 2026-08-12: Releases are macOS-only
 
 **Decision:** Stop building, rehearsing, promoting, or publishing Linux release

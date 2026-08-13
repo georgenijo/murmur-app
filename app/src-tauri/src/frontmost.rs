@@ -29,6 +29,15 @@ pub struct FrontmostAppIdentity {
     pub process_id: Option<i32>,
 }
 
+/// Ephemeral frontmost-app metadata used only by an opted-in Voice Query pass.
+/// These strings are prompt content: callers must not log, trace, or persist
+/// them, and the type intentionally has no `Debug` implementation.
+#[derive(Clone)]
+pub struct QueryAppMetadata {
+    pub application_name: Option<String>,
+    pub window_title: Option<String>,
+}
+
 #[derive(Debug)]
 struct RunningApplicationCandidate {
     bundle_id: Option<String>,
@@ -265,6 +274,239 @@ pub fn frontmost_app_identity() -> FrontmostAppIdentity {
     }
 }
 
+/// Freeze Voice Query's app identity from one native `NSWorkspace` sample.
+/// Unlike dictation's compatibility detector, this path never invokes
+/// AppleScript or any other child process: unavailable native state simply
+/// yields an empty identity and therefore no query context.
+#[cfg(target_os = "macos")]
+pub fn query_frontmost_app_identity() -> FrontmostAppIdentity {
+    use objc2_app_kit::NSWorkspace;
+
+    let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+        return FrontmostAppIdentity {
+            bundle_id: None,
+            process_id: None,
+        };
+    };
+    query_identity(
+        application.processIdentifier(),
+        application
+            .bundleIdentifier()
+            .map(|value| value.to_string()),
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn query_identity(process_id: i32, bundle_id: Option<String>) -> FrontmostAppIdentity {
+    // Bundle ID is required to apply the user's per-app deny profile. If it is
+    // unavailable, fail closed instead of using a PID-only identity that could
+    // bypass an exclusion.
+    let bundle_id = bundle_id.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    });
+    match bundle_id {
+        Some(bundle_id) => FrontmostAppIdentity {
+            bundle_id: Some(bundle_id),
+            process_id: Some(process_id),
+        },
+        None => FrontmostAppIdentity {
+            bundle_id: None,
+            process_id: None,
+        },
+    }
+}
+
+/// Query context requires the exact native PID and bundle pair. Partial
+/// identities are deliberately never accepted because they cannot prove that
+/// per-app privacy exclusions were resolved for the same application.
+pub(crate) fn query_identity_matches(
+    expected: &FrontmostAppIdentity,
+    actual: &FrontmostAppIdentity,
+) -> bool {
+    matches!(
+        (
+            expected.process_id,
+            expected.bundle_id.as_deref(),
+            actual.process_id,
+            actual.bundle_id.as_deref(),
+        ),
+        (Some(expected_pid), Some(expected_bundle), Some(actual_pid), Some(actual_bundle))
+            if expected_pid == actual_pid && expected_bundle == actual_bundle
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn query_identity_is_current(
+    app_handle: &tauri::AppHandle,
+    expected: &FrontmostAppIdentity,
+) -> bool {
+    let expected = expected.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if app_handle
+        .run_on_main_thread(move || {
+            let current = query_frontmost_app_identity();
+            let _ = tx.send(query_identity_matches(&expected, &current));
+        })
+        .is_err()
+    {
+        return false;
+    }
+    rx.await.unwrap_or(false)
+}
+
+/// Read the app name and focused-window title for the exact app identity that
+/// was frozen at query start. The native sample is rejected if focus moved in
+/// the meantime, preventing context from two different apps being combined.
+/// Window titles are read directly through Accessibility; no shell,
+/// AppleScript, screen capture, or OCR path is involved.
+#[cfg(target_os = "macos")]
+pub async fn query_app_metadata(
+    app_handle: &tauri::AppHandle,
+    expected: &FrontmostAppIdentity,
+) -> Option<QueryAppMetadata> {
+    if expected.process_id.is_none() && expected.bundle_id.is_none() {
+        return None;
+    }
+    let expected = expected.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .run_on_main_thread(move || {
+            let _ = tx.send(native_query_metadata(&expected));
+        })
+        .ok()?;
+    rx.await.ok().flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn native_query_metadata(expected: &FrontmostAppIdentity) -> Option<QueryAppMetadata> {
+    use objc2_app_kit::NSWorkspace;
+
+    let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let process_id = application.processIdentifier();
+    let bundle_id = application
+        .bundleIdentifier()
+        .map(|value| value.to_string());
+    let actual = query_identity(process_id, bundle_id.clone());
+    if !query_identity_matches(expected, &actual) {
+        return None;
+    }
+    let application_name = application
+        .localizedName()
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| bundle_id.filter(|value| !value.trim().is_empty()));
+    Some(QueryAppMetadata {
+        application_name,
+        window_title: ax_window_title(process_id),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn ax_window_title(process_id: i32) -> Option<String> {
+    use std::ffi::{c_char, c_void, CStr, CString};
+
+    type AXUIElementRef = *const c_void;
+    type CFTypeRef = *const c_void;
+    type CFIndex = isize;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+        fn AXUIElementCopyAttributeValue(
+            element: AXUIElementRef,
+            attribute: CFTypeRef,
+            value: *mut CFTypeRef,
+        ) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
+        fn CFStringCreateWithCString(
+            allocator: CFTypeRef,
+            string: *const c_char,
+            encoding: u32,
+        ) -> CFTypeRef;
+        fn CFStringGetLength(string: CFTypeRef) -> CFIndex;
+        fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: u32) -> CFIndex;
+        fn CFStringGetCString(
+            string: CFTypeRef,
+            buffer: *mut c_char,
+            buffer_size: CFIndex,
+            encoding: u32,
+        ) -> bool;
+        fn CFRelease(value: CFTypeRef);
+    }
+
+    struct CFGuard(CFTypeRef);
+    impl Drop for CFGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0) };
+            }
+        }
+    }
+
+    const AX_SUCCESS: i32 = 0;
+    const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.025;
+    const UTF8_ENCODING: u32 = 0x0800_0100;
+
+    fn attribute(name: &str) -> Option<CFGuard> {
+        let name = CString::new(name).ok()?;
+        let value =
+            unsafe { CFStringCreateWithCString(std::ptr::null(), name.as_ptr(), UTF8_ENCODING) };
+        (!value.is_null()).then(|| CFGuard(value))
+    }
+
+    fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<CFGuard> {
+        let attribute = attribute(name)?;
+        let mut value: CFTypeRef = std::ptr::null();
+        let status = unsafe { AXUIElementCopyAttributeValue(element, attribute.0, &mut value) };
+        if status != AX_SUCCESS || value.is_null() {
+            if !value.is_null() {
+                unsafe { CFRelease(value) };
+            }
+            return None;
+        }
+        Some(CFGuard(value))
+    }
+
+    fn string(value: CFTypeRef) -> Option<String> {
+        let length = unsafe { CFStringGetLength(value) };
+        let maximum = unsafe { CFStringGetMaximumSizeForEncoding(length, UTF8_ENCODING) };
+        if maximum < 0 {
+            return None;
+        }
+        let mut buffer = vec![0 as c_char; maximum.saturating_add(1) as usize];
+        let converted = unsafe {
+            CFStringGetCString(
+                value,
+                buffer.as_mut_ptr(),
+                buffer.len() as CFIndex,
+                UTF8_ENCODING,
+            )
+        };
+        converted.then(|| {
+            unsafe { CStr::from_ptr(buffer.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        })
+    }
+
+    let application = unsafe { AXUIElementCreateApplication(process_id) };
+    if application.is_null() {
+        return None;
+    }
+    let application = CFGuard(application);
+    if unsafe { AXUIElementSetMessagingTimeout(application.0, AX_QUERY_TIMEOUT_SECONDS) }
+        != AX_SUCCESS
+    {
+        return None;
+    }
+    let window = copy_attribute(application.0, "AXFocusedWindow")?;
+    if unsafe { AXUIElementSetMessagingTimeout(window.0, AX_QUERY_TIMEOUT_SECONDS) } != AX_SUCCESS {
+        return None;
+    }
+    string(copy_attribute(window.0, "AXTitle")?.0).filter(|title| !title.trim().is_empty())
+}
+
 /// Non-macOS platforms have no frontmost-app concept here; profiles are a no-op.
 #[cfg(not(target_os = "macos"))]
 pub fn frontmost_bundle_id() -> Option<String> {
@@ -277,6 +519,30 @@ pub fn frontmost_app_identity() -> FrontmostAppIdentity {
         bundle_id: None,
         process_id: None,
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn query_frontmost_app_identity() -> FrontmostAppIdentity {
+    FrontmostAppIdentity {
+        bundle_id: None,
+        process_id: None,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) async fn query_identity_is_current(
+    _app_handle: &tauri::AppHandle,
+    _expected: &FrontmostAppIdentity,
+) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn query_app_metadata(
+    _app_handle: &tauri::AppHandle,
+    _expected: &FrontmostAppIdentity,
+) -> Option<QueryAppMetadata> {
+    None
 }
 
 #[cfg(test)]
@@ -508,5 +774,46 @@ mod tests {
         assert_eq!(result.bundle_id.as_deref(), Some("com.apple.Terminal"));
         assert_eq!(result.retry_count, 0);
         assert_eq!(native_results.len(), 1, "detector must not re-read focus");
+    }
+
+    #[test]
+    fn query_metadata_requires_the_frozen_app_identity() {
+        let with_pid = FrontmostAppIdentity {
+            bundle_id: Some("com.example.Editor".to_string()),
+            process_id: Some(42),
+        };
+        let same = FrontmostAppIdentity {
+            bundle_id: Some("com.example.Editor".to_string()),
+            process_id: Some(42),
+        };
+        assert!(query_identity_matches(&with_pid, &same));
+        let bundle_only = FrontmostAppIdentity {
+            bundle_id: Some("com.example.Editor".to_string()),
+            process_id: None,
+        };
+        assert!(!query_identity_matches(&with_pid, &bundle_only));
+        let different_bundle = FrontmostAppIdentity {
+            bundle_id: Some("com.example.Other".to_string()),
+            process_id: Some(42),
+        };
+        assert!(!query_identity_matches(&with_pid, &different_bundle));
+    }
+
+    #[test]
+    fn query_identity_requires_a_bundle_id_for_profile_exclusions() {
+        assert_eq!(
+            query_identity(42, Some(" com.example.Editor ".to_string())),
+            FrontmostAppIdentity {
+                bundle_id: Some("com.example.Editor".to_string()),
+                process_id: Some(42),
+            }
+        );
+        assert_eq!(
+            query_identity(42, None),
+            FrontmostAppIdentity {
+                bundle_id: None,
+                process_id: None,
+            }
+        );
     }
 }

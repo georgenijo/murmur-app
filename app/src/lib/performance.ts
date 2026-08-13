@@ -15,12 +15,14 @@ export type MeasurementV1<T> =
 export type PerformanceRunKindV1 =
   | 'dictation'
   | 'fileTranscription'
-  | 'selectedTextTransform';
+  | 'selectedTextTransform'
+  | 'voiceQuery';
 
 export type RunCorrelationV1 =
   | { kind: 'dictation'; recordingId: number }
   | { kind: 'fileTranscription'; fileRunId: number }
-  | { kind: 'selectedTextTransform'; transformPassId: number };
+  | { kind: 'selectedTextTransform'; transformPassId: number }
+  | { kind: 'voiceQuery'; queryPassId: number };
 
 export type PerformanceStageV1 =
   | 'captureFinalization'
@@ -138,6 +140,7 @@ export type RunOutcomeV1 =
         | 'inferenceFailed'
         | 'transformStageFailed'
         | 'deliveryFailed'
+        | 'queryFailed'
         | 'internalEarlyExit'
         | 'interruptedByRestart';
     };
@@ -161,6 +164,11 @@ export interface PerformanceRunV1 {
     durationMs: MeasurementV1<number>;
     outcome: StageOutcomeV1;
   }>;
+  /** Voice Query child facts only. Never contains stderr text or provider detail. */
+  queryProcess?: {
+    exitCode: number | null;
+    stderrPresent: boolean;
+  };
 }
 
 export interface PerformanceRunListV1 {
@@ -193,15 +201,28 @@ const stageOutcomes = new Set<StageOutcomeV1>([
 const stableErrors = new Set([
   'audioCaptureFailed', 'decodeFailed', 'vadFailed', 'modelFailed',
   'inferenceFailed', 'transformStageFailed', 'deliveryFailed',
-  'internalEarlyExit', 'interruptedByRestart',
+  'queryFailed', 'internalEarlyExit', 'interruptedByRestart',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value > 0;
 }
 
 export function isMeasurementV1<T>(
@@ -209,9 +230,12 @@ export function isMeasurementV1<T>(
   isValue: (candidate: unknown) => candidate is T,
 ): value is MeasurementV1<T> {
   if (!isRecord(value) || typeof value.status !== 'string') return false;
-  if (value.status === 'measured') return isValue(value.value);
-  if (value.status === 'notApplicable') return !('value' in value);
+  if (value.status === 'measured') {
+    return hasExactKeys(value, ['status', 'value']) && isValue(value.value);
+  }
+  if (value.status === 'notApplicable') return hasExactKeys(value, ['status']);
   return value.status === 'unavailable'
+    && hasExactKeys(value, ['status', 'reason'])
     && typeof value.reason === 'string'
     && unavailableReasons.has(value.reason as UnavailableReasonV1);
 }
@@ -222,11 +246,17 @@ export function measuredValue<T>(measurement: MeasurementV1<T>): T | null {
 
 export function isResourceSampleV1(value: unknown): value is ResourceSampleV1 {
   if (!isRecord(value)
+    || !hasExactKeys(value, ['schemaVersion', 'observedAtMs', 'host', 'mainProcess', 'sidecarProcess'])
     || value.schemaVersion !== 1
     || !isFiniteNumber(value.observedAtMs)
     || !isRecord(value.host)
+    || !hasExactKeys(value.host, ['cpuPercent'])
     || !isRecord(value.mainProcess)
-    || !isRecord(value.sidecarProcess)) {
+    || !hasExactKeys(value.mainProcess, [
+      'cpuPercent', 'rssBytes', 'rustHeapBytes', 'ffiNativeHeapBytes',
+    ])
+    || !isRecord(value.sidecarProcess)
+    || !hasExactKeys(value.sidecarProcess, ['cpuPercent', 'rssBytes'])) {
     return false;
   }
   const numberMeasurement = (candidate: unknown): candidate is MeasurementV1<number> =>
@@ -247,6 +277,7 @@ function isStage(value: unknown): value is PerformanceStageV1 {
 
 function isStageTiming(value: unknown): value is StageTimingV1 {
   return isRecord(value)
+    && hasExactKeys(value, ['stage', 'durationMs', 'outcome'])
     && isStage(value.stage)
     && isMeasurementV1(value.durationMs, isFiniteNumber)
     && typeof value.outcome === 'string'
@@ -255,6 +286,7 @@ function isStageTiming(value: unknown): value is StageTimingV1 {
 
 function isRuntime(value: unknown): value is RuntimeIdentityV1 {
   return isRecord(value)
+    && hasExactKeys(value, ['role', 'modelId', 'backend', 'accelerator', 'warmState'])
     && ['transcription', 'instructionAsr', 'generation'].includes(String(value.role))
     && typeof value.modelId === 'string'
     && ['whisper', 'parakeet', 'coreml', 'llamaCpp'].includes(String(value.backend))
@@ -264,6 +296,9 @@ function isRuntime(value: unknown): value is RuntimeIdentityV1 {
 
 function isInputSummary(value: unknown): value is ContentFreeInputSummaryV1 {
   return isRecord(value)
+    && hasExactKeys(value, [
+      'audioDurationMs', 'inputSizeBucket', 'outputSizeBucket', 'outputTokenCount',
+    ])
     && isMeasurementV1(value.audioDurationMs, isFiniteNumber)
     && isMeasurementV1(
       value.inputSizeBucket,
@@ -280,6 +315,7 @@ function isInputSummary(value: unknown): value is ContentFreeInputSummaryV1 {
 
 function isResourceRange(value: unknown): value is ResourceRangeV1<number> {
   return isRecord(value)
+    && hasExactKeys(value, ['start', 'average', 'peak', 'end'])
     && isMeasurementV1(value.start, isFiniteNumber)
     && isMeasurementV1(value.average, isFiniteNumber)
     && isMeasurementV1(value.peak, isFiniteNumber)
@@ -288,26 +324,35 @@ function isResourceRange(value: unknown): value is ResourceRangeV1<number> {
 
 function isResourceSummary(value: unknown): value is ResourceSummaryV1 {
   return isRecord(value)
+    && hasExactKeys(value, ['sampleCount', 'host', 'mainProcess', 'sidecarProcess'])
     && isFiniteNumber(value.sampleCount)
     && isRecord(value.host)
+    && hasExactKeys(value.host, ['cpuPercent'])
     && isResourceRange(value.host.cpuPercent)
     && isRecord(value.mainProcess)
+    && hasExactKeys(value.mainProcess, [
+      'cpuPercent', 'rssBytes', 'rustHeapBytes', 'ffiNativeHeapBytes',
+    ])
     && isResourceRange(value.mainProcess.cpuPercent)
     && isResourceRange(value.mainProcess.rssBytes)
     && isResourceRange(value.mainProcess.rustHeapBytes)
     && isResourceRange(value.mainProcess.ffiNativeHeapBytes)
     && isRecord(value.sidecarProcess)
+    && hasExactKeys(value.sidecarProcess, ['cpuPercent', 'rssBytes'])
     && isResourceRange(value.sidecarProcess.cpuPercent)
     && isResourceRange(value.sidecarProcess.rssBytes);
 }
 
 function isRunOutcome(value: unknown): value is RunOutcomeV1 {
   if (!isRecord(value) || typeof value.status !== 'string') return false;
-  if (value.status === 'success' || value.status === 'noSpeech') return true;
+  if (value.status === 'success' || value.status === 'noSpeech') {
+    return hasExactKeys(value, ['status']);
+  }
   if (value.status === 'cancelled' || value.status === 'timedOut') {
-    return isStage(value.stage);
+    return hasExactKeys(value, ['status', 'stage']) && isStage(value.stage);
   }
   return (value.status === 'failed' || value.status === 'interrupted')
+    && hasExactKeys(value, ['status', 'stage', 'errorCode'])
     && isStage(value.stage)
     && typeof value.errorCode === 'string'
     && stableErrors.has(value.errorCode);
@@ -315,6 +360,7 @@ function isRunOutcome(value: unknown): value is RunOutcomeV1 {
 
 function isFollowUp(value: unknown): boolean {
   return isRecord(value)
+    && hasExactKeys(value, ['kind', 'atMs', 'durationMs', 'outcome'])
     && (value.kind === 'apply' || value.kind === 'undo')
     && isFiniteNumber(value.atMs)
     && isMeasurementV1(value.durationMs, isFiniteNumber)
@@ -322,16 +368,51 @@ function isFollowUp(value: unknown): boolean {
     && stageOutcomes.has(value.outcome as StageOutcomeV1);
 }
 
+function isQueryProcess(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ['exitCode', 'stderrPresent'])
+    && (value.exitCode === null || (
+      typeof value.exitCode === 'number'
+      && Number.isSafeInteger(value.exitCode)
+      && value.exitCode >= -2_147_483_648
+      && value.exitCode <= 2_147_483_647
+    ))
+    && typeof value.stderrPresent === 'boolean';
+}
+
+function isRunCorrelation(value: unknown, kind: PerformanceRunKindV1): value is RunCorrelationV1 {
+  if (!isRecord(value) || value.kind !== kind) return false;
+  switch (kind) {
+    case 'dictation':
+      return hasExactKeys(value, ['kind', 'recordingId'])
+        && isFiniteNumber(value.recordingId);
+    case 'fileTranscription':
+      return hasExactKeys(value, ['kind', 'fileRunId'])
+        && isFiniteNumber(value.fileRunId);
+    case 'selectedTextTransform':
+      return hasExactKeys(value, ['kind', 'transformPassId'])
+        && isFiniteNumber(value.transformPassId);
+    case 'voiceQuery':
+      return hasExactKeys(value, ['kind', 'queryPassId'])
+        && isPositiveSafeInteger(value.queryPassId);
+  }
+}
+
 export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
-  if (!isRecord(value)
+  if (!isRecord(value)) return false;
+  const expectedKeys = [
+    'schemaVersion', 'runId', 'kind', 'startedAtMs', 'finishedAtMs', 'appVersion',
+    'correlation', 'outcome', 'runtimes', 'stages', 'input', 'resources', 'followUps',
+  ];
+  if ('queryProcess' in value) expectedKeys.push('queryProcess');
+  if (!hasExactKeys(value, expectedKeys)
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string'
     || !/^[a-f0-9]{32}$/.test(value.runId)
-    || !['dictation', 'fileTranscription', 'selectedTextTransform'].includes(String(value.kind))
+    || !['dictation', 'fileTranscription', 'selectedTextTransform', 'voiceQuery'].includes(String(value.kind))
     || !isFiniteNumber(value.startedAtMs)
     || !isFiniteNumber(value.finishedAtMs)
     || typeof value.appVersion !== 'string'
-    || !isRecord(value.correlation)
     || !isRunOutcome(value.outcome)
     || !Array.isArray(value.runtimes)
     || !Array.isArray(value.stages)
@@ -340,7 +421,8 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || !Array.isArray(value.followUps)
     || !value.runtimes.every(isRuntime)
     || !value.stages.every(isStageTiming)
-    || !value.followUps.every(isFollowUp)) {
+    || !value.followUps.every(isFollowUp)
+    || ('queryProcess' in value && !isQueryProcess(value.queryProcess))) {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));
@@ -348,22 +430,14 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || !PERFORMANCE_STAGES_V1.every(stage => stages.has(stage))) {
     return false;
   }
-  const correlationMatches =
-    (value.kind === 'dictation'
-      && value.correlation.kind === 'dictation'
-      && isFiniteNumber(value.correlation.recordingId))
-    || (value.kind === 'fileTranscription'
-      && value.correlation.kind === 'fileTranscription'
-      && isFiniteNumber(value.correlation.fileRunId))
-    || (value.kind === 'selectedTextTransform'
-      && value.correlation.kind === 'selectedTextTransform'
-      && isFiniteNumber(value.correlation.transformPassId));
-  return correlationMatches;
+  return isRunCorrelation(value.correlation, value.kind as PerformanceRunKindV1)
+    && (value.kind === 'voiceQuery' || !('queryProcess' in value));
 }
 
 export async function listPerformanceRuns(limit = 50): Promise<PerformanceRunListV1> {
   const value = await invoke<unknown>('list_performance_runs', { limit });
   if (!isRecord(value)
+    || !hasExactKeys(value, ['schemaVersion', 'runs'])
     || value.schemaVersion !== 1
     || !Array.isArray(value.runs)
     || !value.runs.every(isPerformanceRunV1)) {

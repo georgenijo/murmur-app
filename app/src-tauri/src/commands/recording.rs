@@ -1677,6 +1677,10 @@ pub async fn configure_dictation(
                         crate::ide_context::normalize_config_roots(&roots)
                     })
                     .unwrap_or_default();
+                let query_context_excluded = p
+                    .get("queryContextExcluded")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
                 Some(crate::state::AppProfile {
                     bundle_id,
                     label,
@@ -1687,6 +1691,7 @@ pub async fn configure_dictation(
                     writing_style,
                     ide_context_enabled,
                     ide_project_roots,
+                    query_context_excluded,
                 })
             })
             .collect();
@@ -3795,6 +3800,7 @@ mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
+                query_history: crate::query_history::QueryHistoryStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
@@ -3916,6 +3922,7 @@ mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
+                query_history: crate::query_history::QueryHistoryStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
@@ -4292,6 +4299,7 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
+            query_context_excluded: false,
         };
         let mut technical = ordinary.clone();
         technical.bundle_id = "com.example.Editor".to_string();

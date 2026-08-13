@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "0.32.0"
+version = "0.33.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -96,7 +96,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSApplication", "NSRunningApplication", "NSWorkspace", "NSPasteboard", "NSPasteboardItem"] }
 objc2-foundation = "0.3"
 block2 = "0.6"
-core-graphics = "0.25"
+core-graphics = { version = "0.25", features = ["elcapitan"] }
 core-foundation = "0.10"
 security-framework = "3.7"
 

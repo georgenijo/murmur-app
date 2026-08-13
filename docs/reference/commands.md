@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 148 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 158 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -103,11 +103,21 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Validates the configured executable/fixed argv, freezes local ASR context, and starts query capture for the exact pass. |
-| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript as one final argv element, and streams bounded stdout to the query popover. |
+| `list_query_provider_presets` | — | `Result<Vec<QueryProviderPreset>, String>` | Main-window-only provider metadata and local executable discovery for Claude, Codex, Grok, Cursor, and Custom. Presets are data; they do not create alternate spawn paths. |
+| `load_query_environment` | `provider: QueryProviderId` | `Result<Vec<String>, String>` | Main-window-only list of configured environment **names**. Saved values remain Rust-side and are never returned to a webview. |
+| `save_query_environment` | `provider: QueryProviderId`, `variables: Vec<QueryEnvironmentVariable>` | `Result<(), String>` | Main-window-only owner-permission storage for permitted absolute config-directory values. Non-empty entries merge by name; an empty list clears the provider and recovers a malformed/future store by replacing it with an empty current-version store. Base allowlist overrides and secret variable names are rejected. |
+| `validate_query_command` | `command: QueryCommandConfig` | `Result<QueryCommandValidation, String>` | Main-window preflight used before enabling the shortcut. Resolves the exact executable and validates argv, timeout, provider, and Rust-owned declared environment. |
+| `test_query_provider` | `command: QueryCommandConfig` | `Result<QueryProviderTestResult, String>` | Main-window-only bounded auth probe through `spawn_user_cli`; returns sanitized 16 KiB stdout/stderr tails only to Settings and emits no content telemetry. |
+| `launch_query_provider_sign_in` | `command: QueryCommandConfig` | `Result<(), String>` | Main-window-only explicit repair action that opens the preset's interactive login in Terminal. Normal query and probe execution remain direct, shell-free spawns. |
+| `launch_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<(), String>` | Query-review-only equivalent using the exact failed pass's immutable provider, executable, and Rust-owned environment. |
+| `probe_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<bool, String>` | Query-review-only bounded re-probe used after interactive sign-in; no stdout/stderr content crosses this IPC boundary. |
+| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Revalidates the configured provider/executable/fixed argv; freezes local ASR, Rust-owned environment, requested `none` / `application` / `selection` context, and `retainQueryHistory` consent for the exact pass; then starts query capture. |
+| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript and frozen context together as one final argv element, and streams bounded stdout to the query popover. |
 | `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
 | `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
-| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer}` only when invoked by the `query-review` webview; every other window receives empty content. |
+| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, provider, usage, signInFix, contextSummary}` only to the `query-review` webview. `usage` contains provider-reported numbers only. `errorDetail` is the bounded stderr tail and remains distinct from answer content; the summary names the app/context kind but never contains window-title or selection text. Every other window receives empty content. |
+| `list_query_history` | `offset: Option<u32>`, `limit: Option<u32>`, `provider: Option<QueryProviderId>` | `Result<QueryHistoryPageV1, String>` | Main-window-only, newest-first page from the separate opt-in query store. Defaults to 50 entries and caps requests at 100; never includes context, stderr/detail, executable/argv/environment, or secrets. |
+| `clear_query_history` | — | `Result<(), String>` | Main-window-only direct purge of every retained Voice Query record and recovery artifact. Advances the store clear epoch so an older in-flight pass cannot reinsert content after deletion. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
 

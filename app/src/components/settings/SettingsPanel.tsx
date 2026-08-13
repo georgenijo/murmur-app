@@ -15,13 +15,28 @@ import {
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
   RECORDING_MODE_OPTIONS,
+  QUERY_CONTEXT_LEVEL_OPTIONS,
   QUERY_KEY_OPTIONS,
   TRANSFORM_KEY_OPTIONS,
   type QueryKey,
+  type QueryProviderId,
   type RecordingMode,
   type Settings,
   type TransformKey,
 } from '../../lib/settings';
+import {
+  CUSTOM_QUERY_PRESET,
+  launchQueryProviderSignIn,
+  listQueryProviderPresets,
+  loadQueryEnvironment,
+  saveQueryEnvironment,
+  testQueryProvider,
+  validateQueryCommand,
+  type QueryCommandConfig,
+  type QueryEnvironmentVariable,
+  type QueryProviderPreset,
+  type QueryProviderTestResult,
+} from '../../lib/queryProviders';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
@@ -222,7 +237,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { tab: 'text', title: 'Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
   { tab: 'text', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms' },
   { tab: 'text', title: 'Knowledge', detail: 'Manage local corrections, snippets, and transforms.', keywords: 'voice commands replacement' },
-  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey' },
+  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey history logging privacy question' },
   { tab: 'text', title: 'Selected-text Transform', detail: 'Configure on-device rewriting.', keywords: 'llm rewrite shortcut' },
   { tab: 'app', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
   { tab: 'app', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors' },
@@ -247,6 +262,76 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
   return settings.autoPaste
     ? 'Clipboard copying stays on; only automatic paste is paused.'
     : 'Clipboard copying stays on; auto-paste remains off.';
+}
+
+function queryConfigurationMessage(error: unknown): string {
+  const code = String(error);
+  if (code.includes('invalid_executable')) return 'The CLI executable is missing, is not executable, or is not an absolute path.';
+  if (code.includes('invalid_arguments')) return 'Fixed arguments exceed the Voice Query safety limits.';
+  if (code.includes('invalid_timeout')) return 'Choose a timeout between 5 seconds and 5 minutes.';
+  if (code.includes('invalid_environment')) return 'Declared environment values must be absolute config-directory paths.';
+  if (code.includes('environment_unavailable')) return 'Murmur could not read the protected Voice Query environment file.';
+  return 'Murmur could not validate this Voice Query configuration.';
+}
+
+function queryProviderTestMessage(
+  provider: QueryProviderId,
+  result: QueryProviderTestResult,
+): string {
+  if (isIncompleteCodexProbe(provider, result)) {
+    return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then choose Test again.';
+  }
+  if (result.authenticated === null) {
+    return 'Executable validated. Custom providers do not have a built-in authentication probe.';
+  }
+  if (result.ok) return 'Authenticated and ready.';
+  if (result.errorCode === 'provider_not_authenticated') {
+    return result.signInFix ?? 'The provider is not authenticated.';
+  }
+  return 'The provider probe failed. Review its output below.';
+}
+
+function isIncompleteCodexProbe(
+  provider: QueryProviderId,
+  result: QueryProviderTestResult,
+): boolean {
+  if (provider !== 'codex' || result.errorCode !== 'probe_failed') return false;
+  const detail = `${result.stdout}\n${result.stderr}`;
+  return detail.includes('The Codex CLI installation is incomplete')
+    || (
+      /ENOENT/i.test(detail)
+      && /@openai\/codex-darwin-/i.test(detail)
+      && /\/vendor\//i.test(detail)
+      && /\/codex\/codex/i.test(detail)
+    );
+}
+
+function queryCommand(settings: Settings): QueryCommandConfig {
+  return {
+    provider: settings.queryProvider,
+    executable: settings.queryExecutable,
+    arguments: settings.queryArguments,
+    timeoutSeconds: settings.queryTimeoutSeconds,
+    contextLevel: settings.queryContextLevel,
+    retainQueryHistory: settings.retainQueryHistory,
+  };
+}
+
+const QUERY_SWITCH_INTERRUPTED_NOTICE =
+  'Configuration changed during provider preflight. Voice Query remains off.';
+
+function queryCommandFingerprintFor(
+  command: QueryCommandConfig,
+  transformHoldKey: TransformKey | null,
+): string {
+  return JSON.stringify([
+    command.provider,
+    command.executable,
+    command.arguments,
+    command.timeoutSeconds,
+    command.contextLevel,
+    transformHoldKey,
+  ]);
 }
 
 export const SettingsPanel = memo(function SettingsPanel({
@@ -480,6 +565,103 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
   const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
   const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
+  const [queryConfigNotice, setQueryConfigNotice] = useState<string | null>(null);
+  const [queryPresets, setQueryPresets] = useState<QueryProviderPreset[]>([CUSTOM_QUERY_PRESET]);
+  const [queryEnvironment, setQueryEnvironment] = useState<QueryEnvironmentVariable[]>([]);
+  const [configuredQueryEnvironment, setConfiguredQueryEnvironment] = useState<string[]>([]);
+  const [queryEnvironmentStatus, setQueryEnvironmentStatus] = useState<string | null>(null);
+  const [queryEnvironmentNeedsRepair, setQueryEnvironmentNeedsRepair] = useState(false);
+  const [queryConfigBusy, setQueryConfigBusy] = useState(false);
+  const [queryTestResult, setQueryTestResult] = useState<QueryProviderTestResult | null>(null);
+  const [queryTestBusy, setQueryTestBusy] = useState(false);
+  const [querySignInStatus, setQuerySignInStatus] = useState<string | null>(null);
+  const signInPollRef = useRef(0);
+  const queryConfigGenerationRef = useRef(0);
+  const queryProviderSwitchRef = useRef<{ generation: number; hotkey: QueryKey } | null>(null);
+  const queryCommandFingerprint = queryCommandFingerprintFor(
+    queryCommand(settings),
+    settings.transformHoldKey,
+  );
+  const queryCommandFingerprintRef = useRef(queryCommandFingerprint);
+
+  const invalidateQueryRequests = () => {
+    const interruptedProviderSwitch = queryProviderSwitchRef.current !== null;
+    queryConfigGenerationRef.current += 1;
+    signInPollRef.current += 1;
+    queryProviderSwitchRef.current = null;
+    setQueryConfigBusy(false);
+    setQueryTestBusy(false);
+    setQueryTestResult(null);
+    setQuerySignInStatus(null);
+    if (interruptedProviderSwitch) {
+      setQueryConfigNotice(QUERY_SWITCH_INTERRUPTED_NOTICE);
+    }
+    return queryConfigGenerationRef.current;
+  };
+
+  const queryRequestIsCurrent = (generation: number) => (
+    queryConfigGenerationRef.current === generation
+  );
+
+  useEffect(() => () => {
+    signInPollRef.current += 1;
+    queryConfigGenerationRef.current += 1;
+    queryProviderSwitchRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (queryCommandFingerprintRef.current === queryCommandFingerprint) return;
+    const interruptedProviderSwitch = queryProviderSwitchRef.current !== null;
+    queryCommandFingerprintRef.current = queryCommandFingerprint;
+    queryConfigGenerationRef.current += 1;
+    signInPollRef.current += 1;
+    queryProviderSwitchRef.current = null;
+    setQueryConfigBusy(false);
+    setQueryTestBusy(false);
+    setQueryTestResult(null);
+    setQuerySignInStatus(null);
+    if (interruptedProviderSwitch) {
+      setQueryConfigError(null);
+      setQueryConfigNotice(QUERY_SWITCH_INTERRUPTED_NOTICE);
+    }
+  }, [queryCommandFingerprint]);
+
+  useEffect(() => {
+    if (activeCat !== 'text') return;
+    let cancelled = false;
+    void listQueryProviderPresets()
+      .then((presets) => {
+        if (!cancelled) setQueryPresets(presets);
+      })
+      .catch(() => {
+        if (!cancelled) setQueryPresets([CUSTOM_QUERY_PRESET]);
+      });
+    return () => { cancelled = true; };
+  }, [activeCat]);
+
+  useEffect(() => {
+    if (activeCat !== 'text') return;
+    let cancelled = false;
+    setQueryEnvironmentStatus(null);
+    setQueryEnvironmentNeedsRepair(false);
+    void loadQueryEnvironment(settings.queryProvider)
+      .then((names) => {
+        if (!cancelled) {
+          setConfiguredQueryEnvironment(Array.isArray(names) ? names : []);
+          setQueryEnvironment([]);
+          setQueryEnvironmentNeedsRepair(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setQueryEnvironment([]);
+          setConfiguredQueryEnvironment([]);
+          setQueryEnvironmentNeedsRepair(true);
+          setQueryEnvironmentStatus('Could not load the protected environment file. Clear saved values to repair it.');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [activeCat, settings.queryProvider]);
 
   const refreshTransformModel = useCallback(async () => {
     try {
@@ -585,9 +767,11 @@ export const SettingsPanel = memo(function SettingsPanel({
     ? 'Hold to record, or double-tap to start and single-tap to stop.'
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
 
-  const toggleVoiceQuery = () => {
+  const toggleVoiceQuery = async () => {
     setQueryConfigError(null);
     if (settings.queryHotkey !== null) {
+      invalidateQueryRequests();
+      setQueryConfigNotice(null);
       onUpdateSettings({ queryHotkey: null });
       return;
     }
@@ -600,15 +784,236 @@ export const SettingsPanel = memo(function SettingsPanel({
       setQueryConfigError('No dedicated shortcut is available.');
       return;
     }
-    onUpdateSettings({ queryHotkey: key });
+    const command = queryCommand(settings);
+    const generation = invalidateQueryRequests();
+    setQueryConfigBusy(true);
+    try {
+      await validateQueryCommand(command);
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigNotice(null);
+        onUpdateSettings({ queryHotkey: key });
+      }
+    } catch (error) {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigError(queryConfigurationMessage(error));
+      }
+    } finally {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigBusy(false);
+      }
+    }
+  };
+
+  const selectQueryProvider = async (provider: QueryProviderId) => {
+    const selected = queryPresets.find((preset) => preset.id === provider)
+      ?? (provider === 'custom' ? CUSTOM_QUERY_PRESET : null);
+    if (!selected) return;
+    // A rapid second selection sees the hotkey carried by the still-current
+    // switch transaction even though Settings has already persisted the
+    // fail-closed temporary `null`. No completed or failed transaction keeps
+    // this ref alive.
+    const hotkeyToPreserve = settings.queryHotkey
+      ?? queryProviderSwitchRef.current?.hotkey
+      ?? null;
+    const command: QueryCommandConfig = {
+      provider,
+      executable: selected.discoveredExecutable ?? '',
+      arguments: [...selected.recommendedArguments],
+      timeoutSeconds: settings.queryTimeoutSeconds,
+      contextLevel: settings.queryContextLevel,
+      retainQueryHistory: settings.retainQueryHistory,
+    };
+    const generation = invalidateQueryRequests();
+    if (hotkeyToPreserve !== null) {
+      queryProviderSwitchRef.current = { generation, hotkey: hotkeyToPreserve };
+    }
+    // This is the exact command being committed below. Priming the ref keeps
+    // the controlled-settings layout effect from invalidating its own switch;
+    // any different edit still changes the fingerprint and wins the race.
+    queryCommandFingerprintRef.current = queryCommandFingerprintFor(
+      command,
+      settings.transformHoldKey,
+    );
+    setQueryConfigError(null);
+    setQueryConfigNotice(hotkeyToPreserve !== null
+      ? `Checking ${selected.label} before keeping Voice Query enabled…`
+      : null);
+    setQueryTestResult(null);
+    setQuerySignInStatus(null);
+    setQueryEnvironmentStatus(null);
+    setQueryEnvironmentNeedsRepair(false);
+    setQueryEnvironment([]);
+    setConfiguredQueryEnvironment([]);
+    onUpdateSettings({
+      queryProvider: provider,
+      queryExecutable: command.executable,
+      queryArguments: command.arguments,
+      queryHotkey: null,
+    });
+    if (hotkeyToPreserve === null) return;
+
+    setQueryConfigBusy(true);
+    setQueryTestBusy(true);
+    try {
+      await validateQueryCommand(command);
+      if (!queryRequestIsCurrent(generation)) return;
+      const result = await testQueryProvider(command);
+      if (!queryRequestIsCurrent(generation)) return;
+      setQueryTestResult(result);
+      if (!result.ok) {
+        queryProviderSwitchRef.current = null;
+        setQueryConfigNotice(null);
+        setQueryConfigError(
+          `Voice Query remains off. ${queryProviderTestMessage(provider, result)}`,
+        );
+        return;
+      }
+      const pending = queryProviderSwitchRef.current;
+      if (!pending || pending.generation !== generation || pending.hotkey !== hotkeyToPreserve) {
+        return;
+      }
+      queryProviderSwitchRef.current = null;
+      setQueryConfigNotice(
+        `Provider changed to ${selected.label}. Voice Query stayed enabled after validation and preflight.`,
+      );
+      onUpdateSettings({ queryHotkey: hotkeyToPreserve });
+    } catch (error) {
+      if (queryRequestIsCurrent(generation)) {
+        queryProviderSwitchRef.current = null;
+        setQueryConfigNotice(null);
+        setQueryConfigError(`Voice Query remains off. ${queryConfigurationMessage(error)}`);
+      }
+    } finally {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigBusy(false);
+        setQueryTestBusy(false);
+      }
+    }
+  };
+
+  const saveDeclaredEnvironment = async () => {
+    setQueryEnvironmentStatus(null);
+    const entered = queryEnvironment.filter((variable) => variable.value.length > 0);
+    if (entered.length === 0) {
+      setQueryEnvironmentStatus('Enter an absolute config-directory path to save.');
+      return;
+    }
+    const provider = settings.queryProvider;
+    const generation = invalidateQueryRequests();
+    try {
+      await saveQueryEnvironment(provider, entered);
+      if (!queryRequestIsCurrent(generation)) return;
+      setConfiguredQueryEnvironment((current) => [
+        ...new Set([...current, ...entered.map((variable) => variable.name)]),
+      ]);
+      setQueryEnvironment([]);
+      setQueryEnvironmentStatus('Saved in Murmur’s protected app-data directory.');
+      setQueryEnvironmentNeedsRepair(false);
+      setQueryTestResult(null);
+      setQuerySignInStatus(null);
+    } catch (error) {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryEnvironmentStatus(queryConfigurationMessage(error));
+      }
+    }
+  };
+
+  const clearDeclaredEnvironment = async () => {
+    setQueryEnvironmentStatus(null);
+    const provider = settings.queryProvider;
+    const generation = invalidateQueryRequests();
+    try {
+      await saveQueryEnvironment(provider, []);
+      if (!queryRequestIsCurrent(generation)) return;
+      setQueryEnvironment([]);
+      setConfiguredQueryEnvironment([]);
+      setQueryEnvironmentStatus('Saved config-directory values cleared.');
+      setQueryEnvironmentNeedsRepair(false);
+      setQueryTestResult(null);
+      setQuerySignInStatus(null);
+    } catch (error) {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryEnvironmentStatus(queryConfigurationMessage(error));
+      }
+    }
+  };
+
+  const runQueryTest = async (): Promise<QueryProviderTestResult | null> => {
+    setQueryConfigError(null);
+    setQuerySignInStatus(null);
+    const command = queryCommand(settings);
+    const generation = invalidateQueryRequests();
+    setQueryTestBusy(true);
+    try {
+      const result = await testQueryProvider(command);
+      if (!queryRequestIsCurrent(generation)) return null;
+      setQueryTestResult(result);
+      return result;
+    } catch (error) {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryConfigError(queryConfigurationMessage(error));
+        setQueryTestResult(null);
+      }
+      return null;
+    } finally {
+      if (queryRequestIsCurrent(generation)) {
+        setQueryTestBusy(false);
+      }
+    }
+  };
+
+  const signInQueryProvider = async () => {
+    const poll = signInPollRef.current + 1;
+    signInPollRef.current = poll;
+    const command = queryCommand(settings);
+    const generation = queryConfigGenerationRef.current;
+    const ownsRequest = () => (
+      signInPollRef.current === poll && queryRequestIsCurrent(generation)
+    );
+    setQueryConfigError(null);
+    setQuerySignInStatus('Opening Terminal…');
+    try {
+      await launchQueryProviderSignIn(command);
+      if (!ownsRequest()) return;
+      setQuerySignInStatus('Terminal opened. Waiting for sign-in…');
+      const deadline = Date.now() + 60_000;
+      while (ownsRequest() && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        if (!ownsRequest()) return;
+        const result = await testQueryProvider(command);
+        if (!ownsRequest()) return;
+        setQueryTestResult(result);
+        if (result.ok) {
+          setQuerySignInStatus('Signed in and ready.');
+          return;
+        }
+      }
+      if (ownsRequest()) {
+        setQuerySignInStatus('Sign-in is still pending. Finish in Terminal, then choose Test.');
+      }
+    } catch (error) {
+      if (ownsRequest()) {
+        setQuerySignInStatus(null);
+        setQueryConfigError(String(error).includes('sign_in')
+          ? 'Murmur could not open the provider sign-in in Terminal.'
+          : queryConfigurationMessage(error));
+      }
+    }
   };
 
   const chooseQueryExecutable = async () => {
+    const generation = queryConfigGenerationRef.current;
     try {
       const selected = await open({ directory: false, multiple: false });
-      if (typeof selected === 'string') {
+      if (typeof selected === 'string' && queryRequestIsCurrent(generation)) {
         setQueryConfigError(null);
-        onUpdateSettings({ queryExecutable: selected });
+        setQueryConfigNotice(settings.queryHotkey !== null
+          ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
+          : null);
+        setQueryTestResult(null);
+        setQuerySignInStatus(null);
+        invalidateQueryRequests();
+        onUpdateSettings({ queryExecutable: selected, queryHotkey: null });
       }
     } catch {
       // Cancellation leaves the configured executable untouched.
@@ -623,6 +1028,14 @@ export const SettingsPanel = memo(function SettingsPanel({
     : null;
   const saveToFile = settings.saveTranscript || settings.saveAudio;
   const autoPasteOn = effectiveAutoPaste(settings);
+  const selectedQueryPreset = queryPresets.find((preset) => preset.id === settings.queryProvider)
+    ?? (settings.queryProvider === 'custom' ? CUSTOM_QUERY_PRESET : null);
+  const queryProviderItems = queryPresets.map((preset) => ({
+    value: preset.id,
+    label: preset.discoveredExecutable || preset.id === 'custom'
+      ? preset.label
+      : `${preset.label} — not found`,
+  }));
 
   const resetStats = () => {
     if (confirmReset) {
@@ -829,17 +1242,46 @@ export const SettingsPanel = memo(function SettingsPanel({
               <p className="text-sm font-medium text-on-surface">You control where the question goes</p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface">
                 Murmur transcribes your question locally, then gives it to the exact CLI executable below.
-                That CLI may send the question or answer to cloud services according to its own configuration.
+                That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.
                 Murmur cannot verify or prevent that network egress.
               </p>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-on-surface">Provider</label>
+              <Select
+                value={settings.queryProvider}
+                onChange={(value) => void selectQueryProvider(value as QueryProviderId)}
+                items={queryProviderItems.length > 0
+                  ? queryProviderItems
+                  : [{ value: 'custom', label: 'Custom' }]}
+              />
+              {selectedQueryPreset && settings.queryProvider !== 'custom' && (
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  {selectedQueryPreset.discoveredExecutable
+                    ? `Found ${selectedQueryPreset.discoveredExecutable}`
+                    : `Not found in ${selectedQueryPreset.discoveryPaths.join(', ')}`}
+                </p>
+              )}
+              {settings.queryProvider === 'custom' && (
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Choose an absolute executable and its fixed arguments below. For a local smoke test,
+                  use <code>/usr/bin/printf</code> with one fixed argument: <code>%s</code>.
+                </p>
+              )}
             </div>
 
             <SettingToggle
               title="Enable Voice Query"
               description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."
               checked={settings.queryHotkey !== null}
-              onChange={toggleVoiceQuery}
+              disabled={queryConfigBusy}
+              onChange={() => void toggleVoiceQuery()}
             />
+            {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
+            {queryConfigNotice && (
+              <p role="status" className="text-xs text-on-surface-variant">{queryConfigNotice}</p>
+            )}
 
             <div className="space-y-4">
               <div>
@@ -851,7 +1293,13 @@ export const SettingsPanel = memo(function SettingsPanel({
                     value={settings.queryExecutable}
                     onChange={(event) => {
                       setQueryConfigError(null);
-                      onUpdateSettings({ queryExecutable: event.target.value });
+                      setQueryConfigNotice(settings.queryHotkey !== null
+                        ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
+                        : null);
+                      setQueryTestResult(null);
+                      setQuerySignInStatus(null);
+                      invalidateQueryRequests();
+                      onUpdateSettings({ queryExecutable: event.target.value, queryHotkey: null });
                     }}
                     placeholder="/absolute/path/to/agent"
                     spellCheck={false}
@@ -872,7 +1320,19 @@ export const SettingsPanel = memo(function SettingsPanel({
                   id="query-arguments"
                   rows={3}
                   value={settings.queryArguments.join('\n')}
-                  onChange={(event) => onUpdateSettings({ queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0) })}
+                  onChange={(event) => {
+                    setQueryConfigError(null);
+                    setQueryConfigNotice(settings.queryHotkey !== null
+                      ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
+                      : null);
+                    setQueryTestResult(null);
+                    setQuerySignInStatus(null);
+                    invalidateQueryRequests();
+                    onUpdateSettings({
+                      queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0),
+                      queryHotkey: null,
+                    });
+                  }}
                   placeholder={'One argument per line\n--print'}
                   spellCheck={false}
                   className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
@@ -881,6 +1341,165 @@ export const SettingsPanel = memo(function SettingsPanel({
                   Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
                 </p>
               </div>
+
+              <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-on-surface">Provider preflight</p>
+                    <p className="mt-1 text-xs text-on-surface-variant">
+                      Runs the preset’s bounded authentication probe through the same direct-spawn and cleared-environment path as a query.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={queryTestBusy || !settings.queryExecutable.trim()}
+                    onClick={() => void runQueryTest()}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {queryTestBusy ? 'Testing…' : 'Test'}
+                  </button>
+                </div>
+                {queryTestResult && (
+                  <div className="mt-3 space-y-2 text-xs">
+                    <p className={queryTestResult.ok ? 'text-primary' : 'text-error'}>
+                      {queryProviderTestMessage(settings.queryProvider, queryTestResult)}
+                    </p>
+                    {queryTestResult.stdout && !isIncompleteCodexProbe(settings.queryProvider, queryTestResult) && (
+                      <div>
+                        <p className="font-semibold text-on-surface-variant">stdout{queryTestResult.stdoutTruncated ? ' · tail only' : ''}</p>
+                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
+                          {queryTestResult.stdout}
+                        </pre>
+                      </div>
+                    )}
+                    {queryTestResult.stderr && !isIncompleteCodexProbe(settings.queryProvider, queryTestResult) && (
+                      <div>
+                        <p className="font-semibold text-on-surface-variant">stderr{queryTestResult.stderrTruncated ? ' · tail only' : ''}</p>
+                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
+                          {queryTestResult.stderr}
+                        </pre>
+                      </div>
+                    )}
+                    {!queryTestResult.ok && queryTestResult.signInFix && (
+                      <button
+                        type="button"
+                        onClick={() => void signInQueryProvider()}
+                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 font-semibold text-on-surface hover:bg-surface-container"
+                      >
+                        Sign in…
+                      </button>
+                    )}
+                  </div>
+                )}
+                {querySignInStatus && (
+                  <p aria-live="polite" className="mt-2 text-xs text-on-surface-variant">
+                    {querySignInStatus}
+                  </p>
+                )}
+              </div>
+
+              {selectedQueryPreset && (
+                selectedQueryPreset.permittedEnvironmentVariables.length > 0
+                || queryEnvironmentNeedsRepair
+                || queryEnvironmentStatus !== null
+              ) && (
+                <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
+                  <p className="text-sm font-medium text-on-surface">
+                    {selectedQueryPreset.permittedEnvironmentVariables.length > 0
+                      ? 'Declared config directories'
+                      : 'Voice Query environment'}
+                  </p>
+                  {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                    <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
+                      Optional absolute directory paths are added to the cleared child environment.
+                      HOME and the base allowlist cannot be overridden. API keys, tokens, and other
+                      secret variables are not accepted. Values live only in Rust-owned app data,
+                      never localStorage.
+                    </p>
+                  )}
+                  {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                    <div className="mt-3 space-y-3">
+                      {selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
+                        <div key={name}>
+                          <label htmlFor={`query-env-${name}`} className="mb-1 block font-mono text-xs font-medium text-on-surface">
+                            {name}{configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
+                          </label>
+                          <input
+                            id={`query-env-${name}`}
+                            type="text"
+                            value={queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              invalidateQueryRequests();
+                              setQueryEnvironment((current) => [
+                                ...current.filter((variable) => variable.name !== name),
+                                ...(value ? [{ name, value }] : []),
+                              ]);
+                              setQueryEnvironmentStatus(null);
+                            }}
+                            placeholder={configuredQueryEnvironment.includes(name)
+                              ? 'Enter a replacement path'
+                              : '/absolute/path/to/config'}
+                            spellCheck={false}
+                            className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-3 flex items-center gap-3">
+                    {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void saveDeclaredEnvironment()}
+                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                      >
+                        Save environment
+                      </button>
+                    )}
+                    {(configuredQueryEnvironment.length > 0 || queryEnvironmentNeedsRepair) && (
+                      <button
+                        type="button"
+                        onClick={() => void clearDeclaredEnvironment()}
+                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
+                      >
+                        Clear saved values
+                      </button>
+                    )}
+                    {queryEnvironmentStatus && (
+                      <span className="text-xs text-on-surface-variant">{queryEnvironmentStatus}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-on-surface">Context shared with the CLI</label>
+                <Select
+                  value={settings.queryContextLevel}
+                  onChange={(queryContextLevel) => {
+                    invalidateQueryRequests();
+                    onUpdateSettings({ queryContextLevel });
+                  }}
+                  items={QUERY_CONTEXT_LEVEL_OPTIONS}
+                />
+                <p className="mt-1 text-xs text-on-surface-variant">
+                  Off by default. App &amp; window adds only the frontmost app name and window title.
+                  Choose App, window &amp; selection (the third option) to also add up to 8 KiB of
+                  selected text after secure-field checks. The popover always shows what kind of
+                  context was included, and per-app exclusions take precedence.
+                </p>
+              </div>
+
+              <SettingToggle
+                title="Keep Voice Query history on this Mac"
+                description="Off by default. When on, Murmur keeps up to 200 questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. A pass that actually shares app context stays display-only and is not saved, because a provider may quote that context in its answer. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
+                checked={settings.retainQueryHistory}
+                onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
+              />
+              <p className="text-xs text-on-surface-variant">
+                Voice Query counters and token usage appear under Insights in the main-window footer.
+              </p>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -904,7 +1523,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <label className="mb-1.5 block text-sm font-medium text-on-surface">Timeout</label>
                   <Select
                     value={String(settings.queryTimeoutSeconds)}
-                    onChange={(value) => onUpdateSettings({ queryTimeoutSeconds: Number(value) })}
+                    onChange={(value) => {
+                      invalidateQueryRequests();
+                      onUpdateSettings({ queryTimeoutSeconds: Number(value) });
+                    }}
                     items={[
                       { value: '30', label: '30 seconds' },
                       { value: '60', label: '1 minute' },
@@ -915,7 +1537,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               </div>
 
-              {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
               {accessibilityGranted === false && settings.queryHotkey !== null && (
                 <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                   <span>Accessibility permission is required for the global query shortcut.</span>
@@ -926,7 +1547,8 @@ export const SettingsPanel = memo(function SettingsPanel({
 
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
               Answers stream into a popover and are copied to the clipboard when complete. They are never
-              auto-pasted. Murmur does not add question or answer text to history, saved files, usage stats, or telemetry.
+              auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
+              Context content never enters history, saved files, usage stats, diagnostics, logs, or telemetry.
             </div>
           </SettingsSection>
 

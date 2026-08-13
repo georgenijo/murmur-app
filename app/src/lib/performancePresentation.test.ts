@@ -56,6 +56,17 @@ describe('performance presentation semantics', () => {
       'generation',
       'reviewReady',
     ]);
+    const query = makeRun({
+      kind: 'voiceQuery',
+      correlation: { kind: 'voiceQuery', queryPassId: 43 },
+    });
+    expect(orderedStages(query).map(stage => stage.stage)).toEqual([
+      'instructionCapture',
+      'instructionAsr',
+      'sidecarSpawnLoad',
+      'generation',
+      'totalProcessing',
+    ]);
   });
 
   it('formats real-time factor and transform throughput only when measured', () => {
@@ -102,6 +113,13 @@ describe('performance presentation semantics', () => {
     }))).toEqual({
       field: 'transform_pass_id',
       value: '42',
+    });
+    expect(correlationFilterForRun(makeRun({
+      kind: 'voiceQuery',
+      correlation: { kind: 'voiceQuery', queryPassId: 43 },
+    }))).toEqual({
+      field: 'query_pass_id',
+      value: '43',
     });
   });
 

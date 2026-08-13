@@ -108,6 +108,25 @@ impl PerformanceMetrics {
         )
     }
 
+    pub(crate) fn begin_voice_query(&self, query_pass_id: u64) -> Result<ActiveRunV1, String> {
+        self.begin(
+            PerformanceRunKindV1::VoiceQuery,
+            RunCorrelationV1::VoiceQuery { query_pass_id },
+            Vec::new(),
+            ContentFreeInputSummaryV1::default(),
+        )
+    }
+
+    pub(crate) fn set_query_process(
+        &self,
+        query_pass_id: u64,
+        query_process: QueryProcessSummaryV1,
+    ) -> Result<bool, String> {
+        self.update_active(&RunCorrelationV1::VoiceQuery { query_pass_id }, |active| {
+            active.query_process = Some(query_process)
+        })
+    }
+
     pub(crate) fn update_active(
         &self,
         correlation: &RunCorrelationV1,
@@ -234,6 +253,11 @@ impl PerformanceMetrics {
             let _ = app_handle.emit("performance-diagnostics-cleared", ());
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn counts(&self) -> Result<(u64, u64, u64), String> {
+        self.repository()?.counts()
     }
 }
 

@@ -13,6 +13,8 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type QueryKey = TransformKey;
+export type QueryProviderId = 'claude' | 'codex' | 'grok' | 'cursor' | 'custom';
+export type QueryContextLevel = 'none' | 'application' | 'selection';
 
 export type WritingStyle =
   | 'conversational'
@@ -50,6 +52,8 @@ export interface AppProfile {
   ideContextEnabled: boolean;
   /** User-selected local roots. Index contents are never persisted. */
   ideProjectRoots: string[];
+  /** Privacy deny override; can never enable Voice Query context by itself. */
+  queryContextExcluded: boolean;
 }
 
 const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
@@ -203,11 +207,17 @@ export interface Settings {
   transformHoldKey: TransformKey | null;
   /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
   queryHotkey: QueryKey | null;
+  /** Provider preset metadata; `custom` preserves the original generic bridge. */
+  queryProvider: QueryProviderId;
   /** Absolute path to the exact user-selected CLI executable. */
   queryExecutable: string;
   /** Fixed argv elements placed before the one-element spoken question. */
   queryArguments: string[];
   queryTimeoutSeconds: number;
+  /** Optional context appended inside the one literal query argv element. */
+  queryContextLevel: QueryContextLevel;
+  /** Opt-in Rust-owned local question/answer history; false keeps content ephemeral. */
+  retainQueryHistory: boolean;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -324,6 +334,12 @@ export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
 
 export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = TRANSFORM_KEY_OPTIONS;
 
+export const QUERY_CONTEXT_LEVEL_OPTIONS: { value: QueryContextLevel; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'application', label: 'App & window' },
+  { value: 'selection', label: 'App, window & selection' },
+];
+
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold Down' },
   { value: 'double_tap', label: 'Double-Tap' },
@@ -371,9 +387,12 @@ export const DEFAULT_SETTINGS: Settings = {
   // Disabled by default — no settings UI to configure it yet (Phase D).
   transformHoldKey: null,
   queryHotkey: null,
+  queryProvider: 'custom',
   queryExecutable: '',
   queryArguments: [],
   queryTimeoutSeconds: 60,
+  queryContextLevel: 'none',
+  retainQueryHistory: false,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -633,6 +652,12 @@ export function loadSettings(): Settings {
       } else {
         parsed.queryExecutable = parsed.queryExecutable.slice(0, 4096);
       }
+      if (
+        typeof parsed.queryProvider !== 'string'
+        || !['claude', 'codex', 'grok', 'cursor', 'custom'].includes(parsed.queryProvider)
+      ) {
+        parsed.queryProvider = DEFAULT_SETTINGS.queryProvider;
+      }
       if (!Array.isArray(parsed.queryArguments)) {
         parsed.queryArguments = DEFAULT_SETTINGS.queryArguments;
       } else {
@@ -648,6 +673,15 @@ export function loadSettings(): Settings {
         || parsed.queryTimeoutSeconds > 300
       ) {
         parsed.queryTimeoutSeconds = DEFAULT_SETTINGS.queryTimeoutSeconds;
+      }
+      if (
+        typeof parsed.queryContextLevel !== 'string'
+        || !QUERY_CONTEXT_LEVEL_OPTIONS.some((option) => option.value === parsed.queryContextLevel)
+      ) {
+        parsed.queryContextLevel = DEFAULT_SETTINGS.queryContextLevel;
+      }
+      if (typeof parsed.retainQueryHistory !== 'boolean') {
+        parsed.retainQueryHistory = DEFAULT_SETTINGS.retainQueryHistory;
       }
       if (
         parsed.queryHotkey !== null
@@ -712,6 +746,8 @@ export function loadSettings(): Settings {
                   .filter((root, index, roots) => roots.indexOf(root) === index)
                   .slice(0, 4)
               : [],
+            queryContextExcluded:
+              typeof p.queryContextExcluded === 'boolean' ? p.queryContextExcluded : false,
           }));
       }
 

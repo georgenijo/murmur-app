@@ -101,7 +101,15 @@ function ResourceRangeRow({
   );
 }
 
-function WaterfallRow({ timing, maximum }: { timing: StageTimingV1; maximum: number }) {
+function WaterfallRow({
+  timing,
+  maximum,
+  kind,
+}: {
+  timing: StageTimingV1;
+  maximum: number;
+  kind: PerformanceRunV1['kind'];
+}) {
   const value = formatMeasurement(timing.durationMs, formatMilliseconds);
   const measuredValue = timing.durationMs.status === 'measured'
     ? timing.durationMs.value
@@ -120,7 +128,7 @@ function WaterfallRow({ timing, maximum }: { timing: StageTimingV1; maximum: num
   return (
     <li className="grid grid-cols-[minmax(130px,0.8fr)_minmax(150px,2fr)_90px] items-center gap-3 py-1.5">
       <div className="min-w-0">
-        <div className="truncate text-xs font-medium text-on-surface">{stageLabel(timing.stage)}</div>
+        <div className="truncate text-xs font-medium text-on-surface">{stageLabel(timing.stage, kind)}</div>
         <div className="text-[10px] capitalize text-on-surface-variant">{timing.outcome}</div>
       </div>
       <div className="relative h-5 overflow-hidden rounded-md bg-surface-container">
@@ -163,7 +171,7 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
     run.resources.mainProcess.rssBytes.start,
     run.resources.mainProcess.rssBytes.end,
   );
-  const outcomeDetail = runOutcomeDetail(run.outcome);
+  const outcomeDetail = runOutcomeDetail(run.outcome, run.kind);
 
   return (
     <div className="flex flex-col gap-5 p-4">
@@ -209,6 +217,22 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
           <SummaryCard label="Host CPU peak" value={hostPeak.text} detail="Whole-host utilization" />
           <SummaryCard label="Sidecar RSS peak" value={sidecarPeak.text} detail={sidecarPeak.detail ?? 'Local LLM helper'} />
           <SummaryCard label="Accelerator utilization" value="Unavailable" detail="No production GPU or ANE percentage" />
+          {run.kind === 'voiceQuery' && (
+            <>
+              <SummaryCard
+                label="Provider exit code"
+                value={run.queryProcess?.exitCode === null
+                  ? 'Unavailable'
+                  : String(run.queryProcess?.exitCode ?? 'Unavailable')}
+                detail="Content-free process result"
+              />
+              <SummaryCard
+                label="Provider stderr"
+                value={run.queryProcess ? (run.queryProcess.stderrPresent ? 'Present' : 'Not present') : 'Unavailable'}
+                detail="Presence only; stderr text is never retained"
+              />
+            </>
+          )}
         </div>
       </section>
 
@@ -245,7 +269,7 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
           </p>
         </div>
         <ol aria-label="Ordered run stages">
-          {stages.map(stage => <WaterfallRow key={stage.stage} timing={stage} maximum={maximum} />)}
+          {stages.map(stage => <WaterfallRow key={stage.stage} timing={stage} maximum={maximum} kind={run.kind} />)}
         </ol>
         {run.followUps.length > 0 && (
           <div className="mt-3 border-t border-outline-variant/10 pt-3">

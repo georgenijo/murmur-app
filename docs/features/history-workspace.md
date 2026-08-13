@@ -2,9 +2,13 @@
 
 ## Overview
 
-Transcription history is where a dictated line goes to be found again. The workspace turns the plain reverse-chronological list into something you can work in: search it, narrow it, and take a set of entries out of the app as Markdown, plain text, or JSON.
+History has three deliberately separate workspaces: Transcripts, Meetings, and
+Queries. Transcription history turns the plain reverse-chronological list into
+something you can search, narrow, and export. Meetings use their own searchable
+SQLite sessions. Queries expose only explicitly retained Voice Query content;
+they never join transcript export or Correct and Teach.
 
-Everything here is local. The durable source of truth is `history.json` in the
+Everything here is local. The transcript durable source of truth is `history.json` in the
 per-bundle app data directory; `localStorage` under `dictation-history` is a
 synchronous cache. The main window hydrates that cache before React renders,
 and upgrades migrate an existing cache to disk once when no durable file
@@ -15,6 +19,28 @@ worth keeping past the cap belongs in an export or the knowledge store, not in
 a special history state.
 
 Settings → Model & Output → Output includes **Save Transcription History**. Turning it off makes the single `addEntry` boundary discard new microphone and imported-file transcripts before they reach React state, localStorage, or `history.json`. Current transcription delivery and content-free usage statistics continue normally. Previously saved entries remain visible until the user explicitly clears them, so changing a preference never silently deletes data.
+
+Voice Query has a different, off-by-default boundary. Settings → Text → Voice
+Query includes **Keep Voice Query history on this Mac**. When enabled for a
+pass, Rust stores the original question and answer with bounded metadata in a
+separate local SQLite database. History → Queries loads at most 50 records at a
+time, filters by provider, and offers **Delete all query history** as a direct
+one-click purge. The store keeps at most 200 newest entries. Turning the toggle
+off affects new passes only; it never silently deletes old records. A pass that
+actually appends app/window/selection context to its provider prompt is
+display-only and skips the entire history row, because raw or structured
+provider output may quote that context. Context configured but unavailable or
+excluded for the active app is never appended and does not suppress history.
+
+Query records are never cached in localStorage or merged into
+`dictation-history`. They are not editable, teachable, searchable through the
+transcript index, copied into transcript exports, or included in saved files.
+Optional app/window/selection context, composed prompts, stderr/error detail,
+paths, argv, and environment values are excluded from the store. Structured
+Claude/Codex raw-fallback passes also skip the whole row because their raw
+archives can contain user frames that echo the composed prompt. The provider
+filter and pagination cross only main-window-gated IPC, and live change events
+contain no content.
 
 Writes publish atomically through Rust with owner-only file permissions and
 never log transcript content. A
@@ -90,6 +116,8 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, chips, cards, export menu, clear actions |
+| `app/src/lib/hooks/useQueryHistory.ts` | Active-workspace-only paged query-history reads, provider filter, live refresh, and purge |
+| `app/src/components/history/QueryHistoryPanel.tsx` | Local question/answer cards and one-click purge; no export or edit path |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
 ## Tests

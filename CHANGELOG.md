@@ -12,6 +12,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   when Core ML Parakeet is selected, then clears them when the question is sent
   or cancelled (#561).
 
+## [0.33.0] - 2026-08-13
+
+### Added
+
+- Voice Query now provides provider-aware setup for Claude Code, Codex, Grok,
+  Cursor Agent, and custom local CLIs; structured provider adapters; bounded
+  sign-in repair; and content-free session usage, cost, and performance
+  insights (#550–#552).
+- Voice Query can retain an off-by-default, local-only history and can
+  optionally attach one immutable app/window or secure-field-aware selected
+  text context snapshot. Context is excluded from telemetry, diagnostics,
+  statistics, and history; per-app exclusions take precedence (#553, #554).
+
 ### Changed
 
 - Murmur now enforces its macOS-only product boundary across app builds, CI,

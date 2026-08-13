@@ -2,7 +2,7 @@
 
 Issue [#351](https://github.com/georgenijo/murmur-app/issues/351) defines the
 versioned, local data layer used by the Diagnostics performance workspace.
-Dictation, imported-file, and selected-text transform runs share this contract.
+Dictation, imported-file, selected-text transform, and Voice Query runs share this contract.
 Transform metrics reuse #332's canonical `transform_pass_id`; the existing
 content-free transform trace remains the only structured trace source.
 
@@ -29,8 +29,9 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 1`; run and resource JSON
-records also carry `schemaVersion: 1`. A database created by a newer Murmur
+The database currently uses SQLite `user_version = 2`; the v2 migration adds
+Voice Query support without changing tables. Run and resource JSON records
+remain backward-compatible at `schemaVersion: 1`. A database created by a newer Murmur
 build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
 
@@ -39,14 +40,18 @@ record versions are not decoded as V1.
 `PerformanceRunV1` contains:
 
 - an opaque random `runId`;
-- kind (`dictation`, `fileTranscription`, or `selectedTextTransform`);
+- kind (`dictation`, `fileTranscription`, `selectedTextTransform`, or `voiceQuery`);
 - start/finish UTC timestamps and exactly one terminal outcome;
-- the existing `recordingId`, a dedicated `fileRunId`, or the canonical
-  `transformPassId`;
+- the existing `recordingId`, a dedicated `fileRunId`, the canonical
+  `transformPassId`, or the monotonic `queryPassId`;
 - catalog-backed model, backend, accelerator, and warm/cold state;
 - typed stage measurements;
 - content-free audio duration or bounded size/token fields;
 - scoped resource summaries.
+
+Voice Query records may additionally carry `queryProcess` with only an integer
+exit code (or unavailable) and a boolean `stderrPresent`. Old V1 rows omit the
+field. No stderr bytes or provider error detail is admitted.
 
 Every measurement is one of:
 
@@ -94,6 +99,20 @@ are appended as bounded correlated follow-up records rather than changing the
 run's single terminal outcome. Retry keeps #332's same pass ID and does not
 create a competing trace identity.
 
+### Voice Query stages
+
+- instruction capture is presented as **Capture**;
+- instruction ASR is presented as **Transcription**;
+- sidecar spawn/load is reused as **Provider spawn** for the directly spawned
+  CLI process;
+- generation is the time to **First answer**;
+- total processing is presented as **Total**.
+
+The stored stage IDs remain the existing V1 enum, so old readers and rows do
+not require a JSON schema bump. A terminal provider/configuration/query-path
+failure maps to the stable `queryFailed` run error. Audio and transcription
+failures continue to use their existing stable errors.
+
 ## Resource scopes
 
 | Field | Scope and unit |
@@ -119,10 +138,11 @@ PID or failed process read is `sampleFailed`, and unsupported platforms report
 
 ## Privacy
 
-Persistent diagnostics never contain transcript or instruction text,
+Persistent diagnostics never contain transcript, query, answer, or instruction text,
 selected/proposed/replaced text, clipboard contents, paths or filenames, bundle
-IDs, window titles, project/profile names, raw stderr, or free-form native error
-messages. Errors are stable enums. Text-related sizes are bounded buckets.
+IDs, window titles, selected context, project/profile names, raw stderr, or
+free-form native error messages. Voice Query records retain stderr presence
+only. Errors are stable enums. Text-related sizes are bounded buckets.
 There is no network upload or remote telemetry.
 
 ## Commands and events

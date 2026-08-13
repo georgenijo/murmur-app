@@ -22,6 +22,7 @@ import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useMeetings } from './lib/hooks/useMeetings';
+import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
@@ -39,7 +40,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import type { CompletedUpdate, UpdateStatus } from './lib/updater';
-import { resetStats } from './lib/stats';
+import { resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
@@ -76,6 +77,8 @@ function App() {
   }, []);
 
   const [modelReady, setModelReady] = useState<boolean | null>(null);
+  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const meetings = useMeetings(settings);
@@ -86,6 +89,14 @@ function App() {
     setModelReady(true);
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
+  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
+  const queryHistorySurfaceActive = isQueryHistorySurfaceActive({
+    queriesSelected: historyWorkspace === 'queries',
+    settingsOpen: isSettingsOpen,
+    onboardingState,
+    modelReady,
+  });
+  const queryHistory = useQueryHistory(queryHistorySurfaceActive);
 
   // First-launch gate: is the currently-selected model present? Checked once on
   // mount (not reactively) so changing models in Settings uses the inline
@@ -103,7 +114,6 @@ function App() {
   // Checking every model (not just the settings default) keeps a fresh webview
   // data store (e.g. tauri dev vs installed app) from re-running the wizard
   // when models are already on disk (#240).
-  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   useEffect(() => {
     if (isOnboardingComplete()) {
       setOnboardingState('done');
@@ -162,10 +172,15 @@ function App() {
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
-  const combinedStatsVersion = statsVersion + statsResetVersion;
+  const [queryStatsVersion, setQueryStatsVersion] = useState(0);
+  const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
   const handleResetStats = useCallback(() => {
     resetStats();
     setStatsResetVersion(v => v + 1);
+  }, []);
+  const handleQueryCompleted = useCallback((completion: QueryCompletion) => {
+    updateQueryStats(completion);
+    setQueryStatsVersion(v => v + 1);
   }, []);
   // Keep the global hotkeys disarmed until onboarding completes — accessibility
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
@@ -204,10 +219,14 @@ function App() {
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
     command: {
+      provider: settings.queryProvider,
       executable: settings.queryExecutable,
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,
+      contextLevel: settings.queryContextLevel,
+      retainQueryHistory: settings.retainQueryHistory,
     },
+    onQueryCompleted: handleQueryCompleted,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
@@ -320,7 +339,6 @@ function App() {
     });
   }, [updateStatus]);
 
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
   const settingsViewRef = useRef('settings.dictation');
   const settingsActiveRef = useRef(isSettingsOpen);
@@ -359,7 +377,6 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
-  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
     setHistoryWorkspace('transcripts');
@@ -501,6 +518,13 @@ function App() {
         keywords: ['system audio', 'calls', 'me', 'them'],
         run: () => { closeSettings('programmatic'); setHistoryWorkspace('meetings'); },
       },
+      {
+        id: 'show-query-history',
+        title: 'Show Voice Query history',
+        section: 'Navigation',
+        keywords: ['questions', 'answers', 'agent', 'queries'],
+        run: () => { closeSettings('programmatic'); setHistoryWorkspace('queries'); },
+      },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
         title: `Settings: ${category.label}`,
@@ -619,6 +643,9 @@ function App() {
             workspace={historyWorkspace}
             onWorkspaceChange={setHistoryWorkspace}
             meetings={meetings}
+            queryHistory={queryHistory}
+            queryHistoryActive={queryHistorySurfaceActive}
+            retainQueryHistory={settings.retainQueryHistory}
           />
 
           {error && (

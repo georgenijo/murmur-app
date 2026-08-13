@@ -1,15 +1,23 @@
 import { useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
-import { useQueryReviewDriver, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
+import {
+  useQueryReviewDriver,
+  type QueryHistorySkipReason,
+  type QueryReviewState,
+} from '../../lib/hooks/useQueryReviewDriver';
+import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
 
 const ERROR_MESSAGES: Record<string, string> = {
   not_configured: 'Choose a CLI executable in Voice Query settings.',
   invalid_executable: 'The configured CLI executable is missing or cannot be run.',
   invalid_arguments: 'The configured fixed arguments are invalid.',
   invalid_timeout: 'Choose a timeout between 5 seconds and 5 minutes.',
+  invalid_environment: 'The saved Voice Query environment is invalid. Clear and re-enter it in Settings.',
+  environment_unavailable: 'Murmur could not read the protected Voice Query environment. Open Settings and clear or re-save it.',
   busy: 'Murmur is already recording or running another local task.',
   audio_start_failed: 'The microphone could not start. Check the selected input and permission.',
+  audio_capture_failed: 'Microphone capture failed while stopping. Check the selected input and try again.',
   audio_not_ready: 'The microphone was not ready yet. Try the shortcut again.',
   audio_recovering: 'Audio capture is recovering. Try again in a moment.',
   audio_recovery_stalled: 'Audio capture recovery stalled. Reopen Murmur and try again.',
@@ -22,10 +30,25 @@ const ERROR_MESSAGES: Record<string, string> = {
   termination_unconfirmed: 'Murmur could not confirm that the CLI process stopped.',
   process_failed: 'The configured CLI process failed.',
   exit_nonzero: 'The configured CLI exited with an error.',
+  provider_error: 'The configured provider reported an error.',
+  provider_not_authenticated: 'The configured provider is not signed in.',
   output_too_large: 'The answer exceeded the 256 KB safety limit and was stopped.',
   empty_answer: 'The configured CLI returned no answer.',
   clipboard_unavailable: 'The answer is ready, but the clipboard is unavailable. Use Copy to try again.',
 };
+
+const CODEX_INSTALL_INCOMPLETE = 'The Codex CLI installation is incomplete';
+
+function isIncompleteCodexDetail(errorDetail?: string | null): boolean {
+  if (!errorDetail) return false;
+  return errorDetail.includes(CODEX_INSTALL_INCOMPLETE)
+    || (
+      /ENOENT/i.test(errorDetail)
+      && /@openai\/codex-darwin-/i.test(errorDetail)
+      && /\/vendor\//i.test(errorDetail)
+      && /\/codex\/codex/i.test(errorDetail)
+    );
+}
 
 function statusLabel(state: QueryReviewState, errorCode: string | null): string {
   switch (state) {
@@ -42,13 +65,29 @@ function statusLabel(state: QueryReviewState, errorCode: string | null): string 
   }
 }
 
-export function queryErrorMessage(errorCode: string | null): string | null {
+export function queryErrorMessage(errorCode: string | null, errorDetail?: string | null): string | null {
   // `clipboard_superseded` is a successful answer whose auto-copy deferred to a
   // clipboard write the user made while it was generating — not a failure.
   if (!errorCode || errorCode === 'audio_stalled' || errorCode === 'clipboard_superseded') {
     return null;
   }
+  if (
+    errorCode === 'exit_nonzero'
+    && isIncompleteCodexDetail(errorDetail)
+  ) {
+    return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.';
+  }
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
+}
+
+export function queryHistoryNotice(reason: QueryHistorySkipReason | null): string | null {
+  if (reason === 'context_included') {
+    return 'Not saved to history — app context was included.';
+  }
+  if (reason === 'structured_raw_fallback') {
+    return 'Not saved to history — structured provider output could not be safely parsed.';
+  }
+  return null;
 }
 
 export function queryListeningPartial(state: QueryReviewState, partial: string): string | null {
@@ -56,14 +95,46 @@ export function queryListeningPartial(state: QueryReviewState, partial: string):
   return state === 'listening' && text ? text : null;
 }
 
+export function formatQueryUsage(usage: QueryUsage | null): string | null {
+  if (!usage) return null;
+  const parts = [
+    `${usage.inputTokens.toLocaleString()} in`,
+    `${usage.outputTokens.toLocaleString()} out`,
+  ];
+  if (usage.costUsd !== null) parts.push(formatQueryCost(usage.costUsd));
+  return parts.join(' · ');
+}
+
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
-  const errorMessage = useMemo(() => queryErrorMessage(driver.errorCode), [driver.errorCode]);
+  const errorMessage = useMemo(
+    () => queryErrorMessage(driver.errorCode, driver.errorDetail),
+    [driver.errorCode, driver.errorDetail],
+  );
   const listeningPartial = useMemo(
     () => queryListeningPartial(driver.state, driver.partial),
     [driver.state, driver.partial],
   );
   const terminal = driver.state === 'ready' || driver.state === 'failed';
+  const historyNotice = queryHistoryNotice(driver.historySkipReason);
+  const showErrorDetail = driver.state === 'failed'
+    && driver.errorDetail
+    && !isIncompleteCodexDetail(driver.errorDetail);
+  const usageText = driver.state === 'ready' ? formatQueryUsage(driver.usage) : null;
+  const primaryText = driver.state === 'failed'
+    ? errorMessage ?? 'The voice query could not be completed.'
+    : driver.answer || errorMessage || (terminal ? 'No answer was returned.' : '');
+  const footerText = driver.errorCode === 'clipboard_unavailable'
+    ? usageText
+      ? `Clipboard unavailable · ${usageText} · never auto-pasted`
+      : 'Clipboard unavailable · never auto-pasted'
+    : driver.errorCode === 'clipboard_superseded'
+      ? usageText
+        ? `Clipboard left as-is · ${usageText} · press Copy for the answer`
+        : 'Clipboard left as-is · press Copy for the answer'
+      : driver.state === 'ready'
+        ? usageText ? `${usageText} · Never auto-pasted` : 'Never auto-pasted'
+        : 'Esc to cancel';
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -94,6 +165,11 @@ export function QueryReviewApp() {
           <p aria-live="polite" className="mt-0.5 truncate text-[13px] font-medium text-white/90">
             {statusLabel(driver.state, driver.errorCode)}
           </p>
+          {driver.contextSummary && (
+            <p aria-label="Query context" className="mt-0.5 truncate text-[10px] font-medium text-violet-200/70">
+              {driver.contextSummary}
+            </p>
+          )}
         </div>
         {!terminal && (
           <button type="button" onClick={driver.cancel} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-white/60 hover:bg-white/10 hover:text-white">
@@ -111,20 +187,52 @@ export function QueryReviewApp() {
           >
             {listeningPartial
               ? <p className="whitespace-pre-wrap text-white/70">{listeningPartial}</p>
+              : driver.state === 'failed'
+              ? <p className="whitespace-pre-wrap">{primaryText}</p>
               : driver.answer
-              ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
-              : <p className="whitespace-pre-wrap">{errorMessage || 'No answer was returned.'}</p>}
+                ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
+                : <p className="whitespace-pre-wrap">{primaryText}</p>}
             {driver.state === 'running' && <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/60 align-middle" />}
+            {showErrorDetail && (
+              <div className="mt-3 rounded-lg border border-red-300/15 bg-red-950/30 p-2.5">
+                <p className="select-none text-[10px] font-semibold uppercase tracking-[0.12em] text-red-200/55">
+                  Provider detail
+                </p>
+                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-red-100/75">
+                  {driver.errorDetail}
+                </pre>
+              </div>
+            )}
+            {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
+              <p className="mt-3 text-xs text-amber-100/80">{driver.signInFix}</p>
+            )}
+            {driver.signInStatus && (
+              <p aria-live="polite" className="mt-2 text-xs text-white/60">{driver.signInStatus}</p>
+            )}
           </div>
+          {terminal && historyNotice && (
+            <p
+              aria-label="Voice Query history status"
+              className="border-t border-white/10 px-4 py-2 text-[10px] text-amber-200/70"
+            >
+              {historyNotice}
+            </p>
+          )}
           <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
-              {driver.errorCode === 'clipboard_unavailable'
-                ? 'Clipboard unavailable · never auto-pasted'
-                : driver.errorCode === 'clipboard_superseded'
-                  ? 'Clipboard left as-is · press Copy for the answer'
-                  : driver.state === 'ready' ? 'Never auto-pasted' : 'Esc to cancel'}
+              {footerText}
             </span>
             <div className="flex gap-2">
+              {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
+                <button
+                  type="button"
+                  disabled={driver.signInBusy}
+                  onClick={() => void driver.signIn()}
+                  className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-wait disabled:opacity-50"
+                >
+                  {driver.signInBusy ? 'Waiting…' : 'Sign in…'}
+                </button>
+              )}
               {driver.state === 'ready' && (
                 <button type="button" onClick={driver.copy} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15">
                   Copy

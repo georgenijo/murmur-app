@@ -83,6 +83,7 @@ describe('KnowledgeManager', () => {
       bundleId: 'com.apple.Terminal', label: 'Terminal', autoPasteOverride: null,
       cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
       writingStyle: null, ideContextEnabled: false, ideProjectRoots: [],
+      queryContextExcluded: false,
     }]} />));
   });
 

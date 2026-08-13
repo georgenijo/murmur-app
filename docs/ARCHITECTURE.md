@@ -175,7 +175,7 @@ available for packaging and callback-boundary validation. See the
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 148 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 158 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
@@ -192,7 +192,10 @@ available for packaging and callback-boundary validation. See the
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
-| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout streaming, and exact-pass cancellation |
+| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout/stderr streaming, immutable provider configuration, and exact-pass cancellation |
+| `query_adapter.rs` | Incremental Claude/Codex JSONL answer, typed failure, and pass-scoped usage extraction with non-duplicating raw fallback |
+| `query_provider.rs` | Voice Query preset/discovery data, bounded auth preflight, known auth repair, and Rust-owned declared config-directory environment values |
+| `query_history/` | Off-by-default bounded SQLite question/answer store with main-window-only paging and purge |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |
@@ -340,19 +343,20 @@ tracing event
              +--> 'app-event' emitted to all windows
 ```
 
-Six streams (tracing targets): `pipeline`, `audio`, `keyboard`, `transform`, `meeting`, `system`.
+Seven streams (tracing targets): `pipeline`, `audio`, `keyboard`, `transform`, `meeting`, `query`, `system`.
 
-**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform` and `meeting` events are stricter still and stripped in *all* builds: every string key **and** value must appear in an explicit stable vocabulary of enum values, stage names, error codes, and bucket labels. Anything else is dropped at the layer, independent of the call site. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
+**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform`, `meeting`, and `query` events are stricter still and stripped in *all* builds: every key, type, and stable string value must satisfy that stream's exact allowlist. Anything else is dropped at the layer, independent of the call site. Query questions, answers, context, stderr, and provider detail therefore cannot enter events even when local query history is enabled. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
 
 ### Local storage
 
-Three SQLite databases, all local-only:
+Four SQLite databases, all local-only:
 
 | Store | File | Retention |
 |-------|------|-----------|
 | Personal knowledge | `knowledge/knowledge.sqlite3` | User-managed; versioned migrations, backups, quarantine on corruption |
 | Performance diagnostics | `diagnostics/performance.sqlite3` | 200 completed runs, 600 resource samples, 8 follow-ups per run |
 | Meetings | `meetings/meetings.sqlite3` | User-managed searchable sessions; age/count caps applied before start; audio off by default |
+| Voice Query history | `query-history/query-history.sqlite3` | Off by default; newest 200 question/answer records; direct user purge |
 
 Transform diagnostic captures (explicitly consented, content-bearing) live under `diagnostics/transforms/transform-captures/` in a `0700` directory with `0600` files: max 3 retained, 7-day expiry, symlink targets refused, no export path.
 
@@ -381,7 +385,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-148 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+158 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
