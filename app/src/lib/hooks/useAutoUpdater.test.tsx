@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
+  invoke: vi.fn(),
   getVersion: vi.fn(),
   relaunch: vi.fn(),
   isPermissionGranted: vi.fn(),
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: mocks.relaunch }));
 vi.mock('@tauri-apps/plugin-notification', () => ({
@@ -57,6 +59,7 @@ describe('useAutoUpdater presentation state', () => {
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.isPermissionGranted.mockResolvedValue(true);
     mocks.getUpdateInstallEnvironment.mockResolvedValue({ appTranslocated: false });
+    mocks.invoke.mockResolvedValue({ path: null, result: null });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({}),
@@ -129,7 +132,163 @@ describe('useAutoUpdater presentation state', () => {
     );
   });
 
-  it('keeps a failed manual check inline instead of opening a broken retry modal', async () => {
+  it('leaves the canary path inert when the launch marker is absent', async () => {
+    await act(async () => root.unmount());
+    automaticChecksEnabled = true;
+    root = createRoot(container);
+    mocks.check.mockResolvedValue({ available: false });
+    await act(async () => root.render(<Harness />));
+
+    expect(mocks.invoke).toHaveBeenCalledWith('updater_canary', { action: 'read' });
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('updater_canary', expect.objectContaining({ action: 'write' }));
+  });
+
+  async function launchCanary(state: { path: string; result: unknown; dryRun: boolean }) {
+    await act(async () => root.unmount());
+    automaticChecksEnabled = true;
+    mocks.invoke.mockImplementation(async (_command: string, request: { action: string; result?: unknown }) => (
+      request.action === 'read' ? state : { ...state, result: request.result }
+    ));
+    root = createRoot(container);
+    await act(async () => root.render(<Harness />));
+    await act(async () => Promise.resolve());
+  }
+
+  function canaryWrites() {
+    return mocks.invoke.mock.calls
+      .filter(([, request]) => request?.action === 'write')
+      .map(([, request]) => request.result);
+  }
+
+  it('canary bypasses a skipped matching version and uses the real install path', async () => {
+    localStorage.setItem('skipped-update-version', '0.23.0');
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: {},
+      downloadAndInstall,
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
+
+    expect(downloadAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+  });
+
+  it('canary dry-run launches discovery and policy but never downloads or relaunches', async () => {
+    const downloadAndInstall = vi.fn();
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: {},
+      downloadAndInstall,
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: true });
+
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    const writes = canaryWrites();
+    expect(writes[writes.length - 1]).toMatchObject({ status: 'dry-run', dryRun: true });
+  });
+
+  it('records production stages as pending until install evidence is available', async () => {
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: {},
+      downloadAndInstall,
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
+
+    const writes = canaryWrites();
+    expect(writes[0]).toMatchObject({ status: 'pending', stages: {
+      download: 'pending', signatureVerify: 'pending', install: 'pending', relaunch: 'pending',
+    } });
+    expect(writes[1]).toMatchObject({ status: 'pending', stages: {
+      download: 'passed', signatureVerify: 'passed', install: 'passed', relaunch: 'pending',
+    } });
+  });
+
+  it('records policy failure without fabricating production stages', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: undefined,
+      downloadAndInstall: vi.fn(),
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
+
+    const writes = canaryWrites();
+    expect(writes[writes.length - 1]).toMatchObject({ status: 'failed', stages: {
+      discover: 'passed', policy: 'failed', download: 'pending', signatureVerify: 'pending', install: 'pending', relaunch: 'pending',
+    } });
+  });
+
+  it('records a canary download failure at the download stage', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: {},
+      downloadAndInstall: vi.fn().mockRejectedValue(new Error('disk full')),
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
+
+    const writes = canaryWrites();
+    expect(writes[writes.length - 1]).toMatchObject({ status: 'failed', stages: {
+      download: 'failed', signatureVerify: 'pending', install: 'pending', relaunch: 'pending',
+    } });
+  });
+
+  it('records a canary relaunch failure after install evidence', async () => {
+    mocks.relaunch.mockRejectedValueOnce(new Error('relaunch refused'));
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: {},
+      downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
+
+    const writes = canaryWrites();
+    expect(writes[writes.length - 1]).toMatchObject({ status: 'failed', stages: {
+      download: 'passed', signatureVerify: 'passed', install: 'passed', relaunch: 'failed',
+    } });
+  });
+
+  it('recovers a pending canary only after the installed version matches', async () => {
+    const previous = {
+      schemaVersion: 1 as const,
+      status: 'pending' as const,
+      checkedVersion: '0.22.1',
+      offeredVersion: '0.23.0',
+      forced: false,
+      dryRun: false,
+      stages: { discover: 'passed' as const, policy: 'passed' as const, download: 'passed' as const, signatureVerify: 'passed' as const, install: 'passed' as const, relaunch: 'pending' as const },
+      error: null,
+    };
+    mocks.getVersion.mockResolvedValue('0.23.0');
+    await launchCanary({ path: '/tmp/canary.json', result: previous, dryRun: false });
+    const writes = canaryWrites();
+    expect(writes[writes.length - 1]).toMatchObject({ status: 'passed', stages: { relaunch: 'passed' } });
+    expect(mocks.check).not.toHaveBeenCalled();
+  });
+
+  it('opens a recovery modal after a failed manual check', async () => {
     mocks.check.mockRejectedValue(new Error('offline'));
 
     await act(async () => current.checkForUpdate());
@@ -139,7 +298,7 @@ describe('useAutoUpdater presentation state', () => {
       stage: 'check',
       message: 'Error: offline',
     });
-    expect(current.isUpdateDialogOpen).toBe(false);
+    expect(current.isUpdateDialogOpen).toBe(true);
     expect(mocks.check).toHaveBeenCalledTimes(2);
     expect(mocks.flogError).toHaveBeenCalledWith(
       'updater',
@@ -180,7 +339,9 @@ describe('useAutoUpdater presentation state', () => {
     expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
-  it('fails closed when update availability is known but policy cannot be verified', async () => {
+  it('offers a verified update as optional when policy cannot be verified', async () => {
+    mocks.getVersion.mockRejectedValue(new Error('installed version unavailable'));
+    mocks.getVersion.mockClear();
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
@@ -192,14 +353,24 @@ describe('useAutoUpdater presentation state', () => {
     await act(async () => current.checkForUpdate());
 
     expect(current.updateStatus).toMatchObject({
-      phase: 'error',
-      stage: 'check',
-      message: expect.stringContaining('verify the update policy'),
+      phase: 'available',
+      version: '0.24.2',
+      isForced: false,
     });
-    expect(localStorage.getItem('updater-last-check')).toBeNull();
+    expect(current.isUpdateDialogOpen).toBe(true);
+    expect(mocks.getVersion).not.toHaveBeenCalled();
+    expect(localStorage.getItem('updater-last-check')).not.toBeNull();
+    expect(mocks.flogWarn).toHaveBeenCalledWith(
+      'updater',
+      'could not verify update policy',
+      { error: 'Update manifest was not an object.' },
+    );
+    expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
   it('uses an absent policy from the native response without a webview fetch', async () => {
+    mocks.getVersion.mockRejectedValue(new Error('installed version unavailable'));
+    mocks.getVersion.mockClear();
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
@@ -211,6 +382,7 @@ describe('useAutoUpdater presentation state', () => {
     await act(async () => current.checkForUpdate());
 
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(mocks.getVersion).not.toHaveBeenCalled();
     expect(current.updateStatus).toMatchObject({
       phase: 'available',
       version: '0.24.2',
@@ -332,8 +504,8 @@ describe('useAutoUpdater presentation state', () => {
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
 
     await act(async () => current.checkForUpdate());
-    let first!: Promise<void>;
-    let second!: Promise<void>;
+    let first!: Promise<unknown>;
+    let second!: Promise<unknown>;
     await act(async () => {
       first = current.startDownload();
       second = current.startDownload();
@@ -369,8 +541,8 @@ describe('useAutoUpdater presentation state', () => {
         resolveCheck = resolve;
       })
     );
-    let pendingCheck!: Promise<void>;
-    let install!: Promise<void>;
+    let pendingCheck!: Promise<unknown>;
+    let install!: Promise<unknown>;
     await act(async () => {
       pendingCheck = current.checkForUpdate();
       install = current.startDownload();
@@ -400,7 +572,7 @@ describe('useAutoUpdater presentation state', () => {
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
 
     await act(async () => current.checkForUpdate());
-    let install!: Promise<void>;
+    let install!: Promise<unknown>;
     await act(async () => {
       install = current.startDownload();
       await Promise.resolve();
@@ -446,7 +618,7 @@ describe('useAutoUpdater presentation state', () => {
         resolveEnvironment = resolve;
       }),
     );
-    let install!: Promise<void>;
+    let install!: Promise<unknown>;
     await act(async () => {
       install = current.startDownload();
       await Promise.resolve();

@@ -451,6 +451,10 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
 }
 
 pub fn start(app_handle: &tauri::AppHandle) {
+    if std::env::var_os("MURMUR_UPDATER_CANARY").is_some() {
+        tracing::info!(target: "system", "log shipper disabled: updater canary run");
+        return;
+    }
     if crate::telemetry::is_internal_bundle(app_handle) {
         tracing::info!(target: "system", "log shipper disabled: internal bundle");
         return;
