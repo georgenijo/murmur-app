@@ -17,6 +17,7 @@ import {
   RECORDING_MODE_OPTIONS,
   QUERY_KEY_OPTIONS,
   TRANSFORM_KEY_OPTIONS,
+  type QueryContextLevel,
   type QueryKey,
   type RecordingMode,
   type Settings,
@@ -882,6 +883,30 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </p>
               </div>
 
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-on-surface">Desktop context</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { value: 0, label: 'None' },
+                    { value: 1, label: 'App + window' },
+                    { value: 2, label: '+ selection' },
+                  ] as { value: QueryContextLevel; label: string }[]).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      aria-pressed={settings.queryContextLevel === option.value}
+                      onClick={() => onUpdateSettings({ queryContextLevel: option.value })}
+                      className={`min-h-9 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${settings.queryContextLevel === option.value ? 'border-primary bg-primary text-on-primary' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container'}`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
+                  Frozen once when the query starts and shown in the answer popover. Selected text is capped at 8 KiB and secure fields are always refused. Exclude sensitive apps under App Overrides.
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-on-surface">Query shortcut</label>
@@ -926,7 +951,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
               Answers stream into a popover and are copied to the clipboard when complete. They are never
-              auto-pasted. Murmur does not add question or answer text to history, saved files, usage stats, or telemetry.
+              auto-pasted. Murmur does not add question, context, or answer text to history, saved files, usage stats, or telemetry.
             </div>
           </SettingsSection>
 

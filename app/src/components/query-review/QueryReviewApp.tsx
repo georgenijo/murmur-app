@@ -1,13 +1,14 @@
 import { useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
-import { useQueryReviewDriver, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
+import { useQueryReviewDriver, type QueryContextDisplay, type QueryReviewState } from '../../lib/hooks/useQueryReviewDriver';
 
 const ERROR_MESSAGES: Record<string, string> = {
   not_configured: 'Choose a CLI executable in Voice Query settings.',
   invalid_executable: 'The configured CLI executable is missing or cannot be run.',
   invalid_arguments: 'The configured fixed arguments are invalid.',
   invalid_timeout: 'Choose a timeout between 5 seconds and 5 minutes.',
+  invalid_context: 'Choose a valid Voice Query context level.',
   busy: 'Murmur is already recording or running another local task.',
   audio_start_failed: 'The microphone could not start. Check the selected input and permission.',
   audio_not_ready: 'The microphone was not ready yet. Try the shortcut again.',
@@ -51,9 +52,27 @@ export function queryErrorMessage(errorCode: string | null): string | null {
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
 }
 
+function formatSelectionBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+export function queryContextSummary(context: QueryContextDisplay | null): string | null {
+  if (!context) return null;
+  if (context.status === 'excluded') return 'Context: excluded for this app';
+  if (context.status === 'unavailable') return 'Context: unavailable';
+  const parts = [context.appName || 'Unknown app'];
+  if (context.windowTitle) parts.push(context.windowTitle);
+  if (context.selectionBytes !== null) {
+    parts.push(`${formatSelectionBytes(context.selectionBytes)} selection${context.selectionTruncated ? ' (trimmed)' : ''}`);
+  }
+  return `Context: ${parts.join(' — ')}`;
+}
+
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
   const errorMessage = useMemo(() => queryErrorMessage(driver.errorCode), [driver.errorCode]);
+  const contextSummary = useMemo(() => queryContextSummary(driver.context), [driver.context]);
   const terminal = driver.state === 'ready' || driver.state === 'failed';
 
   useEffect(() => {
@@ -85,6 +104,9 @@ export function QueryReviewApp() {
           <p aria-live="polite" className="mt-0.5 truncate text-[13px] font-medium text-white/90">
             {statusLabel(driver.state, driver.errorCode)}
           </p>
+          {contextSummary && (
+            <p title={contextSummary} className="mt-0.5 truncate text-[11px] text-white/45">{contextSummary}</p>
+          )}
         </div>
         {!terminal && (
           <button type="button" onClick={driver.cancel} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-white/60 hover:bg-white/10 hover:text-white">

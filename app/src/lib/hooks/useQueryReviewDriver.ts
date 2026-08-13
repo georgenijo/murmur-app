@@ -27,6 +27,15 @@ interface QueryChunkPayload {
 interface QueryContent {
   queryPassId: number | null;
   answer: string;
+  context: QueryContextDisplay | null;
+}
+
+export interface QueryContextDisplay {
+  status: 'included' | 'excluded' | 'unavailable';
+  appName: string | null;
+  windowTitle: string | null;
+  selectionBytes: number | null;
+  selectionTruncated: boolean;
 }
 
 function validPassId(value: unknown): value is number {
@@ -56,6 +65,7 @@ export function useQueryReviewDriver() {
   const [state, setState] = useState<QueryReviewState>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
+  const [context, setContext] = useState<QueryContextDisplay | null>(null);
   const passIdRef = useRef<number | null>(null);
   const nextSequenceRef = useRef(0);
 
@@ -63,6 +73,7 @@ export function useQueryReviewDriver() {
     let disposed = false;
     let unlistenState: (() => void) | null = null;
     let unlistenChunk: (() => void) | null = null;
+    let unlistenContext: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
 
     const refresh = async (expectedPassId: number) => {
@@ -70,6 +81,7 @@ export function useQueryReviewDriver() {
         const content = await invoke<QueryContent>('get_query_review_content');
         if (!disposed && content.queryPassId === expectedPassId && typeof content.answer === 'string') {
           setAnswer(content.answer);
+          setContext(content.context ?? null);
         }
       } catch {
         flog.warn('query-review', 'could not refresh answer content');
@@ -84,12 +96,11 @@ export function useQueryReviewDriver() {
           passIdRef.current = payload.queryPassId;
           nextSequenceRef.current = 0;
           setAnswer('');
+          setContext(null);
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
-        if (payload.state === 'ready' || payload.state === 'failed') {
-          void refresh(payload.queryPassId);
-        }
+        void refresh(payload.queryPassId);
       });
       if (disposed) { unlistenState(); return; }
 
@@ -107,20 +118,30 @@ export function useQueryReviewDriver() {
       });
       if (disposed) { unlistenState(); unlistenChunk(); return; }
 
+      unlistenContext = await listen<unknown>('query-context-changed', (event) => {
+        if (disposed || !event.payload || typeof event.payload !== 'object') return;
+        const queryPassId = (event.payload as Record<string, unknown>).queryPassId;
+        if (!validPassId(queryPassId) || queryPassId !== passIdRef.current) return;
+        void refresh(queryPassId);
+      });
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); return; }
+
       unlistenHidden = await listen('query-review-hidden', () => {
         passIdRef.current = null;
         nextSequenceRef.current = 0;
         setState('idle');
         setErrorCode(null);
         setAnswer('');
+        setContext(null);
       });
-      if (disposed) { unlistenState(); unlistenChunk(); unlistenHidden(); }
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); unlistenHidden(); }
     };
     void setup();
     return () => {
       disposed = true;
       unlistenState?.();
       unlistenChunk?.();
+      unlistenContext?.();
       unlistenHidden?.();
     };
   }, []);
@@ -144,5 +165,5 @@ export function useQueryReviewDriver() {
     });
   }, []);
 
-  return { state, errorCode, answer, cancel, copy };
+  return { state, errorCode, answer, context, cancel, copy };
 }

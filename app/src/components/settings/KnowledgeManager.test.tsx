@@ -82,7 +82,7 @@ describe('KnowledgeManager', () => {
     await act(async () => root.render(<KnowledgeManager active profiles={[{
       bundleId: 'com.apple.Terminal', label: 'Terminal', autoPasteOverride: null,
       cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
-      writingStyle: null, ideContextEnabled: false, ideProjectRoots: [],
+      writingStyle: null, ideContextEnabled: false, ideProjectRoots: [], queryContextExcluded: false,
     }]} />));
   });
 

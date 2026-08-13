@@ -13,7 +13,7 @@ Murmur resolves one immutable `DictationContextSnapshot` for every live recordin
 
 One-session overrides are an explicit, typed resolver input but no trigger supplies them yet. This keeps the precedence contract ready for future commands without adding a second app-detection or settings path.
 
-Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, and local IDE project context. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
+Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, local IDE project context, and a Voice Query context exclusion. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
 
 Settings > Delivery > App Overrides can add a profile from currently running
 regular macOS apps or through advanced manual bundle-ID entry. The picker returns
@@ -68,6 +68,12 @@ Context capture is deny-by-default. A profile may explicitly grant only its boun
 - Selected text
 - Nearby or surrounding screen text
 - Clipboard contents as general transcription context. A matched snippet may read it only when that exact Voice Command carries explicit clipboard permission.
+
+These denials govern live dictation. Voice Query has a separate, user-visible
+context level that is off by default and freezes app/window/selection data only
+for the exact query pass. A matching profile's `queryContextExcluded` flag
+overrides that global opt-in and attaches no app name, window title, or
+selection for the excluded app.
 
 This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. IDE project context does not change those denials: it reads only user-selected roots through the bounded local index described in [Local IDE Symbols and `@file` Context](ide-context.md). Unmatched profiles and app names that merely look like IDEs remain no-ops.
 

@@ -103,6 +103,39 @@ pub enum SelectionError {
     SecureCheckFailed,
 }
 
+#[derive(Clone, Copy)]
+enum CaptureOwner {
+    Transform(u64),
+    Query,
+}
+
+impl CaptureOwner {
+    fn transform_pass_id(self) -> Option<u64> {
+        match self {
+            Self::Transform(pass_id) => Some(pass_id),
+            Self::Query => None,
+        }
+    }
+
+    fn trace_attempt(self, attempt: u32, outcome: &'static str, elapsed_ms: u64) {
+        if let Some(pass_id) = self.transform_pass_id() {
+            crate::transform_trace::capture_attempt(pass_id, attempt, outcome, elapsed_ms);
+        }
+    }
+
+    fn trace_path(
+        self,
+        path: &'static str,
+        outcome: &'static str,
+        elapsed_ms: u64,
+        length_bucket: Option<&'static str>,
+    ) {
+        if let Some(pass_id) = self.transform_pass_id() {
+            crate::transform_trace::capture_path(pass_id, path, outcome, elapsed_ms, length_bucket);
+        }
+    }
+}
+
 impl SelectionError {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -276,15 +309,25 @@ pub async fn capture_selection(
     app_handle: &tauri::AppHandle,
     transform_pass_id: u64,
 ) -> Result<TransformSnapshot, SelectionError> {
+    capture_selection_for(app_handle, CaptureOwner::Transform(transform_pass_id)).await
+}
+
+/// Reuse the exact transform selection path for Voice Query context without
+/// writing query activity into transform diagnostics. Secure-field refusal,
+/// AX retries, clipboard fallback, and pasteboard restoration stay identical.
+pub async fn capture_query_selection(
+    app_handle: &tauri::AppHandle,
+) -> Result<TransformSnapshot, SelectionError> {
+    capture_selection_for(app_handle, CaptureOwner::Query).await
+}
+
+async fn capture_selection_for(
+    app_handle: &tauri::AppHandle,
+    owner: CaptureOwner,
+) -> Result<TransformSnapshot, SelectionError> {
     if !crate::injector::is_accessibility_enabled() {
-        crate::transform_trace::capture_attempt(
-            transform_pass_id,
-            0,
-            SelectionError::AccessibilityDenied.as_str(),
-            0,
-        );
-        crate::transform_trace::capture_path(
-            transform_pass_id,
+        owner.trace_attempt(0, SelectionError::AccessibilityDenied.as_str(), 0);
+        owner.trace_path(
             "preflight",
             SelectionError::AccessibilityDenied.as_str(),
             0,
@@ -337,8 +380,7 @@ pub async fn capture_selection(
                 Ok(_) => "ok",
                 Err(error) => error.as_str(),
             };
-            crate::transform_trace::capture_attempt(
-                transform_pass_id,
+            owner.trace_attempt(
                 attempt + 1,
                 attempt_outcome,
                 attempt_started.elapsed().as_millis() as u64,
@@ -357,12 +399,14 @@ pub async fn capture_selection(
                         .and_then(|(_, bundle_id)| bundle_id.as_deref())
                         .is_some_and(is_known_chromium_browser);
                     if attempt + 1 < AX_ATTEMPTS && !known_chromium {
-                        tracing::info!(
-                            target: "transform",
-                            transform_pass_id,
-                            attempt = attempt + 1,
-                            "AX capture incomplete — retrying after warm-up gap"
-                        );
+                        if let Some(transform_pass_id) = owner.transform_pass_id() {
+                            tracing::info!(
+                                target: "transform",
+                                transform_pass_id,
+                                attempt = attempt + 1,
+                                "AX capture incomplete — retrying after warm-up gap"
+                            );
+                        }
                     } else {
                         break;
                     }
@@ -397,19 +441,16 @@ pub async fn capture_selection(
             // an errored secure check on ANY attempt bars the fallback even if
             // a later attempt fails shallower (`AxUnavailable`).
             (Err(err), Some((pid, bundle_id))) if fallback_allowed(err, secure_check_errored) => {
-                tracing::info!(
-                    target: "transform",
-                    transform_pass_id,
-                    ax_outcome = err.as_str(),
-                    "AX capture incomplete — attempting clipboard fallback"
-                );
-                tokio::task::spawn_blocking(move || {
-                    clipboard_fallback::capture_via_clipboard(
-                        pid,
-                        bundle_id,
-                        err,
+                if let Some(transform_pass_id) = owner.transform_pass_id() {
+                    tracing::info!(
+                        target: "transform",
                         transform_pass_id,
-                    )
+                        ax_outcome = err.as_str(),
+                        "AX capture incomplete — attempting clipboard fallback"
+                    );
+                }
+                tokio::task::spawn_blocking(move || {
+                    clipboard_fallback::capture_via_clipboard(pid, bundle_id, err, owner)
                 })
                 .await
                 .unwrap_or(Err(err))
@@ -423,8 +464,7 @@ pub async fn capture_selection(
                     .as_ref()
                     .ok()
                     .map(|snapshot| length_bucket(snapshot.text.len()));
-                crate::transform_trace::capture_path(
-                    transform_pass_id,
+                owner.trace_path(
                     "ax_attempt",
                     outcome,
                     capture_started.elapsed().as_millis() as u64,
@@ -483,7 +523,7 @@ fn is_known_chromium_browser(bundle_id: &str) -> bool {
 /// centers; apply uses the paste fallback).
 #[cfg(target_os = "macos")]
 mod clipboard_fallback {
-    use super::{SelectionError, TransformSnapshot};
+    use super::{CaptureOwner, SelectionError, TransformSnapshot};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
@@ -502,7 +542,7 @@ mod clipboard_fallback {
     /// threads, and this module already runs inside `spawn_blocking`, so
     /// off-main use here matches the existing clipboard I/O in `injector`.
     mod pasteboard {
-        use super::PasteboardSnapshot;
+        use super::{CaptureOwner, PasteboardSnapshot};
         use objc2_app_kit::{NSPasteboard, NSPasteboardItem};
         use objc2_foundation::{NSArray, NSData, NSString};
 
@@ -532,7 +572,7 @@ mod clipboard_fallback {
                 .collect()
         }
 
-        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot, transform_pass_id: u64) {
+        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot, owner: CaptureOwner) {
             let pb = NSPasteboard::generalPasteboard();
             pb.clearContents();
             if snapshot.is_empty() {
@@ -553,12 +593,20 @@ mod clipboard_fallback {
             let array = NSArray::from_retained_slice(&items);
             if !pb.writeObjects(&array) {
                 // Content-free by design: item/type counts only.
-                tracing::warn!(
-                    target: "transform",
-                    transform_pass_id,
-                    items = snapshot.len(),
-                    "pasteboard restore write was refused"
-                );
+                if let Some(transform_pass_id) = owner.transform_pass_id() {
+                    tracing::warn!(
+                        target: "transform",
+                        transform_pass_id,
+                        items = snapshot.len(),
+                        "pasteboard restore write was refused"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "query",
+                        event_code = "query.context_clipboard_restore_failed",
+                        "query context pasteboard restore write was refused"
+                    );
+                }
             }
         }
     }
@@ -572,7 +620,7 @@ mod clipboard_fallback {
 
     #[cfg(test)]
     pub(super) fn pasteboard_restore_for_tests(snapshot: &PasteboardSnapshot) {
-        pasteboard::restore(snapshot, 0)
+        pasteboard::restore(snapshot, CaptureOwner::Transform(0))
     }
 
     /// Unique-per-attempt sentinel. Never derived from clipboard or selection
@@ -683,7 +731,7 @@ mod clipboard_fallback {
         pid: i32,
         bundle_id: Option<String>,
         ax_outcome: SelectionError,
-        transform_pass_id: u64,
+        owner: CaptureOwner,
     ) -> Result<TransformSnapshot, SelectionError> {
         let started = Instant::now();
         let original = pasteboard::snapshot();
@@ -692,9 +740,8 @@ mod clipboard_fallback {
             // arboard clears the pasteboard BEFORE writing, so a failed
             // sentinel write can still have destroyed the contents — restore
             // the snapshot (harmless if the pasteboard was never touched).
-            pasteboard::restore(&original, transform_pass_id);
-            crate::transform_trace::capture_path(
-                transform_pass_id,
+            pasteboard::restore(&original, owner);
+            owner.trace_path(
                 "clipboard_fallback",
                 "sentinel_write_failed",
                 started.elapsed().as_millis() as u64,
@@ -724,13 +771,12 @@ mod clipboard_fallback {
         // type — whether or not the capture succeeded. An empty snapshot
         // restores to an empty (cleared) pasteboard, which also removes our
         // sentinel on the failure path.
-        pasteboard::restore(&original, transform_pass_id);
+        pasteboard::restore(&original, owner);
 
         let text = match copied {
             Some(text) => text,
             None => {
-                crate::transform_trace::capture_path(
-                    transform_pass_id,
+                owner.trace_path(
                     "clipboard_fallback",
                     ax_outcome.as_str(),
                     started.elapsed().as_millis() as u64,
@@ -740,8 +786,7 @@ mod clipboard_fallback {
             }
         };
         if let Err(error) = super::classify_selection(&text) {
-            crate::transform_trace::capture_path(
-                transform_pass_id,
+            owner.trace_path(
                 "clipboard_fallback",
                 error.as_str(),
                 started.elapsed().as_millis() as u64,
@@ -749,8 +794,7 @@ mod clipboard_fallback {
             );
             return Err(error);
         }
-        crate::transform_trace::capture_path(
-            transform_pass_id,
+        owner.trace_path(
             "clipboard_fallback",
             "ok",
             started.elapsed().as_millis() as u64,

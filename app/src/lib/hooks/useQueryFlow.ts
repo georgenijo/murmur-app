@@ -1,13 +1,18 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS, type QueryKey } from '../settings';
+import { DEFAULT_SETTINGS, type QueryContextLevel, type QueryKey } from '../settings';
 import { flog } from '../log';
 
 interface QueryCommandSnapshot {
   executable: string;
   arguments: string[];
   timeoutSeconds: number;
+}
+
+interface QueryContextSnapshot {
+  level: QueryContextLevel;
+  excludedBundleIds: string[];
 }
 
 interface QueryTogglePayload {
@@ -22,6 +27,7 @@ interface UseQueryFlowProps {
   queryHotkey: QueryKey | null;
   microphone?: string;
   command: QueryCommandSnapshot;
+  context: QueryContextSnapshot;
 }
 
 function isTogglePayload(value: unknown): value is QueryTogglePayload {
@@ -40,11 +46,14 @@ export function useQueryFlow({
   queryHotkey,
   microphone,
   command,
+  context,
 }: UseQueryFlowProps) {
   const activePassRef = useRef<number | null>(null);
   const commandRef = useRef(command);
+  const contextRef = useRef(context);
   const microphoneRef = useRef(microphone);
   useEffect(() => { commandRef.current = command; }, [command]);
+  useEffect(() => { contextRef.current = context; }, [context]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
 
   useEffect(() => {
@@ -66,6 +75,7 @@ export function useQueryFlow({
               ? selectedMicrophone
               : null,
             command: commandRef.current,
+            context: contextRef.current,
           }).catch(() => {
             flog.warn('query', 'start command failed', { query_pass_id: queryPassId });
             void invoke('cancel_query', { queryPassId }).catch(() => {});

@@ -37,6 +37,7 @@ describe('loadSettings', () => {
       model: 'tiny.en' as const,
       doubleTapKey: 'alt_l' as const,
       transformHoldKey: 'alt_r' as const,
+      queryContextLevel: 2 as const,
       language: 'es',
       autoPaste: true,
       autoPasteDelayMs: 230,
@@ -63,6 +64,7 @@ describe('loadSettings', () => {
         writingStyle: 'code_technical' as const,
         ideContextEnabled: true,
         ideProjectRoots: ['/tmp/project'],
+        queryContextExcluded: true,
       }],
       voiceCommandsEnabled: true,
       voiceCommands: [{ phrase: 'standup', replacement: 'Yesterday:\nToday:' }],
@@ -253,6 +255,22 @@ describe('loadSettings', () => {
     expect(legacy.ideProjectRoots).toEqual([]);
     expect(malformed.ideContextEnabled).toBe(false);
     expect(malformed.ideProjectRoots).toEqual([]);
+  });
+
+  it('migrates per-app Voice Query exclusions as explicit opt-outs', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      appProfiles: [
+        { bundleId: 'com.example.Secret', label: 'Secret', queryContextExcluded: true },
+        { bundleId: 'com.example.Legacy', label: 'Legacy' },
+        { bundleId: 'com.example.Malformed', label: 'Malformed', queryContextExcluded: 'yes' },
+      ],
+    }));
+
+    const [secret, legacy, malformed] = loadSettings().appProfiles;
+    expect(secret.queryContextExcluded).toBe(true);
+    expect(legacy.queryContextExcluded).toBe(false);
+    expect(malformed.queryContextExcluded).toBe(false);
   });
 
   it('keeps smart formatting opt-in across settings migrations', () => {
@@ -844,6 +862,7 @@ describe('Voice Query settings', () => {
     expect(DEFAULT_SETTINGS.queryExecutable).toBe('');
     expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
     expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
+    expect(DEFAULT_SETTINGS.queryContextLevel).toBe(0);
   });
 
   it('fails closed when a persisted query key conflicts with transform', () => {
@@ -874,5 +893,14 @@ describe('Voice Query settings', () => {
     expect(settings.queryArguments).toHaveLength(32);
     expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
     expect(settings.queryTimeoutSeconds).toBe(60);
+  });
+
+  it('allows only the three explicit context levels', () => {
+    for (const level of [0, 1, 2] as const) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, queryContextLevel: level }));
+      expect(loadSettings().queryContextLevel).toBe(level);
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, queryContextLevel: 7 }));
+    expect(loadSettings().queryContextLevel).toBe(0);
   });
 });

@@ -49,6 +49,10 @@ describe('useQueryFlow', () => {
           arguments: ['%s'],
           timeoutSeconds: 60,
         },
+        context: {
+          level: 2,
+          excludedBundleIds: ['com.example.Secret'],
+        },
       });
       return null;
     }
@@ -74,6 +78,10 @@ describe('useQueryFlow', () => {
         executable: '/usr/bin/printf',
         arguments: ['%s'],
         timeoutSeconds: 60,
+      },
+      context: {
+        level: 2,
+        excludedBundleIds: ['com.example.Secret'],
       },
     });
 

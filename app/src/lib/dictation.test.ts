@@ -19,6 +19,7 @@ describe('buildConfigureOptions', () => {
           writingStyle: 'code_technical',
           ideContextEnabled: false,
           ideProjectRoots: [],
+          queryContextExcluded: false,
         },
       ],
     });

@@ -208,6 +208,12 @@ function App() {
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,
     },
+    context: {
+      level: settings.queryContextLevel,
+      excludedBundleIds: settings.appProfiles
+        .filter((profile) => profile.queryContextExcluded)
+        .map((profile) => profile.bundleId),
+    },
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });

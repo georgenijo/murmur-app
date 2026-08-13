@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Voice Query can now explicitly freeze the frontmost app and window title,
+  optionally include up to 8 KiB of secure-field-aware selected text, disclose
+  the attached context in its popover, and exclude configured apps (#554).
+
 ### Changed
 
 - Murmur now enforces its macOS-only product boundary across app builds, CI,

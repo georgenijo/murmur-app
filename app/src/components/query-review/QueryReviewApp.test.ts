@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { queryErrorMessage } from './QueryReviewApp';
+import { queryContextSummary, queryErrorMessage } from './QueryReviewApp';
 
 describe('queryErrorMessage', () => {
   it('treats a deferred clipboard as success, not failure', () => {
@@ -22,5 +22,24 @@ describe('queryErrorMessage', () => {
 
   it('falls back to a generic message for an unrecognised code', () => {
     expect(queryErrorMessage('something_new')).toBe('The voice query could not be completed.');
+  });
+});
+
+describe('queryContextSummary', () => {
+  it('shows exactly which context was attached without exposing selected text', () => {
+    expect(queryContextSummary({
+      status: 'included',
+      appName: 'Safari',
+      windowTitle: 'Murmur issue',
+      selectionBytes: 1229,
+      selectionTruncated: false,
+    })).toBe('Context: Safari — Murmur issue — 1.2 KB selection');
+  });
+
+  it('makes exclusions and unavailable context visible', () => {
+    expect(queryContextSummary({ status: 'excluded', appName: null, windowTitle: null, selectionBytes: null, selectionTruncated: false }))
+      .toBe('Context: excluded for this app');
+    expect(queryContextSummary({ status: 'unavailable', appName: null, windowTitle: null, selectionBytes: null, selectionTruncated: false }))
+      .toBe('Context: unavailable');
   });
 });

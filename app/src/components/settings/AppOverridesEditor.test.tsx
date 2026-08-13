@@ -18,6 +18,7 @@ const TERMINAL: AppProfile = {
   writingStyle: null,
   ideContextEnabled: false,
   ideProjectRoots: [],
+  queryContextExcluded: false,
 };
 
 describe('AppOverridesEditor', () => {
@@ -82,5 +83,12 @@ describe('AppOverridesEditor', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(onChange).toHaveBeenCalledWith([{ ...TERMINAL, cleanupOverride: false }]);
+  });
+
+  it('can exclude one app from Voice Query context', async () => {
+    await act(async () => root.render(<AppOverridesEditor profiles={[TERMINAL]} onChange={onChange} />));
+    const toggle = container.querySelector('[aria-label="Exclude Terminal from Voice Query context"]') as HTMLButtonElement;
+    await act(async () => toggle.click());
+    expect(onChange).toHaveBeenCalledWith([{ ...TERMINAL, queryContextExcluded: true }]);
   });
 });

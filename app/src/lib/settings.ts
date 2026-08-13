@@ -13,6 +13,7 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type QueryKey = TransformKey;
+export type QueryContextLevel = 0 | 1 | 2;
 
 export type WritingStyle =
   | 'conversational'
@@ -50,6 +51,8 @@ export interface AppProfile {
   ideContextEnabled: boolean;
   /** User-selected local roots. Index contents are never persisted. */
   ideProjectRoots: string[];
+  /** Deny Voice Query app/window/selection context for this app. */
+  queryContextExcluded: boolean;
 }
 
 const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
@@ -208,6 +211,8 @@ export interface Settings {
   /** Fixed argv elements placed before the one-element spoken question. */
   queryArguments: string[];
   queryTimeoutSeconds: number;
+  /** Context frozen at query start: none, app/window, or app/window/selection. */
+  queryContextLevel: QueryContextLevel;
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
@@ -374,6 +379,7 @@ export const DEFAULT_SETTINGS: Settings = {
   queryExecutable: '',
   queryArguments: [],
   queryTimeoutSeconds: 60,
+  queryContextLevel: 0,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -649,6 +655,9 @@ export function loadSettings(): Settings {
       ) {
         parsed.queryTimeoutSeconds = DEFAULT_SETTINGS.queryTimeoutSeconds;
       }
+      if (![0, 1, 2].includes(parsed.queryContextLevel as number)) {
+        parsed.queryContextLevel = DEFAULT_SETTINGS.queryContextLevel;
+      }
       if (
         parsed.queryHotkey !== null
         && parsed.queryHotkey === parsed.transformHoldKey
@@ -712,6 +721,8 @@ export function loadSettings(): Settings {
                   .filter((root, index, roots) => roots.indexOf(root) === index)
                   .slice(0, 4)
               : [],
+            queryContextExcluded:
+              typeof p.queryContextExcluded === 'boolean' ? p.queryContextExcluded : false,
           }));
       }
 

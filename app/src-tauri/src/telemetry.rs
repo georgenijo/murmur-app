@@ -480,6 +480,7 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "invalid_executable"
                 | "invalid_arguments"
                 | "invalid_timeout"
+                | "invalid_context"
                 | "busy"
                 | "audio_start_failed"
                 | "audio_not_ready"
@@ -915,9 +916,12 @@ mod tests {
             "event_code": "query.pass_state",
             "query_pass_id": 8,
             "state": "running",
-            "error_code": "spawn_failed",
+            "error_code": "invalid_context",
             "question": "SENTINEL_QUESTION ; rm -rf",
             "answer": "SENTINEL_ANSWER",
+            "app_name": "SENTINEL_APP",
+            "window_title": "SENTINEL_WINDOW",
+            "selected_text": "SENTINEL_SELECTION",
             "command": "/Users/private/bin/agent",
             "arguments": ["SENTINEL_ARGUMENTS"],
             "structured_answer": { "content": "SENTINEL_OBJECT" },
@@ -928,7 +932,7 @@ mod tests {
         assert_eq!(data["event_code"], "query.pass_state");
         assert_eq!(data["query_pass_id"], 8);
         assert_eq!(data["state"], "running");
-        assert_eq!(data["error_code"], "spawn_failed");
+        assert_eq!(data["error_code"], "invalid_context");
         assert!(!encoded.contains("SENTINEL"));
         assert!(!encoded.contains("/Users/private"));
         assert!(!encoded.contains("rm -rf"));

@@ -29,6 +29,15 @@ pub struct FrontmostAppIdentity {
     pub process_id: Option<i32>,
 }
 
+/// User-visible metadata frozen for one Voice Query pass. This type must never
+/// be logged or emitted on a broadcast event: app names and window titles can
+/// reveal document content.
+#[derive(Clone)]
+pub struct FrontmostContextMetadata {
+    pub app_name: String,
+    pub window_title: Option<String>,
+}
+
 #[derive(Debug)]
 struct RunningApplicationCandidate {
     bundle_id: Option<String>,
@@ -265,6 +274,146 @@ pub fn frontmost_app_identity() -> FrontmostAppIdentity {
     }
 }
 
+/// Read the display name and focused-window title only when the native
+/// frontmost application still matches the identity already frozen by the
+/// caller. A focus change makes context unavailable instead of pairing the
+/// original app identity with a newer app's title.
+#[cfg(target_os = "macos")]
+pub async fn frontmost_context_metadata(
+    app_handle: &tauri::AppHandle,
+    identity: &FrontmostAppIdentity,
+) -> Option<FrontmostContextMetadata> {
+    let expected_pid = identity.process_id?;
+    let expected_bundle = identity.bundle_id.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .run_on_main_thread(move || {
+            let _ = tx.send(native_context_metadata(
+                expected_pid,
+                expected_bundle.as_deref(),
+            ));
+        })
+        .ok()?;
+    rx.await.ok().flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn native_context_metadata(
+    expected_pid: i32,
+    expected_bundle: Option<&str>,
+) -> Option<FrontmostContextMetadata> {
+    use objc2_app_kit::NSWorkspace;
+
+    let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    if app.processIdentifier() != expected_pid {
+        return None;
+    }
+    let bundle = app.bundleIdentifier().map(|value| value.to_string());
+    if bundle.as_deref() != expected_bundle {
+        return None;
+    }
+    let app_name = app
+        .localizedName()
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+        .or(bundle)?;
+    Some(FrontmostContextMetadata {
+        app_name,
+        window_title: native_window_title(expected_pid),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn native_window_title(pid: i32) -> Option<String> {
+    use std::ffi::{c_char, c_void, CStr, CString};
+
+    type AXUIElementRef = *const c_void;
+    type CFTypeRef = *const c_void;
+    type CFIndex = isize;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+        fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
+        fn AXUIElementCopyAttributeValue(
+            element: AXUIElementRef,
+            attribute: CFTypeRef,
+            value: *mut CFTypeRef,
+        ) -> i32;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithCString(
+            allocator: *const c_void,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> CFTypeRef;
+        fn CFStringGetCStringPtr(string: CFTypeRef, encoding: u32) -> *const c_char;
+        fn CFStringGetLength(string: CFTypeRef) -> CFIndex;
+        fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: u32) -> CFIndex;
+        fn CFStringGetCString(
+            string: CFTypeRef,
+            buffer: *mut c_char,
+            buffer_size: CFIndex,
+            encoding: u32,
+        ) -> bool;
+        fn CFRelease(value: CFTypeRef);
+    }
+
+    const UTF8: u32 = 0x0800_0100;
+
+    unsafe fn attribute(element: AXUIElementRef, name: &str) -> Option<CFTypeRef> {
+        let name = CString::new(name).ok()?;
+        let key = unsafe { CFStringCreateWithCString(std::ptr::null(), name.as_ptr(), UTF8) };
+        if key.is_null() {
+            return None;
+        }
+        let mut value: CFTypeRef = std::ptr::null();
+        let status = unsafe { AXUIElementCopyAttributeValue(element, key, &mut value) };
+        unsafe { CFRelease(key) };
+        (status == 0 && !value.is_null()).then_some(value)
+    }
+
+    unsafe fn string(value: CFTypeRef) -> Option<String> {
+        let direct = unsafe { CFStringGetCStringPtr(value, UTF8) };
+        if !direct.is_null() {
+            return Some(
+                unsafe { CStr::from_ptr(direct) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        let length = unsafe { CFStringGetLength(value) };
+        let capacity = unsafe { CFStringGetMaximumSizeForEncoding(length, UTF8) } + 1;
+        if capacity <= 1 {
+            return None;
+        }
+        let mut buffer = vec![0_u8; capacity as usize];
+        unsafe { CFStringGetCString(value, buffer.as_mut_ptr().cast(), capacity, UTF8) }.then(
+            || {
+                unsafe { CStr::from_ptr(buffer.as_ptr().cast()) }
+                    .to_string_lossy()
+                    .into_owned()
+            },
+        )
+    }
+
+    let application = unsafe { AXUIElementCreateApplication(pid) };
+    if application.is_null() {
+        return None;
+    }
+    let _ = unsafe { AXUIElementSetMessagingTimeout(application, 0.025) };
+    let window = unsafe { attribute(application, "AXFocusedWindow") };
+    unsafe { CFRelease(application) };
+    let window = window?;
+    let title = unsafe { attribute(window.cast(), "AXTitle") };
+    unsafe { CFRelease(window) };
+    let title = title?;
+    let text = unsafe { string(title) };
+    unsafe { CFRelease(title) };
+    text.filter(|value| !value.trim().is_empty())
+}
+
 /// Non-macOS platforms have no frontmost-app concept here; profiles are a no-op.
 #[cfg(not(target_os = "macos"))]
 pub fn frontmost_bundle_id() -> Option<String> {
@@ -277,6 +426,14 @@ pub fn frontmost_app_identity() -> FrontmostAppIdentity {
         bundle_id: None,
         process_id: None,
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn frontmost_context_metadata(
+    _app_handle: &tauri::AppHandle,
+    _identity: &FrontmostAppIdentity,
+) -> Option<FrontmostContextMetadata> {
+    None
 }
 
 #[cfg(test)]

@@ -65,6 +65,7 @@ interface Settings {
   queryExecutable: string;                 // absolute executable path
   queryArguments: string[];                // fixed argv before question
   queryTimeoutSeconds: number;             // 5–300, default 60
+  queryContextLevel: 0 | 1 | 2;            // none, app/window, + selection
 
   // Delivery
   autoPaste: boolean;
@@ -165,6 +166,7 @@ model-selection side effects.
 | `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
 | `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question, which is one final argv element. |
 | `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
+| `queryContextLevel` | `0 \| 1 \| 2` | `0` | 0 = none, 1 = app/window, 2 = app/window/selection | Context is frozen once at query start, visibly disclosed in the popover, and appended inside the one final literal prompt argument. Selection is secure-field-aware and capped at 8 KiB. |
 
 The Settings disclosure explicitly states that the configured CLI may send the question or answer to cloud services and that Murmur cannot control its network behavior. See [Voice Query](../features/voice-query.md).
 
@@ -206,7 +208,7 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 
 ## Per-App Profiles
 
-`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
+`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots, queryContextExcluded }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." `queryContextExcluded` defaults to `false`; when true, Voice Query attaches no app, window, or selection context for that profile even if the global context level is enabled. Existing, missing, and malformed persisted style/override fields migrate safely.
 
 `ideContextEnabled` defaults to `false` and must be enabled on the exact matching profile. `ideProjectRoots` persists only the explicit user-selected root strings, trimmed, deduplicated, and capped at four. Filenames, symbols, source snippets, and scan results are memory-only and are not settings fields. The roots therefore remain visible in Settings and in any direct inspection or backup of the existing settings JSON; there is no hidden export path.
 

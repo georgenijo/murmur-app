@@ -63,7 +63,7 @@ describe('VoiceCommandsManager', () => {
     await act(async () => root.render(<VoiceCommandsManager active globallyEnabled profiles={[{
       bundleId: 'com.apple.mail', label: 'Mail', autoPasteOverride: null, cleanupOverride: null,
       smartFormattingOverride: null, cliFormattingOverride: null, writingStyle: null,
-      ideContextEnabled: false, ideProjectRoots: [],
+      ideContextEnabled: false, ideProjectRoots: [], queryContextExcluded: false,
     }]} />));
   });
 
