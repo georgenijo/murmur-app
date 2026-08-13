@@ -181,6 +181,8 @@ describe('useAutoUpdater presentation state', () => {
   });
 
   it('offers a verified update as optional when policy cannot be verified', async () => {
+    mocks.getVersion.mockRejectedValue(new Error('installed version unavailable'));
+    mocks.getVersion.mockClear();
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
@@ -197,6 +199,7 @@ describe('useAutoUpdater presentation state', () => {
       isForced: false,
     });
     expect(current.isUpdateDialogOpen).toBe(true);
+    expect(mocks.getVersion).not.toHaveBeenCalled();
     expect(localStorage.getItem('updater-last-check')).not.toBeNull();
     expect(mocks.flogWarn).toHaveBeenCalledWith(
       'updater',
@@ -207,6 +210,8 @@ describe('useAutoUpdater presentation state', () => {
   });
 
   it('uses an absent policy from the native response without a webview fetch', async () => {
+    mocks.getVersion.mockRejectedValue(new Error('installed version unavailable'));
+    mocks.getVersion.mockClear();
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
@@ -218,6 +223,7 @@ describe('useAutoUpdater presentation state', () => {
     await act(async () => current.checkForUpdate());
 
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(mocks.getVersion).not.toHaveBeenCalled();
     expect(current.updateStatus).toMatchObject({
       phase: 'available',
       version: '0.24.2',

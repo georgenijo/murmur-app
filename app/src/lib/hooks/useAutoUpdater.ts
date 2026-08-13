@@ -150,19 +150,20 @@ export function useAutoUpdater(
 
       // Tauri exposes the exact native response as rawJson, so policy parsing
       // does not need a second cross-origin request from the webview.
-      const currentVersion = await getVersion();
       const policy = parseMinVersionPolicy(update.rawJson);
       if (policy.status === 'unavailable') {
         flog.warn('updater', 'could not verify update policy', {
           error: policy.message,
         });
       }
-      setLastCheckTimestamp(Date.now());
       // A secondary policy read may fail to force an update; it must never
       // fail to offer a verified update.
-      const isForced =
-        policy.status === 'present' &&
-        isBelowMinVersion(currentVersion, policy.minVersion);
+      let isForced = false;
+      if (policy.status === 'present') {
+        const currentVersion = await getVersion();
+        isForced = isBelowMinVersion(currentVersion, policy.minVersion);
+      }
+      setLastCheckTimestamp(Date.now());
 
       // If not forced and user previously skipped this version, suppress
       if (!isForced && getSkippedVersion() === update.version) {

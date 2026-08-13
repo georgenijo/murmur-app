@@ -51,8 +51,8 @@ than the release. The legacy bridge manifest intentionally omits this policy.
 
 ### Normal Updates
 
-When a new version is available and the current version is above a verified
-`min_version` (or no verifiable minimum policy is available):
+When a new version is available and the current version is at or above a
+verified `min_version` (or no verifiable minimum policy is available):
 
 1. **Available** — Background discovery is passive: the main Record/File row
    shows an update pill and the menu-bar action changes to the available
@@ -106,12 +106,14 @@ the Settings page and homepage indicator do not describe a completed download
 or failed installation as an update-check failure.
 
 The updater manifest policy parser also distinguishes an intentionally absent
-`min_version` from unavailable or malformed native metadata. Once update
-availability is known, an unavailable or malformed policy is logged as a
-warning and the signed update is still offered as optional (`isForced: false`).
-Only a verifiably present policy can force an update, and the successful-check
-timestamp advances because native update availability was verified. A secondary
-policy read may fail to force an update; it must never fail to offer one.
+`min_version` from unavailable or structurally malformed native metadata. Once
+update availability is known, an absent policy leaves the signed update
+optional. Unavailable or structurally malformed metadata is logged as a warning
+and the signed update is still offered as optional (`isForced: false`). Only a
+present string policy can enter forced-update enforcement. If that policy's
+`min_version`, or the installed version, is unparseable, the existing
+`isBelowMinVersion` fail-safe forces the update. A secondary policy read may
+fail to force an update; it must never fail to offer one.
 
 ### Background Notifications
 
