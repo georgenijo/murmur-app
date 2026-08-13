@@ -691,6 +691,7 @@ function App() {
         <UpdateModal
           status={isUpdateDialogOpen ? updateStatus : { phase: 'idle' }}
           onDownload={startDownload}
+          onRetryCheck={() => void checkForUpdate()}
           onSkip={skipVersion}
           onDismiss={dismissUpdate}
         />

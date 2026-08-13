@@ -209,7 +209,7 @@ export function useAutoUpdater(
         error: String(err),
       });
       if (shouldPresentManualResult()) {
-        setIsUpdateDialogOpen(false);
+        setIsUpdateDialogOpen(true);
         setUpdateStatus({
           phase: 'error',
           stage: 'check',
