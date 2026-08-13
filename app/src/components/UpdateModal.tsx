@@ -1,16 +1,22 @@
 import { exit } from '@tauri-apps/plugin-process';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import type { UpdateStatus } from '../lib/updater';
 
+// Replace with an owned stable redirect (for example, murmur.georgenijo.com/download)
+// once one is publicly available.
+export const LATEST_RELEASES_URL = 'https://github.com/georgenijo/murmur-app/releases/latest';
+
 interface UpdateModalProps {
   status: UpdateStatus;
   onDownload: () => void;
+  onRetryCheck: () => void;
   onSkip: () => void;
   onDismiss: () => void;
 }
 
-export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateModalProps) {
+export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismiss }: UpdateModalProps) {
   if (
     status.phase !== 'available' &&
     status.phase !== 'preparing' &&
@@ -26,6 +32,7 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
   const isDownloading = status.phase === 'downloading';
   const isReady = status.phase === 'ready';
   const isError = status.phase === 'error';
+  const isCheckError = isError && status.stage === 'check';
   const requiresReinstall = isError && status.recovery === 'reinstall';
   const isBusy = isPreparing || isDownloading || isReady;
 
@@ -133,10 +140,20 @@ export function UpdateModal({ status, onDownload, onSkip, onDismiss }: UpdateMod
           <div className="flex flex-col gap-2">
             {(status.phase === 'available' || (isError && !requiresReinstall)) && (
               <button
-                onClick={onDownload}
+                onClick={isCheckError ? onRetryCheck : onDownload}
                 className="w-full py-2 px-4 bg-primary hover:bg-primary-dim text-on-primary text-sm font-medium rounded-lg transition-colors"
               >
                 {isError ? 'Retry' : 'Update Now'}
+              </button>
+            )}
+
+            {isCheckError && (
+              <button
+                type="button"
+                onClick={() => void openUrl(LATEST_RELEASES_URL)}
+                className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-4 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container"
+              >
+                Download latest version
               </button>
             )}
 

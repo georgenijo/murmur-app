@@ -129,7 +129,7 @@ describe('useAutoUpdater presentation state', () => {
     );
   });
 
-  it('keeps a failed manual check inline instead of opening a broken retry modal', async () => {
+  it('opens a recovery modal after a failed manual check', async () => {
     mocks.check.mockRejectedValue(new Error('offline'));
 
     await act(async () => current.checkForUpdate());
@@ -139,7 +139,7 @@ describe('useAutoUpdater presentation state', () => {
       stage: 'check',
       message: 'Error: offline',
     });
-    expect(current.isUpdateDialogOpen).toBe(false);
+    expect(current.isUpdateDialogOpen).toBe(true);
     expect(mocks.check).toHaveBeenCalledTimes(2);
     expect(mocks.flogError).toHaveBeenCalledWith(
       'updater',

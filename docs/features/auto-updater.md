@@ -92,7 +92,12 @@ When the current version is below the `min_version` field from the release manif
 
 ### Error State
 
-If the download or install fails, the modal shows a red error banner with the error message and a "Retry" button. For forced updates in error state, the "Quit" button remains available.
+If the update check fails, the modal shows a red error banner with the error
+message, a "Retry" button that runs the check again, and a secondary
+"Download latest version" button that opens the latest GitHub release page.
+This recovery button appears only for `stage: 'check'` errors; it is absent from
+all normal states and from download/install errors. For forced updates in error
+state, the "Quit" button remains available.
 
 Before downloading, Murmur asks the Rust host whether the current executable is
 running under macOS Gatekeeper's `AppTranslocation` path. A translocated app is
