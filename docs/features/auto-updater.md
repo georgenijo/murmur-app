@@ -105,10 +105,11 @@ The first public build containing this canary support cannot be tested by the
 previous public build: that older client has no canary marker or result writer.
 This is a one-time bootstrap exception. Physically install the first
 canary-capable public build into the dedicated `Murmur OTA Canary` location on
-the trusted mini, launch it once there, and verify `--dry-run`. Mandatory OTA
-canary gating begins with the next release, when that installed build is the
-previous public client. Never use the daily `/Applications` install for this
-bootstrap.
+the trusted mini and launch it once there to grant permissions. Do not run the
+normal release gate against this bootstrap build: its predecessor is not
+canary-capable. Use `--dry-run` beginning with the next release, when this
+installed build is the previous public client. Never use the daily
+`/Applications` install for this bootstrap.
 
 On the trusted mini, install Fleet and GitHub CLI access, then run the command
 above from a checkout at `/Users/george-mac-mini/Documents/code/murmur-app`.
