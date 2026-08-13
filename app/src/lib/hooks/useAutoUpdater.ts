@@ -201,8 +201,9 @@ export function useAutoUpdater(
       // A secondary policy read may fail to force an update; it must never
       // fail to offer a verified update.
       let isForced = false;
+      let currentVersion: string = 'unknown';
       if (policy.status === 'present') {
-        const currentVersion = await getVersion();
+        currentVersion = await getVersion();
         isForced = isBelowMinVersion(currentVersion, policy.minVersion);
       }
       setLastCheckTimestamp(Date.now());
