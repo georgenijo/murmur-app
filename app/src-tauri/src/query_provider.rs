@@ -1106,7 +1106,11 @@ mod tests {
             "import sys; print('ready'); print('detail', file=sys.stderr)".to_string(),
         ];
         let output =
-            run_bounded_command_with_timeout(python, &arguments, &[], Duration::from_secs(1))
+            // This verifies fast-exit pipe draining, not timeout behavior.
+            // Leave enough headroom for a cold `/usr/bin/python3` launch on a
+            // saturated macOS CI runner; the dedicated hostile-child test
+            // below keeps the 150 ms deadline assertion.
+            run_bounded_command_with_timeout(python, &arguments, &[], Duration::from_secs(5))
                 .unwrap();
         assert!(output.success);
         assert_eq!(output.stdout, "ready");
