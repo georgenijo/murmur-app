@@ -1,14 +1,6 @@
-//! Compile-time-selected platform behavior.
-//!
-//! Keep target selection in this module. Callers should depend on the stable
-//! functions exported here instead of carrying their own `#[cfg]` branches.
+//! macOS platform behavior shared behind a small metrics seam.
 
-#[cfg_attr(target_os = "macos", path = "macos.rs")]
-#[cfg_attr(target_os = "linux", path = "linux.rs")]
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "linux")),
-    path = "unsupported.rs"
-)]
+#[path = "macos.rs"]
 mod current;
 
 pub(crate) fn cpu_percent() -> Option<f32> {

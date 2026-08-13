@@ -23,7 +23,7 @@ never fall through to Whisper or another backend.
 | Medium | `medium.en` | Whisper (Metal GPU) | ~1.5 GB | Slow | English only |
 | Large Turbo | `large-v3-turbo` | Whisper (Metal GPU) | ~3 GB | Slow | Multilingual |
 
-**Default for new macOS installs:** `parakeet-tdt-0.6b-v3-coreml`. Non-macOS builds hide Core ML and default to the CPU Parakeet model. Persisted Whisper and CPU Parakeet selections remain valid and are not migrated. The Rust `DictationState::default()` stays `base.en` until the first frontend `configure_dictation` call selects the persisted model.
+**Default for new installs:** `parakeet-tdt-0.6b-v3-coreml`. The complete macOS catalog is always exposed. Persisted Whisper and CPU Parakeet selections remain valid and are not migrated. The Rust `DictationState::default()` stays `base.en` until the first frontend `configure_dictation` call selects the persisted model.
 
 ## Backend
 

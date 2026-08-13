@@ -20,8 +20,8 @@ regular macOS apps or through advanced manual bundle-ID entry. The picker return
 only display name and bundle ID, excludes Murmur and helper/accessory processes,
 deduplicates and sorts entries, and caps the list at 64. It is fetched on demand,
 kept only in React memory, and never logged or persisted unless the user chooses
-an app. Non-macOS builds expose the same command as an empty list, so Linux
-compilation and manual bundle-ID compatibility remain intact.
+an app. Advanced manual bundle-ID entry remains available when an application
+is not present in that live macOS list.
 
 Each boolean override is an explicit **Use global setting / Always / Never**
 choice mapped to the existing `null / true / false` storage contract. Existing

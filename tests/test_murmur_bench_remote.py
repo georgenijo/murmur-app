@@ -20,6 +20,32 @@ NOMINAL_SNAPSHOT = {
 
 
 class MurmurBenchRemoteTests(unittest.TestCase):
+    def test_benchmark_environment_namespaces_cargo_cache_by_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_lock = root / "first.lock"
+            second_lock = root / "second.lock"
+            first_lock.write_text("first", encoding="utf-8")
+            second_lock.write_text("second", encoding="utf-8")
+
+            first = remote.benchmark_environment(root, first_lock, "1" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+            repeated = remote.benchmark_environment(root, first_lock, "1" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+            new_ref = remote.benchmark_environment(root, first_lock, "2" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+            new_lock = remote.benchmark_environment(root, second_lock, "1" * 40)[
+                "CARGO_TARGET_DIR"
+            ]
+
+            self.assertEqual(first, repeated)
+            self.assertNotEqual(first, new_ref)
+            self.assertNotEqual(first, new_lock)
+            self.assertEqual(Path(first).parent, root / "cargo-target")
+
     def test_preflight_rejects_battery_low_power_and_thermal_pressure(self) -> None:
         cases = (
             ({**NOMINAL_SNAPSHOT, "powerSource": "Battery Power"}, "AC power"),
@@ -103,7 +129,7 @@ class MurmurBenchRemoteTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "unrelated build process"):
                 remote.run_benchmark(
-                    runner=Path("/tmp/murmur_bench.py"),
+                    benchmark_binary=Path("/tmp/headless_benchmark"),
                     worktree=Path("/tmp/worktree"),
                     output=Path("/tmp/report.json"),
                     corpus_dir=Path("/tmp/corpus"),
@@ -113,6 +139,41 @@ class MurmurBenchRemoteTests(unittest.TestCase):
                     environment={},
                 )
         terminate.assert_called_once_with(process)
+
+    def test_prepare_benchmark_binary_uses_cargo_executable_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "headless_benchmark"
+            executable.touch()
+            completed = mock.Mock(
+                stdout=json.dumps(
+                    {
+                        "reason": "compiler-artifact",
+                        "target": {"name": "headless_benchmark"},
+                        "executable": str(executable),
+                    }
+                )
+            )
+            with mock.patch.object(
+                remote.subprocess, "run", return_value=completed
+            ) as run:
+                result = remote.prepare_benchmark_binary(
+                    worktree=root, environment={"CARGO_TARGET_DIR": "/tmp/target"}
+                )
+
+            self.assertEqual(result, executable)
+            run.assert_called_once_with(
+                [
+                    "cargo", "test", "--release", "--features",
+                    "internal-benchmark", "--test", "headless_benchmark",
+                    "--no-run", "--message-format=json",
+                ],
+                cwd=root / "app" / "src-tauri",
+                env={"CARGO_TARGET_DIR": "/tmp/target"},
+                check=True,
+                stdout=remote.subprocess.PIPE,
+                text=True,
+            )
 
     def test_run_lock_rejects_a_concurrent_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -173,7 +234,7 @@ class MurmurBenchRemoteTests(unittest.TestCase):
                 ),
             ):
                 remote.run_conditioned_benchmark(
-                    runner=root / "murmur_bench.py",
+                    benchmark_binary=root / "headless_benchmark",
                     worktree=worktree,
                     report=report_path,
                     cache_root=cache_root,
@@ -205,7 +266,7 @@ class MurmurBenchRemoteTests(unittest.TestCase):
             self.assertNotEqual(calls[0][1], report_path)
             self.assertFalse(calls[0][1].exists(), "conditioning report must be temporary")
             meta = json.loads(report_path.with_suffix(".meta.json").read_text())
-            self.assertEqual(meta["cachePolicy"], "conditioned-timed-path-v2")
+            self.assertEqual(meta["cachePolicy"], "conditioned-timed-path-v4")
             self.assertEqual(meta["conditioningPreset"], "quick")
             self.assertEqual(
                 meta["conditioningStages"],

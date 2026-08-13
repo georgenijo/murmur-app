@@ -98,8 +98,8 @@ pub fn list_running_applications() -> Vec<RunningApplication> {
     bounded_running_applications(candidates)
 }
 
-/// Linux and other non-macOS builds retain the same command surface without
-/// probing platform process state.
+/// Unsupported test targets retain the command surface without probing
+/// platform process state.
 #[tauri::command]
 #[cfg(not(target_os = "macos"))]
 pub fn list_running_applications() -> Vec<RunningApplication> {

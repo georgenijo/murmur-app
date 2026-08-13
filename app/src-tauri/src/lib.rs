@@ -206,40 +206,8 @@ impl llm_sidecar::HostGuard for AppHostGuard {
     }
 }
 
-/// WebKitGTK environment defaults applied on Linux before GTK/webkit init.
-///
-/// On Linux/Wayland, webkit2gtk's DMABUF renderer leaves windows invisible
-/// on many mesa/NVIDIA stacks (Fedora, Nobara, Ubuntu 23+). Disabling the
-/// DMABUF renderer and compositing mode restores rendering. Users can
-/// override either default by pre-setting the variable in their environment.
-#[cfg(target_os = "linux")]
-const LINUX_WEBKIT_ENV_DEFAULTS: &[(&str, &str)] = &[
-    ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
-    ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
-];
-
-/// Apply `LINUX_WEBKIT_ENV_DEFAULTS` via injected get/set closures.
-///
-/// Separated from `run()` so tests can exercise it against a fake env map
-/// without touching process-global state.
-#[cfg(target_os = "linux")]
-fn apply_linux_webkit_env_defaults<F, G>(mut get: F, mut set: G)
-where
-    F: FnMut(&str) -> Option<std::ffi::OsString>,
-    G: FnMut(&str, &str),
-{
-    for (key, default) in LINUX_WEBKIT_ENV_DEFAULTS {
-        if get(key).is_none() {
-            set(key, default);
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "linux")]
-    apply_linux_webkit_env_defaults(|k| std::env::var_os(k), |k, v| std::env::set_var(k, v));
-
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -569,10 +537,9 @@ pub fn run() {
                 *state.display_snapshot.lock_or_recover() = Some(display_snapshot);
             }
 
-            // Re-enable mouse events on the overlay window.
-            // focusable:false sets ignoresMouseEvents=true on macOS;
-            // we override that while keeping the window non-activating.
-            // On Linux, skip the overlay — it's designed for the macOS notch.
+            // Re-enable mouse events on the overlay window. focusable:false
+            // sets ignoresMouseEvents=true; override that while keeping the
+            // macOS window non-activating.
             #[cfg(target_os = "macos")]
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
@@ -704,110 +671,4 @@ pub fn run() {
             }
         }
     });
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::ffi::OsString;
-
-    /// Empty env: both defaults must be applied.
-    #[test]
-    fn applies_all_defaults_when_env_empty() {
-        let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        apply_linux_webkit_env_defaults(
-            |k| env.borrow().get(k).cloned(),
-            |k, v| {
-                env.borrow_mut().insert(k.to_string(), OsString::from(v));
-            },
-        );
-        let map = env.borrow();
-        assert_eq!(
-            map.get("WEBKIT_DISABLE_DMABUF_RENDERER"),
-            Some(&OsString::from("1"))
-        );
-        assert_eq!(
-            map.get("WEBKIT_DISABLE_COMPOSITING_MODE"),
-            Some(&OsString::from("1"))
-        );
-    }
-
-    /// User-provided values must be preserved (including explicit "0" opt-outs).
-    #[test]
-    fn preserves_user_overrides() {
-        let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut()
-            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
-        env.borrow_mut().insert(
-            "WEBKIT_DISABLE_COMPOSITING_MODE".into(),
-            OsString::from("custom"),
-        );
-
-        apply_linux_webkit_env_defaults(
-            |k| env.borrow().get(k).cloned(),
-            |k, v| {
-                env.borrow_mut().insert(k.to_string(), OsString::from(v));
-            },
-        );
-
-        let map = env.borrow();
-        assert_eq!(
-            map.get("WEBKIT_DISABLE_DMABUF_RENDERER"),
-            Some(&OsString::from("0"))
-        );
-        assert_eq!(
-            map.get("WEBKIT_DISABLE_COMPOSITING_MODE"),
-            Some(&OsString::from("custom"))
-        );
-    }
-
-    /// Partial user override: only the unset default should be applied.
-    #[test]
-    fn applies_only_missing_defaults() {
-        let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut()
-            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from("0"));
-        let writes: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
-
-        apply_linux_webkit_env_defaults(
-            |k| env.borrow().get(k).cloned(),
-            |k, v| {
-                writes.borrow_mut().push((k.to_string(), v.to_string()));
-                env.borrow_mut().insert(k.to_string(), OsString::from(v));
-            },
-        );
-
-        assert_eq!(
-            *writes.borrow(),
-            vec![(
-                "WEBKIT_DISABLE_COMPOSITING_MODE".to_string(),
-                "1".to_string()
-            )],
-        );
-        assert_eq!(
-            env.borrow().get("WEBKIT_DISABLE_DMABUF_RENDERER"),
-            Some(&OsString::from("0")),
-        );
-    }
-
-    /// Empty string is a valid value and must be preserved (matches `var_os` semantics).
-    #[test]
-    fn treats_empty_string_as_set() {
-        let env: RefCell<HashMap<String, OsString>> = RefCell::new(HashMap::new());
-        env.borrow_mut()
-            .insert("WEBKIT_DISABLE_DMABUF_RENDERER".into(), OsString::from(""));
-        let writes: RefCell<Vec<String>> = RefCell::new(Vec::new());
-
-        apply_linux_webkit_env_defaults(
-            |k| env.borrow().get(k).cloned(),
-            |k, _v| writes.borrow_mut().push(k.to_string()),
-        );
-
-        assert_eq!(
-            *writes.borrow(),
-            vec!["WEBKIT_DISABLE_COMPOSITING_MODE".to_string()],
-        );
-    }
 }

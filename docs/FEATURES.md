@@ -254,7 +254,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 ## 9. Platform, privacy, distribution
 
-- macOS 14+ on Apple Silicon (Core ML/ANE); Whisper and CPU Parakeet also build for Linux.
+- macOS 14+ on Apple Silicon. App builds fail explicitly for non-macOS targets.
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.

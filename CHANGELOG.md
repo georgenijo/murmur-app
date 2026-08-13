@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Murmur now enforces its macOS-only product boundary across app builds, CI,
+  runtime platform paths, model metadata, and contributor documentation; the
+  retired Linux/CUDA build lane and X11/Wayland compatibility code are removed
+  (#570).
+
 ## [0.32.0] - 2026-08-13
 
 ### Changed

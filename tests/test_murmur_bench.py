@@ -37,7 +37,7 @@ def report(
     }
 
 
-def metadata(*, cache_policy: str = "conditioned-timed-path-v2") -> dict:
+def metadata(*, cache_policy: str = "conditioned-timed-path-v4") -> dict:
     return {
         "cachePolicy": cache_policy,
         "conditioningPreset": "quick",

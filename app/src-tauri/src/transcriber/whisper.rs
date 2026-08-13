@@ -195,17 +195,11 @@ impl TranscriptionBackend for WhisperBackend {
 
         let mut params = WhisperContextParameters::default();
         // Murmur consumes segment text, not DTW token timestamps. Flash
-        // attention therefore gives Metal/CUDA a fused, lower-memory path
+        // attention therefore gives Metal a fused, lower-memory path
         // without removing any output the application uses.
         params.flash_attn(true);
 
-        let gpu_backend = if cfg!(target_os = "macos") {
-            "metal"
-        } else if cfg!(target_os = "linux") && std::path::Path::new("/dev/nvidia0").exists() {
-            "cuda"
-        } else {
-            "cpu"
-        };
+        let gpu_backend = "metal";
         tracing::info!(target: "pipeline", model = model_name, gpu = gpu_backend, "whisper_model_loading");
 
         let ctx = WhisperContext::new_with_params(path_str, params)
