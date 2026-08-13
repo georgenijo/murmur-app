@@ -2297,7 +2297,7 @@ pub(crate) fn handle_audio_lifecycle(
         |app_handle, recording_id| {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<State>();
-                if stop_native_recording(app_handle.clone(), state)
+                if stop_native_recording_for(app_handle.clone(), state, Some(recording_id))
                     .await
                     .is_err()
                 {
@@ -2922,11 +2922,40 @@ pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    stop_native_recording_for(app_handle, state, None).await
+}
+
+fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u64>) -> bool {
+    expected_recording_id.is_none_or(|expected| expected == current_recording_id)
+}
+
+/// Stop only the recording generation captured by the caller. User commands
+/// pass no expectation; asynchronous lifecycle continuations must pass the
+/// generation that scheduled them so they cannot stop a newer recording.
+async fn stop_native_recording_for(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    expected_recording_id: Option<u64>,
+) -> Result<serde_json::Value, String> {
     let transition = state.app_state.recording_transition.lock().await;
+    let current_recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
+    if !stop_owner_matches(current_recording_id, expected_recording_id) {
+        let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");
+        let _ = audio_lifecycle::take_interrupted_dictation(stale_recording_id);
+        state.app_state.dictation_telemetry.emit_terminal(
+            stale_recording_id,
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner,
+        );
+        return Ok(serde_json::json!({
+            "type": "recording_superseded",
+            "state": "idle"
+        }));
+    }
     // Atomic check-and-set + generation capture in a single lock.
     let (status, rid, interrupted_capture) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        let rid = state.app_state.recording_id.load(Ordering::SeqCst);
+        let rid = current_recording_id;
         match dictation.status {
             DictationStatus::Processing => {
                 return Ok(serde_json::json!({
@@ -3728,6 +3757,13 @@ mod tests {
         assert!(!status_allows_model_preparation(
             DictationStatus::Processing
         ));
+    }
+
+    #[test]
+    fn asynchronous_stop_targets_only_its_original_recording_generation() {
+        assert!(stop_owner_matches(41, None));
+        assert!(stop_owner_matches(41, Some(41)));
+        assert!(!stop_owner_matches(42, Some(41)));
     }
 
     #[test]

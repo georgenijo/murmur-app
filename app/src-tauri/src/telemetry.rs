@@ -160,10 +160,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         let mut visitor = JsonVisitor::new();
         event.record(&mut visitor);
 
-        let summary = sanitized_summary(&stream, visitor.message);
         let mut data = serde_json::Value::Object(visitor.fields);
 
         sanitize_event_data(&stream, &mut data, cfg!(debug_assertions));
+        let summary = sanitized_summary(&stream, visitor.message, &data, cfg!(debug_assertions));
 
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
@@ -295,11 +295,24 @@ fn is_safe_dictation_error_code(value: &str) -> bool {
     )
 }
 
-fn sanitized_summary(stream: &str, summary: Option<String>) -> String {
+fn sanitized_summary(
+    stream: &str,
+    summary: Option<String>,
+    data: &serde_json::Value,
+    debug_build: bool,
+) -> String {
     if stream == "meeting" {
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
         "Meeting event".to_string()
+    } else if !debug_build {
+        // Release summaries must never depend on caller-provided text. Retain
+        // useful semantics only through the exact event-code allowlist.
+        data.get("event_code")
+            .and_then(serde_json::Value::as_str)
+            .and_then(canonical_event_code)
+            .unwrap_or("Structured event")
+            .to_string()
     } else {
         summary.unwrap_or_default()
     }
@@ -987,8 +1000,40 @@ mod tests {
         assert!(!encoded.contains("/Users/private"));
         assert!(!encoded.contains("private-session"));
         assert!(!encoded.contains("private-model"));
-        let summary = sanitized_summary("meeting", Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()));
+        let summary = sanitized_summary(
+            "meeting",
+            Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()),
+            &data,
+            true,
+        );
         assert_eq!(summary, "Meeting event");
         assert!(!summary.contains("SENTINEL"));
+    }
+
+    #[test]
+    fn release_summaries_use_only_allowlisted_event_codes() {
+        let safe_data = serde_json::json!({
+            "event_code": "pipeline.dictation_terminal"
+        });
+        let safe = sanitized_summary(
+            "pipeline",
+            Some("SENTINEL_PRIVATE_TRANSCRIPT".to_string()),
+            &safe_data,
+            false,
+        );
+        assert_eq!(safe, "pipeline.dictation_terminal");
+
+        let unsafe_data = serde_json::json!({
+            "event_code": "SENTINEL_PRIVATE_EVENT"
+        });
+        let unsafe_summary = sanitized_summary(
+            "system",
+            Some("/Users/private/project".to_string()),
+            &unsafe_data,
+            false,
+        );
+        assert_eq!(unsafe_summary, "Structured event");
+        assert!(!unsafe_summary.contains("SENTINEL"));
+        assert!(!unsafe_summary.contains("/Users/private"));
     }
 }

@@ -21,7 +21,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from dictation_lifecycle import DictationLifecycleCorrelator
+from dictation_lifecycle import DictationLifecycleCorrelator, STAGE_CODES
 
 
 SCHEMA_VERSION = 1
@@ -205,7 +205,12 @@ def scan_install(path, install_id, cohorts):
                 }
                 continue
 
-            cohort["dictation_lifecycle"].observe(event, session_id)
+            if code in STAGE_CODES:
+                # The receiver stamps versions per upload, so a delayed batch
+                # can disagree with the version captured at startup. Never
+                # split one recording across version cohorts.
+                if session is not None and session["version"] == version:
+                    cohort["dictation_lifecycle"].observe(event, session_id)
             data = event_data(event)
             if code == "audio.capture_started":
                 if (

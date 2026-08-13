@@ -115,6 +115,18 @@ class DictationLifecycleCorrelatorTests(unittest.TestCase):
         self.assertEqual(report["terminal_events"], 2)
         self.assertEqual(report["outcomes"], {"success": 1})
 
+    def test_duplicate_orphan_terminals_count_one_orphan_attempt(self) -> None:
+        report = lifecycle.correlate_events(
+            [
+                event("system.startup_baseline"),
+                event("pipeline.dictation_terminal", 8, outcome="success"),
+                event("pipeline.dictation_terminal", 8, outcome="success"),
+                event("pipeline.dictation_terminal", 8, outcome="success"),
+                event("system.startup_baseline"),
+            ]
+        )
+        self.assertEqual(report["orphan_stage_attempts"], 1)
+
     def test_open_app_session_is_not_a_missing_terminal(self) -> None:
         report = lifecycle.correlate_events(
             [

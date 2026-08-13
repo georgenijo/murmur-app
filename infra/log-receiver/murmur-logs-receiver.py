@@ -941,7 +941,13 @@ def find_activity_metrics(path, max_line_bytes=MAX_ACTIVITY_EVENT_BYTES):
             continue
         code = event_code(event)
         metric = None
-        if code == "audio.capture_ready" and event_value(event, "owner_kind") == "dictation":
+        if code == "audio.capture_ready" and event_value(event, "owner_kind") in (
+            None,
+            "dictation",
+        ):
+            # Missing owner_kind is legacy dictation telemetry. New shared
+            # audio producers always stamp their owner and remain fail-closed
+            # for any explicit non-dictation value.
             metric = "last_activated"
         elif code == "recording.native_audio_ready":
             metric = "last_activated"
@@ -1072,6 +1078,8 @@ def classify_event(event):
     code = event_code(event)
     if code and code.startswith("audio."):
         owner_kind = event_value(event, "owner_kind")
+        # Preserve pre-owner_kind dictation health history while excluding all
+        # explicitly scoped transform/query/preview audio events.
         if owner_kind is not None and owner_kind != "dictation":
             return None
     if code == "keyboard.listener_started":

@@ -39,6 +39,9 @@ def recording_id(event, code):
     if not isinstance(data, dict):
         return None
     if code in ("audio.capture_started", "audio.capture_ready"):
+        # Funnel denominators require explicit ownership. Legacy events without
+        # owner_kind remain usable for general health, but cannot prove that a
+        # shared audio owner was a dictation attempt.
         if data.get("owner_kind") != "dictation":
             return None
     value = data.get("recording_id")
@@ -116,7 +119,7 @@ class DictationLifecycleCorrelator:
             counts["duplicate_terminals"] += accepted and terminal_count > 1
             counts["orphan_stage_attempts"] += (
                 not accepted
-                and (item["ready"] or item["stop_handoff"] or terminal_count)
+                and (item["ready"] or item["stop_handoff"] or terminal_count > 0)
             )
             counts["accepted_without_request"] += accepted and not requested
             counts["request_to_accept"] += requested and not accepted
