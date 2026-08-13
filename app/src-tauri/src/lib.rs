@@ -38,6 +38,7 @@ mod performance_metrics;
 mod platform;
 mod query_adapter;
 mod query_flow;
+mod query_history;
 mod query_provider;
 mod resource_monitor;
 mod selection;
@@ -137,6 +138,7 @@ pub(crate) struct State {
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
+    pub(crate) query_history: query_history::QueryHistoryStore,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
@@ -271,6 +273,7 @@ pub fn run() {
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
+            query_history: query_history::QueryHistoryStore::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
             display_snapshot: Mutex::new(None),
@@ -350,6 +353,8 @@ pub fn run() {
             query_flow::launch_query_provider_sign_in,
             query_flow::launch_query_sign_in_for_pass,
             query_flow::probe_query_sign_in_for_pass,
+            commands::query_history::list_query_history,
+            commands::query_history::clear_query_history,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,
@@ -485,6 +490,19 @@ pub fn run() {
                     target: "system",
                     diagnostics_available = false,
                     "performance diagnostics store unavailable: {}",
+                    error
+                );
+            }
+            let query_history_root = app.path().app_data_dir()?.join("query-history");
+            if let Err(error) = app
+                .state::<State>()
+                .query_history
+                .initialize(query_history_root, Some(app.handle().clone()))
+            {
+                tracing::warn!(
+                    target: "system",
+                    query_history_available = false,
+                    "Voice Query history store unavailable: {}",
                     error
                 );
             }

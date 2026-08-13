@@ -6,9 +6,14 @@
 //! query-review webview receives answer chunks.
 
 use crate::dictation_context::DictationContextSnapshot;
-use crate::managed_child::ManagedChild;
+use crate::managed_child::{ConfirmedTermination, ManagedChild};
 use crate::model_runtime::PreparationReason;
+use crate::performance_metrics::{
+    PerformanceStageV1, QueryProcessSummaryV1, RunCorrelationV1, RunOutcomeV1, StableRunErrorV1,
+    StageTimingV1,
+};
 use crate::query_adapter::{AnswerUpdate, ProviderFailureKind, QueryUsage, VoiceQueryAdapter};
+use crate::query_history::{QueryHistoryDraft, QueryHistoryTokenCountsV1};
 use crate::query_provider::{
     QueryEnvironmentVariable, QueryProviderId, QueryProviderTestResult, MAX_STDERR_BYTES,
 };
@@ -18,7 +23,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 const MAX_EXECUTABLE_BYTES: usize = 4096;
@@ -243,6 +248,10 @@ pub(crate) struct QueryCommandConfig {
     pub timeout_seconds: u64,
     #[serde(default)]
     context_level: QueryContextLevel,
+    /// Immutable consent snapshot for this pass. Changing the setting affects
+    /// only the next pass and never retroactively persists an active query.
+    #[serde(default)]
+    retain_query_history: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +275,56 @@ struct QuerySession {
     error_detail: Option<String>,
 }
 
+struct QueryPassTracker {
+    pass_id: u64,
+    provider: QueryProviderId,
+    retain_history: bool,
+    history_epoch: Option<u64>,
+    started_at: Instant,
+    started_at_ms: i64,
+    capture_started_at: Option<Instant>,
+    capture_duration_ms: Option<u64>,
+    transcribe_started_at: Option<Instant>,
+    transcribe_duration_ms: Option<u64>,
+    spawn_duration_ms: Option<u64>,
+    spawn_completed_at: Option<Instant>,
+    first_chunk_duration_ms: Option<u64>,
+    current_stage: PerformanceStageV1,
+    original_question: Option<String>,
+    exit_code: Option<i32>,
+    stderr_present: Arc<AtomicBool>,
+    terminal_intent: Option<QueryTerminal>,
+    terminal_claimed: bool,
+}
+
+struct QueryTerminalSnapshot {
+    provider: QueryProviderId,
+    retain_history: bool,
+    history_epoch: Option<u64>,
+    timestamp_ms: i64,
+    duration_ms: u64,
+    current_stage: PerformanceStageV1,
+    stages: Vec<StageTimingV1>,
+    original_question: Option<String>,
+    answer: String,
+    usage: Option<QueryUsage>,
+    exit_code: Option<i32>,
+    stderr_present: bool,
+    terminal_intent: Option<QueryTerminal>,
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn unix_time_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
 struct ActiveQueryChild {
     pass_id: u64,
     child: Arc<Mutex<ManagedChild>>,
@@ -278,6 +337,21 @@ enum QueryChildOwnership {
         pass_id: u64,
     },
     Active(ActiveQueryChild),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryChildTermination {
+    NoChild,
+    Starting,
+    Confirmed { exit_code: Option<i32> },
+    Unconfirmed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryLifecycleStart {
+    Created,
+    AlreadyExists,
+    Stale,
 }
 
 impl QueryChildOwnership {
@@ -296,8 +370,11 @@ pub(crate) struct QueryCoordinator {
     pass_sequence: AtomicU64,
     active_pass_id: AtomicU64,
     cancelled_pass_id: AtomicU64,
+    worker_pass_id: AtomicU64,
+    worker_state_changed: Condvar,
     status: Mutex<QueryStatus>,
     session: Mutex<Option<QuerySession>>,
+    tracker: Mutex<Option<QueryPassTracker>>,
     child: Mutex<Option<QueryChildOwnership>>,
 }
 
@@ -310,14 +387,46 @@ impl Default for QueryCoordinator {
             pass_sequence: AtomicU64::new(0),
             active_pass_id: AtomicU64::new(0),
             cancelled_pass_id: AtomicU64::new(0),
+            worker_pass_id: AtomicU64::new(0),
+            worker_state_changed: Condvar::new(),
             status: Mutex::new(QueryStatus::Idle),
             session: Mutex::new(None),
+            tracker: Mutex::new(None),
             child: Mutex::new(None),
         }
     }
 }
 
 impl QueryCoordinator {
+    fn new_tracker(
+        pass_id: u64,
+        provider: QueryProviderId,
+        retain_history: bool,
+        history_epoch: Option<u64>,
+    ) -> QueryPassTracker {
+        QueryPassTracker {
+            pass_id,
+            provider,
+            retain_history,
+            history_epoch,
+            started_at: Instant::now(),
+            started_at_ms: unix_time_ms(),
+            capture_started_at: None,
+            capture_duration_ms: None,
+            transcribe_started_at: None,
+            transcribe_duration_ms: None,
+            spawn_duration_ms: None,
+            spawn_completed_at: None,
+            first_chunk_duration_ms: None,
+            current_stage: PerformanceStageV1::InstructionCapture,
+            original_question: None,
+            exit_code: None,
+            stderr_present: Arc::new(AtomicBool::new(false)),
+            terminal_intent: None,
+            terminal_claimed: false,
+        }
+    }
+
     /// Called only from the shared rdev callback. A terminal review can be
     /// superseded; an in-flight pass is never replaced.
     pub(crate) fn allocate_keyboard_pass(&self) -> Option<u64> {
@@ -329,9 +438,314 @@ impl QueryCoordinator {
         if !status.accepts_new_pass() || self.child.lock_or_recover().is_some() {
             return None;
         }
+        // A terminal UI state is not reusable until its diagnostics/history
+        // snapshot has been claimed. This closes the small window between
+        // publishing Ready/Failed and the best-effort store writes.
+        if self
+            .tracker
+            .lock_or_recover()
+            .as_ref()
+            .is_some_and(|tracker| !tracker.terminal_claimed)
+        {
+            return None;
+        }
         let pass_id = self.pass_sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.tracker.lock_or_recover() = None;
+        self.worker_pass_id.store(0, Ordering::SeqCst);
         self.active_pass_id.store(pass_id, Ordering::SeqCst);
         Some(pass_id)
+    }
+
+    fn mark_worker_started(&self, pass_id: u64) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) || self.worker_pass_id.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+        self.worker_pass_id.store(pass_id, Ordering::SeqCst);
+        true
+    }
+
+    fn mark_worker_finished(&self, pass_id: u64) {
+        let _ownership = self.ownership.lock_or_recover();
+        if self.worker_pass_id.load(Ordering::SeqCst) == pass_id {
+            self.worker_pass_id.store(0, Ordering::SeqCst);
+            self.worker_state_changed.notify_all();
+        }
+    }
+
+    fn wait_for_worker_finished(&self, pass_id: u64, deadline: Instant) -> bool {
+        let mut ownership = self.ownership.lock_or_recover();
+        while self.worker_pass_id.load(Ordering::SeqCst) == pass_id {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, timeout) = self
+                .worker_state_changed
+                .wait_timeout(ownership, deadline.saturating_duration_since(now))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            ownership = next;
+            if timeout.timed_out() && self.worker_pass_id.load(Ordering::SeqCst) == pass_id {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[cfg(test)]
+    fn begin_tracking(
+        &self,
+        pass_id: u64,
+        provider: QueryProviderId,
+        retain_history: bool,
+        history_epoch: Option<u64>,
+    ) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return false;
+        }
+        let mut tracker = self.tracker.lock_or_recover();
+        if tracker.is_some() {
+            return false;
+        }
+        *tracker = Some(Self::new_tracker(
+            pass_id,
+            provider,
+            retain_history,
+            history_epoch,
+        ));
+        true
+    }
+
+    fn begin_diagnostics_locked(
+        performance: &crate::performance_metrics::PerformanceMetrics,
+        pass_id: u64,
+    ) {
+        if performance.begin_voice_query(pass_id).is_err() {
+            tracing::warn!(
+                target: "system",
+                voice_query_diagnostics = false,
+                "Voice Query diagnostics run could not be started"
+            );
+        }
+    }
+
+    /// Create the exact start lifecycle once. Existing state means either a
+    /// duplicate start or a pre-start cancellation and must never proceed.
+    fn initialize_start_lifecycle(
+        &self,
+        pass_id: u64,
+        provider: QueryProviderId,
+        retain_history: bool,
+        history_epoch: Option<u64>,
+        performance: &crate::performance_metrics::PerformanceMetrics,
+    ) -> QueryLifecycleStart {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return QueryLifecycleStart::Stale;
+        }
+        let mut slot = self.tracker.lock_or_recover();
+        if slot
+            .as_ref()
+            .is_some_and(|tracker| tracker.pass_id == pass_id)
+        {
+            return QueryLifecycleStart::AlreadyExists;
+        }
+        if slot.is_some() {
+            return QueryLifecycleStart::Stale;
+        }
+        *slot = Some(Self::new_tracker(
+            pass_id,
+            provider,
+            retain_history,
+            history_epoch,
+        ));
+        Self::begin_diagnostics_locked(performance, pass_id);
+        QueryLifecycleStart::Created
+    }
+
+    /// Create a generic pre-start lifecycle when needed and mark cancellation
+    /// in the same ownership transaction. A concurrent start then observes a
+    /// stale pass and cannot overwrite provider/consent or launch a pipeline.
+    fn ensure_lifecycle_and_begin_cancel(
+        &self,
+        pass_id: u64,
+        performance: &crate::performance_metrics::PerformanceMetrics,
+    ) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return false;
+        }
+        let mut slot = self.tracker.lock_or_recover();
+        if slot.is_none() {
+            *slot = Some(Self::new_tracker(
+                pass_id,
+                QueryProviderId::Custom,
+                false,
+                None,
+            ));
+            Self::begin_diagnostics_locked(performance, pass_id);
+        }
+        if !slot
+            .as_ref()
+            .is_some_and(|tracker| tracker.pass_id == pass_id)
+        {
+            return false;
+        }
+        self.cancelled_pass_id.fetch_max(pass_id, Ordering::SeqCst);
+        if let Some(tracker) = slot.as_mut() {
+            tracker.terminal_intent = Some(QueryTerminal::Cancelled);
+        }
+        true
+    }
+
+    fn update_tracker(&self, pass_id: u64, update: impl FnOnce(&mut QueryPassTracker)) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        let mut slot = self.tracker.lock_or_recover();
+        let Some(tracker) = slot
+            .as_mut()
+            .filter(|tracker| tracker.pass_id == pass_id && !tracker.terminal_claimed)
+        else {
+            return false;
+        };
+        update(tracker);
+        true
+    }
+
+    fn mark_capture_started(&self, pass_id: u64) {
+        let _ = self.update_tracker(pass_id, |tracker| {
+            tracker.capture_started_at.get_or_insert_with(Instant::now);
+        });
+    }
+
+    fn mark_capture_finished(&self, pass_id: u64, advance: bool) {
+        let _ = self.update_tracker(pass_id, |tracker| {
+            if tracker.capture_duration_ms.is_none() {
+                tracker.capture_duration_ms = tracker.capture_started_at.map(elapsed_ms);
+            }
+            if advance {
+                tracker.transcribe_started_at = Some(Instant::now());
+                tracker.current_stage = PerformanceStageV1::InstructionAsr;
+            }
+        });
+    }
+
+    fn mark_transcription_finished(&self, pass_id: u64, question: Option<String>, advance: bool) {
+        let _ = self.update_tracker(pass_id, |tracker| {
+            if tracker.transcribe_duration_ms.is_none() {
+                tracker.transcribe_duration_ms = tracker.transcribe_started_at.map(elapsed_ms);
+            }
+            if let Some(question) = question {
+                tracker.original_question = Some(question);
+            }
+            if advance {
+                tracker.current_stage = PerformanceStageV1::SidecarSpawnLoad;
+            }
+        });
+    }
+
+    fn mark_spawn_finished(&self, pass_id: u64, started_at: Instant, succeeded: bool) {
+        let _ = self.update_tracker(pass_id, |tracker| {
+            tracker.spawn_duration_ms = Some(elapsed_ms(started_at));
+            if succeeded {
+                tracker.spawn_completed_at = Some(Instant::now());
+                tracker.current_stage = PerformanceStageV1::Generation;
+            }
+        });
+    }
+
+    fn mark_first_chunk(&self, pass_id: u64) {
+        let _ = self.update_tracker(pass_id, |tracker| {
+            if tracker.first_chunk_duration_ms.is_none() {
+                tracker.first_chunk_duration_ms = tracker.spawn_completed_at.map(elapsed_ms);
+            }
+        });
+    }
+
+    fn stderr_flag(&self, pass_id: u64) -> Arc<AtomicBool> {
+        let _ownership = self.ownership.lock_or_recover();
+        self.tracker
+            .lock_or_recover()
+            .as_ref()
+            .filter(|tracker| tracker.pass_id == pass_id)
+            .map(|tracker| Arc::clone(&tracker.stderr_present))
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+    }
+
+    fn mark_exit_code(&self, pass_id: u64, exit_code: Option<i32>) {
+        let _ = self.update_tracker(pass_id, |tracker| tracker.exit_code = exit_code);
+    }
+
+    fn claim_terminal(&self, pass_id: u64) -> Option<QueryTerminalSnapshot> {
+        let _ownership = self.ownership.lock_or_recover();
+        if self.active_pass_id() != Some(pass_id) {
+            return None;
+        }
+        let mut tracker_slot = self.tracker.lock_or_recover();
+        let tracker = tracker_slot
+            .as_mut()
+            .filter(|tracker| tracker.pass_id == pass_id && !tracker.terminal_claimed)?;
+        tracker.terminal_claimed = true;
+        let session = self
+            .session
+            .lock_or_recover()
+            .as_ref()
+            .filter(|session| session.pass_id == pass_id)
+            .cloned();
+        let mut stages = Vec::new();
+        if let Some(duration_ms) = tracker
+            .capture_duration_ms
+            .or_else(|| tracker.capture_started_at.map(elapsed_ms))
+        {
+            stages.push(StageTimingV1::measured(
+                PerformanceStageV1::InstructionCapture,
+                duration_ms,
+            ));
+        }
+        if let Some(duration_ms) = tracker
+            .transcribe_duration_ms
+            .or_else(|| tracker.transcribe_started_at.map(elapsed_ms))
+        {
+            stages.push(StageTimingV1::measured(
+                PerformanceStageV1::InstructionAsr,
+                duration_ms,
+            ));
+        }
+        if let Some(duration_ms) = tracker.spawn_duration_ms {
+            stages.push(StageTimingV1::measured(
+                PerformanceStageV1::SidecarSpawnLoad,
+                duration_ms,
+            ));
+        }
+        if let Some(duration_ms) = tracker.first_chunk_duration_ms {
+            stages.push(StageTimingV1::measured(
+                PerformanceStageV1::Generation,
+                duration_ms,
+            ));
+        }
+        let duration_ms = elapsed_ms(tracker.started_at);
+        stages.push(StageTimingV1::measured(
+            PerformanceStageV1::TotalProcessing,
+            duration_ms,
+        ));
+        Some(QueryTerminalSnapshot {
+            provider: tracker.provider,
+            retain_history: tracker.retain_history,
+            history_epoch: tracker.history_epoch,
+            timestamp_ms: tracker.started_at_ms,
+            duration_ms,
+            current_stage: tracker.current_stage,
+            stages,
+            original_question: tracker.original_question.clone(),
+            answer: session
+                .as_ref()
+                .map(|session| session.answer.clone())
+                .unwrap_or_default(),
+            usage: session.as_ref().and_then(|session| session.usage),
+            exit_code: tracker.exit_code,
+            stderr_present: tracker.stderr_present.load(Ordering::Acquire),
+            terminal_intent: tracker.terminal_intent,
+        })
     }
 
     pub(crate) fn active_pass_id(&self) -> Option<u64> {
@@ -359,6 +773,7 @@ impl QueryCoordinator {
         true
     }
 
+    #[cfg(test)]
     fn begin_cancel(&self, pass_id: u64) -> bool {
         let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
@@ -549,12 +964,12 @@ impl QueryCoordinator {
         }
     }
 
-    fn terminate_child(&self, pass_id: u64) -> bool {
+    fn terminate_child(&self, pass_id: u64) -> QueryChildTermination {
         let child = {
             let _ownership = self.ownership.lock_or_recover();
             match self.child.lock_or_recover().as_ref() {
                 Some(QueryChildOwnership::Starting { pass_id: owner }) if *owner == pass_id => {
-                    return false;
+                    return QueryChildTermination::Starting;
                 }
                 Some(QueryChildOwnership::Active(active)) if active.pass_id == pass_id => {
                     Some(Arc::clone(&active.child))
@@ -563,16 +978,31 @@ impl QueryCoordinator {
             }
         };
         let Some(child) = child else {
-            return true;
+            return QueryChildTermination::NoChild;
         };
-        let confirmed = child
-            .lock_or_recover()
-            .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
-            .is_some();
-        if confirmed {
+        let termination = self.hard_kill_child(pass_id, &child);
+        if let Some(termination) = termination {
             self.clear_child(pass_id);
+            QueryChildTermination::Confirmed {
+                exit_code: termination.exit_code,
+            }
+        } else {
+            QueryChildTermination::Unconfirmed
         }
-        confirmed
+    }
+
+    fn hard_kill_child(
+        &self,
+        pass_id: u64,
+        child: &Arc<Mutex<ManagedChild>>,
+    ) -> Option<ConfirmedTermination> {
+        let termination = child
+            .lock_or_recover()
+            .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE);
+        if let Some(termination) = termination {
+            self.mark_exit_code(pass_id, termination.exit_code);
+        }
+        termination
     }
 
     pub(crate) fn shutdown(&self) {
@@ -596,10 +1026,7 @@ impl QueryCoordinator {
         };
         drop(ownership);
         if let Some((pass_id, child)) = active {
-            let confirmed = child
-                .lock_or_recover()
-                .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
-                .is_some();
+            let confirmed = self.hard_kill_child(pass_id, &child).is_some();
             if confirmed {
                 self.clear_child(pass_id);
             }
@@ -611,6 +1038,14 @@ impl QueryCoordinator {
         if self.active_pass_id() != Some(pass_id) {
             return false;
         }
+        let mut tracker = self.tracker.lock_or_recover();
+        let Some(tracker) = tracker
+            .as_mut()
+            .filter(|tracker| tracker.pass_id == pass_id && !tracker.terminal_claimed)
+        else {
+            return false;
+        };
+        tracker.terminal_intent = Some(QueryTerminal::Failed("termination_unconfirmed"));
         *self.status.lock_or_recover() = QueryStatus::Failed;
         true
     }
@@ -626,6 +1061,9 @@ impl QueryCoordinator {
             .as_ref()
             .is_some_and(|ownership| ownership.pass_id() == pass_id)
         {
+            return false;
+        }
+        if self.worker_pass_id.load(Ordering::SeqCst) == pass_id {
             return false;
         }
         *self.session.lock_or_recover() = None;
@@ -929,6 +1367,127 @@ fn fail_query(
         let _ = crate::commands::query_popover::show_internal(app, true);
         let _ = crate::commands::query_popover::set_expanded_internal(app, true);
         emit_state(app, pass_id, QueryStatus::Failed, Some(error_code));
+        finalize_query_pass(state, pass_id, QueryTerminal::Failed(error_code));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum QueryTerminal {
+    Ready { error_code: Option<&'static str> },
+    Failed(&'static str),
+    Cancelled,
+}
+
+fn stable_query_error(error_code: &'static str) -> StableRunErrorV1 {
+    match error_code {
+        "audio_start_failed"
+        | "audio_not_ready"
+        | "audio_recovering"
+        | "audio_recovery_stalled"
+        | "audio_capture_failed" => StableRunErrorV1::AudioCaptureFailed,
+        "no_speech" => StableRunErrorV1::InferenceFailed,
+        "transcription_failed" | "empty_query" | "query_too_large" => {
+            StableRunErrorV1::InferenceFailed
+        }
+        _ => StableRunErrorV1::QueryFailed,
+    }
+}
+
+fn history_tokens(usage: QueryUsage) -> QueryHistoryTokenCountsV1 {
+    const JS_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    QueryHistoryTokenCountsV1 {
+        input_tokens: usage.input_tokens.min(JS_MAX_SAFE_INTEGER),
+        output_tokens: usage.output_tokens.min(JS_MAX_SAFE_INTEGER),
+        reasoning_output_tokens: usage.reasoning_output_tokens.min(JS_MAX_SAFE_INTEGER),
+        cached_input_tokens: usage.cached_input_tokens.min(JS_MAX_SAFE_INTEGER),
+        cache_creation_input_tokens: usage.cache_creation_input_tokens.min(JS_MAX_SAFE_INTEGER),
+    }
+}
+
+/// Claim and persist a pass exactly once. Both stores are explicitly
+/// best-effort and can never alter the user-visible query result.
+fn finalize_query_pass(state: &crate::State, pass_id: u64, fallback: QueryTerminal) {
+    let Some(snapshot) = state.query.claim_terminal(pass_id) else {
+        return;
+    };
+    // Claim and terminal-intent read share the coordinator ownership lock, so
+    // an unconfirmed-teardown failure can never race into a stale Cancelled
+    // diagnostic after the worker begins terminalization.
+    let terminal = snapshot.terminal_intent.unwrap_or(fallback);
+    let process = QueryProcessSummaryV1 {
+        exit_code: snapshot.exit_code,
+        stderr_present: snapshot.stderr_present,
+    };
+    let _ = state.performance.set_query_process(pass_id, process);
+    let outcome = match terminal {
+        QueryTerminal::Ready { .. } => RunOutcomeV1::Success,
+        QueryTerminal::Cancelled => RunOutcomeV1::Cancelled {
+            stage: snapshot.current_stage,
+        },
+        QueryTerminal::Failed("no_speech") => RunOutcomeV1::NoSpeech,
+        QueryTerminal::Failed("timed_out") => RunOutcomeV1::TimedOut {
+            stage: snapshot.current_stage,
+        },
+        QueryTerminal::Failed(error_code) => RunOutcomeV1::Failed {
+            stage: snapshot.current_stage,
+            error_code: stable_query_error(error_code),
+        },
+    };
+    let _ = state.performance.complete(
+        &RunCorrelationV1::VoiceQuery {
+            query_pass_id: pass_id,
+        },
+        outcome,
+        snapshot.stages,
+        None,
+        None,
+    );
+
+    let error_code = match terminal {
+        QueryTerminal::Ready { error_code } => error_code,
+        QueryTerminal::Failed(error_code) => Some(error_code),
+        QueryTerminal::Cancelled => Some("cancelled"),
+    };
+    if snapshot.retain_history {
+        if let (Some(epoch), Some(question)) = (snapshot.history_epoch, snapshot.original_question)
+        {
+            let inserted = state.query_history.insert_if_epoch(
+                epoch,
+                QueryHistoryDraft {
+                    timestamp_ms: snapshot.timestamp_ms,
+                    provider: snapshot.provider,
+                    question,
+                    answer: snapshot.answer,
+                    tokens: snapshot.usage.map(history_tokens),
+                    duration_ms: snapshot.duration_ms,
+                    error_code: error_code.map(str::to_string),
+                },
+            );
+            if inserted.is_err() {
+                tracing::warn!(
+                    target: "system",
+                    query_history_write = false,
+                    "Voice Query history entry could not be persisted"
+                );
+            }
+        }
+    }
+}
+
+fn set_query_diagnostic_stage(state: &crate::State, pass_id: u64, stage: PerformanceStageV1) {
+    let _ = state.performance.set_current_stage(
+        &RunCorrelationV1::VoiceQuery {
+            query_pass_id: pass_id,
+        },
+        stage,
+    );
+}
+
+fn finish_cancelled_query(app: &tauri::AppHandle, state: &crate::State, pass_id: u64) {
+    finalize_query_pass(state, pass_id, QueryTerminal::Cancelled);
+    if state.query.complete_cancel(pass_id) {
+        let _ = crate::commands::query_popover::hide_internal(app);
+        let _ = app.emit("query-review-hidden", ());
     }
 }
 
@@ -1050,6 +1609,21 @@ pub(crate) async fn start_query_capture(
     query_pass_id: u64,
     command: QueryCommandConfig,
 ) -> Result<(), String> {
+    let provider = command.provider;
+    let retain_history = command.retain_query_history;
+    let history_epoch = retain_history
+        .then(|| state.query_history.clear_epoch())
+        .flatten();
+    if state.query.initialize_start_lifecycle(
+        query_pass_id,
+        provider,
+        retain_history,
+        history_epoch,
+        &state.performance,
+    ) != QueryLifecycleStart::Created
+    {
+        return Ok(());
+    }
     let command = match validate_command_for_app(&app_handle, command) {
         Ok(command) => command,
         Err(error_code) => {
@@ -1057,11 +1631,18 @@ pub(crate) async fn start_query_capture(
             return Ok(());
         }
     };
-    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+    let _transition = match crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
         state.inner(),
     )
-    .await?;
+    .await
+    {
+        Ok(transition) => transition,
+        Err(_) => {
+            fail_query(&app_handle, &state, query_pass_id, "audio_start_failed");
+            return Ok(());
+        }
+    };
     if !state.query.is_active(query_pass_id) {
         return Ok(());
     }
@@ -1170,6 +1751,7 @@ pub(crate) fn handle_audio_lifecycle(
                 .query
                 .set_status(query_pass_id, QueryStatus::Listening)
             {
+                state.query.mark_capture_started(query_pass_id);
                 crate::keyboard::set_query_recording_state(true);
                 emit_state(&app_handle, query_pass_id, QueryStatus::Listening, None);
             }
@@ -1287,6 +1869,20 @@ async fn transcribe_query(
 struct QueryRunError {
     code: &'static str,
     detail: Option<String>,
+}
+
+struct QueryWorkerGuard {
+    app: tauri::AppHandle,
+    pass_id: u64,
+}
+
+impl Drop for QueryWorkerGuard {
+    fn drop(&mut self) {
+        self.app
+            .state::<crate::State>()
+            .query
+            .mark_worker_finished(self.pass_id);
+    }
 }
 
 impl QueryRunError {
@@ -1408,6 +2004,9 @@ fn accept_answer_updates(
                 (text, true)
             }
         };
+        if !text.is_empty() {
+            app.state::<crate::State>().query.mark_first_chunk(pass_id);
+        }
         let _ = crate::commands::query_popover::set_expanded_internal(app, true);
         let _ = app.emit_to(
             "query-review",
@@ -1452,6 +2051,10 @@ fn run_cli(
     command: ValidatedQueryCommand,
     prompt: String,
 ) -> Result<(), QueryRunError> {
+    let _worker_guard = QueryWorkerGuard {
+        app: app.clone(),
+        pass_id,
+    };
     let mut arguments = command.arguments.clone();
     // The transcript and its optional immutable context are one final argv
     // element. They are never parsed, quoted, substituted, or evaluated by a
@@ -1468,16 +2071,29 @@ fn run_cli(
             return Err(QueryRunError::code("cancelled"));
         }
     }
-    let (spawned_child, stdin, mut stdout, mut stderr) =
-        match ManagedChild::spawn_user_cli(&command.executable, &arguments, &environment) {
-            Ok(spawned) => spawned,
-            Err(_) => {
-                app.state::<crate::State>()
-                    .query
-                    .release_child_start(pass_id);
-                return Err(QueryRunError::code("spawn_failed"));
-            }
-        };
+    let spawn_started_at = Instant::now();
+    let spawned = ManagedChild::spawn_user_cli(&command.executable, &arguments, &environment);
+    app.state::<crate::State>().query.mark_spawn_finished(
+        pass_id,
+        spawn_started_at,
+        spawned.is_ok(),
+    );
+    if spawned.is_ok() {
+        set_query_diagnostic_stage(
+            app.state::<crate::State>().inner(),
+            pass_id,
+            PerformanceStageV1::Generation,
+        );
+    }
+    let (spawned_child, stdin, mut stdout, mut stderr) = match spawned {
+        Ok(spawned) => spawned,
+        Err(_) => {
+            app.state::<crate::State>()
+                .query
+                .release_child_start(pass_id);
+            return Err(QueryRunError::code("spawn_failed"));
+        }
+    };
     drop(stdin);
     let child = Arc::new(Mutex::new(spawned_child));
     if !app
@@ -1485,9 +2101,10 @@ fn run_cli(
         .query
         .publish_spawned_child(pass_id, Arc::clone(&child))
     {
-        let confirmed = child
-            .lock_or_recover()
-            .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+        let confirmed = app
+            .state::<crate::State>()
+            .query
+            .hard_kill_child(pass_id, &child)
             .is_some();
         if !confirmed {
             let _ = app
@@ -1504,9 +2121,10 @@ fn run_cli(
     if crate::query_provider::set_pipe_nonblocking(&stdout).is_err()
         || crate::query_provider::set_pipe_nonblocking(&stderr).is_err()
     {
-        let confirmed = child
-            .lock_or_recover()
-            .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+        let confirmed = app
+            .state::<crate::State>()
+            .query
+            .hard_kill_child(pass_id, &child)
             .is_some();
         app.state::<crate::State>()
             .query
@@ -1553,6 +2171,7 @@ fn run_cli(
         }
     });
     let stderr_stop = Arc::clone(&stop_readers);
+    let stderr_present = app.state::<crate::State>().query.stderr_flag(pass_id);
     let stderr_reader = std::thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         loop {
@@ -1562,6 +2181,9 @@ fn run_cli(
             match stderr.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
+                    // Record presence from raw pipe bytes, before sanitization
+                    // or any typed provider detail can be concatenated.
+                    stderr_present.store(true, Ordering::Release);
                     if !send_cli_output(
                         &tx,
                         CliOutput::Stderr(buffer[..count].to_vec()),
@@ -1590,10 +2212,7 @@ fn run_cli(
         {
             let state = app.state::<crate::State>();
             if !state.query.is_active(pass_id) {
-                let confirmed = child
-                    .lock_or_recover()
-                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
-                    .is_some();
+                let confirmed = state.query.hard_kill_child(pass_id, &child).is_some();
                 discard_remaining_output(
                     &rx,
                     stdout_reader,
@@ -1620,9 +2239,10 @@ fn run_cli(
                 }
             };
             if let Err(error_code) = result {
-                let confirmed = child
-                    .lock_or_recover()
-                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+                let confirmed = app
+                    .state::<crate::State>()
+                    .query
+                    .hard_kill_child(pass_id, &child)
                     .is_some();
                 discard_remaining_output(
                     &rx,
@@ -1645,9 +2265,10 @@ fn run_cli(
             }
         }
         if Instant::now() >= deadline {
-            let confirmed = child
-                .lock_or_recover()
-                .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+            let confirmed = app
+                .state::<crate::State>()
+                .query
+                .hard_kill_child(pass_id, &child)
                 .is_some();
             discard_remaining_output(
                 &rx,
@@ -1671,6 +2292,9 @@ fn run_cli(
         let wait_result = { child.lock_or_recover().try_wait() };
         match wait_result {
             Ok(Some(status)) => {
+                app.state::<crate::State>()
+                    .query
+                    .mark_exit_code(pass_id, status.code());
                 // A wrapper CLI can exit while a descendant still inherits a
                 // pipe. Confirm the entire owned process group before joining.
                 if child
@@ -1698,9 +2322,10 @@ fn run_cli(
             }
             Ok(None) => std::thread::sleep(CHILD_POLL_INTERVAL),
             Err(_) => {
-                let confirmed = child
-                    .lock_or_recover()
-                    .hard_kill_confirmed(Instant::now() + TERMINATION_DEADLINE)
+                let confirmed = app
+                    .state::<crate::State>()
+                    .query
+                    .hard_kill_child(pass_id, &child)
                     .is_some();
                 discard_remaining_output(
                     &rx,
@@ -1863,8 +2488,16 @@ pub(crate) async fn finish_query_capture(
             _ => return Ok(()),
         }
         crate::keyboard::set_query_recording_state(false);
-        let samples = crate::audio_lifecycle::stop_query_recording(query_pass_id)
-            .map_err(|_| "Could not stop query recording".to_string())?;
+        let samples = match crate::audio_lifecycle::stop_query_recording(query_pass_id) {
+            Ok(samples) => samples,
+            Err(_) => {
+                state.query.mark_capture_finished(query_pass_id, false);
+                fail_query(&app_handle, &state, query_pass_id, "audio_capture_failed");
+                return Ok(());
+            }
+        };
+        state.query.mark_capture_finished(query_pass_id, true);
+        set_query_diagnostic_stage(&state, query_pass_id, PerformanceStageV1::InstructionAsr);
         state
             .query
             .set_status(query_pass_id, QueryStatus::Transcribing);
@@ -1875,23 +2508,34 @@ pub(crate) async fn finish_query_capture(
     let Some(session) = state.query.session(query_pass_id) else {
         return Ok(());
     };
-    let query = match transcribe_query(
+    let transcription_result = transcribe_query(
         &app_handle,
         &state,
         query_pass_id,
         samples,
         &session.context,
     )
-    .await
-    {
-        Ok(query) => query,
+    .await;
+    let query = match transcription_result {
+        Ok(query) => {
+            // Persist only this original transcription. The context-composed
+            // provider prompt below is never copied into durable history.
+            state
+                .query
+                .mark_transcription_finished(query_pass_id, Some(query.clone()), true);
+            query
+        }
         Err("cancelled") => return Ok(()),
         Err(error_code) => {
+            state
+                .query
+                .mark_transcription_finished(query_pass_id, None, false);
             fail_query(&app_handle, &state, query_pass_id, error_code);
             return Ok(());
         }
     };
-    let prompt = match session.query_context.build_prompt(query) {
+    set_query_diagnostic_stage(&state, query_pass_id, PerformanceStageV1::SidecarSpawnLoad);
+    let prompt = match session.query_context.build_prompt(query.clone()) {
         Ok(prompt) => prompt,
         Err(error_code) => {
             fail_query(&app_handle, &state, query_pass_id, error_code);
@@ -1910,11 +2554,33 @@ pub(crate) async fn finish_query_capture(
 
     let command = session.command;
     let worker_app = app_handle.clone();
-    let result =
-        tokio::task::spawn_blocking(move || run_cli(worker_app, query_pass_id, command, prompt))
-            .await
-            .unwrap_or_else(|_| Err(QueryRunError::code("process_failed")));
+    let result = tokio::task::spawn_blocking(move || {
+        if !worker_app
+            .state::<crate::State>()
+            .query
+            .mark_worker_started(query_pass_id)
+        {
+            return Err(QueryRunError::code("cancelled"));
+        }
+        run_cli(worker_app, query_pass_id, command, prompt)
+    })
+    .await
+    .unwrap_or_else(|_| Err(QueryRunError::code("process_failed")));
     if !state.query.is_active(query_pass_id) {
+        if result
+            .as_ref()
+            .is_err_and(|error| error.code == "termination_unconfirmed")
+        {
+            if state.query.fail_cancel_termination(query_pass_id) {
+                emit_state(
+                    &app_handle,
+                    query_pass_id,
+                    QueryStatus::Failed,
+                    Some("termination_unconfirmed"),
+                );
+            }
+        }
+        finish_cancelled_query(&app_handle, &state, query_pass_id);
         return Ok(());
     }
     match result {
@@ -1944,6 +2610,13 @@ pub(crate) async fn finish_query_capture(
                     QueryStatus::Ready,
                     clipboard_error,
                 );
+                finalize_query_pass(
+                    &state,
+                    query_pass_id,
+                    QueryTerminal::Ready {
+                        error_code: clipboard_error,
+                    },
+                );
             }
         }
         Err(error) if error.code == "cancelled" => {}
@@ -1961,7 +2634,13 @@ pub(crate) fn cancel_query(
     state: tauri::State<'_, crate::State>,
     query_pass_id: u64,
 ) -> Result<(), String> {
-    if !state.query.begin_cancel(query_pass_id) {
+    // A hotkey release can beat the async start command. Establish a
+    // content-free lifecycle first so that even that pre-start cancellation
+    // produces one terminal run instead of silently disappearing.
+    if !state
+        .query
+        .ensure_lifecycle_and_begin_cancel(query_pass_id, &state.performance)
+    {
         return Ok(());
     }
     crate::keyboard::set_query_recording_state(false);
@@ -1974,7 +2653,30 @@ pub(crate) fn cancel_query(
             crate::audio_lifecycle::AudioCancelReason::User,
         );
     }
-    if !state.query.terminate_child(query_pass_id) {
+    match state.query.terminate_child(query_pass_id) {
+        QueryChildTermination::Starting => {
+            // The worker will observe cancellation after spawn resolves, then
+            // kill any published child, drain both pipes, and own cleanup.
+            return Ok(());
+        }
+        QueryChildTermination::Unconfirmed => {
+            if state.query.fail_cancel_termination(query_pass_id) {
+                emit_state(
+                    &app_handle,
+                    query_pass_id,
+                    QueryStatus::Failed,
+                    Some("termination_unconfirmed"),
+                );
+            }
+            // Never snapshot while the worker can still discover raw stderr.
+            return Err("The configured CLI could not be confirmed terminated.".to_string());
+        }
+        QueryChildTermination::NoChild | QueryChildTermination::Confirmed { .. } => {}
+    }
+    if !state.query.wait_for_worker_finished(
+        query_pass_id,
+        Instant::now() + TERMINATION_DEADLINE + Duration::from_millis(500),
+    ) {
         if state.query.fail_cancel_termination(query_pass_id) {
             emit_state(
                 &app_handle,
@@ -1983,15 +2685,11 @@ pub(crate) fn cancel_query(
                 Some("termination_unconfirmed"),
             );
         }
-        return Err("The configured CLI could not be confirmed terminated.".to_string());
+        return Err("The configured CLI teardown did not finish in time.".to_string());
     }
     // A terminal pass can be superseded by a new hotkey while this command is
     // awaiting teardown. Never clear or hide the newer owner's session.
-    if !state.query.complete_cancel(query_pass_id) {
-        return Ok(());
-    }
-    let _ = crate::commands::query_popover::hide_internal(&app_handle);
-    let _ = app_handle.emit("query-review-hidden", ());
+    finish_cancelled_query(&app_handle, &state, query_pass_id);
     Ok(())
 }
 
@@ -2053,6 +2751,7 @@ mod tests {
             arguments: vec!["-p".into()],
             timeout_seconds: 60,
             context_level: QueryContextLevel::None,
+            retain_query_history: false,
         };
         assert_eq!(
             validate_command(invalid, vec![]).unwrap_err(),
@@ -2065,6 +2764,7 @@ mod tests {
             arguments: vec!["%s".into()],
             timeout_seconds: 60,
             context_level: QueryContextLevel::None,
+            retain_query_history: false,
         };
         let valid = validate_command(valid, vec![]).expect("printf must be executable");
         assert_eq!(valid.arguments, vec!["%s"]);
@@ -2109,10 +2809,117 @@ mod tests {
         query.set_status(first, QueryStatus::Running);
         assert_eq!(query.allocate_keyboard_pass(), None);
         query.set_status(first, QueryStatus::Ready);
-        let second = query.allocate_keyboard_pass().unwrap();
+        // A terminal UI state cannot supersede its owner until the store
+        // snapshot has been claimed.
+        assert_eq!(query.allocate_keyboard_pass(), Some(2));
+        let second = query.active_pass_id().unwrap();
         assert_eq!(second, 2);
         assert!(!query.set_status(first, QueryStatus::Failed));
         assert_eq!(query.active_pass_id(), Some(second));
+    }
+
+    #[test]
+    fn tracked_terminal_state_blocks_reuse_until_claimed() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, false, None));
+        assert!(query.set_status(pass_id, QueryStatus::Ready));
+        assert_eq!(query.allocate_keyboard_pass(), None);
+        assert!(query.claim_terminal(pass_id).is_some());
+        assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
+    }
+
+    #[test]
+    fn failure_stage_advances_only_after_successful_stage_boundary() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, false, None));
+        query.mark_capture_started(pass_id);
+        query.mark_capture_finished(pass_id, false);
+        let capture_failure = query.claim_terminal(pass_id).unwrap();
+        assert_eq!(
+            capture_failure.current_stage,
+            PerformanceStageV1::InstructionCapture
+        );
+
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, false, None));
+        query.mark_capture_started(pass_id);
+        query.mark_capture_finished(pass_id, true);
+        query.mark_transcription_finished(pass_id, None, false);
+        let asr_failure = query.claim_terminal(pass_id).unwrap();
+        assert_eq!(
+            asr_failure.current_stage,
+            PerformanceStageV1::InstructionAsr
+        );
+    }
+
+    #[test]
+    fn cancellation_snapshots_in_progress_capture_and_transcription_timings() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, false, None));
+        query.mark_capture_started(pass_id);
+        let listening = query.claim_terminal(pass_id).unwrap();
+        assert!(listening
+            .stages
+            .iter()
+            .any(|timing| timing.stage == PerformanceStageV1::InstructionCapture));
+
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, false, None));
+        query.mark_capture_started(pass_id);
+        query.mark_capture_finished(pass_id, true);
+        let transcribing = query.claim_terminal(pass_id).unwrap();
+        assert!(transcribing
+            .stages
+            .iter()
+            .any(|timing| timing.stage == PerformanceStageV1::InstructionAsr));
+        assert_eq!(
+            transcribing.current_stage,
+            PerformanceStageV1::InstructionAsr
+        );
+    }
+
+    #[test]
+    fn worker_completion_unblocks_cancel_cleanup() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Claude, false, None));
+        assert!(query.set_status(pass_id, QueryStatus::Running));
+        assert!(query.mark_worker_started(pass_id));
+        assert!(query.reserve_child_start(pass_id));
+        assert!(query.begin_cancel(pass_id));
+        assert_eq!(
+            query.terminate_child(pass_id),
+            QueryChildTermination::Starting
+        );
+        assert!(!query.complete_cancel(pass_id));
+        query.release_child_start(pass_id);
+        query.mark_worker_finished(pass_id);
+        assert!(query.claim_terminal(pass_id).is_some());
+        assert!(query.complete_cancel(pass_id));
+        assert_eq!(query.status(), QueryStatus::Idle);
+        assert_eq!(query.active_pass_id(), None);
+        assert!(query.child.lock_or_recover().is_none());
+        assert!(query.claim_terminal(pass_id).is_none());
+    }
+
+    #[test]
+    fn durable_history_tokens_clamp_to_javascript_safe_integers() {
+        let usage = QueryUsage {
+            input_tokens: u64::MAX,
+            output_tokens: 1,
+            reasoning_output_tokens: 2,
+            cached_input_tokens: 3,
+            cache_creation_input_tokens: 4,
+            cost_usd: Some(99.0),
+        };
+        let tokens = history_tokens(usage);
+        assert_eq!(tokens.input_tokens, 9_007_199_254_740_991);
+        assert_eq!(tokens.output_tokens, 1);
     }
 
     #[test]
@@ -2124,14 +2931,126 @@ mod tests {
     }
 
     #[test]
+    fn start_and_pre_start_cancel_initialize_exactly_one_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(temp.path().join("diagnostics"), None)
+            .unwrap();
+
+        let start_wins = QueryCoordinator::default();
+        let pass_id = start_wins.allocate_keyboard_pass().unwrap();
+        assert_eq!(
+            start_wins.initialize_start_lifecycle(
+                pass_id,
+                QueryProviderId::Claude,
+                true,
+                Some(7),
+                &performance,
+            ),
+            QueryLifecycleStart::Created
+        );
+        assert_eq!(
+            start_wins.initialize_start_lifecycle(
+                pass_id,
+                QueryProviderId::Codex,
+                false,
+                None,
+                &performance,
+            ),
+            QueryLifecycleStart::AlreadyExists,
+            "a duplicate start cannot launch a second pipeline"
+        );
+        assert!(start_wins.ensure_lifecycle_and_begin_cancel(pass_id, &performance));
+        let snapshot = start_wins.claim_terminal(pass_id).unwrap();
+        assert_eq!(snapshot.provider, QueryProviderId::Claude);
+        assert!(snapshot.retain_history);
+        assert_eq!(snapshot.history_epoch, Some(7));
+        performance
+            .complete(
+                &RunCorrelationV1::VoiceQuery {
+                    query_pass_id: pass_id,
+                },
+                RunOutcomeV1::Cancelled {
+                    stage: snapshot.current_stage,
+                },
+                snapshot.stages,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(performance.counts().unwrap(), (0, 1, 0));
+
+        let cancel_temp = tempfile::tempdir().unwrap();
+        let cancel_performance = crate::performance_metrics::PerformanceMetrics::default();
+        cancel_performance
+            .initialize(cancel_temp.path().join("diagnostics"), None)
+            .unwrap();
+        let cancel_wins = QueryCoordinator::default();
+        let pass_id = cancel_wins.allocate_keyboard_pass().unwrap();
+        assert!(cancel_wins.ensure_lifecycle_and_begin_cancel(pass_id, &cancel_performance));
+        assert_eq!(
+            cancel_wins.initialize_start_lifecycle(
+                pass_id,
+                QueryProviderId::Claude,
+                true,
+                Some(8),
+                &cancel_performance,
+            ),
+            QueryLifecycleStart::Stale,
+            "pre-start cancellation prevents later start from adopting generic state"
+        );
+        let snapshot = cancel_wins.claim_terminal(pass_id).unwrap();
+        assert_eq!(snapshot.provider, QueryProviderId::Custom);
+        assert!(!snapshot.retain_history);
+        cancel_performance
+            .complete(
+                &RunCorrelationV1::VoiceQuery {
+                    query_pass_id: pass_id,
+                },
+                RunOutcomeV1::Cancelled {
+                    stage: snapshot.current_stage,
+                },
+                snapshot.stages,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(cancel_performance.counts().unwrap(), (0, 1, 0));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn confirmed_teardown_preserves_an_available_exit_code() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Custom, false, None));
+        let (child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/usr/bin/false"), &[], &[]).unwrap();
+        drop((stdin, stdout, stderr));
+        assert!(query.reserve_child_start(pass_id));
+        assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            query.terminate_child(pass_id),
+            QueryChildTermination::Confirmed { exit_code: Some(1) }
+        );
+        assert_eq!(query.claim_terminal(pass_id).unwrap().exit_code, Some(1));
+    }
+
+    #[test]
     fn cancellation_cannot_complete_during_child_start_reservation() {
         let query = QueryCoordinator::default();
         let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Custom, false, None));
         query.set_status(pass_id, QueryStatus::Running);
 
         assert!(query.reserve_child_start(pass_id));
         assert!(query.begin_cancel(pass_id));
-        assert!(!query.terminate_child(pass_id));
+        assert_eq!(
+            query.terminate_child(pass_id),
+            QueryChildTermination::Starting
+        );
         assert!(!query.complete_cancel(pass_id));
         assert!(query.fail_cancel_termination(pass_id));
         assert_eq!(query.allocate_keyboard_pass(), None);
@@ -2139,6 +3058,7 @@ mod tests {
         // A failed spawn releases the reservation. With no process to own, a
         // terminal pass may then be superseded safely.
         query.release_child_start(pass_id);
+        assert!(query.claim_terminal(pass_id).is_some());
         assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
     }
 
@@ -2162,7 +3082,10 @@ mod tests {
         assert!(!query.complete_cancel(pass_id));
         assert_eq!(query.allocate_keyboard_pass(), None);
 
-        assert!(query.terminate_child(pass_id));
+        assert_eq!(
+            query.terminate_child(pass_id),
+            QueryChildTermination::Confirmed { exit_code: None }
+        );
         assert!(query.complete_cancel(pass_id));
         assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
     }
@@ -2225,7 +3148,10 @@ mod tests {
         assert!(query.child.lock_or_recover().is_some());
         assert_eq!(query.allocate_keyboard_pass(), None);
 
-        assert!(query.terminate_child(pass_id));
+        assert_eq!(
+            query.terminate_child(pass_id),
+            QueryChildTermination::Confirmed { exit_code: None }
+        );
         assert!(query.child.lock_or_recover().is_none());
         assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
     }

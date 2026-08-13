@@ -3800,6 +3800,7 @@ mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
+                query_history: crate::query_history::QueryHistoryStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
@@ -3921,6 +3922,7 @@ mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
+                query_history: crate::query_history::QueryHistoryStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
