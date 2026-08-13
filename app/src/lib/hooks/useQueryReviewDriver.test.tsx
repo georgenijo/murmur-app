@@ -567,10 +567,10 @@ describe('useQueryReviewDriver ownership', () => {
       });
       await Promise.resolve();
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 71, sequence: 1, text: 'gap chunk' },
+        payload: { queryPassId: 71, sequence: 1, text: 'gap chunk', replace: false },
       });
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 71, sequence: 2, text: 'later chunk' },
+        payload: { queryPassId: 71, sequence: 2, text: 'later chunk', replace: false },
       });
       await Promise.resolve();
     });
@@ -612,7 +612,7 @@ describe('useQueryReviewDriver ownership', () => {
       });
       await Promise.resolve();
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 81, sequence: 0, text: 'new streamed text' },
+        payload: { queryPassId: 81, sequence: 0, text: 'new streamed text', replace: false },
       });
       await Promise.resolve();
     });
@@ -647,7 +647,7 @@ describe('useQueryReviewDriver ownership', () => {
 
     await act(async () => {
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 91, sequence: 0, text: 'complete answer' },
+        payload: { queryPassId: 91, sequence: 0, text: 'complete answer', replace: false },
       });
       await Promise.resolve();
     });
@@ -686,7 +686,7 @@ describe('useQueryReviewDriver ownership', () => {
       });
       await Promise.resolve();
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 101, sequence: 1, text: 'two' },
+        payload: { queryPassId: 101, sequence: 1, text: 'two', replace: false },
       });
       await Promise.resolve();
     });
@@ -704,7 +704,7 @@ describe('useQueryReviewDriver ownership', () => {
 
     await act(async () => {
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 101, sequence: 2, text: 'two' },
+        payload: { queryPassId: 101, sequence: 2, text: 'two', replace: false },
       });
       await Promise.resolve();
       await Promise.resolve();
@@ -713,7 +713,7 @@ describe('useQueryReviewDriver ownership', () => {
 
     await act(async () => {
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 101, sequence: 3, text: 'three' },
+        payload: { queryPassId: 101, sequence: 3, text: 'three', replace: false },
       });
       await Promise.resolve();
       await Promise.resolve();
@@ -748,7 +748,7 @@ describe('useQueryReviewDriver ownership', () => {
       });
       await Promise.resolve();
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 111, sequence: 1, text: 'represented gap text' },
+        payload: { queryPassId: 111, sequence: 1, text: 'represented gap text', replace: false },
       });
       await Promise.resolve();
       await Promise.resolve();
@@ -757,10 +757,10 @@ describe('useQueryReviewDriver ownership', () => {
 
     await act(async () => {
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 111, sequence: 1, text: 'represented gap text' },
+        payload: { queryPassId: 111, sequence: 1, text: 'represented gap text', replace: false },
       });
       mocks.listeners['query-answer-chunk']?.({
-        payload: { queryPassId: 111, sequence: 2, text: 'represented tail' },
+        payload: { queryPassId: 111, sequence: 2, text: 'represented tail', replace: false },
       });
       await Promise.resolve();
     });

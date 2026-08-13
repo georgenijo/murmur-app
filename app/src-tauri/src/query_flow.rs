@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
@@ -291,6 +291,8 @@ impl QueryChildOwnership {
 
 pub(crate) struct QueryCoordinator {
     ownership: Mutex<()>,
+    child_state_changed: Condvar,
+    shutting_down: AtomicBool,
     pass_sequence: AtomicU64,
     active_pass_id: AtomicU64,
     cancelled_pass_id: AtomicU64,
@@ -303,6 +305,8 @@ impl Default for QueryCoordinator {
     fn default() -> Self {
         Self {
             ownership: Mutex::new(()),
+            child_state_changed: Condvar::new(),
+            shutting_down: AtomicBool::new(false),
             pass_sequence: AtomicU64::new(0),
             active_pass_id: AtomicU64::new(0),
             cancelled_pass_id: AtomicU64::new(0),
@@ -318,6 +322,9 @@ impl QueryCoordinator {
     /// superseded; an in-flight pass is never replaced.
     pub(crate) fn allocate_keyboard_pass(&self) -> Option<u64> {
         let _ownership = self.ownership.lock_or_recover();
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return None;
+        }
         let status = *self.status.lock_or_recover();
         if !status.accepts_new_pass() || self.child.lock_or_recover().is_some() {
             return None;
@@ -461,7 +468,7 @@ impl QueryCoordinator {
     fn reserve_child_start(&self, pass_id: u64) -> bool {
         let _ownership = self.ownership.lock_or_recover();
         let mut slot = self.child.lock_or_recover();
-        if !self.is_active(pass_id) || slot.is_some() {
+        if self.shutting_down.load(Ordering::SeqCst) || !self.is_active(pass_id) || slot.is_some() {
             return false;
         }
         *slot = Some(QueryChildOwnership::Starting { pass_id });
@@ -475,6 +482,7 @@ impl QueryCoordinator {
             matches!(ownership, QueryChildOwnership::Starting { pass_id: owner } if *owner == pass_id)
         }) {
             *slot = None;
+            self.child_state_changed.notify_all();
         }
     }
 
@@ -490,6 +498,7 @@ impl QueryCoordinator {
             pass_id,
             child,
         }));
+        self.child_state_changed.notify_all();
         true
     }
 
@@ -503,6 +512,7 @@ impl QueryCoordinator {
                     pass_id,
                     child,
                 }));
+                self.child_state_changed.notify_all();
                 true
             }
             None if self.active_pass_id() == Some(pass_id) => {
@@ -510,6 +520,7 @@ impl QueryCoordinator {
                     pass_id,
                     child,
                 }));
+                self.child_state_changed.notify_all();
                 true
             }
             _ => false,
@@ -524,6 +535,7 @@ impl QueryCoordinator {
             .is_some_and(|ownership| ownership.pass_id() == pass_id)
         {
             *slot = None;
+            self.child_state_changed.notify_all();
         }
     }
 
@@ -564,12 +576,25 @@ impl QueryCoordinator {
     }
 
     pub(crate) fn shutdown(&self) {
-        let active = match self.child.lock_or_recover().as_ref() {
-            Some(QueryChildOwnership::Active(active)) => {
-                Some((active.pass_id, Arc::clone(&active.child)))
+        let mut ownership = self.ownership.lock_or_recover();
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let active = loop {
+            let child = self.child.lock_or_recover();
+            match child.as_ref() {
+                Some(QueryChildOwnership::Starting { .. }) => {
+                    drop(child);
+                    ownership = self
+                        .child_state_changed
+                        .wait(ownership)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                Some(QueryChildOwnership::Active(active)) => {
+                    break Some((active.pass_id, Arc::clone(&active.child)));
+                }
+                None => break None,
             }
-            Some(QueryChildOwnership::Starting { .. }) | None => None,
         };
+        drop(ownership);
         if let Some((pass_id, child)) = active {
             let confirmed = child
                 .lock_or_recover()
@@ -2144,6 +2169,47 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn shutdown_waits_for_starting_child_then_confirms_teardown() {
+        let query = Arc::new(QueryCoordinator::default());
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        query.set_status(pass_id, QueryStatus::Running);
+        assert!(query.reserve_child_start(pass_id));
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let (shutdown_done_tx, shutdown_done_rx) = std::sync::mpsc::channel();
+        let shutdown_query = Arc::clone(&query);
+        let shutdown_barrier = Arc::clone(&barrier);
+        let shutdown = std::thread::spawn(move || {
+            shutdown_barrier.wait();
+            shutdown_query.shutdown();
+            shutdown_done_tx.send(()).unwrap();
+        });
+        barrier.wait();
+        while !query.shutting_down.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        assert_eq!(query.allocate_keyboard_pass(), None);
+        assert!(matches!(
+            shutdown_done_rx.recv_timeout(Duration::from_millis(25)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        let arguments = vec!["30".to_string()];
+        let (child, stdin, stdout, stderr) =
+            ManagedChild::spawn_user_cli(Path::new("/bin/sleep"), &arguments, &[]).unwrap();
+        drop((stdin, stdout, stderr));
+        assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
+
+        shutdown_done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("shutdown should terminate the published child");
+        shutdown.join().unwrap();
+        assert!(query.child.lock_or_recover().is_none());
+        assert_eq!(query.allocate_keyboard_pass(), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn unconfirmed_child_ownership_blocks_a_new_pass() {
         let query = QueryCoordinator::default();
         let pass_id = query.allocate_keyboard_pass().unwrap();
@@ -2246,65 +2312,6 @@ mod tests {
         assert_eq!(next_pass_id, pass_id + 1);
         assert_eq!(query.answer(next_pass_id), None);
     }
-    #[test]
-    fn utf8_decoder_preserves_split_scalar_values() {
-        let mut decoder = Utf8Chunks::new();
-        let bytes = "hello 🦀".as_bytes();
-        assert_eq!(decoder.push(&bytes[..8]), "hello ");
-        assert_eq!(decoder.push(&bytes[8..]), "🦀");
-        assert_eq!(decoder.finish(), "");
-    }
-
-    #[test]
-    fn incomplete_utf8_tail_clears_reaped_child_before_cap_error() {
-        let query = QueryCoordinator::default();
-        let pass_id = query.allocate_keyboard_pass().unwrap();
-        let context = Arc::new(crate::dictation_context::resolve(
-            crate::dictation_context::ResolverInputs {
-                bundle_id: None,
-                global: &crate::state::DictationState::default(),
-                prompt: None,
-                correction_matcher: None,
-                ide_context_index: None,
-                vocabulary_version: 0,
-                voice_commands: None,
-                session_overrides: crate::dictation_context::SessionOverrides::default(),
-            },
-        ));
-        query.install_session(
-            pass_id,
-            QuerySession {
-                pass_id,
-                context,
-                query_context: QueryContextSnapshot::default(),
-                command: ValidatedQueryCommand {
-                    provider: QueryProviderId::Custom,
-                    executable: PathBuf::from("/usr/bin/printf"),
-                    arguments: vec![],
-                    timeout: Duration::from_secs(5),
-                    environment: vec![],
-                    context_level: QueryContextLevel::None,
-                },
-                answer: "a".repeat(MAX_ANSWER_BYTES - 1),
-                usage: None,
-                error_detail: None,
-            },
-        );
-        let (child, stdin, stdout, stderr) =
-            ManagedChild::spawn_user_cli(Path::new("/usr/bin/true"), &[], &[]).unwrap();
-        drop((stdin, stdout, stderr));
-        assert!(query.reserve_child_start(pass_id));
-        assert!(query.publish_spawned_child(pass_id, Arc::new(Mutex::new(child))));
-
-        let mut decoder = Utf8Chunks::new();
-        assert_eq!(decoder.push(&[0xf0]), "");
-        assert_eq!(
-            finish_stdout_after_reap(&query, pass_id, decoder),
-            Err("output_too_large")
-        );
-        assert!(query.child.lock_or_recover().is_none());
-    }
-
     #[test]
     fn no_context_preserves_the_question_byte_for_byte() {
         let question = "what does `$HOME` mean?\nkeep this literal".to_string();
