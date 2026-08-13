@@ -50,6 +50,13 @@ policy and emits the immutable updater manifest.
 
 Include the min_version decision in the release summary.
 
+Never set `min_version` to force an update until the currently shipped public
+version has passed the post-release OTA canary. After publication, run
+`python3 scripts/murmur_canary_fleet.py --tag v{new_version}` on the trusted
+Mac mini and do not announce the release unless it exits zero. The one-time
+canary installation setup and result schema are in
+`docs/features/auto-updater.md`.
+
 ## 4. Run the Pre-Release Murmur Bench Gate
 
 Before asking for release authorization, compare the previous release tag with

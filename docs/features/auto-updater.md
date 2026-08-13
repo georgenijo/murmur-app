@@ -47,6 +47,65 @@ The modern channel's policy is version-controlled in
 `major.minor.patch` value publishes it after verifying that it is not newer
 than the release. The legacy bridge manifest intentionally omits this policy.
 
+## Post-release OTA canary
+
+The trusted Mac mini has an opt-in canary installation in a dedicated
+`Murmur OTA Canary` directory. The release operator runs:
+
+```bash
+python3 scripts/murmur_canary_fleet.py --tag vX.Y.Z
+```
+
+The runner finds the previous public release, installs its signed
+`Murmur.app.tar.gz` into that directory (never the daily `/Applications`
+install), launches it with `MURMUR_UPDATER_CANARY=/path/to/result.json`, and
+waits for the relaunched client. The app-side marker is absent for ordinary
+launches, so the canary path is inert; canary runs also disable the log shipper.
+The app still uses the normal updater hook, including native `Update.rawJson`
+policy parsing, download, signature verification, install, and relaunch.
+
+The result file is JSON with this schema:
+
+```json
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "checkedVersion": "0.31.3",
+  "offeredVersion": "0.31.4",
+  "forced": false,
+  "stages": {
+    "discover": "passed",
+    "policy": "passed",
+    "download": "passed",
+    "signatureVerify": "passed",
+    "install": "passed",
+    "relaunch": "passed"
+  },
+  "error": null
+}
+```
+
+`status` must be `passed`, every stage must be `passed`, and the checked and
+offered versions must differ. The runner validates this contract and exits
+nonzero with the captured error for any failure. `--dry-run` prepares the
+previous signed bundle and prints the launch command but stops before launching
+or installing it.
+
+The canary proves manifest consumability, native policy parsing, signature
+verification, installation, and relaunch into the new version. It does not
+prove per-user network conditions, Gatekeeper App Translocation behavior, or
+the many possible daily-install locations.
+
+### One-time Mac mini setup
+
+On the trusted mini, install Fleet and GitHub CLI access, then run the command
+above from a checkout at `/Users/george-mac-mini/Documents/code/murmur-app`.
+Grant Murmur the required macOS permissions to the dedicated canary bundle,
+and keep the mini on AC power with the screen session available for any first
+launch prompts. Confirm `--dry-run` first. The first real run creates
+`~/Library/Application Support/Murmur OTA Canary/Murmur Canary.app`; do not
+move it into `/Applications` or point the runner at the daily installation.
+
 ## Update Flow
 
 ### Normal Updates

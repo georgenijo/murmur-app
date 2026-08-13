@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
+  invoke: vi.fn(),
   getVersion: vi.fn(),
   relaunch: vi.fn(),
   isPermissionGranted: vi.fn(),
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: mocks.relaunch }));
 vi.mock('@tauri-apps/plugin-notification', () => ({
@@ -57,6 +59,7 @@ describe('useAutoUpdater presentation state', () => {
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.isPermissionGranted.mockResolvedValue(true);
     mocks.getUpdateInstallEnvironment.mockResolvedValue({ appTranslocated: false });
+    mocks.invoke.mockResolvedValue({ path: null, result: null });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({}),
@@ -127,6 +130,19 @@ describe('useAutoUpdater presentation state', () => {
       'no update available',
       { event_code: 'updater.check_current' },
     );
+  });
+
+  it('leaves the canary path inert when the launch marker is absent', async () => {
+    await act(async () => root.unmount());
+    automaticChecksEnabled = true;
+    root = createRoot(container);
+    mocks.check.mockResolvedValue({ available: false });
+    await act(async () => root.render(<Harness />));
+
+    expect(mocks.invoke).toHaveBeenCalledWith('updater_canary', { action: 'read' });
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('updater_canary', expect.objectContaining({ action: 'write' }));
   });
 
   it('opens a recovery modal after a failed manual check', async () => {
@@ -345,8 +361,8 @@ describe('useAutoUpdater presentation state', () => {
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
 
     await act(async () => current.checkForUpdate());
-    let first!: Promise<void>;
-    let second!: Promise<void>;
+    let first!: Promise<unknown>;
+    let second!: Promise<unknown>;
     await act(async () => {
       first = current.startDownload();
       second = current.startDownload();
@@ -382,8 +398,8 @@ describe('useAutoUpdater presentation state', () => {
         resolveCheck = resolve;
       })
     );
-    let pendingCheck!: Promise<void>;
-    let install!: Promise<void>;
+    let pendingCheck!: Promise<unknown>;
+    let install!: Promise<unknown>;
     await act(async () => {
       pendingCheck = current.checkForUpdate();
       install = current.startDownload();
@@ -413,7 +429,7 @@ describe('useAutoUpdater presentation state', () => {
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
 
     await act(async () => current.checkForUpdate());
-    let install!: Promise<void>;
+    let install!: Promise<unknown>;
     await act(async () => {
       install = current.startDownload();
       await Promise.resolve();
@@ -459,7 +475,7 @@ describe('useAutoUpdater presentation state', () => {
         resolveEnvironment = resolve;
       }),
     );
-    let install!: Promise<void>;
+    let install!: Promise<unknown>;
     await act(async () => {
       install = current.startDownload();
       await Promise.resolve();

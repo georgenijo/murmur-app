@@ -58,6 +58,18 @@ the release optional, while a stable minimum version at or below the target
 release is emitted as `min_version` on the modern channel. Invalid or future
 minimum versions fail promotion.
 
+After publication, the release is not done until the previous public build
+passes the real OTA canary on the trusted Mac mini. Run the documented manual
+gate (the mini is tailnet-only, so it is not run on a GitHub-hosted runner):
+
+```bash
+python3 scripts/murmur_canary_fleet.py --tag vX.Y.Z
+```
+
+The command must exit zero and report a complete result-file pass before the
+release is announced. A failed or timed-out canary blocks release follow-up;
+fix the updater and publish a patch release as needed.
+
 Set that file before the version-bump commit:
 
 ```json
@@ -65,8 +77,11 @@ Set that file before the version-bump commit:
 ```
 
 Use a quoted stable version such as `"0.24.0"` only when every installed
-version below that threshold must update or quit. Policy changes receive the
-same code review and trusted-main provenance as the release itself.
+version below that threshold must update or quit. Never set `min_version` to
+force an update until the canary from the currently shipped public version has
+passed: a forced update combined with a broken checker is the worst failure
+mode. Policy changes receive the same code review and trusted-main provenance
+as the release itself.
 
 Immediately before publication, the workflow requires the draft release body
 to match the remotely downloaded updater manifest notes after applying the same

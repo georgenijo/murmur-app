@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 147 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 148 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -287,6 +287,7 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_update_install_environment` | — | `Result<{ appTranslocated: bool }, String>` | Reports whether Gatekeeper launched the current executable through its read-only `AppTranslocation` mount. Does not expose the executable path and fails closed if the current executable cannot be resolved. |
+| `updater_canary` | `request: { action: "read" | "write", result?: JSON }` | `Result<{ path: string | null, result: JSON | null }, String>` | Reads the opt-in `MURMUR_UPDATER_CANARY` result path or atomically writes the app's canary result. With no environment marker, returns an inert state. |
 
 ## Telemetry (`telemetry.rs`)
 

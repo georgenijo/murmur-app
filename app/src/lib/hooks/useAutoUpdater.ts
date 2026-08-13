@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -30,6 +31,38 @@ const APP_TRANSLOCATION_MESSAGE =
   'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.';
 
 type UpdaterOperation = 'idle' | 'checking' | 'installing';
+type CanaryStage = 'pending' | 'passed' | 'failed';
+
+export interface UpdaterCanaryResult {
+  schemaVersion: 1;
+  status: 'pending' | 'passed' | 'failed';
+  checkedVersion: string;
+  offeredVersion: string | null;
+  forced: boolean;
+  stages: {
+    discover: CanaryStage;
+    policy: CanaryStage;
+    download: CanaryStage;
+    signatureVerify: CanaryStage;
+    install: CanaryStage;
+    relaunch: CanaryStage;
+  };
+  error: string | null;
+}
+
+interface UpdaterCanaryState {
+  path: string | null;
+  result: UpdaterCanaryResult | null;
+}
+
+type CheckOutcome =
+  | { kind: 'available'; version: string; forced: boolean; policyVerified: boolean }
+  | { kind: 'current'; version: string }
+  | { kind: 'failed'; version: string; stage: 'discover' | 'policy'; message: string };
+
+type InstallOutcome =
+  | { kind: 'installed'; version: string }
+  | { kind: 'failed'; version: string; message: string };
 
 const UPDATE_CHECK_ATTEMPTS = 2;
 
@@ -43,7 +76,7 @@ export interface UseAutoUpdaterReturn {
   isUpdateDialogOpen: boolean;
   checkForUpdate: () => Promise<void>;
   showAvailableUpdate: () => void;
-  startDownload: () => Promise<void>;
+  startDownload: () => Promise<InstallOutcome | undefined>;
   skipVersion: () => void;
   dismissUpdate: () => void;
   dismissCompletedUpdate: () => void;
@@ -63,6 +96,7 @@ export function useAutoUpdater(
   const pendingCheckRef = useRef<Promise<void> | null>(null);
   const isForcedRef = useRef(false);
   const manualPresentationRequestedRef = useRef(false);
+  const automaticStartupRef = useRef(false);
 
   // The updater process replaces the app before relaunching, so the release
   // payload is recovered from localStorage and shown only after the installed
@@ -90,17 +124,19 @@ export function useAutoUpdater(
     };
   }, []);
 
-  const performCheck = useCallback(async (opts: { isBackground: boolean }) => {
+  const performCheck = useCallback(async (opts: { isBackground: boolean }): Promise<CheckOutcome> => {
     if (operationRef.current === 'installing') {
       flog.info('updater', 'check ignored while install owns updater');
-      return;
+      return { kind: 'failed', version: 'unknown', stage: 'discover', message: 'Updater is installing.' };
     }
     if (!opts.isBackground) {
       clearSkippedVersion();
       manualPresentationRequestedRef.current = true;
       setUpdateStatus({ phase: 'checking' });
     }
-    if (operationRef.current === 'checking') return;
+    if (operationRef.current === 'checking') {
+      return { kind: 'failed', version: 'unknown', stage: 'discover', message: 'Updater check already in progress.' };
+    }
     operationRef.current = 'checking';
     let settleCheck!: () => void;
     pendingCheckRef.current = new Promise<void>((resolve) => {
@@ -143,7 +179,7 @@ export function useAutoUpdater(
           // Reset back to idle after a brief display
           setTimeout(() => setUpdateStatus(s => s.phase === 'up-to-date' ? { phase: 'idle' } : s), 3000);
         }
-        return;
+        return { kind: 'current', version: await getVersion() };
       }
 
       flog.info('updater', 'update available', { version: update.version });
@@ -171,7 +207,7 @@ export function useAutoUpdater(
         if (shouldPresentManualResult()) {
           setUpdateStatus({ phase: 'idle' });
         }
-        return;
+        return { kind: 'current', version: currentVersion };
       }
 
       const wasAlreadyAvailable = updateRef.current?.version === update.version;
@@ -203,6 +239,12 @@ export function useAutoUpdater(
           flog.warn('updater', 'notification failed', { error: String(err) });
         }
       }
+      return {
+        kind: 'available',
+        version: update.version,
+        forced: isForced,
+        policyVerified: policy.status !== 'unavailable',
+      };
     } catch (err) {
       flog.error('updater', 'check failed', {
         event_code: 'updater.check_failed',
@@ -218,6 +260,7 @@ export function useAutoUpdater(
         });
       }
       // Background errors are silent
+      return { kind: 'failed', version: 'unknown', stage: 'discover', message: String(err) };
     } finally {
       if (operationRef.current === 'checking') {
         operationRef.current = 'idle';
@@ -227,55 +270,6 @@ export function useAutoUpdater(
       manualPresentationRequestedRef.current = false;
     }
   }, []);
-
-  // On mount: always check on launch. A short, inert timer only asks whether
-  // the six-hour network interval is due; native wake events and foreground
-  // activation use the same gate so hidden/sleeping webviews do not strand the
-  // update indicator.
-  // Skip entirely in dev — a dev build auto-updating to a prod release would
-  // download+relaunch into /Applications, making `tauri dev` impossible.
-  useEffect(() => {
-    if (!automaticChecksEnabled) {
-      flog.info('updater', 'dev build — skipping automatic update check');
-      return;
-    }
-
-    performCheck({ isBackground: true });
-
-    const checkIfDue = () => {
-      if (isDueForCheck()) {
-        performCheck({ isBackground: true });
-      }
-    };
-    const interval = setInterval(checkIfDue, CHECK_TIMER_TICK_MS);
-    const onFocus = () => checkIfDue();
-    const onVisibilityChange = () => {
-      if (!document.hidden) checkIfDue();
-    };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
-    let disposed = false;
-    let unlistenWake: (() => void) | undefined;
-    listen<unknown>('updater-background-check-requested', checkIfDue)
-      .then((unlisten) => {
-        if (disposed) unlisten();
-        else unlistenWake = unlisten;
-      })
-      .catch((err) => {
-        flog.warn('updater', 'could not listen for native wake checks', {
-          error: String(err),
-        });
-      });
-
-    return () => {
-      disposed = true;
-      clearInterval(interval);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      unlistenWake?.();
-    };
-  }, [automaticChecksEnabled, performCheck]);
 
   const checkForUpdate = useCallback(async () => {
     await performCheck({ isBackground: false });
@@ -290,7 +284,7 @@ export function useAutoUpdater(
     }
   }, [updateStatus]);
 
-  const startDownload = useCallback(async () => {
+  const startDownload = useCallback(async (): Promise<InstallOutcome | undefined> => {
     if (operationRef.current === 'checking') {
       flog.info('updater', 'install waiting for in-flight update check');
       await pendingCheckRef.current;
@@ -299,10 +293,10 @@ export function useAutoUpdater(
       flog.info('updater', 'install ignored because updater is already busy', {
         operation: operationRef.current,
       });
-      return;
+      return undefined;
     }
     const update = updateRef.current;
-    if (!update) return;
+    if (!update) return undefined;
 
     const version =
       updateStatus.phase === 'available' ? updateStatus.version
@@ -324,7 +318,7 @@ export function useAutoUpdater(
           recovery: 'reinstall',
         });
         operationRef.current = 'idle';
-        return;
+        return { kind: 'failed', version, message: APP_TRANSLOCATION_MESSAGE };
       }
 
       setUpdateStatus({ phase: 'downloading', version, progress: 0 });
@@ -362,6 +356,7 @@ export function useAutoUpdater(
       });
       clearSkippedVersion();
       await relaunch();
+      return { kind: 'installed', version };
     } catch (err) {
       operationRef.current = 'idle';
       flog.error('updater', 'download/install failed', {
@@ -374,8 +369,163 @@ export function useAutoUpdater(
         message: String(err),
         isForced: isForcedRef.current,
       });
+      return { kind: 'failed', version, message: String(err) };
     }
   }, [updateStatus]);
+
+  const writeCanary = useCallback(async (result: UpdaterCanaryResult) => {
+    await invoke<UpdaterCanaryState>('updater_canary', { action: 'write', result });
+  }, []);
+
+  const runCanary = useCallback(async (previous: UpdaterCanaryResult | null) => {
+    const checkedVersion = await getVersion();
+    // A pending result with the offered version means this is the post-install
+    // launch. The running version is the final assertion of the OTA.
+    if (previous?.status === 'pending' && previous.offeredVersion === checkedVersion) {
+      await writeCanary({
+        ...previous,
+        status: 'passed',
+        stages: { ...previous.stages, relaunch: 'passed' },
+        error: null,
+      });
+      return;
+    }
+
+    const outcome = await performCheck({ isBackground: true });
+    if (outcome.kind !== 'available') {
+      await writeCanary({
+        schemaVersion: 1,
+        status: 'failed',
+        checkedVersion,
+        offeredVersion: null,
+        forced: false,
+        stages: {
+          discover: outcome.kind === 'current' ? 'passed' : 'failed',
+          policy: outcome.kind === 'current' ? 'passed' : outcome.stage === 'policy' ? 'failed' : 'pending',
+          download: 'pending',
+          signatureVerify: 'pending',
+          install: 'pending',
+          relaunch: 'pending',
+        },
+        error: outcome.kind === 'current'
+          ? 'No update was available for the canary run.'
+          : outcome.message,
+      });
+      return;
+    }
+
+    if (!outcome.policyVerified) {
+      await writeCanary({
+        schemaVersion: 1,
+        status: 'failed',
+        checkedVersion,
+        offeredVersion: outcome.version,
+        forced: outcome.forced,
+        stages: {
+          discover: 'passed',
+          policy: 'failed',
+          download: 'pending',
+          signatureVerify: 'pending',
+          install: 'pending',
+          relaunch: 'pending',
+        },
+        error: 'Update policy could not be parsed from the native updater response.',
+      });
+      return;
+    }
+
+    await writeCanary({
+      schemaVersion: 1,
+      status: 'pending',
+      checkedVersion,
+      offeredVersion: outcome.version,
+      forced: outcome.forced,
+      stages: {
+        discover: 'passed',
+        policy: 'passed',
+        // downloadAndInstall owns all three production operations; these are
+        // marked ready before the call so the file survives relaunch.
+        download: 'passed',
+        signatureVerify: 'passed',
+        install: 'passed',
+        relaunch: 'pending',
+      },
+      error: null,
+    });
+
+    const install = await startDownload();
+    if (!install || install.kind === 'installed') return;
+    await writeCanary({
+      schemaVersion: 1,
+      status: 'failed',
+      checkedVersion,
+      offeredVersion: outcome.version,
+      forced: outcome.forced,
+      stages: {
+        discover: 'passed',
+        policy: 'passed',
+        download: 'failed',
+        signatureVerify: 'failed',
+        install: 'failed',
+        relaunch: 'pending',
+      },
+      error: install.message,
+    });
+  }, [performCheck, startDownload, writeCanary]);
+
+  // On mount, inspect the opt-in canary marker before the normal launch check.
+  // An absent marker falls straight through to the existing updater behavior.
+  useEffect(() => {
+    if (!automaticChecksEnabled) {
+      flog.info('updater', 'dev build — skipping automatic update check');
+      return;
+    }
+    if (automaticStartupRef.current) return;
+    automaticStartupRef.current = true;
+
+    let disposed = false;
+    const start = async () => {
+      try {
+        const canary = await invoke<UpdaterCanaryState>('updater_canary', { action: 'read' });
+        if (disposed) return;
+        if (canary.path) await runCanary(canary.result);
+        else await performCheck({ isBackground: true });
+      } catch (error) {
+        flog.warn('updater', 'could not inspect updater canary state', { error: String(error) });
+        if (!disposed) await performCheck({ isBackground: true });
+      }
+    };
+    start();
+
+    const checkIfDue = () => {
+      if (isDueForCheck()) performCheck({ isBackground: true });
+    };
+    const interval = setInterval(checkIfDue, CHECK_TIMER_TICK_MS);
+    const onFocus = () => checkIfDue();
+    const onVisibilityChange = () => {
+      if (!document.hidden) checkIfDue();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    let unlistenWake: (() => void) | undefined;
+    listen<unknown>('updater-background-check-requested', checkIfDue)
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unlistenWake = unlisten;
+      })
+      .catch((err) => {
+        flog.warn('updater', 'could not listen for native wake checks', { error: String(err) });
+      });
+
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      unlistenWake?.();
+    };
+  }, [automaticChecksEnabled, performCheck, runCanary]);
 
   const skipVersion = useCallback(() => {
     if (updateStatus.phase === 'available') {
