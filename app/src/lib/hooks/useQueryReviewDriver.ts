@@ -24,10 +24,18 @@ interface QueryChunkPayload {
   text: string;
 }
 
+export interface QuerySignIn {
+  provider: string;
+  hint: string;
+}
+
 interface QueryContent {
   queryPassId: number | null;
   answer: string;
   context: QueryContextDisplay | null;
+  /** Bounded stderr tail from the failed run, requester-gated to this window. */
+  errorDetail: string | null;
+  signIn: QuerySignIn | null;
 }
 
 export interface QueryContextDisplay {
@@ -66,6 +74,8 @@ export function useQueryReviewDriver() {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
   const [context, setContext] = useState<QueryContextDisplay | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [signIn, setSignIn] = useState<QuerySignIn | null>(null);
   const passIdRef = useRef<number | null>(null);
   const nextSequenceRef = useRef(0);
 
@@ -79,10 +89,17 @@ export function useQueryReviewDriver() {
     const refresh = async (expectedPassId: number) => {
       try {
         const content = await invoke<QueryContent>('get_query_review_content');
-        if (!disposed && content.queryPassId === expectedPassId && typeof content.answer === 'string') {
+        if (disposed || content.queryPassId !== expectedPassId) return;
+        if (typeof content.answer === 'string') {
           setAnswer(content.answer);
           setContext(content.context ?? null);
         }
+        setErrorDetail(typeof content.errorDetail === 'string' && content.errorDetail ? content.errorDetail : null);
+        setSignIn(
+          content.signIn && typeof content.signIn.provider === 'string' && typeof content.signIn.hint === 'string'
+            ? content.signIn
+            : null,
+        );
       } catch {
         flog.warn('query-review', 'could not refresh answer content');
       }
@@ -97,6 +114,8 @@ export function useQueryReviewDriver() {
           nextSequenceRef.current = 0;
           setAnswer('');
           setContext(null);
+          setErrorDetail(null);
+          setSignIn(null);
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
@@ -133,6 +152,8 @@ export function useQueryReviewDriver() {
         setErrorCode(null);
         setAnswer('');
         setContext(null);
+        setErrorDetail(null);
+        setSignIn(null);
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); unlistenHidden(); }
     };
@@ -165,5 +186,17 @@ export function useQueryReviewDriver() {
     });
   }, []);
 
-  return { state, errorCode, answer, context, cancel, copy };
+  /**
+   * Hand the pass off to the provider's own login. Murmur never sees the
+   * credential — the vendor CLI opens in Terminal and the user finishes there.
+   */
+  const startSignIn = useCallback(() => {
+    const queryPassId = passIdRef.current;
+    if (queryPassId === null) return;
+    void invoke('launch_query_pass_login', { queryPassId }).catch(() => {
+      flog.warn('query-review', 'sign-in launch failed', { query_pass_id: queryPassId });
+    });
+  }, []);
+
+  return { state, errorCode, answer, context, errorDetail, signIn, cancel, copy, startSignIn };
 }

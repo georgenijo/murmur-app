@@ -48,6 +48,7 @@ describe('useQueryFlow', () => {
           executable: '/usr/bin/printf',
           arguments: ['%s'],
           timeoutSeconds: 60,
+          presetId: 'claude',
         },
         context: {
           level: 2,
@@ -78,6 +79,9 @@ describe('useQueryFlow', () => {
         executable: '/usr/bin/printf',
         arguments: ['%s'],
         timeoutSeconds: 60,
+        // The preset rides along with the command so the backend knows whose
+        // auth signatures and login to use when the run fails (#550).
+        presetId: 'claude',
       },
       context: {
         level: 2,

@@ -206,6 +206,12 @@ export interface Settings {
   transformHoldKey: TransformKey | null;
   /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
   queryHotkey: QueryKey | null;
+  /**
+   * Provider preset the query command was configured from (`'custom'` when it
+   * was assembled by hand). It selects auth signatures and the offered sign-in;
+   * it never changes what Murmur spawns.
+   */
+  queryPresetId: string;
   /** Absolute path to the exact user-selected CLI executable. */
   queryExecutable: string;
   /** Fixed argv elements placed before the one-element spoken question. */
@@ -376,6 +382,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Disabled by default — no settings UI to configure it yet (Phase D).
   transformHoldKey: null,
   queryHotkey: null,
+  queryPresetId: 'custom',
   queryExecutable: '',
   queryArguments: [],
   queryTimeoutSeconds: 60,
@@ -633,6 +640,9 @@ export function loadSettings(): Settings {
         ) {
           parsed.queryHotkey = DEFAULT_SETTINGS.queryHotkey;
         }
+      }
+      if (typeof parsed.queryPresetId !== 'string' || parsed.queryPresetId.length > 32) {
+        parsed.queryPresetId = DEFAULT_SETTINGS.queryPresetId;
       }
       if (typeof parsed.queryExecutable !== 'string') {
         parsed.queryExecutable = DEFAULT_SETTINGS.queryExecutable;

@@ -207,6 +207,7 @@ function App() {
       executable: settings.queryExecutable,
       arguments: settings.queryArguments,
       timeoutSeconds: settings.queryTimeoutSeconds,
+      presetId: settings.queryPresetId === 'custom' ? null : settings.queryPresetId,
     },
     context: {
       level: settings.queryContextLevel,

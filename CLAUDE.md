@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (148 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (155 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 148 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 155 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -139,6 +139,9 @@ Read these before working on a feature:
 | `knowledge_store/` (`repository.rs`, `types.rs`) | SQLite knowledge store: migrations, repository, typed records, backup/quarantine |
 | `selection.rs` | AX selection capture for transform (secure-field fail-closed) |
 | `transform_apply.rs` | Approve/undo write-back (only path that writes to the target app) |
+| `query_flow.rs` | Voice-query orchestration, bounded stdout/stderr streaming, owned CLI child |
+| `query_presets.rs` | Provider presets, binary discovery, auth preflight, vendor login launch |
+| `query_env.rs` | Declared query-CLI environment variables (validated, 0600, Rust-owned) |
 | `transform_flow.rs` | End-to-end transform orchestrator + Tauri commands |
 | `transform_presets.rs` | Built-in spoken transform presets (Shorten/Bullets/…) |
 | `transform_diagnostics.rs` / `transform_trace.rs` | Per-pass records, consented captures, pass-scoped correlation |
