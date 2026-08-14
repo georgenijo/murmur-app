@@ -49,7 +49,7 @@ function isIncompleteCodexDetail(errorDetail?: string | null): boolean {
     );
 }
 
-function statusLabel(state: QueryReviewState, errorCode: string | null): string {
+export function statusLabel(state: QueryReviewState, errorCode: string | null): string {
   switch (state) {
     case 'connecting': return 'Connecting microphone…';
     case 'listening': return 'Listening — tap the query key once when done';
@@ -58,6 +58,7 @@ function statusLabel(state: QueryReviewState, errorCode: string | null): string 
     case 'ready':
       if (errorCode === 'clipboard_unavailable') return 'Answer ready';
       if (errorCode === 'clipboard_superseded') return 'Answer ready — clipboard left alone';
+      if (errorCode === 'auto_copy_disabled' || errorCode === 'auto_copy_unavailable') return 'Answer ready';
       return 'Answer copied to clipboard';
     case 'failed': return 'Voice query failed';
     default: return 'Voice Query';
@@ -65,9 +66,14 @@ function statusLabel(state: QueryReviewState, errorCode: string | null): string 
 }
 
 export function queryErrorMessage(errorCode: string | null, errorDetail?: string | null): string | null {
-  // `clipboard_superseded` is a successful answer whose auto-copy deferred to a
-  // clipboard write the user made while it was generating — not a failure.
-  if (!errorCode || errorCode === 'audio_stalled' || errorCode === 'clipboard_superseded') {
+  // These are successful answers whose clipboard delivery was intentionally
+  // skipped or deferred. They remain available through the explicit Copy action.
+  if (!errorCode || [
+    'audio_stalled',
+    'clipboard_superseded',
+    'auto_copy_disabled',
+    'auto_copy_unavailable',
+  ].includes(errorCode)) {
     return null;
   }
   if (
@@ -94,6 +100,37 @@ export function formatQueryUsage(usage: QueryUsage | null): string | null {
   return parts.join(' · ');
 }
 
+function queryFooterText(
+  state: QueryReviewState,
+  errorCode: string | null,
+  usageText: string | null,
+): string {
+  if (errorCode === 'clipboard_unavailable') {
+    return usageText
+      ? `Clipboard unavailable · ${usageText} · never auto-pasted`
+      : 'Clipboard unavailable · never auto-pasted';
+  }
+  if (errorCode === 'clipboard_superseded') {
+    return usageText
+      ? `Clipboard left as-is · ${usageText} · press Copy for the answer`
+      : 'Clipboard left as-is · press Copy for the answer';
+  }
+  if (errorCode === 'auto_copy_disabled') {
+    return usageText
+      ? `Automatic copy off · ${usageText} · press Copy for the answer`
+      : 'Automatic copy off · press Copy for the answer';
+  }
+  if (errorCode === 'auto_copy_unavailable') {
+    return usageText
+      ? `Automatic copy unavailable · ${usageText} · press Copy for the answer`
+      : 'Automatic copy unavailable · press Copy for the answer';
+  }
+  if (state === 'ready') {
+    return usageText ? `${usageText} · Never auto-pasted` : 'Never auto-pasted';
+  }
+  return 'Esc to cancel';
+}
+
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
   const errorMessage = useMemo(
@@ -112,17 +149,7 @@ export function QueryReviewApp() {
   const primaryText = driver.state === 'failed'
     ? errorMessage ?? 'The voice query could not be completed.'
     : driver.answer || errorMessage || (terminal ? 'No answer was returned.' : '');
-  const footerText = driver.errorCode === 'clipboard_unavailable'
-    ? usageText
-      ? `Clipboard unavailable · ${usageText} · never auto-pasted`
-      : 'Clipboard unavailable · never auto-pasted'
-    : driver.errorCode === 'clipboard_superseded'
-      ? usageText
-        ? `Clipboard left as-is · ${usageText} · press Copy for the answer`
-        : 'Clipboard left as-is · press Copy for the answer'
-      : driver.state === 'ready'
-        ? usageText ? `${usageText} · Never auto-pasted` : 'Never auto-pasted'
-        : 'Esc to cancel';
+  const footerText = queryFooterText(driver.state, driver.errorCode, usageText);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

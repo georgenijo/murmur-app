@@ -289,9 +289,46 @@ struct QuerySession {
     context: Arc<DictationContextSnapshot>,
     query_context: QueryContextSnapshot,
     command: ValidatedQueryCommand,
+    automatically_copy_answer: bool,
     answer: String,
     usage: Option<QueryUsage>,
     error_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryReadyOutcome {
+    Copied,
+    AutoCopyDisabled,
+    AutoCopyUnavailable,
+    ClipboardSuperseded,
+    ClipboardUnavailable,
+    EmptyAnswer,
+    Stale,
+}
+
+impl QueryReadyOutcome {
+    fn error_code(self) -> Option<&'static str> {
+        match self {
+            Self::Copied => None,
+            Self::AutoCopyDisabled => Some("auto_copy_disabled"),
+            Self::AutoCopyUnavailable => Some("auto_copy_unavailable"),
+            Self::ClipboardSuperseded => Some("clipboard_superseded"),
+            Self::ClipboardUnavailable => Some("clipboard_unavailable"),
+            Self::EmptyAnswer | Self::Stale => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryRunCompletion {
+    auto_copy_eligible: bool,
+}
+
+fn auto_copy_eligible(provider: QueryProviderId, used_structured_output: bool) -> bool {
+    match provider {
+        QueryProviderId::Claude | QueryProviderId::Codex => used_structured_output,
+        QueryProviderId::Grok | QueryProviderId::Cursor | QueryProviderId::Custom => true,
+    }
 }
 
 struct QueryPassTracker {
@@ -815,6 +852,88 @@ impl QueryCoordinator {
         true
     }
 
+    /// Claim a successful terminal answer and, when permitted by the pass
+    /// snapshot, write it to the clipboard exactly once.
+    ///
+    /// Ownership stays held through the clipboard write. Cancellation, a
+    /// duplicate completion, and a newer pass therefore cannot make a stale
+    /// answer observable between validation and the side effect.
+    fn finalize_ready_answer<CurrentGeneration, WriteClipboard>(
+        &self,
+        pass_id: u64,
+        clipboard_generation: Option<u64>,
+        auto_copy_eligible: bool,
+        current_generation: CurrentGeneration,
+        write_clipboard: WriteClipboard,
+    ) -> QueryReadyOutcome
+    where
+        CurrentGeneration: FnOnce() -> u64,
+        WriteClipboard: FnOnce(&str) -> Result<(), ()>,
+    {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return QueryReadyOutcome::Stale;
+        }
+        let mut status = self.status.lock_or_recover();
+        if *status != QueryStatus::Running {
+            return QueryReadyOutcome::Stale;
+        }
+        let session = self.session.lock_or_recover();
+        let Some(session) = session
+            .as_ref()
+            .filter(|session| session.pass_id == pass_id)
+        else {
+            return QueryReadyOutcome::Stale;
+        };
+        if session.answer.trim().is_empty() {
+            return QueryReadyOutcome::EmptyAnswer;
+        }
+
+        let outcome = if !session.automatically_copy_answer {
+            // Disabled passes do not even inspect clipboard ownership.
+            QueryReadyOutcome::AutoCopyDisabled
+        } else if !auto_copy_eligible {
+            // Structured-provider parse fallback remains reviewable, but raw
+            // provider frames are not safe to claim automatically.
+            QueryReadyOutcome::AutoCopyUnavailable
+        } else if clipboard_generation
+            .is_none_or(|snapshot| !may_claim_clipboard(snapshot, current_generation()))
+        {
+            QueryReadyOutcome::ClipboardSuperseded
+        } else if write_clipboard(&session.answer).is_err() {
+            QueryReadyOutcome::ClipboardUnavailable
+        } else {
+            QueryReadyOutcome::Copied
+        };
+        *status = QueryStatus::Ready;
+        outcome
+    }
+
+    /// Manual Copy uses the same ownership fence: only the exact active Ready
+    /// pass can write, and it cannot become stale between validation and the
+    /// clipboard side effect.
+    fn copy_ready_answer<WriteClipboard>(
+        &self,
+        pass_id: u64,
+        write_clipboard: WriteClipboard,
+    ) -> Result<(), String>
+    where
+        WriteClipboard: FnOnce(&str) -> Result<(), String>,
+    {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) || *self.status.lock_or_recover() != QueryStatus::Ready {
+            return Err("That query answer is no longer available.".to_string());
+        }
+        let session = self.session.lock_or_recover();
+        let answer = session
+            .as_ref()
+            .filter(|session| session.pass_id == pass_id)
+            .map(|session| session.answer.as_str())
+            .filter(|answer| !answer.is_empty())
+            .ok_or_else(|| "That query answer is no longer available.".to_string())?;
+        write_clipboard(answer)
+    }
+
     #[cfg(test)]
     fn begin_cancel(&self, pass_id: u64) -> bool {
         let _ownership = self.ownership.lock_or_recover();
@@ -1198,10 +1317,14 @@ fn validate_command_for_app(
     validate_command(config, environment, working_directory)
 }
 
-fn require_window(window: &tauri::WebviewWindow, expected: &str) -> Result<(), String> {
-    (window.label() == expected)
+fn require_window_label(actual: &str, expected: &str) -> Result<(), String> {
+    (actual == expected)
         .then_some(())
         .ok_or_else(|| "This Voice Query command is not available from this window.".to_string())
+}
+
+fn require_window(window: &tauri::WebviewWindow, expected: &str) -> Result<(), String> {
+    require_window_label(window.label(), expected)
 }
 
 #[derive(Serialize)]
@@ -1680,11 +1803,14 @@ async fn resolve_query_context(
 #[tauri::command]
 pub(crate) async fn start_query_capture(
     app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
     query_pass_id: u64,
+    automatically_copy_answer: bool,
     command: QueryCommandConfig,
 ) -> Result<(), String> {
+    require_window(&window, "main")?;
     let provider = command.provider;
     let retain_history = command.retain_query_history;
     let history_epoch = retain_history
@@ -1780,6 +1906,7 @@ pub(crate) async fn start_query_capture(
         context: Arc::clone(&context),
         query_context,
         command,
+        automatically_copy_answer,
         answer: String::new(),
         usage: None,
         error_detail: None,
@@ -2304,7 +2431,7 @@ fn run_cli(
     pass_id: u64,
     command: ValidatedQueryCommand,
     prompt: String,
-) -> Result<(), QueryRunError> {
+) -> Result<QueryRunCompletion, QueryRunError> {
     let _worker_guard = QueryWorkerGuard {
         app: app.clone(),
         pass_id,
@@ -2724,7 +2851,9 @@ fn run_cli(
             &stderr_tail,
         ));
     }
-    Ok(())
+    Ok(QueryRunCompletion {
+        auto_copy_eligible: auto_copy_eligible(command.provider, completion.used_structured_output),
+    })
 }
 
 #[tauri::command]
@@ -2810,10 +2939,13 @@ pub(crate) async fn finish_query_capture(
     }
     emit_state(&app_handle, query_pass_id, QueryStatus::Running, None);
 
-    // Snapshot the clipboard before the CLI runs. Dictation is allowed to start
-    // during `Running`, so the user may deliberately produce and paste text
-    // while the answer generates; if that happened we must not overwrite it.
-    let clipboard_generation = crate::injector::clipboard_write_generation();
+    // Snapshot the clipboard before the CLI runs only for passes that opted
+    // into automatic copying. Dictation is allowed to start during `Running`,
+    // so the user may deliberately produce and paste text while the answer
+    // generates; if that happened we must not overwrite it.
+    let clipboard_generation = session
+        .automatically_copy_answer
+        .then(crate::injector::clipboard_write_generation);
 
     let command = session.command;
     let worker_app = app_handle.clone();
@@ -2846,25 +2978,18 @@ pub(crate) async fn finish_query_capture(
         return Ok(());
     }
     match result {
-        Ok(()) => {
-            let answer = state.query.answer(query_pass_id).unwrap_or_default();
-            if answer.trim().is_empty() {
+        Ok(completion) => {
+            let ready_outcome = state.query.finalize_ready_answer(
+                query_pass_id,
+                clipboard_generation,
+                completion.auto_copy_eligible,
+                crate::injector::clipboard_write_generation,
+                |answer| crate::injector::write_clipboard_text(answer).map_err(|_| ()),
+            );
+            if ready_outcome == QueryReadyOutcome::EmptyAnswer {
                 fail_query(&app_handle, &state, query_pass_id, "empty_answer");
-            } else if state.query.set_status(query_pass_id, QueryStatus::Ready) {
-                let clipboard_error = if !may_claim_clipboard(
-                    clipboard_generation,
-                    crate::injector::clipboard_write_generation(),
-                ) {
-                    // Something else claimed the clipboard while the answer was
-                    // generating. Defer to it: the answer stays in the popover
-                    // behind Copy, rather than silently replacing text the user
-                    // may already have pasted somewhere.
-                    Some("clipboard_superseded")
-                } else {
-                    crate::injector::write_clipboard_text(&answer)
-                        .err()
-                        .map(|_| "clipboard_unavailable")
-                };
+            } else if ready_outcome != QueryReadyOutcome::Stale {
+                let clipboard_error = ready_outcome.error_code();
                 let _ = crate::commands::query_popover::set_expanded_internal(&app_handle, true);
                 emit_state(
                     &app_handle,
@@ -2957,20 +3082,14 @@ pub(crate) fn cancel_query(
 
 #[tauri::command]
 pub(crate) fn copy_query_answer(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::State>,
     query_pass_id: u64,
 ) -> Result<(), String> {
-    if state.query.active_pass_id() != Some(query_pass_id)
-        || state.query.status() != QueryStatus::Ready
-    {
-        return Err("That query answer is no longer available.".to_string());
-    }
-    let answer = state
+    require_window(&window, "query-review")?;
+    state
         .query
-        .answer(query_pass_id)
-        .filter(|answer| !answer.is_empty())
-        .ok_or_else(|| "That query answer is no longer available.".to_string())?;
-    crate::injector::write_clipboard_text(&answer)
+        .copy_ready_answer(query_pass_id, crate::injector::write_clipboard_text)
 }
 
 #[tauri::command]
@@ -3027,6 +3146,36 @@ mod tests {
                 AnswerUpdate::Replace(text) => query.replace_answer(pass_id, text).unwrap(),
             }
         }
+    }
+
+    fn install_test_query_session(
+        query: &QueryCoordinator,
+        pass_id: u64,
+        automatically_copy_answer: bool,
+        answer: &str,
+    ) {
+        assert!(query.install_session(
+            pass_id,
+            QuerySession {
+                pass_id,
+                context: test_dictation_context(),
+                query_context: QueryContextSnapshot::default(),
+                command: ValidatedQueryCommand {
+                    provider: QueryProviderId::Custom,
+                    executable: PathBuf::from("/usr/bin/printf"),
+                    arguments: vec![],
+                    timeout: Duration::from_secs(5),
+                    environment: vec![],
+                    working_directory: std::env::temp_dir(),
+                    context_level: QueryContextLevel::None,
+                },
+                automatically_copy_answer,
+                answer: answer.to_string(),
+                usage: None,
+                error_detail: None,
+            },
+        ));
+        assert!(query.set_status(pass_id, QueryStatus::Running));
     }
 
     #[test]
@@ -3096,6 +3245,198 @@ mod tests {
         assert!(may_claim_clipboard(7, 7));
         // A dictation (or transform) landed mid-run — leave its text in place.
         assert!(!may_claim_clipboard(7, 8));
+    }
+
+    #[test]
+    fn only_valid_structured_or_declared_raw_output_is_auto_copy_eligible() {
+        assert!(auto_copy_eligible(QueryProviderId::Claude, true));
+        assert!(auto_copy_eligible(QueryProviderId::Codex, true));
+        assert!(!auto_copy_eligible(QueryProviderId::Claude, false));
+        assert!(!auto_copy_eligible(QueryProviderId::Codex, false));
+        for provider in [
+            QueryProviderId::Grok,
+            QueryProviderId::Cursor,
+            QueryProviderId::Custom,
+        ] {
+            assert!(auto_copy_eligible(provider, false));
+        }
+    }
+
+    #[test]
+    fn successful_answer_is_copied_exactly_once() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&query, pass_id, true, "bounded answer");
+        let writes = std::cell::Cell::new(0);
+
+        let first = query.finalize_ready_answer(
+            pass_id,
+            Some(7),
+            true,
+            || 7,
+            |answer| {
+                assert_eq!(answer, "bounded answer");
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        );
+        let duplicate = query.finalize_ready_answer(
+            pass_id,
+            Some(7),
+            true,
+            || 7,
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(first, QueryReadyOutcome::Copied);
+        assert_eq!(duplicate, QueryReadyOutcome::Stale);
+        assert_eq!(writes.get(), 1);
+        assert_eq!(query.status(), QueryStatus::Ready);
+    }
+
+    #[test]
+    fn disabled_pass_never_inspects_or_writes_the_clipboard() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&query, pass_id, false, "manual answer");
+
+        let outcome = query.finalize_ready_answer(
+            pass_id,
+            None,
+            true,
+            || panic!("disabled auto-copy must not inspect clipboard ownership"),
+            |_| panic!("disabled auto-copy must not write the clipboard"),
+        );
+
+        assert_eq!(outcome, QueryReadyOutcome::AutoCopyDisabled);
+        assert_eq!(outcome.error_code(), Some("auto_copy_disabled"));
+        assert_eq!(query.status(), QueryStatus::Ready);
+    }
+
+    #[test]
+    fn clipboard_supersession_and_failure_remain_successful_without_duplicate_writes() {
+        let superseded = QueryCoordinator::default();
+        let pass_id = superseded.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&superseded, pass_id, true, "answer");
+        let outcome = superseded.finalize_ready_answer(
+            pass_id,
+            Some(7),
+            true,
+            || 8,
+            |_| panic!("a superseded answer must not write"),
+        );
+        assert_eq!(outcome, QueryReadyOutcome::ClipboardSuperseded);
+        assert_eq!(superseded.status(), QueryStatus::Ready);
+
+        let unavailable = QueryCoordinator::default();
+        let pass_id = unavailable.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&unavailable, pass_id, true, "answer");
+        let writes = std::cell::Cell::new(0);
+        let outcome = unavailable.finalize_ready_answer(
+            pass_id,
+            Some(9),
+            true,
+            || 9,
+            |_| {
+                writes.set(writes.get() + 1);
+                Err(())
+            },
+        );
+        assert_eq!(outcome, QueryReadyOutcome::ClipboardUnavailable);
+        assert_eq!(writes.get(), 1);
+        assert_eq!(unavailable.status(), QueryStatus::Ready);
+    }
+
+    #[test]
+    fn malformed_structured_fallback_and_nonterminal_answers_never_auto_copy() {
+        let malformed = QueryCoordinator::default();
+        let pass_id = malformed.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&malformed, pass_id, true, "raw provider frame");
+        let outcome = malformed.finalize_ready_answer(
+            pass_id,
+            Some(4),
+            false,
+            || panic!("an ineligible fallback must not inspect clipboard ownership"),
+            |_| panic!("an ineligible fallback must not write"),
+        );
+        assert_eq!(outcome, QueryReadyOutcome::AutoCopyUnavailable);
+        assert_eq!(outcome.error_code(), Some("auto_copy_unavailable"));
+
+        let empty = QueryCoordinator::default();
+        let pass_id = empty.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&empty, pass_id, true, "   ");
+        assert_eq!(
+            empty.finalize_ready_answer(
+                pass_id,
+                Some(1),
+                true,
+                || panic!("empty output must not inspect clipboard ownership"),
+                |_| panic!("empty output must not write"),
+            ),
+            QueryReadyOutcome::EmptyAnswer
+        );
+
+        let cancelled = QueryCoordinator::default();
+        let pass_id = cancelled.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&cancelled, pass_id, true, "stale answer");
+        assert!(cancelled.begin_cancel(pass_id));
+        assert_eq!(
+            cancelled.finalize_ready_answer(
+                pass_id,
+                Some(1),
+                true,
+                || panic!("cancelled output must not inspect clipboard ownership"),
+                |_| panic!("cancelled output must not write"),
+            ),
+            QueryReadyOutcome::Stale
+        );
+    }
+
+    #[test]
+    fn voice_query_requester_labels_are_fail_closed() {
+        assert!(require_window_label("main", "main").is_ok());
+        assert!(require_window_label("query-review", "query-review").is_ok());
+        assert!(require_window_label("overlay", "main").is_err());
+        assert!(require_window_label("main", "query-review").is_err());
+    }
+
+    #[test]
+    fn manual_copy_is_fenced_to_the_exact_ready_pass() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        install_test_query_session(&query, pass_id, false, "manual answer");
+        assert_eq!(
+            query.finalize_ready_answer(
+                pass_id,
+                None,
+                true,
+                || panic!("disabled auto-copy must not inspect clipboard ownership"),
+                |_| panic!("disabled auto-copy must not write"),
+            ),
+            QueryReadyOutcome::AutoCopyDisabled
+        );
+        let writes = std::cell::Cell::new(0);
+        query
+            .copy_ready_answer(pass_id, |answer| {
+                assert_eq!(answer, "manual answer");
+                writes.set(writes.get() + 1);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(writes.get(), 1);
+
+        let next_pass = query.allocate_keyboard_pass().unwrap();
+        assert_eq!(next_pass, pass_id + 1);
+        assert!(query
+            .copy_ready_answer(pass_id, |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(writes.get(), 1);
     }
 
     #[test]
@@ -3270,6 +3611,7 @@ mod tests {
                     working_directory: temp.path().to_path_buf(),
                     context_level: QueryContextLevel::Selection,
                 },
+                automatically_copy_answer: true,
                 answer: String::new(),
                 usage: None,
                 error_detail: None,
@@ -3389,6 +3731,7 @@ mod tests {
                     working_directory: temp.path().to_path_buf(),
                     context_level: QueryContextLevel::Selection,
                 },
+                automatically_copy_answer: true,
                 answer: String::new(),
                 usage: None,
                 error_detail: None,
@@ -3445,6 +3788,7 @@ mod tests {
                     working_directory: temp.path().to_path_buf(),
                     context_level: QueryContextLevel::Application,
                 },
+                automatically_copy_answer: true,
                 answer: String::new(),
                 usage: None,
                 error_detail: None,
@@ -3803,6 +4147,7 @@ mod tests {
                     working_directory: std::env::temp_dir(),
                     context_level: QueryContextLevel::None,
                 },
+                automatically_copy_answer: true,
                 answer: "a".repeat(MAX_ANSWER_BYTES),
                 usage: None,
                 error_detail: None,

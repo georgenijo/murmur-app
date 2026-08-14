@@ -36,6 +36,8 @@ export const QUERY_HISTORY_ERROR_CODES = [
   'provider_error',
   'exit_nonzero',
   'empty_answer',
+  'auto_copy_disabled',
+  'auto_copy_unavailable',
   'clipboard_superseded',
   'clipboard_unavailable',
   'cancelled',

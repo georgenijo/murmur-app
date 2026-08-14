@@ -33,6 +33,13 @@ function tokenSummary(tokens: NonNullable<ReturnType<typeof useQueryHistory>['en
   return parts.join(' · ');
 }
 
+const READY_DELIVERY_LABELS: Record<string, string> = {
+  auto_copy_disabled: 'Manual copy',
+  auto_copy_unavailable: 'Manual copy',
+  clipboard_superseded: 'Clipboard unchanged',
+  clipboard_unavailable: 'Clipboard unavailable',
+};
+
 export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPanelProps) {
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -131,9 +138,15 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
                     </>
                   )}
                   {entry.errorCode && (
-                    <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 font-mono text-error">
-                      {entry.errorCode}
-                    </span>
+                    READY_DELIVERY_LABELS[entry.errorCode] ? (
+                      <span className="ml-auto rounded-full bg-surface-container px-2 py-0.5 font-medium text-on-surface-variant">
+                        {READY_DELIVERY_LABELS[entry.errorCode]}
+                      </span>
+                    ) : (
+                      <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 font-mono text-error">
+                        {entry.errorCode}
+                      </span>
+                    )
                   )}
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">

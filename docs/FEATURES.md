@@ -160,7 +160,7 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 - Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
 - Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
 - Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
-- Question, answer, and context stay out of telemetry, logs, stats, diagnostics, and file output. An off-by-default setting may retain only questions and answers in a separate bounded Rust-owned local history store. The completed answer is copied but never auto-pasted.
+- Question, answer, and context stay out of telemetry, logs, stats, diagnostics, and file output. An off-by-default setting may retain only questions and answers in a separate bounded Rust-owned local history store. Successful final answers are copied once by default; users can disable automatic copy and use the review popover's manual Copy action instead. Voice Query never auto-pastes.
 
 ---
 
