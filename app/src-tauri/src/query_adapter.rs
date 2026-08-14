@@ -97,7 +97,6 @@ impl VoiceQueryAdapter {
             AdapterKind::JsonLines(adapter) => adapter.finish(),
         }
     }
-
 }
 
 #[derive(Default)]
