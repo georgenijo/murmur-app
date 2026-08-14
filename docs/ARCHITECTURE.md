@@ -167,8 +167,14 @@ identity, nonce, strict bounded frames, and separate mic/system channel
 sequences. Native callbacks write only to preallocated SPSC rings; the worker's
 drain loop owns protocol I/O. Release builds validate fixed identifier, Team ID,
 hardened runtime, and entitlements before spawn, then retain exact managed
-process-group ownership through confirmed exit. The earlier health probe remains
-available for packaging and callback-boundary validation. See the
+process-group ownership through confirmed exit. The inventory path bounds its
+ordinary termination wait, retracts authoritative state and blocks replacements
+before transferring an unconfirmed child to the single prestarted app-owned
+reaper service, then performs a bounded exit drain; the worker parent watchdog
+remains the final boundary if the host exits first. If that reaper service
+cannot start, inventory stays unavailable and no inventory helper is launched.
+The earlier health probe
+remains available for packaging and callback-boundary validation. See the
 [capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
 
 ### Module map

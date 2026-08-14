@@ -32,7 +32,7 @@ stores an ordered transcript in SQLite.
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
-rate changes, wrong capture identity, wrong nonce, unknown channels, and v3
+rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v5
 frames. It never mixes the streams.
 
 The tap exists only inside an explicit permission probe or meeting session.
@@ -106,7 +106,7 @@ Mac.
 
 - `cargo test meeting -- --test-threads=1` covers the store, recovery,
   rendering, privacy sanitizer, and accelerated bounded-memory chunking.
-- Protocol/helper tests cover v4 framing, channel identity, overflow, two
+- Protocol/helper tests cover v5 framing, channel identity, overflow, two
   independent rings under Loom, macOS gating, and typed permission failures.
 - The native gate exercises signed-app permission attribution, start → first
   PCM on both channels → stop, and confirmed tap destruction.

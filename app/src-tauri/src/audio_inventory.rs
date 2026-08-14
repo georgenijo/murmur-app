@@ -4,8 +4,10 @@
 //! passive capture worker is the primary topology/default-input invalidation
 //! source. A backend-owned five-minute timer is only its bounded watchdog.
 //! Refreshes use the same idle HAL boundary as capture startup and defer until
-//! the owned capture worker returns to Idle. Unsupported platforms publish an
-//! immediate unavailable snapshot and never try to spawn the macOS helper.
+//! the owned capture worker returns to Idle. One app-owned reaper service must
+//! start before any inventory helper; startup fails closed if it cannot.
+//! Unsupported platforms publish an immediate unavailable snapshot and never
+//! try to spawn the macOS helper or its reaper service.
 
 use crate::audio::{AudioDeviceDescriptor, EnumeratedAudioInputInventory};
 use crate::MutexExt;
@@ -335,6 +337,24 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     }
 }
 
+fn detached_reap_invalidation(
+    coordinator: &AudioInputInventoryCoordinator,
+) -> Option<(AudioInputInventorySnapshot, bool)> {
+    coordinator.invalidate()
+}
+
+/// Retract an authoritative inventory as soon as helper ownership leaves the
+/// ordinary bounded termination path. This is deliberately content-free and
+/// does not request or spawn a refresh while the helper spawn gate is held.
+pub(crate) fn helper_entered_detached_reap() {
+    let Some((snapshot, changed)) = detached_reap_invalidation(coordinator()) else {
+        return;
+    };
+    if changed {
+        emit_inventory(&snapshot);
+    }
+}
+
 fn log_refresh(snapshot: &AudioInputInventorySnapshot, changed: bool, reason: &'static str) {
     tracing::info!(
         target: "audio",
@@ -477,7 +497,9 @@ fn start_input_topology_watch_supervisor() {
             "passive microphone topology watcher could not start"
         ),
     }
-    if slot.is_none() {
+    let needs_fallback_refresh = slot.is_none();
+    drop(slot);
+    if needs_fallback_refresh {
         // Preserve the bounded enumeration fallback if even the supervisor
         // thread cannot be created.
         topology_changed();
@@ -518,6 +540,20 @@ fn start_refresh_timer() {}
 
 pub(crate) fn initialize(app_handle: tauri::AppHandle) {
     *app_handle_slot().lock_or_recover() = Some(app_handle);
+    #[cfg(target_os = "macos")]
+    if !crate::audio::start_inventory_helper_reaper_service() {
+        coordinator().request_refresh();
+        if coordinator().claim_refresh(false) {
+            let (snapshot, changed) = coordinator().finish_refresh(Err(
+                "microphone inventory reaper service unavailable".to_string(),
+            ));
+            log_refresh(&snapshot, changed, "reaperServiceUnavailable");
+            if changed {
+                emit_inventory(&snapshot);
+            }
+        }
+        return;
+    }
     #[cfg(not(target_os = "macos"))]
     {
         coordinator().request_refresh();
@@ -556,6 +592,8 @@ pub(crate) fn shutdown() {
     for refresh in refreshes {
         let _ = refresh.join();
     }
+    #[cfg(target_os = "macos")]
+    crate::audio::shutdown_inventory_helper_reaper_service();
 }
 
 pub(crate) fn get_inventory() -> AudioInputInventorySnapshot {
@@ -747,10 +785,10 @@ mod tests {
     }
 
     #[test]
-    fn default_must_be_present_and_duplicate_stable_ids_fail_closed() {
-        let missing_default = normalize_inventory(topology(&[("uid-a", "A")], Some("uid-b")))
-            .expect("missing default is safely represented as unavailable");
-        assert_eq!(missing_default.default_input_id, None);
+    fn unknown_default_is_omitted_and_duplicate_stable_ids_fail_closed() {
+        let unknown_default = normalize_inventory(topology(&[("uid-a", "A")], Some("uid-b")))
+            .expect("an unknown default is safely omitted from a valid device inventory");
+        assert_eq!(unknown_default.default_input_id, None);
 
         assert!(normalize_inventory(topology(
             &[("uid-a", "A"), ("uid-a", "renamed")],
@@ -813,5 +851,42 @@ mod tests {
             coordinator.finish_refresh(Ok(topology(&[("uid-b", "B")], Some("uid-b"))));
         assert_eq!(settled.status, AudioInputInventoryStatus::Available);
         assert_eq!(settled.devices[0].id, "uid-b");
+    }
+
+    #[test]
+    fn detached_reap_immediately_retracts_an_available_snapshot() {
+        let coordinator = AudioInputInventoryCoordinator::default();
+        coordinator.request_refresh();
+        assert!(coordinator.claim_refresh(false));
+        coordinator.finish_refresh(Ok(topology(&[("uid-a", "A")], Some("uid-a"))));
+
+        let (retracted, changed) = detached_reap_invalidation(&coordinator).unwrap();
+        assert!(changed);
+        assert_eq!(retracted.status, AudioInputInventoryStatus::Stale);
+        assert_eq!(
+            retracted.error_code,
+            Some(AudioInputInventoryErrorCode::RefreshPending)
+        );
+    }
+
+    #[test]
+    fn detached_reap_epoch_keeps_an_in_flight_result_stale() {
+        let coordinator = AudioInputInventoryCoordinator::default();
+        coordinator.request_refresh();
+        assert!(coordinator.claim_refresh(false));
+        coordinator.finish_refresh(Ok(topology(&[("uid-a", "A")], Some("uid-a"))));
+
+        coordinator.request_refresh();
+        assert!(coordinator.claim_refresh(false));
+        detached_reap_invalidation(&coordinator).unwrap();
+        let (raced_result, _) =
+            coordinator.finish_refresh(Ok(topology(&[("uid-b", "B")], Some("uid-b"))));
+
+        assert_eq!(raced_result.status, AudioInputInventoryStatus::Stale);
+        assert_eq!(
+            raced_result.error_code,
+            Some(AudioInputInventoryErrorCode::RefreshPending)
+        );
+        assert!(coordinator.claim_refresh(false));
     }
 }

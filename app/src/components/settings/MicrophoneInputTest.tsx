@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDeviceDescriptor } from '../../lib/audioDevices';
 import { audioDeviceSelectOptions } from '../../lib/audioDevices';
@@ -31,6 +31,7 @@ interface MicrophoneInputTestProps {
   dictationBusy: boolean;
   missingDevice: boolean;
   inventoryAvailable?: boolean;
+  inventoryLoading?: boolean;
   onChange: (microphone: string) => void;
 }
 
@@ -50,9 +51,11 @@ export function MicrophoneInputTest({
   dictationBusy,
   missingDevice,
   inventoryAvailable = true,
+  inventoryLoading = false,
   onChange,
 }: MicrophoneInputTestProps) {
   const surfaceActive = useSettingsSurfaceActive();
+  const selectorHelperId = useId();
   const monitoringActive = active && surfaceActive;
   const [status, setStatus] = useState<MicrophonePreviewStatus>(IDLE_MICROPHONE_PREVIEW);
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
@@ -347,6 +350,13 @@ export function MicrophoneInputTest({
           ? 'Speak normally and watch the live level.'
           : 'Preview stays on this Mac and is never transcribed or saved.'
   );
+  const selectorHelperText = !inventoryAvailable
+    ? inventoryLoading
+      ? 'Loading available microphones…'
+      : 'Microphone choices are temporarily unavailable.'
+    : missingDevice
+      ? 'Selected device not found — choose an available microphone or System Default.'
+      : null;
 
   return (
     <div>
@@ -356,12 +366,22 @@ export function MicrophoneInputTest({
         onChange={switchDevice}
         disabled={busy || !inventoryAvailable}
         aria-label="Microphone input"
+        aria-describedby={selectorHelperText ? selectorHelperId : undefined}
         items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(devices)]}
       />
-      {missingDevice && (
-        <p className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-          Selected device not found — choose an available microphone or System Default.
+      {selectorHelperText && missingDevice && inventoryAvailable ? (
+        <p
+          id={selectorHelperId}
+          className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface"
+        >
+          {selectorHelperText}
         </p>
+      ) : selectorHelperText ? (
+        <p id={selectorHelperId} className="mt-2 text-xs text-on-surface-variant">
+          {selectorHelperText}
+        </p>
+      ) : (
+        null
       )}
       <div className="mt-3 rounded-lg bg-surface-container-low p-3">
         <div className="flex items-center gap-3">

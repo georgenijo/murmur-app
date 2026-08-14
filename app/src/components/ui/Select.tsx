@@ -21,6 +21,7 @@ export interface SelectProps<T extends string = string> {
   disabled?: boolean;
   placeholder?: string;
   'aria-label'?: string;
+  'aria-describedby'?: string;
 }
 
 function isGrouped<T extends string>(
@@ -36,6 +37,7 @@ export function Select<T extends string = string>({
   disabled,
   placeholder,
   'aria-label': ariaLabel,
+  'aria-describedby': ariaDescribedBy,
 }: SelectProps<T>) {
   const id = useId();
   const [isOpen, setIsOpen] = useState(false);
@@ -222,6 +224,7 @@ export function Select<T extends string = string>({
             : undefined
         }
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
         className={`flex h-8 w-full items-center justify-between rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${

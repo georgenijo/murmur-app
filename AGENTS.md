@@ -116,6 +116,7 @@ Read these before working on a feature:
 | `commands/transform_popover.rs` | Transform review window geometry + show/hide/focusable |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
 | `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, mono conversion, and 16kHz resampling |
+| `audio_inventory.rs` | Shared versioned microphone inventory, passive topology invalidation, coalesced idle-only refresh, stale-cache policy, and privacy-safe aggregate |
 | `audio_decode.rs` | Imported audio-file decoding |
 | `capture_agent_probe.rs` / `capture_helper_probe.rs` | Signed helper registration, callback-health probes, cancellation, and confirmed-termination evidence |
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership |

@@ -10,11 +10,12 @@ use murmur_capture_helper_protocol::{
     SessionNonce, SetupTransition,
 };
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::fmt;
 use std::io::BufReader;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -39,6 +40,9 @@ const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 // otherwise waits on helper output and only observes host commands on timeout.
 const CAPTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
+const INVENTORY_QUARANTINE_RETRY_LIMIT: usize = 2;
+#[cfg(target_os = "macos")]
+const INVENTORY_REAPER_SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 const HELPER_CONTROL_DEADLINE: Duration = Duration::from_secs(3);
 const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const TCC_PROMPT_WATCHDOG: Duration = Duration::from_secs(120);
@@ -50,6 +54,54 @@ const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
 const CAPTURE_ACTIVE_BUDGET: Duration = Duration::from_secs(30);
 const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
 static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
+static INVENTORY_HELPERS_IN_DETACHED_REAP: AtomicUsize = AtomicUsize::new(0);
+
+struct InventoryHelperSpawnGate {
+    lock: Mutex<()>,
+    reaper_changed: Condvar,
+}
+
+fn inventory_helper_spawn_gate() -> &'static InventoryHelperSpawnGate {
+    static GATE: OnceLock<InventoryHelperSpawnGate> = OnceLock::new();
+    GATE.get_or_init(|| InventoryHelperSpawnGate {
+        lock: Mutex::new(()),
+        reaper_changed: Condvar::new(),
+    })
+}
+
+struct InventoryReaperShared {
+    queue: Mutex<VecDeque<ManagedChild>>,
+    changed: Condvar,
+    accepting: AtomicBool,
+    #[cfg(target_os = "macos")]
+    shutdown: AtomicBool,
+}
+
+impl Default for InventoryReaperShared {
+    fn default() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            changed: Condvar::new(),
+            accepting: AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
+            shutdown: AtomicBool::new(false),
+        }
+    }
+}
+
+struct InventoryReaperService {
+    join: JoinHandle<()>,
+}
+
+fn inventory_reaper_shared() -> &'static Arc<InventoryReaperShared> {
+    static SHARED: OnceLock<Arc<InventoryReaperShared>> = OnceLock::new();
+    SHARED.get_or_init(|| Arc::new(InventoryReaperShared::default()))
+}
+
+fn inventory_reaper_service_slot() -> &'static Mutex<Option<InventoryReaperService>> {
+    static SERVICE: OnceLock<Mutex<Option<InventoryReaperService>>> = OnceLock::new();
+    SERVICE.get_or_init(|| Mutex::new(None))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioFailureKind {
@@ -438,22 +490,300 @@ fn hello(
     }
 }
 
-fn quarantine_after_unconfirmed_exit(
-    initially_confirmed: bool,
-    mut retry: impl FnMut() -> bool,
-) -> bool {
-    if initially_confirmed {
-        return true;
-    }
-    while !retry() {}
-    false
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryHelperTermination {
+    ConfirmedWithinBudget,
+    ConfirmedDuringQuarantine,
+    DetachedReaperRequired,
 }
 
-/// Return whether the helper exited within its ordinary bounded budget, but
-/// never return at all until its process group is confirmed empty. A `false`
-/// result therefore marks the refresh failed without permitting an orphan to
-/// overlap the next inventory/watch helper.
-fn confirm_or_quarantine_inventory_helper(child: &mut ManagedChild) -> bool {
+fn bounded_inventory_quarantine(
+    initially_confirmed: bool,
+    retry_limit: usize,
+    mut retry: impl FnMut() -> bool,
+) -> InventoryHelperTermination {
+    if initially_confirmed {
+        return InventoryHelperTermination::ConfirmedWithinBudget;
+    }
+    for _ in 0..retry_limit {
+        if retry() {
+            return InventoryHelperTermination::ConfirmedDuringQuarantine;
+        }
+    }
+    InventoryHelperTermination::DetachedReaperRequired
+}
+
+fn inventory_helper_reaper_active() -> bool {
+    INVENTORY_HELPERS_IN_DETACHED_REAP.load(Ordering::Acquire) != 0
+}
+
+fn inventory_helper_publish_allowed() -> bool {
+    let _spawn_guard = inventory_helper_spawn_gate().lock.lock_or_recover();
+    !inventory_helper_reaper_active()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryHelperSpawnAction {
+    Spawn,
+    WaitForReaper,
+    Refuse,
+}
+
+fn inventory_helper_spawn_action(
+    reaper_service_ready: bool,
+    reaper_active: bool,
+    shutdown: Option<bool>,
+) -> InventoryHelperSpawnAction {
+    if shutdown == Some(true) || !reaper_service_ready {
+        InventoryHelperSpawnAction::Refuse
+    } else if !reaper_active {
+        InventoryHelperSpawnAction::Spawn
+    } else if shutdown == Some(false) {
+        InventoryHelperSpawnAction::WaitForReaper
+    } else {
+        InventoryHelperSpawnAction::Refuse
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryReaperServiceAction {
+    Wait,
+    Reap,
+    Exit,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn inventory_reaper_service_action(
+    queue_is_empty: bool,
+    shutdown: bool,
+) -> InventoryReaperServiceAction {
+    if !queue_is_empty {
+        InventoryReaperServiceAction::Reap
+    } else if shutdown {
+        InventoryReaperServiceAction::Exit
+    } else {
+        InventoryReaperServiceAction::Wait
+    }
+}
+
+fn inventory_reaper_service_accepts(
+    registered: bool,
+    accepting: bool,
+    thread_finished: bool,
+) -> bool {
+    registered && accepting && !thread_finished
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryReaperShutdownAction {
+    Join,
+    Wait,
+    Detach,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn inventory_reaper_shutdown_action(
+    thread_finished: bool,
+    now: Instant,
+    deadline: Instant,
+) -> InventoryReaperShutdownAction {
+    if thread_finished {
+        InventoryReaperShutdownAction::Join
+    } else if now >= deadline {
+        InventoryReaperShutdownAction::Detach
+    } else {
+        InventoryReaperShutdownAction::Wait
+    }
+}
+
+fn inventory_reaper_service_ready() -> bool {
+    let slot = inventory_reaper_service_slot().lock_or_recover();
+    let Some(service) = slot.as_ref() else {
+        return false;
+    };
+    inventory_reaper_service_accepts(
+        true,
+        inventory_reaper_shared().accepting.load(Ordering::Acquire),
+        service.join.is_finished(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn run_inventory_reaper_service(shared: Arc<InventoryReaperShared>) {
+    loop {
+        let child = {
+            let mut queue = shared.queue.lock_or_recover();
+            loop {
+                match inventory_reaper_service_action(
+                    queue.is_empty(),
+                    shared.shutdown.load(Ordering::Acquire),
+                ) {
+                    InventoryReaperServiceAction::Reap => break queue.pop_front(),
+                    InventoryReaperServiceAction::Exit => {
+                        shared.accepting.store(false, Ordering::Release);
+                        return;
+                    }
+                    InventoryReaperServiceAction::Wait => {
+                        queue = shared
+                            .changed
+                            .wait(queue)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    }
+                }
+            }
+        };
+        let Some(mut child) = child else {
+            continue;
+        };
+        while child
+            .hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE)
+            .is_none()
+        {}
+        let gate = inventory_helper_spawn_gate();
+        let _spawn_guard = gate.lock.lock_or_recover();
+        INVENTORY_HELPERS_IN_DETACHED_REAP.fetch_sub(1, Ordering::AcqRel);
+        gate.reaper_changed.notify_all();
+    }
+}
+
+/// Start the single app-owned inventory reaper before any watcher or
+/// enumeration helper can be created. A failed service spawn leaves accepting
+/// false, so every helper request fails closed.
+#[cfg(target_os = "macos")]
+pub(crate) fn start_inventory_helper_reaper_service() -> bool {
+    let mut slot = inventory_reaper_service_slot().lock_or_recover();
+    if slot.is_some() {
+        return inventory_reaper_service_accepts(
+            true,
+            inventory_reaper_shared().accepting.load(Ordering::Acquire),
+            slot.as_ref()
+                .is_some_and(|service| service.join.is_finished()),
+        );
+    }
+    let shared = Arc::clone(inventory_reaper_shared());
+    shared.shutdown.store(false, Ordering::Release);
+    let worker_shared = Arc::clone(&shared);
+    let spawn = thread::Builder::new()
+        .name("murmur-inventory-reaper".to_string())
+        .spawn(move || run_inventory_reaper_service(worker_shared));
+    match spawn {
+        Ok(join) => {
+            shared.accepting.store(true, Ordering::Release);
+            *slot = Some(InventoryReaperService { join });
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Signal the app-owned reaper after every producer has joined, then wait only
+/// for the fixed shutdown budget. An unfinished service handle is detached at
+/// process exit; queued/active ManagedChild ownership remains in the service,
+/// and the worker parent watchdog is the final safety boundary.
+#[cfg(target_os = "macos")]
+pub(crate) fn shutdown_inventory_helper_reaper_service() {
+    let Some(service) = inventory_reaper_service_slot().lock_or_recover().take() else {
+        return;
+    };
+    let shared = inventory_reaper_shared();
+    shared.accepting.store(false, Ordering::Release);
+    shared.shutdown.store(true, Ordering::Release);
+    shared.changed.notify_all();
+
+    let deadline = Instant::now() + INVENTORY_REAPER_SHUTDOWN_DRAIN;
+    loop {
+        match inventory_reaper_shutdown_action(service.join.is_finished(), Instant::now(), deadline)
+        {
+            InventoryReaperShutdownAction::Join => {
+                let _ = service.join.join();
+                return;
+            }
+            InventoryReaperShutdownAction::Wait => thread::sleep(Duration::from_millis(10)),
+            InventoryReaperShutdownAction::Detach => {
+                tracing::warn!(
+                    target: "audio",
+                    active_reaper_count = INVENTORY_HELPERS_IN_DETACHED_REAP
+                        .load(Ordering::Acquire),
+                    "microphone inventory reaper exceeded the bounded shutdown drain"
+                );
+                drop(service.join);
+                return;
+            }
+        }
+    }
+}
+
+fn transfer_inventory_helper_to_detached_reaper(child: ManagedChild) {
+    let pid = child.pid();
+    INVENTORY_HELPERS_IN_DETACHED_REAP.fetch_add(1, Ordering::AcqRel);
+    crate::audio_inventory::helper_entered_detached_reap();
+    tracing::error!(
+        target: "audio",
+        event_code = "audio.input_inventory_helper_detached_reap",
+        helper_pid = pid,
+        "microphone inventory helper transferred to detached termination reaper"
+    );
+
+    let shared = inventory_reaper_shared();
+    shared.queue.lock_or_recover().push_back(child);
+    shared.changed.notify_one();
+}
+
+fn spawn_inventory_helper(
+    capture_id: u64,
+    nonce_hex: &str,
+    shutdown: Option<&AtomicBool>,
+) -> Result<
+    (
+        ManagedChild,
+        std::process::ChildStdin,
+        std::process::ChildStdout,
+    ),
+    String,
+> {
+    let gate = inventory_helper_spawn_gate();
+    let mut guard = gate.lock.lock_or_recover();
+    loop {
+        let shutdown_requested = shutdown.map(|shutdown| shutdown.load(Ordering::Acquire));
+        let reaper_service_ready = inventory_reaper_service_ready();
+        match inventory_helper_spawn_action(
+            reaper_service_ready,
+            inventory_helper_reaper_active(),
+            shutdown_requested,
+        ) {
+            InventoryHelperSpawnAction::Spawn => break,
+            InventoryHelperSpawnAction::Refuse => {
+                return Err(if shutdown_requested == Some(true) {
+                    "Microphone inventory recovery stopped during shutdown.".to_string()
+                } else if !reaper_service_ready {
+                    "Microphone inventory reaper is unavailable.".to_string()
+                } else {
+                    "Microphone inventory recovery is still pending.".to_string()
+                });
+            }
+            InventoryHelperSpawnAction::WaitForReaper => {}
+        }
+        let (next_guard, _) = gate
+            .reaper_changed
+            .wait_timeout(guard, Duration::from_millis(50))
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard = next_guard;
+    }
+    spawn_helper(capture_id, nonce_hex, None).map_err(|failure| failure.to_string())
+}
+
+/// Return whether the helper exited within its ordinary bounded budget. A
+/// delayed confirmation still fails the current operation. If the bounded
+/// quarantine also expires, ownership moves to a registered process-lifetime
+/// reaper and the inventory/watch spawn gate remains closed until confirmation.
+fn confirm_or_quarantine_inventory_helper(mut child: ManagedChild) -> bool {
+    // Close the replacement-spawn race before termination begins. Existing
+    // passive watcher/enumerator children may finish concurrently, but no new
+    // inventory helper can pass spawn_inventory_helper until this child is
+    // confirmed or its owned detached-reaper state is visible.
+    let _spawn_guard = inventory_helper_spawn_gate().lock.lock_or_recover();
     let initially_confirmed = child
         .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
         .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE))
@@ -465,30 +795,41 @@ fn confirm_or_quarantine_inventory_helper(child: &mut ManagedChild) -> bool {
             "microphone inventory helper entered termination quarantine"
         );
     }
-    quarantine_after_unconfirmed_exit(initially_confirmed, || {
-        let confirmed = child
-            .hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE)
-            .is_some();
-        if !confirmed {
-            tracing::warn!(
-                target: "audio",
-                helper_pid = child.pid(),
-                "microphone inventory helper remains in termination quarantine"
-            );
+    let termination = bounded_inventory_quarantine(
+        initially_confirmed,
+        INVENTORY_QUARANTINE_RETRY_LIMIT,
+        || {
+            let confirmed = child
+                .hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE)
+                .is_some();
+            if !confirmed {
+                tracing::warn!(
+                    target: "audio",
+                    helper_pid = child.pid(),
+                    "microphone inventory helper remains in termination quarantine"
+                );
+            }
+            confirmed
+        },
+    );
+    match termination {
+        InventoryHelperTermination::ConfirmedWithinBudget => true,
+        InventoryHelperTermination::ConfirmedDuringQuarantine => false,
+        InventoryHelperTermination::DetachedReaperRequired => {
+            transfer_inventory_helper_to_detached_reaper(child);
+            false
         }
-        confirmed
-    })
+    }
 }
 
 pub(crate) fn enumerate_input_devices() -> Result<EnumeratedAudioInputInventory, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (mut child, mut input, output) =
-        spawn_helper(capture_id, &nonce_hex, None).map_err(|failure| failure.to_string())?;
+    let (child, mut input, output) = spawn_inventory_helper(capture_id, &nonce_hex, None)?;
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
             drop(input);
-            let _ = confirm_or_quarantine_inventory_helper(&mut child);
+            let _ = confirm_or_quarantine_inventory_helper(child);
             return Err(failure.to_string());
         }
     };
@@ -501,14 +842,14 @@ pub(crate) fn enumerate_input_devices() -> Result<EnumeratedAudioInputInventory,
     .is_err()
     {
         drop(input);
-        let _ = confirm_or_quarantine_inventory_helper(&mut child);
+        let _ = confirm_or_quarantine_inventory_helper(child);
         return Err("Failed to request microphone enumeration.".to_string());
     }
     let (frame, output) = match read_control_frame_with_deadline(output, capture_id, nonce) {
         Ok(result) => result,
         Err(failure) => {
             drop(input);
-            let _ = confirm_or_quarantine_inventory_helper(&mut child);
+            let _ = confirm_or_quarantine_inventory_helper(child);
             return Err(failure.to_string());
         }
     };
@@ -528,22 +869,49 @@ pub(crate) fn enumerate_input_devices() -> Result<EnumeratedAudioInputInventory,
         },
         _ => {
             drop(input);
-            let _ = confirm_or_quarantine_inventory_helper(&mut child);
+            let _ = confirm_or_quarantine_inventory_helper(child);
             return Err("The capture worker returned an invalid device list.".to_string());
         }
     };
     drop((input, output));
-    let termination_confirmed = confirm_or_quarantine_inventory_helper(&mut child);
-    inventory_after_confirmed_helper_exit(inventory, termination_confirmed)
+    let termination_confirmed = confirm_or_quarantine_inventory_helper(child);
+    inventory_after_confirmed_helper_exit(
+        inventory,
+        termination_confirmed,
+        !inventory_helper_publish_allowed(),
+    )
 }
 
 fn inventory_after_confirmed_helper_exit(
     inventory: EnumeratedAudioInputInventory,
     termination_confirmed: bool,
+    another_helper_in_detached_reap: bool,
 ) -> Result<EnumeratedAudioInputInventory, String> {
-    termination_confirmed
+    (termination_confirmed && !another_helper_in_detached_reap)
         .then_some(inventory)
         .ok_or_else(|| "The microphone inventory worker could not be reaped safely.".to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn should_forward_input_topology_change(ready: bool, stop_sent: bool) -> bool {
+    ready && !stop_sent
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn input_topology_watch_timeout(
+    ready: bool,
+    stop_sent: bool,
+    now: Instant,
+    ready_deadline: Instant,
+    stop_deadline: Option<Instant>,
+) -> Option<&'static str> {
+    if stop_deadline.is_some_and(|deadline| now >= deadline) {
+        Some("The microphone topology watcher did not stop in time.")
+    } else if !ready && !stop_sent && now >= ready_deadline {
+        Some("The microphone topology watcher did not become ready.")
+    } else {
+        None
+    }
 }
 
 /// Own one passive topology watcher until shutdown or protocol failure. The
@@ -555,13 +923,13 @@ pub(crate) fn run_input_topology_watch(
     mut on_changed: impl FnMut(),
 ) -> Result<(), String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (mut child, mut input, output) =
-        spawn_helper(capture_id, &nonce_hex, None).map_err(|failure| failure.to_string())?;
+    let (child, mut input, output) =
+        spawn_inventory_helper(capture_id, &nonce_hex, Some(shutdown))?;
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
             drop(input);
-            let _ = confirm_or_quarantine_inventory_helper(&mut child);
+            let _ = confirm_or_quarantine_inventory_helper(child);
             return Err(failure.to_string());
         }
     };
@@ -574,7 +942,7 @@ pub(crate) fn run_input_topology_watch(
     .is_err()
     {
         drop(input);
-        let _ = confirm_or_quarantine_inventory_helper(&mut child);
+        let _ = confirm_or_quarantine_inventory_helper(child);
         return Err("Failed to start the microphone topology watcher.".to_string());
     }
 
@@ -599,13 +967,14 @@ pub(crate) fn run_input_topology_watch(
         });
     if reader_spawn.is_err() {
         drop(input);
-        let _ = confirm_or_quarantine_inventory_helper(&mut child);
+        let _ = confirm_or_quarantine_inventory_helper(child);
         return Err("Failed to supervise the microphone topology watcher.".to_string());
     }
 
     let ready_deadline = Instant::now() + HELPER_CONTROL_DEADLINE;
     let mut ready = false;
     let mut stop_sent = false;
+    let mut stop_deadline = None;
     let result = loop {
         if shutdown.load(Ordering::Acquire) && !stop_sent {
             stop_sent = true;
@@ -614,9 +983,16 @@ pub(crate) fn run_input_topology_watch(
             {
                 break Err("Failed to stop the microphone topology watcher.".to_string());
             }
+            stop_deadline = Some(Instant::now() + HELPER_STOP_DEADLINE);
         }
-        if !ready && Instant::now() >= ready_deadline {
-            break Err("The microphone topology watcher did not become ready.".to_string());
+        if let Some(message) = input_topology_watch_timeout(
+            ready,
+            stop_sent,
+            Instant::now(),
+            ready_deadline,
+            stop_deadline,
+        ) {
+            break Err(message.to_string());
         }
         match reader_receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(Some(ProductionFrame::Control(
@@ -629,9 +1005,11 @@ pub(crate) fn run_input_topology_watch(
                 on_changed();
             }
             Ok(Some(ProductionFrame::Control(ProductionHelperMessage::InputTopologyChanged)))
-                if ready && !stop_sent =>
+                if ready =>
             {
-                on_changed()
+                if should_forward_input_topology_change(ready, stop_sent) {
+                    on_changed();
+                }
             }
             Ok(Some(ProductionFrame::Control(ProductionHelperMessage::Stopped { .. })))
                 if stop_sent =>
@@ -649,7 +1027,7 @@ pub(crate) fn run_input_topology_watch(
     };
 
     drop(input);
-    let terminated = confirm_or_quarantine_inventory_helper(&mut child);
+    let terminated = confirm_or_quarantine_inventory_helper(child);
     if !terminated {
         return Err("The microphone topology watcher could not be reaped.".to_string());
     }
@@ -1869,28 +2247,133 @@ mod tests {
             }],
             default_input_id: Some("uid".to_string()),
         };
-        assert!(inventory_after_confirmed_helper_exit(inventory.clone(), false).is_err());
+        assert!(inventory_after_confirmed_helper_exit(inventory.clone(), false, false).is_err());
+        assert!(inventory_after_confirmed_helper_exit(inventory.clone(), true, true).is_err());
         assert_eq!(
-            inventory_after_confirmed_helper_exit(inventory.clone(), true).unwrap(),
+            inventory_after_confirmed_helper_exit(inventory.clone(), true, false).unwrap(),
             inventory
         );
     }
 
     #[test]
-    fn unconfirmed_inventory_helper_cannot_return_before_quarantine_reaps_it() {
+    fn ordinary_inventory_quarantine_is_bounded_before_detached_transfer() {
         let mut retries = 0;
-        assert!(!quarantine_after_unconfirmed_exit(false, || {
-            retries += 1;
-            retries == 3
-        }));
-        assert_eq!(retries, 3);
+        assert_eq!(
+            bounded_inventory_quarantine(false, 2, || {
+                retries += 1;
+                false
+            }),
+            InventoryHelperTermination::DetachedReaperRequired
+        );
+        assert_eq!(retries, 2);
+
+        let mut delayed_retries = 0;
+        assert_eq!(
+            bounded_inventory_quarantine(false, 3, || {
+                delayed_retries += 1;
+                delayed_retries == 2
+            }),
+            InventoryHelperTermination::ConfirmedDuringQuarantine
+        );
+        assert_eq!(delayed_retries, 2);
 
         let mut unexpected_retry = false;
-        assert!(quarantine_after_unconfirmed_exit(true, || {
-            unexpected_retry = true;
-            true
-        }));
+        assert_eq!(
+            bounded_inventory_quarantine(true, 2, || {
+                unexpected_retry = true;
+                true
+            }),
+            InventoryHelperTermination::ConfirmedWithinBudget
+        );
         assert!(!unexpected_retry);
+    }
+
+    #[test]
+    fn detached_reaper_gate_waits_for_watcher_but_refuses_enumeration() {
+        assert_eq!(
+            inventory_helper_spawn_action(true, false, Some(false)),
+            InventoryHelperSpawnAction::Spawn
+        );
+        assert_eq!(
+            inventory_helper_spawn_action(true, true, Some(false)),
+            InventoryHelperSpawnAction::WaitForReaper
+        );
+        assert_eq!(
+            inventory_helper_spawn_action(true, true, None),
+            InventoryHelperSpawnAction::Refuse
+        );
+        assert_eq!(
+            inventory_helper_spawn_action(true, true, Some(true)),
+            InventoryHelperSpawnAction::Refuse
+        );
+        assert_eq!(
+            inventory_helper_spawn_action(true, false, Some(true)),
+            InventoryHelperSpawnAction::Refuse
+        );
+        assert_eq!(
+            inventory_helper_spawn_action(false, false, Some(false)),
+            InventoryHelperSpawnAction::Refuse
+        );
+    }
+
+    #[test]
+    fn inventory_reaper_service_state_queue_and_shutdown_decisions_are_bounded() {
+        assert_eq!(
+            inventory_reaper_service_action(true, false),
+            InventoryReaperServiceAction::Wait
+        );
+        assert_eq!(
+            inventory_reaper_service_action(false, false),
+            InventoryReaperServiceAction::Reap
+        );
+        assert_eq!(
+            inventory_reaper_service_action(false, true),
+            InventoryReaperServiceAction::Reap
+        );
+        assert_eq!(
+            inventory_reaper_service_action(true, true),
+            InventoryReaperServiceAction::Exit
+        );
+
+        assert!(inventory_reaper_service_accepts(true, true, false));
+        assert!(!inventory_reaper_service_accepts(false, true, false));
+        assert!(!inventory_reaper_service_accepts(true, false, false));
+        assert!(!inventory_reaper_service_accepts(true, true, true));
+
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        assert_eq!(
+            inventory_reaper_shutdown_action(true, now, deadline),
+            InventoryReaperShutdownAction::Join
+        );
+        assert_eq!(
+            inventory_reaper_shutdown_action(false, now, deadline),
+            InventoryReaperShutdownAction::Wait
+        );
+        assert_eq!(
+            inventory_reaper_shutdown_action(false, deadline, deadline),
+            InventoryReaperShutdownAction::Detach
+        );
+    }
+
+    #[test]
+    fn topology_changes_are_ignored_after_stop_is_sent() {
+        assert!(!should_forward_input_topology_change(false, false));
+        assert!(should_forward_input_topology_change(true, false));
+        assert!(!should_forward_input_topology_change(true, true));
+    }
+
+    #[test]
+    fn topology_watch_has_a_post_stop_deadline() {
+        let now = Instant::now();
+        assert_eq!(
+            input_topology_watch_timeout(true, true, now, now + Duration::from_secs(30), Some(now),),
+            Some("The microphone topology watcher did not stop in time.")
+        );
+        assert_eq!(
+            input_topology_watch_timeout(true, true, now, now, Some(now + Duration::from_secs(1)),),
+            None
+        );
     }
 
     #[test]

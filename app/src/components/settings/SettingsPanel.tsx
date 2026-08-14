@@ -1132,10 +1132,11 @@ export const SettingsPanel = memo(function SettingsPanel({
               dictationBusy={isRecording}
               missingDevice={missingDevice}
               inventoryAvailable={audioInventory?.status === 'available'}
+              inventoryLoading={audioInventoryState.loading}
               onChange={(microphone) => onUpdateSettings({ microphone })}
             />
             {audioInventoryState.error && (
-              <p className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
+              <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
             )}
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>

@@ -39,6 +39,16 @@ the revision and emits no event. A failed refresh preserves the last successful
 topology only as explicitly stale display data; stale or unavailable data can
 never prove that a pinned microphone is present.
 
+Inventory-worker termination has a bounded ordinary wait/kill budget. If the
+process group is still unconfirmed, the backend immediately retracts an
+authoritative snapshot, blocks replacement inventory workers, and transfers the
+exact `ManagedChild` to the single prestarted app-owned reaper service. App exit
+drains that service for a fixed two-second budget after refresh producers stop;
+the signed worker's parent watchdog is the final boundary if the host process
+exits first. The reaper service starts before any inventory helper; if it cannot
+start, the inventory remains unavailable and no watcher or enumeration helper
+is spawned.
+
 Labels and stable IDs remain local. The log shipper reads a separately derived
 aggregate (count, actual-default availability, and enumeration success) and can
 never serialize either field. Production protocol v5 adds the optional

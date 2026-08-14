@@ -103,6 +103,16 @@ describe('loadSettings', () => {
     expect(loadSettings().microphoneIdMigrationComplete).toBe(true);
   });
 
+  it('normalizes System Default migration proof to complete even when stored false', () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      microphone: 'system_default',
+      microphoneIdMigrationComplete: false,
+      settingsVersion: 3,
+    }));
+    expect(loadSettings().microphoneIdMigrationComplete).toBe(true);
+  });
+
   it('leaves an old opaque microphone value pending live inventory proof', () => {
     const old = {
       ...DEFAULT_SETTINGS,

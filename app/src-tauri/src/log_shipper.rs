@@ -297,13 +297,13 @@ fn aggregate_audio_state<T>(
     .to_string()
 }
 
-fn cached_audio_state() -> Option<String> {
+fn cached_audio_inventory_aggregate() -> String {
     let aggregate = crate::audio_inventory::privacy_aggregate();
-    Some(aggregate_audio_state(
+    aggregate_audio_state(
         aggregate.default_input_available,
         0..aggregate.input_device_count,
         aggregate.enumeration_ok,
-    ))
+    )
 }
 
 async fn ship_state(
@@ -391,9 +391,9 @@ pub fn start(app_handle: &tauri::AppHandle) {
         let mut last_snapshot: Option<String> = None;
         loop {
             tick(&client, &endpoint, &device).await;
-            // Device/state snapshots are populated only by an existing explicit
-            // enumeration request (for example, when Settings opens). Reading
-            // this cache must never spawn a capture helper from the shipper.
+            // Device/state snapshots come only from the shared backend cache.
+            // Reading this cache must never spawn a capture helper from the
+            // shipper.
             // The install id is re-read after tick(): the first tick persists
             // it, so a fresh install reports state under its real identity
             // instead of a throwaway UUID.
@@ -401,13 +401,11 @@ pub fn start(app_handle: &tauri::AppHandle) {
                 .filter(|p| p.exists())
                 .map(|p| load_state(&p).install_id);
             if let Some(install_id) = &state_install_id {
-                if let Some(snap) = cached_audio_state() {
-                    if last_snapshot.as_deref() != Some(snap.as_str())
-                        && ship_state(&client, &state_endpoint, install_id, &device, snap.clone())
-                            .await
-                    {
-                        last_snapshot = Some(snap);
-                    }
+                let snap = cached_audio_inventory_aggregate();
+                if last_snapshot.as_deref() != Some(snap.as_str())
+                    && ship_state(&client, &state_endpoint, install_id, &device, snap.clone()).await
+                {
+                    last_snapshot = Some(snap);
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
@@ -528,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_state_cache_tracks_only_aggregate_enumeration_results() {
+    fn audio_inventory_aggregate_tracks_only_bounded_enumeration_results() {
         let success: serde_json::Value =
             serde_json::from_str(&aggregate_audio_state(true, 0..3, true)).unwrap();
         assert_eq!(success["default_input_available"], true);

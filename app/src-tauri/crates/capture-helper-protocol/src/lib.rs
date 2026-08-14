@@ -787,9 +787,15 @@ mod tests {
     #[test]
     fn production_v5_topology_watch_is_content_free() {
         let nonce = [5_u8; 16];
-        for message in [
-            ProductionHelperMessage::InputTopologyWatchReady,
-            ProductionHelperMessage::InputTopologyChanged,
+        for (message, expected_json) in [
+            (
+                ProductionHelperMessage::InputTopologyWatchReady,
+                r#"{"type":"inputTopologyWatchReady"}"#,
+            ),
+            (
+                ProductionHelperMessage::InputTopologyChanged,
+                r#"{"type":"inputTopologyChanged"}"#,
+            ),
         ] {
             let mut bytes = Vec::new();
             write_production_control(&mut bytes, 17, nonce, &message).unwrap();
@@ -799,6 +805,7 @@ mod tests {
                 ProductionFrame::Control(message.clone())
             );
             let serialized = serde_json::to_string(&message).unwrap();
+            assert_eq!(serialized, expected_json);
             assert!(!serialized.contains("device"));
             assert!(!serialized.contains("name"));
             assert!(!serialized.contains("uid"));
@@ -806,5 +813,17 @@ mod tests {
 
         let serialized = serde_json::to_string(&ProductionHostMessage::WatchInputTopology).unwrap();
         assert_eq!(serialized, r#"{"type":"watchInputTopology"}"#);
+
+        let devices = ProductionHelperMessage::Devices {
+            devices: vec![ProductionDevice {
+                id: "stable-uid".to_string(),
+                name: "Built-in Microphone".to_string(),
+            }],
+            default_input_id: Some("stable-uid".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_string(&devices).unwrap(),
+            r#"{"type":"devices","devices":[{"id":"stable-uid","name":"Built-in Microphone"}],"defaultInputId":"stable-uid"}"#
+        );
     }
 }

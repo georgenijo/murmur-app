@@ -638,8 +638,10 @@ export function loadSettings(): Settings {
       // Older blobs stored either an opaque CoreAudio UID or a display name in
       // the same string field. Only the default sentinel is self-authenticating;
       // all other old values remain pending until checked against a live list.
-      if (typeof parsed.microphoneIdMigrationComplete !== 'boolean') {
-        parsed.microphoneIdMigrationComplete = parsed.microphone === 'system_default';
+      if (parsed.microphone === 'system_default') {
+        parsed.microphoneIdMigrationComplete = true;
+      } else if (typeof parsed.microphoneIdMigrationComplete !== 'boolean') {
+        parsed.microphoneIdMigrationComplete = false;
       }
 
       // Validate model against current allow-list (includes Moonshine migration)

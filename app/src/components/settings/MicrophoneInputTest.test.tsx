@@ -61,6 +61,8 @@ describe('MicrophoneInputTest', () => {
   let vadSensitivity = 60;
   let dictationBusy = false;
   let inventoryAvailable = true;
+  let inventoryLoading = false;
+  let missingDevice = false;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
 
@@ -79,8 +81,9 @@ describe('MicrophoneInputTest', () => {
             ready={appReady}
             vadSensitivity={vadSensitivity}
             dictationBusy={dictationBusy}
-            missingDevice={false}
+            missingDevice={missingDevice}
             inventoryAvailable={inventoryAvailable}
+            inventoryLoading={inventoryLoading}
             onChange={handleMicrophoneChange}
           />
         </SettingsSurfaceActiveContext.Provider>,
@@ -106,6 +109,8 @@ describe('MicrophoneInputTest', () => {
     vadSensitivity = 60;
     dictationBusy = false;
     inventoryAvailable = true;
+    inventoryLoading = false;
+    missingDevice = false;
     frames = new Map();
     nextFrame = 1;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -165,6 +170,31 @@ describe('MicrophoneInputTest', () => {
     await render();
     expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());
     expect((container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('describes loading before unavailable or missing-device selector states', async () => {
+    inventoryAvailable = false;
+    inventoryLoading = true;
+    missingDevice = true;
+    await render();
+    const selector = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    const helper = document.getElementById(selector.getAttribute('aria-describedby') ?? '');
+    expect(helper?.textContent).toBe('Loading available microphones…');
+    expect(container.textContent).not.toContain('Selected device not found');
+
+    inventoryLoading = false;
+    await render();
+    const unavailableHelper = document.getElementById(selector.getAttribute('aria-describedby') ?? '');
+    expect(unavailableHelper?.textContent).toBe('Microphone choices are temporarily unavailable.');
+    expect(container.textContent).not.toContain('Selected device not found');
+  });
+
+  it('describes a missing selected device once inventory is authoritative', async () => {
+    missingDevice = true;
+    await render();
+    const selector = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    const helper = document.getElementById(selector.getAttribute('aria-describedby') ?? '');
+    expect(helper?.textContent).toContain('Selected device not found');
   });
 
   it('pauses for dictation while connecting and resumes automatically afterward', async () => {
