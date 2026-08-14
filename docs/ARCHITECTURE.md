@@ -325,7 +325,7 @@ Global modifier hotkeys recover when macOS disables the underlying event tap, an
 ### `injector.rs` — Text Injection
 
 1. **Clipboard** (always): `arboard`. Empty/whitespace-only text is skipped.
-2. **Auto-paste** (optional): waits the configured delay, then posts a native `CGEvent` Cmd+V key-down/key-up pair to `CGEventTapLocation::HID`. If the native path fails, it falls back to `osascript`. Retries once on failure; the whole operation is timeout-bounded. On failure, `auto-paste-failed` is emitted and the text stays on the clipboard.
+2. **Auto-paste** (optional): waits the configured delay, then posts a native `CGEvent` Cmd+V key-down/key-up pair to `CGEventTapLocation::HID`. If the native path fails, it falls back to `osascript`. Retries once on failure; the whole operation is timeout-bounded. A typed, generation-gated delivery outcome distinguishes completed automatic paste, confirmed clipboard-only delivery, failed clipboard write, and an unconfirmed timeout. The overlay shows `⌘V` only for the confirmed clipboard-only case; detailed failures remain on `auto-paste-failed` for the main window.
 
 Focused-field role checks use native AX with a per-element messaging timeout and an osascript fallback, so a hung app can't stall the pipeline.
 

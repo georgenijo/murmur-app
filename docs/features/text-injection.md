@@ -22,7 +22,7 @@ When `auto_paste` is enabled in settings:
 6. Skip auto-paste only when the focused role is on the confirmed non-editable denylist; unknown roles still allow paste
 7. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. If event construction fails, fall back to the previous System Events `osascript` paste
 8. If the paste attempt reports a failure, wait 100ms and retry once
-9. If both attempts fail, emit `auto-paste-failed` so the frontend can notify the user
+9. Report a typed delivery outcome: automatic paste posted, confirmed clipboard-only, clipboard write failed, or delivery unconfirmed
 
 ### Delay Rationale
 
@@ -38,7 +38,9 @@ CoreGraphics event posting has no delivery result, so a successful native post c
 
 ### Failure Notification
 
-When paste fails (injection error, sender dropped, or 2s timeout), the Rust pipeline emits an `auto-paste-failed` Tauri event. A recording-target mismatch uses the specific message "App focus changed. Text is in your clipboard; paste it when ready." Other failures retain the manual-paste hint. The main window displays the detailed message in its existing error banner, while the collapsed non-activating overlay shows a bounded `⌘V` cue with the accessible meaning "Text copied to clipboard. Paste manually." Both clear after 5 seconds; neither retries the paste, changes focus, or expands the overlay.
+The Rust pipeline emits a content-free, generation-gated `dictation-delivery-outcome` after each current recording's delivery attempt. Confirmed clipboard-only outcomes cover disabled or file-output-suppressed auto-paste, missing Accessibility permission, safe focus refusal, and failed paste attempts. The collapsed non-activating overlay shows those outcomes as a bounded `⌘V` cue with the accessible meaning "Text copied to clipboard. Paste manually." A successful automatic paste, failed clipboard write, or unconfirmed timeout never shows the cue; a newer outcome clears any older cue, and duplicate/stale recording IDs are ignored.
+
+Focus refusals and delivery failures still emit `auto-paste-failed` for the main window's detailed five-second banner. Disabled auto-paste and missing Accessibility permission are successful clipboard-only outcomes, not errors, so they emit only the delivery outcome. A recording-target mismatch uses the specific message "App focus changed. Text is in your clipboard; paste it when ready." Messages for clipboard-write failure or an unconfirmed timeout do not claim that text reached the clipboard. Neither event retries the paste, changes focus, or expands the overlay.
 
 ### Native path and compatibility fallback
 

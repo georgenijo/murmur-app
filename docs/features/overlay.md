@@ -122,7 +122,7 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 |------|------|
 | `useOverlayGeometry` | Fetches/subscribes to `OverlayGeometry` (see [Geometry Contract](#geometry-contract)). |
 | `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`, `overlayVerticalOffset`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
-| `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), `auto-paste-failed` (clipboard-only `⌘V` cue), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
+| `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), `dictation-generation-started` ownership floor, generation-ordered `dictation-delivery-outcome` (clipboard-only `⌘V` cue), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
 | `useOverlayExpansion` (pre-existing, see [Expansion Controller](#expansion-controller)) | The hover-expand lifecycle. |
 | `useWaveform` | The `audio-level` listener and the rAF bar-height animation (see [Waveform Animation](#waveform-animation)). |
 | `useRecordingControls` | Click/double-click/mousedown disambiguation (250ms debounce) and "locked mode" (see [Click Interactions](#click-interactions)). Reads the microphone override via `loadSettings()` — no raw localStorage parsing. |
@@ -181,12 +181,18 @@ Spinning circle in the left wing; the waveform is hidden (visible only while rec
 
 ### Clipboard Only (transient)
 
-When automatic paste is refused or fails after the clipboard write succeeds,
-the collapsed pill shows an accessible green `⌘V` cue for 5 seconds. Active
+Whenever a dictation is confirmed on the clipboard without a completed
+automatic paste—including disabled or file-output-suppressed auto-paste,
+missing Accessibility permission, a safe focus refusal, or a paste failure—the
+collapsed pill shows an accessible green `⌘V` cue for 5 seconds. The cue never
+appears after a failed/unconfirmed clipboard write or a completed automatic
+paste. Active
 recording, processing, meeting, transform, and higher-priority failure states
 remain truthful and take visual precedence; the cue appears once those states
 return to idle. It is non-interactive and never focuses Murmur, expands the
-surface, resizes the window, or retries the paste.
+surface, resizes the window, or retries the paste. Monotonic recording IDs make
+duplicate and stale delivery events unable to extend or resurrect the cue; a
+separate generation-start event advances the stale-event floor before delivery.
 
 ### Cancelled (transient)
 An 800ms red-X flash, triggered by `recording-cancelled`. Takes priority over every other indicator.
@@ -248,7 +254,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
 - Calls: `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `auto-paste-failed`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
+- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 
