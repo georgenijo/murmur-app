@@ -288,6 +288,10 @@ pub(crate) enum AudioWorkerEvent {
         owner: crate::audio_lifecycle::AudioOwner,
         failure: AudioFailure,
     },
+    StartupDiagnostic {
+        owner: crate::audio_lifecycle::AudioOwner,
+        diagnostic: AudioStartupDiagnostic,
+    },
     FirstBuffer {
         owner: crate::audio_lifecycle::AudioOwner,
         sample_rate: u32,
@@ -306,6 +310,55 @@ pub(crate) enum AudioWorkerEvent {
     ThreadExited {
         owner: crate::audio_lifecycle::AudioOwner,
     },
+}
+
+/// Content-free observations from the production capture worker. These are
+/// emitted only for the bounded microphone startup benchmark; regular capture
+/// owners keep their existing lifecycle/event surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AudioStartupDiagnostic {
+    BackendPlan {
+        primary: CaptureBackend,
+        fallback: CaptureBackend,
+        source: AudioBackendOrderSource,
+    },
+    AttemptStarted {
+        backend: CaptureBackend,
+        resolution_pass: u8,
+        attempt_index: u8,
+        attempt_budget_ms: u64,
+    },
+    SetupStep {
+        backend: CaptureBackend,
+        resolution_pass: u8,
+        attempt_index: u8,
+        step: CaptureSetupStep,
+        transition: SetupTransition,
+    },
+    FirstPcm {
+        backend: CaptureBackend,
+        resolution_pass: u8,
+        attempt_index: u8,
+        attempt_start_to_first_pcm_ms: u64,
+        active_elapsed_ms: u64,
+    },
+    CycleReady {
+        cycle_start_to_first_pcm_ms: u64,
+    },
+    AttemptFailed {
+        backend: CaptureBackend,
+        resolution_pass: u8,
+        attempt_index: u8,
+        active_elapsed_ms: u64,
+        failure_kind: AudioFailureKind,
+        failure_phase: AudioInitPhase,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AudioBackendOrderSource {
+    Default,
+    SessionFirstPcmMemo,
 }
 
 #[derive(Clone)]
@@ -1067,6 +1120,7 @@ enum AttemptResult {
     Failed {
         failure: AudioFailure,
         retained_audio: bool,
+        active_elapsed_ms: u64,
     },
 }
 
@@ -1275,7 +1329,7 @@ const FAST_FAIL_PRIMARY_BUDGET: Duration = Duration::from_secs(2);
 const FAST_RESCUE_THRESHOLD: Duration = Duration::from_secs(1);
 const FAST_FAIL_ARM_COUNT: u32 = 2;
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct BackendMemo {
     last_ready: Option<CaptureBackend>,
     promotion_disabled: bool,
@@ -1284,11 +1338,10 @@ struct BackendMemo {
 
 static CAPTURE_MEMO: Mutex<Vec<(Option<String>, BackendMemo)>> = Mutex::new(Vec::new());
 
-// Memo writes are deliberately not gated on capture ownership: they record
-// observations about device behavior (a backend delivered PCM, a promoted
-// backend hung), and an observation made by an attempt that was cancelled a
-// moment later is exactly as true about the hardware. Ownership generations
-// guard recording state and publication, not this ordering heuristic.
+// Normal production owners update this memo from observed device behavior.
+// Diagnostic benchmark capture is explicitly excluded at each write site so
+// measuring startup cannot retrain later dictation; all policy reads remain
+// non-inserting as well.
 fn with_memo<R>(device_id: Option<&str>, apply: impl FnOnce(&mut BackendMemo) -> R) -> R {
     let mut memo = CAPTURE_MEMO.lock_or_recover();
     if let Some(position) = memo.iter().position(|(key, _)| key.as_deref() == device_id) {
@@ -1297,6 +1350,15 @@ fn with_memo<R>(device_id: Option<&str>, apply: impl FnOnce(&mut BackendMemo) ->
         memo.push((device_id.map(str::to_string), BackendMemo::default()));
         apply(&mut memo.last_mut().expect("entry just pushed").1)
     }
+}
+
+fn read_memo<R>(device_id: Option<&str>, apply: impl FnOnce(Option<&BackendMemo>) -> R) -> R {
+    let memo = CAPTURE_MEMO.lock_or_recover();
+    apply(
+        memo.iter()
+            .find(|(key, _)| key.as_deref() == device_id)
+            .map(|(_, value)| value),
+    )
 }
 
 fn note_first_pcm(
@@ -1329,18 +1391,37 @@ fn note_promoted_primary_timeout(device_id: Option<&str>) {
     });
 }
 
+fn should_update_capture_memo(owner: crate::audio_lifecycle::AudioOwner) -> bool {
+    !owner.is_microphone_benchmark()
+}
+
 fn preferred_backends_for(device_id: Option<&str>) -> [CaptureBackend; 2] {
     let default_order = preferred_backends();
-    let last_ready = with_memo(device_id, |memo| {
-        if memo.promotion_disabled {
-            None
-        } else {
-            memo.last_ready
-        }
+    let last_ready = read_memo(device_id, |memo| {
+        memo.and_then(|memo| {
+            if memo.promotion_disabled {
+                None
+            } else {
+                memo.last_ready
+            }
+        })
     });
     match last_ready {
         Some(backend) if backend == default_order[1] => [default_order[1], default_order[0]],
         _ => default_order,
+    }
+}
+
+pub(crate) fn microphone_startup_backend_plan(device_id: Option<&str>) -> AudioStartupDiagnostic {
+    let backends = preferred_backends_for(device_id);
+    AudioStartupDiagnostic::BackendPlan {
+        primary: backends[0],
+        fallback: backends[1],
+        source: if backends != preferred_backends() {
+            AudioBackendOrderSource::SessionFirstPcmMemo
+        } else {
+            AudioBackendOrderSource::Default
+        },
     }
 }
 
@@ -1356,8 +1437,8 @@ fn primary_attempt_budget(
         // case beyond the default order's.
         budget = budget.min(PROMOTED_PRIMARY_BUDGET_CAP);
     }
-    if with_memo(device_id, |memo| {
-        memo.consecutive_fast_rescues >= FAST_FAIL_ARM_COUNT
+    if read_memo(device_id, |memo| {
+        memo.is_some_and(|memo| memo.consecutive_fast_rescues >= FAST_FAIL_ARM_COUNT)
     }) {
         budget = budget.min(FAST_FAIL_PRIMARY_BUDGET);
     }
@@ -1520,6 +1601,22 @@ fn run_backend(
     }
     let started_at = Instant::now();
     let mut clock = ActiveAttemptClock::new(started_at);
+    let attempt_budget = if ctx.is_primary {
+        primary_attempt_budget(backend, device_id, ctx.memo_promoted)
+    } else {
+        backend_attempt_budget(backend)
+    };
+    if owner.is_microphone_benchmark() {
+        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+            owner,
+            diagnostic: AudioStartupDiagnostic::AttemptStarted {
+                backend,
+                resolution_pass: ctx.resolution_pass as u8,
+                attempt_index: ctx.backend_attempt as u8,
+                attempt_budget_ms: attempt_budget.as_millis() as u64,
+            },
+        });
+    }
     let mut permission_prompt_started = None;
     let permission_status = crate::commands::permissions::check_microphone_permission_status();
     if permission_status == "denied" {
@@ -1529,6 +1626,7 @@ fn run_backend(
                 AudioInitPhase::StreamBuild,
             ),
             retained_audio: false,
+            active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
         };
     }
     if permission_status == "notDetermined" {
@@ -1556,6 +1654,7 @@ fn run_backend(
                 return AttemptResult::Failed {
                     failure,
                     retained_audio: false,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                 };
             }
         };
@@ -1584,6 +1683,7 @@ fn run_backend(
             return AttemptResult::Failed {
                 failure,
                 retained_audio: false,
+                active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
             };
         }
     };
@@ -1624,6 +1724,7 @@ fn run_backend(
                 AudioInitPhase::StreamBuild,
             ),
             retained_audio: false,
+            active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
         };
     }
     tracing::info!(
@@ -1666,11 +1767,6 @@ fn run_backend(
     let mut input_resolution = InputResolutionTracker::default();
     let worker_pid = child.pid();
     let mut hang_probe: Option<crate::hang_diagnostics::HangProbe> = None;
-    let attempt_budget = if ctx.is_primary {
-        primary_attempt_budget(backend, device_id, ctx.memo_promoted)
-    } else {
-        backend_attempt_budget(backend)
-    };
     if attempt_budget != backend_attempt_budget(backend) {
         tracing::info!(
             target: "audio",
@@ -1774,6 +1870,7 @@ fn run_backend(
                 return AttemptResult::Failed {
                     failure: AudioFailure::new(AudioFailureKind::PermissionDenied, phase),
                     retained_audio,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                 };
             }
             if permission_prompt_timed_out {
@@ -1802,6 +1899,7 @@ fn run_backend(
                         current_phase,
                     ),
                     retained_audio: false,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                 };
             }
         }
@@ -1836,7 +1934,7 @@ fn run_backend(
                 },
                 current_phase,
             );
-            if ctx.is_primary && ctx.memo_promoted {
+            if ctx.is_primary && ctx.memo_promoted && should_update_capture_memo(owner) {
                 // The promoted backend hung too, so the hang on this device
                 // is first-attempt-bound rather than backend-bound; keeping
                 // the promotion would oscillate the order every recording.
@@ -1887,6 +1985,7 @@ fn run_backend(
             return AttemptResult::Failed {
                 failure,
                 retained_audio: false,
+                active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
             };
         }
 
@@ -1923,6 +2022,7 @@ fn run_backend(
                             AudioInitPhase::Runtime,
                         ),
                         retained_audio,
+                        active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
                 expected_sequence += 1;
@@ -1966,7 +2066,25 @@ fn run_backend(
                     current_phase = AudioInitPhase::Runtime;
                     // A successful preview is real device-readiness evidence,
                     // so it intentionally trains the per-device backend memo.
-                    note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
+                    if owner.is_microphone_benchmark() {
+                        let active_elapsed_ms = clock.elapsed(Instant::now()).as_millis() as u64;
+                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                            owner,
+                            diagnostic: AudioStartupDiagnostic::FirstPcm {
+                                backend,
+                                resolution_pass: ctx.resolution_pass as u8,
+                                attempt_index: ctx.backend_attempt as u8,
+                                // Match the existing production
+                                // `audio.capture_ready.startup_ms` contract:
+                                // helper Start write -> first accepted PCM.
+                                attempt_start_to_first_pcm_ms: start_sent_at.elapsed().as_millis()
+                                    as u64,
+                                active_elapsed_ms,
+                            },
+                        });
+                    } else if should_update_capture_memo(owner) {
+                        note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
+                    }
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
                         &mut clock,
@@ -2055,6 +2173,7 @@ fn run_backend(
                     return AttemptResult::Failed {
                         failure: AudioFailure::new(AudioFailureKind::ProtocolError, current_phase),
                         retained_audio,
+                        active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
                 tracing::info!(
@@ -2122,6 +2241,7 @@ fn run_backend(
                     return AttemptResult::Failed {
                         failure: AudioFailure::new(AudioFailureKind::ProtocolError, current_phase),
                         retained_audio,
+                        active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
                 tracing::info!(
@@ -2174,9 +2294,22 @@ fn run_backend(
                     return AttemptResult::Failed {
                         failure: AudioFailure::new(AudioFailureKind::ProtocolError, current_phase),
                         retained_audio,
+                        active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
                 last_setup_step = Some((step, transition));
+                if owner.is_microphone_benchmark() {
+                    let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                        owner,
+                        diagnostic: AudioStartupDiagnostic::SetupStep {
+                            backend,
+                            resolution_pass: ctx.resolution_pass as u8,
+                            attempt_index: ctx.backend_attempt as u8,
+                            step,
+                            transition,
+                        },
+                    });
+                }
                 tracing::info!(
                     target: "audio",
                     capture_id,
@@ -2220,6 +2353,7 @@ fn run_backend(
                     return AttemptResult::Failed {
                         failure: AudioFailure::new(AudioFailureKind::ProtocolError, phase),
                         retained_audio,
+                        active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
                 if !terminate_or_quarantine(
@@ -2237,6 +2371,7 @@ fn run_backend(
                 return AttemptResult::Failed {
                     failure: AudioFailure::new(failure_kind(code), phase),
                     retained_audio,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                 };
             }
             Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Stopped {
@@ -2295,6 +2430,7 @@ fn run_backend(
                         },
                     ),
                     retained_audio,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                 };
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -2305,6 +2441,7 @@ fn run_backend(
 fn run_capture_backend_pass(
     owner: crate::audio_lifecycle::AudioOwner,
     command_receiver: &Receiver<AudioCommand>,
+    event_sender: &AudioWorkerEventSender,
     backends: [CaptureBackend; 2],
     resolution_pass: usize,
     run_attempt: &mut impl FnMut(CaptureBackend, usize, usize) -> AttemptResult,
@@ -2317,7 +2454,21 @@ fn run_capture_backend_pass(
             AttemptResult::Failed {
                 failure,
                 retained_audio,
+                active_elapsed_ms,
             } if !retained_audio && attempt_index == 0 && failure.permits_backend_fallback() => {
+                if owner.is_microphone_benchmark() {
+                    let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                        owner,
+                        diagnostic: AudioStartupDiagnostic::AttemptFailed {
+                            backend,
+                            resolution_pass: resolution_pass as u8,
+                            attempt_index: (attempt_index + 1) as u8,
+                            active_elapsed_ms,
+                            failure_kind: failure.kind,
+                            failure_phase: failure.phase,
+                        },
+                    });
+                }
                 primary_device_unavailable = failure.kind == AudioFailureKind::DeviceUnavailable;
                 if stop_requested_between_attempts(command_receiver) {
                     tracing::info!(
@@ -2341,7 +2492,21 @@ fn run_capture_backend_pass(
             AttemptResult::Failed {
                 failure,
                 retained_audio,
+                active_elapsed_ms,
             } => {
+                if owner.is_microphone_benchmark() {
+                    let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                        owner,
+                        diagnostic: AudioStartupDiagnostic::AttemptFailed {
+                            backend,
+                            resolution_pass: resolution_pass as u8,
+                            attempt_index: (attempt_index + 1) as u8,
+                            active_elapsed_ms,
+                            failure_kind: failure.kind,
+                            failure_phase: failure.phase,
+                        },
+                    });
+                }
                 let fallback_exhausted = !retained_audio && attempt_index == 1;
                 let both_backends_device_unavailable = fallback_exhausted
                     && primary_device_unavailable
@@ -2385,6 +2550,7 @@ fn run_capture_backend_sequence_with_delay(
         match run_capture_backend_pass(
             owner,
             command_receiver,
+            event_sender,
             backends,
             pass_index + 1,
             &mut run_attempt,
@@ -2487,6 +2653,20 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
     );
     let backends = preferred_backends_for(device_id.as_deref());
     let memo_promoted = backends != preferred_backends();
+    if owner.is_microphone_benchmark() {
+        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+            owner,
+            diagnostic: AudioStartupDiagnostic::BackendPlan {
+                primary: backends[0],
+                fallback: backends[1],
+                source: if memo_promoted {
+                    AudioBackendOrderSource::SessionFirstPcmMemo
+                } else {
+                    AudioBackendOrderSource::Default
+                },
+            },
+        });
+    }
     if memo_promoted {
         tracing::info!(
             target: "audio",
@@ -2973,6 +3153,46 @@ mod tests {
         assert!(stop_requested_between_attempts(&receiver));
     }
 
+    #[test]
+    fn diagnostic_capture_never_retrains_the_production_backend_memo() {
+        assert!(should_update_capture_memo(
+            crate::audio_lifecycle::AudioOwner::Dictation(1)
+        ));
+        assert!(should_update_capture_memo(
+            crate::audio_lifecycle::AudioOwner::Preview(2)
+        ));
+        assert!(!should_update_capture_memo(
+            crate::audio_lifecycle::AudioOwner::MicrophoneBenchmark(3)
+        ));
+    }
+
+    #[test]
+    fn diagnostic_policy_reads_leave_capture_memo_byte_equivalent() {
+        let unseen = Some("memo-diagnostic-unseen");
+        let before_unseen = CAPTURE_MEMO.lock_or_recover().clone();
+        let unseen_plan = microphone_startup_backend_plan(unseen);
+        let unseen_order = preferred_backends_for(unseen);
+        let _ = primary_attempt_budget(unseen_order[0], unseen, false);
+        assert!(matches!(
+            unseen_plan,
+            AudioStartupDiagnostic::BackendPlan { .. }
+        ));
+        assert_eq!(before_unseen, CAPTURE_MEMO.lock_or_recover().clone());
+
+        let existing = Some("memo-diagnostic-existing");
+        let default_order = preferred_backends();
+        note_first_pcm(existing, default_order[1], false, FAST);
+        let before_existing = CAPTURE_MEMO.lock_or_recover().clone();
+        let existing_plan = microphone_startup_backend_plan(existing);
+        let existing_order = preferred_backends_for(existing);
+        let _ = primary_attempt_budget(existing_order[0], existing, true);
+        assert!(matches!(
+            existing_plan,
+            AudioStartupDiagnostic::BackendPlan { .. }
+        ));
+        assert_eq!(before_existing, CAPTURE_MEMO.lock_or_recover().clone());
+    }
+
     fn failed_attempt(kind: AudioFailureKind, retained_audio: bool) -> AttemptResult {
         AttemptResult::Failed {
             failure: AudioFailure::new(
@@ -2984,6 +3204,7 @@ mod tests {
                 },
             ),
             retained_audio,
+            active_elapsed_ms: 1,
         }
     }
 
@@ -3245,6 +3466,7 @@ mod tests {
                             AudioInitPhase::StreamBuild,
                         ),
                         retained_audio: false,
+                        active_elapsed_ms: 1,
                     }
                 } else {
                     AttemptResult::Stopped
@@ -3299,6 +3521,7 @@ mod tests {
                         AudioInitPhase::StreamBuild,
                     ),
                     retained_audio: false,
+                    active_elapsed_ms: 1,
                 }
             },
         );
@@ -3537,6 +3760,7 @@ mod tests {
                         AudioInitPhase::Runtime,
                     ),
                     retained_audio: true,
+                    active_elapsed_ms: 1,
                 }
             },
         );

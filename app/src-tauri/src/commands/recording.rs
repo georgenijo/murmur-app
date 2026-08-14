@@ -3032,6 +3032,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     let is_current = || state.app_state.recording_id.load(Ordering::SeqCst) == recording_id;
 
     match event {
+        AudioLifecycleEvent::StartupDiagnostic(_) => {}
         AudioLifecycleEvent::Accepted => {
             state.app_state.dictation_telemetry.accepted(recording_id);
             if !is_current() {
@@ -4855,6 +4856,7 @@ mod tests {
             .manage(State {
                 app_state,
                 benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
@@ -4977,6 +4979,7 @@ mod tests {
             .manage(State {
                 app_state,
                 benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),

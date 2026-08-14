@@ -1218,6 +1218,7 @@ pub(crate) fn handle_audio_lifecycle(
     }
 
     match event {
+        crate::audio_lifecycle::AudioLifecycleEvent::StartupDiagnostic(_) => {}
         crate::audio_lifecycle::AudioLifecycleEvent::Accepted => {}
         crate::audio_lifecycle::AudioLifecycleEvent::Ready => {
             crate::transform_trace::audio(transform_pass_id, "armed", "ok", 0, 0);

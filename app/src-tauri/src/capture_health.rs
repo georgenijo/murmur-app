@@ -88,6 +88,13 @@ impl CaptureHealthAccumulator {
     }
 
     fn observe(&mut self, event: &AppEvent) -> bool {
+        // Every shared-audio lifecycle mutation is dictation-scoped. Owner
+        // counters are independent per owner kind, so keying a pending
+        // fallback by the numeric ID alone would let a preview, query, or
+        // diagnostic benchmark cycle collide with a later dictation.
+        if string_field(event, "owner_kind") != Some("dictation") {
+            return false;
+        }
         let Some(owner) = numeric_field(event, "owner") else {
             return false;
         };
@@ -112,7 +119,7 @@ impl CaptureHealthAccumulator {
             self.pending_fallbacks.remove(&owner);
             return false;
         }
-        if !is_ready(event) || string_field(event, "owner_kind") != Some("dictation") {
+        if !is_ready(event) {
             return false;
         }
 
@@ -378,13 +385,14 @@ mod tests {
         )
     }
 
-    fn fallback(at_ms: i64, owner: u64, backend: &str) -> AppEvent {
+    fn fallback(at_ms: i64, owner: u64, backend: &str, kind: &str) -> AppEvent {
         event(
             at_ms,
             FALLBACK_SUMMARY,
             serde_json::json!({
                 "event_code": "audio.fallback_started",
                 "owner": owner,
+                "owner_kind": kind,
                 "from_backend": backend,
                 "device_label": "SENTINEL DEVICE",
                 "device_uid": "SENTINEL UID",
@@ -410,7 +418,7 @@ mod tests {
     fn finalizes_only_successful_dictation_observations() {
         let mut accumulator = CaptureHealthAccumulator::default();
         accumulator.observe(&start(0, 1, "transform"));
-        accumulator.observe(&fallback(100, 1, "auhal"));
+        accumulator.observe(&fallback(100, 1, "auhal", "transform"));
         accumulator.observe(&ready(200, 1, 100, "transform"));
         accumulator.observe(&start(300, 2, "dictation"));
         accumulator.observe(&ready(500, 2, 200, "dictation"));
@@ -426,12 +434,16 @@ mod tests {
     }
 
     #[test]
-    fn owner_collision_start_and_stale_window_cannot_invent_fallback() {
+    fn non_dictation_owner_collision_and_stale_window_cannot_invent_fallback() {
         let mut accumulator = CaptureHealthAccumulator::default();
-        accumulator.observe(&fallback(0, 7, "auhal"));
-        accumulator.observe(&start(1_000, 7, "transform"));
+        accumulator.observe(&start(0, 7, "microphone_benchmark"));
+        accumulator.observe(&fallback(500, 7, "auhal", "microphone_benchmark"));
+        accumulator.observe(&ready(1_000, 7, 500, "microphone_benchmark"));
+        assert!(accumulator.pending_fallbacks.is_empty());
+
+        accumulator.observe(&start(1_500, 7, "dictation"));
         accumulator.observe(&ready(2_000, 7, 1_000, "dictation"));
-        accumulator.observe(&fallback(3_000, 8, "auhal"));
+        accumulator.observe(&fallback(3_000, 8, "auhal", "dictation"));
         accumulator.observe(&ready(38_001, 8, 1_000, "dictation"));
 
         assert_eq!(accumulator.history().observations.len(), 2);
@@ -445,7 +457,7 @@ mod tests {
     #[test]
     fn unknown_backend_still_records_recovered_fallback_without_its_label() {
         let mut accumulator = CaptureHealthAccumulator::default();
-        accumulator.observe(&fallback(0, 9, "private-device-label"));
+        accumulator.observe(&fallback(0, 9, "private-device-label", "dictation"));
         accumulator.observe(&ready(1_000, 9, 1_000, "dictation"));
 
         let observation = &accumulator.history().observations[0];
@@ -471,7 +483,7 @@ mod tests {
         let event_log = temp.path().join("events.jsonl");
         let events = [
             start(0, 9, "dictation"),
-            fallback(1_000, 9, "auhal"),
+            fallback(1_000, 9, "auhal", "dictation"),
             ready(2_000, 9, 2_000, "dictation"),
         ];
         let jsonl = events

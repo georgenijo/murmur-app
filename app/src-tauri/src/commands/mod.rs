@@ -9,6 +9,7 @@ pub mod knowledge;
 pub mod logging;
 pub mod meeting;
 pub mod microphone_preview;
+pub mod microphone_startup_benchmark;
 pub mod models;
 pub(crate) mod native_window;
 pub mod overlay;

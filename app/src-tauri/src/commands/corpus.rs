@@ -477,6 +477,7 @@ pub(crate) fn handle_audio_lifecycle(
         return;
     }
     match event {
+        AudioLifecycleEvent::StartupDiagnostic(_) => {}
         AudioLifecycleEvent::Accepted => {}
         AudioLifecycleEvent::Ready => {
             state

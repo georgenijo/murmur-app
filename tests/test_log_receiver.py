@@ -187,6 +187,65 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertNotIn("private transcript content", str(presentation))
         self.assertNotIn("/Users/private/project", str(presentation))
 
+    def test_microphone_benchmark_owner_cannot_pollute_dashboard_correlation(self) -> None:
+        benchmark_data = {
+            "owner": 7,
+            "owner_kind": "microphone_benchmark",
+        }
+        events = [
+            event(
+                "capture backend exceeded its active initialization budget",
+                timestamp="2026-08-05T00:00:00Z",
+                level="warn",
+                stream="audio",
+                data={
+                    **benchmark_data,
+                    "event_code": "audio.capture_backend_timeout",
+                    "backend": "auhal",
+                },
+            ),
+            event(
+                "capture backend failed before retained audio; trying bounded fallback",
+                timestamp="2026-08-05T00:00:01Z",
+                level="warn",
+                stream="audio",
+                data={
+                    **benchmark_data,
+                    "event_code": "audio.fallback_started",
+                    "from_backend": "auhal",
+                    "to_backend": "cpal",
+                },
+            ),
+            event(
+                "both capture backend attempts failed before first PCM",
+                timestamp="2026-08-05T00:00:02Z",
+                level="error",
+                stream="audio",
+                data={
+                    **benchmark_data,
+                    "event_code": "audio.capture_failed",
+                },
+            ),
+            event(
+                "audio readiness accepted",
+                timestamp="2026-08-05T00:00:03Z",
+                stream="audio",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner": 7,
+                    "owner_kind": "dictation",
+                    "startup_ms": 250,
+                },
+            ),
+        ]
+
+        signals = receiver.build_health_signals(events)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["code"], "audio.capture_ready")
+        self.assertEqual(signals[0]["status"], "healthy")
+        self.assertEqual(len(signals[0]["events"]), 1)
+
     def test_listener_silence_is_diagnostic_and_deduplicated(self) -> None:
         events = [
             event(
