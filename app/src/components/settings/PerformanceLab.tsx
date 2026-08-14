@@ -29,6 +29,7 @@ import {
 import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 import { CorpusRecorder } from './CorpusRecorder';
+import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
@@ -140,10 +141,11 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
   );
 }
 
-export function PerformanceLab({ status, settings, onUpdateSettings }: {
+export function PerformanceLab({ status, settings, onUpdateSettings, audioInventory }: {
   status: DictationStatus;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
+  audioInventory: AudioInputInventoryV1 | null;
 }) {
   const [models, setModels] = useState<BenchmarkModel[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -368,6 +370,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings }: {
         benchmarkRunning={running}
         fileTranscribing={fileTranscribing}
         settings={settings}
+        audioInventory={audioInventory}
         onUpdateSettings={onUpdateSettings}
         onBusyChange={setCorpusBusy}
       />}

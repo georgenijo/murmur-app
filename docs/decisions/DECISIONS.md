@@ -6,6 +6,37 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-14: Microphone inventory uses an idle-only shared cache with bounded refresh
+
+**Decision:** Replace helper-per-consumer microphone enumeration with one
+Rust-owned, schema-versioned inventory. A supervised signed worker installs
+passive Core Audio topology/default-input listeners and sends content-free
+invalidation signals; it never enumerates or opens a device. Refresh once at
+startup and every five minutes as the bounded fallback if a listener signal is
+missed or the watcher exhausts its restart budget. Concurrent requests
+coalesce; a signal or tick during any capture-owned phase remains pending until
+the lifecycle supervisor has joined the capture worker and published Idle.
+Settings focus is a cache read, never a refresh trigger. Production protocol v5
+carries the actual default input's optional stable ID in the bounded `Devices`
+reply and adds the watcher controls.
+
+**Rationale:** macOS exposes the authoritative topology/default signal through
+Core Audio, but the app-process HAL isolation boundary forbids a listener
+there. The app therefore owns one passive listener worker instead of launching
+a new enumeration worker on every focus or consumer read. Enumeration remains
+short-lived, coalesced, and idle-only; the bounded backend timer supplies a
+deterministic fallback. Keeping the last successful topology explicitly stale
+gives the UI continuity without allowing old data to prove that a pinned
+microphone is present. The shipper derives only aggregate availability and
+counts, so labels and UIDs remain local.
+
+**Status:** active
+
+**References:** issue #534; `audio_inventory.rs`, `audio_lifecycle.rs`,
+`crates/capture-helper-protocol`, `useAudioInputInventory`
+
+---
+
 ## 2026-08-14: Overlay calibration previews native movement and commits explicitly
 
 **Decision:** Replace the overlay-resident pointer drag band with Settings
@@ -447,7 +478,7 @@ initialization budgets inside one 30-second active-time contract. Each backend
 has a 2-second confirmed-termination budget, with 2 seconds reserved for
 protocol scheduling. CPAL can start only after AUHAL's process group is proven
 empty and a final Stop check passes. Pending TCC prompt time is excluded from
-active deadlines but bounded by a separate 120-second watchdog. Protocol v3
+active deadlines but bounded by a separate 120-second watchdog. Protocol v5
 reports privacy-safe setup sub-phases.
 
 **Rationale:** A global Stop at 30 seconds previously converted a hung primary
@@ -505,7 +536,7 @@ saved only process-launch time and did not affect the blocking HAL call.
 ## 2026-08-01: Production HAL ownership moves to a killable capture worker (#405)
 
 **Decision:** Production microphone enumeration and capture run only inside the
-signed managed capture worker over binary protocol v3. The worker exposes CPAL
+signed managed capture worker over binary protocol v5. The worker exposes CPAL
 and direct AUHAL backends with one exact-device pre-buffer fallback. Callback
 PCM crosses a preallocated SPSC ring; the app validates capture identity,
 sequence, bounds, and sample rate before retaining it. Runtime failure

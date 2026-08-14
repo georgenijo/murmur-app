@@ -2,6 +2,7 @@
 mod alloc;
 mod audio;
 mod audio_decode;
+mod audio_inventory;
 mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
@@ -282,6 +283,7 @@ pub fn run() {
             commands::permissions::check_microphone_permission_status,
             commands::permissions::reset_microphone_permission,
             commands::permissions::list_audio_devices,
+            commands::permissions::get_audio_input_inventory,
             commands::microphone_preview::get_microphone_preview_status,
             commands::microphone_preview::start_microphone_preview,
             commands::microphone_preview::update_microphone_preview_vad_sensitivity,
@@ -429,6 +431,7 @@ pub fn run() {
         })
         .setup(|app| {
             telemetry::init(app.handle().clone());
+            audio_inventory::initialize(app.handle().clone());
             log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
@@ -690,10 +693,11 @@ pub fn run() {
             }
         }
 
-        // App-exit teardown: stop any resident local-LLM helper so it never
-        // outlives the app (no-op when no child is running).
-        #[cfg(target_os = "macos")]
         if let RunEvent::Exit = &_event {
+            audio_inventory::shutdown();
+            // App-exit teardown: stop resident native helpers so none outlive
+            // the app (all no-op when no child is running).
+            #[cfg(target_os = "macos")]
             if let Some(state) = _app_handle.try_state::<State>() {
                 state.meetings.shutdown(_app_handle);
                 state.transform_runtime.shutdown();

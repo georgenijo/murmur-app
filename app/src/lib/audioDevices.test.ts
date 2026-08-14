@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   audioDeviceSelectOptions,
   migrateLegacyMicrophoneId,
+  parseAudioInputInventory,
   selectedDeviceExists,
 } from './audioDevices';
 
@@ -34,5 +35,46 @@ describe('audio device persistence', () => {
       { value: 'USB-A', label: 'Studio Mic (USB-A)' },
       { value: 'USB-B', label: 'Studio Mic (USB-B)' },
     ]);
+  });
+});
+
+describe('parseAudioInputInventory', () => {
+  const available = {
+    schemaVersion: 1,
+    revision: 4,
+    status: 'available',
+    devices: [{ id: 'uid-1', name: 'Studio Mic' }],
+    defaultInputId: 'uid-1',
+    errorCode: null,
+  };
+
+  it('accepts the exact v1 contract', () => {
+    expect(parseAudioInputInventory(available)).toEqual(available);
+  });
+
+  it('accepts exact UTF-8 byte boundaries for stable IDs and display names', () => {
+    const id = 'x'.repeat(4096);
+    const name = '🎙'.repeat(128);
+    expect(parseAudioInputInventory({
+      ...available,
+      devices: [{ id, name }],
+      defaultInputId: id,
+    })?.devices[0]).toEqual({ id, name });
+  });
+
+  it.each([
+    { ...available, schemaVersion: 2 },
+    { ...available, revision: -1 },
+    { ...available, extra: true },
+    { ...available, devices: [{ id: 'uid-1', name: 'Mic', extra: true }] },
+    { ...available, devices: Array.from({ length: 257 }, (_, index) => ({ id: `uid-${index}`, name: 'Mic' })) },
+    { ...available, devices: [{ id: 'x'.repeat(4097), name: 'Mic' }], defaultInputId: null },
+    { ...available, devices: [{ id: 'uid-1', name: '🎙'.repeat(129) }] },
+    { ...available, status: 'available', errorCode: 'enumerationFailed' },
+    { ...available, status: 'stale', errorCode: null },
+    { ...available, status: 'stale', errorCode: 'captureActive' },
+    { ...available, status: 'unavailable', errorCode: 'notInitialized' },
+  ])('rejects malformed or semantically impossible payload %#', (payload) => {
+    expect(parseAudioInputInventory(payload)).toBeNull();
   });
 });

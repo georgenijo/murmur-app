@@ -52,6 +52,16 @@ mockIPC((command) => {
     };
   }
   if (command === 'cancel_microphone_preview') return false;
+  if (command === 'get_audio_input_inventory') {
+    return {
+      schemaVersion: 1,
+      revision: 1,
+      status: 'available',
+      devices: [],
+      defaultInputId: null,
+      errorCode: null,
+    };
+  }
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
   if (command.includes('version')) return '0.27.0';
   return null;

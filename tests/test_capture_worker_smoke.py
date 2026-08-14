@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
+import struct
 import tempfile
 import textwrap
 import time
@@ -46,6 +47,24 @@ class CaptureWorkerSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(SmokeError, "invalid protocol header"):
                 read_control_frame(stream, 42, nonce, time.monotonic() + 1)
 
+    def test_previous_protocol_version_fails_closed(self) -> None:
+        capture_id = 42
+        nonce = bytes(range(16))
+        encoded = bytearray(
+            encode_control_frame(capture_id, nonce, {"type": "helloAck"})
+        )
+        encoded[4:6] = struct.pack("<H", 4)
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, encoded)
+        finally:
+            os.close(write_fd)
+        with os.fdopen(read_fd, "rb", buffering=0) as stream:
+            with self.assertRaisesRegex(SmokeError, "invalid protocol header"):
+                read_control_frame(
+                    stream, capture_id, nonce, time.monotonic() + 1
+                )
+
     def test_smoke_exercises_hello_and_start(self) -> None:
         fake_worker = textwrap.dedent(
             """\
@@ -55,19 +74,19 @@ class CaptureWorkerSmokeTests(unittest.TestCase):
             import struct
             import sys
 
-            assert sys.argv[1] == "--production-v4"
+            assert sys.argv[1] == "--production-v5"
             capture_id = int(sys.argv[2])
             nonce = bytes.fromhex(sys.argv[3])
 
             def read_frame():
                 header = sys.stdin.buffer.read(36)
                 magic, version, kind, reserved, length, actual_id, actual_nonce = struct.unpack("<4sHBBIQ16s", header)
-                assert (magic, version, kind, reserved, actual_id, actual_nonce) == (b"MRMR", 4, 0, 0, capture_id, nonce)
+                assert (magic, version, kind, reserved, actual_id, actual_nonce) == (b"MRMR", 5, 0, 0, capture_id, nonce)
                 return json.loads(sys.stdin.buffer.read(length))
 
             def write_frame(message):
                 body = json.dumps(message, separators=(",", ":")).encode()
-                sys.stdout.buffer.write(struct.pack("<4sHBBIQ16s", b"MRMR", 4, 0, 0, len(body), capture_id, nonce) + body)
+                sys.stdout.buffer.write(struct.pack("<4sHBBIQ16s", b"MRMR", 5, 0, 0, len(body), capture_id, nonce) + body)
                 sys.stdout.buffer.flush()
 
             assert read_frame() == {"type": "hello"}

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 160 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 161 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -44,7 +44,8 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
 | `open_system_audio_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Screen & System Audio Recording. |
-| `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | CPAL input descriptors: backend-native stable `id` plus presentation-only `name`. |
+| `get_audio_input_inventory` | — | `Result<AudioInputInventorySnapshot, String>` | Exact-main-window-gated shared schema-v1 snapshot: monotonic `revision`, `available` / `stale` / `unavailable` status, stable-ID/display-name descriptors, actual `defaultInputId`, and a bounded error code. The window gate runs before any inventory read or refresh request. A cold read may wait for the one coalesced startup refresh; it never bypasses active capture ownership. |
+| `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | Exact-main-window-gated compatibility view over the shared inventory. The gate runs before reading the inventory. Returns descriptors only from an authoritative `available` snapshot; stale/unavailable state fails closed and never enumerates per caller. |
 
 ## Meeting capture (`commands/meeting.rs`)
 

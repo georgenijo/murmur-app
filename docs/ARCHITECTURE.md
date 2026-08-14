@@ -83,7 +83,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 explicit Start Meeting
     |
-signed murmur-capture-worker --production-v4
+signed murmur-capture-worker --production-v5
     |-- microphone AUHAL callback --> preallocated SPSC ring --> Me frames
     +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
     |
@@ -162,22 +162,29 @@ always-dark glass surfaces.
 ### Capture worker boundary
 
 The signed `murmur-capture-worker` owns production microphone capture and the
-phase-one System Audio CATap. Production protocol v4 has capture-scoped
+phase-one System Audio CATap. Production protocol v5 has capture-scoped
 identity, nonce, strict bounded frames, and separate mic/system channel
 sequences. Native callbacks write only to preallocated SPSC rings; the worker's
 drain loop owns protocol I/O. Release builds validate fixed identifier, Team ID,
 hardened runtime, and entitlements before spawn, then retain exact managed
-process-group ownership through confirmed exit. The earlier health probe remains
-available for packaging and callback-boundary validation. See the
+process-group ownership through confirmed exit. The inventory path bounds its
+ordinary termination wait, retracts authoritative state and blocks replacements
+before transferring an unconfirmed child to the single prestarted app-owned
+reaper service, then performs a bounded exit drain; the worker parent watchdog
+remains the final boundary if the host exits first. If that reaper service
+cannot start, inventory stays unavailable and no inventory helper is launched.
+The earlier health probe
+remains available for packaging and callback-boundary validation. See the
 [capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
 
 ### Module map
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 160 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 161 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
+| `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
 | `capture_helper_probe.rs` | Probe-only capture-helper handshake, callback-health observation, cancel, and confirmed termination evidence |
@@ -385,7 +392,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-160 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+161 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

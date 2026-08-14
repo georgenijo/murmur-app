@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (160 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (161 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 160 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 161 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -124,6 +124,7 @@ Read these before working on a feature:
 | `commands/transform_popover.rs` | Transform review window geometry + show/hide/focusable |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
 | `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, preview level routing, mono conversion, and 16kHz resampling |
+| `audio_inventory.rs` | Shared versioned microphone inventory, passive topology invalidation, coalesced idle-only refresh, stale-cache policy, and privacy-safe aggregate |
 | `audio_decode.rs` | Imported audio-file decoding |
 | `capture_agent_probe.rs` / `capture_helper_probe.rs` | Signed helper registration, callback-health probes, cancellation, and confirmed-termination evidence |
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership |

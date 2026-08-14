@@ -39,6 +39,16 @@ no audio, yields to real dictation, resumes afterward, and stops when Dictation
 Settings is left or hidden. See
 [Microphone Input Test](../features/microphone-input-test.md).
 
+The microphone list is operational state too. One Rust-owned schema-v1 snapshot
+is invalidated by a passive signed-worker Core Audio listener, refreshed at
+startup, and guarded by a bounded five-minute backend fallback, never by
+Settings focus. Refresh work coalesces and defers through every capture-owned
+phase until joined-worker `Idle`. Settings accepts only strictly validated,
+same-or-newer revisions; a failed refresh keeps the previous list visibly stale
+but cannot prove an explicit device is available. Display names and stable IDs
+stay local, while shipped state receives only a count/default-available/success
+aggregate.
+
 **TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
 
 ```typescript
@@ -55,6 +65,7 @@ interface Settings {
   hotkeyMissFeedback: boolean;
   autoStopSilenceMs: number;               // 0 = off (default)
   microphone: string;
+  microphoneIdMigrationComplete: boolean;  // durable proof marker
   disabled: boolean;
 
   // Transform (selected-text rewrite)
@@ -241,7 +252,8 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from `list_audio_devices` | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend uses the live system default. A missing explicit ID fails closed; it never records from another physical microphone. Unique legacy display-name values migrate to the matching stable ID when the settings panel enumerates devices; duplicate or missing names remain unresolved and require reselection. |
+| `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from the shared input inventory | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend resolves the live system default at recording start. A missing explicit ID fails closed; it never records from another physical microphone. |
+| `microphoneIdMigrationComplete` | `boolean` | `true` | `true` / `false` | Durable proof that `microphone` is the System Default sentinel or a stable ID selected/proven against an authoritative inventory. Schema v3 marks old `system_default` values complete without an inventory request. Other old strings remain pending because opaque CoreAudio UIDs cannot be distinguished syntactically from legacy display names. Exact ID membership or one unique display-name match completes migration; ambiguous/missing names remain unresolved. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
 | `overlayVerticalOffset` | `number` | `0` | Integer `-12` through `12` | Confirmed native overlay fine-tuning in logical points. Settings previews the real window; Cancel restores the baseline, Preview default is transient, and Save or inactive Reset persists. Schema v2 resets offsets from the former broken drag flow once. |
 
@@ -269,6 +281,11 @@ Each window entry (`main.tsx`, `overlay.tsx`, `transform-review.tsx`, `query-rev
 On the first v2 load, Murmur resets any pre-v2 overlay calibration to zero and
 deletes the old standalone `murmur-overlay-vertical-offset` key. Subsequent v2
 offsets are integer-clamped to ±12 and remain inside the durable Settings blob.
+
+On the first v3 load, Murmur adds `microphoneIdMigrationComplete`. System
+Default is complete immediately. Every other pre-v3 microphone string remains
+pending until an available shared inventory proves exact ID membership or a
+unique legacy display-name match; stale/unavailable inventory never migrates it.
 
 Hydration is idempotent, so every window can run it regardless of creation order; concurrent first-run writes are serialized in Rust and write identical content.
 

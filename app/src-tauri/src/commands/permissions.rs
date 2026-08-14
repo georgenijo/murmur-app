@@ -330,14 +330,64 @@ pub fn check_microphone_permission_status() -> String {
     }
 }
 
+const AUDIO_INVENTORY_REQUEST_DENIED: &str = "Microphone inventory is unavailable.";
+
+fn audio_inventory_request_allowed(window_label: &str) -> bool {
+    window_label == "main"
+}
+
+async fn run_audio_inventory_read<T: Send + 'static>(
+    read: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(read)
+        .await
+        .map_err(|_| AUDIO_INVENTORY_REQUEST_DENIED.to_string())
+}
+
 #[tauri::command]
-pub fn list_audio_devices() -> Result<Vec<audio::AudioDeviceDescriptor>, String> {
-    audio::list_input_devices()
+pub async fn list_audio_devices(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<audio::AudioDeviceDescriptor>, String> {
+    if !audio_inventory_request_allowed(window.label()) {
+        return Err(AUDIO_INVENTORY_REQUEST_DENIED.to_string());
+    }
+    drop(window);
+    run_audio_inventory_read(audio::list_input_devices).await?
+}
+
+#[tauri::command]
+pub async fn get_audio_input_inventory(
+    window: tauri::WebviewWindow,
+) -> Result<crate::audio_inventory::AudioInputInventorySnapshot, String> {
+    if !audio_inventory_request_allowed(window.label()) {
+        return Err(AUDIO_INVENTORY_REQUEST_DENIED.to_string());
+    }
+    drop(window);
+    run_audio_inventory_read(crate::audio_inventory::get_inventory).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::mic_status_to_banner_state;
+    use super::{
+        audio_inventory_request_allowed, mic_status_to_banner_state, run_audio_inventory_read,
+    };
+
+    #[test]
+    fn audio_inventory_is_exactly_main_window_scoped() {
+        assert!(audio_inventory_request_allowed("main"));
+        for denied in ["overlay", "diagnostics", "transform-review", "MAIN", ""] {
+            assert!(!audio_inventory_request_allowed(denied));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audio_inventory_read_runs_on_a_blocking_worker() {
+        let caller = std::thread::current().id();
+        let worker = run_audio_inventory_read(|| std::thread::current().id())
+            .await
+            .unwrap();
+        assert_ne!(worker, caller);
+    }
 
     #[test]
     fn authorized_status_maps_to_granted() {

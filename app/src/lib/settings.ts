@@ -232,6 +232,8 @@ export interface Settings {
    */
   autoStopSilenceMs: number;
   microphone: string;
+  /** True once `microphone` is proven to be a backend ID or System Default. */
+  microphoneIdMigrationComplete: boolean;
   launchAtLogin: boolean;
   /** Confirmed vertical fine-tuning for the notch overlay, in logical points. */
   overlayVerticalOffset: number;
@@ -410,6 +412,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Opt-in: a recording that ends itself is a surprise until you ask for it.
   autoStopSilenceMs: 0,
   microphone: 'system_default',
+  microphoneIdMigrationComplete: true,
   launchAtLogin: false,
   overlayVerticalOffset: 0,
   vadSensitivity: 50,
@@ -448,7 +451,7 @@ export const STORAGE_KEY = 'dictation-settings';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
 const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
 
@@ -631,6 +634,15 @@ export function loadSettings(): Settings {
       delete parsed.hotkey;
       // The removed live-preview feature must not remain in persisted settings.
       delete parsed.liveTranscriptPreview;
+
+      // Older blobs stored either an opaque CoreAudio UID or a display name in
+      // the same string field. Only the default sentinel is self-authenticating;
+      // all other old values remain pending until checked against a live list.
+      if (parsed.microphone === 'system_default') {
+        parsed.microphoneIdMigrationComplete = true;
+      } else if (typeof parsed.microphoneIdMigrationComplete !== 'boolean') {
+        parsed.microphoneIdMigrationComplete = false;
+      }
 
       // Validate model against current allow-list (includes Moonshine migration)
       const validModels = new Set<string>(AVAILABLE_MODEL_OPTIONS.map((m) => m.value));

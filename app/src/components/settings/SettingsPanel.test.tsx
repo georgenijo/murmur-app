@@ -19,12 +19,16 @@ const coreMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 const diagnosticsWorkspaceMock = vi.hoisted(() => vi.fn());
+const eventMocks = vi.hoisted(() => ({
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
+  listen: vi.fn(),
+}));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: coreMocks.invoke,
 }));
 vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn(async () => {}),
-  listen: vi.fn(async () => () => {}),
+  listen: eventMocks.listen,
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
@@ -63,12 +67,25 @@ vi.mock('../../lib/transformSettings', () => ({
 }));
 
 beforeEach(() => {
+  eventMocks.listeners.clear();
+  eventMocks.listen.mockReset();
+  eventMocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    eventMocks.listeners.set(name, handler);
+    return () => eventMocks.listeners.delete(name);
+  });
   diagnosticsWorkspaceMock.mockClear();
   coreMocks.notchPillInstalled = false;
   coreMocks.notchPillDetectionError = false;
   coreMocks.invoke.mockReset();
   coreMocks.invoke.mockImplementation(async (command: string) => {
-    if (command === 'list_audio_devices') return [];
+    if (command === 'get_audio_input_inventory') return {
+      schemaVersion: 1,
+      revision: 1,
+      status: 'available',
+      devices: [],
+      defaultInputId: null,
+      errorCode: null,
+    };
     if (command === 'get_microphone_preview_status') {
       return {
         previewId: null,
@@ -172,6 +189,33 @@ describe('SettingsPanel information architecture', () => {
 
   it('hides the NotchPill setting when the companion app is absent', () => {
     expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
+  });
+
+  it('does not re-enumerate microphones when the window receives focus', async () => {
+    const before = coreMocks.invoke.mock.calls.filter(([command]) => command === 'get_audio_input_inventory').length;
+    expect(before).toBeGreaterThan(0);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
+    const after = coreMocks.invoke.mock.calls.filter(([command]) => command === 'get_audio_input_inventory').length;
+    expect(after).toBe(before);
+  });
+
+  it('announces inventory failures without presenting stale choices', async () => {
+    await act(async () => {
+      eventMocks.listeners.get('audio-input-inventory-changed')?.({ payload: {
+        schemaVersion: 1,
+        revision: 2,
+        status: 'unavailable',
+        devices: [],
+        defaultInputId: null,
+        errorCode: 'enumerationFailed',
+      } });
+    });
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('microphone list is temporarily unavailable');
+    expect((container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('shows the NotchPill setting when the companion app is installed', async () => {
