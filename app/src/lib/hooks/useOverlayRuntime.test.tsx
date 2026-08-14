@@ -172,6 +172,20 @@ describe('useOverlayRuntime clipboard-only cue', () => {
     expect(current?.showClipboardOnly).toBe(true);
   });
 
+  it('keeps a newer delivery cue when an older generation event arrives late', async () => {
+    await emitDelivery(41);
+    await emitGeneration(40);
+    expect(current?.showClipboardOnly).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('keeps a delivery cue when its generation event arrives late', async () => {
+    await emitDelivery(42);
+    await emitGeneration(42);
+    expect(current?.showClipboardOnly).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
   it('unsubscribes and clears the pending timeout on unmount', async () => {
     await emitDelivery(20);
     expect(vi.getTimerCount()).toBe(1);

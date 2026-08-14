@@ -235,6 +235,7 @@ export function useOverlayRuntime({
     listen<unknown>('dictation-generation-started', (event) => {
       const recordingId = recordingIdFromPayload(event.payload);
       if (recordingId == null || recordingId <= latestRecordingGenerationRef.current) return;
+      if (recordingId <= lastDeliveryRecordingIdRef.current) return;
       latestRecordingGenerationRef.current = recordingId;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
       clipboardOnlyTimerRef.current = null;
