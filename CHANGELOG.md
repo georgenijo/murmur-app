@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   when Core ML Parakeet is selected, then clears them when the question is sent
   or cancelled (#561).
 
+### Fixed
+
+- Voice Query listening words now resample the live capture buffer to 16 kHz
+  before Core ML decode, matching the stop path (#561).
+
 ## [0.33.0] - 2026-08-13
 
 ### Added

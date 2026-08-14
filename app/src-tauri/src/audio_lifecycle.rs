@@ -617,13 +617,12 @@ fn handle_message(
                 if current.owner != owner || current.phase != AttemptPhase::Recording {
                     return None;
                 }
-                Some(
-                    current
-                        .shared
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone(),
-                )
+                let raw = current
+                    .shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                Some(samples_for_asr(raw, current.sample_rate))
             });
             let _ = response.send(samples);
         }
@@ -1106,8 +1105,12 @@ fn take_samples(attempt: &mut Attempt) -> Vec<f32> {
         audio_secs = raw_duration,
         "audio capture finalized"
     );
-    if attempt.sample_rate != WHISPER_SAMPLE_RATE && !raw.is_empty() {
-        audio::resample(&raw, attempt.sample_rate, WHISPER_SAMPLE_RATE)
+    samples_for_asr(raw, attempt.sample_rate)
+}
+
+fn samples_for_asr(raw: Vec<f32>, sample_rate: u32) -> Vec<f32> {
+    if sample_rate != WHISPER_SAMPLE_RATE && !raw.is_empty() {
+        audio::resample(&raw, sample_rate, WHISPER_SAMPLE_RATE)
     } else {
         raw
     }

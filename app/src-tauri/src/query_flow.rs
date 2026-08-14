@@ -1916,9 +1916,11 @@ fn spawn_query_partial_ticker(app: tauri::AppHandle, pass_id: u64) {
     {
         let state = app.state::<crate::State>();
         let Some(session) = state.query.session(pass_id) else {
+            emit_partial_tick(pass_id, "no_session", 0);
             return;
         };
         if !query_partials_supported(&session.context.transcription.model_name) {
+            emit_partial_tick(pass_id, "unsupported_model", 0);
             return;
         }
     }
@@ -1932,6 +1934,17 @@ fn spawn_query_partial_ticker(app: tauri::AppHandle, pass_id: u64) {
     }));
 }
 
+fn emit_partial_tick(pass_id: u64, outcome: &'static str, sample_count: usize) {
+    tracing::info!(
+        target: "query",
+        event_code = "query.partial_tick",
+        query_pass_id = pass_id,
+        outcome,
+        sample_count = sample_count as u64,
+        "query listening partial tick"
+    );
+}
+
 /// Returns false when the listening ticker should stop.
 async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool {
     let transcription = {
@@ -1940,22 +1953,27 @@ async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool 
             return false;
         }
         if !state.query.try_begin_partial(pass_id) {
+            emit_partial_tick(pass_id, "in_flight", 0);
             return true;
         }
         let Some(session) = state.query.session(pass_id) else {
             state.query.finish_partial(pass_id);
+            emit_partial_tick(pass_id, "no_session", 0);
             return false;
         };
         session.context.transcription.clone()
     };
     let samples = crate::audio_lifecycle::peek_query_samples(pass_id).unwrap_or_default();
-    match partial_tick_for_samples(samples.len()) {
+    let sample_count = samples.len();
+    match partial_tick_for_samples(sample_count) {
         PartialTick::TooShort => {
             app.state::<crate::State>().query.finish_partial(pass_id);
+            emit_partial_tick(pass_id, "too_short", sample_count);
             true
         }
         PartialTick::Capped => {
             app.state::<crate::State>().query.finish_partial(pass_id);
+            emit_partial_tick(pass_id, "capped", sample_count);
             false
         }
         PartialTick::Decode => {
@@ -1978,7 +1996,12 @@ async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool 
                             "text": text,
                         }),
                     );
+                    emit_partial_tick(pass_id, "emitted", sample_count);
+                } else {
+                    emit_partial_tick(pass_id, "stale", sample_count);
                 }
+            } else {
+                emit_partial_tick(pass_id, "empty", sample_count);
             }
             state.query.is_listening(pass_id)
         }
