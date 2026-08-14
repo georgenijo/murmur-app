@@ -14,8 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- Voice Query listening words now resample the live capture buffer to 16 kHz
-  before Core ML decode, matching the stop path (#561).
+- The live Voice Query capture buffer is now resampled to 16 kHz before
+  Core ML decode, matching the stop path (#561).
+- Voice Query listening words no longer stop updating after 20 seconds of
+  captured audio: each tick now re-decodes only the trailing 20-second window,
+  so the popover keeps updating until the question is sent or cancelled (#561).
+- Claude Voice Queries no longer answer with a fabricated file listing of the
+  private query workspace: Murmur now appends a fixed, content-free
+  system-prompt instruction telling the model it has no tools or file access
+  and that its working directory is not the user's project (#561).
 
 ## [0.33.0] - 2026-08-13
 
