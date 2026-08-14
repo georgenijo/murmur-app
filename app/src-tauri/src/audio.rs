@@ -184,6 +184,12 @@ pub struct AudioDeviceDescriptor {
     pub name: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EnumeratedAudioInputInventory {
+    pub(crate) devices: Vec<AudioDeviceDescriptor>,
+    pub(crate) default_input_id: Option<String>,
+}
+
 pub(crate) enum AudioCommand {
     Stop,
 }
@@ -353,7 +359,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v4", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v5", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -432,14 +438,57 @@ fn hello(
     }
 }
 
-fn enumerate_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
+fn quarantine_after_unconfirmed_exit(
+    initially_confirmed: bool,
+    mut retry: impl FnMut() -> bool,
+) -> bool {
+    if initially_confirmed {
+        return true;
+    }
+    while !retry() {}
+    false
+}
+
+/// Return whether the helper exited within its ordinary bounded budget, but
+/// never return at all until its process group is confirmed empty. A `false`
+/// result therefore marks the refresh failed without permitting an orphan to
+/// overlap the next inventory/watch helper.
+fn confirm_or_quarantine_inventory_helper(child: &mut ManagedChild) -> bool {
+    let initially_confirmed = child
+        .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
+        .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE))
+        .is_some();
+    if !initially_confirmed {
+        tracing::error!(
+            target: "audio",
+            helper_pid = child.pid(),
+            "microphone inventory helper entered termination quarantine"
+        );
+    }
+    quarantine_after_unconfirmed_exit(initially_confirmed, || {
+        let confirmed = child
+            .hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE)
+            .is_some();
+        if !confirmed {
+            tracing::warn!(
+                target: "audio",
+                helper_pid = child.pid(),
+                "microphone inventory helper remains in termination quarantine"
+            );
+        }
+        confirmed
+    })
+}
+
+pub(crate) fn enumerate_input_devices() -> Result<EnumeratedAudioInputInventory, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) =
         spawn_helper(capture_id, &nonce_hex, None).map_err(|failure| failure.to_string())?;
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
-            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            drop(input);
+            let _ = confirm_or_quarantine_inventory_helper(&mut child);
             return Err(failure.to_string());
         }
     };
@@ -451,48 +500,164 @@ fn enumerate_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     )
     .is_err()
     {
-        let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+        drop(input);
+        let _ = confirm_or_quarantine_inventory_helper(&mut child);
         return Err("Failed to request microphone enumeration.".to_string());
     }
     let (frame, output) = match read_control_frame_with_deadline(output, capture_id, nonce) {
         Ok(result) => result,
         Err(failure) => {
-            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            drop(input);
+            let _ = confirm_or_quarantine_inventory_helper(&mut child);
             return Err(failure.to_string());
         }
     };
-    let devices = match frame {
-        ProductionFrame::Control(ProductionHelperMessage::Devices { devices }) => devices
-            .into_iter()
-            .map(|device| AudioDeviceDescriptor {
-                id: device.id,
-                name: device.name,
-            })
-            .collect(),
+    let inventory = match frame {
+        ProductionFrame::Control(ProductionHelperMessage::Devices {
+            devices,
+            default_input_id,
+        }) => EnumeratedAudioInputInventory {
+            devices: devices
+                .into_iter()
+                .map(|device| AudioDeviceDescriptor {
+                    id: device.id,
+                    name: device.name,
+                })
+                .collect(),
+            default_input_id,
+        },
         _ => {
-            let _ = child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE);
+            drop(input);
+            let _ = confirm_or_quarantine_inventory_helper(&mut child);
             return Err("The capture worker returned an invalid device list.".to_string());
         }
     };
     drop((input, output));
-    let _ = child
-        .wait_for_exit(Instant::now() + HELPER_STOP_DEADLINE)
-        .or_else(|| child.hard_kill_confirmed(Instant::now() + HELPER_STOP_DEADLINE));
-    Ok(devices)
+    let termination_confirmed = confirm_or_quarantine_inventory_helper(&mut child);
+    inventory_after_confirmed_helper_exit(inventory, termination_confirmed)
 }
 
-/// Refresh the shipper's aggregate without allowing presentation labels or
-/// backend UIDs to cross the audio-module boundary.
-pub(crate) fn count_input_devices_for_state() -> Result<usize, String> {
-    enumerate_input_devices().map(|devices| devices.len())
+fn inventory_after_confirmed_helper_exit(
+    inventory: EnumeratedAudioInputInventory,
+    termination_confirmed: bool,
+) -> Result<EnumeratedAudioInputInventory, String> {
+    termination_confirmed
+        .then_some(inventory)
+        .ok_or_else(|| "The microphone inventory worker could not be reaped safely.".to_string())
+}
+
+/// Own one passive topology watcher until shutdown or protocol failure. The
+/// callback is invoked only for a content-free invalidation; callers decide
+/// when it is safe to enumerate.
+#[cfg(target_os = "macos")]
+pub(crate) fn run_input_topology_watch(
+    shutdown: &AtomicBool,
+    mut on_changed: impl FnMut(),
+) -> Result<(), String> {
+    let (capture_id, nonce, nonce_hex) = capture_identity();
+    let (mut child, mut input, output) =
+        spawn_helper(capture_id, &nonce_hex, None).map_err(|failure| failure.to_string())?;
+    let output = match hello(&mut input, output, capture_id, nonce) {
+        Ok(output) => output,
+        Err(failure) => {
+            drop(input);
+            let _ = confirm_or_quarantine_inventory_helper(&mut child);
+            return Err(failure.to_string());
+        }
+    };
+    if write_production_control(
+        &mut input,
+        capture_id,
+        nonce,
+        &ProductionHostMessage::WatchInputTopology,
+    )
+    .is_err()
+    {
+        drop(input);
+        let _ = confirm_or_quarantine_inventory_helper(&mut child);
+        return Err("Failed to start the microphone topology watcher.".to_string());
+    }
+
+    let (reader_sender, reader_receiver) = mpsc::channel();
+    let reader_spawn = thread::Builder::new()
+        .name("murmur-input-topology-reader".to_string())
+        .spawn(move || {
+            let mut output = output;
+            loop {
+                match read_production_frame(&mut output, capture_id, nonce) {
+                    Ok(frame) => {
+                        if reader_sender.send(Some(frame)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = reader_sender.send(None);
+                        return;
+                    }
+                }
+            }
+        });
+    if reader_spawn.is_err() {
+        drop(input);
+        let _ = confirm_or_quarantine_inventory_helper(&mut child);
+        return Err("Failed to supervise the microphone topology watcher.".to_string());
+    }
+
+    let ready_deadline = Instant::now() + HELPER_CONTROL_DEADLINE;
+    let mut ready = false;
+    let mut stop_sent = false;
+    let result = loop {
+        if shutdown.load(Ordering::Acquire) && !stop_sent {
+            stop_sent = true;
+            if write_production_control(&mut input, capture_id, nonce, &ProductionHostMessage::Stop)
+                .is_err()
+            {
+                break Err("Failed to stop the microphone topology watcher.".to_string());
+            }
+        }
+        if !ready && Instant::now() >= ready_deadline {
+            break Err("The microphone topology watcher did not become ready.".to_string());
+        }
+        match reader_receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(Some(ProductionFrame::Control(
+                ProductionHelperMessage::InputTopologyWatchReady,
+            ))) if !ready => {
+                ready = true;
+                // Establishing the listener is itself an invalidation fence:
+                // refresh after it is live so no startup topology change can
+                // fall into a gap between enumeration and subscription.
+                on_changed();
+            }
+            Ok(Some(ProductionFrame::Control(ProductionHelperMessage::InputTopologyChanged)))
+                if ready && !stop_sent =>
+            {
+                on_changed()
+            }
+            Ok(Some(ProductionFrame::Control(ProductionHelperMessage::Stopped { .. })))
+                if stop_sent =>
+            {
+                break Ok(())
+            }
+            Ok(Some(_)) | Ok(None) => {
+                break Err("The microphone topology watcher stopped unexpectedly.".to_string())
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                break Err("The microphone topology watcher disconnected.".to_string())
+            }
+        }
+    };
+
+    drop(input);
+    let terminated = confirm_or_quarantine_inventory_helper(&mut child);
+    if !terminated {
+        return Err("The microphone topology watcher could not be reaped.".to_string());
+    }
+    result
 }
 
 pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
-    let result = enumerate_input_devices();
-    crate::log_shipper::record_audio_input_enumeration(
-        result.as_ref().ok().map(|devices| devices.len()),
-    );
-    result
+    crate::audio_inventory::available_devices()
 }
 
 pub fn start_transform_capture_audio(
@@ -1694,6 +1859,39 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_is_never_published_without_confirmed_helper_exit() {
+        let inventory = EnumeratedAudioInputInventory {
+            devices: vec![AudioDeviceDescriptor {
+                id: "uid".to_string(),
+                name: "Mic".to_string(),
+            }],
+            default_input_id: Some("uid".to_string()),
+        };
+        assert!(inventory_after_confirmed_helper_exit(inventory.clone(), false).is_err());
+        assert_eq!(
+            inventory_after_confirmed_helper_exit(inventory.clone(), true).unwrap(),
+            inventory
+        );
+    }
+
+    #[test]
+    fn unconfirmed_inventory_helper_cannot_return_before_quarantine_reaps_it() {
+        let mut retries = 0;
+        assert!(!quarantine_after_unconfirmed_exit(false, || {
+            retries += 1;
+            retries == 3
+        }));
+        assert_eq!(retries, 3);
+
+        let mut unexpected_retry = false;
+        assert!(quarantine_after_unconfirmed_exit(true, || {
+            unexpected_retry = true;
+            true
+        }));
+        assert!(!unexpected_retry);
+    }
 
     #[test]
     fn integer_downsampling_uses_the_same_source_positions_as_linear_interpolation() {

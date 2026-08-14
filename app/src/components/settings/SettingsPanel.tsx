@@ -3,7 +3,6 @@ import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
   selectedDeviceExists,
-  type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -38,6 +37,7 @@ import {
   type QueryProviderTestResult,
 } from '../../lib/queryProviders';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
+import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
   modelDownloadLabel,
@@ -68,6 +68,7 @@ import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
+import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import {
   DiagnosticsWorkspace,
   type DiagnosticsTab,
@@ -172,13 +173,6 @@ function VadSensitivitySlider({
       <p className="mt-1 text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
     </div>
   );
-}
-
-function sameAudioDevices(left: AudioDeviceDescriptor[], right: AudioDeviceDescriptor[]): boolean {
-  return left.length === right.length
-    && left.every((device, index) => (
-      device.id === right[index]?.id && device.name === right[index]?.name
-    ));
 }
 
 interface SettingsPanelProps {
@@ -483,45 +477,12 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   }, [settings.model]);
 
-  const [audioDevices, setAudioDevices] = useState<AudioDeviceDescriptor[]>([]);
+  const settingsSurfaceActive = useSettingsSurfaceActive();
+  const audioInventoryState = useAudioInputInventory(settingsSurfaceActive);
+  const audioInventory = audioInventoryState.inventory;
+  const audioDevices = audioInventory?.status === 'available' ? audioInventory.devices : [];
   const [previewVadSensitivity, setPreviewVadSensitivity] = useState(settings.vadSensitivity);
   useEffect(() => setPreviewVadSensitivity(settings.vadSensitivity), [settings.vadSensitivity]);
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      invoke<AudioDeviceDescriptor[]>('list_audio_devices')
-        .then((devices) => {
-          if (!cancelled) {
-            setAudioDevices((current) => sameAudioDevices(current, devices) ? current : devices);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) setAudioDevices((current) => current.length === 0 ? current : []);
-        });
-    };
-    refresh();
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      if (activeRef && !activeRef.current) return;
-      invoke<AudioDeviceDescriptor[]>('list_audio_devices')
-        .then((devices) => {
-          if (!cancelled) {
-            setAudioDevices((current) => sameAudioDevices(current, devices) ? current : devices);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) setAudioDevices((current) => current.length === 0 ? current : []);
-        });
-    };
-    window.addEventListener('focus', refresh);
-    return () => {
-      cancelled = true;
-      window.removeEventListener('focus', refresh);
-    };
-  }, [activeRef]);
 
   const [notchPillInstalled, setNotchPillInstalled] = useState(false);
   useEffect(() => {
@@ -1021,7 +982,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   };
   const missingDevice = settings.microphone !== DEFAULT_SETTINGS.microphone
-    && audioDevices.length > 0
+    && audioInventory?.status === 'available'
     && !selectedDeviceExists(settings.microphone, audioDevices);
   const englishOnly = selectedRuntime ? !selectedRuntime.capabilities.multilingual : true;
   const downloadProgress = modelDownload.phase === 'downloading'
@@ -1170,8 +1131,12 @@ export const SettingsPanel = memo(function SettingsPanel({
               vadSensitivity={previewVadSensitivity}
               dictationBusy={isRecording}
               missingDevice={missingDevice}
+              inventoryAvailable={audioInventory?.status === 'available'}
               onChange={(microphone) => onUpdateSettings({ microphone })}
             />
+            {audioInventoryState.error && (
+              <p className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
+            )}
             <div>
               <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
               <VadSensitivitySlider
@@ -1840,7 +1805,7 @@ export const SettingsPanel = memo(function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection pageId="model" activePage={activeCat} title="Benchmark" subtitle="Directional local model comparisons">
-            <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} />
+            <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} audioInventory={audioInventory} />
           </SettingsSection>
 
           <SettingsSection pageId="model" activePage={activeCat} title="Advanced Diagnostics" subtitle="Events, run history, performance, comparisons, and transform traces">

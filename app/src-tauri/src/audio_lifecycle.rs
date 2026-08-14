@@ -683,7 +683,7 @@ fn handle_start(
         Err(error) => {
             public.clear_owner(request.owner);
             public.set_phase(PublicPhase::Idle);
-            crate::log_shipper::audio_lifecycle_became_idle();
+            crate::audio_inventory::lifecycle_became_idle();
             let _ = request
                 .response
                 .send(Err(AudioStartError::SpawnFailed(error)));
@@ -1071,7 +1071,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     public.still_connecting.store(false, Ordering::SeqCst);
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
-    crate::log_shipper::audio_lifecycle_became_idle();
+    crate::audio_inventory::lifecycle_became_idle();
     if preview_idle_after_clear {
         // Preview callers wait for this event before opening another device.
         // Publish it only after the worker is joined and supervisor ownership

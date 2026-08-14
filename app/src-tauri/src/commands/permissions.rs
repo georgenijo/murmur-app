@@ -330,14 +330,43 @@ pub fn check_microphone_permission_status() -> String {
     }
 }
 
+const AUDIO_INVENTORY_REQUEST_DENIED: &str = "Microphone inventory is unavailable.";
+
+fn audio_inventory_request_allowed(window_label: &str) -> bool {
+    window_label == "main"
+}
+
 #[tauri::command]
-pub fn list_audio_devices() -> Result<Vec<audio::AudioDeviceDescriptor>, String> {
+pub fn list_audio_devices(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<audio::AudioDeviceDescriptor>, String> {
+    if !audio_inventory_request_allowed(window.label()) {
+        return Err(AUDIO_INVENTORY_REQUEST_DENIED.to_string());
+    }
     audio::list_input_devices()
+}
+
+#[tauri::command]
+pub fn get_audio_input_inventory(
+    window: tauri::WebviewWindow,
+) -> Result<crate::audio_inventory::AudioInputInventorySnapshot, String> {
+    if !audio_inventory_request_allowed(window.label()) {
+        return Err(AUDIO_INVENTORY_REQUEST_DENIED.to_string());
+    }
+    Ok(crate::audio_inventory::get_inventory())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::mic_status_to_banner_state;
+    use super::{audio_inventory_request_allowed, mic_status_to_banner_state};
+
+    #[test]
+    fn audio_inventory_is_exactly_main_window_scoped() {
+        assert!(audio_inventory_request_allowed("main"));
+        for denied in ["overlay", "diagnostics", "transform-review", "MAIN", ""] {
+            assert!(!audio_inventory_request_allowed(denied));
+        }
+    }
 
     #[test]
     fn authorized_status_maps_to_granted() {

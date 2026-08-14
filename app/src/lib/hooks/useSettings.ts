@@ -6,9 +6,9 @@ import { configure, buildConfigureOptions } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
 import {
   migrateLegacyMicrophoneId,
-  type AudioDeviceDescriptor,
 } from '../audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../buildFlavor';
+import { useAudioInputInventory } from './useAudioInputInventory';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
@@ -17,32 +17,29 @@ export function useSettings() {
   const [configureError, setConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const configureVersionRef = useRef(0);
+  const [microphoneMigrationPending, setMicrophoneMigrationPending] = useState(
+    () => !settings.microphoneIdMigrationComplete,
+  );
+  const audioInventory = useAudioInputInventory(microphoneMigrationPending);
 
   // Migrate pre-CPAL-0.18 display-name selections during app settings
   // initialization, not when Settings happens to be opened. Only a unique
   // display-name match is persisted as the backend-native stable ID;
   // ambiguous/missing names remain unresolved so the UI requires reselection.
   useEffect(() => {
-    let cancelled = false;
-    invoke<AudioDeviceDescriptor[]>('list_audio_devices')
-      .then((devices) => {
-        if (cancelled || !Array.isArray(devices)) return;
-        const current = settingsRef.current;
-        const microphone = migrateLegacyMicrophoneId(current.microphone, devices);
-        if (microphone === current.microphone) return;
-        const migrated = { ...current, microphone };
-        settingsRef.current = migrated;
-        setSettings(migrated);
-        saveSettings(migrated);
-      })
-      .catch(() => {
-        // Enumeration failure is fail-closed: preserve the unresolved legacy
-        // value rather than silently replacing it with System Default.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    const inventory = audioInventory.inventory;
+    if (!microphoneMigrationPending || inventory?.status !== 'available') return;
+    const current = settingsRef.current;
+    const microphone = migrateLegacyMicrophoneId(current.microphone, inventory.devices);
+    const proven = inventory.devices.some((device) => device.id === current.microphone)
+      || microphone !== current.microphone;
+    if (!proven) return;
+    setMicrophoneMigrationPending(false);
+    const migrated = { ...current, microphone, microphoneIdMigrationComplete: true };
+    settingsRef.current = migrated;
+    setSettings(migrated);
+    saveSettings(migrated);
+  }, [audioInventory.inventory, microphoneMigrationPending]);
 
   // Sync launchAtLogin with OS state on mount.
   // Handles the case where a user removed the login item from System Settings.
@@ -83,12 +80,18 @@ export function useSettings() {
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setConfigureError(null);
     const previousSettings = settingsRef.current;
-    const newSettings = { ...previousSettings, ...updates };
+    const newSettings = {
+      ...previousSettings,
+      ...updates,
+      ...('microphone' in updates ? { microphoneIdMigrationComplete: true } : {}),
+    };
     settingsRef.current = newSettings;
     setSettings(newSettings);
     saveSettings(newSettings);
 
     if ('microphone' in updates && updates.microphone !== previousSettings.microphone) {
+      // A picker-originated value is already based on an authoritative inventory.
+      setMicrophoneMigrationPending(false);
       invoke('cancel_audio_initialization', { reason: 'device_changed' }).catch((err) => {
         console.error('Failed to cancel audio initialization after device change:', err);
       });

@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   audioDeviceSelectOptions,
   selectedDeviceExists,
-  type AudioDeviceDescriptor,
+  type AudioInputInventoryV1,
 } from '../../lib/audioDevices';
 import {
   cancelCorpusRecording,
@@ -22,6 +21,25 @@ import type { DictationStatus } from '../../lib/types';
 
 type RecorderPhase = CorpusStatusEvent['state'];
 
+export function corpusMicrophoneAvailability(
+  inventory: AudioInputInventoryV1 | null,
+  deviceId: string,
+) {
+  const inventoryAvailable = inventory?.status === 'available';
+  const displayDevices = inventory?.devices ?? [];
+  const selectableDevices = inventoryAvailable ? displayDevices : [];
+  return {
+    inventoryAvailable,
+    displayDevices,
+    selectableDevices,
+    deviceSelectable: inventoryAvailable && (
+      deviceId === 'system_default'
+        ? selectableDevices.length > 0
+        : selectedDeviceExists(deviceId, selectableDevices)
+    ),
+  };
+}
+
 function durationLabel(milliseconds: number): string {
   const seconds = Math.max(0, milliseconds) / 1_000;
   return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}s`;
@@ -36,6 +54,7 @@ export function CorpusRecorder({
   benchmarkRunning,
   fileTranscribing,
   settings,
+  audioInventory,
   onUpdateSettings,
   onBusyChange,
 }: {
@@ -43,10 +62,10 @@ export function CorpusRecorder({
   benchmarkRunning: boolean;
   fileTranscribing: boolean;
   settings: Settings;
+  audioInventory: AudioInputInventoryV1 | null;
   onUpdateSettings: (updates: Partial<Settings>) => void;
   onBusyChange: (busy: boolean) => void;
 }) {
-  const [devices, setDevices] = useState<AudioDeviceDescriptor[]>([]);
   const [deviceId, setDeviceId] = useState(settings.microphone);
   const [promptIndex, setPromptIndex] = useState(0);
   const [phase, setPhase] = useState<RecorderPhase>('idle');
@@ -66,15 +85,10 @@ export function CorpusRecorder({
 
   useEffect(() => {
     let disposed = false;
-    Promise.all([
-      invoke<AudioDeviceDescriptor[]>('list_audio_devices'),
-      getCorpusSummary(),
-    ])
-      .then(([nextDevices, nextSummary]) => {
+    getCorpusSummary()
+      .then((nextSummary) => {
         if (disposed) return;
-        setDevices(nextDevices);
         setSummary(nextSummary);
-        setDeviceId((current) => selectedDeviceExists(current, nextDevices) ? current : 'system_default');
         const completed = new Set(
           nextSummary.recordings
             .filter((recording) => recording.selected)
@@ -83,8 +97,8 @@ export function CorpusRecorder({
         const firstIncomplete = PERSONAL_CORPUS_PROMPTS.findIndex((prompt) => !completed.has(prompt.id));
         if (firstIncomplete >= 0) setPromptIndex(firstIncomplete);
       })
-      .catch((reason: unknown) => {
-        if (!disposed) setError(`Could not prepare the corpus recorder: ${String(reason)}`);
+      .catch(() => {
+        if (!disposed) setError('Could not prepare the private corpus summary.');
       });
     return () => {
       disposed = true;
@@ -134,11 +148,17 @@ export function CorpusRecorder({
     return () => window.clearInterval(timer);
   }, [phase]);
 
-  const deviceOptions = useMemo(() => audioDeviceSelectOptions(devices), [devices]);
+  const {
+    inventoryAvailable,
+    displayDevices,
+    selectableDevices,
+    deviceSelectable,
+  } = corpusMicrophoneAvailability(audioInventory, deviceId);
+  const deviceOptions = useMemo(() => audioDeviceSelectOptions(selectableDevices), [selectableDevices]);
   const currentPrompt = PERSONAL_CORPUS_PROMPTS[promptIndex];
   const selectedDeviceLabel = deviceId === 'system_default'
     ? 'System Default'
-    : devices.find((device) => device.id === deviceId)?.name ?? 'Unavailable microphone';
+    : displayDevices.find((device) => device.id === deviceId)?.name ?? 'Unavailable microphone';
   const selectedRecordings = summary?.recordings.filter((recording) => recording.selected) ?? [];
   const completedPromptIds = useMemo(
     () => new Set(selectedRecordings.map((recording) => recording.promptId)),
@@ -154,9 +174,10 @@ export function CorpusRecorder({
       : fileTranscribing
         ? 'Finish the file transcription first.'
         : null;
-  const canRecord = phase === 'idle' && blockedReason === null && devices.length > 0;
+  const canRecord = phase === 'idle' && blockedReason === null && deviceSelectable;
 
   const beginRecording = useCallback(async () => {
+    if (!canRecord) return;
     setError(null);
     setLastRecording(null);
     setElapsedMs(0);
@@ -176,7 +197,7 @@ export function CorpusRecorder({
       setPhase('error');
       setError(String(reason));
     }
-  }, [currentPrompt, deviceId, promptIndex, selectedDeviceLabel]);
+  }, [canRecord, currentPrompt, deviceId, promptIndex, selectedDeviceLabel]);
 
   const finishRecording = useCallback(async () => {
     setError(null);
@@ -258,7 +279,7 @@ export function CorpusRecorder({
         <select
           id="corpus-microphone"
           value={deviceId}
-          disabled={busy}
+          disabled={busy || !inventoryAvailable}
           onChange={(event) => {
             const microphone = event.target.value;
             setDeviceId(microphone);
@@ -338,13 +359,15 @@ export function CorpusRecorder({
           {lastRecording.qualityWarnings.map((warning) => <p key={warning} className="mt-1 text-primary">{warning}</p>)}
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <button type="button" onClick={useAndContinue} className="rounded-md bg-primary px-3 py-1.5 font-semibold text-on-primary hover:bg-primary-dim">Use & Next</button>
-            <button type="button" onClick={() => void beginRecording()} className="font-medium text-on-surface-variant underline hover:text-primary">Record another take</button>
+            <button type="button" disabled={!canRecord} onClick={() => void beginRecording()} className="font-medium text-on-surface-variant underline hover:text-primary disabled:cursor-not-allowed disabled:opacity-40">Record another take</button>
           </div>
         </div>
       )}
 
       {blockedReason && <p className="text-xs text-primary">{blockedReason}</p>}
-      {devices.length === 0 && !error && <p className="text-xs text-primary">No microphone input is currently available.</p>}
+      {!inventoryAvailable && !error && <p className="text-xs text-primary">The microphone list is temporarily unavailable. Cached names are display-only until it refreshes.</p>}
+      {inventoryAvailable && selectableDevices.length === 0 && !error && <p className="text-xs text-primary">No microphone input is currently available.</p>}
+      {inventoryAvailable && deviceId !== 'system_default' && !deviceSelectable && !error && <p className="text-xs text-primary">The selected microphone is unavailable. Choose another microphone before recording.</p>}
       {error && (
         <div className="rounded-lg border border-error/35 bg-error/10 p-3 text-xs text-error">
           <p>{error}</p>

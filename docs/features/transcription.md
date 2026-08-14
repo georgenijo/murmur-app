@@ -3,7 +3,7 @@
 ## Process-isolated capture
 
 Microphone enumeration and streaming execute only in the signed
-`murmur-capture-worker`. Production protocol v3 binds every control and PCM
+`murmur-capture-worker`. Production protocol v5 binds every control and PCM
 frame to a capture ID and nonce and rejects stale, malformed, oversized,
 out-of-sequence, or sample-rate-changing input. The worker callback writes mono
 samples into a preallocated SPSC ring; the parent retains PCM before declaring
@@ -11,6 +11,40 @@ readiness and calculates waveform levels locally. The Settings microphone
 preview is the deliberate exception to PCM retention: it reaches readiness on
 valid first PCM, aggregates only content-free RMS/peak values, and immediately
 discards the samples.
+
+### Shared microphone inventory
+
+Every local consumer reads one app-lifetime, versioned microphone inventory
+instead of spawning an enumeration worker itself. On macOS, one supervised
+signed worker registers passive Core Audio device-list and default-input
+listeners. Its callback only sets an atomic flag; the worker sends a
+content-free invalidation from its control loop and never enumerates or opens a
+device. The backend performs one startup refresh and uses a five-minute timer
+as the bounded fallback if a signal is missed or the watcher exhausts its
+restart budget. An invalidation or timer tick only marks one refresh pending;
+concurrent readers and later requests coalesce behind that work. Settings
+focus, the settings migration, Performance Lab, and the corpus recorder only
+read the shared snapshot and subscribe to
+`audio-input-inventory-changed`, so focusing a window never launches another
+helper.
+
+Enumeration still runs only inside the signed capture worker and only through
+the shared idle HAL boundary. A tick during `Starting`, `Recording`, `Stopping`,
+or `Recovering` is deferred, then claimed once after the owned capture worker
+has exited, joined, and published `Idle`. The snapshot is schema-versioned and
+contains a monotonic local revision, status (`available`, `stale`, or
+`unavailable`), stable-ID/display-name descriptors, the actual default input's
+stable ID when present, and a bounded error code. An unchanged refresh keeps
+the revision and emits no event. A failed refresh preserves the last successful
+topology only as explicitly stale display data; stale or unavailable data can
+never prove that a pinned microphone is present.
+
+Labels and stable IDs remain local. The log shipper reads a separately derived
+aggregate (count, actual-default availability, and enumeration success) and can
+never serialize either field. Production protocol v5 adds the optional
+`defaultInputId` to the bounded `Devices` reply and adds the passive watcher
+controls; capture selection itself still resolves the immutable device choice
+afresh at recording start.
 
 Direct AUHAL is the primary backend and CPAL is the independent fallback. A
 single fallback is allowed only before any audio is retained and must target the
@@ -87,7 +121,7 @@ Transcription processing is local. Network access occurs for model setup and may
   If one blocks, Murmur retains exclusive ownership rather than detaching the
   worker or accepting a competing retry. Process isolation is the final fault
   boundary.
-- Protocol v3 emits stable entered/completed setup-step constants that bracket
+- Protocol v5 emits stable entered/completed setup-step constants that bracket
   each native Core Audio call on the AUHAL path — device resolution, unit
   creation (`audio_unit_new`: component find/instantiate/initialize), input
   enable, output disable, current-device binding, stream-format configuration,

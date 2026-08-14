@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 4;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 5;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -80,6 +80,9 @@ pub struct ProductionDevice {
 pub enum ProductionHostMessage {
     Hello,
     Enumerate,
+    /// Installs passive Core Audio topology/default-input listeners in the
+    /// isolated worker. Listener callbacks never enumerate or open devices.
+    WatchInputTopology,
     Start {
         device_id: Option<String>,
         backend: CaptureBackend,
@@ -107,7 +110,12 @@ pub enum ProductionHelperMessage {
     HelloAck,
     Devices {
         devices: Vec<ProductionDevice>,
+        default_input_id: Option<String>,
     },
+    InputTopologyWatchReady,
+    /// Content-free invalidation signal. The host performs any enumeration
+    /// later, under its shared idle-HAL boundary.
+    InputTopologyChanged,
     Phase {
         phase: CapturePhase,
         backend: CaptureBackend,
@@ -774,5 +782,29 @@ mod tests {
         assert!(!serialized.contains("deviceName"));
         assert!(!serialized.contains("uid"));
         assert!(!serialized.contains("error"));
+    }
+
+    #[test]
+    fn production_v5_topology_watch_is_content_free() {
+        let nonce = [5_u8; 16];
+        for message in [
+            ProductionHelperMessage::InputTopologyWatchReady,
+            ProductionHelperMessage::InputTopologyChanged,
+        ] {
+            let mut bytes = Vec::new();
+            write_production_control(&mut bytes, 17, nonce, &message).unwrap();
+            assert_eq!(
+                read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 17, nonce)
+                    .unwrap(),
+                ProductionFrame::Control(message.clone())
+            );
+            let serialized = serde_json::to_string(&message).unwrap();
+            assert!(!serialized.contains("device"));
+            assert!(!serialized.contains("name"));
+            assert!(!serialized.contains("uid"));
+        }
+
+        let serialized = serde_json::to_string(&ProductionHostMessage::WatchInputTopology).unwrap();
+        assert_eq!(serialized, r#"{"type":"watchInputTopology"}"#);
     }
 }

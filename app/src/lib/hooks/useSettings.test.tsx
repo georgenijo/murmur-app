@@ -18,7 +18,7 @@ vi.mock('../dictation', () => ({
   buildConfigureOptions: vi.fn((settings) => settings),
 }));
 vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: () => false }));
 vi.mock('@tauri-apps/plugin-autostart', () => ({
   isEnabled: mocks.isEnabled,
   enable: mocks.enable,
@@ -99,19 +99,23 @@ describe('useSettings configure rollback privacy', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       microphone: 'Studio Mic',
+      microphoneIdMigrationComplete: false,
     }));
     mocks.invoke.mockImplementation(async (command?: string) => (
-      command === 'list_audio_devices'
-        ? [
+      command === 'get_audio_input_inventory'
+        ? {
+            schemaVersion: 1, revision: 1, status: 'available', defaultInputId: null, errorCode: null, devices: [
             { id: 'raw-coreaudio-built-in', name: 'Built-in Mic' },
             { id: 'raw-coreaudio-studio', name: 'Studio Mic' },
-          ]
+            ],
+          }
         : undefined
     ));
 
     await mountHarness();
 
     expect(current.settings.microphone).toBe('raw-coreaudio-studio');
+    expect(current.settings.microphoneIdMigrationComplete).toBe(true);
     expect(
       JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').microphone,
     ).toBe('raw-coreaudio-studio');
@@ -121,22 +125,78 @@ describe('useSettings configure rollback privacy', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       microphone: 'Studio Mic',
+      microphoneIdMigrationComplete: false,
     }));
     mocks.invoke.mockImplementation(async (command?: string) => (
-      command === 'list_audio_devices'
-        ? [
+      command === 'get_audio_input_inventory'
+        ? {
+            schemaVersion: 1, revision: 1, status: 'available', defaultInputId: null, errorCode: null, devices: [
             { id: 'raw-coreaudio-studio-a', name: 'Studio Mic' },
             { id: 'raw-coreaudio-studio-b', name: 'Studio Mic' },
-          ]
+            ],
+          }
         : undefined
     ));
 
     await mountHarness();
 
     expect(current.settings.microphone).toBe('Studio Mic');
+    expect(current.settings.microphoneIdMigrationComplete).toBe(false);
     expect(
       JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').microphone,
     ).toBe('Studio Mic');
+  });
+
+  it('does not request inventory for the System Default sentinel', async () => {
+    await mountHarness();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('get_audio_input_inventory');
+  });
+
+  it('does not migrate a legacy display name from stale topology', async () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      microphone: 'Studio Mic',
+      microphoneIdMigrationComplete: false,
+    }));
+    mocks.invoke.mockImplementation(async (command?: string) => (
+      command === 'get_audio_input_inventory'
+        ? {
+            schemaVersion: 1,
+            revision: 2,
+            status: 'stale',
+            devices: [{ id: 'raw-coreaudio-studio', name: 'Studio Mic' }],
+            defaultInputId: null,
+            errorCode: 'refreshPending',
+          }
+        : undefined
+    ));
+
+    await mountHarness();
+    expect(current.settings.microphone).toBe('Studio Mic');
+    expect(current.settings.microphoneIdMigrationComplete).toBe(false);
+  });
+
+  it('marks a previously stored raw UID complete after exact membership proof', async () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      microphone: 'opaque uid',
+      microphoneIdMigrationComplete: false,
+    }));
+    mocks.invoke.mockImplementation(async (command?: string) => (
+      command === 'get_audio_input_inventory'
+        ? {
+            schemaVersion: 1,
+            revision: 3,
+            status: 'available',
+            devices: [{ id: 'opaque uid', name: 'Studio Mic' }],
+            defaultInputId: 'opaque uid',
+            errorCode: null,
+          }
+        : undefined
+    ));
+    await mountHarness();
+    expect(current.settings.microphone).toBe('opaque uid');
+    expect(current.settings.microphoneIdMigrationComplete).toBe(true);
   });
 
   it('pushes mirrorToNotchPill changes to the backend (regression: was missing from configure-trigger list)', async () => {

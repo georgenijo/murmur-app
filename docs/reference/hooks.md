@@ -1,6 +1,6 @@
 # React Hooks Reference
 
-The 29 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
+The 30 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
 
 For the commands these hooks call see [commands.md](commands.md). For the events they subscribe to see [events.md](events.md). For settings managed by `useSettings` see [settings.md](settings.md).
 
@@ -51,6 +51,15 @@ Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }`
 ---
 
 ## Configuration and lifecycle (main window)
+
+### `useAudioInputInventory`
+Strictly parses the shared schema-v1 microphone inventory returned by
+`get_audio_input_inventory` and applies only same-or-newer revisions from the
+targeted `audio-input-inventory-changed` event. The hook never enumerates on
+window focus. It exposes the last validated snapshot plus bounded loading/error
+state to Settings, the settings migration, Performance Lab, and the corpus
+recorder; stale descriptors may be displayed but never treated as authoritative
+device presence.
 
 ### `useSettings`
 Loads and persists `Settings` to localStorage, pushes the backend-relevant subset to `configure_dictation`, and reconciles `launchAtLogin` with the actual OS autostart state on mount. Updates are optimistic with rollback: if `configure_dictation` fails, the affected fields revert, and a versioned configure ref prevents a stale rollback from clobbering newer settings. Emits `settings-changed` so the overlay re-reads.

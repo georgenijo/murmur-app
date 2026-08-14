@@ -30,6 +30,7 @@ interface MicrophoneInputTestProps {
   vadSensitivity: number;
   dictationBusy: boolean;
   missingDevice: boolean;
+  inventoryAvailable?: boolean;
   onChange: (microphone: string) => void;
 }
 
@@ -48,6 +49,7 @@ export function MicrophoneInputTest({
   vadSensitivity,
   dictationBusy,
   missingDevice,
+  inventoryAvailable = true,
   onChange,
 }: MicrophoneInputTestProps) {
   const surfaceActive = useSettingsSurfaceActive();
@@ -268,13 +270,13 @@ export function MicrophoneInputTest({
 
   useEffect(() => {
     if (!subscriptionsReady) return;
-    if (!monitoringActive || !ready || dictationBusy || missingDevice) {
+    if (!monitoringActive || !ready || dictationBusy || missingDevice || !inventoryAvailable) {
       const previewId = statusRef.current.previewId;
       if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
       return;
     }
     if (statusRef.current.previewId === null) void start();
-  }, [dictationBusy, microphone, missingDevice, monitoringActive, ready, start, subscriptionsReady]);
+  }, [dictationBusy, inventoryAvailable, microphone, missingDevice, monitoringActive, ready, start, subscriptionsReady]);
 
   const switchDevice = useCallback((nextMicrophone: string) => {
     void runExclusive(async () => {
@@ -352,7 +354,7 @@ export function MicrophoneInputTest({
       <Select
         value={microphone}
         onChange={switchDevice}
-        disabled={busy}
+        disabled={busy || !inventoryAvailable}
         aria-label="Microphone input"
         items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(devices)]}
       />

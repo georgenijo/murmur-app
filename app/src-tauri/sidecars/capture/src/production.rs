@@ -9,10 +9,12 @@ use coreaudio::audio_unit::{
     AudioUnit, Element, IOType, SampleFormat as AuSampleFormat, Scope, StreamFormat,
 };
 use coreaudio::sys::{
-    kAudioDevicePropertyDeviceUID, kAudioObjectPropertyElementMaster,
-    kAudioObjectPropertyScopeGlobal, kAudioOutputUnitProperty_CurrentDevice,
-    kAudioOutputUnitProperty_EnableIO, AudioDeviceID, AudioObjectGetPropertyData,
-    AudioObjectPropertyAddress,
+    kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultInputDevice,
+    kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMaster,
+    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+    kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO, AudioDeviceID,
+    AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectID,
+    AudioObjectPropertyAddress, AudioObjectPropertyListenerProc, AudioObjectRemovePropertyListener,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
@@ -22,7 +24,9 @@ use murmur_capture_helper_protocol::{
     ProductionHelperMessage, ProductionHostMessage, ProductionPcmMetadata, SessionNonce,
     SetupTransition, SystemAudioPermissionStatus,
 };
+use std::ffi::c_void;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool as ProcessAtomicBool, Ordering as ProcessOrdering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -37,6 +41,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const RING_CAPACITY: usize = 48_000 * 8;
 const STOP_DEADLINE: Duration = Duration::from_secs(2);
+// The passive watcher is the worker's only production session. Keep callback
+// state alive until process exit because Core Audio does not promise that a
+// failed/best-effort listener removal has drained every racing callback.
+static INPUT_TOPOLOGY_CHANGED: ProcessAtomicBool = ProcessAtomicBool::new(false);
 
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
@@ -179,10 +187,11 @@ fn raw_uid(device: AudioDeviceID) -> Option<String> {
     )
 }
 
-fn enumerate() -> Result<Vec<ProductionDevice>, FailureCode> {
+fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>), FailureCode> {
     let ids =
         get_audio_device_ids_for_scope(Scope::Input).map_err(|_| FailureCode::EnumerationFailed)?;
-    Ok(ids
+    let default_input_id = get_default_device_id(true).and_then(raw_uid);
+    let devices = ids
         .into_iter()
         .filter_map(|id| {
             Some(ProductionDevice {
@@ -190,7 +199,144 @@ fn enumerate() -> Result<Vec<ProductionDevice>, FailureCode> {
                 name: get_device_name(id).ok()?,
             })
         })
-        .collect())
+        .collect();
+    Ok((devices, default_input_id))
+}
+
+unsafe extern "C" fn input_topology_changed(
+    _object_id: AudioObjectID,
+    _address_count: u32,
+    _addresses: *const AudioObjectPropertyAddress,
+    client_data: *mut c_void,
+) -> i32 {
+    if let Some(changed) = unsafe { (client_data as *const ProcessAtomicBool).as_ref() } {
+        // Core Audio callback boundary: one content-free atomic only. The
+        // worker's ordinary control loop serializes the notification later.
+        changed.store(true, ProcessOrdering::Release);
+    }
+    0
+}
+
+fn input_topology_address(selector: u32) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMaster,
+    }
+}
+
+fn watch_input_topology(
+    stdout: &mut impl Write,
+    capture_id: u64,
+    nonce: SessionNonce,
+) -> Result<(), ()> {
+    INPUT_TOPOLOGY_CHANGED.store(false, ProcessOrdering::Release);
+    let client_data = (&INPUT_TOPOLOGY_CHANGED as *const ProcessAtomicBool)
+        .cast_mut()
+        .cast::<c_void>();
+    let devices_address = input_topology_address(kAudioHardwarePropertyDevices);
+    let default_address = input_topology_address(kAudioHardwarePropertyDefaultInputDevice);
+    let listener: AudioObjectPropertyListenerProc = Some(input_topology_changed);
+
+    let devices_status = unsafe {
+        AudioObjectAddPropertyListener(
+            kAudioObjectSystemObject,
+            &devices_address,
+            listener,
+            client_data,
+        )
+    };
+    if devices_status != 0 {
+        return Err(());
+    }
+    let default_status = unsafe {
+        AudioObjectAddPropertyListener(
+            kAudioObjectSystemObject,
+            &default_address,
+            listener,
+            client_data,
+        )
+    };
+    if default_status != 0 {
+        unsafe {
+            AudioObjectRemovePropertyListener(
+                kAudioObjectSystemObject,
+                &devices_address,
+                listener,
+                client_data,
+            );
+        }
+        return Err(());
+    }
+
+    let watch_result = (|| -> Result<(), ()> {
+        write_production_control(
+            stdout,
+            capture_id,
+            nonce,
+            &ProductionHelperMessage::InputTopologyWatchReady,
+        )
+        .map_err(|_| ())?;
+
+        let (host_sender, host_receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("murmur-input-topology-control".to_string())
+            .spawn(move || {
+                let mut stdin = std::io::stdin().lock();
+                while let Ok(message) = read_control(&mut stdin, capture_id, nonce) {
+                    if host_sender.send(message).is_err() {
+                        return;
+                    }
+                }
+                // Stdin is the ownership channel. The parent watchdog is a
+                // second line of defence, but EOF should reap this worker now.
+                unsafe { libc::_exit(0) }
+            })
+            .map_err(|_| ())?;
+
+        loop {
+            if INPUT_TOPOLOGY_CHANGED.swap(false, ProcessOrdering::AcqRel) {
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::InputTopologyChanged,
+                )
+                .map_err(|_| ())?;
+            }
+            match host_receiver.recv_timeout(Duration::from_millis(25)) {
+                Ok(ProductionHostMessage::Stop | ProductionHostMessage::Cancel) => return Ok(()),
+                Ok(_) => return Err(()),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(()),
+            }
+        }
+    })();
+
+    unsafe {
+        AudioObjectRemovePropertyListener(
+            kAudioObjectSystemObject,
+            &default_address,
+            listener,
+            client_data,
+        );
+        AudioObjectRemovePropertyListener(
+            kAudioObjectSystemObject,
+            &devices_address,
+            listener,
+            client_data,
+        );
+    }
+    watch_result?;
+    write_production_control(
+        stdout,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::Stopped {
+            retained_samples: 0,
+        },
+    )
+    .map_err(|_| ())
 }
 
 fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
@@ -1021,6 +1167,18 @@ mod tests {
     }
 
     #[test]
+    fn topology_callback_uses_process_lifetime_atomic_state() {
+        INPUT_TOPOLOGY_CHANGED.store(false, ProcessOrdering::Release);
+        let client_data = (&INPUT_TOPOLOGY_CHANGED as *const ProcessAtomicBool)
+            .cast_mut()
+            .cast::<c_void>();
+        unsafe {
+            input_topology_changed(0, 0, std::ptr::null(), client_data);
+        }
+        assert!(INPUT_TOPOLOGY_CHANGED.load(ProcessOrdering::Acquire));
+    }
+
+    #[test]
     fn read_control_accepts_matching_control_frame() {
         let capture_id = 42;
         let nonce = [7; 16];
@@ -1099,15 +1257,22 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
     .map_err(|_| ())?;
     match read_control(&mut stdin, capture_id, nonce)? {
         ProductionHostMessage::Enumerate => {
-            let devices = enumerate().map_err(|_| ())?;
+            let (devices, default_input_id) = enumerate().map_err(|_| ())?;
             write_production_control(
                 &mut stdout,
                 capture_id,
                 nonce,
-                &ProductionHelperMessage::Devices { devices },
+                &ProductionHelperMessage::Devices {
+                    devices,
+                    default_input_id,
+                },
             )
             .map_err(|_| ())?;
             Ok(())
+        }
+        ProductionHostMessage::WatchInputTopology => {
+            drop(stdin);
+            watch_input_topology(&mut stdout, capture_id, nonce)
         }
         ProductionHostMessage::ProbeSystemAudio => {
             drop(stdin);

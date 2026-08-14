@@ -12,9 +12,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-
-use crate::MutexExt;
 
 const ENDPOINT: &str = "https://georgenijo.com/murmur/ingest";
 pub(crate) const TOKEN: &str = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0";
@@ -24,41 +21,6 @@ const STARTUP_DELAY_SECS: u64 = 15;
 const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// Defensive bound for the aggregate input-device count shipped in `/state`.
 const MAX_AUDIO_INPUT_COUNT: usize = 256;
-
-static AUDIO_STATE_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-static AUDIO_STATE_REFRESH: OnceLock<Mutex<AudioStateRefreshGate>> = OnceLock::new();
-
-#[derive(Default)]
-struct AudioStateRefreshGate {
-    pending: bool,
-    in_flight: bool,
-}
-
-impl AudioStateRefreshGate {
-    fn observe_state_poll(&mut self, capture_active: bool) {
-        if capture_active {
-            self.pending = true;
-        }
-    }
-
-    fn claim_after_idle(&mut self, capture_active: bool) -> bool {
-        if capture_active || !self.pending || self.in_flight {
-            return false;
-        }
-        self.pending = false;
-        self.in_flight = true;
-        true
-    }
-
-    fn defer_claimed_refresh(&mut self) {
-        self.pending = true;
-        self.in_flight = false;
-    }
-
-    fn complete_refresh(&mut self) {
-        self.in_flight = false;
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 struct ShipperState {
@@ -335,75 +297,13 @@ fn aggregate_audio_state<T>(
     .to_string()
 }
 
-fn audio_state_cache() -> &'static Mutex<Option<String>> {
-    AUDIO_STATE_CACHE.get_or_init(|| Mutex::new(None))
-}
-
-fn audio_state_refresh_gate() -> &'static Mutex<AudioStateRefreshGate> {
-    AUDIO_STATE_REFRESH.get_or_init(|| Mutex::new(AudioStateRefreshGate::default()))
-}
-
-/// Cache a privacy-safe aggregate produced by either an explicit device-list
-/// request or the single deferred state-only refresh.
-pub(crate) fn record_audio_input_enumeration(input_count: Option<usize>) {
-    let snapshot = match input_count {
-        Some(count) => aggregate_audio_state(count > 0, 0..count, true),
-        None => aggregate_audio_state(false, std::iter::empty::<()>(), false),
-    };
-    *audio_state_cache().lock_or_recover() = Some(snapshot);
-}
-
 fn cached_audio_state() -> Option<String> {
-    let capture_active = crate::audio_lifecycle::is_audio_active();
-    audio_state_refresh_gate()
-        .lock_or_recover()
-        .observe_state_poll(capture_active);
-    if !capture_active {
-        // This is also the bounded recovery path for an earlier thread-spawn
-        // failure: the next normal shipper tick may claim the pending work.
-        audio_lifecycle_became_idle();
-    }
-    audio_state_cache().lock_or_recover().clone()
-}
-
-/// A shipper poll that overlaps capture reads the last aggregate and marks one
-/// refresh pending. The lifecycle supervisor calls this only after it has
-/// joined the owned worker and published Idle, so no state-only enumeration is
-/// launched during initialization, recording, stopping, or recovery.
-pub(crate) fn audio_lifecycle_became_idle() {
-    if !audio_state_refresh_gate()
-        .lock_or_recover()
-        .claim_after_idle(crate::audio_lifecycle::is_audio_active())
-    {
-        return;
-    }
-
-    let spawn = std::thread::Builder::new()
-        .name("murmur-audio-state-refresh".to_string())
-        .spawn(|| {
-            // The shared HAL boundary closes the check-to-enumeration race:
-            // either this refresh finishes first or capture publishes Starting
-            // first and this work is deferred to the next idle transition.
-            let Some(result) = crate::audio_lifecycle::with_idle_hal_boundary(|| {
-                crate::audio::count_input_devices_for_state()
-            }) else {
-                audio_state_refresh_gate()
-                    .lock_or_recover()
-                    .defer_claimed_refresh();
-                return;
-            };
-
-            record_audio_input_enumeration(result.ok());
-            audio_state_refresh_gate()
-                .lock_or_recover()
-                .complete_refresh();
-        });
-
-    if spawn.is_err() {
-        audio_state_refresh_gate()
-            .lock_or_recover()
-            .defer_claimed_refresh();
-    }
+    let aggregate = crate::audio_inventory::privacy_aggregate();
+    Some(aggregate_audio_state(
+        aggregate.default_input_available,
+        0..aggregate.input_device_count,
+        aggregate.enumeration_ok,
+    ))
 }
 
 async fn ship_state(
@@ -629,61 +529,21 @@ mod tests {
 
     #[test]
     fn audio_state_cache_tracks_only_aggregate_enumeration_results() {
-        record_audio_input_enumeration(Some(3));
         let success: serde_json::Value =
-            serde_json::from_str(&cached_audio_state().unwrap()).unwrap();
+            serde_json::from_str(&aggregate_audio_state(true, 0..3, true)).unwrap();
         assert_eq!(success["default_input_available"], true);
         assert_eq!(success["input_device_count"], 3);
         assert_eq!(success["input_enumeration_ok"], true);
 
-        record_audio_input_enumeration(None);
-        let failure: serde_json::Value =
-            serde_json::from_str(&cached_audio_state().unwrap()).unwrap();
+        let failure: serde_json::Value = serde_json::from_str(&aggregate_audio_state(
+            false,
+            std::iter::empty::<()>(),
+            false,
+        ))
+        .unwrap();
         assert_eq!(failure["default_input_available"], false);
         assert_eq!(failure["input_device_count"], 0);
         assert_eq!(failure["input_enumeration_ok"], false);
-    }
-
-    #[test]
-    fn state_refresh_is_deferred_through_every_owned_capture_phase() {
-        for phase in ["starting", "recording", "recovering", "stopping"] {
-            let mut gate = AudioStateRefreshGate::default();
-            gate.observe_state_poll(true);
-
-            assert!(gate.pending, "{phase} must retain one pending refresh");
-            assert!(
-                !gate.claim_after_idle(true),
-                "{phase} must not launch diagnostic enumeration"
-            );
-            assert!(!gate.in_flight);
-        }
-    }
-
-    #[test]
-    fn pending_state_refresh_runs_once_after_idle_without_retry_loop() {
-        let mut gate = AudioStateRefreshGate::default();
-        gate.observe_state_poll(true);
-        gate.observe_state_poll(true);
-        gate.observe_state_poll(true);
-
-        assert!(gate.claim_after_idle(false));
-        assert!(gate.in_flight);
-        assert!(!gate.pending);
-        assert!(!gate.claim_after_idle(false));
-
-        gate.complete_refresh();
-        assert!(!gate.claim_after_idle(false));
-    }
-
-    #[test]
-    fn capture_that_wins_during_refresh_defers_until_the_next_idle() {
-        let mut gate = AudioStateRefreshGate::default();
-        gate.observe_state_poll(true);
-        assert!(gate.claim_after_idle(false));
-
-        gate.defer_claimed_refresh();
-        assert!(!gate.claim_after_idle(true));
-        assert!(gate.claim_after_idle(false));
     }
 
     #[tokio::test]

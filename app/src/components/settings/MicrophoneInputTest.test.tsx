@@ -60,6 +60,7 @@ describe('MicrophoneInputTest', () => {
   let appReady = true;
   let vadSensitivity = 60;
   let dictationBusy = false;
+  let inventoryAvailable = true;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
 
@@ -79,6 +80,7 @@ describe('MicrophoneInputTest', () => {
             vadSensitivity={vadSensitivity}
             dictationBusy={dictationBusy}
             missingDevice={false}
+            inventoryAvailable={inventoryAvailable}
             onChange={handleMicrophoneChange}
           />
         </SettingsSurfaceActiveContext.Provider>,
@@ -103,6 +105,7 @@ describe('MicrophoneInputTest', () => {
     appReady = true;
     vadSensitivity = 60;
     dictationBusy = false;
+    inventoryAvailable = true;
     frames = new Map();
     nextFrame = 1;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -155,6 +158,13 @@ describe('MicrophoneInputTest', () => {
     expect(paintedLevel).toBeLessThan(20);
     expect(meter.getAttribute('aria-valuetext')).toContain('Signal detected');
     expect(container.textContent).toContain('Signal detected');
+  });
+
+  it('does not preview or allow selection from stale inventory', async () => {
+    inventoryAvailable = false;
+    await render();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());
+    expect((container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('pauses for dictation while connecting and resumes automatically afterward', async () => {

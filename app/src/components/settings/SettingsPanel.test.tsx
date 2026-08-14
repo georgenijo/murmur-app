@@ -68,7 +68,14 @@ beforeEach(() => {
   coreMocks.notchPillDetectionError = false;
   coreMocks.invoke.mockReset();
   coreMocks.invoke.mockImplementation(async (command: string) => {
-    if (command === 'list_audio_devices') return [];
+    if (command === 'get_audio_input_inventory') return {
+      schemaVersion: 1,
+      revision: 1,
+      status: 'available',
+      devices: [],
+      defaultInputId: null,
+      errorCode: null,
+    };
     if (command === 'get_microphone_preview_status') {
       return {
         previewId: null,
@@ -172,6 +179,16 @@ describe('SettingsPanel information architecture', () => {
 
   it('hides the NotchPill setting when the companion app is absent', () => {
     expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
+  });
+
+  it('does not re-enumerate microphones when the window receives focus', async () => {
+    const before = coreMocks.invoke.mock.calls.filter(([command]) => command === 'get_audio_input_inventory').length;
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
+    const after = coreMocks.invoke.mock.calls.filter(([command]) => command === 'get_audio_input_inventory').length;
+    expect(after).toBe(before);
   });
 
   it('shows the NotchPill setting when the companion app is installed', async () => {

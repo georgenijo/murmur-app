@@ -7,8 +7,10 @@ Issues: #405, #408, #409, #410, #411, #412, #426, #436
 ## Decision
 
 The Tauri application process never links CPAL or CoreAudio capture APIs. It
-owns a single signed `murmur-capture-worker` process group and communicates over
-production protocol v3. Every frame carries a monotonic capture ID and a random
+owns each signed `murmur-capture-worker` process group directly and communicates
+over production protocol v5. Capture, bounded enumeration, and the passive
+input-topology watcher use separate owned sessions. Every frame carries a
+monotonic capture ID and a random
 128-bit nonce. Control payloads are bounded JSON; audio is bounded binary mono
 `f32` PCM with a strict sequence and sample rate.
 
