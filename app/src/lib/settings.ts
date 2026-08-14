@@ -216,6 +216,8 @@ export interface Settings {
   queryTimeoutSeconds: number;
   /** Optional context appended inside the one literal query argv element. */
   queryContextLevel: QueryContextLevel;
+  /** Copy successful final answers to the clipboard; snapshotted per query pass. */
+  queryAutomaticallyCopyAnswers: boolean;
   /** Opt-in Rust-owned local question/answer history; false keeps content ephemeral. */
   retainQueryHistory: boolean;
   language: string;
@@ -394,6 +396,7 @@ export const DEFAULT_SETTINGS: Settings = {
   queryArguments: [],
   queryTimeoutSeconds: 60,
   queryContextLevel: 'none',
+  queryAutomaticallyCopyAnswers: true,
   retainQueryHistory: false,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
@@ -707,6 +710,11 @@ export function loadSettings(): Settings {
         || !QUERY_CONTEXT_LEVEL_OPTIONS.some((option) => option.value === parsed.queryContextLevel)
       ) {
         parsed.queryContextLevel = DEFAULT_SETTINGS.queryContextLevel;
+      }
+      // Auto-copy shipped before it became configurable, so pre-feature and
+      // malformed documents retain that behavior. An explicit false is kept.
+      if (typeof parsed.queryAutomaticallyCopyAnswers !== 'boolean') {
+        parsed.queryAutomaticallyCopyAnswers = DEFAULT_SETTINGS.queryAutomaticallyCopyAnswers;
       }
       if (typeof parsed.retainQueryHistory !== 'boolean') {
         parsed.retainQueryHistory = DEFAULT_SETTINGS.retainQueryHistory;

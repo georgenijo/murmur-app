@@ -238,7 +238,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { tab: 'text', title: 'Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
   { tab: 'text', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms' },
   { tab: 'text', title: 'Knowledge', detail: 'Manage local corrections, snippets, and transforms.', keywords: 'voice commands replacement' },
-  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey history logging privacy question' },
+  { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey history logging privacy question clipboard copy automatic' },
   { tab: 'text', title: 'Selected-text Transform', detail: 'Configure on-device rewriting.', keywords: 'llm rewrite shortcut' },
   { tab: 'app', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
   { tab: 'app', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors' },
@@ -1270,6 +1270,14 @@ export const SettingsPanel = memo(function SettingsPanel({
               disabled={queryConfigBusy}
               onChange={() => void toggleVoiceQuery()}
             />
+            <SettingToggle
+              title="Automatically copy answers"
+              description="Copy successful final answers to the clipboard. Voice Query never auto-pastes."
+              checked={settings.queryAutomaticallyCopyAnswers}
+              onChange={() => onUpdateSettings({
+                queryAutomaticallyCopyAnswers: !settings.queryAutomaticallyCopyAnswers,
+              })}
+            />
             {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
             {queryConfigNotice && (
               <p role="status" className="text-xs text-on-surface-variant">{queryConfigNotice}</p>
@@ -1538,8 +1546,8 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
 
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
-              Answers stream into a popover and are copied to the clipboard when complete. They are never
-              auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
+              Answers stream into a popover. Successful final answers are copied to the clipboard when automatic
+              copying is enabled; otherwise, use Copy in the popover. They are never auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
               Context is never stored as a separate history field, but a saved answer may quote context shared with the CLI.
               Context content never enters saved files, usage stats, diagnostics, logs, or telemetry.
             </div>

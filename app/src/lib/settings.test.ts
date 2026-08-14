@@ -888,7 +888,27 @@ describe('Voice Query settings', () => {
     expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
     expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
     expect(DEFAULT_SETTINGS.queryContextLevel).toBe('none');
+    expect(DEFAULT_SETTINGS.queryAutomaticallyCopyAnswers).toBe(true);
     expect(DEFAULT_SETTINGS.retainQueryHistory).toBe(false);
+  });
+
+  it('keeps auto-copy on for old or malformed documents and preserves an explicit opt-out', () => {
+    for (const [stored, expected] of [
+      [undefined, true],
+      ['yes', true],
+      [null, true],
+      [false, false],
+      [true, true],
+    ] as const) {
+      const settings = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+      if (stored === undefined) {
+        delete settings.queryAutomaticallyCopyAnswers;
+      } else {
+        settings.queryAutomaticallyCopyAnswers = stored;
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      expect(loadSettings().queryAutomaticallyCopyAnswers).toBe(expected);
+    }
   });
 
   it('fails closed when a persisted query key conflicts with transform', () => {
@@ -912,6 +932,7 @@ describe('Voice Query settings', () => {
       queryArguments: [...Array.from({ length: 40 }, (_, index) => `arg-${index}`), 7],
       queryTimeoutSeconds: 999,
       queryContextLevel: 'desktop_screenshot',
+      queryAutomaticallyCopyAnswers: 'sometimes',
       retainQueryHistory: 'yes',
     }));
 
@@ -924,6 +945,7 @@ describe('Voice Query settings', () => {
     expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
     expect(settings.queryTimeoutSeconds).toBe(60);
     expect(settings.queryContextLevel).toBe('none');
+    expect(settings.queryAutomaticallyCopyAnswers).toBe(true);
     expect(settings.retainQueryHistory).toBe(false);
   });
 

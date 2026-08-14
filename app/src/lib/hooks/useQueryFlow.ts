@@ -33,6 +33,7 @@ interface UseQueryFlowProps {
   accessibilityGranted: boolean | null;
   queryHotkey: QueryKey | null;
   microphone?: string;
+  automaticallyCopyAnswers: boolean;
   command: QueryCommandConfig;
   onQueryCompleted?: (completion: QueryCompletion) => void;
 }
@@ -72,6 +73,7 @@ export function useQueryFlow({
   accessibilityGranted,
   queryHotkey,
   microphone,
+  automaticallyCopyAnswers,
   command,
   onQueryCompleted,
 }: UseQueryFlowProps) {
@@ -79,10 +81,12 @@ export function useQueryFlow({
   const trackedPassesRef = useRef(new Map<number, TrackedQueryPass>());
   const commandRef = useRef(command);
   const microphoneRef = useRef(microphone);
+  const automaticallyCopyAnswersRef = useRef(automaticallyCopyAnswers);
   const onQueryCompletedRef = useRef(onQueryCompleted);
   const terminalListenersReadyRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => { commandRef.current = command; }, [command]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
+  useEffect(() => { automaticallyCopyAnswersRef.current = automaticallyCopyAnswers; }, [automaticallyCopyAnswers]);
   useEffect(() => { onQueryCompletedRef.current = onQueryCompleted; }, [onQueryCompleted]);
 
   const completeTrackedPass = (
@@ -191,6 +195,7 @@ export function useQueryFlow({
             deviceName: selectedMicrophone && selectedMicrophone !== DEFAULT_SETTINGS.microphone
               ? selectedMicrophone
               : null,
+            automaticallyCopyAnswer: automaticallyCopyAnswersRef.current,
             command: immutableCommand,
           }).catch(() => {
             flog.warn('query', 'start command failed', { query_pass_id: queryPassId });

@@ -218,6 +218,7 @@ function App() {
     accessibilityGranted,
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
+    automaticallyCopyAnswers: settings.queryAutomaticallyCopyAnswers,
     command: {
       provider: settings.queryProvider,
       executable: settings.queryExecutable,

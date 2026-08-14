@@ -313,6 +313,33 @@ describe('useQueryReviewDriver ownership', () => {
     expect(current!.errorCode).toBe('provider_not_authenticated');
   });
 
+  it('marks the current answer copied after an explicit Copy succeeds', async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'get_query_review_content') {
+        return Promise.resolve(content(103, 'answer'));
+      }
+      return Promise.resolve();
+    });
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 103, state: 'ready', errorCode: 'auto_copy_disabled' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!.errorCode).toBe('auto_copy_disabled');
+
+    await act(async () => {
+      current!.copy();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.invoke).toHaveBeenCalledWith('copy_query_answer', { queryPassId: 103 });
+    expect(current!.errorCode).toBeNull();
+  });
+
   it('does not let a delayed prior-pass Copy failure overwrite the new pass error', async () => {
     let rejectCopy!: (error: Error) => void;
     const copy = new Promise<void>((_resolve, reject) => { rejectCopy = reject; });

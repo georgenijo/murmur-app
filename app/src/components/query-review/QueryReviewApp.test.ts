@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { queryErrorMessage, queryListeningPartial } from './QueryReviewApp';
+import { queryErrorMessage, queryListeningPartial, statusLabel } from './QueryReviewApp';
 
 describe('queryErrorMessage', () => {
   it('treats a deferred clipboard as success, not failure', () => {
@@ -8,6 +8,10 @@ describe('queryErrorMessage', () => {
     // write the user made while it was generating. Surfacing this as an error
     // would read as though the query itself failed.
     expect(queryErrorMessage('clipboard_superseded')).toBeNull();
+    expect(queryErrorMessage('auto_copy_disabled')).toBeNull();
+    expect(queryErrorMessage('auto_copy_unavailable')).toBeNull();
+    expect(statusLabel('ready', 'auto_copy_disabled')).toBe('Answer ready');
+    expect(statusLabel('ready', 'auto_copy_unavailable')).toBe('Answer ready');
   });
 
   it('stays silent for non-terminal audio stalls and no error at all', () => {

@@ -218,6 +218,12 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Context shared with the CLI');
     expect(container.textContent).toContain('Off by default');
     expect(container.textContent).toContain('never auto-pasted');
+    const autoCopyToggle = container.querySelector(
+      '[role="switch"][aria-label="Automatically copy answers"]',
+    ) as HTMLButtonElement;
+    expect(autoCopyToggle.getAttribute('aria-checked')).toBe('true');
+    await act(async () => autoCopyToggle.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ queryAutomaticallyCopyAnswers: false });
     const historyToggle = container.querySelector(
       '[role="switch"][aria-label="Keep Voice Query history on this Mac"]',
     ) as HTMLButtonElement;
@@ -301,6 +307,25 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => result.click());
     expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('App');
     expect(container.textContent).toContain('Appearance settings');
+  });
+
+  it('finds the Voice Query clipboard preference from settings search', async () => {
+    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'clipboard copy');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const result = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Voice Query'),
+    ) as HTMLButtonElement;
+    expect(result).toBeDefined();
+    await act(async () => result.click());
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Text');
+    expect(container.querySelector(
+      '[role="switch"][aria-label="Automatically copy answers"]',
+    )).not.toBeNull();
   });
 
   it('opens diagnostics when the cross-tab result explicitly targets them', async () => {

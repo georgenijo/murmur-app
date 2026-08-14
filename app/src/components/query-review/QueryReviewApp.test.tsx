@@ -144,6 +144,24 @@ describe('QueryReviewApp', () => {
     expect(container.textContent).toContain('Never auto-pasted');
   });
 
+  it('keeps disabled and unavailable automatic copy states truthful and actionable', async () => {
+    mocks.driver.state = 'ready';
+    mocks.driver.errorCode = 'auto_copy_disabled';
+    mocks.driver.answer = 'answer';
+    mocks.driver.errorDetail = null;
+    await act(async () => root.render(<QueryReviewApp />));
+
+    expect(container.textContent).toContain('Answer ready');
+    expect(container.textContent).toContain('Automatic copy off');
+    expect(container.textContent).toContain('press Copy for the answer');
+    expect(container.textContent).not.toContain('Answer copied to clipboard');
+
+    mocks.driver.errorCode = 'auto_copy_unavailable';
+    await act(async () => root.render(<QueryReviewApp />));
+    expect(container.textContent).toContain('Automatic copy unavailable');
+    expect(container.textContent).not.toContain('Answer copied to clipboard');
+  });
+
   it('shows listening words as plain text before the CLI runs', async () => {
     mocks.driver.state = 'listening';
     mocks.driver.errorCode = null;

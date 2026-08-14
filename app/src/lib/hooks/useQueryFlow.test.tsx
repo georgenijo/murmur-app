@@ -33,10 +33,12 @@ const DEFAULT_COMMAND: QueryCommandConfig = {
 function Harness({
   enabled = true,
   command,
+  automaticallyCopyAnswers = true,
   onQueryCompleted,
 }: {
   enabled?: boolean;
   command: QueryCommandConfig;
+  automaticallyCopyAnswers?: boolean;
   onQueryCompleted?: (completion: QueryCompletion) => void;
 }) {
   useQueryFlow({
@@ -45,6 +47,7 @@ function Harness({
     accessibilityGranted: true,
     queryHotkey: 'alt_r',
     microphone: 'system_default',
+    automaticallyCopyAnswers,
     command,
     onQueryCompleted,
   });
@@ -73,12 +76,14 @@ describe('useQueryFlow', () => {
     onQueryCompleted?: (completion: QueryCompletion) => void,
     command: QueryCommandConfig = DEFAULT_COMMAND,
     enabled = true,
+    automaticallyCopyAnswers = true,
   ) {
     await act(async () => {
       root.render(
         <Harness
           enabled={enabled}
           command={command}
+          automaticallyCopyAnswers={automaticallyCopyAnswers}
           onQueryCompleted={onQueryCompleted}
         />,
       );
@@ -108,6 +113,7 @@ describe('useQueryFlow', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', {
       queryPassId: 17,
       deviceName: null,
+      automaticallyCopyAnswer: true,
       command: {
         provider: 'custom',
         executable: '/usr/bin/printf',
@@ -162,6 +168,7 @@ describe('useQueryFlow', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', {
       queryPassId: 32,
       deviceName: null,
+      automaticallyCopyAnswer: true,
       command: { ...DEFAULT_COMMAND, contextLevel: 'none' },
     });
   });
@@ -190,6 +197,7 @@ describe('useQueryFlow', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', {
       queryPassId: 42,
       deviceName: null,
+      automaticallyCopyAnswer: true,
       command: { ...DEFAULT_COMMAND, timeoutSeconds: 120 },
     });
   });
@@ -216,6 +224,35 @@ describe('useQueryFlow', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({
       queryPassId: 19,
       command: expect.objectContaining({ retainQueryHistory: true }),
+    }));
+  });
+
+  it('snapshots the auto-copy preference for each start without restarting the listener', async () => {
+    await renderFlow(undefined, DEFAULT_COMMAND, true, false);
+    mocks.invoke.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 71, action: 'start' } });
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({
+      queryPassId: 71,
+      automaticallyCopyAnswer: false,
+    }));
+
+    mocks.invoke.mockClear();
+    await renderFlow(undefined, DEFAULT_COMMAND, true, true);
+    expect(mocks.invoke).not.toHaveBeenCalledWith('stop_query_listener');
+    expect(mocks.invoke).not.toHaveBeenCalledWith('cancel_query', { queryPassId: 71 });
+
+    await act(async () => {
+      mocks.listeners.get('query-review-hidden')?.({ payload: { queryPassId: 71 } });
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 72, action: 'start' } });
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({
+      queryPassId: 72,
+      automaticallyCopyAnswer: true,
     }));
   });
 

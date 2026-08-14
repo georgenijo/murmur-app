@@ -61,6 +61,30 @@ describe('QueryHistoryPanel', () => {
     expect(container.textContent).not.toContain('$');
   });
 
+  it('presents successful clipboard delivery states as neutral notices', async () => {
+    const base = history().entries[0];
+    await act(async () => root.render(
+      <QueryHistoryPanel
+        history={history({
+          entries: [
+            { ...base, id: '11111111111111111111111111111111', errorCode: 'auto_copy_disabled' },
+            { ...base, id: '22222222222222222222222222222222', errorCode: 'clipboard_superseded' },
+          ],
+          total: 2,
+        })}
+        retentionEnabled
+      />,
+    ));
+
+    expect(container.textContent).toContain('Manual copy');
+    expect(container.textContent).toContain('Clipboard unchanged');
+    expect(container.textContent).not.toContain('auto_copy_disabled');
+    expect(container.textContent).not.toContain('clipboard_superseded');
+    const notices = Array.from(container.querySelectorAll('article span.ml-auto'));
+    expect(notices).toHaveLength(2);
+    expect(notices.every((notice) => !notice.classList.contains('text-error'))).toBe(true);
+  });
+
   it('filters by provider and purges immediately without a modal confirmation', async () => {
     const state = history();
     const confirm = vi.spyOn(window, 'confirm');

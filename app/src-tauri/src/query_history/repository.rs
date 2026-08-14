@@ -360,6 +360,8 @@ fn valid_error_code(code: &str) -> bool {
             | "provider_error"
             | "exit_nonzero"
             | "empty_answer"
+            | "auto_copy_disabled"
+            | "auto_copy_unavailable"
             | "clipboard_superseded"
             | "clipboard_unavailable"
             | "cancelled"
@@ -1053,6 +1055,12 @@ mod tests {
             .insert_if_epoch(epoch, unknown_error)
             .unwrap_err()
             .contains("invalid record"));
+    }
+
+    #[test]
+    fn auto_copy_ready_codes_are_valid_history_metadata() {
+        assert!(valid_error_code("auto_copy_disabled"));
+        assert!(valid_error_code("auto_copy_unavailable"));
     }
 
     #[test]

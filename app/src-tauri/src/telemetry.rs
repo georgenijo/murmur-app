@@ -513,6 +513,8 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "provider_not_authenticated"
                 | "provider_error"
                 | "empty_answer"
+                | "auto_copy_disabled"
+                | "auto_copy_unavailable"
                 | "clipboard_unavailable"
                 | "clipboard_superseded"
                 | "output_too_large"
@@ -1057,6 +1059,8 @@ mod tests {
             ("failed", "invalid_environment"),
             ("failed", "environment_unavailable"),
             ("failed", "audio_capture_failed"),
+            ("ready", "auto_copy_disabled"),
+            ("ready", "auto_copy_unavailable"),
             ("ready", "clipboard_superseded"),
         ] {
             let mut data = serde_json::json!({
