@@ -63,8 +63,9 @@ confirmed empty and a final Stop check passes. Once audio exists, failure ends c
 devices. Prefixes of at least 500 ms are transcribed normally, remain
 clipboard-first, and are marked **Interrupted · partial** in history.
 
-For an explicit pinned microphone only, a full AUHAL-to-CPAL pass in which both
-backends fail `device_unavailable` before first PCM may be repeated up to two
+For an explicit pinned microphone only, a full two-backend pass in which both
+the memo-resolved primary and fallback backends fail `device_unavailable`
+before first PCM may be repeated up to two
 more times. The 500 ms gaps between passes are cancellable. All three possible
 passes use the exact immutable device ID selected at recording start; Murmur
 never substitutes the system default or another input. A mixed failure, a

@@ -434,9 +434,12 @@ fn cpal_device(
     requested: Option<&str>,
 ) -> (Result<cpal::Device, FailureCode>, InputResolutionEvidence) {
     let host = cpal::default_host();
-    // This query is evidence only. It never selects a different microphone or
-    // changes the backend's existing resolution result.
-    let default_input_available = get_default_device_id(true).is_some();
+    // Keep the fallback backend independent from Core Audio resolution calls:
+    // even evidence-only HAL work could otherwise stall before CPAL gets a
+    // chance to resolve the requested device. Reuse CPAL's own default result
+    // for both the availability fact and system-default selection.
+    let default_input_device = host.default_input_device();
+    let default_input_available = default_input_device.is_some();
     if let Some(requested) = requested {
         let devices = match host.input_devices() {
             Ok(devices) => devices,
@@ -474,7 +477,7 @@ fn cpal_device(
         // Preserve CPAL's default-device result as the capture decision. The
         // supplementary enumeration supplies only a bounded content-free
         // count; failure to collect it must not make default capture fail.
-        let selected = require_input_device(host.default_input_device());
+        let selected = require_input_device(default_input_device);
         let evidence = match host.input_devices() {
             Ok(devices) => {
                 InputResolutionEvidence::observed(None, devices.count(), default_input_available)

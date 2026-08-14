@@ -10,7 +10,8 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 **Decision:** When both AUHAL and CPAL fail `device_unavailable` before first
 PCM for an explicit pinned microphone, allow up to two additional complete
-AUHAL-to-CPAL passes. Wait 500 ms between passes with Stop/command-channel-disconnect-aware
+primary-to-fallback passes in the session's immutable memo-resolved order. Wait
+500 ms between passes with Stop/command-channel-disconnect-aware
 cancellation, and pass the same immutable device ID to every helper. Never
 substitute the system default. System-default capture, mixed failure kinds,
 retained audio, or any other terminal result do not retry. Exhaustion emits the

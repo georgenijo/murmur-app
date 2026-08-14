@@ -182,7 +182,8 @@ remains available for packaging and callback-boundary validation. See the
 [capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
 
 An explicit pinned input that resolves as unavailable in both AUHAL and CPAL
-may run at most two additional complete AUHAL-to-CPAL resolution passes. The
+may run at most two additional complete primary-to-fallback resolution passes
+using the session's immutable memo-resolved backend order. The
 500 ms gaps are cancellable, every pass uses the same immutable raw device UID,
 and no pass substitutes the OS default. Mixed failures, system-default capture,
 retained audio, or an unavailable device after first PCM remain terminal.

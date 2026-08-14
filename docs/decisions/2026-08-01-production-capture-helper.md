@@ -27,10 +27,11 @@ retained audio, any gap, malformed frame, overflow, backend error, stall, or
 process exit terminates capture and preserves the delivered prefix.
 
 If both backends in a complete pre-PCM pass report `device_unavailable` for an
-explicit pinned microphone, the supervisor may repeat that full AUHAL-to-CPAL
-pass up to two more times. Each 500 ms inter-pass gap remains interruptible by
-Stop or command-channel disconnect. Every attempt receives the same immutable raw device
-UID; no attempt substitutes the default input. System-default capture, mixed
+explicit pinned microphone, the supervisor may repeat that full two-backend
+pass in the session's immutable memo-resolved order up to two more times. Each
+500 ms inter-pass gap remains interruptible by Stop or command-channel
+disconnect. Every attempt receives the same immutable raw device UID; no
+attempt substitutes the default input. System-default capture, mixed
 failure kinds, retained audio, and any other terminal condition do not enter
 this re-resolution loop.
 
