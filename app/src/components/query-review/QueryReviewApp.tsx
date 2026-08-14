@@ -90,6 +90,11 @@ export function queryHistoryNotice(reason: QueryHistorySkipReason | null): strin
   return null;
 }
 
+export function queryListeningPartial(state: QueryReviewState, partial: string): string | null {
+  const text = partial.trim() ? partial : '';
+  return state === 'listening' && text ? text : null;
+}
+
 export function formatQueryUsage(usage: QueryUsage | null): string | null {
   if (!usage) return null;
   const parts = [
@@ -105,6 +110,10 @@ export function QueryReviewApp() {
   const errorMessage = useMemo(
     () => queryErrorMessage(driver.errorCode, driver.errorDetail),
     [driver.errorCode, driver.errorDetail],
+  );
+  const listeningPartial = useMemo(
+    () => queryListeningPartial(driver.state, driver.partial),
+    [driver.state, driver.partial],
   );
   const terminal = driver.state === 'ready' || driver.state === 'failed';
   const historyNotice = queryHistoryNotice(driver.historySkipReason);
@@ -169,14 +178,16 @@ export function QueryReviewApp() {
         )}
       </header>
 
-      {(driver.answer || errorMessage || terminal) && (
+      {(listeningPartial || driver.answer || errorMessage || terminal) && (
         <section className="flex min-h-0 flex-1 flex-col border-t border-white/10">
           <div
-            aria-label="Query answer"
+            aria-label={listeningPartial ? 'Heard so far' : 'Query answer'}
             aria-live="polite"
             className="min-h-0 flex-1 select-text overflow-y-auto break-words px-4 py-3 text-[13px] leading-relaxed text-white/85 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:text-violet-300 [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:text-white/70 [&_code]:rounded [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[12px] [&_em]:italic [&_h1]:mb-1 [&_h1]:mt-3 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h1]:text-white [&_h2]:mb-1 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:text-[13px] [&_h3]:font-semibold [&_h3]:text-white [&_hr]:my-3 [&_hr]:border-white/10 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/40 [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_strong]:text-white [&_table]:my-2 [&_table]:w-full [&_td]:pr-3 [&_th]:pr-3 [&_th]:text-left [&_th]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
           >
-            {driver.state === 'failed'
+            {listeningPartial
+              ? <p className="whitespace-pre-wrap text-white/70">{listeningPartial}</p>
+              : driver.state === 'failed'
               ? <p className="whitespace-pre-wrap">{primaryText}</p>
               : driver.answer
                 ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>

@@ -28,6 +28,11 @@ interface QueryChunkPayload {
   replace: boolean;
 }
 
+interface QueryPartialPayload {
+  queryPassId: number;
+  text: string;
+}
+
 interface QueryContent {
   queryPassId: number | null;
   answer: string;
@@ -67,10 +72,17 @@ function isChunkPayload(value: unknown): value is QueryChunkPayload {
     && typeof payload.replace === 'boolean';
 }
 
+function isPartialPayload(value: unknown): value is QueryPartialPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Record<string, unknown>;
+  return validPassId(payload.queryPassId) && typeof payload.text === 'string';
+}
+
 export function useQueryReviewDriver() {
   const [state, setState] = useState<QueryReviewState>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
+  const [partial, setPartial] = useState('');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [usage, setUsage] = useState<QueryUsage | null>(null);
   const [signInFix, setSignInFix] = useState<string | null>(null);
@@ -79,6 +91,7 @@ export function useQueryReviewDriver() {
   const [contextSummary, setContextSummary] = useState<string | null>(null);
   const [historySkipReason, setHistorySkipReason] = useState<QueryHistorySkipReason | null>(null);
   const passIdRef = useRef<number | null>(null);
+  const stateRef = useRef<QueryReviewState>('idle');
   const nextSequenceRef = useRef(0);
   const contentRefreshTicketRef = useRef(0);
   const contextRefreshTicketRef = useRef(0);
@@ -92,6 +105,7 @@ export function useQueryReviewDriver() {
     let disposed = false;
     let unlistenState: (() => void) | null = null;
     let unlistenChunk: (() => void) | null = null;
+    let unlistenPartial: (() => void) | null = null;
     let unlistenContext: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
 
@@ -154,6 +168,7 @@ export function useQueryReviewDriver() {
           terminalPassIdRef.current = null;
           terminalAnswerSnapshotRef.current = false;
           setAnswer('');
+          setPartial('');
           setErrorDetail(null);
           setUsage(null);
           setSignInFix(null);
@@ -164,8 +179,12 @@ export function useQueryReviewDriver() {
           setContextSummary(null);
           setHistorySkipReason(null);
         }
+        stateRef.current = payload.state;
         setState(payload.state);
         setErrorCode(payload.errorCode);
+        if (payload.state !== 'listening') {
+          setPartial('');
+        }
         // Context and answer refreshes have independent ownership. Nonterminal
         // state changes can recover a missed context notification without an
         // older snapshot ever replacing streamed answer text.
@@ -219,13 +238,22 @@ export function useQueryReviewDriver() {
       });
       if (disposed) { unlistenState(); unlistenChunk(); return; }
 
+      unlistenPartial = await listen<unknown>('query-partial', (event) => {
+        if (disposed || !isPartialPayload(event.payload)) return;
+        const payload = event.payload;
+        if (payload.queryPassId !== passIdRef.current) return;
+        if (stateRef.current !== 'listening') return;
+        setPartial(payload.text);
+      });
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); return; }
+
       unlistenContext = await listen<unknown>('query-context-resolved', (event) => {
         if (disposed || !event.payload || typeof event.payload !== 'object') return;
         const queryPassId = (event.payload as Record<string, unknown>).queryPassId;
         if (!validPassId(queryPassId) || queryPassId !== passIdRef.current) return;
         void refreshContext(queryPassId);
       });
-      if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); return; }
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenContext(); return; }
 
       unlistenHidden = await listen<unknown>('query-review-hidden', (event) => {
         if (disposed || !event.payload || typeof event.payload !== 'object') return;
@@ -240,9 +268,11 @@ export function useQueryReviewDriver() {
         answerRecoveryRef.current = false;
         terminalPassIdRef.current = null;
         terminalAnswerSnapshotRef.current = false;
+        stateRef.current = 'idle';
         setState('idle');
         setErrorCode(null);
         setAnswer('');
+        setPartial('');
         setErrorDetail(null);
         setUsage(null);
         setSignInFix(null);
@@ -253,7 +283,7 @@ export function useQueryReviewDriver() {
         setContextSummary(null);
         setHistorySkipReason(null);
       });
-      if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); unlistenHidden(); }
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenContext(); unlistenHidden(); }
     };
     void setup();
     return () => {
@@ -262,6 +292,7 @@ export function useQueryReviewDriver() {
       copyAttemptRef.current += 1;
       unlistenState?.();
       unlistenChunk?.();
+      unlistenPartial?.();
       unlistenContext?.();
       unlistenHidden?.();
     };
@@ -336,6 +367,7 @@ export function useQueryReviewDriver() {
     state,
     errorCode,
     answer,
+    partial,
     errorDetail,
     usage,
     signInFix,

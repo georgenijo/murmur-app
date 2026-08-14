@@ -47,6 +47,12 @@ const MIN_TIMEOUT_SECONDS: u64 = 5;
 const MAX_TIMEOUT_SECONDS: u64 = 300;
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TERMINATION_DEADLINE: Duration = Duration::from_secs(2);
+const PARTIAL_INTERVAL: Duration = Duration::from_millis(700);
+const PARTIAL_MIN_SAMPLES: usize = 16_000 * 800 / 1_000;
+/// Trailing decode window once captured audio exceeds it: each tick re-decodes
+/// only the last 20 seconds, so per-tick cost stays bounded without ever
+/// stopping the ticker while the user keeps speaking.
+const PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 20;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -393,6 +399,7 @@ pub(crate) struct QueryCoordinator {
     pass_sequence: AtomicU64,
     active_pass_id: AtomicU64,
     cancelled_pass_id: AtomicU64,
+    partial_in_flight_pass: AtomicU64,
     worker_pass_id: AtomicU64,
     worker_state_changed: Condvar,
     status: Mutex<QueryStatus>,
@@ -410,6 +417,7 @@ impl Default for QueryCoordinator {
             pass_sequence: AtomicU64::new(0),
             active_pass_id: AtomicU64::new(0),
             cancelled_pass_id: AtomicU64::new(0),
+            partial_in_flight_pass: AtomicU64::new(0),
             worker_pass_id: AtomicU64::new(0),
             worker_state_changed: Condvar::new(),
             status: Mutex::new(QueryStatus::Idle),
@@ -800,6 +808,27 @@ impl QueryCoordinator {
             && self.cancelled_pass_id.load(Ordering::SeqCst) < pass_id
     }
 
+    fn is_listening(&self, pass_id: u64) -> bool {
+        self.is_active(pass_id) && self.status() == QueryStatus::Listening
+    }
+
+    fn try_begin_partial(&self, pass_id: u64) -> bool {
+        self.is_listening(pass_id)
+            && self
+                .partial_in_flight_pass
+                .compare_exchange(0, pass_id, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+    }
+
+    fn finish_partial(&self, pass_id: u64) {
+        let _ = self.partial_in_flight_pass.compare_exchange(
+            pass_id,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+
     fn set_status(&self, pass_id: u64, status: QueryStatus) -> bool {
         let _ownership = self.ownership.lock_or_recover();
         if !self.is_active(pass_id) {
@@ -1185,10 +1214,21 @@ fn validate_command(
     if !(MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&config.timeout_seconds) {
         return Err("invalid_timeout");
     }
+    // Pinned arguments are Rust-owned and appended after the user's saved
+    // (editable) fixed arguments, so a fix here applies to every existing
+    // saved config without the user re-saving Settings. They are never
+    // subject to the argument-count/byte limits above (those bound only
+    // `config.arguments`) and never reach the auth probe path.
+    let mut arguments = config.arguments;
+    arguments.extend(
+        crate::query_provider::pinned_query_arguments(config.provider)
+            .iter()
+            .map(|argument| argument.to_string()),
+    );
     Ok(ValidatedQueryCommand {
         provider: config.provider,
         executable,
-        arguments: config.arguments,
+        arguments,
         timeout: Duration::from_secs(config.timeout_seconds),
         environment,
         working_directory,
@@ -1838,6 +1878,7 @@ pub(crate) fn handle_audio_lifecycle(
                 state.query.mark_capture_started(query_pass_id);
                 crate::keyboard::set_query_recording_state(true);
                 emit_state(&app_handle, query_pass_id, QueryStatus::Listening, None);
+                spawn_query_partial_ticker(app_handle, query_pass_id);
             }
         }
         crate::audio_lifecycle::AudioLifecycleEvent::StillConnecting => {
@@ -1862,6 +1903,162 @@ pub(crate) fn handle_audio_lifecycle(
         }
         crate::audio_lifecycle::AudioLifecycleEvent::Idle => {}
     }
+}
+
+fn query_partials_supported(model_name: &str) -> bool {
+    crate::transcriber::is_coreml_model(model_name)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialTick {
+    TooShort,
+    Decode,
+}
+
+fn partial_tick_for_samples(count: usize) -> PartialTick {
+    if count < PARTIAL_MIN_SAMPLES {
+        PartialTick::TooShort
+    } else {
+        PartialTick::Decode
+    }
+}
+
+/// Returns the trailing [`PARTIAL_WINDOW_SAMPLES`] of `samples` once the
+/// buffer grows past that window, else the whole slice. Keeps per-tick decode
+/// cost bounded while captured audio keeps growing past 20 seconds.
+fn partial_decode_window(samples: &[f32]) -> &[f32] {
+    if samples.len() > PARTIAL_WINDOW_SAMPLES {
+        &samples[samples.len() - PARTIAL_WINDOW_SAMPLES..]
+    } else {
+        samples
+    }
+}
+
+fn spawn_query_partial_ticker(app: tauri::AppHandle, pass_id: u64) {
+    {
+        let state = app.state::<crate::State>();
+        let Some(session) = state.query.session(pass_id) else {
+            emit_partial_tick(pass_id, "no_session", 0);
+            return;
+        };
+        if !query_partials_supported(&session.context.transcription.model_name) {
+            emit_partial_tick(pass_id, "unsupported_model", 0);
+            return;
+        }
+    }
+    drop(tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(PARTIAL_INTERVAL).await;
+            if !decode_one_query_partial(&app, pass_id).await {
+                break;
+            }
+        }
+    }));
+}
+
+fn emit_partial_tick(pass_id: u64, outcome: &'static str, sample_count: usize) {
+    tracing::info!(
+        target: "query",
+        event_code = "query.partial_tick",
+        query_pass_id = pass_id,
+        outcome,
+        sample_count = sample_count as u64,
+        "query listening partial tick"
+    );
+}
+
+/// Returns false when the listening ticker should stop (pass no longer
+/// listening, or the session is gone). Once captured audio exceeds
+/// [`PARTIAL_WINDOW_SAMPLES`], each tick decodes only the trailing window, so
+/// the ticker keeps running — and the words keep updating — for as long as
+/// the user keeps speaking.
+async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool {
+    let transcription = {
+        let state = app.state::<crate::State>();
+        if !state.query.is_listening(pass_id) {
+            return false;
+        }
+        if !state.query.try_begin_partial(pass_id) {
+            emit_partial_tick(pass_id, "in_flight", 0);
+            return true;
+        }
+        let Some(session) = state.query.session(pass_id) else {
+            state.query.finish_partial(pass_id);
+            emit_partial_tick(pass_id, "no_session", 0);
+            return false;
+        };
+        session.context.transcription.clone()
+    };
+    let samples = crate::audio_lifecycle::peek_query_samples(pass_id).unwrap_or_default();
+    let sample_count = samples.len();
+    match partial_tick_for_samples(sample_count) {
+        PartialTick::TooShort => {
+            app.state::<crate::State>().query.finish_partial(pass_id);
+            emit_partial_tick(pass_id, "too_short", sample_count);
+            true
+        }
+        PartialTick::Decode => {
+            let window = partial_decode_window(&samples).to_vec();
+            let worker_app = app.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                transcribe_query_partial(&worker_app, pass_id, window, &transcription)
+            })
+            .await;
+            let text = result.ok().flatten();
+            let state = app.state::<crate::State>();
+            state.query.finish_partial(pass_id);
+            if let Some(text) = text {
+                if state.query.is_listening(pass_id) {
+                    let _ = crate::commands::query_popover::set_expanded_internal(app, true);
+                    let _ = app.emit_to(
+                        "query-review",
+                        "query-partial",
+                        serde_json::json!({
+                            "queryPassId": pass_id,
+                            "text": text,
+                        }),
+                    );
+                    emit_partial_tick(pass_id, "emitted", sample_count);
+                } else {
+                    emit_partial_tick(pass_id, "stale", sample_count);
+                }
+            } else {
+                emit_partial_tick(pass_id, "empty", sample_count);
+            }
+            state.query.is_listening(pass_id)
+        }
+    }
+}
+
+fn transcribe_query_partial(
+    app: &tauri::AppHandle,
+    pass_id: u64,
+    samples: Vec<f32>,
+    transcription: &crate::dictation_context::TranscriptionSettings,
+) -> Option<String> {
+    let state = app.state::<crate::State>();
+    if !state.query.is_listening(pass_id) {
+        return None;
+    }
+    let (raw, _) = state
+        .app_state
+        .model_runtime
+        .with_ready_backend(
+            Some(app),
+            &transcription.model_name,
+            PreparationReason::Pipeline,
+            |backend| {
+                backend.transcribe(
+                    &samples,
+                    &transcription.language,
+                    transcription.prompt.as_deref(),
+                    transcription.smart_punctuation,
+                )
+            },
+        )
+        .ok()?;
+    let cleaned = raw.trim().to_string();
+    (!cleaned.is_empty()).then_some(cleaned)
 }
 
 async fn transcribe_query(
@@ -2942,6 +3139,39 @@ mod tests {
     }
 
     #[test]
+    fn validate_command_appends_provider_pinned_arguments_after_user_arguments() {
+        let claude = QueryCommandConfig {
+            provider: QueryProviderId::Claude,
+            executable: "/usr/bin/printf".into(),
+            arguments: vec!["--verbose".into()],
+            timeout_seconds: 60,
+            context_level: QueryContextLevel::None,
+            retain_query_history: false,
+        };
+        let claude = validate_command(claude, vec![], std::env::temp_dir())
+            .expect("printf must be executable");
+        let mut expected = vec!["--verbose".to_string()];
+        expected.extend(
+            crate::query_provider::pinned_query_arguments(QueryProviderId::Claude)
+                .iter()
+                .map(|argument| argument.to_string()),
+        );
+        assert_eq!(claude.arguments, expected);
+
+        let custom = QueryCommandConfig {
+            provider: QueryProviderId::Custom,
+            executable: "/usr/bin/printf".into(),
+            arguments: vec!["--verbose".into()],
+            timeout_seconds: 60,
+            context_level: QueryContextLevel::None,
+            retain_query_history: false,
+        };
+        let custom = validate_command(custom, vec![], std::env::temp_dir())
+            .expect("printf must be executable");
+        assert_eq!(custom.arguments, vec!["--verbose"]);
+    }
+
+    #[test]
     fn answer_defers_to_a_clipboard_write_made_while_it_was_generating() {
         // Nothing else wrote: the answer copies itself as usual.
         assert!(may_claim_clipboard(7, 7));
@@ -3841,5 +4071,92 @@ mod tests {
                 process_id: Some(42),
             },
         ));
+    }
+
+    #[test]
+    fn query_partials_are_coreml_only() {
+        assert!(query_partials_supported(
+            crate::transcriber::COREML_MODEL_NAME
+        ));
+        assert!(!query_partials_supported("base.en"));
+        assert!(!query_partials_supported(
+            crate::model_runtime::PARAKEET_CPU_MODEL
+        ));
+    }
+
+    #[test]
+    fn partial_tick_bounds_cost_by_captured_audio() {
+        assert_eq!(partial_tick_for_samples(0), PartialTick::TooShort);
+        assert_eq!(
+            partial_tick_for_samples(PARTIAL_MIN_SAMPLES - 1),
+            PartialTick::TooShort
+        );
+        assert_eq!(
+            partial_tick_for_samples(PARTIAL_MIN_SAMPLES),
+            PartialTick::Decode
+        );
+        assert_eq!(
+            partial_tick_for_samples(PARTIAL_WINDOW_SAMPLES),
+            PartialTick::Decode
+        );
+        // Beyond the window the ticker keeps decoding (trailing-window
+        // decode), never falling back to a hard cap.
+        assert_eq!(
+            partial_tick_for_samples(PARTIAL_WINDOW_SAMPLES + 1),
+            PartialTick::Decode
+        );
+    }
+
+    #[test]
+    fn partial_decode_window_bounds_the_trailing_slice() {
+        let ramp: Vec<f32> = (0..PARTIAL_WINDOW_SAMPLES + 500)
+            .map(|index| index as f32)
+            .collect();
+        let window = partial_decode_window(&ramp);
+        assert_eq!(window.len(), PARTIAL_WINDOW_SAMPLES);
+        assert_eq!(window.first().copied(), Some(500.0));
+        assert_eq!(window.last().copied(), ramp.last().copied());
+
+        let short: Vec<f32> = (0..PARTIAL_MIN_SAMPLES).map(|index| index as f32).collect();
+        assert_eq!(partial_decode_window(&short), short.as_slice());
+    }
+
+    #[test]
+    fn partial_decode_skips_when_one_is_in_flight_and_drops_after_listening() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        query.set_status(pass_id, QueryStatus::Listening);
+        assert!(query.try_begin_partial(pass_id));
+        assert!(!query.try_begin_partial(pass_id));
+        query.finish_partial(pass_id);
+        assert!(query.try_begin_partial(pass_id));
+        query.finish_partial(pass_id);
+
+        query.set_status(pass_id, QueryStatus::Transcribing);
+        assert!(!query.is_listening(pass_id));
+        assert!(!query.try_begin_partial(pass_id));
+    }
+
+    #[test]
+    fn stale_or_cancelled_pass_cannot_emit_partials() {
+        let query = QueryCoordinator::default();
+        let first = query.allocate_keyboard_pass().unwrap();
+        query.set_status(first, QueryStatus::Listening);
+        query.begin_cancel(first);
+        assert!(!query.is_listening(first));
+        assert!(!query.try_begin_partial(first));
+
+        let query = QueryCoordinator::default();
+        let first = query.allocate_keyboard_pass().unwrap();
+        query.set_status(first, QueryStatus::Listening);
+        query.set_status(first, QueryStatus::Ready);
+        let second = query.allocate_keyboard_pass().unwrap();
+        query.set_status(second, QueryStatus::Listening);
+        assert!(!query.try_begin_partial(first));
+        assert!(query.try_begin_partial(second));
+        query.finish_partial(first);
+        assert!(!query.try_begin_partial(second));
+        query.finish_partial(second);
+        assert!(query.try_begin_partial(second));
     }
 }
