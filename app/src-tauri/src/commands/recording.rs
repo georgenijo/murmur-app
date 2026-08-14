@@ -585,9 +585,7 @@ impl DictationDeliveryOutcome {
     }
 }
 
-fn confirmed_delivery_outcome(
-    outcome: injector::InjectionOutcome,
-) -> DictationDeliveryOutcome {
+fn confirmed_delivery_outcome(outcome: injector::InjectionOutcome) -> DictationDeliveryOutcome {
     match outcome {
         injector::InjectionOutcome::NoText => DictationDeliveryOutcome::Unconfirmed,
         injector::InjectionOutcome::ClipboardOnly(_) => DictationDeliveryOutcome::ClipboardOnly,
@@ -601,10 +599,7 @@ fn delivery_event_recording_id(
     cancelled: bool,
     status: DictationStatus,
 ) -> Option<u64> {
-    if recording_id == current_recording_id
-        && !cancelled
-        && status == DictationStatus::Processing
-    {
+    if recording_id == current_recording_id && !cancelled && status == DictationStatus::Processing {
         Some(recording_id)
     } else {
         None
@@ -670,10 +665,22 @@ mod clipboard_delivery_tests {
 
     #[test]
     fn delivery_event_values_are_stable_and_content_free() {
-        assert_eq!(DictationDeliveryOutcome::ClipboardOnly.as_event_value(), "clipboardOnly");
-        assert_eq!(DictationDeliveryOutcome::AutoPastePosted.as_event_value(), "autoPastePosted");
-        assert_eq!(DictationDeliveryOutcome::ClipboardWriteFailed.as_event_value(), "clipboardWriteFailed");
-        assert_eq!(DictationDeliveryOutcome::Unconfirmed.as_event_value(), "unconfirmed");
+        assert_eq!(
+            DictationDeliveryOutcome::ClipboardOnly.as_event_value(),
+            "clipboardOnly"
+        );
+        assert_eq!(
+            DictationDeliveryOutcome::AutoPastePosted.as_event_value(),
+            "autoPastePosted"
+        );
+        assert_eq!(
+            DictationDeliveryOutcome::ClipboardWriteFailed.as_event_value(),
+            "clipboardWriteFailed"
+        );
+        assert_eq!(
+            DictationDeliveryOutcome::Unconfirmed.as_event_value(),
+            "unconfirmed"
+        );
     }
 }
 
@@ -1135,7 +1142,9 @@ async fn run_transcription_pipeline(
         } else {
             "Text is in your clipboard -- press Ctrl+V to paste manually."
         };
-        let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
+        let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+        {
             Ok(Ok(Ok(outcome))) => {
                 if let injector::InjectionOutcome::ClipboardOnly(reason) = outcome {
                     let failure_message = match reason {
