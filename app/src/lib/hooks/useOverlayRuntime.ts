@@ -311,6 +311,10 @@ export function useOverlayRuntime({
     if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
     clipboardOnlyTimerRef.current = null;
     setShowClipboardOnly(false);
+    if (microphoneFailureTimerRef.current) clearTimeout(microphoneFailureTimerRef.current);
+    microphoneFailureTimerRef.current = null;
+    microphoneFailureRecordingIdRef.current = 0;
+    setShowMicrophoneFailure(null);
   }, [status]);
 
   useEffect(() => {

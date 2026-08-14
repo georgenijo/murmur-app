@@ -210,6 +210,25 @@ describe('useOverlayRuntime transient cues', () => {
     expect(current?.showMicrophoneFailure).toBeNull();
   });
 
+  it('clears microphone failure on active status when generation listeners are unavailable', async () => {
+    await act(async () => root.unmount());
+    mocks.handlers.clear();
+    mocks.unlistens.clear();
+    mocks.listenFailures.add('dictation-generation-started');
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await emitInitializationFailure('device_unavailable', 10);
+    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    await act(async () => root.render(<Harness status="starting" />));
+    expect(current?.showMicrophoneFailure).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('ignores a failure callback after cleanup while listener registration is pending', async () => {
     await act(async () => root.unmount());
     mocks.handlers.clear();

@@ -1512,6 +1512,12 @@ fn run_backend(
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
 ) -> AttemptResult {
+    // Close the retry-delay timeout boundary before permission probing or a
+    // new helper spawn. A Stop queued as the wait expires must own the next
+    // action rather than allowing another same-device attempt to start.
+    if stop_requested_between_attempts(command_receiver) {
+        return AttemptResult::Stopped;
+    }
     let started_at = Instant::now();
     let mut clock = ActiveAttemptClock::new(started_at);
     let mut permission_prompt_started = None;
@@ -2355,11 +2361,15 @@ fn run_capture_backend_pass(
 fn wait_for_device_reresolution(
     command_receiver: &Receiver<AudioCommand>,
     delay: Duration,
+    after_timeout: impl FnOnce(),
 ) -> bool {
-    matches!(
-        command_receiver.recv_timeout(delay),
-        Err(RecvTimeoutError::Timeout)
-    )
+    match command_receiver.recv_timeout(delay) {
+        Err(RecvTimeoutError::Timeout) => {
+            after_timeout();
+            !stop_requested_between_attempts(command_receiver)
+        }
+        Ok(AudioCommand::Stop) | Err(RecvTimeoutError::Disconnected) => false,
+    }
 }
 
 fn run_capture_backend_sequence_with_delay(
@@ -2396,7 +2406,7 @@ fn run_capture_backend_sequence_with_delay(
                         error_kind = pass_failure.failure.kind.as_str(),
                         "pinned microphone was absent on both backends; waiting for bounded same-device re-resolution"
                     );
-                    if wait_for_device_reresolution(command_receiver, retry_delay) {
+                    if wait_for_device_reresolution(command_receiver, retry_delay, || {}) {
                         continue;
                     }
                     tracing::info!(
@@ -3350,6 +3360,16 @@ mod tests {
                 },
                 ..
             }]
+        ));
+    }
+
+    #[test]
+    fn stop_queued_at_reresolution_timeout_boundary_prevents_the_next_pass() {
+        let (command_sender, command_receiver) = mpsc::channel();
+        assert!(!wait_for_device_reresolution(
+            &command_receiver,
+            Duration::ZERO,
+            || command_sender.send(AudioCommand::Stop).unwrap(),
         ));
     }
 
