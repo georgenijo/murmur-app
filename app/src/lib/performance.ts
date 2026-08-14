@@ -176,6 +176,54 @@ export interface PerformanceRunListV1 {
   runs: PerformanceRunV1[];
 }
 
+export type PerformanceStoreErrorClassV1 =
+  | 'busyLocked'
+  | 'storageFull'
+  | 'readOnly'
+  | 'io'
+  | 'corruptIntegrity'
+  | 'schemaMigration'
+  | 'invalidRecord'
+  | 'unavailable';
+
+export type PerformanceStoreOperationV1 =
+  | 'initialize'
+  | 'begin'
+  | 'update'
+  | 'complete'
+  | 'read'
+  | 'write'
+  | 'clear';
+
+export type PerformanceStoreRecommendedActionV1 =
+  | 'none'
+  | 'retry'
+  | 'freeDisk'
+  | 'checkPermissions'
+  | 'reinitializeStore'
+  | 'restartApp';
+
+export interface PerformanceStoreFailureV1 {
+  operation: PerformanceStoreOperationV1;
+  errorClass: PerformanceStoreErrorClassV1;
+  attemptCount: number;
+  retryExhausted: boolean;
+  atMs: number;
+  recordingId?: number;
+}
+
+export interface PerformanceStoreHealthV1 {
+  schemaVersion: 1;
+  status: 'available' | 'unavailable';
+  skippedRunCount: number;
+  lastFailure?: PerformanceStoreFailureV1;
+  recommendedAction: PerformanceStoreRecommendedActionV1;
+  lastRecovery?: {
+    action: 'quarantinedAndReinitialized';
+    atMs: number;
+  };
+}
+
 const unavailableReasons = new Set<UnavailableReasonV1>([
   'unsupportedPlatform',
   'sampleFailed',
@@ -203,6 +251,16 @@ const stableErrors = new Set([
   'inferenceFailed', 'transformStageFailed', 'deliveryFailed',
   'queryFailed', 'internalEarlyExit', 'interruptedByRestart',
 ]);
+const performanceStoreErrorClasses = new Set<PerformanceStoreErrorClassV1>([
+  'busyLocked', 'storageFull', 'readOnly', 'io', 'corruptIntegrity',
+  'schemaMigration', 'invalidRecord', 'unavailable',
+]);
+const performanceStoreOperations = new Set<PerformanceStoreOperationV1>([
+  'initialize', 'begin', 'update', 'complete', 'read', 'write', 'clear',
+]);
+const performanceStoreRecommendedActions = new Set<PerformanceStoreRecommendedActionV1>([
+  'none', 'retry', 'freeDisk', 'checkPermissions', 'reinitializeStore', 'restartApp',
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -223,6 +281,70 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number'
     && Number.isSafeInteger(value)
     && value > 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0;
+}
+
+export function isPerformanceStoreHealthV1(
+  value: unknown,
+): value is PerformanceStoreHealthV1 {
+  if (!isRecord(value)) return false;
+  const expectedKeys = [
+    'schemaVersion', 'status', 'skippedRunCount', 'recommendedAction',
+  ];
+  if ('lastFailure' in value) expectedKeys.push('lastFailure');
+  if ('lastRecovery' in value) expectedKeys.push('lastRecovery');
+  if (!hasExactKeys(value, expectedKeys)
+    || value.schemaVersion !== 1
+    || (value.status !== 'available' && value.status !== 'unavailable')
+    || !isNonNegativeSafeInteger(value.skippedRunCount)
+    || typeof value.recommendedAction !== 'string'
+    || !performanceStoreRecommendedActions.has(
+      value.recommendedAction as PerformanceStoreRecommendedActionV1,
+    )) {
+    return false;
+  }
+  if ('lastFailure' in value) {
+    if (!isRecord(value.lastFailure)) return false;
+    const failureKeys = [
+      'operation', 'errorClass', 'attemptCount', 'retryExhausted', 'atMs',
+    ];
+    if ('recordingId' in value.lastFailure) failureKeys.push('recordingId');
+    if (!hasExactKeys(value.lastFailure, failureKeys)
+      || typeof value.lastFailure.operation !== 'string'
+      || !performanceStoreOperations.has(
+        value.lastFailure.operation as PerformanceStoreOperationV1,
+      )
+      || typeof value.lastFailure.errorClass !== 'string'
+      || !performanceStoreErrorClasses.has(
+        value.lastFailure.errorClass as PerformanceStoreErrorClassV1,
+      )
+      || !isPositiveSafeInteger(value.lastFailure.attemptCount)
+      || value.lastFailure.attemptCount > 3
+      || typeof value.lastFailure.retryExhausted !== 'boolean'
+      || value.lastFailure.retryExhausted !== (
+        value.lastFailure.errorClass === 'busyLocked'
+        && value.lastFailure.attemptCount === 3
+      )
+      || !isNonNegativeSafeInteger(value.lastFailure.atMs)
+      || ('recordingId' in value.lastFailure
+        && !isPositiveSafeInteger(value.lastFailure.recordingId))) {
+      return false;
+    }
+  }
+  if ('lastRecovery' in value) {
+    if (!isRecord(value.lastRecovery)
+      || !hasExactKeys(value.lastRecovery, ['action', 'atMs'])
+      || value.lastRecovery.action !== 'quarantinedAndReinitialized'
+      || !isNonNegativeSafeInteger(value.lastRecovery.atMs)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function isMeasurementV1<T>(
@@ -465,6 +587,24 @@ export async function getPerformanceResourceWindow(): Promise<ResourceSampleV1[]
 
 export async function clearPerformanceDiagnostics(): Promise<void> {
   await invoke('clear_performance_diagnostics');
+}
+
+export async function getPerformanceStoreHealth(): Promise<PerformanceStoreHealthV1> {
+  const value = await invoke<unknown>('get_performance_store_health');
+  if (!isPerformanceStoreHealthV1(value)) {
+    throw new Error('Murmur returned an unsupported diagnostics-health schema.');
+  }
+  return value;
+}
+
+export async function recoverPerformanceStore(
+  allowReinitialize: boolean,
+): Promise<PerformanceStoreHealthV1> {
+  const value = await invoke<unknown>('recover_performance_store', { allowReinitialize });
+  if (!isPerformanceStoreHealthV1(value)) {
+    throw new Error('Murmur returned an unsupported diagnostics-health schema.');
+  }
+  return value;
 }
 
 export function onPerformanceRunCompleted(

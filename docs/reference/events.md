@@ -132,6 +132,13 @@ vocabularies while dropping arbitrary string values. See
 [Transcription Pipeline](../features/transcription.md#per-recording-lifecycle-telemetry)
 for stage denominators and terminal semantics.
 
+An exhausted dictation diagnostics-row start emits the stable structured code
+`performance.store_operation_failed`. Its all-build allowlist admits only
+`operation`, `error_class`, numeric `attempts`, and numeric `recording_id`.
+SQL, SQLite messages, database paths, transcripts, and audio are rejected at
+the telemetry layer. The Fleet watch groups this event by ingested app version
+and safe error class.
+
 ## Updater
 
 | Event | Payload | Source | When it fires | Listeners |

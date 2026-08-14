@@ -53,6 +53,10 @@ The pipeline string exceptions are exact allowlisted `event_code` values and
 the bounded terminal `outcome` / `error_code` vocabularies. Event codes are
 fixed identifiers such as `pipeline.dictation_terminal`; arbitrary values are
 removed. Transform event codes pass through the same exact-value allowlist.
+The `performance.store_operation_failed` system event is treated as its own
+all-build schema: only its code, bounded operation/error class, attempt count,
+and recording ID survive. SQLite text, SQL, paths, and unknown fields are
+dropped.
 Frontend-originated codes are validated by Rust before entering the structured
 event. This gives local and fleet presentation layers stable semantic keys
 without permitting user content or arbitrary labels.

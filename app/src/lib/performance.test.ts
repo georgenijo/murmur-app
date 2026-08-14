@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isMeasurementV1,
   isPerformanceRunV1,
+  isPerformanceStoreHealthV1,
   isResourceSampleV1,
   measuredValue,
   PERFORMANCE_STAGES_V1,
@@ -9,6 +10,76 @@ import {
 } from './performance';
 
 describe('performance contracts', () => {
+  it('accepts only the bounded, content-free diagnostics-health schema', () => {
+    const health = {
+      schemaVersion: 1,
+      status: 'available',
+      skippedRunCount: 2,
+      recommendedAction: 'retry',
+      lastFailure: {
+        operation: 'begin',
+        errorClass: 'busyLocked',
+        attemptCount: 3,
+        retryExhausted: true,
+        atMs: 1_786_720_000_000,
+        recordingId: 35,
+      },
+      lastRecovery: {
+        action: 'quarantinedAndReinitialized',
+        atMs: 1_786_719_000_000,
+      },
+    };
+
+    expect(isPerformanceStoreHealthV1(health)).toBe(true);
+    expect(isPerformanceStoreHealthV1({
+      schemaVersion: 1,
+      status: 'unavailable',
+      skippedRunCount: 0,
+      recommendedAction: 'reinitializeStore',
+    })).toBe(true);
+    expect(isPerformanceStoreHealthV1({ ...health, schemaVersion: 2 })).toBe(false);
+    expect(isPerformanceStoreHealthV1({ ...health, status: 'disabled' })).toBe(false);
+    expect(isPerformanceStoreHealthV1({ ...health, skippedRunCount: -1 })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, attemptCount: 0, retryExhausted: false },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, attemptCount: 4, retryExhausted: false },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, attemptCount: 2, retryExhausted: true },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, errorClass: 'io', retryExhausted: true },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, retryExhausted: false },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: {
+        ...health.lastFailure,
+        errorClass: 'io',
+        attemptCount: 1,
+        retryExhausted: false,
+      },
+    })).toBe(true);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, errorClass: 'rawSqliteError' },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({
+      ...health,
+      lastFailure: { ...health.lastFailure, path: '/private/data' },
+    })).toBe(false);
+    expect(isPerformanceStoreHealthV1({ ...health, message: 'database is locked' })).toBe(false);
+  });
+
   it('keeps measured zero distinct from unavailable and not-applicable', () => {
     const measured: MeasurementV1<number> = { status: 'measured', value: 0 };
     expect(isMeasurementV1(measured, (value): value is number => typeof value === 'number')).toBe(true);

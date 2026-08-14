@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventStore } from '../../lib/hooks/useEventStore';
 import { usePerformanceDiagnostics } from '../../lib/hooks/usePerformanceDiagnostics';
 import { usePerformanceHealth } from '../../lib/hooks/usePerformanceHealth';
+import { usePerformanceStoreHealth } from '../../lib/hooks/usePerformanceStoreHealth';
 import { StreamChips } from './StreamChips';
 import { LevelFilter } from './LevelFilter';
 import { EventRow } from './EventRow';
@@ -39,18 +40,24 @@ interface DiagnosticsWorkspaceProps {
   active?: boolean;
   requestedTab?: DiagnosticsTab;
   onPopOut?: (tab: DiagnosticsTab) => void;
+  /** Authorized `main` and `diagnostics` webviews may read or recover store health. */
+  storeHealthEnabled?: boolean;
 }
 
 export function DiagnosticsWorkspace({
   active = true,
   requestedTab,
   onPopOut,
+  storeHealthEnabled = false,
 }: DiagnosticsWorkspaceProps) {
   const { events, clear } = useEventStore(active);
   const [tab, setTab] = useState<DiagnosticsTab>(requestedTab ?? 'events');
   useUiLatencyDestination(active ? `settings.model.diagnostics.${tab}` : null);
   const performance = usePerformanceDiagnostics(active);
   const health = usePerformanceHealth(active && tab === 'performance');
+  const storeHealth = usePerformanceStoreHealth(
+    active && storeHealthEnabled && (tab === 'performance' || tab === 'runs'),
+  );
   const [activeStreams, setActiveStreams] = useState<Set<StreamName>>(
     () => new Set(['pipeline', 'audio', 'transform', 'query', 'system'])
   );
@@ -273,6 +280,7 @@ export function DiagnosticsWorkspace({
             loading={performance.resourcesLoading}
             error={performance.resourcesError}
             health={health}
+            store={storeHealthEnabled ? storeHealth : undefined}
             onRetry={() => {
               void performance.refreshResources();
               health.refresh();
@@ -307,6 +315,7 @@ export function DiagnosticsWorkspace({
             onRetry={performance.refreshRuns}
             onClear={performance.clear}
             onShowEvents={showCorrelatedEvents}
+            store={storeHealthEnabled ? storeHealth : undefined}
           />
         </div>
       )}

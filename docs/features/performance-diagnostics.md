@@ -35,6 +35,25 @@ remain backward-compatible at `schemaVersion: 1`. A database created by a newer 
 build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
 
+SQLite failures use a bounded taxonomy: `busyLocked`, `storageFull`,
+`readOnly`, `io`, `corruptIntegrity`, `schemaMigration`, `invalidRecord`, or
+`unavailable`. Only `busyLocked` is retried, for at most three total attempts
+with short bounded backoff. The retry happens in diagnostics persistence after
+the capture transition; it never delays microphone ownership or prevents
+ordinary dictation. A run that still cannot begin is explicitly skipped.
+
+Initialization validates integrity and supported-version records after opening
+the database and before the store is used. On automatic startup, only proven
+physical corruption quarantines the database and its SQLite sidecars inside the
+diagnostics directory before creating a fresh store once. An undecodable
+supported-version record stays unavailable until the user explicitly confirms
+**Reinitialize Store**. Unsupported/newer schemas and other persistent failures
+also leave the store unavailable with a bounded local action; the health banner
+distinguishes that state from a single skipped run. Explicit recovery reopens
+and rechecks the store, and never quarantines without both confirmed caller
+intent and fresh corruption or invalid-record evidence. It does not delete
+quarantined evidence, and a healthy database is never quarantined.
+
 ## Run contract
 
 `PerformanceRunV1` contains:
@@ -143,7 +162,12 @@ selected/proposed/replaced text, clipboard contents, paths or filenames, bundle
 IDs, window titles, selected context, project/profile names, raw stderr, or
 free-form native error messages. Voice Query records retain stderr presence
 only. Errors are stable enums. Text-related sizes are bounded buckets.
-There is no network upload or remote telemetry.
+Database contents are never uploaded. When a dictation diagnostics row still
+cannot begin after its bounded retry, one content-free structured event reports
+only `operation`, the safe error class, attempt count, and `recording_id`. The
+telemetry layer independently rejects every other key and unknown string in
+both debug and release builds; SQL, database paths, transcript, and audio can
+never enter this event.
 
 ## Commands and events
 
@@ -152,6 +176,8 @@ There is no network upload or remote telemetry.
 | `list_performance_runs` | Read newest supported V1 runs, bounded to 200 |
 | `get_performance_run` | Read one V1 run by opaque ID |
 | `get_performance_resource_window` | Read the persistent ten-minute sample window |
+| `get_performance_store_health` | Read available/unavailable state and bounded recovery evidence |
+| `recover_performance_store` | Explicitly retry initialization without restarting Murmur; destructive reinitialization requires confirmed caller intent |
 | `clear_performance_diagnostics` | Clear only the diagnostics database |
 | `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab |
 | `performance-run-completed` | Live typed completion event |
@@ -170,6 +196,12 @@ Diagnostics window on the currently selected tab, allowing the main window to
 remain navigable while events, resource samples, and UI latency samples update.
 Closing the pop-out hides it so opening it again avoids another WebView cold
 start.
+
+The production regression watch counts exhausted
+`performance.store_operation_failed` events by install, app version,
+operation, and safe error class. It consumes only the already privacy-stripped
+JSONL stream and collapses unrecognized labels to `unknown` before producing a
+report or dashboard alert.
 
 ## Capture startup health
 

@@ -98,6 +98,36 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("v1.0.0 → v1.1.0", page)
         self.assertIn("p50 200 ms → 520 ms (2.6x)", page)
 
+    def test_dashboard_surfaces_performance_store_failure_watch(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-14T00:00:00Z",
+            "status": "alert",
+            "alerts": [
+                {
+                    "kind": "performance_store_failure",
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.3",
+                    "operation": "begin",
+                    "error_class": "busyLocked",
+                    "count": 2,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Diagnostics store begin failed 2 time(s) (busyLocked)", page)
+
     def test_stable_event_code_takes_precedence_over_compatibility_summary(self) -> None:
         item = event(
             "listener heartbeat — no rdev callbacks observed",

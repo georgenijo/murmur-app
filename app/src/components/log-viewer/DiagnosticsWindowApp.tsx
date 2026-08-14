@@ -31,7 +31,7 @@ export function DiagnosticsWindowApp() {
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       <WindowHeader contextLabel="Diagnostics" />
       <main className="min-h-0 flex-1 overflow-hidden">
-        <DiagnosticsWorkspace requestedTab={requestedTab} />
+        <DiagnosticsWorkspace requestedTab={requestedTab} storeHealthEnabled />
       </main>
     </div>
   );

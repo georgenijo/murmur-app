@@ -1866,6 +1866,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <div className="mt-3 h-[520px] min-h-0 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
                   <DiagnosticsWorkspace
                     active
+                    storeHealthEnabled
                     onPopOut={(tab) => { void popOutDiagnostics(tab); }}
                   />
                 </div>

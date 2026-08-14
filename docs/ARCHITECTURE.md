@@ -175,7 +175,7 @@ available for packaging and callback-boundary validation. See the
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 158 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 160 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
@@ -345,7 +345,7 @@ tracing event
 
 Seven streams (tracing targets): `pipeline`, `audio`, `keyboard`, `transform`, `meeting`, `query`, `system`.
 
-**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform`, `meeting`, and `query` events are stricter still and stripped in *all* builds: every key, type, and stable string value must satisfy that stream's exact allowlist. Anything else is dropped at the layer, independent of the call site. Query questions, answers, context, stderr, and provider detail therefore cannot enter events even when local query history is enabled. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
+**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform`, `meeting`, and `query` events are stricter still and stripped in *all* builds: every key, type, and stable string value must satisfy that stream's exact allowlist. The `performance.store_operation_failed` system event is likewise reduced in every build to its stable code, operation, safe SQLite class, attempt count, and recording ID. Anything else is dropped at the layer, independent of the call site. Query questions, answers, context, stderr, SQL, database paths, and provider detail therefore cannot enter those events. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
 
 ### Local storage
 
@@ -385,7 +385,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-158 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+160 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

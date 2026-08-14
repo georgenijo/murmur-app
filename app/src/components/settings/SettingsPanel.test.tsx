@@ -18,6 +18,7 @@ const coreMocks = vi.hoisted(() => ({
   notchPillDetectionError: false,
   invoke: vi.fn(),
 }));
+const diagnosticsWorkspaceMock = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: coreMocks.invoke,
 }));
@@ -34,7 +35,12 @@ vi.mock('./AppOverridesEditor', () => ({ AppOverridesEditor: () => <div>App over
 vi.mock('./AppearanceSettings', () => ({ AppearanceSettings: () => <div>Appearance settings</div> }));
 vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge manager</div> }));
 vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
-vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({ DiagnosticsWorkspace: () => <div>Diagnostics workspace</div> }));
+vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({
+  DiagnosticsWorkspace: (props: unknown) => {
+    diagnosticsWorkspaceMock(props);
+    return <div>Diagnostics workspace</div>;
+  },
+}));
 vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
 vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: () => <div>Voice commands editor</div> }));
 vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
@@ -57,6 +63,7 @@ vi.mock('../../lib/transformSettings', () => ({
 }));
 
 beforeEach(() => {
+  diagnosticsWorkspaceMock.mockClear();
   coreMocks.notchPillInstalled = false;
   coreMocks.notchPillDetectionError = false;
   coreMocks.invoke.mockReset();
@@ -293,6 +300,9 @@ describe('SettingsPanel information architecture', () => {
 
     await act(async () => summary.click());
     expect(container.textContent).toContain('Diagnostics workspace');
+    expect(diagnosticsWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({
+      storeHealthEnabled: true,
+    }));
   });
 
   it('searches across tabs and routes a result to its owning tab', async () => {

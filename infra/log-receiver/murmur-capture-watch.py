@@ -34,6 +34,25 @@ REPEATED_ZERO_READY_SESSIONS = 2
 RECENT_ATTEMPTED_SESSION_WINDOW = 5
 MAX_READY_RECORDINGS_PER_SESSION = 20
 CAPTURE_HEALTH_OWNER_KIND = "dictation"
+PERFORMANCE_STORE_OPERATIONS = {
+    "initialize",
+    "begin",
+    "update",
+    "complete",
+    "read",
+    "write",
+    "clear",
+}
+PERFORMANCE_STORE_ERROR_CLASSES = {
+    "busyLocked",
+    "storageFull",
+    "readOnly",
+    "io",
+    "corruptIntegrity",
+    "schemaMigration",
+    "invalidRecord",
+    "unavailable",
+}
 
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
 INSTALL_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
@@ -99,6 +118,14 @@ def bounded_setup_step(value):
     return value if value in SETUP_STEPS else "unknown"
 
 
+def bounded_performance_store_operation(value):
+    return value if value in PERFORMANCE_STORE_OPERATIONS else "unknown"
+
+
+def bounded_performance_store_error_class(value):
+    return value if value in PERFORMANCE_STORE_ERROR_CLASSES else "unknown"
+
+
 def numeric_startup(event):
     value = event_data(event).get("startup_ms")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -126,6 +153,7 @@ def new_cohort(install_id, version):
         "timeouts": Counter(),
         "fallback_count": 0,
         "both_backends_failed_count": 0,
+        "performance_store_failures": Counter(),
         "attempted_sessions": 0,
         "recent_session_ready_counts": deque(maxlen=RECENT_ATTEMPTED_SESSION_WINDOW),
         "last_attempted_session_at": "",
@@ -245,6 +273,13 @@ def scan_install(path, install_id, cohorts):
                 continue
             if code == "audio.capture_failed":
                 cohort["both_backends_failed_count"] += 1
+                continue
+            if code == "performance.store_operation_failed":
+                key = (
+                    bounded_performance_store_operation(data.get("operation")),
+                    bounded_performance_store_error_class(data.get("error_class")),
+                )
+                cohort["performance_store_failures"][key] += 1
 
     # An open app session is deliberately not classified as zero-ready. A later
     # startup boundary proves that the preceding session ended and makes the
@@ -267,6 +302,17 @@ def serialize_cohort(cohort):
             key=lambda item: (-item[1], item[0]),
         )
     ]
+    performance_store_failure_rows = [
+        {
+            "operation": operation,
+            "error_class": error_class,
+            "count": count,
+        }
+        for (operation, error_class), count in sorted(
+            cohort["performance_store_failures"].items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
     return {
         "install_id": cohort["install_id"],
         "app_version": cohort["app_version"],
@@ -280,6 +326,10 @@ def serialize_cohort(cohort):
         "capture_backend_timeouts": timeout_rows,
         "fallback_count": cohort["fallback_count"],
         "both_backends_failed_count": cohort["both_backends_failed_count"],
+        "performance_store_failure_total": sum(
+            cohort["performance_store_failures"].values()
+        ),
+        "performance_store_failures": performance_store_failure_rows,
         "attempted_sessions": cohort["attempted_sessions"],
         "evaluated_attempted_sessions": len(recent_session_ready_counts),
         "attempted_sessions_truncated": (
@@ -314,6 +364,21 @@ def regression_alerts(cohort_rows):
         by_install.setdefault(row["install_id"], []).append(row)
 
     for install_id, rows in by_install.items():
+        latest = max(
+            rows,
+            key=lambda row: (row["last_event_at"], row["app_version"]),
+        )
+        for failure in latest["performance_store_failures"]:
+            alerts.append(
+                {
+                    "kind": "performance_store_failure",
+                    "install_id": install_id,
+                    "app_version": latest["app_version"],
+                    "operation": failure["operation"],
+                    "error_class": failure["error_class"],
+                    "count": failure["count"],
+                }
+            )
         lifecycle_rows = [
             row
             for row in rows

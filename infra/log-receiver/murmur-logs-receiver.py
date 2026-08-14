@@ -216,6 +216,18 @@ def render_capture_watch(report):
                     label,
                 )
             )
+        elif alert.get("kind") == "performance_store_failure":
+            rows.append(
+                "<li><code>%s</code> v%s: Diagnostics store %s failed %s time(s) "
+                "(%s)</li>"
+                % (
+                    install,
+                    html.escape(str(alert.get("app_version", ""))[:40]),
+                    html.escape(str(alert.get("operation", "unknown"))[:24]),
+                    html.escape(str(alert.get("count", ""))[:20]),
+                    html.escape(str(alert.get("error_class", "unknown"))[:32]),
+                )
+            )
     return (
         "<div class='watch-banner alert'><strong>Capture regression watch · "
         "%d alert%s</strong><span>Last run %s</span><ul>%s</ul></div>"
