@@ -131,7 +131,7 @@ Owns geometry sourced from Rust — the single source of truth. Fetches `get_ove
 The hover-expand lifecycle, owned end to end: 150ms dwell intent gate, cursor polling, and the **only** writer to the native resize path (`set_overlay_expanded`). Awaits the applied frame before revealing the dropdown, so CSS never animates into a window that hasn't grown yet. Treats `overlay-geometry-changed` as an authoritative reset — cancels timers, forces collapsed, issues one corrective resize.
 
 ### `useOverlayRuntime`
-Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, and the `app-disabled-changed` state mirror.
+Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, a `dictation-generation-started` ownership floor plus generation-ordered `dictation-delivery-outcome` clipboard-only cue, and the `app-disabled-changed` state mirror. Duplicate or stale delivery IDs are ignored; a newer generation or non-clipboard outcome clears the older cue.
 
 ### `useOverlaySettingsMirror`
 The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows), including the confirmed vertical calibration offset, plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.

@@ -17,6 +17,39 @@ const TRANSFORM_BUSY_FLASH_MS = 800;
 const MICROPHONE_FAILURE_FLASH_MS = 1200;
 export const CLIPBOARD_ONLY_FLASH_MS = 5000;
 
+type DictationDeliveryOutcome =
+  | 'clipboardOnly'
+  | 'autoPastePosted'
+  | 'clipboardWriteFailed'
+  | 'unconfirmed';
+
+interface DictationDeliveryOutcomePayload {
+  recordingId: number;
+  outcome: DictationDeliveryOutcome;
+}
+
+function recordingIdFromPayload(value: unknown): number | null {
+  if (!value || typeof value !== 'object') return null;
+  const recordingId = (value as Record<string, unknown>).recordingId;
+  return Number.isSafeInteger(recordingId) && (recordingId as number) > 0
+    ? recordingId as number
+    : null;
+}
+
+function isDictationDeliveryOutcomePayload(
+  value: unknown,
+): value is DictationDeliveryOutcomePayload {
+  const recordingId = recordingIdFromPayload(value);
+  if (recordingId == null) return false;
+  const payload = value as Record<string, unknown>;
+  return [
+      'clipboardOnly',
+      'autoPastePosted',
+      'clipboardWriteFailed',
+      'unconfirmed',
+    ].includes(payload.outcome as string);
+}
+
 export interface UseOverlayRuntimeArgs {
   /** Current dictation status (reactive value, not just a ref). */
   status: DictationStatus;
@@ -82,6 +115,10 @@ export function useOverlayRuntime({
   const [showClipboardOnly, setShowClipboardOnly] = useState(false);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clipboardOnlyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastDeliveryRecordingIdRef = useRef(0);
+  const latestRecordingGenerationRef = useRef(0);
+  const clipboardListenerFailedRef = useRef(false);
 
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
 
@@ -155,29 +192,92 @@ export function useOverlayRuntime({
     };
   }, []);
 
-  // Clipboard-first delivery already succeeded when this event fires. Keep the
-  // overlay non-activating and show only a bounded manual-paste cue; the main
-  // window continues to render the event payload as its detailed error banner.
+  // Every terminal delivery outcome carries a monotonic recording ID. A newer
+  // non-clipboard outcome clears any older cue, while duplicate/stale events
+  // cannot extend or resurrect it.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    listen('auto-paste-failed', () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      setShowClipboardOnly(true);
-      timeoutId = setTimeout(() => {
+    listen<unknown>('dictation-delivery-outcome', (event) => {
+      if (clipboardListenerFailedRef.current) return;
+      if (!isDictationDeliveryOutcomePayload(event.payload)) return;
+      if (event.payload.recordingId < latestRecordingGenerationRef.current) return;
+      if (event.payload.recordingId <= lastDeliveryRecordingIdRef.current) return;
+      lastDeliveryRecordingIdRef.current = event.payload.recordingId;
+
+      if (clipboardOnlyTimerRef.current) {
+        clearTimeout(clipboardOnlyTimerRef.current);
+        clipboardOnlyTimerRef.current = null;
+      }
+      const clipboardOnly = event.payload.outcome === 'clipboardOnly';
+      setShowClipboardOnly(clipboardOnly);
+      if (!clipboardOnly) return;
+
+      clipboardOnlyTimerRef.current = setTimeout(() => {
         if (!cancelled) setShowClipboardOnly(false);
-        timeoutId = null;
+        clipboardOnlyTimerRef.current = null;
       }, CLIPBOARD_ONLY_FLASH_MS);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
+    }).catch((cause: unknown) => {
+      if (cancelled) return;
+      clipboardListenerFailedRef.current = true;
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
+      setShowClipboardOnly(false);
+      flog.warn('overlay', 'dictation-delivery-outcome listener unavailable', {
+        error: String(cause),
+      });
     });
     return () => {
       cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
       unlisten?.();
     };
   }, []);
+
+  // Track recording ownership independently from the string-only status event.
+  // If webview delivery is delayed or reordered, an outcome from an older
+  // generation cannot install a cue over newer work.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('dictation-generation-started', (event) => {
+      if (clipboardListenerFailedRef.current) return;
+      const recordingId = recordingIdFromPayload(event.payload);
+      if (recordingId == null || recordingId <= latestRecordingGenerationRef.current) return;
+      if (recordingId <= lastDeliveryRecordingIdRef.current) return;
+      latestRecordingGenerationRef.current = recordingId;
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
+      setShowClipboardOnly(false);
+    }).then((fn) => {
+      if (cancelled) { fn(); } else { unlisten = fn; }
+    }).catch((cause: unknown) => {
+      if (cancelled) return;
+      clipboardListenerFailedRef.current = true;
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
+      setShowClipboardOnly(false);
+      flog.warn('overlay', 'dictation-generation-started listener unavailable', {
+        error: String(cause),
+      });
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // A new active lifecycle supersedes an idle cue immediately. This prevents a
+  // prior recording's timer from resurfacing after newer work returns to idle.
+  useEffect(() => {
+    if (status === 'idle') return;
+    if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+    clipboardOnlyTimerRef.current = null;
+    setShowClipboardOnly(false);
+  }, [status]);
 
   useEffect(() => {
     let cancelled = false;

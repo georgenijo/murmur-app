@@ -12,6 +12,22 @@ use std::time::Instant;
 /// somewhere is never yanked out from under them.
 static CLIPBOARD_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClipboardOnlyReason {
+    AutoPasteDisabled,
+    AccessibilityDenied,
+    TargetChanged,
+    FocusNotEditable,
+    PasteFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InjectionOutcome {
+    NoText,
+    ClipboardOnly(ClipboardOnlyReason),
+    AutoPasted,
+}
+
 pub(crate) fn clipboard_write_generation() -> u64 {
     CLIPBOARD_WRITE_GENERATION.load(Ordering::SeqCst)
 }
@@ -145,19 +161,19 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
 /// On paste failure, retries once after a 100ms backoff. When
 /// `target_process_id` is known, auto-paste fails closed if focus moved to a
 /// different application after recording began; the clipboard copy remains.
-pub fn inject_text(
+pub(crate) fn inject_text(
     text: &str,
     auto_paste: bool,
     delay_ms: u64,
     target_process_id: Option<i32>,
-) -> Result<(), String> {
+) -> Result<InjectionOutcome, String> {
     let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
     // Skip if text is empty
     if text.trim().is_empty() {
         tracing::info!(target: "pipeline", "inject_text: text is empty, skipping");
-        return Ok(());
+        return Ok(InjectionOutcome::NoText);
     }
 
     // Copy transcription to clipboard
@@ -176,7 +192,9 @@ pub fn inject_text(
             total_ms = inject_started.elapsed().as_millis() as u64,
             "inject timing"
         );
-        return Ok(());
+        return Ok(InjectionOutcome::ClipboardOnly(
+            ClipboardOnlyReason::AutoPasteDisabled,
+        ));
     }
 
     {
@@ -186,7 +204,9 @@ pub fn inject_text(
         // Check accessibility permission before attempting paste simulation (macOS only)
         if !is_accessibility_enabled() {
             tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
-            return Ok(());
+            return Ok(InjectionOutcome::ClipboardOnly(
+                ClipboardOnlyReason::AccessibilityDenied,
+            ));
         }
 
         // Wait for window focus to settle
@@ -198,7 +218,9 @@ pub fn inject_text(
                     target: "pipeline",
                     "inject_text: recording target is no longer frontmost — skipping paste, text in clipboard only"
                 );
-                return Err("recording target is no longer frontmost".to_string());
+                return Ok(InjectionOutcome::ClipboardOnly(
+                    ClipboardOnlyReason::TargetChanged,
+                ));
             }
         }
 
@@ -222,7 +244,9 @@ pub fn inject_text(
                 "inject timing"
             );
             tracing::warn!(target: "pipeline", "inject_text: focused element is not an editable text field — skipping paste, text in clipboard only");
-            return Err("No editable text field is focused".to_string());
+            return Ok(InjectionOutcome::ClipboardOnly(
+                ClipboardOnlyReason::FocusNotEditable,
+            ));
         }
 
         // Simulate paste keystroke, retry once on failure
@@ -245,7 +269,15 @@ pub fn inject_text(
             total_ms = inject_started.elapsed().as_millis() as u64,
             "inject timing"
         );
-        result
+        match result {
+            Ok(()) => Ok(InjectionOutcome::AutoPasted),
+            Err(error) => {
+                tracing::warn!(target: "pipeline", "inject_text: {}", error);
+                Ok(InjectionOutcome::ClipboardOnly(
+                    ClipboardOnlyReason::PasteFailed,
+                ))
+            }
+        }
     }
 }
 
