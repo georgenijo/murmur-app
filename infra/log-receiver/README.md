@@ -141,6 +141,8 @@ cohorts per install. Further versions collapse into a non-comparable
 - dictation `startup_ms` p50 and p95;
 - active-budget timeouts split by stable backend and native setup step;
 - fallback and both-backends-failed counts;
+- exhausted diagnostics-store operations split by stable operation and safe
+  SQLite error class for each app-version cohort;
 - a histogram of ready recordings for the five most recent completed,
   attempted dictation sessions in each cohort;
 - a stable-code dictation funnel with terminal outcome counts, per-stage
@@ -152,6 +154,13 @@ contained a dictation `audio initialization accepted`; idle launches, transform
 captures, and the currently open session are excluded. Per-session ready counts
 at or above 20 share one capped tail bucket, bounding both memory and report
 cardinality.
+
+`performance.store_operation_failed` contains only the operation, bounded
+error class, attempt count, and recording ID. The watch independently
+allowlists the operation and class, collapsing unknown labels before they can
+enter its report. The newest affected app-version cohort produces a dashboard
+alert; the versioned cohort rows retain the counts needed to distinguish a
+one-off skipped run from recurrence.
 
 An alert is created when the newest comparable version has at least five
 dictation readiness samples and its p50 is more than twice the best retained

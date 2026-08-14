@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 158 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 160 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -230,6 +230,8 @@ frontend.
 | `list_performance_runs` | `limit: Option<u32>` | `Result<PerformanceRunListV1, String>` | Completed runs, newest first (cap 200). |
 | `get_performance_run` | `run_id: String` | `Result<Option<PerformanceRunV1>, String>` | One run with stage timings, warm state, RSS deltas, and transform follow-ups. |
 | `get_performance_resource_window` | — | `Result<Vec<ResourceSampleV1>, String>` | The rolling CPU/memory sample window (cap 600). |
+| `get_performance_store_health` | — | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only content-free store availability, skipped-run count, last bounded failure/recovery evidence, and recommended local action. |
+| `recover_performance_store` | `allow_reinitialize: bool` | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only explicit reopen/check. Quarantine/reinitialize additionally requires confirmed caller intent plus fresh corruption or invalid-record evidence; a healthy database is never deleted. |
 | `get_capture_health_history` | — | `CaptureHealthHistoryV1` | The 20 newest finalized dictation startup observations. Each contains only `startupMs`, `usedFallback`, and an optional allowlisted fallback backend enum. |
 | `clear_performance_diagnostics` | — | `Result<(), String>` | Deletes local run history, samples, and capture-startup observations; emits `performance-diagnostics-cleared`. |
 | `show_diagnostics_window` | `tab: String` | `Result<(), String>` | Shows and focuses the persistent Diagnostics window, selecting one of its exact allowlisted tabs. |

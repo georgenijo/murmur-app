@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { MeasurementV1, ResourceSampleV1 } from '../../lib/performance';
 import type { PerformanceHealth } from '../../lib/hooks/usePerformanceHealth';
+import type { PerformanceStoreHealthState } from '../../lib/hooks/usePerformanceStoreHealth';
 import {
   formatBytes,
   formatMeasurement,
@@ -8,12 +9,14 @@ import {
   type FormattedMeasurement,
 } from '../../lib/performancePresentation';
 import { PerformanceChart, type ResourceChartSeries } from './PerformanceChart';
+import { PerformanceStoreHealthBanner } from './PerformanceStoreHealthBanner';
 
 interface PerformanceViewProps {
   samples: ResourceSampleV1[];
   loading: boolean;
   error: string | null;
   health: PerformanceHealth;
+  store?: PerformanceStoreHealthState;
   onRetry: () => void;
 }
 
@@ -176,6 +179,7 @@ export function PerformanceView({
   loading,
   error,
   health,
+  store,
   onRetry,
 }: PerformanceViewProps) {
   const [selectedIndex, setSelectedIndex] = useState(Math.max(samples.length - 1, 0));
@@ -223,6 +227,23 @@ export function PerformanceView({
 
   return (
     <div className="flex flex-col gap-5 p-4">
+      {store && (
+        <section aria-labelledby="diagnostics-store-health-heading">
+          <h2 id="diagnostics-store-health-heading" className="mb-2 text-sm font-semibold text-on-surface">
+            Diagnostics storage
+          </h2>
+          <PerformanceStoreHealthBanner
+            health={store.health}
+            loading={store.loading}
+            error={store.error}
+            recovering={store.recovering}
+            recoveryError={store.recoveryError}
+            onRefresh={() => void store.refresh()}
+            onRecover={() => void store.recover()}
+          />
+        </section>
+      )}
+
       <section aria-labelledby="runtime-health-heading">
         <div className="mb-2 flex items-end justify-between gap-3">
           <div>

@@ -2,6 +2,130 @@ use serde::{Deserialize, Serialize};
 
 pub const PERFORMANCE_RUN_SCHEMA_VERSION: u32 = 1;
 pub const RESOURCE_SAMPLE_SCHEMA_VERSION: u32 = 1;
+pub const PERFORMANCE_STORE_HEALTH_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerformanceStoreErrorClassV1 {
+    BusyLocked,
+    StorageFull,
+    ReadOnly,
+    Io,
+    CorruptIntegrity,
+    SchemaMigration,
+    InvalidRecord,
+    Unavailable,
+}
+
+impl PerformanceStoreErrorClassV1 {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::BusyLocked => "busyLocked",
+            Self::StorageFull => "storageFull",
+            Self::ReadOnly => "readOnly",
+            Self::Io => "io",
+            Self::CorruptIntegrity => "corruptIntegrity",
+            Self::SchemaMigration => "schemaMigration",
+            Self::InvalidRecord => "invalidRecord",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerformanceStoreOperationV1 {
+    Initialize,
+    Begin,
+    Update,
+    Complete,
+    Read,
+    Write,
+    Clear,
+}
+
+impl PerformanceStoreOperationV1 {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Initialize => "initialize",
+            Self::Begin => "begin",
+            Self::Update => "update",
+            Self::Complete => "complete",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Clear => "clear",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerformanceStoreStatusV1 {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerformanceStoreRecommendedActionV1 {
+    None,
+    Retry,
+    FreeDisk,
+    CheckPermissions,
+    ReinitializeStore,
+    RestartApp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerformanceStoreRecoveryActionV1 {
+    QuarantinedAndReinitialized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceStoreFailureV1 {
+    pub operation: PerformanceStoreOperationV1,
+    pub error_class: PerformanceStoreErrorClassV1,
+    pub attempt_count: u8,
+    pub retry_exhausted: bool,
+    pub at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceStoreRecoveryV1 {
+    pub action: PerformanceStoreRecoveryActionV1,
+    pub at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerformanceStoreHealthV1 {
+    pub schema_version: u32,
+    pub status: PerformanceStoreStatusV1,
+    pub skipped_run_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<PerformanceStoreFailureV1>,
+    pub recommended_action: PerformanceStoreRecommendedActionV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recovery: Option<PerformanceStoreRecoveryV1>,
+}
+
+impl Default for PerformanceStoreHealthV1 {
+    fn default() -> Self {
+        Self {
+            schema_version: PERFORMANCE_STORE_HEALTH_SCHEMA_VERSION,
+            status: PerformanceStoreStatusV1::Unavailable,
+            skipped_run_count: 0,
+            last_failure: None,
+            recommended_action: PerformanceStoreRecommendedActionV1::Retry,
+            last_recovery: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -4,15 +4,16 @@ use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::model_runtime::{self, PreparationReason};
 use crate::performance_metrics::{
     AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceRunGuard,
-    PerformanceStageV1, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1, RuntimeIdentityV1,
-    RuntimeRoleV1, StableRunErrorV1, StageOutcomeV1, StageTimingV1,
+    PerformanceStageV1, PerformanceStoreError, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1,
+    RuntimeIdentityV1, RuntimeRoleV1, StableRunErrorV1, StageOutcomeV1, StageTimingV1,
 };
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
 use crate::{MutexExt, State};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 /// Max number of code identifiers fed to Whisper as an initial prompt. Whisper
@@ -762,6 +763,456 @@ fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<Runti
     runtime_identity_for_role(model_name, warm_state, RuntimeRoleV1::Transcription)
 }
 
+fn emit_performance_store_begin_failure(recording_id: u64, error: &PerformanceStoreError) {
+    tracing::warn!(
+        target: "system",
+        event_code = "performance.store_operation_failed",
+        operation = error.operation.as_str(),
+        error_class = error.class.as_str(),
+        attempts = u64::from(error.attempts),
+        recording_id,
+        "performance diagnostics store operation failed"
+    );
+}
+
+#[derive(Clone)]
+struct DictationPerformanceCompletion {
+    outcome: RunOutcomeV1,
+    stages: Vec<StageTimingV1>,
+    input: Option<ContentFreeInputSummaryV1>,
+    runtimes: Option<Vec<RuntimeIdentityV1>>,
+}
+
+enum DictationPerformanceBeginState {
+    Beginning {
+        completion: Option<DictationPerformanceCompletion>,
+        latest_stage: Option<PerformanceStageV1>,
+    },
+    Ready,
+    Completing(DictationPerformanceCompletion),
+}
+
+struct DictationPerformanceBeginResolution {
+    completion: Option<DictationPerformanceCompletion>,
+    latest_stage: Option<PerformanceStageV1>,
+}
+
+#[derive(Default)]
+struct DictationPerformanceBeginCoordinator {
+    entries: Mutex<HashMap<u64, DictationPerformanceBeginState>>,
+}
+
+enum DictationPerformanceCompletionAction {
+    Persist(DictationPerformanceCompletion),
+    Deferred,
+    AlreadyCompleting,
+}
+
+impl DictationPerformanceBeginCoordinator {
+    fn register(&self, recording_id: u64) {
+        self.entries.lock_or_recover().insert(
+            recording_id,
+            DictationPerformanceBeginState::Beginning {
+                completion: None,
+                latest_stage: None,
+            },
+        );
+    }
+
+    fn abort(&self, recording_id: u64) {
+        self.entries.lock_or_recover().remove(&recording_id);
+    }
+
+    fn request_completion(
+        &self,
+        recording_id: u64,
+        completion: DictationPerformanceCompletion,
+    ) -> DictationPerformanceCompletionAction {
+        let mut entries = self.entries.lock_or_recover();
+        match entries.get_mut(&recording_id) {
+            Some(DictationPerformanceBeginState::Beginning {
+                completion: pending,
+                ..
+            }) => {
+                if pending.is_none() {
+                    *pending = Some(completion);
+                    DictationPerformanceCompletionAction::Deferred
+                } else {
+                    DictationPerformanceCompletionAction::AlreadyCompleting
+                }
+            }
+            Some(DictationPerformanceBeginState::Ready) => {
+                entries.insert(
+                    recording_id,
+                    DictationPerformanceBeginState::Completing(completion.clone()),
+                );
+                DictationPerformanceCompletionAction::Persist(completion)
+            }
+            Some(DictationPerformanceBeginState::Completing(_)) => {
+                DictationPerformanceCompletionAction::AlreadyCompleting
+            }
+            None => {
+                entries.insert(
+                    recording_id,
+                    DictationPerformanceBeginState::Completing(completion.clone()),
+                );
+                DictationPerformanceCompletionAction::Persist(completion)
+            }
+        }
+    }
+
+    fn resolve_begin(
+        &self,
+        recording_id: u64,
+        succeeded: bool,
+    ) -> Option<DictationPerformanceBeginResolution> {
+        let mut entries = self.entries.lock_or_recover();
+        let (completion, latest_stage) = match entries.get_mut(&recording_id) {
+            Some(DictationPerformanceBeginState::Beginning {
+                completion,
+                latest_stage,
+            }) => (completion.take(), latest_stage.take()),
+            Some(
+                DictationPerformanceBeginState::Ready
+                | DictationPerformanceBeginState::Completing(_),
+            )
+            | None => return None,
+        };
+        if succeeded {
+            if let Some(completion) = &completion {
+                entries.insert(
+                    recording_id,
+                    DictationPerformanceBeginState::Completing(completion.clone()),
+                );
+            } else {
+                entries.insert(recording_id, DictationPerformanceBeginState::Ready);
+            }
+            Some(DictationPerformanceBeginResolution {
+                completion,
+                latest_stage,
+            })
+        } else {
+            entries.remove(&recording_id);
+            None
+        }
+    }
+
+    fn finish_completion(&self, recording_id: u64) {
+        let mut entries = self.entries.lock_or_recover();
+        let should_remove = match entries.get(&recording_id) {
+            Some(DictationPerformanceBeginState::Completing(claimed)) => {
+                // Keep the claimed payload alive until persistence succeeds;
+                // observing it here also makes that ownership explicit.
+                let _ = &claimed.outcome;
+                true
+            }
+            _ => false,
+        };
+        if should_remove {
+            entries.remove(&recording_id);
+        }
+    }
+
+    fn defer_stage(&self, recording_id: u64, stage: PerformanceStageV1) -> bool {
+        let mut entries = self.entries.lock_or_recover();
+        match entries.get_mut(&recording_id) {
+            Some(DictationPerformanceBeginState::Beginning { latest_stage, .. }) => {
+                *latest_stage = Some(stage);
+                true
+            }
+            Some(DictationPerformanceBeginState::Completing(_)) => true,
+            Some(DictationPerformanceBeginState::Ready) => false,
+            None => false,
+        }
+    }
+
+    #[cfg(test)]
+    fn completion_is_claimed(&self, recording_id: u64) -> bool {
+        matches!(
+            self.entries.lock_or_recover().get(&recording_id),
+            Some(DictationPerformanceBeginState::Completing(_))
+        )
+    }
+
+    #[cfg(test)]
+    fn claimed_outcome(&self, recording_id: u64) -> Option<RunOutcomeV1> {
+        match self.entries.lock_or_recover().get(&recording_id) {
+            Some(DictationPerformanceBeginState::Completing(claimed)) => {
+                Some(claimed.outcome.clone())
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn begin_is_pending(&self, recording_id: u64) -> bool {
+        self.entries.lock_or_recover().contains_key(&recording_id)
+    }
+}
+
+struct DictationPerformanceBeginRegistration<'a> {
+    coordinator: &'a DictationPerformanceBeginCoordinator,
+    recording_id: u64,
+    armed: bool,
+}
+
+impl<'a> DictationPerformanceBeginRegistration<'a> {
+    fn new(coordinator: &'a DictationPerformanceBeginCoordinator, recording_id: u64) -> Self {
+        Self {
+            coordinator,
+            recording_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DictationPerformanceBeginRegistration<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.coordinator.abort(self.recording_id);
+        }
+    }
+}
+
+fn dictation_performance_begins() -> &'static DictationPerformanceBeginCoordinator {
+    static COORDINATOR: OnceLock<DictationPerformanceBeginCoordinator> = OnceLock::new();
+    COORDINATOR.get_or_init(DictationPerformanceBeginCoordinator::default)
+}
+
+fn persist_dictation_performance_completion(
+    performance: &crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    completion: DictationPerformanceCompletion,
+) -> Result<(), String> {
+    performance
+        .complete(
+            &RunCorrelationV1::Dictation { recording_id },
+            completion.outcome,
+            completion.stages,
+            completion.input,
+            completion.runtimes,
+        )
+        .map(|_| ())
+}
+
+fn flush_dictation_performance_begin(
+    coordinator: &DictationPerformanceBeginCoordinator,
+    performance: &crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    resolution: DictationPerformanceBeginResolution,
+) {
+    if let Some(stage) = resolution.latest_stage {
+        let _ = performance.set_current_stage(&RunCorrelationV1::Dictation { recording_id }, stage);
+    }
+    if let Some(completion) = resolution.completion {
+        if persist_dictation_performance_completion(performance, recording_id, completion).is_ok() {
+            coordinator.finish_completion(recording_id);
+        }
+    }
+}
+
+fn spawn_dictation_performance_completion(
+    performance: crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    completion: DictationPerformanceCompletion,
+) {
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        if persist_dictation_performance_completion(&performance, recording_id, completion).is_ok()
+        {
+            dictation_performance_begins().finish_completion(recording_id);
+        }
+    }));
+}
+
+fn complete_dictation_performance(
+    performance: &crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    outcome: RunOutcomeV1,
+    stages: Vec<StageTimingV1>,
+    input: Option<ContentFreeInputSummaryV1>,
+    runtimes: Option<Vec<RuntimeIdentityV1>>,
+) {
+    let completion = DictationPerformanceCompletion {
+        outcome,
+        stages,
+        input,
+        runtimes,
+    };
+    match dictation_performance_begins().request_completion(recording_id, completion) {
+        DictationPerformanceCompletionAction::Persist(completion) => {
+            spawn_dictation_performance_completion(performance.clone(), recording_id, completion);
+        }
+        DictationPerformanceCompletionAction::Deferred
+        | DictationPerformanceCompletionAction::AlreadyCompleting => {}
+    }
+}
+
+fn spawn_native_dictation_performance_begin(
+    performance: crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    runtimes: Vec<RuntimeIdentityV1>,
+    started_at_ms: i64,
+) {
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let coordinator = dictation_performance_begins();
+        let mut registration =
+            DictationPerformanceBeginRegistration::new(coordinator, recording_id);
+        let result =
+            performance.begin_dictation_diagnosed_at(recording_id, runtimes, started_at_ms);
+        let succeeded = result.is_ok();
+        if let Err(error) = &result {
+            emit_performance_store_begin_failure(recording_id, error);
+        }
+        if let Some(resolution) = coordinator.resolve_begin(recording_id, succeeded) {
+            flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
+        }
+        registration.disarm();
+    }));
+}
+
+struct NativeDictationPerformanceGuard {
+    performance: crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    current_stage: PerformanceStageV1,
+    buffered_stages: Vec<StageTimingV1>,
+    finished: bool,
+}
+
+impl NativeDictationPerformanceGuard {
+    fn new(
+        performance: crate::performance_metrics::PerformanceMetrics,
+        recording_id: u64,
+        stage: PerformanceStageV1,
+    ) -> Self {
+        let guard = Self {
+            performance,
+            recording_id,
+            current_stage: stage,
+            buffered_stages: Vec::new(),
+            finished: false,
+        };
+        guard.track_current_stage();
+        guard
+    }
+
+    fn track_current_stage(&self) {
+        // While begin is pending, the coordinator flushes the latest stage as
+        // soon as the row exists. Once begin is Ready, final/Drop completion
+        // carries the authoritative stage data. Native recognition must never
+        // wait on an interim diagnostics write.
+        let _ = dictation_performance_begins().defer_stage(self.recording_id, self.current_stage);
+    }
+
+    fn enter(&mut self, stage: PerformanceStageV1) {
+        self.current_stage = stage;
+        self.track_current_stage();
+    }
+
+    fn record(&mut self, timing: StageTimingV1) {
+        self.current_stage = timing.stage;
+        if let Some(existing) = self
+            .buffered_stages
+            .iter_mut()
+            .find(|stage| stage.stage == timing.stage)
+        {
+            *existing = timing.clone();
+        } else {
+            self.buffered_stages.push(timing.clone());
+        }
+        self.track_current_stage();
+    }
+
+    fn finish(
+        mut self,
+        outcome: RunOutcomeV1,
+        mut stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) {
+        for timing in std::mem::take(&mut self.buffered_stages) {
+            if !stages.iter().any(|stage| stage.stage == timing.stage) {
+                stages.push(timing);
+            }
+        }
+        self.finished = true;
+        complete_dictation_performance(
+            &self.performance,
+            self.recording_id,
+            outcome,
+            stages,
+            input,
+            runtimes,
+        );
+    }
+}
+
+impl Drop for NativeDictationPerformanceGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        complete_dictation_performance(
+            &self.performance,
+            self.recording_id,
+            RunOutcomeV1::Failed {
+                stage: self.current_stage,
+                error_code: StableRunErrorV1::InternalEarlyExit,
+            },
+            std::mem::take(&mut self.buffered_stages),
+            None,
+            None,
+        );
+    }
+}
+
+trait DictationPerformanceStageRecorder {
+    fn enter(&mut self, stage: PerformanceStageV1);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeStartContextAction {
+    Activate,
+    FlushLifecycleTerminal { install_context: bool },
+    Superseded,
+}
+
+fn native_start_context_action(
+    is_current_generation: bool,
+    status: DictationStatus,
+) -> NativeStartContextAction {
+    if !is_current_generation {
+        return NativeStartContextAction::Superseded;
+    }
+    match status {
+        DictationStatus::Starting => NativeStartContextAction::Activate,
+        DictationStatus::Recovering => NativeStartContextAction::FlushLifecycleTerminal {
+            install_context: true,
+        },
+        DictationStatus::Idle => NativeStartContextAction::FlushLifecycleTerminal {
+            install_context: false,
+        },
+        DictationStatus::Recording | DictationStatus::Processing => {
+            NativeStartContextAction::Superseded
+        }
+    }
+}
+
+impl DictationPerformanceStageRecorder for PerformanceRunGuard {
+    fn enter(&mut self, stage: PerformanceStageV1) {
+        PerformanceRunGuard::enter(self, stage);
+    }
+}
+
+impl DictationPerformanceStageRecorder for NativeDictationPerformanceGuard {
+    fn enter(&mut self, stage: PerformanceStageV1) {
+        NativeDictationPerformanceGuard::enter(self, stage);
+    }
+}
+
 pub(crate) fn runtime_identity_for_role(
     model_name: &str,
     warm_state: ModelWarmStateV1,
@@ -929,7 +1380,7 @@ async fn run_transcription_pipeline(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
     recording_id: u64,
-    performance_guard: &mut PerformanceRunGuard,
+    performance_guard: &mut impl DictationPerformanceStageRecorder,
     context: Arc<DictationContextSnapshot>,
 ) -> Result<PipelineResult, String> {
     // Guard resets status to Idle on any return path (error or success),
@@ -1427,16 +1878,11 @@ pub async fn process_audio(
     let _ = app_handle.emit("recording-status-changed", "processing");
     let app_identity = crate::frontmost::frontmost_app_identity();
     let context = resolve_live_context(&state.app_state, &state.knowledge, &app_identity);
-    if let Err(error) = state.performance.begin_dictation(
+    if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
         runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
     ) {
-        tracing::warn!(
-            target: "system",
-            recording_id = rid,
-            "performance run start failed: {}",
-            error
-        );
+        emit_performance_store_begin_failure(rid, &error);
     }
     let mut performance_guard = state.performance.guard(
         RunCorrelationV1::Dictation { recording_id: rid },
@@ -2677,8 +3123,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 reason,
                 AudioCancelReason::HardDeadline | AudioCancelReason::RuntimeFailure
             ) {
-                let _ = state.performance.complete(
-                    &RunCorrelationV1::Dictation { recording_id },
+                complete_dictation_performance(
+                    &state.performance,
+                    recording_id,
                     RunOutcomeV1::Cancelled {
                         stage: PerformanceStageV1::CaptureFinalization,
                     },
@@ -2748,8 +3195,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 DictationErrorCode::from_audio_failure(kind),
             );
             state.app_state.clear_active_context(recording_id);
-            let _ = state.performance.complete(
-                &RunCorrelationV1::Dictation { recording_id },
+            complete_dictation_performance(
+                &state.performance,
+                recording_id,
                 RunOutcomeV1::Failed {
                     stage: PerformanceStageV1::CaptureFinalization,
                     error_code: StableRunErrorV1::AudioCaptureFailed,
@@ -2787,8 +3235,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     DictationTerminalOutcome::Superseded,
                     DictationErrorCode::StaleOwner,
                 );
-                let _ = state.performance.complete(
-                    &RunCorrelationV1::Dictation { recording_id },
+                complete_dictation_performance(
+                    &state.performance,
+                    recording_id,
                     RunOutcomeV1::Failed {
                         stage: PerformanceStageV1::CaptureFinalization,
                         error_code: StableRunErrorV1::AudioCaptureFailed,
@@ -2820,8 +3269,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     DictationErrorCode::RuntimeFailure,
                 );
                 state.app_state.clear_active_context(recording_id);
-                let _ = state.performance.complete(
-                    &RunCorrelationV1::Dictation { recording_id },
+                complete_dictation_performance(
+                    &state.performance,
+                    recording_id,
                     RunOutcomeV1::Failed {
                         stage: PerformanceStageV1::CaptureFinalization,
                         error_code: StableRunErrorV1::AudioCaptureFailed,
@@ -2857,6 +3307,17 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 recording_id,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::RuntimeFailure,
+            );
+            complete_dictation_performance(
+                &state.performance,
+                recording_id,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::CaptureFinalization,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                Vec::new(),
+                None,
+                None,
             );
             dictation.status = DictationStatus::Idle;
             state.app_state.clear_active_context(recording_id);
@@ -3052,6 +3513,7 @@ pub async fn start_native_recording(
             }
         }
     };
+    let performance_started_at_ms = chrono::Utc::now().timestamp_millis();
     let origin = match origin.as_deref() {
         Some("hold") => "hold",
         _ => "toggle",
@@ -3072,9 +3534,14 @@ pub async fn start_native_recording(
         serde_json::json!({ "recordingId": rid }),
     );
     let _ = app_handle.emit("recording-status-changed", "starting");
+    // Reserve the generation before the worker is allowed to emit lifecycle
+    // events. Terminal persistence can now wait for the asynchronous begin
+    // without holding capture ownership or the recording transition.
+    dictation_performance_begins().register(rid);
     if let Err(error) =
         audio_lifecycle::start_dictation_recording(app_handle.clone(), device_name, rid, origin)
     {
+        dictation_performance_begins().abort(rid);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -3082,16 +3549,6 @@ pub async fn start_native_recording(
             dictation.status = DictationStatus::Idle;
         }
         let _ = app_handle.emit("recording-status-changed", "idle");
-        let _ = state.performance.complete(
-            &RunCorrelationV1::Dictation { recording_id: rid },
-            RunOutcomeV1::Failed {
-                stage: PerformanceStageV1::CaptureFinalization,
-                error_code: StableRunErrorV1::AudioCaptureFailed,
-            },
-            Vec::new(),
-            None,
-            None,
-        );
         return match error {
             AudioStartError::AlreadyStarting => Ok(serde_json::json!({
                 "type": "already_starting",
@@ -3116,11 +3573,54 @@ pub async fn start_native_recording(
         app_identity.bundle_id.as_deref(),
     );
     let context = resolve_live_context(&state.app_state, &state.knowledge, &app_identity);
-    {
+    let context_action = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.recording_id.load(Ordering::SeqCst) != rid
-            || dictation.status != DictationStatus::Starting
-        {
+        let action = native_start_context_action(
+            state.app_state.recording_id.load(Ordering::SeqCst) == rid,
+            dictation.status,
+        );
+        if matches!(
+            action,
+            NativeStartContextAction::Activate
+                | NativeStartContextAction::FlushLifecycleTerminal {
+                    install_context: true
+                }
+        ) {
+            state
+                .app_state
+                .set_active_context(rid, Arc::clone(&context));
+        }
+        (action, dictation.status)
+    };
+    match context_action {
+        (NativeStartContextAction::Activate, _) => {}
+        (NativeStartContextAction::FlushLifecycleTerminal { .. }, status) => {
+            let runtimes =
+                runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown);
+            tracing::info!(
+                target: "pipeline",
+                recording_id = rid,
+                ?status,
+                "flushing reserved diagnostics after audio lifecycle terminal"
+            );
+            drop(_transition);
+            spawn_native_dictation_performance_begin(
+                state.performance.clone(),
+                rid,
+                runtimes,
+                performance_started_at_ms,
+            );
+            return Ok(serde_json::json!({
+                "type": "audio_recovering",
+                "state": match status {
+                    DictationStatus::Idle => "idle",
+                    DictationStatus::Recovering => "recovering",
+                    _ => unreachable!("lifecycle flush only follows idle or recovering"),
+                }
+            }));
+        }
+        (NativeStartContextAction::Superseded, status) => {
+            dictation_performance_begins().abort(rid);
             state.app_state.dictation_telemetry.emit_terminal(
                 rid,
                 DictationTerminalOutcome::Superseded,
@@ -3129,12 +3629,12 @@ pub async fn start_native_recording(
             tracing::warn!(
                 target: "pipeline",
                 recording_id = rid,
-                status = ?dictation.status,
+                ?status,
                 "dictation context discarded after audio initialization ended"
             );
             return Ok(serde_json::json!({
                 "type": "audio_recovering",
-                "state": match dictation.status {
+                "state": match status {
                     DictationStatus::Idle => "idle",
                     DictationStatus::Starting => "starting",
                     DictationStatus::Recording => "recording",
@@ -3143,20 +3643,6 @@ pub async fn start_native_recording(
                 }
             }));
         }
-        if let Err(error) = state.performance.begin_dictation(
-            rid,
-            runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
-        ) {
-            tracing::warn!(
-                target: "system",
-                recording_id = rid,
-                "performance run start failed: {}",
-                error
-            );
-        }
-        state
-            .app_state
-            .set_active_context(rid, Arc::clone(&context));
     }
     tracing::info!(
         target: "pipeline",
@@ -3177,6 +3663,16 @@ pub async fn start_native_recording(
         app_handle.clone(),
         context.transcription.model_name.clone(),
         rid,
+    );
+    let runtimes = runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown);
+    // Ownership is fully installed before diagnostics begin. Release the
+    // transition first so Recording, stop, and cancel never wait for SQLite.
+    drop(_transition);
+    spawn_native_dictation_performance_begin(
+        state.performance.clone(),
+        rid,
+        runtimes,
+        performance_started_at_ms,
     );
 
     Ok(serde_json::json!({
@@ -3268,10 +3764,6 @@ async fn stop_native_recording_for(
             "state": "recovering"
         }));
     }
-    let mut performance_guard = state.performance.guard(
-        RunCorrelationV1::Dictation { recording_id: rid },
-        PerformanceStageV1::CaptureFinalization,
-    );
     let context = match state.app_state.active_context(rid) {
         Some(context) => context,
         None => {
@@ -3286,6 +3778,18 @@ async fn stop_native_recording_for(
             }
             keyboard::set_processing(false);
             let _ = app_handle.emit("recording-status-changed", "idle");
+            drop(transition);
+            complete_dictation_performance(
+                &state.performance,
+                rid,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::CaptureFinalization,
+                    error_code: StableRunErrorV1::InternalEarlyExit,
+                },
+                Vec::new(),
+                None,
+                None,
+            );
             return Err(format!("Missing dictation context for recording {rid}"));
         }
     };
@@ -3325,9 +3829,25 @@ async fn stop_native_recording_for(
             if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
                 let _ = app_handle.emit("recording-status-changed", "idle");
             }
+            complete_dictation_performance(
+                &state.performance,
+                rid,
+                RunOutcomeV1::Failed {
+                    stage: PerformanceStageV1::CaptureFinalization,
+                    error_code: StableRunErrorV1::AudioCaptureFailed,
+                },
+                Vec::new(),
+                None,
+                None,
+            );
             e
         })?
     };
+    let mut performance_guard = NativeDictationPerformanceGuard::new(
+        state.performance.clone(),
+        rid,
+        PerformanceStageV1::CaptureFinalization,
+    );
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_stop_handoff",
@@ -3355,7 +3875,7 @@ async fn stop_native_recording_for(
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
-        let _ = performance_guard.finish(
+        performance_guard.finish(
             RunOutcomeV1::NoSpeech,
             vec![StageTimingV1::measured(
                 PerformanceStageV1::TotalProcessing,
@@ -3388,7 +3908,7 @@ async fn stop_native_recording_for(
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
-        let _ = performance_guard.finish(
+        performance_guard.finish(
             RunOutcomeV1::NoSpeech,
             vec![StageTimingV1::measured(
                 PerformanceStageV1::TotalProcessing,
@@ -3509,7 +4029,7 @@ async fn stop_native_recording_for(
         PipelineTerminal::Cancelled(stage) => RunOutcomeV1::Cancelled { stage },
     };
     let warm_state = timings.warm_state.unwrap_or(ModelWarmStateV1::Unknown);
-    let _ = performance_guard.finish(
+    performance_guard.finish(
         outcome,
         pipeline_stages(&timings, total_ms),
         Some(ContentFreeInputSummaryV1::audio_with_output(
@@ -3615,8 +4135,14 @@ pub async fn cancel_native_recording(
         serde_json::json!({ "recordingId": rid }),
     );
 
-    let _ = state.performance.complete(
-        &RunCorrelationV1::Dictation { recording_id: rid },
+    // Keep the transition fence through the old generation's unscoped UI
+    // events so a newer start cannot publish `starting` and then be reset by
+    // this cancellation's trailing `idle`. Diagnostics completion is already
+    // asynchronous, so releasing immediately before it never waits on SQLite.
+    drop(transition);
+    complete_dictation_performance(
+        &state.performance,
+        rid,
         RunOutcomeV1::Cancelled {
             stage: PerformanceStageV1::InferenceDecode,
         },
@@ -4014,6 +4540,280 @@ mod tests {
     use std::path::PathBuf;
     use tauri::Listener;
 
+    fn failed_capture_completion() -> DictationPerformanceCompletion {
+        DictationPerformanceCompletion {
+            outcome: RunOutcomeV1::Failed {
+                stage: PerformanceStageV1::CaptureFinalization,
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+            },
+            stages: Vec::new(),
+            input: None,
+            runtimes: None,
+        }
+    }
+
+    fn wait_for_completed_runs(
+        performance: &crate::performance_metrics::PerformanceMetrics,
+        expected: usize,
+    ) -> Vec<crate::performance_metrics::PerformanceRunV1> {
+        for _ in 0..100 {
+            let runs = performance.list(10).expect("list completed runs").runs;
+            if runs.len() == expected {
+                return runs;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("timed out waiting for {expected} completed diagnostics runs");
+    }
+
+    #[test]
+    fn terminal_before_diagnostics_begin_is_deferred_and_keeps_first_outcome() {
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 536_001;
+        coordinator.register(recording_id);
+
+        assert!(matches!(
+            coordinator.request_completion(recording_id, failed_capture_completion()),
+            DictationPerformanceCompletionAction::Deferred
+        ));
+        assert!(matches!(
+            coordinator.request_completion(
+                recording_id,
+                DictationPerformanceCompletion {
+                    outcome: RunOutcomeV1::Cancelled {
+                        stage: PerformanceStageV1::CaptureFinalization,
+                    },
+                    stages: Vec::new(),
+                    input: None,
+                    runtimes: None,
+                },
+            ),
+            DictationPerformanceCompletionAction::AlreadyCompleting
+        ));
+
+        let resolution = coordinator
+            .resolve_begin(recording_id, true)
+            .expect("the first terminal waits for begin");
+        let pending = resolution.completion.expect("queued terminal outcome");
+        assert!(matches!(
+            pending.outcome,
+            RunOutcomeV1::Failed {
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+                ..
+            }
+        ));
+        assert!(coordinator.begin_is_pending(recording_id));
+        coordinator.finish_completion(recording_id);
+        assert!(!coordinator.begin_is_pending(recording_id));
+    }
+
+    #[test]
+    fn failed_capture_queued_before_begin_persists_once_after_begin() {
+        assert_eq!(
+            native_start_context_action(true, DictationStatus::Idle),
+            NativeStartContextAction::FlushLifecycleTerminal {
+                install_context: false,
+            },
+            "current-generation Idle must flush, not abort, its reserved begin"
+        );
+        assert_eq!(
+            native_start_context_action(true, DictationStatus::Recovering),
+            NativeStartContextAction::FlushLifecycleTerminal {
+                install_context: true,
+            },
+            "Recovering keeps context for an interrupted transcription"
+        );
+        let root = tempfile::tempdir().expect("temporary diagnostics root");
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .expect("initialize performance diagnostics");
+        let recording_id = 536_002;
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        coordinator.register(recording_id);
+        assert!(matches!(
+            coordinator.request_completion(recording_id, failed_capture_completion()),
+            DictationPerformanceCompletionAction::Deferred
+        ));
+
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .expect("begin delayed diagnostics row");
+        let resolution = coordinator
+            .resolve_begin(recording_id, true)
+            .expect("queued terminal outcome");
+        let pending = resolution.completion.expect("queued terminal completion");
+        persist_dictation_performance_completion(&performance, recording_id, pending)
+            .expect("persist queued terminal");
+        coordinator.finish_completion(recording_id);
+
+        let runs = wait_for_completed_runs(&performance, 1);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].outcome,
+            RunOutcomeV1::Failed {
+                stage: PerformanceStageV1::CaptureFinalization,
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_after_diagnostics_begin_can_persist_immediately() {
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 536_003;
+        coordinator.register(recording_id);
+        assert!(coordinator.resolve_begin(recording_id, true).is_some());
+        assert!(coordinator.begin_is_pending(recording_id));
+        let claimed =
+            match coordinator.request_completion(recording_id, failed_capture_completion()) {
+                DictationPerformanceCompletionAction::Persist(completion) => completion,
+                _ => panic!("Ready must claim the first terminal for persistence"),
+            };
+        assert!(coordinator.completion_is_claimed(recording_id));
+        let unavailable = crate::performance_metrics::PerformanceMetrics::default();
+        assert!(
+            persist_dictation_performance_completion(&unavailable, recording_id, claimed).is_err(),
+            "the failure seam must exercise a real rejected persistence attempt"
+        );
+        assert!(matches!(
+            coordinator.request_completion(
+                recording_id,
+                DictationPerformanceCompletion {
+                    outcome: RunOutcomeV1::Cancelled {
+                        stage: PerformanceStageV1::CaptureFinalization,
+                    },
+                    stages: Vec::new(),
+                    input: None,
+                    runtimes: None,
+                }
+            ),
+            DictationPerformanceCompletionAction::AlreadyCompleting
+        ));
+        // A failed persistence attempt deliberately leaves the exact first
+        // completion claimed; only a successful persist removes the entry.
+        assert!(coordinator.completion_is_claimed(recording_id));
+        assert!(matches!(
+            coordinator.claimed_outcome(recording_id),
+            Some(RunOutcomeV1::Failed {
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+                ..
+            })
+        ));
+        coordinator.finish_completion(recording_id);
+        assert!(!coordinator.begin_is_pending(recording_id));
+    }
+
+    #[test]
+    fn deferred_native_guard_retains_capture_finalization_timing() {
+        let root = tempfile::tempdir().expect("temporary diagnostics root");
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .expect("initialize performance diagnostics");
+        let recording_id = 536_004;
+        let coordinator = dictation_performance_begins();
+        coordinator.register(recording_id);
+
+        let mut guard = NativeDictationPerformanceGuard::new(
+            performance.clone(),
+            recording_id,
+            PerformanceStageV1::CaptureFinalization,
+        );
+        guard.record(StageTimingV1::measured(
+            PerformanceStageV1::CaptureFinalization,
+            37,
+        ));
+        guard.finish(
+            RunOutcomeV1::NoSpeech,
+            vec![StageTimingV1::measured(
+                PerformanceStageV1::TotalProcessing,
+                41,
+            )],
+            Some(ContentFreeInputSummaryV1::audio(100)),
+            None,
+        );
+
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .expect("begin delayed diagnostics row");
+        let resolution = coordinator
+            .resolve_begin(recording_id, true)
+            .expect("native terminal waits for begin");
+        flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
+
+        let runs = performance.list(10).expect("list completed runs").runs;
+        let capture = runs[0]
+            .stages
+            .iter()
+            .find(|stage| stage.stage == PerformanceStageV1::CaptureFinalization)
+            .expect("capture finalization stage");
+        assert_eq!(
+            capture.duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(37)
+        );
+    }
+
+    #[test]
+    fn begin_registration_cleans_up_if_worker_unwinds() {
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 536_005;
+        coordinator.register(recording_id);
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _registration =
+                DictationPerformanceBeginRegistration::new(&coordinator, recording_id);
+            panic!("forced begin worker unwind");
+        }));
+
+        assert!(unwind.is_err());
+        assert!(!coordinator.begin_is_pending(recording_id));
+        assert!(matches!(
+            coordinator.request_completion(recording_id, failed_capture_completion()),
+            DictationPerformanceCompletionAction::Persist(_)
+        ));
+    }
+
+    #[test]
+    fn delayed_begin_flushes_latest_stage_and_preserves_request_timestamp() {
+        let root = tempfile::tempdir().expect("temporary diagnostics root");
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .expect("initialize performance diagnostics");
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 536_006;
+        let requested_at_ms = 1_725_000_000_123_i64;
+        coordinator.register(recording_id);
+        assert!(coordinator.defer_stage(recording_id, PerformanceStageV1::Vad));
+
+        let active = performance
+            .begin_dictation_diagnosed_at(recording_id, Vec::new(), requested_at_ms)
+            .expect("begin delayed diagnostics row");
+        assert_eq!(active.started_at_ms, requested_at_ms);
+        let resolution = coordinator
+            .resolve_begin(recording_id, true)
+            .expect("successful delayed begin");
+        assert_eq!(resolution.latest_stage, Some(PerformanceStageV1::Vad));
+        flush_dictation_performance_begin(&coordinator, &performance, recording_id, resolution);
+        drop(performance);
+
+        let restarted = crate::performance_metrics::PerformanceMetrics::default();
+        restarted
+            .initialize(root.path().to_path_buf(), None)
+            .expect("recover interrupted diagnostics row");
+        let runs = restarted.list(10).expect("list recovered run").runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].started_at_ms, requested_at_ms);
+        assert!(matches!(
+            runs[0].outcome,
+            RunOutcomeV1::Interrupted {
+                stage: PerformanceStageV1::Vad,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn model_preparation_starts_at_accepted_start_and_stops_during_recovery() {
         assert!(status_allows_model_preparation(DictationStatus::Starting));
@@ -4138,7 +4938,7 @@ mod tests {
             vec!["audio-recovery-started", "recording-initialization-failed"],
             "the production bridge must preserve recovery-before-failure order"
         );
-        let runs = performance.list(10).expect("list completed runs").runs;
+        let runs = wait_for_completed_runs(&performance, 1);
         assert_eq!(
             runs.len(),
             1,

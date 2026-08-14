@@ -222,6 +222,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_terminal" => Some("pipeline.dictation_terminal"),
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
+        "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
         "overlay.position_default" => Some("overlay.position_default"),
         "overlay.position_offset_applied" => Some("overlay.position_offset_applied"),
@@ -241,6 +242,39 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "updater.install_ready" => Some("updater.install_ready"),
         "updater.install_failed" => Some("updater.install_failed"),
         _ => None,
+    }
+}
+
+fn is_performance_store_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("performance.store_operation_failed")
+}
+
+fn is_safe_performance_store_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("performance.store_operation_failed"),
+        "operation" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "initialize" | "begin" | "update" | "complete" | "read" | "write" | "clear"
+            )
+        }),
+        "error_class" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "busyLocked"
+                    | "storageFull"
+                    | "readOnly"
+                    | "io"
+                    | "corruptIntegrity"
+                    | "schemaMigration"
+                    | "invalidRecord"
+                    | "unavailable"
+            )
+        }),
+        "attempts" => value.as_u64().is_some_and(|value| (1..=3).contains(&value)),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        _ => false,
     }
 }
 
@@ -553,6 +587,13 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if is_performance_store_event(obj) {
+        // Performance-store failures are shipped for fleet regression watches.
+        // Treat them as a dedicated schema even in debug builds so a future
+        // call site cannot add SQLite text, SQL, paths, or captured content.
+        obj.retain(|key, value| is_safe_performance_store_field(key, value));
+        return;
+    }
     if !debug_build && stream == "pipeline" {
         obj.retain(|key, value| {
             !value.is_string()
@@ -1132,6 +1173,74 @@ mod tests {
         assert!(data.get("event_code").is_none());
         assert!(data.get("outcome").is_none());
         assert!(data.get("error_code").is_none());
+    }
+
+    #[test]
+    fn performance_store_failure_schema_is_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "performance.store_operation_failed",
+                "operation": "begin",
+                "error_class": "busyLocked",
+                "attempts": 3,
+                "recording_id": 35,
+                "error": "database is locked at /Users/private/diagnostics.sqlite3",
+                "sql": "INSERT INTO runs VALUES ('SENTINEL_TRANSCRIPT')",
+                "path": "/Users/private/diagnostics.sqlite3",
+                "content": "SENTINEL_TRANSCRIPT"
+            });
+
+            sanitize_event_data("system", &mut data, debug_build);
+
+            assert_eq!(data["event_code"], "performance.store_operation_failed");
+            assert_eq!(data["operation"], "begin");
+            assert_eq!(data["error_class"], "busyLocked");
+            assert_eq!(data["attempts"], 3);
+            assert_eq!(data["recording_id"], 35);
+            assert_eq!(data.as_object().unwrap().len(), 5);
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert!(!encoded.contains("Users"));
+            assert!(!encoded.contains("INSERT"));
+            assert!(!encoded.contains("SENTINEL"));
+        }
+    }
+
+    #[test]
+    fn performance_store_failure_schema_rejects_unknown_strings_and_types() {
+        let mut data = serde_json::json!({
+            "event_code": "performance.store_operation_failed",
+            "operation": "SELECT private_path",
+            "error_class": "/Users/private",
+            "attempts": "three",
+            "recording_id": -1,
+        });
+
+        sanitize_event_data("system", &mut data, true);
+
+        assert_eq!(data["event_code"], "performance.store_operation_failed");
+        assert_eq!(data.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn performance_store_failure_schema_is_exact_even_on_the_wrong_stream() {
+        let mut data = serde_json::json!({
+            "event_code": "performance.store_operation_failed",
+            "operation": "begin",
+            "error_class": "busyLocked",
+            "attempts": 3,
+            "recording_id": 35,
+            "error": "database is locked at /Users/private/performance.sqlite3",
+            "content": "SENTINEL_TRANSCRIPT",
+        });
+
+        sanitize_event_data("pipeline", &mut data, true);
+
+        assert_eq!(data["event_code"], "performance.store_operation_failed");
+        assert_eq!(data["operation"], "begin");
+        assert_eq!(data["error_class"], "busyLocked");
+        assert_eq!(data["attempts"], 3);
+        assert_eq!(data["recording_id"], 35);
+        assert_eq!(data.as_object().unwrap().len(), 5);
     }
 
     #[test]

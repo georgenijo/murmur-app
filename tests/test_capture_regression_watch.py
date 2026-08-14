@@ -110,6 +110,96 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             [{"backend": "auhal", "last_setup_step": "stream_start", "count": 1}],
         )
 
+    def test_performance_store_failures_are_counted_by_version_and_safe_class(self) -> None:
+        events = [
+            event(
+                "untrusted diagnostic text",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={
+                    "event_code": "performance.store_operation_failed",
+                    "operation": "begin",
+                    "error_class": "busyLocked",
+                    "attempts": 3,
+                    "recording_id": 35,
+                },
+            ),
+            event(
+                "another untrusted summary",
+                "2026-08-01T00:00:01Z",
+                version="1.2.3",
+                data={
+                    "event_code": "performance.store_operation_failed",
+                    "operation": "begin",
+                    "error_class": "busyLocked",
+                    "attempts": 3,
+                    "recording_id": 36,
+                },
+            ),
+            event(
+                "ignored",
+                "2026-08-02T00:00:00Z",
+                version="1.2.4",
+                data={
+                    "event_code": "performance.store_operation_failed",
+                    "operation": "begin",
+                    "error_class": "readOnly",
+                    "attempts": 1,
+                    "recording_id": 1,
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohorts = {row["app_version"]: row for row in report["cohorts"]}
+        self.assertEqual(cohorts["1.2.3"]["performance_store_failure_total"], 2)
+        self.assertEqual(
+            cohorts["1.2.3"]["performance_store_failures"],
+            [{"operation": "begin", "error_class": "busyLocked", "count": 2}],
+        )
+        self.assertEqual(cohorts["1.2.4"]["performance_store_failure_total"], 1)
+        self.assertEqual(report["status"], "alert")
+        self.assertEqual(
+            report["alerts"],
+            [
+                {
+                    "kind": "performance_store_failure",
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.4",
+                    "operation": "begin",
+                    "error_class": "readOnly",
+                    "count": 1,
+                }
+            ],
+        )
+
+    def test_performance_store_watch_collapses_untrusted_labels(self) -> None:
+        events = [
+            event(
+                "ignored",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={
+                    "event_code": "performance.store_operation_failed",
+                    "operation": "SELECT private_path",
+                    "error_class": "/Users/private/diagnostics.sqlite3",
+                },
+            )
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        self.assertEqual(
+            report["cohorts"][0]["performance_store_failures"],
+            [{"operation": "unknown", "error_class": "unknown", "count": 1}],
+        )
+        encoded = json.dumps(report)
+        self.assertNotIn("private_path", encoded)
+        self.assertNotIn("/Users/private", encoded)
+
     def test_alerts_when_newest_version_p50_is_more_than_twice_baseline(self) -> None:
         events = self.ready_events("1.0.0", "01", [180, 190, 200, 210, 220])
         events += self.ready_events("1.1.0", "02", [500, 520, 540, 560, 580])

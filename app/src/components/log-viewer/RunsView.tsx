@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CorrelationFilter } from '../../lib/eventFilters';
+import type { PerformanceStoreHealthState } from '../../lib/hooks/usePerformanceStoreHealth';
 import {
   getPerformanceRun,
   type PerformanceRunKindV1,
@@ -17,6 +18,7 @@ import {
   runtimeSummary,
 } from '../../lib/performancePresentation';
 import { RunDetail } from './RunDetail';
+import { PerformanceStoreHealthBanner } from './PerformanceStoreHealthBanner';
 
 type OutcomeFilter =
   | 'all'
@@ -37,6 +39,7 @@ interface RunsViewProps {
   onRetry: () => void;
   onClear: () => Promise<void>;
   onShowEvents: (filter: CorrelationFilter) => void;
+  store?: PerformanceStoreHealthState;
 }
 
 function outcomeClasses(status: PerformanceRunV1['outcome']['status']): string {
@@ -57,6 +60,7 @@ export function RunsView({
   onRetry,
   onClear,
   onShowEvents,
+  store,
 }: RunsViewProps) {
   const [kind, setKind] = useState<'all' | PerformanceRunKindV1>('all');
   const [outcome, setOutcome] = useState<OutcomeFilter>('all');
@@ -128,6 +132,19 @@ export function RunsView({
 
   return (
     <div className="flex min-h-full flex-col p-4">
+      {store && (
+        <div className="mb-4">
+          <PerformanceStoreHealthBanner
+            health={store.health}
+            loading={store.loading}
+            error={store.error}
+            recovering={store.recovering}
+            recoveryError={store.recoveryError}
+            onRefresh={() => void store.refresh()}
+            onRecover={() => void store.recover()}
+          />
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold text-on-surface">Runs</h2>

@@ -366,6 +366,8 @@ pub fn run() {
             commands::performance::list_performance_runs,
             commands::performance::get_performance_run,
             commands::performance::get_performance_resource_window,
+            commands::performance::get_performance_store_health,
+            commands::performance::recover_performance_store,
             commands::performance::clear_performance_diagnostics,
             commands::performance::show_diagnostics_window,
             commands::transform_diagnostics::arm_next_transform_diagnostic_capture,

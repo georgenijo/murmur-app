@@ -7,8 +7,13 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+const workspaceMock = vi.hoisted(() => vi.fn());
+
 vi.mock('./DiagnosticsWorkspace', () => ({
-  DiagnosticsWorkspace: () => <div>Diagnostics workspace</div>,
+  DiagnosticsWorkspace: (props: unknown) => {
+    workspaceMock(props);
+    return <div>Diagnostics workspace</div>;
+  },
   isDiagnosticsTab: () => true,
 }));
 
@@ -42,5 +47,11 @@ describe('DiagnosticsWindowApp native chrome', () => {
 
     expect(diagnosticsCapability.permissions).toContain('core:window:allow-start-dragging');
     expect(mainCapability.permissions).toContain('core:window:allow-start-dragging');
+  });
+
+  it('enables requester-gated diagnostics store health in this webview', () => {
+    expect(workspaceMock).toHaveBeenCalledWith(expect.objectContaining({
+      storeHealthEnabled: true,
+    }));
   });
 });

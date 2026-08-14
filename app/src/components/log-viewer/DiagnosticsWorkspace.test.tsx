@@ -12,6 +12,7 @@ const hookMocks = vi.hoisted(() => ({
   }>,
   useEventStore: vi.fn(),
   usePerformanceDiagnostics: vi.fn(),
+  usePerformanceStoreHealth: vi.fn(),
 }));
 
 vi.mock('../../lib/hooks/useEventStore', () => ({
@@ -63,6 +64,26 @@ vi.mock('../../lib/hooks/usePerformanceHealth', () => ({
   }),
 }));
 
+vi.mock('../../lib/hooks/usePerformanceStoreHealth', () => ({
+  usePerformanceStoreHealth: (enabled: boolean) => {
+    hookMocks.usePerformanceStoreHealth(enabled);
+    return ({
+      health: {
+        schemaVersion: 1,
+        status: 'available',
+        skippedRunCount: 0,
+        recommendedAction: 'none',
+      },
+      loading: false,
+      error: null,
+      recovering: false,
+      recoveryError: null,
+      refresh: vi.fn(),
+      recover: vi.fn(),
+    });
+  },
+}));
+
 vi.mock('../../lib/transformDiagnostics', () => ({
   listTransformAttempts: vi.fn(async () => []),
   listTransformCaptures: vi.fn(async () => []),
@@ -84,6 +105,7 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     hookMocks.events = [];
     hookMocks.useEventStore.mockClear();
     hookMocks.usePerformanceDiagnostics.mockClear();
+    hookMocks.usePerformanceStoreHealth.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -151,6 +173,23 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     ));
     expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
     expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+  });
+
+  it('enables store health only when an authorized host opts in', async () => {
+    const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
+    await act(async () => (tabs[2] as HTMLButtonElement).click());
+    expect(hookMocks.usePerformanceStoreHealth).toHaveBeenLastCalledWith(false);
+    expect(container.textContent).not.toContain('Diagnostics storage');
+
+    await act(async () => root.render(
+      <DiagnosticsWorkspace
+        requestedTab="performance"
+        storeHealthEnabled
+        onPopOut={onPopOut}
+      />,
+    ));
+    expect(hookMocks.usePerformanceStoreHealth).toHaveBeenLastCalledWith(true);
+    expect(container.textContent).toContain('Diagnostics storage');
   });
 
   it('renders only the newest 100 rows while retaining the full filtered count', async () => {
