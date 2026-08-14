@@ -23,6 +23,7 @@ pub(crate) enum AudioOwner {
     Transform(u64),
     Query(u64),
     Preview(u64),
+    MicrophoneBenchmark(u64),
     #[cfg(feature = "internal-benchmark")]
     Corpus(u64),
 }
@@ -30,7 +31,11 @@ pub(crate) enum AudioOwner {
 impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
-            Self::Dictation(id) | Self::Transform(id) | Self::Query(id) | Self::Preview(id) => id,
+            Self::Dictation(id)
+            | Self::Transform(id)
+            | Self::Query(id)
+            | Self::Preview(id)
+            | Self::MicrophoneBenchmark(id) => id,
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(id) => id,
         }
@@ -42,6 +47,7 @@ impl AudioOwner {
             Self::Transform(_) => "transform",
             Self::Query(_) => "query",
             Self::Preview(_) => "preview",
+            Self::MicrophoneBenchmark(_) => "microphone_benchmark",
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(_) => "corpus",
         }
@@ -50,7 +56,7 @@ impl AudioOwner {
     /// Preview capture proves device readiness and drives a level meter, but
     /// never keeps microphone samples for transcription or later replay.
     pub(crate) fn retains_samples(self) -> bool {
-        !matches!(self, Self::Preview(_))
+        !matches!(self, Self::Preview(_) | Self::MicrophoneBenchmark(_))
     }
 
     pub(crate) fn preview_id(self) -> Option<u64> {
@@ -65,6 +71,10 @@ impl AudioOwner {
             Self::Dictation(id) => Some(id),
             _ => None,
         }
+    }
+
+    pub(crate) fn is_microphone_benchmark(self) -> bool {
+        matches!(self, Self::MicrophoneBenchmark(_))
     }
 }
 
@@ -94,6 +104,7 @@ impl AudioCancelReason {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AudioLifecycleEvent {
     Accepted,
+    StartupDiagnostic(crate::audio::AudioStartupDiagnostic),
     Ready,
     StillConnecting,
     Recovering {
@@ -223,6 +234,14 @@ impl PublicState {
                 == Some(owner)
     }
 
+    fn owns(&self, owner: AudioOwner) -> bool {
+        *self
+            .owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            == Some(owner)
+    }
+
     fn is_still_connecting_for(&self, owner: AudioOwner) -> bool {
         self.still_connecting.load(Ordering::SeqCst)
             && *self
@@ -326,6 +345,13 @@ impl LifecycleSink for ProductionLifecycleSink {
                 crate::commands::microphone_preview::handle_audio_lifecycle(
                     app_handle.clone(),
                     preview_id,
+                    event,
+                );
+            }
+            AudioOwner::MicrophoneBenchmark(cycle_id) => {
+                crate::commands::microphone_startup_benchmark::handle_audio_lifecycle(
+                    app_handle.clone(),
+                    cycle_id,
                     event,
                 );
             }
@@ -767,6 +793,7 @@ fn handle_worker_event(
         | AudioWorkerEvent::PermissionPromptPending { owner }
         | AudioWorkerEvent::PermissionPromptResolved { owner }
         | AudioWorkerEvent::TerminationUnconfirmed { owner, .. }
+        | AudioWorkerEvent::StartupDiagnostic { owner, .. }
         | AudioWorkerEvent::FirstBuffer { owner, .. }
         | AudioWorkerEvent::InitFailed { owner, .. }
         | AudioWorkerEvent::RuntimeFailed { owner, .. }
@@ -828,6 +855,13 @@ fn handle_worker_event(
                 Some(failure),
             );
         }
+        AudioWorkerEvent::StartupDiagnostic { diagnostic, .. } => {
+            sink.notify(
+                current.app_handle.as_ref(),
+                current.owner,
+                AudioLifecycleEvent::StartupDiagnostic(diagnostic),
+            );
+        }
         AudioWorkerEvent::PhaseEntered { phase, .. } => {
             current.init_phase = phase;
             tracing::info!(
@@ -874,6 +908,21 @@ fn handle_worker_event(
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
                 public.set_phase(PublicPhase::Recording);
+                if owner.is_microphone_benchmark() {
+                    sink.notify(
+                        current.app_handle.as_ref(),
+                        current.owner,
+                        AudioLifecycleEvent::StartupDiagnostic(
+                            crate::audio::AudioStartupDiagnostic::CycleReady {
+                                cycle_start_to_first_pcm_ms: current
+                                    .accepted_at
+                                    .elapsed()
+                                    .as_millis()
+                                    as u64,
+                            },
+                        ),
+                    );
+                }
                 if let Some(recording_id) = owner.dictation_id() {
                     tracing::info!(
                         target: "audio",
@@ -929,9 +978,10 @@ fn handle_worker_event(
                 // worker exit. Transform audio has no partial-transcript path,
                 // so preserve its typed, content-free failure before recovery.
                 let report_failure = match current.owner {
-                    AudioOwner::Transform(_) | AudioOwner::Query(_) | AudioOwner::Preview(_) => {
-                        Some(failure)
-                    }
+                    AudioOwner::Transform(_)
+                    | AudioOwner::Query(_)
+                    | AudioOwner::Preview(_)
+                    | AudioOwner::MicrophoneBenchmark(_) => Some(failure),
                     #[cfg(feature = "internal-benchmark")]
                     AudioOwner::Corpus(_) => Some(failure),
                     AudioOwner::Dictation(_) => None,
@@ -979,7 +1029,10 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
         "audio thread exited and joined"
     );
 
-    let preview_idle_after_clear = matches!(finished.owner, AudioOwner::Preview(_));
+    let idle_after_clear = matches!(
+        finished.owner,
+        AudioOwner::Preview(_) | AudioOwner::MicrophoneBenchmark(_)
+    );
     match finished.phase {
         AttemptPhase::Stopping => {
             let samples = take_samples(&mut finished);
@@ -987,7 +1040,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                 .stop_response
                 .take()
                 .is_some_and(|response| response.send(Ok(samples)).is_ok());
-            if !response_delivered && !preview_idle_after_clear {
+            if !response_delivered && !idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -1003,7 +1056,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             if let Some(response) = finished.start_response.take() {
                 let _ = response.send(Err(AudioStartError::InitializationFailed(failure)));
             }
-            if !preview_idle_after_clear {
+            if !idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -1017,7 +1070,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                 sink,
                 AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::Runtime),
             );
-            if !preview_idle_after_clear {
+            if !idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -1058,7 +1111,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                         duration_ms,
                     },
                 );
-            } else if !preview_idle_after_clear {
+            } else if !idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -1072,7 +1125,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
     crate::audio_inventory::lifecycle_became_idle();
-    if preview_idle_after_clear {
+    if idle_after_clear {
         // Preview callers wait for this event before opening another device.
         // Publish it only after the worker is joined and supervisor ownership
         // is visibly idle, so device switching cannot race teardown.
@@ -1395,6 +1448,20 @@ pub(crate) fn start_preview_recording(
     )
 }
 
+pub(crate) fn start_microphone_benchmark_recording(
+    app_handle: tauri::AppHandle,
+    device_id: Option<String>,
+    cycle_id: u64,
+) -> Result<(), AudioStartError> {
+    send_start(
+        AudioOwner::MicrophoneBenchmark(cycle_id),
+        Some(app_handle),
+        device_id,
+        "microphone_startup_benchmark",
+        false,
+    )
+}
+
 #[cfg(feature = "internal-benchmark")]
 pub(crate) fn start_corpus_recording(
     app_handle: tauri::AppHandle,
@@ -1439,6 +1506,10 @@ pub(crate) fn peek_query_samples(query_pass_id: u64) -> Option<Vec<f32>> {
 
 pub(crate) fn stop_preview_recording(preview_id: u64) -> Result<Vec<f32>, String> {
     stop(Some(AudioOwner::Preview(preview_id)))
+}
+
+pub(crate) fn stop_microphone_benchmark_recording(cycle_id: u64) -> Result<Vec<f32>, String> {
+    stop(Some(AudioOwner::MicrophoneBenchmark(cycle_id)))
 }
 
 #[cfg(feature = "internal-benchmark")]
@@ -1491,6 +1562,17 @@ pub(crate) fn cancel_preview_capture(
     reason: AudioCancelReason,
 ) -> Result<bool, String> {
     cancel(Some(AudioOwner::Preview(preview_id)), reason, false)
+}
+
+pub(crate) fn cancel_microphone_benchmark_capture(
+    cycle_id: u64,
+    reason: AudioCancelReason,
+) -> Result<bool, String> {
+    cancel(
+        Some(AudioOwner::MicrophoneBenchmark(cycle_id)),
+        reason,
+        false,
+    )
 }
 
 #[cfg(feature = "internal-benchmark")]
@@ -1550,6 +1632,12 @@ fn cancel(
 
 pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
+}
+
+pub(crate) fn is_microphone_benchmark_owner(cycle_id: u64) -> bool {
+    supervisor()
+        .public
+        .owns(AudioOwner::MicrophoneBenchmark(cycle_id))
 }
 
 /// Run a diagnostic-only HAL operation only when capture does not own the
@@ -1632,6 +1720,15 @@ pub(crate) fn register_sleep_wake_observer() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_benchmark_has_distinct_non_retaining_ownership() {
+        let owner = AudioOwner::MicrophoneBenchmark(41);
+        assert!(owner.is_microphone_benchmark());
+        assert!(!owner.retains_samples());
+        assert_eq!(owner.kind(), "microphone_benchmark");
+        assert_ne!(owner, AudioOwner::Preview(41));
+    }
     use crate::audio::{AudioInitPhase, AudioWorkerEvent};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Condvar, Mutex};

@@ -109,6 +109,7 @@ Question and context content never appears in events. Only the dedicated review 
 | `performance-resource-sample` | `ResourceSampleV1` | `performance_metrics/mod.rs` | Once per second from the resource heartbeat: host CPU, main-process CPU/RSS/Rust-heap/FFI-heap, and sidecar process figures. | Log viewer charts. |
 | `performance-diagnostics-cleared` | `()` | `performance_metrics/mod.rs` | Local run history and samples were deleted. | Log viewer (resets views). |
 | `benchmark-progress` | `BenchmarkProgress {completed, …}` | `benchmark.rs` | During a Performance Lab run, per completed model/fixture unit. | Performance Lab. |
+| `microphone-startup-benchmark-progress` | `{schemaVersion, runId, benchmarkRunId, completedCycles, totalCycles, currentCycle, phase, backend, fallbackOccurred, lastSetupStep, lastSetupTransition}` | `commands/microphone_startup_benchmark.rs` | Main-window-targeted progress for the exact active startup diagnostic. Stable phases cover starting, capture, stopping, recovery, owner wait, and completion; backend/setup values are fixed enums with no device identity or raw native error. | Performance Lab (`MicrophoneStartupBenchmark`), after strict schema and run-ID validation. |
 | `vocab-scan-progress` | `VocabScanProgress {scanId, files, skipped, terms, …}` | `commands/recording.rs` | Throttled during a code-vocabulary folder walk, plus once at completion. Correlated by `scanId` so a superseded scan can't overwrite a newer one. | Settings (`useVocabScan`, `VocabScanStrip`). |
 
 ## Structured logging

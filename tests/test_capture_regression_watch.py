@@ -78,6 +78,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                     version="1.2.3",
                     data={
                         "event_code": "audio.capture_backend_timeout",
+                        "owner_kind": "dictation",
                         "backend": "auhal",
                         "last_setup_step": "stream_start",
                     },
@@ -86,13 +87,19 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                     "capture backend failed before retained audio; trying bounded fallback",
                     "2026-08-01T00:01:01Z",
                     version="1.2.3",
-                    data={"event_code": "audio.fallback_started"},
+                    data={
+                        "event_code": "audio.fallback_started",
+                        "owner_kind": "dictation",
+                    },
                 ),
                 event(
                     "both capture backend attempts failed before first PCM",
                     "2026-08-01T00:01:02Z",
                     version="1.2.3",
-                    data={"event_code": "audio.capture_failed"},
+                    data={
+                        "event_code": "audio.capture_failed",
+                        "owner_kind": "dictation",
+                    },
                 ),
             ]
         )
@@ -109,6 +116,68 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             cohort["capture_backend_timeouts"],
             [{"backend": "auhal", "last_setup_step": "stream_start", "count": 1}],
         )
+
+    def test_microphone_benchmark_events_do_not_enter_dictation_health_counts(self) -> None:
+        events = []
+        for cycle in range(5):
+            owner = cycle + 1
+            events.extend(
+                [
+                    event(
+                        "audio initialization accepted",
+                        f"2026-08-01T00:00:{cycle * 3:02d}Z",
+                        version="1.2.3",
+                        data={
+                            "event_code": "audio.capture_started",
+                            "owner": owner,
+                            "owner_kind": "microphone_benchmark",
+                        },
+                    ),
+                    event(
+                        "capture backend exceeded its active initialization budget",
+                        f"2026-08-01T00:00:{cycle * 3 + 1:02d}Z",
+                        version="1.2.3",
+                        data={
+                            "event_code": "audio.capture_backend_timeout",
+                            "owner": owner,
+                            "owner_kind": "microphone_benchmark",
+                            "backend": "auhal",
+                            "last_setup_step": "stream_start",
+                        },
+                    ),
+                    event(
+                        "capture backend failed before retained audio; trying bounded fallback",
+                        f"2026-08-01T00:00:{cycle * 3 + 2:02d}Z",
+                        version="1.2.3",
+                        data={
+                            "event_code": "audio.fallback_started",
+                            "owner": owner,
+                            "owner_kind": "microphone_benchmark",
+                        },
+                    ),
+                    event(
+                        "both capture backend attempts failed before first PCM",
+                        f"2026-08-01T00:01:{cycle:02d}Z",
+                        version="1.2.3",
+                        data={
+                            "event_code": "audio.capture_failed",
+                            "owner": owner,
+                            "owner_kind": "microphone_benchmark",
+                        },
+                    ),
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["startup_sample_count"], 0)
+        self.assertEqual(cohort["capture_backend_timeouts"], [])
+        self.assertEqual(cohort["fallback_count"], 0)
+        self.assertEqual(cohort["both_backends_failed_count"], 0)
+        self.assertEqual(cohort["attempted_sessions"], 0)
 
     def test_performance_store_failures_are_counted_by_version_and_safe_class(self) -> None:
         events = [
@@ -422,6 +491,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                 "2026-08-01T00:00:00Z",
                 version="1.2.3",
                 data={
+                    "owner_kind": "dictation",
                     "backend": "private-device-name",
                     "last_setup_step": "unsafe\nstep",
                 },
@@ -430,7 +500,11 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                 "capture backend exceeded its active initialization budget",
                 "2026-08-01T00:00:01Z",
                 version="1.2.3",
-                data={"backend": "cpal", "last_setup_step": "none"},
+                data={
+                    "owner_kind": "dictation",
+                    "backend": "cpal",
+                    "last_setup_step": "none",
+                },
             ),
         ]
         with tempfile.TemporaryDirectory() as root:

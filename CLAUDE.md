@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (161 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (164 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 161 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 164 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -114,6 +114,7 @@ Read these before working on a feature:
 | `commands/knowledge.rs` | Personal knowledge store CRUD, resolve, preview, export/import |
 | `commands/correct_and_teach.rs` | Bounded correction proposals + confirm/discard |
 | `commands/benchmark.rs` | Performance Lab run/cancel/save/reveal |
+| `commands/microphone_startup_benchmark.rs` | Exact-owner production microphone startup cycles, progress, cancellation, and typed report export |
 | `commands/performance.rs` | Local run history, resource window, clear |
 | `commands/theme.rs` | Main-window-gated, bounded theme-file import/export transport |
 | `commands/transform_diagnostics.rs` | Per-pass attempt records and consented content captures |
@@ -217,6 +218,7 @@ Read these before working on a feature:
 | `lib/performance.ts` / `lib/performancePresentation.ts` | Run/stage models and presentation |
 | `lib/diagnosticReports.ts` / `lib/diagnosticComparison.ts` | Portable report schema validation and comparison |
 | `lib/benchmark.ts` | Performance Lab request/report types |
+| `lib/microphoneStartupBenchmark.ts` | Strict startup-diagnostic IPC/report boundary, local retention, summaries, and typed export |
 | `lib/transformFlow.ts` | Pure reducer for transform press/release |
 | `lib/transformReview.ts` | Review state/error types + content guards |
 | `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
@@ -227,6 +229,7 @@ Read these before working on a feature:
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |
 | `components/settings/PerformanceLab.tsx` | Benchmark UI, scoring tables, report save/export |
+| `components/settings/MicrophoneStartupBenchmark.tsx` | Five-cycle microphone startup progress, backend attempts, refusal, cancellation, and report UI |
 | `components/settings/KnowledgeManager.tsx` | Knowledge store browse/edit UI |
 | `components/history/CorrectAndTeachDialog.tsx` | Correct-and-Teach review + scope choice |
 | `components/log-viewer/DiagnosticsWorkspace.tsx` | Embedded Performance workspace: Events, Performance, Runs, Transforms, Reports |

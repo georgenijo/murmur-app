@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 161 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 164 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -223,6 +223,9 @@ frontend.
 | `cancel_benchmark` | — | `bool` | Cancels the active run. |
 | `save_benchmark_report` | `report_json`, `output_dir`, `file_name` | `Result<String, String>` | Writes a report as `benchmark-<version>-<machine>-<createdAt>.json`. |
 | `open_benchmark_output_folder` | `output_dir: String` | `Result<(), String>` | Reveals the report folder in Finder. |
+| `run_microphone_startup_benchmark` | `request: MicrophoneStartupBenchmarkRequest {runId, deviceId, cycles}` | `Result<MicrophoneStartupBenchmarkReport, String>` | Main-window-only bounded production-capture startup diagnostic (1–10 cycles). Uses an exact `MicrophoneBenchmark` owner, preserves the immutable production backend order without training its session memo, emits correlated progress, retains no PCM, and resolves only after post-join Idle. |
+| `cancel_microphone_startup_benchmark` | `run_id: String` | `Result<bool, String>` | Cancels only the matching microphone benchmark UUID. Returns false for no owner or a stale run ID and waits through the run command for confirmed teardown. |
+| `save_microphone_startup_benchmark_report` | `report: MicrophoneStartupBenchmarkReport`, `output_dir: String` | `Result<String, String>` | Main-window-only typed export. Revalidates the exact schema/cross-fields and 128 KiB cap, then writes `murmur-microphone-startup-<UTC timestamp>-<run UUID>.json` without accepting a caller-controlled filename. |
 
 ## Performance diagnostics (`commands/performance.rs`)
 

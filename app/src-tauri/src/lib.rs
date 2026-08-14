@@ -131,6 +131,8 @@ impl<T> MutexExt<T> for Mutex<T> {
 pub(crate) struct State {
     pub(crate) app_state: AppState,
     pub(crate) benchmark: std::sync::Arc<benchmark::BenchmarkCoordinator>,
+    pub(crate) microphone_startup_benchmark:
+        commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState,
     #[cfg(feature = "internal-benchmark")]
     pub(crate) corpus: commands::corpus::CorpusRecorderState,
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
@@ -234,6 +236,8 @@ pub fn run() {
         .manage(State {
             app_state: AppState::default(),
             benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            microphone_startup_benchmark:
+                commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
             #[cfg(feature = "internal-benchmark")]
             corpus: commands::corpus::CorpusRecorderState::default(),
             knowledge: knowledge_store::KnowledgeStore::default(),
@@ -289,6 +293,9 @@ pub fn run() {
             commands::microphone_preview::update_microphone_preview_vad_sensitivity,
             commands::microphone_preview::stop_microphone_preview,
             commands::microphone_preview::cancel_microphone_preview,
+            commands::microphone_startup_benchmark::run_microphone_startup_benchmark,
+            commands::microphone_startup_benchmark::cancel_microphone_startup_benchmark,
+            commands::microphone_startup_benchmark::save_microphone_startup_benchmark_report,
             commands::integrations::is_notchpill_installed,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,

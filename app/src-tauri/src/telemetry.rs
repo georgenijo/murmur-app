@@ -250,7 +250,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
 fn is_safe_audio_owner_kind(value: &str) -> bool {
     matches!(
         value,
-        "dictation" | "transform" | "query" | "preview" | "corpus"
+        "dictation" | "transform" | "query" | "preview" | "microphone_benchmark" | "corpus"
     )
 }
 
@@ -1248,6 +1248,81 @@ mod tests {
                 debug_build,
             );
             assert_eq!(summary, "Microphone device re-resolution started");
+        }
+    }
+
+    #[test]
+    fn microphone_benchmark_owner_keeps_only_content_free_audio_evidence() {
+        for debug_build in [true, false] {
+            let mut input_resolution = serde_json::json!({
+                "event_code": "audio.input_resolution_observed",
+                "capture_id": 44,
+                "owner": 9,
+                "owner_kind": "microphone_benchmark",
+                "backend": "auhal",
+                "resolution_pass": 1,
+                "backend_attempt": 1,
+                "microphone_mode": "pinned",
+                "input_enumeration_ok": true,
+                "requested_present": true,
+                "requested_present_known": true,
+                "input_device_count": 2,
+                "input_device_count_capped": false,
+                "default_input_available": true,
+                "device_id": "SENTINEL_PRIVATE_UID",
+                "device_name": "SENTINEL_PRIVATE_MICROPHONE",
+                "raw_error": "SENTINEL /Users/private CoreAudio error",
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT"
+            });
+            sanitize_event_data("audio", &mut input_resolution, debug_build);
+            assert_eq!(input_resolution["owner_kind"], "microphone_benchmark");
+            assert_eq!(input_resolution.as_object().unwrap().len(), 14);
+
+            let mut reresolution = serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 9,
+                "owner_kind": "microphone_benchmark",
+                "completed_pass": 2,
+                "next_pass": 3,
+                "retry_delay_ms": 500,
+                "error_kind": "device_unavailable",
+                "device_id": "SENTINEL_PRIVATE_UID",
+                "device_name": "SENTINEL_PRIVATE_MICROPHONE",
+                "raw_error": "SENTINEL /Users/private CoreAudio error",
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT"
+            });
+            sanitize_event_data("audio", &mut reresolution, debug_build);
+            assert_eq!(reresolution["owner_kind"], "microphone_benchmark");
+            assert_eq!(reresolution.as_object().unwrap().len(), 7);
+
+            for event in [&input_resolution, &reresolution] {
+                let encoded = serde_json::to_string(event).unwrap();
+                assert!(!encoded.contains("SENTINEL"));
+                assert!(!encoded.contains("Users"));
+                assert!(!encoded.contains("device_id"));
+                assert!(!encoded.contains("device_name"));
+                assert!(!encoded.contains("raw_error"));
+                assert!(!encoded.contains("transcript"));
+            }
+
+            let mut unrecognized_owner = serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 9,
+                "owner_kind": "microphone_benchmark:SENTINEL_PRIVATE_UID",
+                "completed_pass": 2,
+                "next_pass": 3,
+                "retry_delay_ms": 500,
+                "error_kind": "device_unavailable"
+            });
+            sanitize_event_data("audio", &mut unrecognized_owner, debug_build);
+            assert_eq!(unrecognized_owner.as_object().unwrap().len(), 1);
+            assert_eq!(
+                unrecognized_owner["event_code"],
+                "audio.device_reresolution_started"
+            );
+            assert!(!serde_json::to_string(&unrecognized_owner)
+                .unwrap()
+                .contains("SENTINEL"));
         }
     }
 

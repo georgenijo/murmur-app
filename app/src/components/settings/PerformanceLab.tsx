@@ -29,6 +29,7 @@ import {
 import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 import { CorpusRecorder } from './CorpusRecorder';
+import { MicrophoneStartupBenchmark } from './MicrophoneStartupBenchmark';
 import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 
@@ -169,6 +170,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
   const [corpusBusy, setCorpusBusy] = useState(false);
+  const [microphoneBenchmarkRunning, setMicrophoneBenchmarkRunning] = useState(false);
   const mounted = useRef(true);
   const runningRef = useRef(false);
 
@@ -241,7 +243,12 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
   const progressPercent = progress && progress.total > 0
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
-  const canRun = selected.length > 0 && !running && status === 'idle' && !fileTranscribing && !corpusBusy;
+  const canRun = selected.length > 0
+    && !running
+    && !microphoneBenchmarkRunning
+    && status === 'idle'
+    && !fileTranscribing
+    && !corpusBusy;
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const toggleModel = (modelName: string) => {
@@ -365,9 +372,20 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             : 'This mode compares installed models with a small, clean synthetic English corpus. It does not represent your voice, microphone, accent, room, or every dictation workload.'}
         </p>
       </div>
+      <MicrophoneStartupBenchmark
+        status={status}
+        deviceId={settings.microphone}
+        audioInventory={audioInventory}
+        modelBenchmarkRunning={running}
+        fileTranscribing={fileTranscribing}
+        corpusBusy={corpusBusy}
+        outputDir={settings.benchmarkOutputDir}
+        autoSave={settings.benchmarkAutoSave}
+        onRunningChange={setMicrophoneBenchmarkRunning}
+      />
       {INTERNAL_BENCHMARK_BUILD && <CorpusRecorder
         status={status}
-        benchmarkRunning={running}
+        benchmarkRunning={running || microphoneBenchmarkRunning}
         fileTranscribing={fileTranscribing}
         settings={settings}
         audioInventory={audioInventory}
@@ -384,7 +402,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             <button
               type="button"
               key={source}
-              disabled={running || corpusBusy}
+              disabled={running || microphoneBenchmarkRunning || corpusBusy}
               onClick={() => {
                 setCorpusSource(source);
                 if (source === 'personal') {
@@ -415,7 +433,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
           {installedCount > 0 && (
             <button
               type="button"
-              disabled={running || corpusBusy}
+              disabled={running || microphoneBenchmarkRunning || corpusBusy}
               onClick={() => setSelected(models.filter((model) => model.installed).map((model) => model.modelName))}
               className="text-xs text-on-surface hover:text-on-surface disabled:opacity-50"
             >
@@ -431,7 +449,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
                 type="checkbox"
                 aria-label={`Benchmark ${model.label}`}
                 checked={selectedSet.has(model.modelName)}
-                disabled={!model.installed || running || corpusBusy}
+                disabled={!model.installed || running || microphoneBenchmarkRunning || corpusBusy}
                 onChange={() => toggleModel(model.modelName)}
                 className="h-4 w-4 accent-primary"
               />
@@ -447,7 +465,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
               {!model.installed && (
                 <button
                   type="button"
-                  disabled={downloading !== null || running || corpusBusy}
+                  disabled={downloading !== null || running || microphoneBenchmarkRunning || corpusBusy}
                   onClick={() => handleDownload(model.modelName)}
                   className="shrink-0 px-2.5 py-1.5 text-xs font-medium border border-outline-variant/30 rounded-md text-on-surface hover:bg-surface-container-low disabled:opacity-50"
                 >
@@ -472,7 +490,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             <button
               type="button"
               key={option.id}
-              disabled={running || corpusBusy}
+              disabled={running || microphoneBenchmarkRunning || corpusBusy}
               onClick={() => setPreset(option.id)}
               className={`min-w-0 px-2 py-2 rounded-md transition-colors disabled:opacity-50 ${
                 preset === option.id
@@ -526,6 +544,9 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         {corpusBusy && (
           <p className="mt-2 text-xs text-primary">Finish or cancel the corpus recording first.</p>
         )}
+        {microphoneBenchmarkRunning && (
+          <p className="mt-2 text-xs text-primary">Finish or cancel the microphone startup test first.</p>
+        )}
         {error && (
           <p className="mt-2 text-xs text-error break-words">{error}</p>
         )}
@@ -553,12 +574,12 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
               onChange={() => onUpdateSettings({ benchmarkAutoSave: !settings.benchmarkAutoSave })}
               className="h-3.5 w-3.5 accent-primary"
             />
-            <span>Auto-save every run to this folder (survives the {MAX_SAVED_BENCHMARK_REPORTS}-run in-app limit)</span>
+            <span>Auto-save every completed full run to this folder (survives the {MAX_SAVED_BENCHMARK_REPORTS}-run in-app limit)</span>
           </label>
         </div>
       </section>
 
-      {report && !running && (
+      {report && !running && !microphoneBenchmarkRunning && (
         <section className="space-y-4 border-t border-outline-variant/30 pt-5">
           <div className="flex items-center justify-between gap-3">
             <div>

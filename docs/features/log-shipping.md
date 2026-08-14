@@ -173,8 +173,12 @@ verdict or a missing-terminal alert. Lifecycle records join only the app-session
 boundary and positive `recording_id`; timestamps and free-form summaries are
 never correlation keys. Audio lifecycle records must carry
 `owner_kind: "dictation"`, so other microphone owners cannot contaminate the
-funnel. Closed sessions are reduced into aggregate counters, leaving only the
-currently open session's per-attempt correlation state in memory.
+funnel. The same exact owner gate applies to startup samples, backend timeouts,
+fallbacks, and both-backends-failed counters, so preview, query, transform, and
+`microphone_benchmark` events remain visible in raw technical logs without
+changing dictation health denominators. Closed sessions are reduced into
+aggregate counters, leaving only the currently open session's per-attempt
+correlation state in memory.
 
 Reports contain no raw event summaries, device fields, content, paths, or free
 form errors. Backend/setup-step values are allowlisted (including the explicit
@@ -210,9 +214,12 @@ live backend attempt. Its allowlist is limited to `event_code`, `capture_id`,
 `requested_present_known`, `input_device_count` (capped at 256),
 `input_device_count_capped`, and `default_input_available`. Cross-field
 contradictions reduce the event to `event_code` only in both debug and release
-builds. The sanitizer never accepts microphone IDs or names, the default
-device's ID, raw errors, paths, content, or arbitrary extra fields. The summary
-is the constant “Microphone input resolution observed”.
+builds. `owner_kind` is an exact enum that includes the content-free
+`microphone_benchmark` diagnostic owner; accepting that owner does not make its
+selected device ID or display name part of the event. The sanitizer never
+accepts microphone IDs or names, the default device's ID, raw errors, paths,
+content, or arbitrary extra fields. The summary is the constant “Microphone
+input resolution observed”.
 
 Health conclusions are limited to the loaded event window. A fallback is shown
 as recovered only when later readiness for the same audio owner proves it;

@@ -262,6 +262,8 @@ def scan_install(path, install_id, cohorts):
                     )
                 continue
             if code == "audio.capture_backend_timeout":
+                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
+                    continue
                 key = (
                     bounded_backend(data.get("backend")),
                     bounded_setup_step(data.get("last_setup_step")),
@@ -269,9 +271,13 @@ def scan_install(path, install_id, cohorts):
                 cohort["timeouts"][key] += 1
                 continue
             if code == "audio.fallback_started":
+                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
+                    continue
                 cohort["fallback_count"] += 1
                 continue
             if code == "audio.capture_failed":
+                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
+                    continue
                 cohort["both_backends_failed_count"] += 1
                 continue
             if code == "performance.store_operation_failed":

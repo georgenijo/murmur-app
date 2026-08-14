@@ -27,6 +27,52 @@ state from the same model-runtime catalog used by onboarding and Settings. Its
 benchmark runner also creates backends through the catalog factory, so adding a
 model does not require a second backend-name classifier.
 
+## Microphone startup diagnostic
+
+**Test microphone startup** runs five bounded start/stop cycles against the
+currently selected input, including a saved pinned input that is presently
+missing. It exercises the signed production capture worker and its real
+AUHAL/CPAL setup budgets. Each cycle stops only after the exact worker has exited,
+joined, and returned the single-owner lifecycle to Idle; a later cycle can never
+overlap a recovering predecessor. The action refuses while dictation, Transform,
+Voice Query, meeting capture, file transcription, corpus recording, model
+preparation, or another benchmark owns the relevant runtime.
+
+Live progress is correlated by a frontend UUID and a Rust-monotonic benchmark
+ID. The UI installs and confirms its event listener before enabling Run, ignores
+events from older IDs, and sends the UUID on cancellation. Starting, capturing,
+stopping, recovering, waiting-for-owner, and complete states stay visible until
+the run command resolves after post-join Idle. After confirmed teardown,
+cancellation produces a bounded partial report rather than discarding completed
+cycles.
+
+The result separates whole-cycle start-to-first-PCM from the production attempt
+records that produced it. For each resolution pass and backend attempt it shows:
+
+- AUHAL or CPAL, immutable attempt order, and whether that order came from the
+  default policy or the session's existing first-PCM memo;
+- successful attempt start-to-first-PCM, active elapsed time, and attempt budget;
+- fallback use, stable failure kind/phase, and the last entered or completed
+  native setup step.
+
+The dashboard reports whole-cycle median/p95/range plus independent AUHAL and
+CPAL attempt counts, successes, failures, median, p95, and maximum over successful
+attempts. It never forces fallback merely to collect a backend sample, so a
+backend with no successful attempt displays no invented latency. Diagnostic
+captures do not train or mutate the production backend memo.
+With the default five-cycle run, nearest-rank p95 is the maximum successful
+sample, so it is a bounded tail signal rather than a high-confidence percentile.
+
+No PCM is transcribed, retained after readiness, written, copied, or emitted.
+Reports contain only fixed enums, timings, cycle counters, app version, `macos`,
+and whether the request used System Default or a pinned input—never the device
+ID/name, raw Core Audio errors, paths, hostnames, audio, or transcript content.
+The latest ten full reports persist in the local Performance Lab dashboard.
+Cancelled/partial reports remain session-only unless the user explicitly chooses
+Copy JSON or Save to file; only full runs may use the Lab's existing auto-save
+folder. The dedicated typed save command revalidates schema/cross-fields and
+writes a Rust-owned filename.
+
 ## Internal personal corpus recorder
 
 The private **Murmur Bench** flavor includes a guided recorder for building a repeatable
@@ -148,12 +194,19 @@ catalog download size nor an isolated peak-memory measurement.
 
 ## Concurrency
 
-The benchmark uses isolated backend instances. In the internal build, live
+The model benchmark uses isolated backend instances. In the internal build, live
 recording, personal-corpus recording, and file transcription are blocked while a benchmark owns the
 benchmark coordinator, and a benchmark cannot start while any recording or
 transcription path is active. Cancellation is checked between inference calls;
 an inference already inside a native backend finishes before cancellation
 returns.
+
+The microphone diagnostic instead owns the same audio lifecycle as production
+capture under `MicrophoneBenchmark(benchmarkRunId)`. It never borrows Preview,
+never bypasses the transition lock, and never considers stop acknowledgement to
+be teardown completion. Its immutable backend plan is snapshotted from
+production state once at run start and reused for every cycle; successful
+diagnostic PCM is explicitly excluded from memo training.
 
 These isolated benchmark instances do not replace the selected dictation model
 or publish shared-runtime lifecycle changes. There is no automatic fallback if
