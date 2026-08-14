@@ -1,5 +1,6 @@
 import type { DictationStatus } from '../../lib/types';
 import type { MeetingRuntimePhase } from '../../lib/meetings';
+import type { MicrophoneFailureCue } from '../../lib/hooks/useOverlayRuntime';
 
 /**
  * Which indicator the top-bar left slot shows. Mirrors the priority chain that
@@ -12,7 +13,7 @@ export type OverlayIndicator =
   | { kind: 'secureField' }
   | { kind: 'transformBusy' }
   | { kind: 'hotkeyMiss' }
-  | { kind: 'microphoneFailure' }
+  | { kind: 'microphoneFailure'; failure: MicrophoneFailureCue }
   | { kind: 'starting'; slow: boolean }
   | { kind: 'recording' }
   | { kind: 'recovering' }
@@ -60,7 +61,7 @@ export function deriveVisual(
   transforming: boolean = false,
   showSecureField: boolean = false,
   showTransformBusy: boolean = false,
-  showMicrophoneFailure: boolean = false,
+  showMicrophoneFailure: MicrophoneFailureCue | false | null = false,
   stillConnecting: boolean = false,
   calibrating: boolean = false,
   meetingPhase: MeetingRuntimePhase = 'idle',
@@ -74,7 +75,7 @@ export function deriveVisual(
   } else if (showSecureField) {
     indicator = { kind: 'secureField' };
   } else if (showMicrophoneFailure) {
-    indicator = { kind: 'microphoneFailure' };
+    indicator = { kind: 'microphoneFailure', failure: showMicrophoneFailure };
   } else if (showTransformBusy) {
     indicator = { kind: 'transformBusy' };
   } else if (showHotkeyMiss) {

@@ -5,9 +5,9 @@ use crate::microphone_preview::{
 };
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
-    read_production_frame, write_production_control, CaptureBackend, CaptureChannel, CapturePhase,
-    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
-    SessionNonce, SetupTransition,
+    read_production_frame, valid_input_resolution_evidence, write_production_control,
+    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
+    ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
 };
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -48,6 +48,8 @@ const PERMISSION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const TCC_PROMPT_WATCHDOG: Duration = Duration::from_secs(120);
 const AUHAL_ATTEMPT_BUDGET: Duration = Duration::from_secs(8);
 const CPAL_ATTEMPT_BUDGET: Duration = Duration::from_secs(16);
+const DEVICE_RERESOLUTION_DELAY: Duration = Duration::from_millis(500);
+const DEVICE_RERESOLUTION_MAX_PASSES: usize = 3;
 const COOPERATIVE_STOP_GRACE: Duration = Duration::from_millis(250);
 const CAPTURE_TERMINATION_BUDGET: Duration = Duration::from_secs(2);
 const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
@@ -411,7 +413,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v5", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v6", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -1068,6 +1070,19 @@ enum AttemptResult {
     },
 }
 
+struct BackendPassFailure {
+    failure: AudioFailure,
+    retained_audio: bool,
+    fallback_exhausted: bool,
+    both_backends_device_unavailable: bool,
+}
+
+enum BackendPassResult {
+    Stopped,
+    TerminalHandled,
+    Failed(BackendPassFailure),
+}
+
 #[derive(Debug)]
 struct ActiveAttemptClock {
     started_at: Instant,
@@ -1353,6 +1368,127 @@ fn primary_attempt_budget(
 struct AttemptContext {
     is_primary: bool,
     memo_promoted: bool,
+    resolution_pass: usize,
+    backend_attempt: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum InputResolutionState {
+    #[default]
+    NotStarted,
+    Started,
+    Observed,
+    Completed,
+}
+
+#[derive(Clone, Copy)]
+struct ReportedInputResolution {
+    input_enumeration_ok: bool,
+    requested_present: Option<bool>,
+    input_device_count: u16,
+    input_device_count_capped: bool,
+}
+
+#[derive(Default)]
+struct InputResolutionTracker {
+    state: InputResolutionState,
+    requested_device: bool,
+    evidence: Option<ReportedInputResolution>,
+}
+
+impl InputResolutionTracker {
+    fn observe_setup(&mut self, step: CaptureSetupStep, transition: SetupTransition) -> bool {
+        match (step, transition, self.state) {
+            (
+                CaptureSetupStep::DeviceResolution,
+                SetupTransition::Entered,
+                InputResolutionState::NotStarted,
+            ) => self.state = InputResolutionState::Started,
+            (
+                CaptureSetupStep::DeviceResolution,
+                SetupTransition::Completed,
+                InputResolutionState::Observed,
+            ) => self.state = InputResolutionState::Completed,
+            (CaptureSetupStep::DeviceResolution, _, _) => return false,
+            (_, _, InputResolutionState::Completed) => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn observe_evidence(
+        &mut self,
+        expected_backend: CaptureBackend,
+        reported_backend: CaptureBackend,
+        requested_device: bool,
+        evidence: ReportedInputResolution,
+    ) -> bool {
+        if reported_backend != expected_backend
+            || self.state != InputResolutionState::Started
+            || !valid_input_resolution_evidence(
+                requested_device,
+                evidence.input_enumeration_ok,
+                evidence.requested_present,
+                evidence.input_device_count,
+                evidence.input_device_count_capped,
+            )
+        {
+            return false;
+        }
+        self.requested_device = requested_device;
+        self.evidence = Some(evidence);
+        self.state = InputResolutionState::Observed;
+        true
+    }
+
+    fn permits_failure(&self, code: FailureCode) -> bool {
+        match self.state {
+            InputResolutionState::Observed => {
+                let Some(evidence) = self.evidence else {
+                    return false;
+                };
+                match code {
+                    FailureCode::NoInputDevice if self.requested_device => {
+                        evidence.input_enumeration_ok && evidence.requested_present == Some(false)
+                    }
+                    FailureCode::NoInputDevice => {
+                        // The selected system default and the supplementary
+                        // topology facts come from separate native queries.
+                        // A topology/API race can therefore report any
+                        // enumeration/default facts while selection itself
+                        // truthfully returns no device. System-default mode
+                        // never qualifies for pinned-device retry.
+                        evidence.requested_present.is_none()
+                    }
+                    FailureCode::EnumerationFailed => !evidence.input_enumeration_ok,
+                    _ => false,
+                }
+            }
+            InputResolutionState::Completed => !matches!(
+                code,
+                FailureCode::NoInputDevice | FailureCode::EnumerationFailed
+            ),
+            InputResolutionState::NotStarted => code == FailureCode::PermissionDenied,
+            InputResolutionState::Started => false,
+        }
+    }
+
+    fn permits_phase(
+        &self,
+        expected_backend: CaptureBackend,
+        reported_backend: CaptureBackend,
+        phase: CapturePhase,
+    ) -> bool {
+        expected_backend == reported_backend
+            && (!matches!(
+                phase,
+                CapturePhase::AwaitingFirstCallback | CapturePhase::Active
+            ) || self.state == InputResolutionState::Completed)
+    }
+
+    fn permits_pcm(&self) -> bool {
+        self.state == InputResolutionState::Completed
+    }
 }
 
 fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) -> bool {
@@ -1376,6 +1512,12 @@ fn run_backend(
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
 ) -> AttemptResult {
+    // Close the retry-delay timeout boundary before permission probing or a
+    // new helper spawn. A Stop queued as the wait expires must own the next
+    // action rather than allowing another same-device attempt to start.
+    if stop_requested_between_attempts(command_receiver) {
+        return AttemptResult::Stopped;
+    }
     let started_at = Instant::now();
     let mut clock = ActiveAttemptClock::new(started_at);
     let mut permission_prompt_started = None;
@@ -1521,6 +1663,7 @@ fn run_backend(
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
+    let mut input_resolution = InputResolutionTracker::default();
     let worker_pid = child.pid();
     let mut hang_probe: Option<crate::hang_diagnostics::HangProbe> = None;
     let attempt_budget = if ctx.is_primary {
@@ -1753,6 +1896,7 @@ fn run_backend(
                     || pcm.sequence != expected_sequence
                     || pcm.samples.is_empty()
                     || sample_rate.is_some_and(|rate| rate != pcm.sample_rate)
+                    || !input_resolution.permits_pcm()
                 {
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
@@ -1886,8 +2030,33 @@ fn run_backend(
             }
             Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Phase {
                 phase,
-                ..
+                backend: reported_backend,
             }))) => {
+                if !input_resolution.permits_phase(backend, reported_backend, phase) {
+                    end_permission_prompt_pause(
+                        &mut permission_prompt_started,
+                        &mut clock,
+                        owner,
+                        event_sender,
+                        Instant::now(),
+                    );
+                    if !terminate_or_quarantine(
+                        child,
+                        Some(input),
+                        capture_id,
+                        nonce,
+                        Some(ProductionHostMessage::Cancel),
+                        owner,
+                        event_sender,
+                        current_phase,
+                    ) {
+                        return AttemptResult::TerminalHandled;
+                    }
+                    return AttemptResult::Failed {
+                        failure: AudioFailure::new(AudioFailureKind::ProtocolError, current_phase),
+                        retained_audio,
+                    };
+                }
                 tracing::info!(
                     target: "audio",
                     capture_id,
@@ -1910,13 +2079,79 @@ fn run_backend(
                 let _ = event_sender.send(AudioWorkerEvent::PhaseEntered { owner, phase });
             }
             Ok(HelperRead::Frame(ProductionFrame::Control(
+                ProductionHelperMessage::InputResolution {
+                    backend: reported_backend,
+                    input_enumeration_ok,
+                    requested_present,
+                    input_device_count,
+                    input_device_count_capped,
+                    default_input_available,
+                },
+            ))) => {
+                let evidence = ReportedInputResolution {
+                    input_enumeration_ok,
+                    requested_present,
+                    input_device_count,
+                    input_device_count_capped,
+                };
+                if !input_resolution.observe_evidence(
+                    backend,
+                    reported_backend,
+                    device_id.is_some(),
+                    evidence,
+                ) {
+                    end_permission_prompt_pause(
+                        &mut permission_prompt_started,
+                        &mut clock,
+                        owner,
+                        event_sender,
+                        Instant::now(),
+                    );
+                    if !terminate_or_quarantine(
+                        child,
+                        Some(input),
+                        capture_id,
+                        nonce,
+                        Some(ProductionHostMessage::Cancel),
+                        owner,
+                        event_sender,
+                        current_phase,
+                    ) {
+                        return AttemptResult::TerminalHandled;
+                    }
+                    return AttemptResult::Failed {
+                        failure: AudioFailure::new(AudioFailureKind::ProtocolError, current_phase),
+                        retained_audio,
+                    };
+                }
+                tracing::info!(
+                    target: "audio",
+                    event_code = "audio.input_resolution_observed",
+                    capture_id,
+                    owner = owner.telemetry_id(),
+                    owner_kind = owner.kind(),
+                    backend = backend_label(backend),
+                    resolution_pass = ctx.resolution_pass,
+                    backend_attempt = ctx.backend_attempt,
+                    microphone_mode = if device_id.is_some() { "pinned" } else { "system_default" },
+                    input_enumeration_ok,
+                    requested_present = requested_present.unwrap_or(false),
+                    requested_present_known = requested_present.is_some(),
+                    input_device_count,
+                    input_device_count_capped,
+                    default_input_available,
+                    "capture helper reported bounded input resolution evidence"
+                );
+            }
+            Ok(HelperRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::SetupStep {
                     backend: reported_backend,
                     step,
                     transition,
                 },
             ))) => {
-                if reported_backend != backend {
+                if reported_backend != backend || !input_resolution.observe_setup(step, transition)
+                {
                     end_permission_prompt_pause(
                         &mut permission_prompt_started,
                         &mut clock,
@@ -1954,6 +2189,7 @@ fn run_backend(
             }
             Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Failure {
                 code,
+                backend: reported_backend,
                 ..
             }))) => {
                 let phase = if retained_audio {
@@ -1968,6 +2204,24 @@ fn run_backend(
                     event_sender,
                     Instant::now(),
                 );
+                if reported_backend != backend || !input_resolution.permits_failure(code) {
+                    if !terminate_or_quarantine(
+                        child,
+                        Some(input),
+                        capture_id,
+                        nonce,
+                        Some(ProductionHostMessage::Cancel),
+                        owner,
+                        event_sender,
+                        phase,
+                    ) {
+                        return AttemptResult::TerminalHandled;
+                    }
+                    return AttemptResult::Failed {
+                        failure: AudioFailure::new(AudioFailureKind::ProtocolError, phase),
+                        retained_audio,
+                    };
+                }
                 if !terminate_or_quarantine(
                     child,
                     Some(input),
@@ -2048,27 +2302,30 @@ fn run_backend(
     }
 }
 
-fn run_capture_backend_sequence(
+fn run_capture_backend_pass(
     owner: crate::audio_lifecycle::AudioOwner,
     command_receiver: &Receiver<AudioCommand>,
-    event_sender: &AudioWorkerEventSender,
     backends: [CaptureBackend; 2],
-    mut run_attempt: impl FnMut(CaptureBackend) -> AttemptResult,
-) {
+    resolution_pass: usize,
+    run_attempt: &mut impl FnMut(CaptureBackend, usize, usize) -> AttemptResult,
+) -> BackendPassResult {
+    let mut primary_device_unavailable = false;
     for (attempt_index, backend) in backends.into_iter().enumerate() {
-        match run_attempt(backend) {
-            AttemptResult::Stopped | AttemptResult::TerminalHandled => return,
+        match run_attempt(backend, resolution_pass, attempt_index + 1) {
+            AttemptResult::Stopped => return BackendPassResult::Stopped,
+            AttemptResult::TerminalHandled => return BackendPassResult::TerminalHandled,
             AttemptResult::Failed {
                 failure,
                 retained_audio,
             } if !retained_audio && attempt_index == 0 && failure.permits_backend_fallback() => {
+                primary_device_unavailable = failure.kind == AudioFailureKind::DeviceUnavailable;
                 if stop_requested_between_attempts(command_receiver) {
                     tracing::info!(
                         target: "audio",
                         owner = owner.telemetry_id(),
                         "capture fallback suppressed by stop between backend attempts"
                     );
-                    return;
+                    return BackendPassResult::Stopped;
                 }
                 tracing::warn!(
                     target: "audio",
@@ -2085,29 +2342,131 @@ fn run_capture_backend_sequence(
                 failure,
                 retained_audio,
             } => {
-                if !retained_audio && attempt_index == 1 {
+                let fallback_exhausted = !retained_audio && attempt_index == 1;
+                let both_backends_device_unavailable = fallback_exhausted
+                    && primary_device_unavailable
+                    && failure.kind == AudioFailureKind::DeviceUnavailable;
+                return BackendPassResult::Failed(BackendPassFailure {
+                    failure,
+                    retained_audio,
+                    fallback_exhausted,
+                    both_backends_device_unavailable,
+                });
+            }
+        }
+    }
+    unreachable!("a backend pass always stops, is terminally handled, or fails")
+}
+
+fn wait_for_device_reresolution(
+    command_receiver: &Receiver<AudioCommand>,
+    delay: Duration,
+    after_timeout: impl FnOnce(),
+) -> bool {
+    match command_receiver.recv_timeout(delay) {
+        Err(RecvTimeoutError::Timeout) => {
+            after_timeout();
+            !stop_requested_between_attempts(command_receiver)
+        }
+        Ok(AudioCommand::Stop) | Err(RecvTimeoutError::Disconnected) => false,
+    }
+}
+
+fn run_capture_backend_sequence_with_delay(
+    owner: crate::audio_lifecycle::AudioOwner,
+    command_receiver: &Receiver<AudioCommand>,
+    event_sender: &AudioWorkerEventSender,
+    backends: [CaptureBackend; 2],
+    pinned_device: bool,
+    retry_delay: Duration,
+    mut run_attempt: impl FnMut(CaptureBackend, usize, usize) -> AttemptResult,
+) {
+    for pass_index in 0..DEVICE_RERESOLUTION_MAX_PASSES {
+        match run_capture_backend_pass(
+            owner,
+            command_receiver,
+            backends,
+            pass_index + 1,
+            &mut run_attempt,
+        ) {
+            BackendPassResult::Stopped | BackendPassResult::TerminalHandled => return,
+            BackendPassResult::Failed(pass_failure) => {
+                let can_reresolve = pinned_device
+                    && pass_failure.both_backends_device_unavailable
+                    && pass_index + 1 < DEVICE_RERESOLUTION_MAX_PASSES;
+                if can_reresolve {
+                    tracing::warn!(
+                        target: "audio",
+                        event_code = "audio.device_reresolution_started",
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        completed_pass = pass_index + 1,
+                        next_pass = pass_index + 2,
+                        retry_delay_ms = retry_delay.as_millis() as u64,
+                        error_kind = pass_failure.failure.kind.as_str(),
+                        "pinned microphone was absent on both backends; waiting for bounded same-device re-resolution"
+                    );
+                    if wait_for_device_reresolution(command_receiver, retry_delay, || {}) {
+                        continue;
+                    }
+                    tracing::info!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        completed_pass = pass_index + 1,
+                        "capture device re-resolution suppressed by stop"
+                    );
+                    return;
+                }
+
+                if pass_failure.fallback_exhausted {
                     tracing::error!(
                         target: "audio",
                         event_code = "audio.capture_failed",
                         owner = owner.telemetry_id(),
                         owner_kind = owner.kind(),
                         primary_backend = backend_label(backends[0]),
-                        fallback_backend = backend_label(backend),
+                        fallback_backend = backend_label(backends[1]),
                         fallback_exhausted = true,
-                        error_kind = failure.kind.as_str(),
+                        resolution_passes = pass_index + 1,
+                        error_kind = pass_failure.failure.kind.as_str(),
                         "both capture backend attempts failed before first PCM"
                     );
                 }
-                let event = if retained_audio {
-                    AudioWorkerEvent::RuntimeFailed { owner, failure }
+                let event = if pass_failure.retained_audio {
+                    AudioWorkerEvent::RuntimeFailed {
+                        owner,
+                        failure: pass_failure.failure,
+                    }
                 } else {
-                    AudioWorkerEvent::InitFailed { owner, failure }
+                    AudioWorkerEvent::InitFailed {
+                        owner,
+                        failure: pass_failure.failure,
+                    }
                 };
                 let _ = event_sender.send(event);
                 return;
             }
         }
     }
+}
+
+fn run_capture_backend_sequence(
+    owner: crate::audio_lifecycle::AudioOwner,
+    command_receiver: &Receiver<AudioCommand>,
+    event_sender: &AudioWorkerEventSender,
+    backends: [CaptureBackend; 2],
+    pinned_device: bool,
+    run_attempt: impl FnMut(CaptureBackend, usize, usize) -> AttemptResult,
+) {
+    run_capture_backend_sequence_with_delay(
+        owner,
+        command_receiver,
+        event_sender,
+        backends,
+        pinned_device,
+        DEVICE_RERESOLUTION_DELAY,
+        run_attempt,
+    );
 }
 
 fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSender) {
@@ -2142,7 +2501,8 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         &command_receiver,
         event_sender,
         backends,
-        |backend| {
+        device_id.is_some(),
+        |backend, resolution_pass, backend_attempt| {
             run_backend(
                 owner,
                 backend,
@@ -2150,6 +2510,8 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 AttemptContext {
                     is_primary: backend == backends[0],
                     memo_promoted,
+                    resolution_pass,
+                    backend_attempt,
                 },
                 &command_receiver,
                 &shared,
@@ -2611,6 +2973,250 @@ mod tests {
         assert!(stop_requested_between_attempts(&receiver));
     }
 
+    fn failed_attempt(kind: AudioFailureKind, retained_audio: bool) -> AttemptResult {
+        AttemptResult::Failed {
+            failure: AudioFailure::new(
+                kind,
+                if retained_audio {
+                    AudioInitPhase::Runtime
+                } else {
+                    AudioInitPhase::StreamBuild
+                },
+            ),
+            retained_audio,
+        }
+    }
+
+    fn resolution_evidence(requested_present: Option<bool>) -> ReportedInputResolution {
+        ReportedInputResolution {
+            input_enumeration_ok: true,
+            requested_present,
+            input_device_count: 2,
+            input_device_count_capped: false,
+        }
+    }
+
+    fn started_resolution_tracker() -> InputResolutionTracker {
+        let mut tracker = InputResolutionTracker::default();
+        assert!(
+            tracker.observe_setup(CaptureSetupStep::DeviceResolution, SetupTransition::Entered,)
+        );
+        tracker
+    }
+
+    #[test]
+    fn input_resolution_evidence_is_accepted_once_between_entered_and_completed() {
+        let mut pinned = started_resolution_tracker();
+        assert!(pinned.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(false)),
+        ));
+        assert!(pinned.permits_failure(FailureCode::NoInputDevice));
+        assert!(pinned.observe_setup(
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        assert!(pinned.observe_setup(CaptureSetupStep::AudioUnitNew, SetupTransition::Entered,));
+
+        let mut system_default = started_resolution_tracker();
+        assert!(system_default.observe_evidence(
+            CaptureBackend::Cpal,
+            CaptureBackend::Cpal,
+            false,
+            resolution_evidence(None),
+        ));
+    }
+
+    #[test]
+    fn input_resolution_rejects_missing_duplicate_and_wrong_backend_evidence() {
+        let mut missing = started_resolution_tracker();
+        assert!(!missing.observe_setup(
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        assert!(!missing.permits_failure(FailureCode::NoInputDevice));
+        assert!(InputResolutionTracker::default().permits_failure(FailureCode::PermissionDenied));
+        assert!(!InputResolutionTracker::default().permits_failure(FailureCode::NoInputDevice));
+
+        let mut duplicate = started_resolution_tracker();
+        assert!(duplicate.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+        assert!(!duplicate.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+
+        let mut wrong_backend = started_resolution_tracker();
+        assert!(!wrong_backend.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Cpal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+    }
+
+    #[test]
+    fn input_resolution_must_complete_before_active_phases_or_pcm() {
+        let mut tracker = InputResolutionTracker::default();
+        assert!(tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            CapturePhase::StreamOpen,
+        ));
+        assert!(!tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Cpal,
+            CapturePhase::StreamOpen,
+        ));
+        assert!(!tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            CapturePhase::AwaitingFirstCallback,
+        ));
+        assert!(!tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            CapturePhase::Active,
+        ));
+        assert!(!tracker.permits_pcm());
+
+        assert!(
+            tracker.observe_setup(CaptureSetupStep::DeviceResolution, SetupTransition::Entered,)
+        );
+        assert!(tracker.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+        assert!(!tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            CapturePhase::AwaitingFirstCallback,
+        ));
+        assert!(!tracker.permits_pcm());
+        assert!(tracker.observe_setup(
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        assert!(tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            CapturePhase::AwaitingFirstCallback,
+        ));
+        assert!(tracker.permits_phase(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            CapturePhase::Active,
+        ));
+        assert!(tracker.permits_pcm());
+    }
+
+    #[test]
+    fn input_resolution_failure_must_match_the_observed_resolver_result() {
+        let mut pinned_present = started_resolution_tracker();
+        assert!(pinned_present.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+        assert!(!pinned_present.permits_failure(FailureCode::NoInputDevice));
+
+        let mut enumeration_unknown = started_resolution_tracker();
+        assert!(enumeration_unknown.observe_evidence(
+            CaptureBackend::Cpal,
+            CaptureBackend::Cpal,
+            true,
+            ReportedInputResolution {
+                input_enumeration_ok: false,
+                requested_present: None,
+                input_device_count: 0,
+                input_device_count_capped: false,
+            },
+        ));
+        assert!(enumeration_unknown.permits_failure(FailureCode::EnumerationFailed));
+        assert!(!enumeration_unknown.permits_failure(FailureCode::NoInputDevice));
+
+        let mut missing_default = started_resolution_tracker();
+        assert!(missing_default.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            false,
+            resolution_evidence(None),
+        ));
+        assert!(missing_default.permits_failure(FailureCode::NoInputDevice));
+
+        let mut completed = started_resolution_tracker();
+        assert!(completed.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            resolution_evidence(Some(true)),
+        ));
+        assert!(completed.observe_setup(
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        assert!(!completed.permits_failure(FailureCode::NoInputDevice));
+        assert!(!completed.permits_failure(FailureCode::EnumerationFailed));
+        assert!(completed.permits_failure(FailureCode::ConfigurationFailed));
+    }
+
+    #[test]
+    fn input_resolution_enforces_protocol_cross_field_invariants() {
+        let invalid = [
+            (
+                true,
+                ReportedInputResolution {
+                    requested_present: None,
+                    ..resolution_evidence(Some(true))
+                },
+            ),
+            (
+                false,
+                ReportedInputResolution {
+                    requested_present: Some(true),
+                    ..resolution_evidence(None)
+                },
+            ),
+            (
+                true,
+                ReportedInputResolution {
+                    input_enumeration_ok: false,
+                    requested_present: None,
+                    input_device_count: 1,
+                    ..resolution_evidence(Some(true))
+                },
+            ),
+            (
+                true,
+                ReportedInputResolution {
+                    input_device_count: 1,
+                    input_device_count_capped: true,
+                    ..resolution_evidence(Some(true))
+                },
+            ),
+        ];
+        for (requested_device, evidence) in invalid {
+            let mut tracker = started_resolution_tracker();
+            assert!(!tracker.observe_evidence(
+                CaptureBackend::Auhal,
+                CaptureBackend::Auhal,
+                requested_device,
+                evidence,
+            ));
+        }
+    }
+
     #[test]
     fn confirmed_primary_timeout_advances_once_to_successful_fallback() {
         let (_command_sender, command_receiver) = mpsc::channel();
@@ -2627,7 +3233,8 @@ mod tests {
             &command_receiver,
             &event_sender,
             [CaptureBackend::Auhal, CaptureBackend::Cpal],
-            |backend| {
+            false,
+            |backend, _, _| {
                 calls.push(backend);
                 if backend == CaptureBackend::Auhal {
                     // Failed is emitted by the production runner only after
@@ -2659,7 +3266,8 @@ mod tests {
             &command_receiver,
             &event_sender,
             [CaptureBackend::Auhal, CaptureBackend::Cpal],
-            |backend| {
+            false,
+            |backend, _, _| {
                 calls.push(backend);
                 AttemptResult::TerminalHandled
             },
@@ -2682,7 +3290,8 @@ mod tests {
             &command_receiver,
             &event_sender,
             [CaptureBackend::Auhal, CaptureBackend::Cpal],
-            |backend| {
+            false,
+            |backend, _, _| {
                 calls.push(backend);
                 AttemptResult::Failed {
                     failure: AudioFailure::new(
@@ -2708,6 +3317,203 @@ mod tests {
     }
 
     #[test]
+    fn pinned_device_unavailable_retries_at_most_two_full_backend_passes() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+
+        run_capture_backend_sequence_with_delay(
+            crate::audio_lifecycle::AudioOwner::Dictation(31),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            true,
+            Duration::ZERO,
+            |backend, resolution_pass, backend_attempt| {
+                calls.push((backend, resolution_pass, backend_attempt));
+                failed_attempt(AudioFailureKind::DeviceUnavailable, false)
+            },
+        );
+
+        assert_eq!(
+            calls,
+            vec![
+                (CaptureBackend::Auhal, 1, 1),
+                (CaptureBackend::Cpal, 1, 2),
+                (CaptureBackend::Auhal, 2, 1),
+                (CaptureBackend::Cpal, 2, 2),
+                (CaptureBackend::Auhal, 3, 1),
+                (CaptureBackend::Cpal, 3, 2),
+            ]
+        );
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [AudioWorkerEvent::InitFailed {
+                failure: AudioFailure {
+                    kind: AudioFailureKind::DeviceUnavailable,
+                    ..
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn stop_queued_at_reresolution_timeout_boundary_prevents_the_next_pass() {
+        let (command_sender, command_receiver) = mpsc::channel();
+        assert!(!wait_for_device_reresolution(
+            &command_receiver,
+            Duration::ZERO,
+            || command_sender.send(AudioCommand::Stop).unwrap(),
+        ));
+    }
+
+    #[test]
+    fn pinned_device_can_succeed_on_a_later_reresolution_pass_without_a_terminal() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+
+        run_capture_backend_sequence_with_delay(
+            crate::audio_lifecycle::AudioOwner::Dictation(32),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            true,
+            Duration::ZERO,
+            |backend, _, _| {
+                calls.push(backend);
+                if calls.len() == 4 {
+                    AttemptResult::Stopped
+                } else {
+                    failed_attempt(AudioFailureKind::DeviceUnavailable, false)
+                }
+            },
+        );
+
+        assert_eq!(
+            calls,
+            vec![
+                CaptureBackend::Auhal,
+                CaptureBackend::Cpal,
+                CaptureBackend::Auhal,
+                CaptureBackend::Cpal,
+            ]
+        );
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn system_default_device_unavailable_does_not_reresolve() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+
+        run_capture_backend_sequence_with_delay(
+            crate::audio_lifecycle::AudioOwner::Dictation(33),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            false,
+            Duration::ZERO,
+            |backend, _, _| {
+                calls.push(backend);
+                failed_attempt(AudioFailureKind::DeviceUnavailable, false)
+            },
+        );
+
+        assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [AudioWorkerEvent::InitFailed { .. }]
+        ));
+    }
+
+    #[test]
+    fn mixed_backend_failures_do_not_reresolve_a_pinned_device() {
+        let (_command_sender, command_receiver) = mpsc::channel();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sender = AudioWorkerEventSender::new(move |event| {
+            captured_events.lock().unwrap().push(event);
+            Ok(())
+        });
+        let mut calls = Vec::new();
+
+        run_capture_backend_sequence_with_delay(
+            crate::audio_lifecycle::AudioOwner::Dictation(34),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            true,
+            Duration::ZERO,
+            |backend, _, _| {
+                calls.push(backend);
+                failed_attempt(
+                    if backend == CaptureBackend::Auhal {
+                        AudioFailureKind::BackendError
+                    } else {
+                        AudioFailureKind::DeviceUnavailable
+                    },
+                    false,
+                )
+            },
+        );
+
+        assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [AudioWorkerEvent::InitFailed {
+                failure: AudioFailure {
+                    kind: AudioFailureKind::DeviceUnavailable,
+                    ..
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn stop_during_reresolution_delay_prevents_another_helper_spawn() {
+        let (command_sender, command_receiver) = mpsc::channel();
+        let event_sender = AudioWorkerEventSender::new(|_| Ok(()));
+        let mut calls = Vec::new();
+
+        run_capture_backend_sequence_with_delay(
+            crate::audio_lifecycle::AudioOwner::Dictation(35),
+            &command_receiver,
+            &event_sender,
+            [CaptureBackend::Auhal, CaptureBackend::Cpal],
+            true,
+            DEVICE_RERESOLUTION_DELAY,
+            |backend, _, _| {
+                calls.push(backend);
+                if calls.len() == 2 {
+                    command_sender.send(AudioCommand::Stop).unwrap();
+                }
+                failed_attempt(AudioFailureKind::DeviceUnavailable, false)
+            },
+        );
+
+        assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
+    }
+
+    #[test]
     fn retained_pcm_disables_fallback() {
         let (_command_sender, command_receiver) = mpsc::channel();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -2722,7 +3528,8 @@ mod tests {
             &command_receiver,
             &event_sender,
             [CaptureBackend::Auhal, CaptureBackend::Cpal],
-            |backend| {
+            false,
+            |backend, _, _| {
                 calls.push(backend);
                 AttemptResult::Failed {
                     failure: AudioFailure::new(

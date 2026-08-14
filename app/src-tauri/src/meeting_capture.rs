@@ -7,9 +7,10 @@ use crate::model_runtime::PreparationReason;
 use crate::state::WHISPER_SAMPLE_RATE;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
-    read_production_frame, write_production_control, CaptureBackend, CaptureChannel, CapturePhase,
-    CaptureSetupStep, FailureCode, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
-    ProductionPcm, SessionNonce, SetupTransition, SystemAudioPermissionStatus,
+    read_production_frame, valid_input_resolution_evidence, write_production_control,
+    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
+    ProductionHelperMessage, ProductionHostMessage, ProductionPcm, SessionNonce, SetupTransition,
+    SystemAudioPermissionStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -490,7 +491,7 @@ fn spawn_worker(
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v5", capture_id_text.as_str(), nonce_hex],
+        &["--production-v6", capture_id_text.as_str(), nonce_hex],
         &[],
     )
     .map_err(|_| {
@@ -636,6 +637,138 @@ struct SetupWatchdog {
     pending: Option<(CaptureChannel, CaptureSetupStep, Instant)>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum MeetingInputResolutionState {
+    #[default]
+    NotStarted,
+    Started,
+    Observed,
+    Completed,
+}
+
+#[derive(Clone, Copy)]
+struct MeetingInputResolutionEvidence {
+    input_enumeration_ok: bool,
+    requested_present: Option<bool>,
+}
+
+#[derive(Default)]
+struct MeetingInputResolutionTracker {
+    state: MeetingInputResolutionState,
+    requested_device: bool,
+    evidence: Option<MeetingInputResolutionEvidence>,
+}
+
+impl MeetingInputResolutionTracker {
+    fn observe_setup(
+        &mut self,
+        channel: CaptureChannel,
+        step: CaptureSetupStep,
+        transition: SetupTransition,
+    ) -> bool {
+        if channel != CaptureChannel::Microphone {
+            return true;
+        }
+        match (step, transition, self.state) {
+            (
+                CaptureSetupStep::DeviceResolution,
+                SetupTransition::Entered,
+                MeetingInputResolutionState::NotStarted,
+            ) => self.state = MeetingInputResolutionState::Started,
+            (
+                CaptureSetupStep::DeviceResolution,
+                SetupTransition::Completed,
+                MeetingInputResolutionState::Observed,
+            ) => self.state = MeetingInputResolutionState::Completed,
+            (CaptureSetupStep::DeviceResolution, _, _) => return false,
+            (_, _, MeetingInputResolutionState::Completed) => {}
+            _ => return false,
+        }
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observe_evidence(
+        &mut self,
+        expected_backend: CaptureBackend,
+        reported_backend: CaptureBackend,
+        requested_device: bool,
+        input_enumeration_ok: bool,
+        requested_present: Option<bool>,
+        input_device_count: u16,
+        input_device_count_capped: bool,
+    ) -> bool {
+        if reported_backend != expected_backend
+            || self.state != MeetingInputResolutionState::Started
+            || !valid_input_resolution_evidence(
+                requested_device,
+                input_enumeration_ok,
+                requested_present,
+                input_device_count,
+                input_device_count_capped,
+            )
+        {
+            return false;
+        }
+        self.requested_device = requested_device;
+        self.evidence = Some(MeetingInputResolutionEvidence {
+            input_enumeration_ok,
+            requested_present,
+        });
+        self.state = MeetingInputResolutionState::Observed;
+        true
+    }
+
+    fn permits_phase(&self, channel: CaptureChannel, phase: CapturePhase) -> bool {
+        channel != CaptureChannel::Microphone
+            || !matches!(
+                phase,
+                CapturePhase::AwaitingFirstCallback | CapturePhase::Active
+            )
+            || self.state == MeetingInputResolutionState::Completed
+    }
+
+    fn permits_pcm(&self, channel: CaptureChannel) -> bool {
+        channel != CaptureChannel::Microphone
+            || self.state == MeetingInputResolutionState::Completed
+    }
+
+    fn permits_failure(&self, code: FailureCode, channel: Option<CaptureChannel>) -> bool {
+        if channel != Some(CaptureChannel::Microphone)
+            && matches!(
+                code,
+                FailureCode::NoInputDevice | FailureCode::EnumerationFailed
+            )
+        {
+            return false;
+        }
+        if channel != Some(CaptureChannel::Microphone) {
+            return true;
+        }
+        match self.state {
+            MeetingInputResolutionState::Observed => {
+                let Some(evidence) = self.evidence else {
+                    return false;
+                };
+                match code {
+                    FailureCode::NoInputDevice if self.requested_device => {
+                        evidence.input_enumeration_ok && evidence.requested_present == Some(false)
+                    }
+                    FailureCode::NoInputDevice => evidence.requested_present.is_none(),
+                    FailureCode::EnumerationFailed => !evidence.input_enumeration_ok,
+                    _ => false,
+                }
+            }
+            MeetingInputResolutionState::Completed => !matches!(
+                code,
+                FailureCode::NoInputDevice | FailureCode::EnumerationFailed
+            ),
+            MeetingInputResolutionState::NotStarted => code == FailureCode::PermissionDenied,
+            MeetingInputResolutionState::Started => false,
+        }
+    }
+}
+
 impl SetupWatchdog {
     fn observe(
         &mut self,
@@ -773,13 +906,14 @@ fn run_capture_session(
         return Err(error);
     }
 
+    let microphone_backend = CaptureBackend::Auhal;
     write_production_control(
         &mut input,
         capture_id,
         nonce,
         &ProductionHostMessage::StartMeeting {
             device_id: config.device_id.clone(),
-            backend: CaptureBackend::Auhal,
+            backend: microphone_backend,
         },
     )
     .map_err(|_| MeetingError::new("protocol_error", "Meeting capture failed to start."))?;
@@ -790,6 +924,7 @@ fn run_capture_session(
     let mut microphone_sequence = ChannelSequence::default();
     let mut system_sequence = ChannelSequence::default();
     let mut setup_watchdog = SetupWatchdog::default();
+    let mut input_resolution = MeetingInputResolutionTracker::default();
     let mut stopping = false;
     let mut stop_requested_at = None;
     let mut terminal_error = None;
@@ -881,6 +1016,13 @@ fn run_capture_session(
 
         match receiver.recv_timeout(FRAME_POLL) {
             Ok(WorkerRead::Frame(ProductionFrame::Pcm(pcm))) => {
+                if !input_resolution.permits_pcm(pcm.channel) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned microphone audio before completing input resolution.",
+                    ));
+                    break;
+                }
                 let sequence = match pcm.channel {
                     CaptureChannel::Microphone => &mut microphone_sequence,
                     CaptureChannel::System => &mut system_sequence,
@@ -913,6 +1055,13 @@ fn run_capture_session(
             Ok(WorkerRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::MeetingPhase { phase, channel },
             ))) => {
+                if !input_resolution.permits_phase(channel, phase) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker advanced before completing input resolution.",
+                    ));
+                    break;
+                }
                 if phase == CapturePhase::Active {
                     match channel {
                         CaptureChannel::Microphone => microphone_active = true,
@@ -954,15 +1103,57 @@ fn run_capture_session(
                 }
             }
             Ok(WorkerRead::Frame(ProductionFrame::Control(
+                ProductionHelperMessage::InputResolution {
+                    backend,
+                    input_enumeration_ok,
+                    requested_present,
+                    input_device_count,
+                    input_device_count_capped,
+                    ..
+                },
+            ))) => {
+                if !input_resolution.observe_evidence(
+                    microphone_backend,
+                    backend,
+                    config.device_id.is_some(),
+                    input_enumeration_ok,
+                    requested_present,
+                    input_device_count,
+                    input_device_count_capped,
+                ) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned invalid input resolution evidence.",
+                    ));
+                    break;
+                }
+            }
+            Ok(WorkerRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::MeetingSetupStep {
                     channel,
                     step,
                     transition,
                 },
-            ))) => setup_watchdog.observe(channel, step, transition),
+            ))) => {
+                if !input_resolution.observe_setup(channel, step, transition) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned input resolution steps out of order.",
+                    ));
+                    break;
+                }
+                setup_watchdog.observe(channel, step, transition);
+            }
             Ok(WorkerRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::MeetingFailure { code, channel, .. },
             ))) => {
+                if !input_resolution.permits_failure(code, channel) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned a failure inconsistent with input resolution.",
+                    ));
+                    break;
+                }
                 terminal_error = Some(meeting_error_for_failure(code, channel));
                 break;
             }
@@ -1627,6 +1818,149 @@ mod tests {
             SetupTransition::Completed,
         );
         assert!(!watchdog.expired());
+    }
+
+    #[test]
+    fn meeting_input_resolution_accepts_one_complete_microphone_sequence() {
+        let mut tracker = MeetingInputResolutionTracker::default();
+        assert!(tracker.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Entered,
+        ));
+        assert!(tracker.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            true,
+            Some(true),
+            2,
+            false,
+        ));
+        assert!(tracker.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        assert!(tracker.permits_phase(
+            CaptureChannel::Microphone,
+            CapturePhase::AwaitingFirstCallback,
+        ));
+        assert!(tracker.permits_phase(CaptureChannel::Microphone, CapturePhase::Active));
+        assert!(tracker.permits_pcm(CaptureChannel::Microphone));
+    }
+
+    #[test]
+    fn meeting_input_resolution_rejects_missing_duplicate_and_wrong_evidence() {
+        let mut tracker = MeetingInputResolutionTracker::default();
+        assert!(tracker.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Entered,
+        ));
+        assert!(!tracker.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Completed,
+        ));
+        assert!(!tracker.permits_phase(CaptureChannel::Microphone, CapturePhase::Active));
+        assert!(!tracker.permits_pcm(CaptureChannel::Microphone));
+        assert!(!tracker.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Cpal,
+            true,
+            true,
+            Some(true),
+            1,
+            false,
+        ));
+        assert!(tracker.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            true,
+            Some(true),
+            1,
+            false,
+        ));
+        assert!(!tracker.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            true,
+            Some(true),
+            1,
+            false,
+        ));
+
+        let mut invalid = MeetingInputResolutionTracker::default();
+        assert!(invalid.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Entered,
+        ));
+        assert!(!invalid.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            true,
+            Some(true),
+            (murmur_capture_helper_protocol::MAX_INPUT_DEVICE_COUNT + 1) as u16,
+            false,
+        ));
+    }
+
+    #[test]
+    fn meeting_input_resolution_failure_codes_match_microphone_evidence() {
+        let mut absent = MeetingInputResolutionTracker::default();
+        assert!(absent.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Entered,
+        ));
+        assert!(absent.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            true,
+            Some(false),
+            1,
+            false,
+        ));
+        assert!(
+            absent.permits_failure(FailureCode::NoInputDevice, Some(CaptureChannel::Microphone),)
+        );
+        assert!(!absent.permits_failure(
+            FailureCode::EnumerationFailed,
+            Some(CaptureChannel::Microphone),
+        ));
+
+        let mut present = MeetingInputResolutionTracker::default();
+        assert!(present.observe_setup(
+            CaptureChannel::Microphone,
+            CaptureSetupStep::DeviceResolution,
+            SetupTransition::Entered,
+        ));
+        assert!(present.observe_evidence(
+            CaptureBackend::Auhal,
+            CaptureBackend::Auhal,
+            true,
+            true,
+            Some(true),
+            1,
+            false,
+        ));
+        assert!(
+            !present.permits_failure(FailureCode::NoInputDevice, Some(CaptureChannel::Microphone),)
+        );
+
+        assert!(!present.permits_failure(FailureCode::NoInputDevice, None));
+        assert!(
+            !present.permits_failure(FailureCode::EnumerationFailed, Some(CaptureChannel::System),)
+        );
+        assert!(
+            present.permits_failure(FailureCode::PermissionDenied, Some(CaptureChannel::System),)
+        );
     }
 
     #[test]

@@ -55,9 +55,43 @@ export function OverlayPill({
               !
             </span>
           ) : indicator.kind === 'microphoneFailure' ? (
-            <span className="w-3 h-3 rounded-full border border-red-400 text-red-300 text-[8px] leading-none flex items-center justify-center font-bold">
-              !
-            </span>
+            indicator.failure === 'deviceUnavailable' ? (
+              <span
+                role="status"
+                aria-live="assertive"
+                aria-label="Selected microphone unavailable. Open Settings to choose another."
+                className="flex h-4 w-4 items-center justify-center text-red-300"
+              >
+                <svg
+                  aria-hidden="true"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M9 9V5a3 3 0 0 1 5.6-1.5" />
+                  <path d="M15 11.5V13a3 3 0 0 1-.4 1.5" />
+                  <path d="M5 10v2a7 7 0 0 0 11.2 5.6" />
+                  <path d="M19 10v2a7 7 0 0 1-.5 2.6" />
+                  <path d="M12 19v3" />
+                  <path d="M8 22h8" />
+                  <path d="M3 3l18 18" />
+                </svg>
+              </span>
+            ) : (
+              <span
+                role="status"
+                aria-live="assertive"
+                aria-label="Microphone capture failed. Try recording again."
+                className="w-3 h-3 rounded-full border border-red-400 text-red-300 text-[8px] leading-none flex items-center justify-center font-bold"
+              >
+                !
+              </span>
+            )
           ) : indicator.kind === 'clipboardOnly' ? (
             <span
               role="status"

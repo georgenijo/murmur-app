@@ -13,11 +13,16 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 5;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 6;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
 pub const MAX_PCM_SAMPLES: usize = 16 * 1024;
+/// Maximum exact input-device count carried by content-free resolution
+/// evidence. A helper must continue resolving across the full candidate list
+/// and set `input_device_count_capped` when the observed count exceeds this
+/// telemetry-only bound.
+pub const MAX_INPUT_DEVICE_COUNT: usize = 256;
 pub type SessionNonce = [u8; 16];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,6 +129,21 @@ pub enum ProductionHelperMessage {
         backend: CaptureBackend,
         step: CaptureSetupStep,
         transition: SetupTransition,
+    },
+    /// Content-free evidence from the live device-resolution pass used by one
+    /// capture backend attempt. The requested selector, device labels, stable
+    /// IDs, default ID, and raw backend errors never cross this boundary.
+    InputResolution {
+        backend: CaptureBackend,
+        input_enumeration_ok: bool,
+        /// `Some` only when a pinned selector was checked against a successful
+        /// backend enumeration. System-default mode and failed enumeration are
+        /// represented by `None`; the host owns the mode and disambiguates the
+        /// two without serializing the selector.
+        requested_present: Option<bool>,
+        input_device_count: u16,
+        input_device_count_capped: bool,
+        default_input_available: bool,
     },
     BackendFallback {
         from: CaptureBackend,
@@ -306,6 +326,31 @@ pub enum FailureCode {
     CallbackStalled,
     InvalidMessage,
     Internal,
+}
+
+/// Validate the bounded, cross-field invariants for production input
+/// resolution evidence. `requested_device` is host-owned request metadata and
+/// is never placed on the wire or in telemetry.
+pub fn valid_input_resolution_evidence(
+    requested_device: bool,
+    input_enumeration_ok: bool,
+    requested_present: Option<bool>,
+    input_device_count: u16,
+    input_device_count_capped: bool,
+) -> bool {
+    if usize::from(input_device_count) > MAX_INPUT_DEVICE_COUNT {
+        return false;
+    }
+    if !input_enumeration_ok {
+        return requested_present.is_none()
+            && input_device_count == 0
+            && !input_device_count_capped;
+    }
+    if input_device_count_capped && usize::from(input_device_count) != MAX_INPUT_DEVICE_COUNT {
+        return false;
+    }
+    requested_present.is_some() == requested_device
+        && !matches!(requested_present, Some(true) if input_device_count == 0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -785,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn production_v5_topology_watch_is_content_free() {
+    fn production_v6_topology_watch_and_resolution_are_content_free() {
         let nonce = [5_u8; 16];
         for (message, expected_json) in [
             (
@@ -824,6 +869,111 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&devices).unwrap(),
             r#"{"type":"devices","devices":[{"id":"stable-uid","name":"Built-in Microphone"}],"defaultInputId":"stable-uid"}"#
+        );
+
+        let resolution = ProductionHelperMessage::InputResolution {
+            backend: CaptureBackend::Auhal,
+            input_enumeration_ok: true,
+            requested_present: Some(false),
+            input_device_count: 2,
+            input_device_count_capped: false,
+            default_input_available: true,
+        };
+        let expected = r#"{"type":"inputResolution","backend":"auhal","inputEnumerationOk":true,"requestedPresent":false,"inputDeviceCount":2,"inputDeviceCountCapped":false,"defaultInputAvailable":true}"#;
+        assert_eq!(serde_json::to_string(&resolution).unwrap(), expected);
+        assert!(serde_json::from_str::<ProductionHelperMessage>(
+            r#"{"type":"inputResolution","backend":"auhal","inputEnumerationOk":true,"requestedPresent":false,"inputDeviceCount":2,"inputDeviceCountCapped":false,"defaultInputAvailable":true,"deviceId":"PRIVATE"}"#
+        )
+        .is_err());
+        let mut bytes = Vec::new();
+        write_production_control(&mut bytes, 17, nonce, &resolution).unwrap();
+        assert_eq!(
+            read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 17, nonce)
+                .unwrap(),
+            ProductionFrame::Control(resolution)
+        );
+        for forbidden in [
+            "stable-uid",
+            "Built-in Microphone",
+            "deviceId",
+            "deviceName",
+            "defaultInputId",
+            "rawError",
+        ] {
+            assert!(!expected.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn production_v6_input_resolution_invariants_are_bounded() {
+        assert!(valid_input_resolution_evidence(
+            true,
+            true,
+            Some(false),
+            2,
+            false
+        ));
+        assert!(valid_input_resolution_evidence(false, true, None, 2, false));
+        assert!(valid_input_resolution_evidence(true, false, None, 0, false));
+        assert!(valid_input_resolution_evidence(
+            true,
+            true,
+            Some(true),
+            MAX_INPUT_DEVICE_COUNT as u16,
+            true
+        ));
+
+        assert!(!valid_input_resolution_evidence(true, true, None, 2, false));
+        assert!(!valid_input_resolution_evidence(
+            false,
+            true,
+            Some(false),
+            2,
+            false
+        ));
+        assert!(!valid_input_resolution_evidence(
+            true,
+            false,
+            Some(false),
+            0,
+            false
+        ));
+        assert!(!valid_input_resolution_evidence(
+            true, false, None, 1, false
+        ));
+        assert!(!valid_input_resolution_evidence(
+            true,
+            true,
+            Some(true),
+            0,
+            false
+        ));
+        assert!(!valid_input_resolution_evidence(
+            true,
+            true,
+            Some(true),
+            1,
+            true
+        ));
+        assert!(!valid_input_resolution_evidence(
+            true,
+            true,
+            Some(true),
+            (MAX_INPUT_DEVICE_COUNT + 1) as u16,
+            false
+        ));
+
+        let system_default = ProductionHelperMessage::InputResolution {
+            backend: CaptureBackend::Cpal,
+            input_enumeration_ok: true,
+            requested_present: None,
+            input_device_count: 0,
+            input_device_count_capped: false,
+            default_input_available: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&system_default).unwrap(),
+            r#"{"type":"inputResolution","backend":"cpal","inputEnumerationOk":true,"requestedPresent":null,"inputDeviceCount":0,"inputDeviceCountCapped":false,"defaultInputAvailable":false}"#
         );
     }
 }

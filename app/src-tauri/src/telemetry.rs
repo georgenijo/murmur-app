@@ -212,6 +212,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
+        "audio.device_reresolution_started" => Some("audio.device_reresolution_started"),
+        "audio.input_resolution_observed" => Some("audio.input_resolution_observed"),
         "audio.capture_started" => Some("audio.capture_started"),
         "audio.fallback_started" => Some("audio.fallback_started"),
         "audio.capture_ready" => Some("audio.capture_ready"),
@@ -242,6 +244,158 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "updater.install_ready" => Some("updater.install_ready"),
         "updater.install_failed" => Some("updater.install_failed"),
         _ => None,
+    }
+}
+
+fn is_safe_audio_owner_kind(value: &str) -> bool {
+    matches!(
+        value,
+        "dictation" | "transform" | "query" | "preview" | "corpus"
+    )
+}
+
+fn is_audio_input_resolution_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.input_resolution_observed")
+}
+
+fn is_safe_audio_input_resolution_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("audio.input_resolution_observed"),
+        "capture_id" | "owner" => value.as_u64().is_some_and(|value| value > 0),
+        "resolution_pass" => value.as_u64().is_some_and(|value| (1..=3).contains(&value)),
+        "backend_attempt" => value.as_u64().is_some_and(|value| (1..=2).contains(&value)),
+        "owner_kind" => value.as_str().is_some_and(is_safe_audio_owner_kind),
+        "backend" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "auhal" | "cpal")),
+        "microphone_mode" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "pinned" | "system_default")),
+        "input_enumeration_ok"
+        | "requested_present"
+        | "requested_present_known"
+        | "input_device_count_capped"
+        | "default_input_available" => value.is_boolean(),
+        "input_device_count" => value.as_u64().is_some_and(|value| {
+            value <= murmur_capture_helper_protocol::MAX_INPUT_DEVICE_COUNT as u64
+        }),
+        _ => false,
+    }
+}
+
+fn valid_audio_input_resolution_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let string = |key: &str| data.get(key).and_then(serde_json::Value::as_str);
+    let boolean = |key: &str| data.get(key).and_then(serde_json::Value::as_bool);
+    let unsigned = |key: &str| data.get(key).and_then(serde_json::Value::as_u64);
+
+    let Some(mode) = string("microphone_mode") else {
+        return false;
+    };
+    let Some(enumeration_ok) = boolean("input_enumeration_ok") else {
+        return false;
+    };
+    let Some(requested_present) = boolean("requested_present") else {
+        return false;
+    };
+    let Some(requested_present_known) = boolean("requested_present_known") else {
+        return false;
+    };
+    let Some(input_device_count) = unsigned("input_device_count") else {
+        return false;
+    };
+    let Some(input_device_count_capped) = boolean("input_device_count_capped") else {
+        return false;
+    };
+    if boolean("default_input_available").is_none()
+        || string("backend").is_none()
+        || string("owner_kind").is_none()
+        || unsigned("capture_id").is_none()
+        || unsigned("owner").is_none()
+        || unsigned("resolution_pass").is_none()
+        || unsigned("backend_attempt").is_none()
+    {
+        return false;
+    }
+    if input_device_count_capped
+        && input_device_count != murmur_capture_helper_protocol::MAX_INPUT_DEVICE_COUNT as u64
+    {
+        return false;
+    }
+    if !enumeration_ok
+        && (input_device_count != 0 || input_device_count_capped || requested_present_known)
+    {
+        return false;
+    }
+    match mode {
+        "system_default" => !requested_present_known && !requested_present,
+        "pinned" => {
+            requested_present_known == enumeration_ok
+                && (requested_present_known || !requested_present)
+                && !(requested_present && input_device_count == 0)
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_audio_input_resolution_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| is_safe_audio_input_resolution_field(key, value));
+    if !valid_audio_input_resolution_shape(data) {
+        // Keep only the stable event identity rather than persisting a partial
+        // or internally contradictory hardware observation.
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
+fn is_audio_device_reresolution_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.device_reresolution_started")
+}
+
+fn is_safe_audio_device_reresolution_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("audio.device_reresolution_started"),
+        "owner" => value.as_u64().is_some_and(|value| value > 0),
+        "owner_kind" => value.as_str().is_some_and(is_safe_audio_owner_kind),
+        "completed_pass" => value.as_u64().is_some_and(|value| (1..=2).contains(&value)),
+        "next_pass" => value.as_u64().is_some_and(|value| (2..=3).contains(&value)),
+        "retry_delay_ms" => value.as_u64() == Some(500),
+        "error_kind" => value.as_str() == Some("device_unavailable"),
+        _ => false,
+    }
+}
+
+fn valid_audio_device_reresolution_shape(
+    data: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let Some(completed_pass) = data
+        .get("completed_pass")
+        .and_then(serde_json::Value::as_u64)
+    else {
+        return false;
+    };
+    let Some(next_pass) = data.get("next_pass").and_then(serde_json::Value::as_u64) else {
+        return false;
+    };
+    data.get("owner")
+        .and_then(serde_json::Value::as_u64)
+        .is_some()
+        && data
+            .get("owner_kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        && data
+            .get("retry_delay_ms")
+            .and_then(serde_json::Value::as_u64)
+            == Some(500)
+        && data.get("error_kind").and_then(serde_json::Value::as_str) == Some("device_unavailable")
+        && next_pass == completed_pass + 1
+}
+
+fn sanitize_audio_device_reresolution_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| is_safe_audio_device_reresolution_field(key, value));
+    if !valid_audio_device_reresolution_shape(data) {
+        data.retain(|key, _| key == "event_code");
     }
 }
 
@@ -339,7 +493,17 @@ fn sanitized_summary(
     data: &serde_json::Value,
     debug_build: bool,
 ) -> String {
-    if stream == "meeting" {
+    if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.input_resolution_observed")
+    {
+        // Keep this privacy-sensitive hardware observation constant even in a
+        // debug build; useful semantics live only in its strict typed fields.
+        "Microphone input resolution observed".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.device_reresolution_started")
+    {
+        "Microphone device re-resolution started".to_string()
+    } else if stream == "meeting" {
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
         "Meeting event".to_string()
@@ -587,6 +751,17 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if is_audio_input_resolution_event(obj) {
+        // This attempt-scoped hardware observation is shipped from the same
+        // JSONL as ordinary audio logs. Enforce an exact schema in every build
+        // so a future call site cannot append device identity or raw errors.
+        sanitize_audio_input_resolution_event(obj);
+        return;
+    }
+    if is_audio_device_reresolution_event(obj) {
+        sanitize_audio_device_reresolution_event(obj);
+        return;
+    }
     if is_performance_store_event(obj) {
         // Performance-store failures are shipped for fleet regression watches.
         // Treat them as a dedicated schema even in debug builds so a future
@@ -882,6 +1057,257 @@ mod tests {
             log_directory_for(root, BENCH_IDENTIFIER),
             root.join("local-dictation-bench/logs")
         );
+    }
+
+    #[test]
+    fn input_resolution_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "audio.input_resolution_observed",
+                "capture_id": 41,
+                "owner": 7,
+                "owner_kind": "dictation",
+                "backend": "auhal",
+                "resolution_pass": 2,
+                "backend_attempt": 1,
+                "microphone_mode": "pinned",
+                "input_enumeration_ok": true,
+                "requested_present": false,
+                "requested_present_known": true,
+                "input_device_count": 3,
+                "input_device_count_capped": false,
+                "default_input_available": true,
+                "device_id": "SENTINEL_PRIVATE_UID",
+                "device_name": "SENTINEL_PRIVATE_MICROPHONE",
+                "default_input_id": "SENTINEL_PRIVATE_DEFAULT_UID",
+                "uid": "SENTINEL_PRIVATE_UID",
+                "raw_error": "SENTINEL /Users/private CoreAudio error",
+                "arbitrary_string": "SENTINEL_TRANSCRIPT"
+            });
+
+            sanitize_event_data("audio", &mut data, debug_build);
+
+            assert_eq!(data["event_code"], "audio.input_resolution_observed");
+            assert_eq!(data["microphone_mode"], "pinned");
+            assert_eq!(data["requested_present"], false);
+            assert_eq!(data["requested_present_known"], true);
+            assert_eq!(data["input_device_count"], 3);
+            assert_eq!(data["default_input_available"], true);
+            assert_eq!(data.as_object().unwrap().len(), 14);
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(!encoded.contains("Users"));
+            assert!(!encoded.contains("device_id"));
+            assert!(!encoded.contains("device_name"));
+            assert!(!encoded.contains("default_input_id"));
+            assert!(!encoded.contains("raw_error"));
+
+            let summary = sanitized_summary(
+                "audio",
+                Some("SENTINEL_PRIVATE_MICROPHONE /Users/private".to_string()),
+                &data,
+                debug_build,
+            );
+            assert_eq!(summary, "Microphone input resolution observed");
+        }
+    }
+
+    #[test]
+    fn input_resolution_schema_rejects_invalid_or_contradictory_evidence() {
+        for mut data in [
+            serde_json::json!({
+                "event_code": "audio.input_resolution_observed",
+                "capture_id": 41,
+                "owner": 7,
+                "owner_kind": "dictation",
+                "backend": "auhal",
+                "resolution_pass": 1,
+                "backend_attempt": 1,
+                "microphone_mode": "pinned",
+                "input_enumeration_ok": true,
+                "requested_present": false,
+                "requested_present_known": false,
+                "input_device_count": 3,
+                "input_device_count_capped": false,
+                "default_input_available": true
+            }),
+            serde_json::json!({
+                "event_code": "audio.input_resolution_observed",
+                "capture_id": 41,
+                "owner": 7,
+                "owner_kind": "dictation",
+                "backend": "cpal",
+                "resolution_pass": 1,
+                "backend_attempt": 2,
+                "microphone_mode": "system_default",
+                "input_enumeration_ok": true,
+                "requested_present": true,
+                "requested_present_known": false,
+                "input_device_count": 257,
+                "input_device_count_capped": true,
+                "default_input_available": false
+            }),
+            serde_json::json!({
+                "event_code": "audio.input_resolution_observed",
+                "capture_id": 41,
+                "owner": 7,
+                "owner_kind": "dictation",
+                "backend": "SENTINEL_PRIVATE_BACKEND",
+                "resolution_pass": 1,
+                "backend_attempt": 1,
+                "microphone_mode": "pinned",
+                "input_enumeration_ok": false,
+                "requested_present": false,
+                "requested_present_known": false,
+                "input_device_count": 1,
+                "input_device_count_capped": false,
+                "default_input_available": true
+            }),
+            serde_json::json!({
+                "event_code": "audio.input_resolution_observed",
+                "capture_id": 41,
+                "owner": 7,
+                "owner_kind": "dictation",
+                "backend": "auhal",
+                "microphone_mode": "pinned",
+                "input_enumeration_ok": true,
+                "requested_present": false,
+                "requested_present_known": true,
+                "input_device_count": 3,
+                "input_device_count_capped": false,
+                "default_input_available": true
+            }),
+        ] {
+            sanitize_event_data("audio", &mut data, true);
+            assert_eq!(data["event_code"], "audio.input_resolution_observed");
+            assert_eq!(data.as_object().unwrap().len(), 1);
+            assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+        }
+
+        let mut unavailable = serde_json::json!({
+            "event_code": "audio.input_resolution_observed",
+            "capture_id": 9,
+            "owner": 3,
+            "owner_kind": "preview",
+            "backend": "cpal",
+            "resolution_pass": 3,
+            "backend_attempt": 2,
+            "microphone_mode": "pinned",
+            "input_enumeration_ok": false,
+            "requested_present": false,
+            "requested_present_known": false,
+            "input_device_count": 0,
+            "input_device_count_capped": false,
+            "default_input_available": true
+        });
+        sanitize_event_data("audio", &mut unavailable, true);
+        assert_eq!(unavailable.as_object().unwrap().len(), 14);
+    }
+
+    #[test]
+    fn device_reresolution_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 12,
+                "owner_kind": "dictation",
+                "completed_pass": 1,
+                "next_pass": 2,
+                "retry_delay_ms": 500,
+                "error_kind": "device_unavailable",
+                "device_id": "SENTINEL_PRIVATE_UID",
+                "device_name": "SENTINEL_PRIVATE_MICROPHONE",
+                "default_input_id": "SENTINEL_PRIVATE_DEFAULT_UID",
+                "raw_error": "SENTINEL /Users/private CoreAudio error",
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT"
+            });
+
+            sanitize_event_data("audio", &mut data, debug_build);
+
+            assert_eq!(data["event_code"], "audio.device_reresolution_started");
+            assert_eq!(data["owner"], 12);
+            assert_eq!(data["owner_kind"], "dictation");
+            assert_eq!(data["completed_pass"], 1);
+            assert_eq!(data["next_pass"], 2);
+            assert_eq!(data["retry_delay_ms"], 500);
+            assert_eq!(data["error_kind"], "device_unavailable");
+            assert_eq!(data.as_object().unwrap().len(), 7);
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(!encoded.contains("Users"));
+            assert!(!encoded.contains("device_id"));
+            assert!(!encoded.contains("device_name"));
+            assert!(!encoded.contains("default_input_id"));
+            assert!(!encoded.contains("raw_error"));
+            assert!(!encoded.contains("transcript"));
+
+            let summary = sanitized_summary(
+                "audio",
+                Some("SENTINEL_PRIVATE_MICROPHONE /Users/private".to_string()),
+                &data,
+                debug_build,
+            );
+            assert_eq!(summary, "Microphone device re-resolution started");
+        }
+    }
+
+    #[test]
+    fn device_reresolution_schema_rejects_invalid_or_contradictory_evidence() {
+        for mut data in [
+            serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 12,
+                "owner_kind": "dictation",
+                "completed_pass": 1,
+                "next_pass": 3,
+                "retry_delay_ms": 500,
+                "error_kind": "device_unavailable"
+            }),
+            serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 12,
+                "owner_kind": "preview",
+                "completed_pass": 2,
+                "next_pass": 3,
+                "retry_delay_ms": 501,
+                "error_kind": "device_unavailable"
+            }),
+            serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 12,
+                "owner_kind": "query",
+                "completed_pass": 1,
+                "next_pass": 2,
+                "retry_delay_ms": 500,
+                "error_kind": "SENTINEL_PRIVATE_ERROR"
+            }),
+            serde_json::json!({
+                "event_code": "audio.device_reresolution_started",
+                "owner": 0,
+                "owner_kind": "transform",
+                "completed_pass": 1,
+                "next_pass": 2,
+                "retry_delay_ms": 500,
+                "error_kind": "device_unavailable"
+            }),
+        ] {
+            sanitize_event_data("audio", &mut data, true);
+            assert_eq!(data["event_code"], "audio.device_reresolution_started");
+            assert_eq!(data.as_object().unwrap().len(), 1);
+            assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+        }
+
+        let mut final_retry = serde_json::json!({
+            "event_code": "audio.device_reresolution_started",
+            "owner": 4,
+            "owner_kind": "corpus",
+            "completed_pass": 2,
+            "next_pass": 3,
+            "retry_delay_ms": 500,
+            "error_kind": "device_unavailable"
+        });
+        sanitize_event_data("audio", &mut final_retry, true);
+        assert_eq!(final_retry.as_object().unwrap().len(), 7);
     }
 
     #[test]

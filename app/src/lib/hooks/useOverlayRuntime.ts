@@ -14,8 +14,10 @@ const CANCELLED_FLASH_MS = 800;
 const SECURE_FIELD_FLASH_MS = 800;
 /** How long the transform-busy refusal flash shows (issue #329). */
 const TRANSFORM_BUSY_FLASH_MS = 800;
-const MICROPHONE_FAILURE_FLASH_MS = 1200;
+export const MICROPHONE_FAILURE_FLASH_MS = 5000;
 export const CLIPBOARD_ONLY_FLASH_MS = 5000;
+
+export type MicrophoneFailureCue = 'deviceUnavailable' | 'generic';
 
 type DictationDeliveryOutcome =
   | 'clipboardOnly'
@@ -50,6 +52,13 @@ function isDictationDeliveryOutcomePayload(
     ].includes(payload.outcome as string);
 }
 
+function microphoneFailureCueFromPayload(value: unknown): MicrophoneFailureCue | null {
+  if (recordingIdFromPayload(value) == null) return null;
+  return (value as Record<string, unknown>).errorKind === 'device_unavailable'
+    ? 'deviceUnavailable'
+    : 'generic';
+}
+
 export interface UseOverlayRuntimeArgs {
   /** Current dictation status (reactive value, not just a ref). */
   status: DictationStatus;
@@ -80,8 +89,8 @@ export interface OverlayRuntime {
    * (issue #329).
    */
   showTransformBusy: boolean;
-  /** Bounded microphone-initialization failure flash. */
-  showMicrophoneFailure: boolean;
+  /** Bounded, content-free microphone-initialization failure cue. */
+  showMicrophoneFailure: MicrophoneFailureCue | null;
   /** Text reached the clipboard, but automatic paste did not complete. */
   showClipboardOnly: boolean;
   disabled: boolean;
@@ -111,11 +120,14 @@ export function useOverlayRuntime({
   const [showCancelled, setShowCancelled] = useState(false);
   const [showSecureField, setShowSecureField] = useState(false);
   const [showTransformBusy, setShowTransformBusy] = useState(false);
-  const [showMicrophoneFailure, setShowMicrophoneFailure] = useState(false);
+  const [showMicrophoneFailure, setShowMicrophoneFailure] =
+    useState<MicrophoneFailureCue | null>(null);
   const [showClipboardOnly, setShowClipboardOnly] = useState(false);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clipboardOnlyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const microphoneFailureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const microphoneFailureRecordingIdRef = useRef(0);
   const lastDeliveryRecordingIdRef = useRef(0);
   const latestRecordingGenerationRef = useRef(0);
   const clipboardListenerFailedRef = useRef(false);
@@ -199,10 +211,21 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<unknown>('dictation-delivery-outcome', (event) => {
+      if (cancelled) return;
       if (clipboardListenerFailedRef.current) return;
       if (!isDictationDeliveryOutcomePayload(event.payload)) return;
       if (event.payload.recordingId < latestRecordingGenerationRef.current) return;
       if (event.payload.recordingId <= lastDeliveryRecordingIdRef.current) return;
+      if (event.payload.recordingId > microphoneFailureRecordingIdRef.current) {
+        if (microphoneFailureTimerRef.current) clearTimeout(microphoneFailureTimerRef.current);
+        microphoneFailureTimerRef.current = null;
+        microphoneFailureRecordingIdRef.current = 0;
+        setShowMicrophoneFailure(null);
+      }
+      latestRecordingGenerationRef.current = Math.max(
+        latestRecordingGenerationRef.current,
+        event.payload.recordingId,
+      );
       lastDeliveryRecordingIdRef.current = event.payload.recordingId;
 
       if (clipboardOnlyTimerRef.current) {
@@ -244,11 +267,22 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<unknown>('dictation-generation-started', (event) => {
-      if (clipboardListenerFailedRef.current) return;
+      if (cancelled) return;
       const recordingId = recordingIdFromPayload(event.payload);
       if (recordingId == null || recordingId <= latestRecordingGenerationRef.current) return;
-      if (recordingId <= lastDeliveryRecordingIdRef.current) return;
       latestRecordingGenerationRef.current = recordingId;
+      if (recordingId > microphoneFailureRecordingIdRef.current) {
+        if (microphoneFailureTimerRef.current) clearTimeout(microphoneFailureTimerRef.current);
+        microphoneFailureTimerRef.current = null;
+        microphoneFailureRecordingIdRef.current = 0;
+        setShowMicrophoneFailure(null);
+      }
+
+      // Microphone ownership is independent of clipboard listener health.
+      // Clipboard correlation still fails closed if either of its listeners
+      // could not be installed.
+      if (clipboardListenerFailedRef.current) return;
+      if (recordingId <= lastDeliveryRecordingIdRef.current) return;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
       clipboardOnlyTimerRef.current = null;
       setShowClipboardOnly(false);
@@ -277,31 +311,66 @@ export function useOverlayRuntime({
     if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
     clipboardOnlyTimerRef.current = null;
     setShowClipboardOnly(false);
+    if (microphoneFailureTimerRef.current) clearTimeout(microphoneFailureTimerRef.current);
+    microphoneFailureTimerRef.current = null;
+    microphoneFailureRecordingIdRef.current = 0;
+    setShowMicrophoneFailure(null);
   }, [status]);
 
   useEffect(() => {
     let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    const flashFailure = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      setShowMicrophoneFailure(true);
-      timeoutId = setTimeout(() => {
-        if (!cancelled) setShowMicrophoneFailure(false);
-        timeoutId = null;
+    const flashFailure = (recordingId: number, cue: MicrophoneFailureCue) => {
+      if (cancelled || recordingId < latestRecordingGenerationRef.current) return;
+      latestRecordingGenerationRef.current = Math.max(
+        latestRecordingGenerationRef.current,
+        recordingId,
+      );
+      microphoneFailureRecordingIdRef.current = recordingId;
+      if (microphoneFailureTimerRef.current) {
+        clearTimeout(microphoneFailureTimerRef.current);
+      }
+      setShowMicrophoneFailure(cue);
+      microphoneFailureTimerRef.current = setTimeout(() => {
+        if (!cancelled) {
+          microphoneFailureRecordingIdRef.current = 0;
+          setShowMicrophoneFailure(null);
+        }
+        microphoneFailureTimerRef.current = null;
       }, MICROPHONE_FAILURE_FLASH_MS);
     };
     const unlistens: (() => void)[] = [];
-    listen('recording-initialization-failed', flashFailure).then((fn) => {
+    listen<unknown>('recording-initialization-failed', (event) => {
+      const recordingId = recordingIdFromPayload(event.payload);
+      const cue = microphoneFailureCueFromPayload(event.payload);
+      if (recordingId != null && cue != null) flashFailure(recordingId, cue);
+    }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
+    }).catch((cause: unknown) => {
+      if (!cancelled) {
+        flog.warn('overlay', 'recording-initialization-failed listener unavailable', {
+          error: String(cause),
+        });
+      }
     });
-    listen('recording-interrupted', flashFailure).then((fn) => {
-      if (cancelled) fn(); else unlisten = fn;
+    listen<unknown>('recording-interrupted', (event) => {
+      const recordingId = recordingIdFromPayload(event.payload);
+      if (recordingId != null) flashFailure(recordingId, 'generic');
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    }).catch((cause: unknown) => {
+      if (!cancelled) {
+        flog.warn('overlay', 'recording-interrupted listener unavailable', {
+          error: String(cause),
+        });
+      }
     });
     return () => {
       cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      unlisten?.();
+      if (microphoneFailureTimerRef.current) {
+        clearTimeout(microphoneFailureTimerRef.current);
+      }
+      microphoneFailureTimerRef.current = null;
+      microphoneFailureRecordingIdRef.current = 0;
       unlistens.forEach((fn) => fn());
     };
   }, []);

@@ -6,6 +6,40 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-14: Pinned microphone re-resolution is bounded and never substitutes
+
+**Decision:** When both AUHAL and CPAL fail `device_unavailable` before first
+PCM for an explicit pinned microphone, allow up to two additional complete
+primary-to-fallback passes in the session's immutable memo-resolved order. Wait
+500 ms between passes with Stop/command-channel-disconnect-aware
+cancellation, and pass the same immutable device ID to every helper. Never
+substitute the system default. System-default capture, mixed failure kinds,
+retained audio, or any other terminal result do not retry. Exhaustion emits the
+typed terminal failure; the overlay shows a five-second mic-off status labelled
+“Selected microphone unavailable. Open Settings to choose another.” without
+expanding, focusing, or changing native geometry. Other failures retain the
+generic cue.
+
+Production protocol v6 adds one helper-live `InputResolution` record before
+each backend opens the microphone. It carries only backend, enumeration
+success, knowable pinned-input presence, an input count capped at 256 with its
+cap flag, and default-input availability. The host validates the cross-field
+contract. The telemetry projection has an exact bounded allowlist, strips
+unknowns, device identity, raw errors, paths, and content, and reduces
+contradictory evidence to the stable event code in debug and release builds.
+
+**Rationale:** A temporarily detached USB input can reappear during Core Audio
+re-enumeration, but an indefinite retry or default substitution would violate
+the user's explicit microphone choice. Attempt-scoped, content-free evidence
+makes the recovery result diagnosable without exposing local device identity.
+
+**Status:** active
+
+**References:** issue #542; `audio.rs`, `audio_lifecycle.rs`,
+`crates/capture-helper-protocol`, `telemetry.rs`, `useOverlayRuntime`
+
+---
+
 ## 2026-08-14: Microphone inventory uses an idle-only shared cache with bounded refresh
 
 **Decision:** Replace helper-per-consumer microphone enumeration with one
@@ -16,7 +50,7 @@ startup and every five minutes as the bounded fallback if a listener signal is
 missed or the watcher exhausts its restart budget. Concurrent requests
 coalesce; a signal or tick during any capture-owned phase remains pending until
 the lifecycle supervisor has joined the capture worker and published Idle.
-Settings focus is a cache read, never a refresh trigger. Production protocol v5
+Settings focus is a cache read, never a refresh trigger. Production protocol v6
 carries the actual default input's optional stable ID in the bounded `Devices`
 reply and adds the watcher controls.
 
@@ -478,7 +512,7 @@ initialization budgets inside one 30-second active-time contract. Each backend
 has a 2-second confirmed-termination budget, with 2 seconds reserved for
 protocol scheduling. CPAL can start only after AUHAL's process group is proven
 empty and a final Stop check passes. Pending TCC prompt time is excluded from
-active deadlines but bounded by a separate 120-second watchdog. Protocol v5
+active deadlines but bounded by a separate 120-second watchdog. Protocol v6
 reports privacy-safe setup sub-phases.
 
 **Rationale:** A global Stop at 30 seconds previously converted a hung primary
@@ -536,7 +570,7 @@ saved only process-launch time and did not affect the blocking HAL call.
 ## 2026-08-01: Production HAL ownership moves to a killable capture worker (#405)
 
 **Decision:** Production microphone enumeration and capture run only inside the
-signed managed capture worker over binary protocol v5. The worker exposes CPAL
+signed managed capture worker over binary protocol v6. The worker exposes CPAL
 and direct AUHAL backends with one exact-device pre-buffer fallback. Callback
 PCM crosses a preallocated SPSC ring; the app validates capture identity,
 sequence, bounds, and sample rate before retaining it. Runtime failure

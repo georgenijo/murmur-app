@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import { OverlayPill } from './OverlayPill';
+import type { OverlayIndicator } from './deriveVisual';
 
 const geometry: OverlayGeometry = {
   windowW: 257,
@@ -16,13 +17,13 @@ const geometry: OverlayGeometry = {
   wingW: 36,
 };
 
-function ClipboardOnlyPill() {
+function CuePill({ indicator }: { indicator: OverlayIndicator }) {
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   return (
     <OverlayPill
       geometry={geometry}
       visual={{
-        indicator: { kind: 'clipboardOnly' },
+        indicator,
         showTapMissedLabel: false,
         waveformVisible: false,
       }}
@@ -32,7 +33,7 @@ function ClipboardOnlyPill() {
   );
 }
 
-describe('OverlayPill clipboard-only cue', () => {
+describe('OverlayPill transient cues', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -48,12 +49,39 @@ describe('OverlayPill clipboard-only cue', () => {
   });
 
   it('renders an accessible, non-interactive manual-paste status', async () => {
-    await act(async () => root.render(<ClipboardOnlyPill />));
+    await act(async () => root.render(<CuePill indicator={{ kind: 'clipboardOnly' }} />));
 
     const status = container.querySelector<HTMLElement>('[role="status"]');
     expect(status?.textContent).toBe('⌘V');
     expect(status?.getAttribute('aria-live')).toBe('polite');
     expect(status?.getAttribute('aria-label')).toBe('Text copied to clipboard. Paste manually.');
     expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('renders an actionable, non-interactive mic-off status for an unavailable device', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'deviceUnavailable' }} />,
+    ));
+
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.getAttribute('aria-live')).toBe('assertive');
+    expect(status?.getAttribute('aria-label')).toBe(
+      'Selected microphone unavailable. Open Settings to choose another.',
+    );
+    expect(status?.querySelector('svg')).not.toBeNull();
+    expect(status?.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('keeps other microphone failures generic and truthful', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'generic' }} />,
+    ));
+
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.textContent).toBe('!');
+    expect(status?.getAttribute('aria-label')).toBe(
+      'Microphone capture failed. Try recording again.',
+    );
   });
 });
