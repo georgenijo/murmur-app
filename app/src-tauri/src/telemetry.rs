@@ -477,7 +477,6 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "empty"
                 | "emitted"
                 | "in_flight"
-                | "capped"
                 | "unsupported_model"
                 | "no_session"
                 | "stale"

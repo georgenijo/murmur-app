@@ -6,6 +6,39 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-13: Voice Query live partials use a trailing decode window; pinned provider arguments are Rust-owned
+
+**Decision:** Two related fixes to Voice Query. (a) Replace the 20-second
+live-partial hard stop with a trailing-window decode: once captured audio
+exceeds `PARTIAL_WINDOW_SAMPLES` (still 20 seconds), each tick re-decodes only
+the trailing window instead of the ticker permanently stopping, so the words
+keep updating for as long as the user keeps speaking. (b) Introduce
+`pinned_query_arguments`, a set of Rust-owned argv elements appended after the
+user's saved fixed arguments at command-validation time, separate from
+`recommended_arguments` (which are copied into user-editable Settings).
+Claude's first use is a fixed `--append-system-prompt` instruction telling the
+model it has no tools or file access and that its working directory is the
+dictation app's empty private scratch folder, not the user's project —
+verified empirically that with `--tools ""` Claude Code otherwise still frames
+itself as a coding agent and fabricates file listings of that folder instead
+of answering.
+
+**Rationale:** User-editable copied argv cannot be retroactively upgraded —
+once `recommended_arguments` is copied into a user's saved Settings, a later
+fix to the preset never reaches that saved config. Pinning the anti-fabrication
+instruction in Rust and appending it at validation time means the fix applies
+to every existing saved Claude configuration immediately, not just newly
+selected presets. The trailing-window decode keeps the same content-free
+`query.partial_tick` telemetry vocabulary and cost bound as the previous cap,
+without the freeze.
+
+**Status:** active
+
+**References:** #561; `app/src-tauri/src/query_flow.rs`,
+`app/src-tauri/src/query_provider.rs`, `docs/features/voice-query.md`
+
+---
+
 ## 2026-08-13: Application builds and runtime support are macOS-only
 
 **Decision:** Enforce macOS as the only Murmur application target. The Rust

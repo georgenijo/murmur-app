@@ -57,12 +57,25 @@ struct ProviderPresetData {
     command_name: &'static str,
     discovery_paths: &'static [&'static str],
     recommended_arguments: &'static [&'static str],
+    /// Rust-owned arguments appended at validation time, after the user's
+    /// saved (editable) fixed arguments and before the prompt. Never copied
+    /// into Settings, so a fix here applies to every existing saved config
+    /// without needing users to re-save. Must stay content-free.
+    pinned_query_arguments: &'static [&'static str],
     auth_probe_arguments: &'static [&'static str],
     auth_failure_signatures: &'static [&'static str],
     sign_in_arguments: &'static [&'static str],
     sign_in_fix: Option<&'static str>,
     permitted_environment_variables: &'static [&'static str],
 }
+
+/// Claude Code's default system prompt frames it as a coding agent with a
+/// working directory even with `--tools ""`, so with all tools disabled it
+/// hallucinates tool calls and invents file listings of the (actually empty)
+/// isolated query workspace instead of answering. This fixed, content-free
+/// instruction is appended via `--append-system-prompt` for every Claude
+/// pass; it never contains the question, context, or answer.
+const CLAUDE_QUERY_PINNED_SYSTEM_PROMPT: &str = "You are answering a spoken question relayed by a local dictation app. You have no tools, no file access, and no project: your working directory is an empty private scratch folder that belongs to the dictation app, not to the user. Never attempt tool calls, never describe, list, or invent files or directories, and never treat the working directory as the subject of the question. If a block labeled as context from the user's active app is present, it describes what is on the user's screen, not your environment. Answer the question directly from your own knowledge; if it truly requires reading the user's files or screen, say you do not have access to them.";
 
 const CLAUDE: ProviderPresetData = ProviderPresetData {
     id: QueryProviderId::Claude,
@@ -84,6 +97,7 @@ const CLAUDE: ProviderPresetData = ProviderPresetData {
         "",
         "--no-session-persistence",
     ],
+    pinned_query_arguments: &["--append-system-prompt", CLAUDE_QUERY_PINNED_SYSTEM_PROMPT],
     auth_probe_arguments: &["auth", "status"],
     auth_failure_signatures: &[
         "not logged in",
@@ -120,6 +134,7 @@ const CODEX: ProviderPresetData = ProviderPresetData {
         "--color",
         "never",
     ],
+    pinned_query_arguments: &[],
     auth_probe_arguments: &["login", "status"],
     auth_failure_signatures: &[
         "not logged in",
@@ -142,6 +157,7 @@ const GROK: ProviderPresetData = ProviderPresetData {
         "~/.local/bin/grok",
     ],
     recommended_arguments: &["-p"],
+    pinned_query_arguments: &[],
     // Grok does not currently expose a status command. Listing models is its
     // documented, read-only authenticated operation and exits before a query.
     auth_probe_arguments: &["models"],
@@ -167,6 +183,7 @@ const CURSOR: ProviderPresetData = ProviderPresetData {
         "/usr/local/bin/cursor-agent",
     ],
     recommended_arguments: &["--print", "--mode", "ask", "--single-turn", "--trust"],
+    pinned_query_arguments: &[],
     auth_probe_arguments: &["status"],
     auth_failure_signatures: &[
         "not authenticated",
@@ -185,6 +202,7 @@ const CUSTOM: ProviderPresetData = ProviderPresetData {
     command_name: "",
     discovery_paths: &[],
     recommended_arguments: &[],
+    pinned_query_arguments: &[],
     auth_probe_arguments: &[],
     auth_failure_signatures: &[],
     sign_in_arguments: &[],
@@ -294,6 +312,13 @@ pub(crate) fn provider_presets() -> Vec<QueryProviderPreset> {
 
 pub(crate) fn auth_fix(provider: QueryProviderId) -> Option<&'static str> {
     preset(provider).sign_in_fix
+}
+
+/// Rust-owned arguments appended after the user's saved fixed arguments at
+/// validation time (never copied into user-editable Settings, and never used
+/// by the auth probe path). See [`ProviderPresetData::pinned_query_arguments`].
+pub(crate) fn pinned_query_arguments(provider: QueryProviderId) -> &'static [&'static str] {
+    preset(provider).pinned_query_arguments
 }
 
 pub(crate) fn is_auth_failure(provider: QueryProviderId, stdout: &str, stderr: &str) -> bool {
@@ -1021,6 +1046,21 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn only_claude_carries_pinned_query_arguments_and_they_are_content_free() {
+        assert_eq!(
+            pinned_query_arguments(QueryProviderId::Claude),
+            ["--append-system-prompt", CLAUDE_QUERY_PINNED_SYSTEM_PROMPT]
+        );
+        assert!(!CLAUDE_QUERY_PINNED_SYSTEM_PROMPT.is_empty());
+        assert!(CLAUDE_QUERY_PINNED_SYSTEM_PROMPT.contains("no tools"));
+
+        assert!(pinned_query_arguments(QueryProviderId::Codex).is_empty());
+        assert!(pinned_query_arguments(QueryProviderId::Grok).is_empty());
+        assert!(pinned_query_arguments(QueryProviderId::Cursor).is_empty());
+        assert!(pinned_query_arguments(QueryProviderId::Custom).is_empty());
     }
 
     #[test]

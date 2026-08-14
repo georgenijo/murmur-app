@@ -49,7 +49,10 @@ const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TERMINATION_DEADLINE: Duration = Duration::from_secs(2);
 const PARTIAL_INTERVAL: Duration = Duration::from_millis(700);
 const PARTIAL_MIN_SAMPLES: usize = 16_000 * 800 / 1_000;
-const PARTIAL_MAX_SAMPLES: usize = 16_000 * 20;
+/// Trailing decode window once captured audio exceeds it: each tick re-decodes
+/// only the last 20 seconds, so per-tick cost stays bounded without ever
+/// stopping the ticker while the user keeps speaking.
+const PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 20;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1211,10 +1214,21 @@ fn validate_command(
     if !(MIN_TIMEOUT_SECONDS..=MAX_TIMEOUT_SECONDS).contains(&config.timeout_seconds) {
         return Err("invalid_timeout");
     }
+    // Pinned arguments are Rust-owned and appended after the user's saved
+    // (editable) fixed arguments, so a fix here applies to every existing
+    // saved config without the user re-saving Settings. They are never
+    // subject to the argument-count/byte limits above (those bound only
+    // `config.arguments`) and never reach the auth probe path.
+    let mut arguments = config.arguments;
+    arguments.extend(
+        crate::query_provider::pinned_query_arguments(config.provider)
+            .iter()
+            .map(|argument| argument.to_string()),
+    );
     Ok(ValidatedQueryCommand {
         provider: config.provider,
         executable,
-        arguments: config.arguments,
+        arguments,
         timeout: Duration::from_secs(config.timeout_seconds),
         environment,
         working_directory,
@@ -1899,16 +1913,24 @@ fn query_partials_supported(model_name: &str) -> bool {
 enum PartialTick {
     TooShort,
     Decode,
-    Capped,
 }
 
 fn partial_tick_for_samples(count: usize) -> PartialTick {
     if count < PARTIAL_MIN_SAMPLES {
         PartialTick::TooShort
-    } else if count > PARTIAL_MAX_SAMPLES {
-        PartialTick::Capped
     } else {
         PartialTick::Decode
+    }
+}
+
+/// Returns the trailing [`PARTIAL_WINDOW_SAMPLES`] of `samples` once the
+/// buffer grows past that window, else the whole slice. Keeps per-tick decode
+/// cost bounded while captured audio keeps growing past 20 seconds.
+fn partial_decode_window(samples: &[f32]) -> &[f32] {
+    if samples.len() > PARTIAL_WINDOW_SAMPLES {
+        &samples[samples.len() - PARTIAL_WINDOW_SAMPLES..]
+    } else {
+        samples
     }
 }
 
@@ -1945,7 +1967,11 @@ fn emit_partial_tick(pass_id: u64, outcome: &'static str, sample_count: usize) {
     );
 }
 
-/// Returns false when the listening ticker should stop.
+/// Returns false when the listening ticker should stop (pass no longer
+/// listening, or the session is gone). Once captured audio exceeds
+/// [`PARTIAL_WINDOW_SAMPLES`], each tick decodes only the trailing window, so
+/// the ticker keeps running — and the words keep updating — for as long as
+/// the user keeps speaking.
 async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool {
     let transcription = {
         let state = app.state::<crate::State>();
@@ -1971,15 +1997,11 @@ async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool 
             emit_partial_tick(pass_id, "too_short", sample_count);
             true
         }
-        PartialTick::Capped => {
-            app.state::<crate::State>().query.finish_partial(pass_id);
-            emit_partial_tick(pass_id, "capped", sample_count);
-            false
-        }
         PartialTick::Decode => {
+            let window = partial_decode_window(&samples).to_vec();
             let worker_app = app.clone();
             let result = tokio::task::spawn_blocking(move || {
-                transcribe_query_partial(&worker_app, pass_id, samples, &transcription)
+                transcribe_query_partial(&worker_app, pass_id, window, &transcription)
             })
             .await;
             let text = result.ok().flatten();
@@ -3117,6 +3139,39 @@ mod tests {
     }
 
     #[test]
+    fn validate_command_appends_provider_pinned_arguments_after_user_arguments() {
+        let claude = QueryCommandConfig {
+            provider: QueryProviderId::Claude,
+            executable: "/usr/bin/printf".into(),
+            arguments: vec!["--verbose".into()],
+            timeout_seconds: 60,
+            context_level: QueryContextLevel::None,
+            retain_query_history: false,
+        };
+        let claude = validate_command(claude, vec![], std::env::temp_dir())
+            .expect("printf must be executable");
+        let mut expected = vec!["--verbose".to_string()];
+        expected.extend(
+            crate::query_provider::pinned_query_arguments(QueryProviderId::Claude)
+                .iter()
+                .map(|argument| argument.to_string()),
+        );
+        assert_eq!(claude.arguments, expected);
+
+        let custom = QueryCommandConfig {
+            provider: QueryProviderId::Custom,
+            executable: "/usr/bin/printf".into(),
+            arguments: vec!["--verbose".into()],
+            timeout_seconds: 60,
+            context_level: QueryContextLevel::None,
+            retain_query_history: false,
+        };
+        let custom = validate_command(custom, vec![], std::env::temp_dir())
+            .expect("printf must be executable");
+        assert_eq!(custom.arguments, vec!["--verbose"]);
+    }
+
+    #[test]
     fn answer_defers_to_a_clipboard_write_made_while_it_was_generating() {
         // Nothing else wrote: the answer copies itself as usual.
         assert!(may_claim_clipboard(7, 7));
@@ -4041,13 +4096,29 @@ mod tests {
             PartialTick::Decode
         );
         assert_eq!(
-            partial_tick_for_samples(PARTIAL_MAX_SAMPLES),
+            partial_tick_for_samples(PARTIAL_WINDOW_SAMPLES),
             PartialTick::Decode
         );
+        // Beyond the window the ticker keeps decoding (trailing-window
+        // decode), never falling back to a hard cap.
         assert_eq!(
-            partial_tick_for_samples(PARTIAL_MAX_SAMPLES + 1),
-            PartialTick::Capped
+            partial_tick_for_samples(PARTIAL_WINDOW_SAMPLES + 1),
+            PartialTick::Decode
         );
+    }
+
+    #[test]
+    fn partial_decode_window_bounds_the_trailing_slice() {
+        let ramp: Vec<f32> = (0..PARTIAL_WINDOW_SAMPLES + 500)
+            .map(|index| index as f32)
+            .collect();
+        let window = partial_decode_window(&ramp);
+        assert_eq!(window.len(), PARTIAL_WINDOW_SAMPLES);
+        assert_eq!(window.first().copied(), Some(500.0));
+        assert_eq!(window.last().copied(), ramp.last().copied());
+
+        let short: Vec<f32> = (0..PARTIAL_MIN_SAMPLES).map(|index| index as f32).collect();
+        assert_eq!(partial_decode_window(&short), short.as_slice());
     }
 
     #[test]
