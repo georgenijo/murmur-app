@@ -22,7 +22,6 @@ const mocks = vi.hoisted(() => ({
     signInStatus: null,
     signInBusy: false,
     contextSummary: null as string | null,
-    historySkipReason: null as 'context_included' | 'structured_raw_fallback' | null,
     cancel: vi.fn(),
     copy: vi.fn(),
     signIn: vi.fn(async () => undefined),
@@ -37,7 +36,6 @@ import {
   QueryReviewApp,
   formatQueryUsage,
   queryErrorMessage,
-  queryHistoryNotice,
 } from './QueryReviewApp';
 
 describe('QueryReviewApp', () => {
@@ -52,7 +50,6 @@ describe('QueryReviewApp', () => {
     mocks.driver.errorDetail = 'Error: Not logged in';
     mocks.driver.usage = null;
     mocks.driver.contextSummary = null;
-    mocks.driver.historySkipReason = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -91,16 +88,6 @@ describe('QueryReviewApp', () => {
       'exit_nonzero',
       'The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.',
     )).toBe('The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.');
-  });
-
-  it('maps requester-gated history skip reasons without including query content', () => {
-    expect(queryHistoryNotice('context_included')).toBe(
-      'Not saved to history — app context was included.',
-    );
-    expect(queryHistoryNotice('structured_raw_fallback')).toBe(
-      'Not saved to history — structured provider output could not be safely parsed.',
-    );
-    expect(queryHistoryNotice(null)).toBeNull();
   });
 
   it('formats provider-reported tokens and optional cost', () => {
@@ -155,17 +142,6 @@ describe('QueryReviewApp', () => {
 
     expect(container.textContent).toContain('21 in · 13 out · $0.0004');
     expect(container.textContent).toContain('Never auto-pasted');
-  });
-
-  it('explains why an otherwise successful context-bearing result was not saved', async () => {
-    mocks.driver.state = 'ready';
-    mocks.driver.errorCode = null;
-    mocks.driver.answer = 'answer';
-    mocks.driver.errorDetail = null;
-    mocks.driver.historySkipReason = 'context_included';
-    await act(async () => root.render(<QueryReviewApp />));
-
-    expect(container.textContent).toContain('Not saved to history — app context was included.');
   });
 
   it('shows listening words as plain text before the CLI runs', async () => {

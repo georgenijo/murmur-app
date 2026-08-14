@@ -1493,7 +1493,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 
               <SettingToggle
                 title="Keep Voice Query history on this Mac"
-                description="Off by default. When on, Murmur keeps up to 200 questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. A pass that actually shares app context stays display-only and is not saved, because a provider may quote that context in its answer. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
+                description="Off by default. When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
                 checked={settings.retainQueryHistory}
                 onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
               />
@@ -1548,7 +1548,8 @@ export const SettingsPanel = memo(function SettingsPanel({
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
               Answers stream into a popover and are copied to the clipboard when complete. They are never
               auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
-              Context content never enters history, saved files, usage stats, diagnostics, logs, or telemetry.
+              Context is never stored as a separate history field, but a saved answer may quote context shared with the CLI.
+              Context content never enters saved files, usage stats, diagnostics, logs, or telemetry.
             </div>
           </SettingsSection>
 

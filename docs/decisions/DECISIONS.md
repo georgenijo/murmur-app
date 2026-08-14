@@ -6,6 +6,28 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-13: Voice Query history retains opted-in contextual results
+
+**Decision:** When **Keep Voice Query history on this Mac** is enabled, retain
+every recognized Voice Query result regardless of attached app/window/selection
+context or structured-provider raw fallback. The store continues to have no
+separate context or composed-prompt field, but its saved answer can quote what
+was sent to the configured CLI.
+
+**Rationale:** The user-visible History setting should have the same clear
+local-retention contract as transcription history. Suppressing most useful
+queries after the user opted in made History appear broken. The toggle remains
+off by default, freezes at pass start, and explicitly discloses the expanded
+local-retention boundary before consent.
+
+**Status:** active; supersedes the contextual/raw-fallback exclusion in the
+2026-08-12 Voice Query retention decision below
+
+**References:** `query_flow.rs`, `QueryHistoryPanel.tsx`, `SettingsPanel.tsx`,
+`docs/features/voice-query.md`
+
+---
+
 ## 2026-08-13: Voice Query live partials use a trailing decode window; pinned provider arguments are Rust-owned
 
 **Decision:** Two related fixes to Voice Query. (a) Replace the 20-second
@@ -95,7 +117,9 @@ retention, purge, and recovery boundary enforceable without widening any
 telemetry or frontend cache contract. Keeping diagnostics separate preserves
 useful failure evidence even when content history is disabled.
 
-**Status:** active
+**Status:** superseded by the 2026-08-13 decision above. The local, opt-in
+retention boundary remains active; contextual and raw-fallback results are now
+retained within that boundary.
 
 **References:** #553; `query_history/`, `query_flow.rs`,
 `performance_metrics/`, `docs/features/voice-query.md`

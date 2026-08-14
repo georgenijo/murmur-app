@@ -3,7 +3,6 @@ import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import {
   useQueryReviewDriver,
-  type QueryHistorySkipReason,
   type QueryReviewState,
 } from '../../lib/hooks/useQueryReviewDriver';
 import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
@@ -80,16 +79,6 @@ export function queryErrorMessage(errorCode: string | null, errorDetail?: string
   return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
 }
 
-export function queryHistoryNotice(reason: QueryHistorySkipReason | null): string | null {
-  if (reason === 'context_included') {
-    return 'Not saved to history — app context was included.';
-  }
-  if (reason === 'structured_raw_fallback') {
-    return 'Not saved to history — structured provider output could not be safely parsed.';
-  }
-  return null;
-}
-
 export function queryListeningPartial(state: QueryReviewState, partial: string): string | null {
   const text = partial.trim() ? partial : '';
   return state === 'listening' && text ? text : null;
@@ -116,7 +105,6 @@ export function QueryReviewApp() {
     [driver.state, driver.partial],
   );
   const terminal = driver.state === 'ready' || driver.state === 'failed';
-  const historyNotice = queryHistoryNotice(driver.historySkipReason);
   const showErrorDetail = driver.state === 'failed'
     && driver.errorDetail
     && !isIncompleteCodexDetail(driver.errorDetail);
@@ -210,14 +198,6 @@ export function QueryReviewApp() {
               <p aria-live="polite" className="mt-2 text-xs text-white/60">{driver.signInStatus}</p>
             )}
           </div>
-          {terminal && historyNotice && (
-            <p
-              aria-label="Voice Query history status"
-              className="border-t border-white/10 px-4 py-2 text-[10px] text-amber-200/70"
-            >
-              {historyNotice}
-            </p>
-          )}
           <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
               {footerText}
