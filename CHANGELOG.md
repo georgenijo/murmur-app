@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-14
+
 ### Added
 
 - Voice Query now shows recognized words in the review popover while listening
