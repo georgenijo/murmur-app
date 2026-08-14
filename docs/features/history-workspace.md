@@ -26,21 +26,22 @@ pass, Rust stores the original question and answer with bounded metadata in a
 separate local SQLite database. History → Queries loads at most 50 records at a
 time, filters by provider, and offers **Delete all query history** as a direct
 one-click purge. The store keeps at most 200 newest entries. Turning the toggle
-off affects new passes only; it never silently deletes old records. A pass that
-actually appends app/window/selection context to its provider prompt is
-display-only and skips the entire history row, because raw or structured
-provider output may quote that context. Context configured but unavailable or
-excluded for the active app is never appended and does not suppress history.
+off affects new passes only; it never silently deletes old records. Every
+recognized query is retained when this explicit local-history consent is on,
+including a query that appended app/window/selection context to its provider
+prompt or used raw structured-provider fallback. Context is not stored as a
+separate field, but a retained answer may quote context that was sent to its
+CLI.
 
 Query records are never cached in localStorage or merged into
 `dictation-history`. They are not editable, teachable, searchable through the
 transcript index, copied into transcript exports, or included in saved files.
-Optional app/window/selection context, composed prompts, stderr/error detail,
-paths, argv, and environment values are excluded from the store. Structured
-Claude/Codex raw-fallback passes also skip the whole row because their raw
-archives can contain user frames that echo the composed prompt. The provider
-filter and pagination cross only main-window-gated IPC, and live change events
-contain no content.
+There is no separate app/window/selection context or composed-prompt field in
+the store. Stderr/error detail, paths, argv, and environment values are also
+excluded. Because a saved answer can quote context or raw provider output,
+enabling Voice Query history is explicit local consent to retain the complete
+question-and-answer result. The provider filter and pagination cross only
+main-window-gated IPC, and live change events contain no content.
 
 Writes publish atomically through Rust with owner-only file permissions and
 never log transcript content. A

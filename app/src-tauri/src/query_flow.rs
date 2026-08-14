@@ -304,7 +304,6 @@ struct QueryPassTracker {
     first_chunk_duration_ms: Option<u64>,
     current_stage: PerformanceStageV1,
     original_question: Option<String>,
-    structured_raw_fallback: bool,
     exit_code: Option<i32>,
     stderr_present: Arc<AtomicBool>,
     terminal_intent: Option<QueryTerminal>,
@@ -322,18 +321,9 @@ struct QueryTerminalSnapshot {
     original_question: Option<String>,
     answer: String,
     usage: Option<QueryUsage>,
-    context_was_included: bool,
-    structured_raw_fallback: bool,
     exit_code: Option<i32>,
     stderr_present: bool,
     terminal_intent: Option<QueryTerminal>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum QueryHistorySkipReason {
-    ContextIncluded,
-    StructuredRawFallback,
 }
 
 fn elapsed_ms(start: Instant) -> u64 {
@@ -443,7 +433,6 @@ impl QueryCoordinator {
             first_chunk_duration_ms: None,
             current_stage: PerformanceStageV1::InstructionCapture,
             original_question: None,
-            structured_raw_fallback: false,
             exit_code: None,
             stderr_present: Arc::new(AtomicBool::new(false)),
             terminal_intent: None,
@@ -686,14 +675,6 @@ impl QueryCoordinator {
         });
     }
 
-    fn mark_structured_raw_fallback(&self, pass_id: u64) {
-        let _ = self.update_tracker(pass_id, |tracker| {
-            // Sticky for the whole pass: a raw structured-provider archive can
-            // echo the composed prompt and is never eligible for persistence.
-            tracker.structured_raw_fallback = true;
-        });
-    }
-
     fn stderr_flag(&self, pass_id: u64) -> Arc<AtomicBool> {
         let _ownership = self.ownership.lock_or_recover();
         self.tracker
@@ -774,10 +755,6 @@ impl QueryCoordinator {
                 .map(|session| session.answer.clone())
                 .unwrap_or_default(),
             usage: session.as_ref().and_then(|session| session.usage),
-            context_was_included: session
-                .as_ref()
-                .is_some_and(|session| session.query_context.was_included_in_prompt()),
-            structured_raw_fallback: tracker.structured_raw_fallback,
             exit_code: tracker.exit_code,
             stderr_present: tracker.stderr_present.load(Ordering::Acquire),
             terminal_intent: tracker.terminal_intent,
@@ -897,29 +874,6 @@ impl QueryCoordinator {
             .as_ref()
             .filter(|session| session.pass_id == pass_id)
             .and_then(|session| session.usage)
-    }
-
-    fn history_skip_reason(&self, pass_id: u64) -> Option<QueryHistorySkipReason> {
-        let _ownership = self.ownership.lock_or_recover();
-        if !self.is_active(pass_id) {
-            return None;
-        }
-        let tracker = self.tracker.lock_or_recover();
-        let tracker = tracker
-            .as_ref()
-            .filter(|tracker| tracker.pass_id == pass_id && tracker.retain_history)?;
-        let session = self.session.lock_or_recover();
-        if session
-            .as_ref()
-            .filter(|session| session.pass_id == pass_id)
-            .is_some_and(|session| session.query_context.was_included_in_prompt())
-        {
-            Some(QueryHistorySkipReason::ContextIncluded)
-        } else if tracker.structured_raw_fallback {
-            Some(QueryHistorySkipReason::StructuredRawFallback)
-        } else {
-            None
-        }
     }
 
     fn set_error_detail(&self, pass_id: u64, detail: Option<String>) -> bool {
@@ -1142,7 +1096,6 @@ pub(crate) struct QueryReviewContent {
     usage: Option<QueryUsage>,
     sign_in_fix: Option<&'static str>,
     context_summary: Option<String>,
-    history_skip_reason: Option<QueryHistorySkipReason>,
 }
 
 fn validate_command(
@@ -1474,12 +1427,11 @@ fn persist_query_history_snapshot(
     snapshot: &QueryTerminalSnapshot,
     error_code: Option<&str>,
 ) -> Result<bool, String> {
-    // Context-bearing passes and structured raw fallback are display-only.
-    // Any provider can echo the composed prompt, while Claude/Codex JSONL raw
-    // archives can directly contain it. Skip the entire row, including the
-    // original question, whenever either boundary applies.
-    if !snapshot.retain_history || snapshot.context_was_included || snapshot.structured_raw_fallback
-    {
+    // History is an explicit local-content retention choice. Once enabled for
+    // this immutable pass, retain every recognized query result regardless of
+    // prompt context or provider output shape. Context is never stored as a
+    // separate field, but a retained answer may quote context sent to a CLI.
+    if !snapshot.retain_history {
         return Ok(false);
     }
     let (Some(epoch), Some(question)) = (snapshot.history_epoch, &snapshot.original_question)
@@ -2083,39 +2035,22 @@ fn accept_stdout(
     sequence: &mut u64,
     bytes: &[u8],
 ) -> Result<(), &'static str> {
-    let updates =
-        adapt_stdout_for_pass(&app.state::<crate::State>().query, pass_id, adapter, bytes)?;
+    let updates = adapt_stdout_for_pass(adapter, bytes)?;
     accept_answer_updates(app, pass_id, sequence, updates)?;
     Ok(())
 }
 
 fn adapt_stdout_for_pass(
-    query: &QueryCoordinator,
-    pass_id: u64,
     adapter: &mut VoiceQueryAdapter,
     bytes: &[u8],
 ) -> Result<Vec<AnswerUpdate>, &'static str> {
-    let updates = adapter.push_stdout(bytes)?;
-    // Mark persistence ineligible before applying/emitting the raw Replace.
-    // Cancellation waits for this worker, so terminal claim observes it.
-    if adapter.used_structured_raw_fallback() {
-        query.mark_structured_raw_fallback(pass_id);
-    }
-    Ok(updates)
+    adapter.push_stdout(bytes)
 }
 
 fn finish_adapter_for_pass(
-    query: &QueryCoordinator,
-    pass_id: u64,
     adapter: &mut VoiceQueryAdapter,
 ) -> Result<crate::query_adapter::AdapterCompletion, &'static str> {
-    let completion = adapter.finish()?;
-    // An otherwise-valid structured prefix can first degrade at EOF. Record
-    // that fact before its raw replacement reaches the session/UI.
-    if adapter.used_structured_raw_fallback() {
-        query.mark_structured_raw_fallback(pass_id);
-    }
-    Ok(completion)
+    adapter.finish()
 }
 
 fn accept_answer_updates(
@@ -2558,9 +2493,8 @@ fn run_cli(
     // release the ownership record before parser finalization so even a
     // bounded-output refusal cannot leave a dead child blocking a later pass.
     app.state::<crate::State>().query.clear_child(pass_id);
-    let completion =
-        finish_adapter_for_pass(&app.state::<crate::State>().query, pass_id, &mut adapter)
-            .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
+    let completion = finish_adapter_for_pass(&mut adapter)
+        .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
     accept_answer_updates(&app, pass_id, &mut sequence, completion.updates)
         .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
     app.state::<crate::State>()
@@ -2864,8 +2798,6 @@ pub(crate) fn get_query_review_content(
     }
     let query_pass_id = state.query.active_pass_id();
     let session = query_pass_id.and_then(|pass_id| state.query.session(pass_id));
-    let history_skip_reason =
-        query_pass_id.and_then(|pass_id| state.query.history_skip_reason(pass_id));
     QueryReviewContent {
         query_pass_id,
         answer: session
@@ -2881,7 +2813,6 @@ pub(crate) fn get_query_review_content(
             .as_ref()
             .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),
         context_summary: session.and_then(|session| session.query_context.summary()),
-        history_skip_reason,
     }
 }
 
@@ -3094,7 +3025,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_raw_fallback_displays_exact_bytes_but_skips_history() {
+    fn structured_raw_fallback_is_retained_when_history_is_enabled() {
         let temp = tempfile::tempdir().unwrap();
         let history = crate::query_history::QueryHistoryStore::default();
         history
@@ -3133,32 +3064,23 @@ mod tests {
         );
         let malformed = "{\"type\":\"result\"\n";
         let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Claude, 4096);
-        assert!(
-            adapt_stdout_for_pass(&query, pass_id, &mut adapter, user_frame.as_bytes())
-                .unwrap()
-                .is_empty()
-        );
-        let updates =
-            adapt_stdout_for_pass(&query, pass_id, &mut adapter, malformed.as_bytes()).unwrap();
+        assert!(adapt_stdout_for_pass(&mut adapter, user_frame.as_bytes())
+            .unwrap()
+            .is_empty());
+        let updates = adapt_stdout_for_pass(&mut adapter, malformed.as_bytes()).unwrap();
         assert_eq!(
             updates,
             vec![AnswerUpdate::Replace(format!("{user_frame}{malformed}"))]
         );
         apply_query_updates(&query, pass_id, updates);
-        let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
+        let completion = finish_adapter_for_pass(&mut adapter).unwrap();
         assert!(completion.updates.is_empty());
 
-        assert_eq!(
-            query.history_skip_reason(pass_id),
-            Some(QueryHistorySkipReason::StructuredRawFallback)
-        );
-
         let snapshot = query.claim_terminal(pass_id).unwrap();
-        assert!(snapshot.structured_raw_fallback);
         assert_eq!(snapshot.answer, format!("{user_frame}{malformed}"));
         assert!(snapshot.answer.contains(private_context));
-        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+        assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
 
         let raw_adapter = VoiceQueryAdapter::new(QueryProviderId::Custom, 4096);
         assert!(!raw_adapter.used_structured_raw_fallback());
@@ -3173,18 +3095,45 @@ mod tests {
             original_question: Some("Raw provider question".into()),
             answer: "Raw provider answer".into(),
             usage: None,
-            context_was_included: false,
-            structured_raw_fallback: false,
             exit_code: Some(0),
             stderr_present: false,
             terminal_intent: None,
         };
         assert!(persist_query_history_snapshot(&history, &raw_snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None).unwrap().total, 2);
     }
 
     #[test]
-    fn context_bearing_raw_provider_echo_is_display_only() {
+    fn history_disabled_keeps_recognized_results_ephemeral() {
+        let temp = tempfile::tempdir().unwrap();
+        let history = crate::query_history::QueryHistoryStore::default();
+        history
+            .initialize(temp.path().join("query-history"), None)
+            .unwrap();
+        let epoch = history.clear_epoch().unwrap();
+
+        let snapshot = QueryTerminalSnapshot {
+            provider: QueryProviderId::Custom,
+            retain_history: false,
+            history_epoch: Some(epoch),
+            timestamp_ms: 1,
+            duration_ms: 1,
+            current_stage: PerformanceStageV1::Generation,
+            stages: vec![],
+            original_question: Some("Do not retain this".into()),
+            answer: "Ephemeral answer".into(),
+            usage: None,
+            exit_code: Some(0),
+            stderr_present: false,
+            terminal_intent: None,
+        };
+
+        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+    }
+
+    #[test]
+    fn context_bearing_raw_provider_echo_is_retained_when_history_is_enabled() {
         let temp = tempfile::tempdir().unwrap();
         let history = crate::query_history::QueryHistoryStore::default();
         history
@@ -3229,29 +3178,20 @@ mod tests {
             },
         ));
         let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Custom, MAX_ANSWER_BYTES);
-        let updates =
-            adapt_stdout_for_pass(&query, pass_id, &mut adapter, composed_prompt.as_bytes())
-                .unwrap();
+        let updates = adapt_stdout_for_pass(&mut adapter, composed_prompt.as_bytes()).unwrap();
         apply_query_updates(&query, pass_id, updates);
-        let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
+        let completion = finish_adapter_for_pass(&mut adapter).unwrap();
         apply_query_updates(&query, pass_id, completion.updates);
 
-        assert_eq!(
-            query.history_skip_reason(pass_id),
-            Some(QueryHistorySkipReason::ContextIncluded)
-        );
-
         let snapshot = query.claim_terminal(pass_id).unwrap();
-        assert!(snapshot.context_was_included);
-        assert!(!snapshot.structured_raw_fallback);
         assert_eq!(snapshot.answer, composed_prompt);
         assert!(snapshot.answer.contains(private_context));
-        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+        assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
     }
 
     #[test]
-    fn context_bearing_valid_structured_answer_is_display_only() {
+    fn context_bearing_valid_structured_answer_is_retained_when_history_is_enabled() {
         let temp = tempfile::tempdir().unwrap();
         let history = crate::query_history::QueryHistoryStore::default();
         history
@@ -3308,20 +3248,17 @@ mod tests {
             })
         );
         let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Claude, MAX_ANSWER_BYTES);
-        let updates =
-            adapt_stdout_for_pass(&query, pass_id, &mut adapter, result.as_bytes()).unwrap();
+        let updates = adapt_stdout_for_pass(&mut adapter, result.as_bytes()).unwrap();
         apply_query_updates(&query, pass_id, updates);
-        let completion = finish_adapter_for_pass(&query, pass_id, &mut adapter).unwrap();
+        let completion = finish_adapter_for_pass(&mut adapter).unwrap();
         assert!(completion.used_structured_output);
         assert!(!adapter.used_structured_raw_fallback());
         apply_query_updates(&query, pass_id, completion.updates);
 
         let snapshot = query.claim_terminal(pass_id).unwrap();
-        assert!(snapshot.context_was_included);
-        assert!(!snapshot.structured_raw_fallback);
         assert_eq!(snapshot.answer, answer);
-        assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+        assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
     }
 
     #[test]

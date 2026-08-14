@@ -12,7 +12,7 @@ Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https
 - A provider may add only its declared config-directory selector: `CLAUDE_CONFIG_DIR` for Claude and `CODEX_HOME` for Codex (Custom may use either). Base allowlist keys, undeclared names, API keys, and tokens are rejected. Values are owner-only Rust app data, never localStorage; Settings receives only the configured variable names after saving and never reads saved values back. Explicit **Clear saved values** also repairs a malformed or future-version store by replacing the untrusted file with an empty current-version store.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question, enabled context, or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
-- Question, answer, and context content never enters structured telemetry, logs, dictation history, usage statistics, performance diagnostics, transcript/audio file output, or broadcast state events. The separate Voice Query history store is the one exception for question and answer content, and only when **Keep Voice Query history on this Mac** was enabled at the start of that pass. Context content is excluded even then. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview; full answer and context-summary retrieval is requester-gated to that window, while numeric usage may also reach the main window for local aggregation.
+- Question, answer, and context content never enters structured telemetry, logs, dictation history, usage statistics, performance diagnostics, transcript/audio file output, or broadcast state events. The separate Voice Query history store is the one exception for question and answer content, and only when **Keep Voice Query history on this Mac** was enabled at the start of that pass. Context is never stored as a separate field, but a retained answer may quote context that was sent to the CLI. Usage statistics accept only content-free counters. Answer chunks are targeted only to the `query-review` webview; full answer and context-summary retrieval is requester-gated to that window, while numeric usage may also reach the main window for local aggregation.
 
 ## Opt-in app context
 
@@ -86,17 +86,15 @@ pass already in flight. When enabled, the terminal pass is written best-effort
 to a separate Rust-owned SQLite store. A record contains only its timestamp,
 provider preset, original transcribed question, answer (including a bounded
 partial answer on failure), provider-reported token counts, total duration, and
-stable error code. It never contains the composed prompt, app/window/selection
-context, provider stderr or typed error detail, executable path, argv,
-environment values, or secrets. If a pass actually appends app context to its
-provider prompt, the whole pass is display-only and no history row is written;
-this prevents raw or structured provider output that quotes that context from
-persisting it indirectly. Context configured but unavailable or disabled for
-the current app is not appended and does not by itself suppress history. When
-retention was enabled, the terminal review explicitly says whether the result
-was not saved because app context was included or because Claude/Codex entered
-structured raw fallback. That content-free reason is available only through
-the requester-gated review IPC and is not broadcast or added to telemetry.
+stable error code. It never contains the composed prompt as a separate field,
+provider stderr or typed error detail, executable path, argv, environment
+values, or secrets. An enabled history pass is retained whether or not it
+included app/window/selection context or a provider fell back to raw output.
+The saved answer may therefore quote context that was sent to the CLI; enabling
+history is explicit local consent to retain that question-and-answer result.
+Context configured but unavailable or disabled for the current app is simply
+not appended. Context and query content remain excluded from telemetry,
+statistics, performance diagnostics, and logs.
 
 The store retains the newest 200 records and prunes in the same transaction as
 each insert. History → Queries reads it through main-window-only, paged IPC,

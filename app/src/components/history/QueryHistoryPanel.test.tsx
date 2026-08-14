@@ -52,12 +52,12 @@ describe('QueryHistoryPanel', () => {
     container.remove();
   });
 
-  it('shows local question/answer records and only content-free metadata', async () => {
+  it('shows local question/answer records and explains the context boundary', async () => {
     await act(async () => root.render(<QueryHistoryPanel history={history()} retentionEnabled />));
     expect(container.textContent).toContain('What is private?');
     expect(container.textContent).toContain('Context and stderr never enter this store.');
     expect(container.textContent).toContain('12 in · 9 out · 3 cached · 1 cache write · 2 reasoning');
-    expect(container.textContent).toContain('Context, provider stderr, commands, paths, and environment values are never stored here.');
+    expect(container.textContent).toContain('Context is never stored as a separate field; provider stderr, commands, paths, and environment values are never stored here.');
     expect(container.textContent).not.toContain('$');
   });
 
@@ -106,9 +106,10 @@ describe('QueryHistoryPanel', () => {
     expect(container.textContent).toContain('Voice Query history deleted from this Mac.');
   });
 
-  it('explains why a context-bearing pass is intentionally not saved', async () => {
+  it('explains that recognized context-bearing queries are retained', async () => {
     const state = history({ entries: [], total: 0 });
     await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
-    expect(container.textContent).toContain('Context-bearing passes stay display-only and are not saved');
+    expect(container.textContent).toContain('including queries that shared app context');
+    expect(container.textContent).toContain('Saved answers can quote that context.');
   });
 });

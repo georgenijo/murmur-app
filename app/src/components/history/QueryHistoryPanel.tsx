@@ -51,7 +51,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
               {retentionEnabled
                 ? 'Questions and answers are kept only in Murmur’s bounded local store.'
                 : 'Saving is off. Existing entries remain available until you delete them.'}
-              {' '}Context, provider stderr, commands, paths, and environment values are never stored here.
+              {' '}Context is never stored as a separate field; provider stderr, commands, paths, and environment values are never stored here.
             </p>
           </div>
           <label className="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant">
@@ -107,7 +107,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
               <p className="text-sm font-medium text-on-surface">No saved Voice Queries</p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
                 {retentionEnabled
-                  ? 'Queries without attached app context will appear here. Context-bearing passes stay display-only and are not saved because providers can quote that context.'
+                  ? 'Recognized Voice Queries appear here, including queries that shared app context. Saved answers can quote that context.'
                   : 'Turn on “Keep Voice Query history on this Mac” in Settings to save future questions and answers.'}
               </p>
             </div>

@@ -1493,7 +1493,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 
               <SettingToggle
                 title="Keep Voice Query history on this Mac"
-                description="Off by default. When on, Murmur keeps up to 200 questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. A pass that actually shares app context stays display-only and is not saved, because a provider may quote that context in its answer. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
+                description="Off by default. When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
                 checked={settings.retainQueryHistory}
                 onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
               />

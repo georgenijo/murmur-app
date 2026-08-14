@@ -13,8 +13,6 @@ export type QueryReviewState =
   | 'ready'
   | 'failed';
 
-export type QueryHistorySkipReason = 'context_included' | 'structured_raw_fallback';
-
 interface QueryStatePayload {
   queryPassId: number;
   state: QueryReviewState;
@@ -36,11 +34,6 @@ interface QueryContent {
   usage: QueryUsage | null;
   signInFix: string | null;
   contextSummary: string | null;
-  historySkipReason?: QueryHistorySkipReason | null;
-}
-
-function isHistorySkipReason(value: unknown): value is QueryHistorySkipReason {
-  return value === 'context_included' || value === 'structured_raw_fallback';
 }
 
 function validPassId(value: unknown): value is number {
@@ -77,7 +70,6 @@ export function useQueryReviewDriver() {
   const [signInStatus, setSignInStatus] = useState<string | null>(null);
   const [signInBusy, setSignInBusy] = useState(false);
   const [contextSummary, setContextSummary] = useState<string | null>(null);
-  const [historySkipReason, setHistorySkipReason] = useState<QueryHistorySkipReason | null>(null);
   const passIdRef = useRef<number | null>(null);
   const nextSequenceRef = useRef(0);
   const contentRefreshTicketRef = useRef(0);
@@ -129,9 +121,6 @@ export function useQueryReviewDriver() {
           setErrorDetail(typeof content.errorDetail === 'string' ? content.errorDetail : null);
           setUsage(isQueryUsage(content.usage) ? content.usage : null);
           setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
-          setHistorySkipReason(isHistorySkipReason(content.historySkipReason)
-            ? content.historySkipReason
-            : null);
           if (terminal || terminalPassIdRef.current === expectedPassId) {
             terminalAnswerSnapshotRef.current = true;
           }
@@ -162,7 +151,6 @@ export function useQueryReviewDriver() {
           signInAttemptRef.current += 1;
           copyAttemptRef.current += 1;
           setContextSummary(null);
-          setHistorySkipReason(null);
         }
         setState(payload.state);
         setErrorCode(payload.errorCode);
@@ -251,7 +239,6 @@ export function useQueryReviewDriver() {
         signInAttemptRef.current += 1;
         copyAttemptRef.current += 1;
         setContextSummary(null);
-        setHistorySkipReason(null);
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenContext(); unlistenHidden(); }
     };
@@ -342,7 +329,6 @@ export function useQueryReviewDriver() {
     signInStatus,
     signInBusy,
     contextSummary,
-    historySkipReason,
     cancel,
     copy,
     signIn,

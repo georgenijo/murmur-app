@@ -32,7 +32,6 @@ function content(
   fix = '',
   usage: unknown = null,
   contextSummary: string | null = null,
-  historySkipReason: 'context_included' | 'structured_raw_fallback' | null = null,
 ) {
   return {
     queryPassId,
@@ -42,7 +41,6 @@ function content(
     usage,
     signInFix: fix,
     contextSummary,
-    historySkipReason,
   };
 }
 
@@ -92,7 +90,7 @@ describe('useQueryReviewDriver ownership', () => {
     });
   }
 
-  it('accepts a content-free history skip reason only from the terminal content snapshot', async () => {
+  it('refreshes the terminal answer and context snapshot', async () => {
     mocks.invoke.mockResolvedValue(content(
       41,
       'answer',
@@ -100,7 +98,6 @@ describe('useQueryReviewDriver ownership', () => {
       '',
       null,
       'Context: TextEdit',
-      'context_included',
     ));
     await mount();
 
@@ -112,7 +109,7 @@ describe('useQueryReviewDriver ownership', () => {
       await Promise.resolve();
     });
 
-    expect(current!.historySkipReason).toBe('context_included');
+    expect(current!.contextSummary).toBe('Context: TextEdit');
   });
 
   it('does not let a delayed prior-pass snapshot overwrite any active-pass field', async () => {

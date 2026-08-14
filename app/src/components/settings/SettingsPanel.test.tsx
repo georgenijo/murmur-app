@@ -221,8 +221,8 @@ describe('SettingsPanel information architecture', () => {
     expect(historyToggle.getAttribute('aria-checked')).toBe('false');
     await act(async () => historyToggle.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ retainQueryHistory: true });
-    expect(container.textContent).toContain('Context content never enters history');
-    expect(container.textContent).toContain('stays display-only and is not saved');
+    expect(container.textContent).toContain('This includes queries that shared app context');
+    expect(container.textContent).toContain('a saved answer may quote it');
   });
 
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
