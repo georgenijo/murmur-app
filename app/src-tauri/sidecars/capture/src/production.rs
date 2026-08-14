@@ -1394,7 +1394,7 @@ mod tests {
         assert_eq!(select_cpal(&[(false, true), (false, true)]), None);
         assert_eq!(select_cpal(&[(false, true), (true, true)]), Some(1));
 
-        let auhal_ids = vec![Some("uid-a".to_string()), None, Some("uid-b".to_string())];
+        let auhal_ids = [Some("uid-a".to_string()), None, Some("uid-b".to_string())];
         let auhal_candidates = || auhal_ids.iter().cloned().enumerate();
         assert_eq!(select_auhal_device("missing", auhal_candidates()), None);
         assert_eq!(select_auhal_device("uid-b", auhal_candidates()), Some(2));
