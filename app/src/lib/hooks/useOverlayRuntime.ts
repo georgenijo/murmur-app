@@ -118,6 +118,7 @@ export function useOverlayRuntime({
   const clipboardOnlyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDeliveryRecordingIdRef = useRef(0);
   const latestRecordingGenerationRef = useRef(0);
+  const clipboardListenerFailedRef = useRef(false);
 
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
 
@@ -198,6 +199,7 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<unknown>('dictation-delivery-outcome', (event) => {
+      if (clipboardListenerFailedRef.current) return;
       if (!isDictationDeliveryOutcomePayload(event.payload)) return;
       if (event.payload.recordingId < latestRecordingGenerationRef.current) return;
       if (event.payload.recordingId <= lastDeliveryRecordingIdRef.current) return;
@@ -217,6 +219,15 @@ export function useOverlayRuntime({
       }, CLIPBOARD_ONLY_FLASH_MS);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
+    }).catch((cause: unknown) => {
+      if (cancelled) return;
+      clipboardListenerFailedRef.current = true;
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
+      setShowClipboardOnly(false);
+      flog.warn('overlay', 'dictation-delivery-outcome listener unavailable', {
+        error: String(cause),
+      });
     });
     return () => {
       cancelled = true;
@@ -233,6 +244,7 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<unknown>('dictation-generation-started', (event) => {
+      if (clipboardListenerFailedRef.current) return;
       const recordingId = recordingIdFromPayload(event.payload);
       if (recordingId == null || recordingId <= latestRecordingGenerationRef.current) return;
       if (recordingId <= lastDeliveryRecordingIdRef.current) return;
@@ -242,6 +254,15 @@ export function useOverlayRuntime({
       setShowClipboardOnly(false);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
+    }).catch((cause: unknown) => {
+      if (cancelled) return;
+      clipboardListenerFailedRef.current = true;
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
+      setShowClipboardOnly(false);
+      flog.warn('overlay', 'dictation-generation-started listener unavailable', {
+        error: String(cause),
+      });
     });
     return () => {
       cancelled = true;

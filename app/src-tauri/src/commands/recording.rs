@@ -606,6 +606,25 @@ fn delivery_event_recording_id(
     }
 }
 
+/// Run a delivery side effect only while this recording still owns the
+/// Processing state. The dictation lock stays held through `operation`, making
+/// cancellation/supersession atomic with the clipboard write and optional
+/// paste that the main-thread callback performs.
+fn with_current_delivery_owner<T>(
+    app_state: &AppState,
+    recording_id: u64,
+    operation: impl FnOnce() -> T,
+) -> Option<T> {
+    let dictation = app_state.dictation.lock_or_recover();
+    delivery_event_recording_id(
+        recording_id,
+        app_state.recording_id.load(Ordering::SeqCst),
+        app_state.is_cancelled(recording_id),
+        dictation.status,
+    )?;
+    Some(operation())
+}
+
 #[cfg(test)]
 mod clipboard_delivery_tests {
     use super::*;
@@ -660,6 +679,55 @@ mod clipboard_delivery_tests {
         assert_eq!(
             delivery_event_recording_id(12, 12, false, DictationStatus::Processing),
             Some(12)
+        );
+    }
+
+    #[test]
+    fn queued_delivery_rechecks_ownership_before_running_its_side_effect() {
+        let app_state = AppState::default();
+        app_state.recording_id.store(12, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+
+        let mut calls = 0;
+        assert_eq!(
+            with_current_delivery_owner(&app_state, 12, || {
+                assert!(matches!(
+                    app_state.dictation.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                calls += 1;
+                42
+            }),
+            Some(42)
+        );
+
+        app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+        assert_eq!(
+            with_current_delivery_owner(&app_state, 12, || {
+                calls += 1;
+                43
+            }),
+            None
+        );
+
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        app_state.recording_id.store(13, Ordering::SeqCst);
+        assert_eq!(
+            with_current_delivery_owner(&app_state, 12, || {
+                calls += 1;
+                44
+            }),
+            None
+        );
+        assert_eq!(calls, 1);
+
+        let cancelled_state = AppState::default();
+        cancelled_state.recording_id.store(12, Ordering::SeqCst);
+        cancelled_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        cancelled_state.cancel_recording(12);
+        assert_eq!(
+            with_current_delivery_owner(&cancelled_state, 12, || 45),
+            None
         );
     }
 
@@ -1126,15 +1194,20 @@ async fn run_transcription_pipeline(
         let paste_delay_ms = delivery.paste_delay_ms;
         let target_process_id = context.app.process_id;
         let (tx, rx) =
-            tokio::sync::oneshot::channel::<Result<injector::InjectionOutcome, String>>();
+            tokio::sync::oneshot::channel::<Option<Result<injector::InjectionOutcome, String>>>();
+        let injection_app_handle = app_handle.clone();
         app_handle
             .run_on_main_thread(move || {
-                let _ = tx.send(injector::inject_text(
-                    &text_to_inject,
-                    effective_auto_paste,
-                    paste_delay_ms,
-                    target_process_id,
-                ));
+                let state = injection_app_handle.state::<State>();
+                let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
+                    injector::inject_text(
+                        &text_to_inject,
+                        effective_auto_paste,
+                        paste_delay_ms,
+                        target_process_id,
+                    )
+                });
+                let _ = tx.send(attempt);
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
         let paste_hint = if cfg!(target_os = "macos") {
@@ -1145,7 +1218,7 @@ async fn run_transcription_pipeline(
         let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
         {
-            Ok(Ok(Ok(outcome))) => {
+            Ok(Ok(Some(Ok(outcome)))) => {
                 if let injector::InjectionOutcome::ClipboardOnly(reason) = outcome {
                     let failure_message = match reason {
                         injector::ClipboardOnlyReason::TargetChanged => Some(
@@ -1162,13 +1235,30 @@ async fn run_transcription_pipeline(
                 }
                 confirmed_delivery_outcome(outcome)
             }
-            Ok(Ok(Err(e))) => {
+            Ok(Ok(Some(Err(e)))) => {
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
                 let _ = app_handle.emit(
                     "auto-paste-failed",
                     "Couldn't copy the transcription to the clipboard.",
                 );
                 DictationDeliveryOutcome::ClipboardWriteFailed
+            }
+            Ok(Ok(None)) => {
+                tracing::info!(
+                    target: "pipeline",
+                    recording_id,
+                    "cancelled before queued text injection"
+                );
+                timings.correction_ms = correction_ms;
+                timings.transform_ms = transform_ms;
+                timings.transform_stages = transform_stages;
+                timings.file_output_ms = file_output_ms;
+                timings.paste_ms = t_inject.elapsed().as_millis() as u64;
+                return Ok(PipelineResult {
+                    text: String::new(),
+                    timings,
+                    terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
+                });
             }
             Ok(Err(_)) => {
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
