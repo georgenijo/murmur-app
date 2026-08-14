@@ -136,10 +136,6 @@ describe('microphone startup benchmark boundary', () => {
     unknownFailure.cycles[1].attempts[0].failureKind = 'raw_coreaudio_error' as never;
     expect(parseMicrophoneStartupBenchmarkReport(unknownFailure)).toBeNull();
 
-    const impossibleTiming = structuredClone(report());
-    impossibleTiming.cycles[0].attempts[0].attemptStartToFirstPcmMs = 101;
-    expect(parseMicrophoneStartupBenchmarkReport(impossibleTiming)).toBeNull();
-
     const impossibleCycleTiming = structuredClone(report());
     impossibleCycleTiming.cycles[0].cycleStartToFirstPcmMs = 94;
     expect(parseMicrophoneStartupBenchmarkReport(impossibleCycleTiming)).toBeNull();
@@ -194,6 +190,14 @@ describe('microphone startup benchmark boundary', () => {
 
     cancelledAttempt.cycles[1].attempts[0].activeElapsedMs = 1;
     expect(parseMicrophoneStartupBenchmarkReport(cancelledAttempt)).toBeNull();
+  });
+
+  it('accepts start-to-first-PCM wall time that exceeds permission-adjusted active elapsed', () => {
+    const distinctClocks = structuredClone(report());
+    distinctClocks.cycles[0].cycleStartToFirstPcmMs = 110;
+    distinctClocks.cycles[0].attempts[0].attemptStartToFirstPcmMs = 105;
+    distinctClocks.cycles[0].attempts[0].activeElapsedMs = 100;
+    expect(parseMicrophoneStartupBenchmarkReport(distinctClocks)).not.toBeNull();
   });
 
   it('accepts correlated partial completion progress and rejects stale-shaped payloads', () => {

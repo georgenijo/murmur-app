@@ -55,6 +55,10 @@ records that produced it. For each resolution pass and backend attempt it shows:
 - fallback use, stable failure kind/phase, and the last entered or completed
   native setup step.
 
+Attempt start-to-first-PCM is wall time after the worker Start message. Active
+elapsed time excludes a pending microphone-permission prompt, so it may be
+smaller than the wall-clock startup value.
+
 The dashboard reports whole-cycle median/p95/range plus independent AUHAL and
 CPAL attempt counts, successes, failures, median, p95, and maximum over successful
 attempts. It never forces fallback merely to collect a backend sample, so a

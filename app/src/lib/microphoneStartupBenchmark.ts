@@ -306,7 +306,7 @@ function parseAttempt(
     if (!isNonNegativeSafeInteger(value.activeElapsedMs)
       || value.activeElapsedMs > MAX_ATTEMPT_ACTIVE_MS
       || !isNonNegativeSafeInteger(latency)
-      || latency > MAX_ATTEMPT_STARTUP_MS || latency > value.activeElapsedMs
+      || latency > MAX_ATTEMPT_STARTUP_MS
       || value.failureKind !== null || value.failurePhase !== null) return null;
   } else if (outcome === 'failed') {
     if (latency !== null

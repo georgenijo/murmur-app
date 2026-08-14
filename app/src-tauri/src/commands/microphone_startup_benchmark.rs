@@ -1198,11 +1198,6 @@ fn validate_report(report: &MicrophoneStartupBenchmarkReport) -> Result<(), Stri
                         && attempt
                             .attempt_start_to_first_pcm_ms
                             .is_none_or(|value| value <= 60_000)
-                        && attempt.attempt_start_to_first_pcm_ms.is_none_or(|latency| {
-                            attempt
-                                .active_elapsed_ms
-                                .is_some_and(|active| latency <= active)
-                        })
                         && attempt.last_setup_step.is_some()
                             == attempt.last_setup_transition.is_some()
                         && outcome_valid
@@ -1630,6 +1625,13 @@ mod tests {
         let mut report = valid_report();
         report.cycles[0].cycle_start_to_first_pcm_ms = Some(9);
         assert!(validate_report(&report).is_err());
+    }
+
+    #[test]
+    fn report_validator_allows_wall_startup_to_exceed_active_elapsed_time() {
+        let mut report = valid_report();
+        report.cycles[0].attempts[0].active_elapsed_ms = Some(1);
+        assert!(validate_report(&report).is_ok());
     }
 
     #[test]
