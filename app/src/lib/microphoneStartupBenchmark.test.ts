@@ -261,4 +261,42 @@ describe('microphone startup benchmark boundary', () => {
     expect(parseMicrophoneStartupBenchmarkReport({ ...report(), startedAt: `${'2'.repeat(80)}Z` })).toBeNull();
     expect(parseMicrophoneStartupBenchmarkReport({ ...report(), appVersion: '1.2.3-rc.1+build.7' })).not.toBeNull();
   });
+
+  it('matches the Rust SemVer and RFC 3339 provenance contract', () => {
+    expect(parseMicrophoneStartupBenchmarkReport(report({
+      appVersion: '1.2.3-rc.1+build.01',
+      startedAt: '2026-08-14t12:00:00.123456789123z',
+      finishedAt: '2026-08-14 12:00:01+00:00',
+    }))).not.toBeNull();
+
+    for (const appVersion of ['01.2.3', '1.2.3-01', '1.2.3-a..b', '1.2.3+', '1.2.3+a..b']) {
+      expect(parseMicrophoneStartupBenchmarkReport(report({ appVersion })), appVersion).toBeNull();
+    }
+    for (const startedAt of [
+      '2026-08-14',
+      '2026-08-14T12:00:00',
+      '2026-02-30T12:00:00Z',
+      '2026-08-14T12:00:00+24:00',
+    ]) {
+      expect(parseMicrophoneStartupBenchmarkReport(report({ startedAt })), startedAt).toBeNull();
+    }
+  });
+
+  it('rejects fractional values for every u64-derived timing field', () => {
+    const fractionalCycle = structuredClone(report());
+    fractionalCycle.cycles[0].cycleStartToFirstPcmMs = 100.5;
+    expect(parseMicrophoneStartupBenchmarkReport(fractionalCycle)).toBeNull();
+
+    const fractionalStartup = structuredClone(report());
+    fractionalStartup.cycles[0].attempts[0].attemptStartToFirstPcmMs = 94.5;
+    expect(parseMicrophoneStartupBenchmarkReport(fractionalStartup)).toBeNull();
+
+    const fractionalElapsed = structuredClone(report());
+    fractionalElapsed.cycles[0].attempts[0].activeElapsedMs = 100.5;
+    expect(parseMicrophoneStartupBenchmarkReport(fractionalElapsed)).toBeNull();
+
+    const fractionalBudget = structuredClone(report());
+    fractionalBudget.cycles[0].attempts[0].attemptBudgetMs = 8_000.5;
+    expect(parseMicrophoneStartupBenchmarkReport(fractionalBudget)).toBeNull();
+  });
 });

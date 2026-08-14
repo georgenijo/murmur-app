@@ -183,14 +183,82 @@ function isRunId(value: unknown): value is string {
 }
 
 function isAppVersion(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length >= 1
-    && value.length <= 64
-    && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+  if (typeof value !== 'string' || value.length < 1 || value.length > 64
+    || !/^[0-9A-Za-z.+-]+$/.test(value)
+    || (value.match(/\+/g)?.length ?? 0) > 1) return false;
+
+  const [withoutBuild, build] = value.split('+');
+  if (build !== undefined && (build.length === 0
+    || build.split('.').some((identifier) => !isSemVerIdentifier(identifier)))) return false;
+
+  const prereleaseSeparator = withoutBuild.indexOf('-');
+  const core = prereleaseSeparator === -1
+    ? withoutBuild
+    : withoutBuild.slice(0, prereleaseSeparator);
+  const prerelease = prereleaseSeparator === -1
+    ? undefined
+    : withoutBuild.slice(prereleaseSeparator + 1);
+  if (prerelease !== undefined && (prerelease.length === 0
+    || prerelease.split('.').some((identifier) => (
+      !isSemVerIdentifier(identifier)
+      || (/^\d+$/.test(identifier) && identifier.length > 1 && identifier.startsWith('0'))
+    )))) return false;
+
+  const parts = core.split('.');
+  return parts.length === 3 && parts.every((part) => (
+    /^\d+$/.test(part) && (part === '0' || !part.startsWith('0'))
+  ));
+}
+
+function isSemVerIdentifier(identifier: string): boolean {
+  return identifier.length > 0 && /^[0-9A-Za-z-]+$/.test(identifier);
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leapYear ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+/** Mirrors chrono's strict DateTime::parse_from_rfc3339 report boundary. */
+function parseRfc3339Nanoseconds(value: unknown): bigint | null {
+  if (typeof value !== 'string' || value.length > 64) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return null;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText,
+    fraction = '', offsetSign, offsetHourText = '0', offsetMinuteText = '0'] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = Number(offsetHourText);
+  const offsetMinute = Number(offsetMinuteText);
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)
+    || hour > 23 || minute > 59 || second > 60
+    || offsetHour > 23 || offsetMinute > 59) return null;
+
+  const local = new Date(0);
+  local.setUTCFullYear(year, month - 1, day);
+  local.setUTCHours(hour, minute, Math.min(second, 59), 0);
+  const offsetMinutes = (offsetHour * 60 + offsetMinute) * (offsetSign === '-' ? -1 : 1);
+  const fractionNanoseconds = BigInt((fraction.slice(0, 9) + '000000000').slice(0, 9));
+  const leapSecondNanoseconds = second === 60 ? 1_000_000_000n : 0n;
+  return BigInt(local.getTime() - offsetMinutes * 60_000) * 1_000_000n
+    + fractionNanoseconds
+    + leapSecondNanoseconds;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function isBackend(value: unknown): value is MicrophoneStartupBackend {
@@ -235,15 +303,15 @@ function parseAttempt(
   const outcome = value.outcome as MicrophoneStartupOutcome;
   const latency = value.attemptStartToFirstPcmMs;
   if (outcome === 'ready') {
-    if (typeof value.activeElapsedMs !== 'number' || !Number.isFinite(value.activeElapsedMs)
-      || value.activeElapsedMs < 0 || value.activeElapsedMs > MAX_ATTEMPT_ACTIVE_MS
-      || typeof latency !== 'number' || !Number.isFinite(latency) || latency < 0
+    if (!isNonNegativeSafeInteger(value.activeElapsedMs)
+      || value.activeElapsedMs > MAX_ATTEMPT_ACTIVE_MS
+      || !isNonNegativeSafeInteger(latency)
       || latency > MAX_ATTEMPT_STARTUP_MS || latency > value.activeElapsedMs
       || value.failureKind !== null || value.failurePhase !== null) return null;
   } else if (outcome === 'failed') {
     if (latency !== null
-      || typeof value.activeElapsedMs !== 'number' || !Number.isFinite(value.activeElapsedMs)
-      || value.activeElapsedMs < 0 || value.activeElapsedMs > MAX_ATTEMPT_ACTIVE_MS
+      || !isNonNegativeSafeInteger(value.activeElapsedMs)
+      || value.activeElapsedMs > MAX_ATTEMPT_ACTIVE_MS
       || value.failureKind === null || value.failurePhase === null) return null;
   } else if (latency !== null || value.activeElapsedMs !== null
     || value.failureKind !== null || value.failurePhase !== null) return null;
@@ -283,8 +351,8 @@ function parseCycle(value: unknown, expectedCycle: number): MicrophoneStartupCyc
   const outcome = value.outcome as MicrophoneStartupOutcome;
   const latency = value.cycleStartToFirstPcmMs;
   if (outcome === 'ready') {
-    if (typeof latency !== 'number' || !Number.isFinite(latency) || latency < 0
-      || latency > MAX_CYCLE_STARTUP_MS || value.backend === null || value.failureKind !== null) return null;
+    if (!isNonNegativeSafeInteger(latency) || latency > MAX_CYCLE_STARTUP_MS
+      || value.backend === null || value.failureKind !== null) return null;
   } else if (latency !== null) {
     return null;
   }
@@ -355,6 +423,8 @@ export function parseMicrophoneStartupBenchmarkProgress(
 export function parseMicrophoneStartupBenchmarkReport(
   value: unknown,
 ): MicrophoneStartupBenchmarkReport | null {
+  const startedAt = isRecord(value) ? parseRfc3339Nanoseconds(value.startedAt) : null;
+  const finishedAt = isRecord(value) ? parseRfc3339Nanoseconds(value.finishedAt) : null;
   if (!isRecord(value) || !hasExactKeys(value, REPORT_KEYS)
     || value.schemaVersion !== 1
     || !isRunId(value.runId)
@@ -368,11 +438,9 @@ export function parseMicrophoneStartupBenchmarkReport(
     || typeof value.cancelled !== 'boolean'
     || typeof value.startedAt !== 'string'
     || typeof value.finishedAt !== 'string'
-    || value.startedAt.length > 64
-    || value.finishedAt.length > 64
-    || !Number.isFinite(Date.parse(value.startedAt))
-    || !Number.isFinite(Date.parse(value.finishedAt))
-    || Date.parse(value.finishedAt) < Date.parse(value.startedAt)
+    || startedAt === null
+    || finishedAt === null
+    || finishedAt < startedAt
     || !Array.isArray(value.cycles)
     || value.cycles.length !== value.completedCycles) return null;
 
