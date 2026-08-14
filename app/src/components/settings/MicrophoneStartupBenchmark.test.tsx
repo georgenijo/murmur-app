@@ -256,6 +256,27 @@ describe('MicrophoneStartupBenchmark', () => {
       .toEqual([['cancel_microphone_startup_benchmark', { runId: RUN_ID }]]);
   });
 
+  it('handles a rejected fire-and-forget cancellation after unmount', async () => {
+    const run = deferred<MicrophoneStartupBenchmarkReport>();
+    const cancellation = deferred<boolean>();
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'run_microphone_startup_benchmark') return run.promise;
+      if (command === 'cancel_microphone_startup_benchmark') return cancellation.promise;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    const runButton = Array.from(container.querySelectorAll('button'))
+      .find((item) => item.textContent === 'Test microphone startup') as HTMLButtonElement;
+    await act(async () => runButton.click());
+
+    await act(async () => root.unmount());
+    unmounted = true;
+    await act(async () => cancellation.reject(new Error('native cancellation unavailable')));
+
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'cancel_microphone_startup_benchmark'))
+      .toEqual([['cancel_microphone_startup_benchmark', { runId: RUN_ID }]]);
+  });
+
   it('shows local refusal reasons before invoking Rust', async () => {
     await render({ status: 'recording' });
     expect(container.textContent).toContain('Finish the current recording first.');

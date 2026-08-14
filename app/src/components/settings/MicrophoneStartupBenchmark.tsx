@@ -109,7 +109,9 @@ export function MicrophoneStartupBenchmark({
     return () => {
       mounted.current = false;
       if (runningRef.current && activeRunId.current) {
-        void cancelMicrophoneStartupBenchmark(activeRunId.current);
+        void cancelMicrophoneStartupBenchmark(activeRunId.current).catch(() => {
+          // The component is gone; the native run remains responsible for teardown.
+        });
       }
     };
   }, []);

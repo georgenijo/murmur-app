@@ -206,11 +206,13 @@ an inference already inside a native backend finishes before cancellation
 returns.
 
 The microphone diagnostic instead owns the same audio lifecycle as production
-capture under `MicrophoneBenchmark(benchmarkRunId)`. It never borrows Preview,
-never bypasses the transition lock, and never considers stop acknowledgement to
-be teardown completion. Its immutable backend plan is snapshotted from
-production state once at run start and reused for every cycle; successful
-diagnostic PCM is explicitly excluded from memo training.
+capture under a per-cycle `MicrophoneBenchmark(cycle_id)` owner. The separate
+`benchmarkRunId` correlates progress and the final report for the complete run.
+The diagnostic never borrows Preview, never bypasses the transition lock, and
+never considers stop acknowledgement to be teardown completion. Its immutable
+backend plan is snapshotted from production state once at run start and reused
+for every cycle; successful diagnostic PCM is explicitly excluded from memo
+training.
 
 These isolated benchmark instances do not replace the selected dictation model
 or publish shared-runtime lifecycle changes. There is no automatic fallback if

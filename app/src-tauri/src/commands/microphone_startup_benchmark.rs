@@ -23,6 +23,12 @@ const MAX_REPORT_BYTES: usize = 128 * 1024;
 // The worker may legitimately wait through the full 120-second TCC prompt
 // watchdog and then use the 30-second active initialization deadline.
 const CYCLE_EVENT_TIMEOUT: Duration = Duration::from_secs(165);
+// Cancellation acknowledgement is bounded at 2 seconds, production stop
+// callers allow 12 seconds for helper teardown, and the capture worker's own
+// termination budgets are shorter. After the first full-cycle timeout, allow
+// one bounded grace window for the authoritative post-join Idle event.
+const CYCLE_IDLE_AFTER_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_CYCLE_TIMEOUTS: u8 = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -240,10 +246,7 @@ impl Default for MicrophoneStartupBenchmarkState {
 
 impl MicrophoneStartupBenchmarkState {
     fn claim(&self, external_run_id: String) -> Result<u64, String> {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut active = self.active.lock_or_recover();
         if active.is_some() {
             return Err("A microphone startup benchmark is already running".to_string());
         }
@@ -259,10 +262,7 @@ impl MicrophoneStartupBenchmarkState {
     }
 
     fn begin_cycle(&self, benchmark_run_id: u64) -> Option<(u64, Receiver<CycleEvent>)> {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut active = self.active.lock_or_recover();
         let run = active.as_mut().filter(|run| {
             run.benchmark_run_id == benchmark_run_id
                 && !run.cancelled
@@ -278,8 +278,7 @@ impl MicrophoneStartupBenchmarkState {
     fn send_if_current(&self, cycle_id: u64, event: CycleEvent) {
         let sender = self
             .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_or_recover()
             .as_ref()
             .filter(|run| run.current_cycle_id == Some(cycle_id))
             .and_then(|run| run.sender.clone());
@@ -289,10 +288,7 @@ impl MicrophoneStartupBenchmarkState {
     }
 
     fn finish_cycle(&self, benchmark_run_id: u64, cycle_id: u64) {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut active = self.active.lock_or_recover();
         if let Some(run) = active.as_mut().filter(|run| {
             run.benchmark_run_id == benchmark_run_id && run.current_cycle_id == Some(cycle_id)
         }) {
@@ -302,10 +298,7 @@ impl MicrophoneStartupBenchmarkState {
     }
 
     fn cancel_exact(&self, external_run_id: &str) -> Option<(u64, Option<u64>)> {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut active = self.active.lock_or_recover();
         let run = active
             .as_mut()
             .filter(|run| run.external_run_id == external_run_id)?;
@@ -315,23 +308,43 @@ impl MicrophoneStartupBenchmarkState {
 
     fn is_cancelled(&self, benchmark_run_id: u64) -> bool {
         self.active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_or_recover()
             .as_ref()
             .is_none_or(|run| run.benchmark_run_id != benchmark_run_id || run.cancelled)
     }
 
     fn finish(&self, benchmark_run_id: u64) {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut active = self.active.lock_or_recover();
         if active
             .as_ref()
             .is_some_and(|run| run.benchmark_run_id == benchmark_run_id)
         {
             *active = None;
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CycleWaitBudget {
+    timeout_count: u8,
+}
+
+impl CycleWaitBudget {
+    fn new() -> Self {
+        Self { timeout_count: 0 }
+    }
+
+    fn receive_timeout(self) -> Duration {
+        if self.timeout_count == 0 {
+            CYCLE_EVENT_TIMEOUT
+        } else {
+            CYCLE_IDLE_AFTER_CANCEL_TIMEOUT
+        }
+    }
+
+    fn record_timeout(&mut self) -> bool {
+        self.timeout_count = self.timeout_count.saturating_add(1);
+        self.timeout_count < MAX_CYCLE_TIMEOUTS
     }
 }
 
@@ -802,8 +815,9 @@ fn run_cycles(
         let mut ready = false;
         let mut cancelled = false;
         let mut idle = false;
+        let mut wait_budget = CycleWaitBudget::new();
         while !idle {
-            match receiver.recv_timeout(CYCLE_EVENT_TIMEOUT) {
+            match receiver.recv_timeout(wait_budget.receive_timeout()) {
                 Ok(CycleEvent::Diagnostic(diagnostic)) => {
                     accumulator.observe(diagnostic);
                     if accumulator.contract_violation {
@@ -911,6 +925,12 @@ fn run_cycles(
                         ProgressPhase::Recovering,
                         &accumulator,
                     );
+                    if !wait_budget.record_timeout() {
+                        return Err(
+                            "The microphone benchmark capture did not reach idle after cancellation"
+                                .to_string(),
+                        );
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     let _ = audio_lifecycle::cancel_microphone_benchmark_capture(
@@ -1158,7 +1178,10 @@ fn validate_report(report: &MicrophoneStartupBenchmarkReport) -> Result<(), Stri
                 .all(|(attempt_position, attempt)| {
                     let expected_backend = cycle
                         .backend_order
-                        .get((attempt.attempt_index - 1) as usize)
+                        .get(match attempt.attempt_index.checked_sub(1) {
+                            Some(index) => index as usize,
+                            None => return false,
+                        })
                         .copied();
                     let key_is_monotonic = attempt_position == 0
                         || cycle.attempts[attempt_position - 1].resolution_pass
@@ -1459,6 +1482,15 @@ mod tests {
     }
 
     #[test]
+    fn cycle_wait_budget_allows_one_bounded_post_cancel_grace() {
+        let mut budget = CycleWaitBudget::new();
+        assert_eq!(budget.receive_timeout(), CYCLE_EVENT_TIMEOUT);
+        assert!(budget.record_timeout());
+        assert_eq!(budget.receive_timeout(), CYCLE_IDLE_AFTER_CANCEL_TIMEOUT);
+        assert!(!budget.record_timeout());
+    }
+
+    #[test]
     fn attempt_observations_remain_ordered_and_bounded() {
         let mut cycle = CycleAccumulator::new(1);
         cycle.observe(AudioStartupDiagnostic::BackendPlan {
@@ -1625,6 +1657,15 @@ mod tests {
         let mut report = valid_report();
         report.cycles[0].cycle_start_to_first_pcm_ms = Some(9);
         assert!(validate_report(&report).is_err());
+    }
+
+    #[test]
+    fn report_validator_rejects_zero_attempt_index_without_panicking() {
+        let mut report = valid_report();
+        report.cycles[0].attempts[0].attempt_index = 0;
+        let validation = std::panic::catch_unwind(|| validate_report(&report));
+        assert!(validation.is_ok());
+        assert!(validation.unwrap().is_err());
     }
 
     #[test]

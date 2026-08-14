@@ -118,15 +118,44 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         )
 
     def test_microphone_benchmark_events_do_not_enter_dictation_health_counts(self) -> None:
-        events = []
+        baseline_timestamp = "2026-08-01T00:00:00Z"
+        events = [
+            event(
+                "startup_baseline",
+                baseline_timestamp,
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            event(
+                "audio initialization accepted",
+                "2026-08-02T00:00:00Z",
+                version="9.9.9",
+                data={
+                    "event_code": "audio.capture_started",
+                    "owner": 100,
+                    "owner_kind": "microphone_benchmark",
+                },
+            ),
+            event(
+                "audio readiness accepted",
+                "2026-08-02T00:00:01Z",
+                version="9.9.9",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "owner": 100,
+                    "owner_kind": "microphone_benchmark",
+                    "startup_ms": 42,
+                },
+            ),
+        ]
         for cycle in range(5):
             owner = cycle + 1
             events.extend(
                 [
                     event(
                         "audio initialization accepted",
-                        f"2026-08-01T00:00:{cycle * 3:02d}Z",
-                        version="1.2.3",
+                        f"2026-08-02T00:00:{cycle * 3:02d}Z",
+                        version="9.9.9",
                         data={
                             "event_code": "audio.capture_started",
                             "owner": owner,
@@ -135,8 +164,8 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                     ),
                     event(
                         "capture backend exceeded its active initialization budget",
-                        f"2026-08-01T00:00:{cycle * 3 + 1:02d}Z",
-                        version="1.2.3",
+                        f"2026-08-02T00:01:{cycle * 3:02d}Z",
+                        version="9.9.9",
                         data={
                             "event_code": "audio.capture_backend_timeout",
                             "owner": owner,
@@ -147,8 +176,8 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                     ),
                     event(
                         "capture backend failed before retained audio; trying bounded fallback",
-                        f"2026-08-01T00:00:{cycle * 3 + 2:02d}Z",
-                        version="1.2.3",
+                        f"2026-08-02T00:01:{cycle * 3 + 1:02d}Z",
+                        version="9.9.9",
                         data={
                             "event_code": "audio.fallback_started",
                             "owner": owner,
@@ -157,8 +186,8 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                     ),
                     event(
                         "both capture backend attempts failed before first PCM",
-                        f"2026-08-01T00:01:{cycle:02d}Z",
-                        version="1.2.3",
+                        f"2026-08-02T00:01:{cycle * 3 + 2:02d}Z",
+                        version="9.9.9",
                         data={
                             "event_code": "audio.capture_failed",
                             "owner": owner,
@@ -167,17 +196,60 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                     ),
                 ]
             )
+        events.extend(
+            [
+                event(
+                    "ignored benchmark-shaped pipeline request",
+                    "2026-08-02T00:02:00Z",
+                    version="9.9.9",
+                    data={
+                        "event_code": "pipeline.dictation_requested",
+                        "owner_kind": "microphone_benchmark",
+                        "recording_id": 91,
+                    },
+                ),
+                event(
+                    "ignored benchmark-shaped pipeline terminal",
+                    "2026-08-02T00:02:01Z",
+                    version="9.9.9",
+                    data={
+                        "event_code": "pipeline.dictation_terminal",
+                        "owner_kind": "microphone_benchmark",
+                        "recording_id": 91,
+                        "outcome": "success",
+                    },
+                ),
+                event(
+                    "ignored benchmark-shaped store failure",
+                    "2026-08-02T00:02:02Z",
+                    version="9.9.9",
+                    data={
+                        "event_code": "performance.store_operation_failed",
+                        "owner_kind": "microphone_benchmark",
+                        "operation": "begin",
+                        "error_class": "busyLocked",
+                    },
+                ),
+            ]
+        )
 
         with tempfile.TemporaryDirectory() as root:
             self.write_install(root, "12345678-abcd", events)
             report = watch.build_report(root)
 
         cohort = report["cohorts"][0]
+        self.assertEqual(len(report["cohorts"]), 1)
+        self.assertEqual(cohort["app_version"], "1.2.3")
+        self.assertEqual(cohort["first_event_at"], baseline_timestamp)
+        self.assertEqual(cohort["last_event_at"], baseline_timestamp)
         self.assertEqual(cohort["startup_sample_count"], 0)
         self.assertEqual(cohort["capture_backend_timeouts"], [])
         self.assertEqual(cohort["fallback_count"], 0)
         self.assertEqual(cohort["both_backends_failed_count"], 0)
+        self.assertEqual(cohort["performance_store_failure_total"], 0)
         self.assertEqual(cohort["attempted_sessions"], 0)
+        self.assertEqual(cohort["dictation_lifecycle"]["requested"], 0)
+        self.assertEqual(cohort["dictation_lifecycle"]["terminal_events"], 0)
 
     def test_performance_store_failures_are_counted_by_version_and_safe_class(self) -> None:
         events = [

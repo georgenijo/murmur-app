@@ -243,7 +243,7 @@ retained audio, or an unavailable device after first PCM remain terminal.
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated, 64 KiB UTF-8 file-transport boundary with regular-file reads and atomic sibling-temp writes.
+Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `microphone_startup_benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated, 64 KiB UTF-8 file-transport boundary with regular-file reads and atomic sibling-temp writes.
 
 ### `state.rs` — Shared State
 

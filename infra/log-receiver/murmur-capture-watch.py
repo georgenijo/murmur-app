@@ -214,12 +214,25 @@ def scan_install(path, install_id, cohorts):
                 malformed += 1
                 continue
 
+            code = event_code(event)
+            data = event_data(event)
+            owner_kind = data.get("owner_kind")
+            # Shared microphone owners remain visible in retained raw logs,
+            # but must not create, touch, or mutate dictation-health cohorts.
+            # Keep owner-less pipeline/store events for their existing typed
+            # dictation correlation while rejecting every explicitly scoped
+            # non-dictation event before any watch state exists.
+            if (
+                owner_kind is not None
+                and owner_kind != CAPTURE_HEALTH_OWNER_KIND
+            ):
+                continue
+
             version = event_version(event)
             timestamp = event_timestamp(event)
             cohort = cohort_for(cohorts, install_id, version)
             touch_cohort(cohort, timestamp)
 
-            code = event_code(event)
             if code == "system.startup_baseline" or event.get("summary") == "startup_baseline":
                 for (cohort_install, _), existing in cohorts.items():
                     if cohort_install == install_id:
@@ -239,7 +252,6 @@ def scan_install(path, install_id, cohorts):
                 # split one recording across version cohorts.
                 if session is not None and session["version"] == version:
                     cohort["dictation_lifecycle"].observe(event, session_id)
-            data = event_data(event)
             if code == "audio.capture_started":
                 if (
                     data.get("owner_kind") == CAPTURE_HEALTH_OWNER_KIND
