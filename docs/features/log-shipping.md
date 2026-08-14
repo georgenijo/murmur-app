@@ -193,6 +193,7 @@ High-value producers attach an allowlisted, privacy-safe `event_code` inside
 the structured `data` object. Examples include
 `audio.capture_backend_timeout`, `audio.fallback_started`,
 `audio.capture_ready`, `audio.capture_failed`,
+`audio.device_reresolution_started`, `audio.input_resolution_observed`,
 `keyboard.listener_silent`, `pipeline.dictation_terminal`,
 `transform.pass_outcome`, and `updater.install_failed`.
 
@@ -201,6 +202,17 @@ language. A bounded compatibility table recognizes the corresponding constant
 summary strings in historical JSONL. Unknown events are never guessed: warnings
 and errors remain visible as technical events with their original escaped
 summary and data.
+
+`audio.input_resolution_observed` is a strict, content-free proof record for a
+live backend attempt. Its allowlist is limited to `event_code`, `capture_id`,
+`owner`, `owner_kind`, `backend`, `resolution_pass` (1–3), `backend_attempt`
+(1–2), `microphone_mode`, `input_enumeration_ok`, `requested_present`,
+`requested_present_known`, `input_device_count` (capped at 256),
+`input_device_count_capped`, and `default_input_available`. Cross-field
+contradictions reduce the event to `event_code` only in both debug and release
+builds. The sanitizer never accepts microphone IDs or names, the default
+device's ID, raw errors, paths, content, or arbitrary extra fields. The summary
+is the constant “Microphone input resolution observed”.
 
 Health conclusions are limited to the loaded event window. A fallback is shown
 as recovered only when later readiness for the same audio owner proves it;

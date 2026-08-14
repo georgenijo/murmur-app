@@ -83,7 +83,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 explicit Start Meeting
     |
-signed murmur-capture-worker --production-v5
+signed murmur-capture-worker --production-v6
     |-- microphone AUHAL callback --> preallocated SPSC ring --> Me frames
     +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
     |
@@ -162,9 +162,13 @@ always-dark glass surfaces.
 ### Capture worker boundary
 
 The signed `murmur-capture-worker` owns production microphone capture and the
-phase-one System Audio CATap. Production protocol v5 has capture-scoped
+phase-one System Audio CATap. Production protocol v6 has capture-scoped
 identity, nonce, strict bounded frames, and separate mic/system channel
-sequences. Native callbacks write only to preallocated SPSC rings; the worker's
+sequences. Before each live backend opens the microphone, an `InputResolution`
+message reports only bounded resolution evidence: backend, enumeration success,
+whether the pinned input was present (when knowable), capped input count, and
+default-input availability. It never carries a device ID, display name, or raw
+error. Native callbacks write only to preallocated SPSC rings; the worker's
 drain loop owns protocol I/O. Release builds validate fixed identifier, Team ID,
 hardened runtime, and entitlements before spawn, then retain exact managed
 process-group ownership through confirmed exit. The inventory path bounds its
@@ -177,13 +181,19 @@ The earlier health probe
 remains available for packaging and callback-boundary validation. See the
 [capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
 
+An explicit pinned input that resolves as unavailable in both AUHAL and CPAL
+may run at most two additional complete AUHAL-to-CPAL resolution passes. The
+500 ms gaps are cancellable, every pass uses the same immutable raw device UID,
+and no pass substitutes the OS default. Mixed failures, system-default capture,
+retained audio, or an unavailable device after first PCM remain terminal.
+
 ### Module map
 
 | Module | Purpose |
 |--------|---------|
 | `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 161 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
-| `audio.rs` | CPAL 0.18 capture worker, stable device-ID selection, typed error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
+| `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |

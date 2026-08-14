@@ -21,7 +21,7 @@ stores an ordered transcript in SQLite.
 
 ## Capture boundary
 
-`murmur-capture-worker --production-v5` owns both native streams:
+`murmur-capture-worker --production-v6` owns both native streams:
 
 1. A private, unmuted stereo `CATap` captures global system output and the
    realtime callback downmixes it to mono without allocation.
@@ -32,8 +32,13 @@ stores an ordered transcript in SQLite.
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
-rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v5
+rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v6
 frames. It never mixes the streams.
+
+Protocol v6 also carries bounded `InputResolution` evidence before the live
+microphone backend opens: backend, enumeration outcome, knowable pinned-input
+presence, a count capped at 256, and default-input availability. It contains no
+device ID, display name, raw error, path, or audio content.
 
 The tap exists only inside an explicit permission probe or meeting session.
 Status reads return a cached `unknown`/`granted`/`denied`/`unsupported` value and
@@ -106,7 +111,7 @@ Mac.
 
 - `cargo test meeting -- --test-threads=1` covers the store, recovery,
   rendering, privacy sanitizer, and accelerated bounded-memory chunking.
-- Protocol/helper tests cover v5 framing, channel identity, overflow, two
+- Protocol/helper tests cover v6 framing, channel identity, overflow, two
   independent rings under Loom, macOS gating, and typed permission failures.
 - The native gate exercises signed-app permission attribution, start → first
   PCM on both channels → stop, and confirmed tap destruction.

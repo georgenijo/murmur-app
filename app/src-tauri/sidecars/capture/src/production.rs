@@ -22,7 +22,7 @@ use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
     CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionDevice, ProductionFrame,
     ProductionHelperMessage, ProductionHostMessage, ProductionPcmMetadata, SessionNonce,
-    SetupTransition, SystemAudioPermissionStatus,
+    SetupTransition, SystemAudioPermissionStatus, MAX_INPUT_DEVICE_COUNT,
 };
 use std::ffi::c_void;
 use std::io::{Read, Write};
@@ -121,6 +121,46 @@ impl SpscRing {
 enum CaptureStream {
     Cpal(Stream),
     Auhal(coreaudio::audio_unit::AudioUnit),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InputResolutionEvidence {
+    input_enumeration_ok: bool,
+    requested_present: Option<bool>,
+    input_device_count: u16,
+    input_device_count_capped: bool,
+    default_input_available: bool,
+}
+
+impl InputResolutionEvidence {
+    fn observed(
+        requested_present: Option<bool>,
+        input_device_count: usize,
+        default_input_available: bool,
+    ) -> Self {
+        Self {
+            input_enumeration_ok: true,
+            requested_present,
+            input_device_count: input_device_count.min(MAX_INPUT_DEVICE_COUNT) as u16,
+            input_device_count_capped: input_device_count > MAX_INPUT_DEVICE_COUNT,
+            default_input_available,
+        }
+    }
+
+    fn enumeration_failed(default_input_available: bool) -> Self {
+        Self {
+            input_enumeration_ok: false,
+            requested_present: None,
+            input_device_count: 0,
+            input_device_count_capped: false,
+            default_input_available,
+        }
+    }
+}
+
+enum MicrophoneSetupObservation {
+    Step(CaptureSetupStep, SetupTransition),
+    InputResolution(InputResolutionEvidence),
 }
 
 impl CaptureStream {
@@ -339,15 +379,78 @@ fn watch_input_topology(
     .map_err(|_| ())
 }
 
-fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
+struct CpalSelection<T> {
+    exact_match: Option<T>,
+    legacy_match: Option<T>,
+    legacy_match_count: usize,
+}
+
+impl<T> Default for CpalSelection<T> {
+    fn default() -> Self {
+        Self {
+            exact_match: None,
+            legacy_match: None,
+            legacy_match_count: 0,
+        }
+    }
+}
+
+impl<T> CpalSelection<T> {
+    fn observe(&mut self, candidate: T, id_matches: bool, name_matches: bool) {
+        if id_matches {
+            // Preserve exact-ID precedence and the prior last-match behavior.
+            self.exact_match = Some(candidate);
+        } else if name_matches {
+            self.legacy_match_count = self.legacy_match_count.saturating_add(1);
+            self.legacy_match = (self.legacy_match_count == 1).then_some(candidate);
+        }
+    }
+
+    fn selected(self) -> Option<T> {
+        self.exact_match.or_else(|| {
+            if self.legacy_match_count == 1 {
+                self.legacy_match
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn select_auhal_device<T>(
+    requested: &str,
+    candidates: impl IntoIterator<Item = (T, Option<String>)>,
+) -> Option<T> {
+    candidates
+        .into_iter()
+        .find_map(|(candidate, uid)| (uid.as_deref() == Some(requested)).then_some(candidate))
+}
+
+fn require_input_device<T>(device: Option<T>) -> Result<T, FailureCode> {
+    device.ok_or(FailureCode::NoInputDevice)
+}
+
+fn cpal_device(
+    requested: Option<&str>,
+) -> (Result<cpal::Device, FailureCode>, InputResolutionEvidence) {
     let host = cpal::default_host();
+    // This query is evidence only. It never selects a different microphone or
+    // changes the backend's existing resolution result.
+    let default_input_available = get_default_device_id(true).is_some();
     if let Some(requested) = requested {
-        let devices = host
-            .input_devices()
-            .map_err(|_| FailureCode::EnumerationFailed)?;
-        let mut exact_match = None;
-        let mut legacy_matches = Vec::new();
+        let devices = match host.input_devices() {
+            Ok(devices) => devices,
+            Err(_) => {
+                return (
+                    Err(FailureCode::EnumerationFailed),
+                    InputResolutionEvidence::enumeration_failed(default_input_available),
+                )
+            }
+        };
+        let mut input_device_count = 0_usize;
+        let mut selection = CpalSelection::default();
         for device in devices {
+            input_device_count = input_device_count.saturating_add(1);
             let id_matches = device
                 .id()
                 .ok()
@@ -358,21 +461,27 @@ fn cpal_device(requested: Option<&str>) -> Result<cpal::Device, FailureCode> {
                 .ok()
                 .map(|description| description.name() == requested)
                 .unwrap_or(false);
-            if id_matches {
-                exact_match = Some(device);
-            } else if name_matches {
-                legacy_matches.push(device);
-            }
+            selection.observe(device, id_matches, name_matches);
         }
-        exact_match
-            .or_else(|| {
-                (legacy_matches.len() == 1)
-                    .then(|| legacy_matches.into_iter().next().expect("length checked"))
-            })
-            .ok_or(FailureCode::NoInputDevice)
+        let selected = require_input_device(selection.selected());
+        let evidence = InputResolutionEvidence::observed(
+            Some(selected.is_ok()),
+            input_device_count,
+            default_input_available,
+        );
+        (selected, evidence)
     } else {
-        host.default_input_device()
-            .ok_or(FailureCode::NoInputDevice)
+        // Preserve CPAL's default-device result as the capture decision. The
+        // supplementary enumeration supplies only a bounded content-free
+        // count; failure to collect it must not make default capture fail.
+        let selected = require_input_device(host.default_input_device());
+        let evidence = match host.input_devices() {
+            Ok(devices) => {
+                InputResolutionEvidence::observed(None, devices.count(), default_input_available)
+            }
+            Err(_) => InputResolutionEvidence::enumeration_failed(default_input_available),
+        };
+        (selected, evidence)
     }
 }
 
@@ -407,19 +516,30 @@ fn start_cpal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
     failed: Arc<AtomicBool>,
-    emit: &mut impl FnMut(CaptureSetupStep, SetupTransition) -> Result<(), FailureCode>,
+    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
-    emit(CaptureSetupStep::DeviceResolution, SetupTransition::Entered)?;
-    let device = cpal_device(requested)?;
-    emit(
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::DeviceResolution,
+        SetupTransition::Entered,
+    ))?;
+    let (device, evidence) = cpal_device(requested);
+    emit(MicrophoneSetupObservation::InputResolution(evidence))?;
+    let device = device?;
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Completed,
-    )?;
-    emit(CaptureSetupStep::DefaultConfig, SetupTransition::Entered)?;
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::DefaultConfig,
+        SetupTransition::Entered,
+    ))?;
     let supported = device
         .default_input_config()
         .map_err(|_| FailureCode::ConfigurationFailed)?;
-    emit(CaptureSetupStep::DefaultConfig, SetupTransition::Completed)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::DefaultConfig,
+        SetupTransition::Completed,
+    ))?;
     let rate = supported.sample_rate();
     let channels = supported.channels() as usize;
     let config = supported.config();
@@ -434,7 +554,10 @@ fn start_cpal(
             )
         };
     }
-    emit(CaptureSetupStep::StreamBuild, SetupTransition::Entered)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::StreamBuild,
+        SetupTransition::Entered,
+    ))?;
     let stream = match supported.sample_format() {
         SampleFormat::I8 => build!(i8),
         SampleFormat::I16 => build!(i16),
@@ -450,39 +573,92 @@ fn start_cpal(
         SampleFormat::F64 => build!(f64),
         _ => return Err(FailureCode::ConfigurationFailed),
     }?;
-    emit(CaptureSetupStep::StreamBuild, SetupTransition::Completed)?;
-    emit(CaptureSetupStep::StreamStart, SetupTransition::Entered)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::StreamBuild,
+        SetupTransition::Completed,
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::StreamStart,
+        SetupTransition::Entered,
+    ))?;
     stream.play().map_err(|_| FailureCode::StreamStartFailed)?;
-    emit(CaptureSetupStep::StreamStart, SetupTransition::Completed)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::StreamStart,
+        SetupTransition::Completed,
+    ))?;
     Ok((CaptureStream::Cpal(stream), rate))
 }
 
 fn start_auhal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
-    emit: &mut impl FnMut(CaptureSetupStep, SetupTransition) -> Result<(), FailureCode>,
+    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
-    emit(CaptureSetupStep::DeviceResolution, SetupTransition::Entered)?;
-    let device = match requested {
-        Some(uid) => get_audio_device_ids_for_scope(Scope::Input)
-            .map_err(|_| FailureCode::EnumerationFailed)?
-            .into_iter()
-            .find(|id| raw_uid(*id).as_deref() == Some(uid))
-            .ok_or(FailureCode::NoInputDevice)?,
-        None => get_default_device_id(true).ok_or(FailureCode::NoInputDevice)?,
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::DeviceResolution,
+        SetupTransition::Entered,
+    ))?;
+    let default_device = get_default_device_id(true);
+    let default_input_available = default_device.is_some();
+    let (device, evidence) = match requested {
+        Some(uid) => match get_audio_device_ids_for_scope(Scope::Input) {
+            Ok(devices) => {
+                let input_device_count = devices.len();
+                let selected = require_input_device(select_auhal_device(
+                    uid,
+                    devices
+                        .iter()
+                        .copied()
+                        .map(|device| (device, raw_uid(device))),
+                ));
+                let evidence = InputResolutionEvidence::observed(
+                    Some(selected.is_ok()),
+                    input_device_count,
+                    default_input_available,
+                );
+                (selected, evidence)
+            }
+            Err(_) => (
+                Err(FailureCode::EnumerationFailed),
+                InputResolutionEvidence::enumeration_failed(default_input_available),
+            ),
+        },
+        None => {
+            // Keep the existing default-device decision independent of the
+            // supplementary count enumeration used only for telemetry.
+            let selected = require_input_device(default_device);
+            let evidence = match get_audio_device_ids_for_scope(Scope::Input) {
+                Ok(devices) => {
+                    InputResolutionEvidence::observed(None, devices.len(), default_input_available)
+                }
+                Err(_) => InputResolutionEvidence::enumeration_failed(default_input_available),
+            };
+            (selected, evidence)
+        }
     };
-    emit(
+    emit(MicrophoneSetupObservation::InputResolution(evidence))?;
+    let device = device?;
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Completed,
-    )?;
+    ))?;
     let sample_rate = 48_000_u32;
     // Inlined from coreaudio-rs audio_unit_from_device_id so every native
     // Core Audio call gets its own Entered/Completed bracket; a hang is then
     // attributable to one named operation instead of the whole creation span.
-    emit(CaptureSetupStep::AudioUnitNew, SetupTransition::Entered)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::AudioUnitNew,
+        SetupTransition::Entered,
+    ))?;
     let mut unit = AudioUnit::new(IOType::HalOutput).map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(CaptureSetupStep::AudioUnitNew, SetupTransition::Completed)?;
-    emit(CaptureSetupStep::EnableInputIo, SetupTransition::Entered)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::AudioUnitNew,
+        SetupTransition::Completed,
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::EnableInputIo,
+        SetupTransition::Entered,
+    ))?;
     unit.set_property(
         kAudioOutputUnitProperty_EnableIO,
         Scope::Input,
@@ -490,8 +666,14 @@ fn start_auhal(
         Some(&1_u32),
     )
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(CaptureSetupStep::EnableInputIo, SetupTransition::Completed)?;
-    emit(CaptureSetupStep::DisableOutputIo, SetupTransition::Entered)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::EnableInputIo,
+        SetupTransition::Completed,
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::DisableOutputIo,
+        SetupTransition::Entered,
+    ))?;
     unit.set_property(
         kAudioOutputUnitProperty_EnableIO,
         Scope::Output,
@@ -499,11 +681,14 @@ fn start_auhal(
         Some(&0_u32),
     )
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DisableOutputIo,
         SetupTransition::Completed,
-    )?;
-    emit(CaptureSetupStep::SetCurrentDevice, SetupTransition::Entered)?;
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::SetCurrentDevice,
+        SetupTransition::Entered,
+    ))?;
     unit.set_property(
         kAudioOutputUnitProperty_CurrentDevice,
         Scope::Global,
@@ -511,10 +696,10 @@ fn start_auhal(
         Some(&device),
     )
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::SetCurrentDevice,
         SetupTransition::Completed,
-    )?;
+    ))?;
     let format = StreamFormat {
         sample_rate: sample_rate as f64,
         sample_format: AuSampleFormat::F32,
@@ -524,10 +709,10 @@ fn start_auhal(
         channels: 1,
     };
     let asbd = format.to_asbd();
-    emit(
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::FormatConfiguration,
         SetupTransition::Entered,
-    )?;
+    ))?;
     unit.set_property(
         coreaudio::sys::kAudioUnitProperty_StreamFormat,
         Scope::Output,
@@ -535,15 +720,15 @@ fn start_auhal(
         Some(&asbd),
     )
     .map_err(|_| FailureCode::ConfigurationFailed)?;
-    emit(
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::FormatConfiguration,
         SetupTransition::Completed,
-    )?;
+    ))?;
     type Args = render_callback::Args<data::NonInterleaved<f32>>;
-    emit(
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::CallbackInstallation,
         SetupTransition::Entered,
-    )?;
+    ))?;
     unit.set_input_callback(move |args: Args| {
         if let Some(channel) = args.data.channels().next() {
             for sample in channel.iter().take(args.num_frames) {
@@ -553,13 +738,19 @@ fn start_auhal(
         Ok(())
     })
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(
+    emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::CallbackInstallation,
         SetupTransition::Completed,
-    )?;
-    emit(CaptureSetupStep::StreamStart, SetupTransition::Entered)?;
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::StreamStart,
+        SetupTransition::Entered,
+    ))?;
     unit.start().map_err(|_| FailureCode::StreamStartFailed)?;
-    emit(CaptureSetupStep::StreamStart, SetupTransition::Completed)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::StreamStart,
+        SetupTransition::Completed,
+    ))?;
     Ok((CaptureStream::Auhal(unit), sample_rate))
 }
 
@@ -766,18 +957,28 @@ fn run_meeting(
     )
     .map_err(|_| ())?;
     let microphone_started = {
-        let mut emit_microphone_setup = |step: CaptureSetupStep, transition: SetupTransition| {
-            write_production_control(
-                stdout,
-                capture_id,
-                nonce,
-                &ProductionHelperMessage::MeetingSetupStep {
-                    channel: CaptureChannel::Microphone,
-                    step,
-                    transition,
-                },
-            )
-            .map_err(|_| FailureCode::Internal)
+        let mut emit_microphone_setup = |observation: MicrophoneSetupObservation| {
+            let message = match observation {
+                MicrophoneSetupObservation::Step(step, transition) => {
+                    ProductionHelperMessage::MeetingSetupStep {
+                        channel: CaptureChannel::Microphone,
+                        step,
+                        transition,
+                    }
+                }
+                MicrophoneSetupObservation::InputResolution(evidence) => {
+                    ProductionHelperMessage::InputResolution {
+                        backend,
+                        input_enumeration_ok: evidence.input_enumeration_ok,
+                        requested_present: evidence.requested_present,
+                        input_device_count: evidence.input_device_count,
+                        input_device_count_capped: evidence.input_device_count_capped,
+                        default_input_available: evidence.default_input_available,
+                    }
+                }
+            };
+            write_production_control(stdout, capture_id, nonce, &message)
+                .map_err(|_| FailureCode::Internal)
         };
         match backend {
             CaptureBackend::Cpal => start_cpal(
@@ -1179,6 +1380,92 @@ mod tests {
     }
 
     #[test]
+    fn backend_resolver_classifications_fail_closed_without_identity_leakage() {
+        let select_cpal = |matches: &[(bool, bool)]| {
+            let mut selection = CpalSelection::default();
+            for (index, (id_matches, name_matches)) in matches.iter().copied().enumerate() {
+                selection.observe(index, id_matches, name_matches);
+            }
+            selection.selected()
+        };
+        assert_eq!(select_cpal(&[]), None);
+        assert_eq!(select_cpal(&[(false, false)]), None);
+        assert_eq!(select_cpal(&[(false, true)]), Some(0));
+        assert_eq!(select_cpal(&[(false, true), (false, true)]), None);
+        assert_eq!(select_cpal(&[(false, true), (true, true)]), Some(1));
+
+        let auhal_ids = vec![Some("uid-a".to_string()), None, Some("uid-b".to_string())];
+        let auhal_candidates = || auhal_ids.iter().cloned().enumerate();
+        assert_eq!(select_auhal_device("missing", auhal_candidates()), None);
+        assert_eq!(select_auhal_device("uid-b", auhal_candidates()), Some(2));
+        assert_eq!(
+            select_auhal_device("missing", std::iter::empty::<(usize, Option<String>)>()),
+            None
+        );
+
+        // Both backend-specific selectors and both default-device paths use
+        // this same typed fail-closed classification.
+        assert_eq!(
+            require_input_device::<u32>(None),
+            Err(FailureCode::NoInputDevice)
+        );
+        assert_eq!(require_input_device(Some(42_u32)), Ok(42));
+    }
+
+    #[test]
+    fn telemetry_count_cap_never_truncates_a_late_device_match() {
+        let late_index = MAX_INPUT_DEVICE_COUNT + 3;
+        let mut cpal_matches = vec![(false, false); MAX_INPUT_DEVICE_COUNT + 7];
+        cpal_matches[late_index] = (true, false);
+        let mut cpal_selection = CpalSelection::default();
+        for (index, (id_matches, name_matches)) in cpal_matches.iter().copied().enumerate() {
+            cpal_selection.observe(index, id_matches, name_matches);
+        }
+        assert_eq!(cpal_selection.selected(), Some(late_index));
+
+        let mut auhal_ids = vec![None; MAX_INPUT_DEVICE_COUNT + 7];
+        auhal_ids[late_index] = Some("late-stable-uid".to_string());
+        assert_eq!(
+            select_auhal_device("late-stable-uid", auhal_ids.into_iter().enumerate()),
+            Some(late_index)
+        );
+
+        let evidence = InputResolutionEvidence::observed(None, cpal_matches.len(), true);
+        assert_eq!(
+            usize::from(evidence.input_device_count),
+            MAX_INPUT_DEVICE_COUNT
+        );
+        assert!(evidence.input_device_count_capped);
+    }
+
+    #[test]
+    fn input_resolution_evidence_is_bounded_and_keeps_unknown_distinct_from_absent() {
+        let absent = InputResolutionEvidence::observed(Some(false), 3, true);
+        assert!(absent.input_enumeration_ok);
+        assert_eq!(absent.requested_present, Some(false));
+        assert_eq!(absent.input_device_count, 3);
+        assert!(!absent.input_device_count_capped);
+        assert!(absent.default_input_available);
+
+        let system_default = InputResolutionEvidence::observed(None, 0, false);
+        assert!(system_default.input_enumeration_ok);
+        assert_eq!(system_default.requested_present, None);
+        assert_eq!(system_default.input_device_count, 0);
+        assert!(!system_default.default_input_available);
+
+        let capped = InputResolutionEvidence::observed(None, MAX_INPUT_DEVICE_COUNT + 17, true);
+        assert_eq!(capped.input_device_count, MAX_INPUT_DEVICE_COUNT as u16);
+        assert!(capped.input_device_count_capped);
+
+        let unavailable = InputResolutionEvidence::enumeration_failed(true);
+        assert!(!unavailable.input_enumeration_ok);
+        assert_eq!(unavailable.requested_present, None);
+        assert_eq!(unavailable.input_device_count, 0);
+        assert!(!unavailable.input_device_count_capped);
+        assert!(unavailable.default_input_available);
+    }
+
+    #[test]
     fn read_control_accepts_matching_control_frame() {
         let capture_id = 42;
         let nonce = [7; 16];
@@ -1302,18 +1589,28 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let ring = Arc::new(SpscRing::new());
             let failed = Arc::new(AtomicBool::new(false));
             let started = {
-                let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
-                    write_production_control(
-                        &mut stdout,
-                        capture_id,
-                        nonce,
-                        &ProductionHelperMessage::SetupStep {
-                            backend,
-                            step,
-                            transition,
-                        },
-                    )
-                    .map_err(|_| FailureCode::Internal)
+                let mut emit_setup = |observation: MicrophoneSetupObservation| {
+                    let message = match observation {
+                        MicrophoneSetupObservation::Step(step, transition) => {
+                            ProductionHelperMessage::SetupStep {
+                                backend,
+                                step,
+                                transition,
+                            }
+                        }
+                        MicrophoneSetupObservation::InputResolution(evidence) => {
+                            ProductionHelperMessage::InputResolution {
+                                backend,
+                                input_enumeration_ok: evidence.input_enumeration_ok,
+                                requested_present: evidence.requested_present,
+                                input_device_count: evidence.input_device_count,
+                                input_device_count_capped: evidence.input_device_count_capped,
+                                default_input_available: evidence.default_input_available,
+                            }
+                        }
+                    };
+                    write_production_control(&mut stdout, capture_id, nonce, &message)
+                        .map_err(|_| FailureCode::Internal)
                 };
                 match backend {
                     CaptureBackend::Cpal => start_cpal(

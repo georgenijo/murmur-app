@@ -2,13 +2,13 @@
 
 Date: 2026-08-01  
 Status: active  
-Issues: #405, #408, #409, #410, #411, #412, #426, #436
+Issues: #405, #408, #409, #410, #411, #412, #426, #436, #542
 
 ## Decision
 
 The Tauri application process never links CPAL or CoreAudio capture APIs. It
 owns each signed `murmur-capture-worker` process group directly and communicates
-over production protocol v5. Capture, bounded enumeration, and the passive
+over production protocol v6. Capture, bounded enumeration, and the passive
 input-topology watcher use separate owned sessions. Every frame carries a
 monotonic capture ID and a random
 128-bit nonce. Control payloads are bounded JSON; audio is bounded binary mono
@@ -26,6 +26,14 @@ must reuse the exact raw device UID. After
 retained audio, any gap, malformed frame, overflow, backend error, stall, or
 process exit terminates capture and preserves the delivered prefix.
 
+If both backends in a complete pre-PCM pass report `device_unavailable` for an
+explicit pinned microphone, the supervisor may repeat that full AUHAL-to-CPAL
+pass up to two more times. Each 500 ms inter-pass gap remains interruptible by
+Stop or command-channel disconnect. Every attempt receives the same immutable raw device
+UID; no attempt substitutes the default input. System-default capture, mixed
+failure kinds, retained audio, and any other terminal condition do not enter
+this re-resolution loop.
+
 The worker reports content-free setup transitions around AUHAL device
 resolution, AudioUnit creation, format configuration, callback installation,
 stream start, and the transition to awaiting the first callback. CPAL reports
@@ -33,6 +41,16 @@ the comparable device-resolution, default-config, stream-build, stream-start,
 and callback-wait transitions. Together with host-side helper launch, first-PCM,
 and stop-to-exit timings, this localizes a blocked HAL operation without logging
 device identity, raw backend errors, or microphone content.
+
+Protocol v6 additionally requires a bounded `InputResolution` message before
+each live backend open. It proves the backend, whether enumeration succeeded,
+whether a pinned requested input was present when knowable, the input count
+capped at 256 (with a separate cap flag), and whether a default input existed.
+The host rejects inconsistent field combinations. Its strict telemetry
+projection permits only bounded attempt/owner/mode coordinates and those
+booleans/counts; it strips unknown fields and never admits a device ID, name,
+raw error, path, or content. Contradictory evidence retains only the stable
+event code in debug and release builds.
 
 Initialization uses one decided 30-second active-time contract: 8 seconds for
 AUHAL through first PCM, 2 seconds for confirmed AUHAL termination, 16 seconds
@@ -58,5 +76,11 @@ without transcription. User cancellation remains a distinct discard path.
   transcription policy while the helper exclusively owns macOS audio objects.
 - CI rejects future app-crate CPAL/CoreAudio dependencies and direct HAL source.
 - Device failover cannot silently switch microphones after capture begins.
+- Short-lived USB re-enumeration can recover within two extra same-device
+  passes, while cancellation and the no-substitution boundary remain explicit.
+- If all bounded passes fail, the terminal typed failure drives a five-second
+  mic-off overlay status labelled “Selected microphone unavailable. Open
+  Settings to choose another.” It never expands, focuses, or resizes the
+  overlay; non-device failures retain the generic cue.
 - This repairs the bounded-fallback contract and adds attribution evidence. It
   does not claim to remove the underlying Core Audio hang.

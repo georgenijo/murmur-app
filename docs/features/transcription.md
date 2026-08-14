@@ -3,7 +3,7 @@
 ## Process-isolated capture
 
 Microphone enumeration and streaming execute only in the signed
-`murmur-capture-worker`. Production protocol v5 binds every control and PCM
+`murmur-capture-worker`. Production protocol v6 binds every control and PCM
 frame to a capture ID and nonce and rejects stale, malformed, oversized,
 out-of-sequence, or sample-rate-changing input. The worker callback writes mono
 samples into a preallocated SPSC ring; the parent retains PCM before declaring
@@ -51,17 +51,25 @@ is spawned.
 
 Labels and stable IDs remain local. The log shipper reads a separately derived
 aggregate (count, actual-default availability, and enumeration success) and can
-never serialize either field. Production protocol v5 adds the optional
+never serialize either field. Production protocol v6 retains the optional
 `defaultInputId` to the bounded `Devices` reply and adds the passive watcher
 controls; capture selection itself still resolves the immutable device choice
 afresh at recording start.
 
-Direct AUHAL is the primary backend and CPAL is the independent fallback. A
-single fallback is allowed only before any audio is retained and must target the
-same raw device UID. The fallback starts only after the primary process group is
+Direct AUHAL is the primary backend and CPAL is the independent fallback. Each
+resolution pass allows one fallback only before any audio is retained and must
+target the same raw device UID. The fallback starts only after the primary process group is
 confirmed empty and a final Stop check passes. Once audio exists, failure ends capture without switching
 devices. Prefixes of at least 500 ms are transcribed normally, remain
 clipboard-first, and are marked **Interrupted · partial** in history.
+
+For an explicit pinned microphone only, a full AUHAL-to-CPAL pass in which both
+backends fail `device_unavailable` before first PCM may be repeated up to two
+more times. The 500 ms gaps between passes are cancellable. All three possible
+passes use the exact immutable device ID selected at recording start; Murmur
+never substitutes the system default or another input. A mixed failure, a
+system-default selection, retained audio, cancellation, or any non-
+`device_unavailable` result ends this re-resolution path immediately.
 
 A process-local session memo, keyed per requested device, adapts the attempt
 sequence to two observed hang pathologies. For a backend-bound hang (one
@@ -98,6 +106,13 @@ Transcription processing is local. Network access occurs for model setup and may
   (`kAudioDevicePropertyDeviceUID` on CoreAudio), never a display name.
   Display names are presentation-only. A missing/ambiguous explicit selection
   fails as `device_unavailable` and never falls back to another microphone.
+- Production protocol v6 sends one `InputResolution` evidence message for each
+  live backend attempt. It contains the backend, enumeration success, whether
+  the requested pinned input was present when that fact is knowable, an input
+  count capped at 256 plus a capped flag, and default-input availability. Strict
+  cross-field validation rejects contradictory evidence. Device IDs, display
+  names, raw backend errors, paths, and content never enter this message or its
+  telemetry projection.
 - An app-lifetime supervisor is the single microphone owner. It owns each
   live capture worker and join handle. Cancellation or deadline expiry closes
   that generation's publication gate and requests stop, but ownership remains
@@ -131,7 +146,7 @@ Transcription processing is local. Network access occurs for model setup and may
   If one blocks, Murmur retains exclusive ownership rather than detaching the
   worker or accepting a competing retry. Process isolation is the final fault
   boundary.
-- Protocol v5 emits stable entered/completed setup-step constants that bracket
+- Protocol v6 emits stable entered/completed setup-step constants that bracket
   each native Core Audio call on the AUHAL path — device resolution, unit
   creation (`audio_unit_new`: component find/instantiate/initialize), input
   enable, output disable, current-device binding, stream-format configuration,
@@ -156,6 +171,12 @@ Transcription processing is local. Network access occurs for model setup and may
   `invalid_input`, `resource_exhausted`, and bounded fallback kinds).
   Phase/error telemetry never includes a device label, UID, raw backend
   message, or audio/transcript content.
+- Exhausting the bounded pinned-input passes emits the ordinary terminal
+  `recording-initialization-failed` event with `errorKind: device_unavailable`.
+  The overlay shows a truthful mic-off status for five seconds with the exact
+  accessible label “Selected microphone unavailable. Open Settings to choose
+  another.” Other capture failures use the generic failure cue. The cue neither
+  expands nor focuses the overlay and does not mutate native geometry.
 - Recording duration begins at accepted readiness, not at the user's initial
   activation.
 - Multi-channel to mono conversion (averages channels) supports every PCM

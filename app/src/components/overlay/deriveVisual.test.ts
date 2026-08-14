@@ -92,8 +92,29 @@ describe('deriveVisual', () => {
 
   it('microphone failure flash beats active lifecycle indicators', () => {
     expect(
-      deriveVisual('recovering', false, false, false, false, false, false, true).indicator,
-    ).toEqual({ kind: 'microphoneFailure' });
+      deriveVisual(
+        'recovering', false, false, false, false, false, false, 'deviceUnavailable',
+      ).indicator,
+    ).toEqual({ kind: 'microphoneFailure', failure: 'deviceUnavailable' });
+
+    expect(
+      deriveVisual(
+        'recording', false, false, false, false, false, false, 'generic',
+      ).indicator,
+    ).toEqual({ kind: 'microphoneFailure', failure: 'generic' });
+  });
+
+  it('cancelled and secure-field cues retain priority over microphone failures', () => {
+    expect(
+      deriveVisual(
+        'idle', true, false, false, false, false, false, 'deviceUnavailable',
+      ).indicator,
+    ).toEqual({ kind: 'cancelled' });
+    expect(
+      deriveVisual(
+        'idle', false, false, false, false, true, false, 'deviceUnavailable',
+      ).indicator,
+    ).toEqual({ kind: 'secureField' });
   });
 
   // Issue #339 gap 1: cancelled and secure-field co-asserted. Reordering
@@ -152,7 +173,7 @@ describe('deriveVisual', () => {
       true,
       true,
       true,
-      true,
+      'generic',
       true,
       true,
     );
@@ -189,8 +210,11 @@ describe('deriveVisual', () => {
       deriveVisual('idle', true, false, false, false, false, false, false, false, false, 'idle', true).indicator,
     ).toEqual({ kind: 'cancelled' });
     expect(
-      deriveVisual('idle', false, false, false, false, false, false, true, false, false, 'idle', true).indicator,
-    ).toEqual({ kind: 'microphoneFailure' });
+      deriveVisual(
+        'idle', false, false, false, false, false, false, 'deviceUnavailable',
+        false, false, 'idle', true,
+      ).indicator,
+    ).toEqual({ kind: 'microphoneFailure', failure: 'deviceUnavailable' });
     expect(
       deriveVisual('idle', false, true, false, false, false, false, false, false, false, 'idle', true).indicator,
     ).toEqual({ kind: 'hotkeyMiss' });

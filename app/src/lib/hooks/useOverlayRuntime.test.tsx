@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   handlers: new Map<string, EventListener>(),
   unlistens: new Map<string, ReturnType<typeof vi.fn>>(),
   listenFailures: new Set<string>(),
+  deferredListeners: new Set<string>(),
+  deferredResolves: new Map<string, () => void>(),
   warn: vi.fn(),
   listen: vi.fn((event: string, handler: EventListener) => {
     if (mocks.listenFailures.has(event)) {
@@ -17,6 +19,11 @@ const mocks = vi.hoisted(() => ({
     const unlisten = vi.fn();
     mocks.handlers.set(event, handler);
     mocks.unlistens.set(event, unlisten);
+    if (mocks.deferredListeners.has(event)) {
+      return new Promise<() => void>((resolve) => {
+        mocks.deferredResolves.set(event, () => resolve(unlisten));
+      });
+    }
     return Promise.resolve(unlisten);
   }),
 }));
@@ -31,6 +38,7 @@ vi.mock('../settings', () => ({
 
 import {
   CLIPBOARD_ONLY_FLASH_MS,
+  MICROPHONE_FAILURE_FLASH_MS,
   type OverlayRuntime,
   useOverlayRuntime,
 } from './useOverlayRuntime';
@@ -52,7 +60,7 @@ function Harness({ status = 'idle' }: { status?: DictationStatus }) {
 
 let current: OverlayRuntime | null = null;
 
-describe('useOverlayRuntime clipboard-only cue', () => {
+describe('useOverlayRuntime transient cues', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -62,6 +70,8 @@ describe('useOverlayRuntime clipboard-only cue', () => {
     mocks.handlers.clear();
     mocks.unlistens.clear();
     mocks.listenFailures.clear();
+    mocks.deferredListeners.clear();
+    mocks.deferredResolves.clear();
     current = null;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -93,6 +103,174 @@ describe('useOverlayRuntime clipboard-only cue', () => {
       });
     });
   }
+
+  async function emitInitializationFailure(errorKind: unknown, recordingId = 1) {
+    await act(async () => {
+      mocks.handlers.get('recording-initialization-failed')?.({
+        payload: { recordingId, errorKind },
+      });
+    });
+  }
+
+  it('shows a typed device-unavailable cue for a bounded five seconds', async () => {
+    expect(current?.showMicrophoneFailure).toBeNull();
+
+    await emitInitializationFailure('device_unavailable');
+    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+
+    await act(async () => vi.advanceTimersByTime(MICROPHONE_FAILURE_FLASH_MS - 1));
+    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(current?.showMicrophoneFailure).toBeNull();
+  });
+
+  it('keeps unknown and interrupted failures generic and ignores malformed payloads', async () => {
+    await emitInitializationFailure('permission_denied');
+    expect(current?.showMicrophoneFailure).toBe('generic');
+
+    await emitGeneration(2);
+    await act(async () => {
+      mocks.handlers.get('recording-initialization-failed')?.({ payload: null });
+    });
+    expect(current?.showMicrophoneFailure).toBeNull();
+
+    await act(async () => {
+      mocks.handlers.get('recording-interrupted')?.({ payload: { recordingId: 2 } });
+    });
+    expect(current?.showMicrophoneFailure).toBe('generic');
+  });
+
+  it('restarts the full failure timeout and adopts the latest typed cue', async () => {
+    await emitInitializationFailure('device_unavailable');
+    await act(async () => vi.advanceTimersByTime(MICROPHONE_FAILURE_FLASH_MS - 1000));
+
+    await emitInitializationFailure('backend_error');
+    expect(current?.showMicrophoneFailure).toBe('generic');
+
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(current?.showMicrophoneFailure).toBe('generic');
+
+    await act(async () => vi.advanceTimersByTime(MICROPHONE_FAILURE_FLASH_MS - 1000));
+    expect(current?.showMicrophoneFailure).toBeNull();
+  });
+
+  it('clears an older failure cue when a newer recording generation starts', async () => {
+    await emitInitializationFailure('device_unavailable');
+    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+
+    await emitGeneration(2);
+    expect(current?.showMicrophoneFailure).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects delayed initialization and interruption failures from an older generation', async () => {
+    await emitGeneration(3);
+    await emitInitializationFailure('device_unavailable', 2);
+    await act(async () => {
+      mocks.handlers.get('recording-interrupted')?.({ payload: { recordingId: 2 } });
+    });
+    expect(current?.showMicrophoneFailure).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('uses a newer delivery as an ownership floor for delayed microphone failures', async () => {
+    await emitDelivery(4);
+    await emitInitializationFailure('device_unavailable', 3);
+    expect(current?.showMicrophoneFailure).toBeNull();
+    expect(current?.showClipboardOnly).toBe(true);
+  });
+
+  it('clears an older microphone failure when a newer delivery arrives first', async () => {
+    await emitInitializationFailure('device_unavailable', 8);
+    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+
+    await emitDelivery(9);
+    await emitGeneration(9);
+    expect(current?.showMicrophoneFailure).toBeNull();
+    expect(current?.showClipboardOnly).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('clears microphone failure even when the clipboard delivery listener is unavailable', async () => {
+    await act(async () => root.unmount());
+    mocks.handlers.clear();
+    mocks.unlistens.clear();
+    mocks.listenFailures.add('dictation-delivery-outcome');
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await emitInitializationFailure('device_unavailable', 5);
+    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    await emitGeneration(6);
+    expect(current?.showMicrophoneFailure).toBeNull();
+  });
+
+  it('ignores a failure callback after cleanup while listener registration is pending', async () => {
+    await act(async () => root.unmount());
+    mocks.handlers.clear();
+    mocks.unlistens.clear();
+    mocks.deferredListeners.add('recording-initialization-failed');
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    const delayedHandler = mocks.handlers.get('recording-initialization-failed');
+
+    await act(async () => root.unmount());
+    await act(async () => {
+      delayedHandler?.({ payload: { recordingId: 7, errorKind: 'device_unavailable' } });
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      mocks.deferredResolves.get('recording-initialization-failed')?.();
+      await Promise.resolve();
+    });
+    expect(mocks.unlistens.get('recording-initialization-failed')).toHaveBeenCalledOnce();
+    root = createRoot(container);
+  });
+
+  it('clears the failure timer and both listeners on unmount', async () => {
+    await emitInitializationFailure('device_unavailable');
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => root.unmount());
+    expect(mocks.unlistens.get('recording-initialization-failed')).toHaveBeenCalledOnce();
+    expect(mocks.unlistens.get('recording-interrupted')).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    root = createRoot(container);
+  });
+
+  it('cleans up the surviving listener when one failure listener is unavailable', async () => {
+    await act(async () => root.unmount());
+    mocks.handlers.clear();
+    mocks.unlistens.clear();
+    mocks.warn.mockClear();
+    mocks.listenFailures.add('recording-initialization-failed');
+    root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current?.showMicrophoneFailure).toBeNull();
+    expect(mocks.warn).toHaveBeenCalledWith(
+      'overlay',
+      'recording-initialization-failed listener unavailable',
+      { error: 'Error: recording-initialization-failed unavailable' },
+    );
+
+    await act(async () => root.unmount());
+    expect(mocks.unlistens.get('recording-interrupted')).toHaveBeenCalledOnce();
+    root = createRoot(container);
+  });
 
   it('shows the cue for a bounded five seconds', async () => {
     expect(current?.showClipboardOnly).toBe(false);

@@ -122,18 +122,18 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 |------|------|
 | `useOverlayGeometry` | Fetches/subscribes to `OverlayGeometry` (see [Geometry Contract](#geometry-contract)). |
 | `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`, `overlayVerticalOffset`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
-| `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), `dictation-generation-started` ownership floor, generation-ordered `dictation-delivery-outcome` (clipboard-only `⌘V` cue), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
+| `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), typed `recording-initialization-failed`/generic `recording-interrupted` microphone cues, `dictation-generation-started` ownership floor, generation-ordered `dictation-delivery-outcome` (clipboard-only `⌘V` cue), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
 | `useOverlayExpansion` (pre-existing, see [Expansion Controller](#expansion-controller)) | The hover-expand lifecycle. |
 | `useWaveform` | The `audio-level` listener and the rAF bar-height animation (see [Waveform Animation](#waveform-animation)). |
 | `useRecordingControls` | Click/double-click/mousedown disambiguation (250ms debounce) and "locked mode" (see [Click Interactions](#click-interactions)). Reads the microphone override via `loadSettings()` — no raw localStorage parsing. |
 
 Pure, React-free logic lives alongside the presentational components in `app/src/components/overlay/`:
 
-- **`deriveVisual.ts`** — `(status, showCancelled, showHotkeyMiss, disabled) → OverlayVisual`. Encodes the top-bar indicator priority (cancelled > hotkey-miss > recording > processing > idle-with-disabled-dimming) exactly once; locked by an exhaustive matrix test (`deriveVisual.test.ts`) over every status × flag combination.
+- **`deriveVisual.ts`** — runtime state → `OverlayVisual`. Encodes the top-bar indicator priority, including typed microphone failures, exactly once; locked by its exhaustive base-state matrix and focused priority tests in `deriveVisual.test.ts`.
 
 Presentational components, both driven entirely by props (no hooks beyond `OverlayPill`'s own local elapsed-timer state):
 
-- **`OverlayPill.tsx`** — the top bar (status indicator slot, inline `m:ss` timer, waveform bars). Owns the elapsed-timer effect (keyed on the `status` prop it already needs for rendering — the smallest-plumbing home for it).
+- **`OverlayPill.tsx`** — the top bar (status indicator slot and waveform bars), including accessible non-interactive transient cues. A terminal `device_unavailable` uses a mic-off glyph with actionable Settings guidance; other capture failures retain a generic warning.
 - **`OverlayDropdown.tsx`** — the three quick-settings buttons (Power, auto-paste toggle, gear). Icons (`PowerIcon`, `ClipboardPasteIcon`, `SlidersIcon`) are colocated in this file rather than split one-per-file.
 
 The island **container** (sizing, hover handlers, `islandRef`) stays in `OverlayWidget.tsx` itself, since it wraps both `OverlayPill` and `OverlayDropdown` as siblings.
@@ -172,7 +172,12 @@ Starting uses a blue pulse; after the backend's 5-second signal it becomes an
 amber "Still connecting" cue. Clicking or toggling again cancels. Recovering
 uses an amber spinner and dropdown label during cancellation recovery; the app
 returns to Idle only after the exclusively owned Core Audio thread exits.
-Initialization failure gets a bounded red warning flash. A normal
+Terminal microphone failure gets a five-second, non-interactive red status cue
+without expanding, focusing, or resizing the overlay. `device_unavailable`
+uses a mic-off glyph whose accessibility label directs the user to Settings to
+choose another input; other failures use a generic capture warning. A newer
+recording generation clears the prior cue immediately so successful retries
+cannot remain covered by stale failure feedback. A normal
 recording stop whose teardown remains blocked surfaces persistent guidance in
 the main recording-error area.
 
