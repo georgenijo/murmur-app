@@ -16,6 +16,7 @@ export interface UseOverlaySettingsMirrorArgs {
 export interface OverlaySettingsMirror {
   autoPaste: boolean;
   fileOutputEnabled: boolean;
+  overlayVerticalOffset: number;
   /** Re-reads localStorage and applies the snapshot. Stable identity. */
   refresh: () => void;
   handleToggleAutoPaste: (e: React.MouseEvent) => Promise<void>;
@@ -38,11 +39,15 @@ export function useOverlaySettingsMirror({
 }: UseOverlaySettingsMirrorArgs): OverlaySettingsMirror {
   const [autoPaste, setAutoPaste] = useState(false);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
+  const [overlayVerticalOffset, setOverlayVerticalOffset] = useState(
+    () => loadSettings().overlayVerticalOffset,
+  );
 
   const applySettingsSnapshot = useCallback((settings: Settings) => {
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
+    setOverlayVerticalOffset(settings.overlayVerticalOffset);
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
   }, [setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef]);
@@ -125,6 +130,7 @@ export function useOverlaySettingsMirror({
   return {
     autoPaste,
     fileOutputEnabled,
+    overlayVerticalOffset,
     refresh,
     handleToggleAutoPaste,
     handleToggleDisabled,

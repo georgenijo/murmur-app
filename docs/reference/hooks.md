@@ -134,7 +134,7 @@ The hover-expand lifecycle, owned end to end: 150ms dwell intent gate, cursor po
 Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, and the `app-disabled-changed` state mirror.
 
 ### `useOverlaySettingsMirror`
-The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows) plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.
+The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows), including the confirmed vertical calibration offset, plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.
 
 ### `useRecordingControls`
 Click disambiguation on the island: single click (250ms debounce) stops recording or exits locked mode; double-click toggles locked mode.

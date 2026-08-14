@@ -21,7 +21,10 @@ const coreMocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: coreMocks.invoke,
 }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock('@tauri-apps/api/event', () => ({
+  emit: vi.fn(async () => {}),
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
 vi.mock('../../lib/hooks/useVocabScan', () => ({

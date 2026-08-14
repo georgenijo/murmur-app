@@ -17,6 +17,7 @@ import {
   AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
   DEFAULT_SETTINGS,
+  LEGACY_OVERLAY_OFFSET_KEY,
   MODEL_OPTIONS,
   STORAGE_KEY,
 } from './settings';
@@ -44,6 +45,7 @@ describe('loadSettings', () => {
       hotkeyMissFeedback: true,
       microphone: 'Studio Mic',
       launchAtLogin: true,
+      overlayVerticalOffset: 7,
       vadSensitivity: 75,
       idleTimeoutMinutes: 15,
       customVocabulary: 'Murmur',
@@ -133,7 +135,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 1,
+      settingsVersion: 2,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -144,7 +146,7 @@ describe('loadSettings', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       autoPasteDelayMs: 50,
-      settingsVersion: 1,
+      settingsVersion: 2,
     }));
 
     expect(loadSettings().autoPasteDelayMs).toBe(50);
@@ -159,8 +161,47 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 1,
+      settingsVersion: 2,
     });
+  });
+
+  it('resets offsets from the broken calibration flow once and removes its standalone key', () => {
+    localStorage.setItem(LEGACY_OVERLAY_OFFSET_KEY, '48');
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      overlayVerticalOffset: 12,
+      settingsVersion: 1,
+    }));
+
+    expect(loadSettings().overlayVerticalOffset).toBe(0);
+    expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
+      overlayVerticalOffset: 0,
+      settingsVersion: 2,
+    });
+  });
+
+  it('preserves and bounds confirmed overlay offsets after migration', () => {
+    for (const [stored, expected] of [
+      [7, 7],
+      [99, 12],
+      [-99, -12],
+      [4.9, 4],
+      ['down', 0],
+    ] as const) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        overlayVerticalOffset: stored,
+        settingsVersion: 2,
+      }));
+      expect(loadSettings().overlayVerticalOffset).toBe(expected);
+    }
+  });
+
+  it('removes a legacy overlay offset even when no settings document exists', () => {
+    localStorage.setItem(LEGACY_OVERLAY_OFFSET_KEY, '48');
+    expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
   });
 
   it('migrates and validates per-app smart and CLI formatting overrides', () => {
@@ -826,7 +867,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 1 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 2 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 

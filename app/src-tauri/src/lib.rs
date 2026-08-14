@@ -571,7 +571,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
-                commands::overlay::position_overlay_default(&overlay_win, notch);
+                commands::overlay::position_overlay_default(&overlay_win, notch, "startup");
                 let _ = overlay_win.show();
                 if let Err(e) = overlay_win.set_ignore_cursor_events(false) {
                     tracing::warn!(target: "system", "Failed to set overlay cursor events: {}", e);

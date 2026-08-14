@@ -6,6 +6,30 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-14: Overlay calibration previews native movement and commits explicitly
+
+**Decision:** Replace the overlay-resident pointer drag band with Settings
+controls that move the native window one logical point at a time within ±12pt.
+Cancel restores the session baseline; Preview default is transient, while Save
+and the inactive Reset action write `overlayVerticalOffset` into the durable Settings document. Settings schema v2
+resets every pre-v2 offset once because the old flow's stored values cannot be
+distinguished from its broken +48pt pointer-up state. Startup and applied
+positions log both target and actual physical coordinates.
+
+**Rationale:** The former preview transformed DOM content rather than the native
+window and persisted automatically on pointer release. A stale maximum offset
+therefore reopened Murmur far below the MacBook notch, while `show_overlay`
+could also jump a live preview back to default. Native preview plus an explicit
+commit boundary makes the behavior visible, reversible, and testable.
+
+**Status:** active; supersedes the disabled overlay position save/restore note
+in the 2025-12 overlay architecture decision
+
+**References:** issue #580, `OverlayCalibrationControl.tsx`,
+`commands/overlay.rs`, `docs/features/overlay.md`
+
+---
+
 ## 2026-08-13: Voice Query history retains opted-in contextual results
 
 **Decision:** When **Keep Voice Query history on this Mac** is enabled, retain

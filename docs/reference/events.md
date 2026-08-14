@@ -1,6 +1,6 @@
 # Tauri Events Reference
 
-Every event emitted from the Rust backend to the frontend via Tauri's event system, plus the two window-to-window events the frontend emits itself. The frontend subscribes with `listen()` from `@tauri-apps/api/event`.
+Every event emitted from the Rust backend to the frontend via Tauri's event system, plus the window-to-window events the frontend emits itself. The frontend subscribes with `listen()` from `@tauri-apps/api/event`.
 
 For commands see [commands.md](commands.md). For the hooks that consume these events see [hooks.md](hooks.md).
 
@@ -143,6 +143,7 @@ for stage denominators and terminal semantics.
 |-------|---------|--------|---------------|-----------|
 | `appearance-changed` | `{revision, reason}` where `reason` is `"user"` \| `"repair"` \| `"reset"` \| `"import"` | Main window appearance controller | After main commits a user edit, reset, import, derived-cache repair, or explicit high-water revision rollover to `1` in `murmur-appearance`. The event carries no colors or file contents. System-mode OS changes do not emit. | Log viewer appearance controller; it reloads storage with a bounded retry, ignores stale revisions, and accepts the single high-water-to-`1` repair rollover. |
 | `settings-changed` | `()` | `useSettings`, `useOverlaySettingsMirror` | A window mutates persisted settings, so the other windows re-read localStorage. | Main window, overlay. |
+| `overlay-calibration-changed` | `{active: boolean}` | Main Settings calibration control | Calibration starts or finishes. It carries no position; native preview movement remains command-owned. | Overlay switches its visual into or out of calibration mode and suppresses normal click/hover behavior. |
 | `open-settings` | `()` | `useOverlaySettingsMirror` | The overlay's quick-settings card asks the main window to open Settings. | Main window (`useOpenSettingsListener`). |
 
 **Dead listener:** `useShowAboutListener` listens for `show-about`, but the tray

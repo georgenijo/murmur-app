@@ -14,16 +14,11 @@ import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
-import { NotchCalibrationBand } from './overlay/NotchCalibrationBand';
 import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatus } from '../lib/meetings';
 
 export function OverlayWidget() {
   const geometry = useOverlayGeometry();
   const [calibrating, setCalibrating] = useState(false);
-  const [verticalOffset, setVerticalOffset] = useState(() => {
-    const value = Number(localStorage.getItem('murmur-overlay-vertical-offset') ?? 0);
-    return Number.isFinite(value) ? Math.max(-12, Math.min(48, value)) : 0;
-  });
 
   // Shared mutable state written synchronously by both useOverlayRuntime's
   // Tauri listeners and useOverlaySettingsMirror's applySettingsSnapshot.
@@ -94,19 +89,21 @@ export function OverlayWidget() {
 
   useEffect(() => {
     if (!geometry) return;
-    void invoke('set_overlay_vertical_offset', { offset: verticalOffset }).catch((error) => {
+    void invoke('set_overlay_vertical_offset', { offset: settingsMirror.overlayVerticalOffset }).catch((error) => {
       flog.warn('overlay', 'could not apply calibrated offset', { error: String(error) });
     });
-  }, [geometry, verticalOffset]);
+  }, [geometry, settingsMirror.overlayVerticalOffset]);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    listen('start-overlay-calibration', () => {
-      setCalibrating(true);
+    listen<{ active?: unknown }>('overlay-calibration-changed', (event) => {
+      setCalibrating(event.payload?.active === true);
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
+    }).catch(() => {
+      // Without the native event bridge, calibration stays inactive.
     });
     return () => {
       disposed = true;
@@ -251,21 +248,6 @@ export function OverlayWidget() {
           onOpenSettings={settingsMirror.handleOpenSettings}
         />
       </div>
-      <NotchCalibrationBand
-        geometry={geometry}
-        active={calibrating}
-        onCancel={() => setCalibrating(false)}
-        onCommit={(delta) => {
-          const next = Math.max(-12, Math.min(48, verticalOffset + delta));
-          setVerticalOffset(next);
-          setCalibrating(false);
-          try {
-            localStorage.setItem('murmur-overlay-vertical-offset', String(next));
-          } catch {
-            // Non-fatal: the offset applies for this session and resets next launch.
-          }
-        }}
-      />
     </div>
   );
 }

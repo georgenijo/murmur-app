@@ -106,6 +106,7 @@ interface Settings {
 
   // System
   launchAtLogin: boolean;
+  overlayVerticalOffset: number;           // integer points, -12 through +12
 }
 ```
 
@@ -240,6 +241,7 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 |---------|------|---------|-------------------|-------------|
 | `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from `list_audio_devices` | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend uses the live system default. A missing explicit ID fails closed; it never records from another physical microphone. Unique legacy display-name values migrate to the matching stable ID when the settings panel enumerates devices; duplicate or missing names remain unresolved and require reselection. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
+| `overlayVerticalOffset` | `number` | `0` | Integer `-12` through `12` | Confirmed native overlay fine-tuning in logical points. Settings previews the real window; Cancel restores the baseline, Preview default is transient, and Save or inactive Reset persists. Schema v2 resets offsets from the former broken drag flow once. |
 
 ---
 
@@ -261,6 +263,10 @@ Each window entry (`main.tsx`, `overlay.tsx`, `transform-review.tsx`, `query-rev
 2. `load_settings_blob` returns a blob → it is written into `localStorage` verbatim. Disk wins; the cache may be stale or evicted.
 3. `load_settings_blob` returns `null` → first run, or an existing install whose settings only ever lived in `localStorage`. A non-null cached blob is migrated to disk once via `save_settings_blob`.
 4. Any failure is logged and swallowed. Boot never blocks on the settings store, and `localStorage` stays the fallback for the session.
+
+On the first v2 load, Murmur resets any pre-v2 overlay calibration to zero and
+deletes the old standalone `murmur-overlay-vertical-offset` key. Subsequent v2
+offsets are integer-clamped to ±12 and remain inside the durable Settings blob.
 
 Hydration is idempotent, so every window can run it regardless of creation order; concurrent first-run writes are serialized in Rust and write identical content.
 
@@ -305,6 +311,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
 | `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
 | `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
+| `overlayVerticalOffset` | _(sent via `set_overlay_vertical_offset`)_ | Frontend/native window only |
 | `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
 | `benchmarkAutoSave` | _(read in the Performance Lab; drives auto-save after each run)_ | Frontend only |
 
