@@ -809,4 +809,74 @@ describe('useQueryReviewDriver ownership', () => {
     });
     expect(current!.answer).toBe('complete recovered answer');
   });
+
+  it('replaces listening partials for the active pass and ignores stale ones', async () => {
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 4, state: 'listening', errorCode: null },
+      });
+      mocks.listeners['query-partial']?.({
+        payload: { queryPassId: 4, text: 'what is' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.state).toBe('listening');
+    expect(current!.partial).toBe('what is');
+
+    await act(async () => {
+      mocks.listeners['query-partial']?.({
+        payload: { queryPassId: 4, text: 'what is the weather' },
+      });
+      mocks.listeners['query-partial']?.({
+        payload: { queryPassId: 3, text: 'stale pass' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.partial).toBe('what is the weather');
+  });
+
+  it('clears the partial when the query is sent or the popover hides', async () => {
+    await mount();
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 8, state: 'listening', errorCode: null },
+      });
+      mocks.listeners['query-partial']?.({
+        payload: { queryPassId: 8, text: 'summarize this' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.partial).toBe('summarize this');
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 8, state: 'transcribing', errorCode: null },
+      });
+      mocks.listeners['query-partial']?.({
+        payload: { queryPassId: 8, text: 'late partial' },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.state).toBe('transcribing');
+    expect(current!.partial).toBe('');
+
+    await act(async () => {
+      mocks.listeners['query-state-changed']?.({
+        payload: { queryPassId: 9, state: 'listening', errorCode: null },
+      });
+      mocks.listeners['query-partial']?.({
+        payload: { queryPassId: 9, text: 'next question' },
+      });
+      mocks.listeners['query-review-hidden']?.({
+        payload: { queryPassId: 9 },
+      });
+      await Promise.resolve();
+    });
+    expect(current!.state).toBe('idle');
+    expect(current!.partial).toBe('');
+    expect(current!.answer).toBe('');
+  });
 });

@@ -1548,7 +1548,8 @@ export const SettingsPanel = memo(function SettingsPanel({
             <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
               Answers stream into a popover and are copied to the clipboard when complete. They are never
               auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
-              Context content never enters history, saved files, usage stats, diagnostics, logs, or telemetry.
+              Context is never stored as a separate history field, but a saved answer may quote context shared with the CLI.
+              Context content never enters saved files, usage stats, diagnostics, logs, or telemetry.
             </div>
           </SettingsSection>
 

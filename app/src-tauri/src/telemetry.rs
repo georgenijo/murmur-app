@@ -231,6 +231,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "meeting.tap_active" => Some("meeting.tap_active"),
         "meeting.tap_destroyed" => Some("meeting.tap_destroyed"),
         "query.pass_state" => Some("query.pass_state"),
+        "query.partial_tick" => Some("query.partial_tick"),
         "updater.check_current" => Some("updater.check_current"),
         "updater.check_failed" => Some("updater.check_failed"),
         "updater.install_blocked" => Some("updater.install_blocked"),
@@ -469,7 +470,17 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
 
 fn is_safe_query_string(key: &str, value: &str) -> bool {
     match key {
-        "event_code" => value == "query.pass_state",
+        "event_code" => matches!(value, "query.pass_state" | "query.partial_tick"),
+        "outcome" => matches!(
+            value,
+            "too_short"
+                | "empty"
+                | "emitted"
+                | "in_flight"
+                | "unsupported_model"
+                | "no_session"
+                | "stale"
+        ),
         "state" => matches!(
             value,
             "idle" | "connecting" | "listening" | "transcribing" | "running" | "ready" | "failed"
@@ -512,7 +523,7 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
 
 fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
     match key {
-        "event_code" | "state" => value
+        "event_code" | "state" | "outcome" => value
             .as_str()
             .is_some_and(|value| is_safe_query_string(key, value)),
         "error_code" => {
@@ -522,6 +533,7 @@ fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
                     .is_some_and(|value| is_safe_query_string(key, value))
         }
         "query_pass_id"
+        | "sample_count"
         | "input_tokens"
         | "output_tokens"
         | "reasoning_output_tokens"
@@ -930,6 +942,8 @@ mod tests {
             "error_code": "provider_not_authenticated",
             "question": "SENTINEL_QUESTION ; rm -rf",
             "answer": "SENTINEL_ANSWER",
+            "text": "SENTINEL_PARTIAL",
+            "partial": "SENTINEL_PARTIAL",
             "context": "SENTINEL_CONTEXT",
             "window_title": "SENTINEL_WINDOW",
             "selection": "SENTINEL_SELECTION",
@@ -1060,6 +1074,26 @@ mod tests {
         });
         sanitize_event_data("query", &mut data, true);
         assert!(data.get("error_code").is_none());
+    }
+
+    #[test]
+    fn query_event_sanitizer_allows_content_free_partial_ticks() {
+        let mut data = serde_json::json!({
+            "event_code": "query.partial_tick",
+            "query_pass_id": 4,
+            "outcome": "empty",
+            "sample_count": 16000,
+            "text": "SENTINEL_PARTIAL",
+            "partial": "SENTINEL_PARTIAL"
+        });
+        sanitize_event_data("query", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(data["event_code"], "query.partial_tick");
+        assert_eq!(data["query_pass_id"], 4);
+        assert_eq!(data["outcome"], "empty");
+        assert_eq!(data["sample_count"], 16000);
+        assert!(!encoded.contains("SENTINEL"));
+        assert_eq!(data.as_object().unwrap().len(), 4);
     }
 
     #[test]

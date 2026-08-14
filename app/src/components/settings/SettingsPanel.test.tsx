@@ -223,6 +223,8 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ retainQueryHistory: true });
     expect(container.textContent).toContain('This includes queries that shared app context');
     expect(container.textContent).toContain('a saved answer may quote it');
+    expect(container.textContent).toContain('a saved answer may quote context shared with the CLI');
+    expect(container.textContent).not.toContain('Context content never enters history');
   });
 
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {

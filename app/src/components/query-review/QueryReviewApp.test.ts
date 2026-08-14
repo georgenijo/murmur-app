@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { queryErrorMessage } from './QueryReviewApp';
+import { queryErrorMessage, queryListeningPartial } from './QueryReviewApp';
 
 describe('queryErrorMessage', () => {
   it('treats a deferred clipboard as success, not failure', () => {
@@ -22,5 +22,15 @@ describe('queryErrorMessage', () => {
 
   it('falls back to a generic message for an unrecognised code', () => {
     expect(queryErrorMessage('something_new')).toBe('The voice query could not be completed.');
+  });
+});
+
+describe('queryListeningPartial', () => {
+  it('shows plain listening text and hides it after send', () => {
+    expect(queryListeningPartial('listening', 'what is the weather')).toBe('what is the weather');
+    expect(queryListeningPartial('listening', '   ')).toBeNull();
+    expect(queryListeningPartial('transcribing', 'what is the weather')).toBeNull();
+    expect(queryListeningPartial('running', 'what is the weather')).toBeNull();
+    expect(queryListeningPartial('ready', 'what is the weather')).toBeNull();
   });
 });

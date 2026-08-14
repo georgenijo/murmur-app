@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   signIn: vi.fn(async () => undefined),
   driver: {
-    state: 'failed' as 'failed' | 'ready',
+    state: 'failed' as 'failed' | 'ready' | 'listening',
     errorCode: 'provider_not_authenticated' as string | null,
     answer: 'partial stdout must not mask failure',
+    partial: '',
     errorDetail: 'Error: Not logged in' as string | null,
     usage: null as null | {
       inputTokens: number;
@@ -45,6 +46,7 @@ describe('QueryReviewApp', () => {
     mocks.driver.state = 'failed';
     mocks.driver.errorCode = 'provider_not_authenticated';
     mocks.driver.answer = 'partial stdout must not mask failure';
+    mocks.driver.partial = '';
     mocks.driver.errorDetail = 'Error: Not logged in';
     mocks.driver.usage = null;
     mocks.driver.contextSummary = null;
@@ -142,4 +144,16 @@ describe('QueryReviewApp', () => {
     expect(container.textContent).toContain('Never auto-pasted');
   });
 
+  it('shows listening words as plain text before the CLI runs', async () => {
+    mocks.driver.state = 'listening';
+    mocks.driver.errorCode = null;
+    mocks.driver.answer = '';
+    mocks.driver.partial = 'what is the weather';
+    mocks.driver.errorDetail = null;
+    await act(async () => root.render(<QueryReviewApp />));
+
+    const heard = container.querySelector('[aria-label="Heard so far"]');
+    expect(heard?.textContent).toBe('what is the weather');
+    expect(container.querySelector('[aria-label="Query answer"]')).toBeNull();
+  });
 });
