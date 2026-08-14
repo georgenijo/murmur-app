@@ -241,7 +241,7 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 |---------|------|---------|-------------------|-------------|
 | `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from `list_audio_devices` | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend uses the live system default. A missing explicit ID fails closed; it never records from another physical microphone. Unique legacy display-name values migrate to the matching stable ID when the settings panel enumerates devices; duplicate or missing names remain unresolved and require reselection. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
-| `overlayVerticalOffset` | `number` | `0` | Integer `-12` through `12` | Confirmed native overlay fine-tuning in logical points. Settings previews the real window; Cancel restores the baseline and only Save persists. Schema v2 resets offsets from the former broken drag flow once. |
+| `overlayVerticalOffset` | `number` | `0` | Integer `-12` through `12` | Confirmed native overlay fine-tuning in logical points. Settings previews the real window; Cancel restores the baseline, Preview default is transient, and Save or inactive Reset persists. Schema v2 resets offsets from the former broken drag flow once. |
 
 ---
 

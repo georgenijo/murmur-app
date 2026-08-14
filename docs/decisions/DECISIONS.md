@@ -10,8 +10,8 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 **Decision:** Replace the overlay-resident pointer drag band with Settings
 controls that move the native window one logical point at a time within ±12pt.
-Cancel restores the session baseline; only Save writes
-`overlayVerticalOffset` into the durable Settings document. Settings schema v2
+Cancel restores the session baseline; Preview default is transient, while Save
+and the inactive Reset action write `overlayVerticalOffset` into the durable Settings document. Settings schema v2
 resets every pre-v2 offset once because the old flow's stored values cannot be
 distinguished from its broken +48pt pointer-up state. Startup and applied
 positions log both target and actual physical coordinates.

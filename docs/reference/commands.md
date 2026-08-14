@@ -276,7 +276,7 @@ without logging their content.
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
 | `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes between collapsed and expanded frames (top-anchored) and returns the applied frame, so CSS never animates into a window that hasn't grown yet. |
-| `set_overlay_vertical_offset` | `offset: f64` | `Result<(), String>` | Clamps calibration to ±12 logical points, moves the actual native overlay window relative to the active monitor's top-center default, and logs target plus applied physical coordinates. Persistence remains an explicit frontend Save action. |
+| `set_overlay_vertical_offset` | `offset: f64` | `Result<(), String>` | Clamps calibration to ±12 logical points, moves the actual native overlay window relative to the active monitor's top-center default, and logs target plus applied physical coordinates. The command is non-persistent; the frontend persists only Save and inactive Reset actions. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
 
 ## Frontmost apps (`frontmost.rs`)

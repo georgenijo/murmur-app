@@ -1,6 +1,10 @@
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  OVERLAY_VERTICAL_OFFSET_MAX,
+  OVERLAY_VERTICAL_OFFSET_MIN,
+} from '../../lib/settings';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 
 const mocks = vi.hoisted(() => ({
@@ -23,6 +27,7 @@ function click(container: HTMLElement, label: string): void {
 describe('OverlayCalibrationControl', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let rootMounted: boolean;
   let committed: number[];
 
   function Harness({ initialOffset }: { initialOffset: number }) {
@@ -47,10 +52,11 @@ describe('OverlayCalibrationControl', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+    rootMounted = true;
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
+    if (rootMounted) await act(async () => root.unmount());
     container.remove();
   });
 
@@ -125,5 +131,42 @@ describe('OverlayCalibrationControl', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('could not start');
     expect(container.textContent).not.toContain('Save position');
     expect(mocks.emit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { initialOffset: OVERLAY_VERTICAL_OFFSET_MIN, label: 'Move overlay up one point' },
+    { initialOffset: OVERLAY_VERTICAL_OFFSET_MAX, label: 'Move overlay down one point' },
+  ])('disables adjustments beyond the bounded offset limits', async ({ initialOffset, label }) => {
+    await act(async () => root.render(<Harness initialOffset={initialOffset} />));
+    await act(async () => {
+      click(container, 'Calibrate');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const button = Array.from(container.querySelectorAll('button')).find(
+      (candidate) => candidate.getAttribute('aria-label') === label,
+    );
+    expect(button?.disabled).toBe(true);
+  });
+
+  it('restores the original position when Settings closes during calibration', async () => {
+    await act(async () => root.render(<Harness initialOffset={5} />));
+    await act(async () => {
+      click(container, 'Calibrate');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      click(container, 'Move overlay down one point');
+      await Promise.resolve();
+    });
+
+    mocks.invoke.mockClear();
+    await act(async () => root.unmount());
+    rootMounted = false;
+
+    expect(mocks.invoke).toHaveBeenCalledWith('set_overlay_vertical_offset', { offset: 5 });
+    expect(committed).toEqual([]);
   });
 });

@@ -26,8 +26,17 @@ export function OverlayCalibrationControl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeRef = useRef(false);
+  const adjustUpRef = useRef<HTMLButtonElement>(null);
+  const startRef = useRef<HTMLButtonElement>(null);
+  const focusPendingRef = useRef(false);
   const originalOffsetRef = useRef(clampOverlayVerticalOffset(offset));
   const requestGenerationRef = useRef(0);
+
+  useEffect(() => {
+    if (!focusPendingRef.current) return;
+    focusPendingRef.current = false;
+    (active ? adjustUpRef.current : startRef.current)?.focus();
+  }, [active]);
 
   useEffect(() => {
     if (!activeRef.current) setDraft(clampOverlayVerticalOffset(offset));
@@ -69,6 +78,7 @@ export function OverlayCalibrationControl({
       originalOffsetRef.current = original;
       setDraft(original);
       activeRef.current = true;
+      focusPendingRef.current = true;
       setActive(true);
       announceCalibration(true);
     } catch {
@@ -82,6 +92,7 @@ export function OverlayCalibrationControl({
 
   const finish = useCallback(() => {
     activeRef.current = false;
+    focusPendingRef.current = true;
     setActive(false);
     announceCalibration(false);
   }, [announceCalibration]);
@@ -96,9 +107,12 @@ export function OverlayCalibrationControl({
     finish();
   }, [draft, finish, onCommit]);
 
-  const reset = useCallback(async () => {
-    if (!(await preview(0))) return;
-    if (!activeRef.current) onCommit(0);
+  const previewDefault = useCallback(async () => {
+    await preview(0);
+  }, [preview]);
+
+  const resetConfirmed = useCallback(async () => {
+    if (await preview(0)) onCommit(0);
   }, [onCommit, preview]);
 
   useEffect(() => () => {
@@ -131,6 +145,7 @@ export function OverlayCalibrationControl({
           </p>
           <div className="mt-3 flex items-center justify-center gap-3">
             <button
+              ref={adjustUpRef}
               type="button"
               aria-label="Move overlay up one point"
               disabled={busy || draft <= OVERLAY_VERTICAL_OFFSET_MIN}
@@ -159,7 +174,7 @@ export function OverlayCalibrationControl({
             <button
               type="button"
               disabled={busy || draft === 0}
-              onClick={() => void reset()}
+              onClick={() => void previewDefault()}
               className="rounded-lg px-2 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
             >
               Preview default
@@ -187,6 +202,7 @@ export function OverlayCalibrationControl({
       ) : (
         <div className="mt-3 flex gap-2">
           <button
+            ref={startRef}
             type="button"
             disabled={busy}
             onClick={() => void start()}
@@ -197,7 +213,7 @@ export function OverlayCalibrationControl({
           <button
             type="button"
             disabled={busy || clampOverlayVerticalOffset(offset) === 0}
-            onClick={() => void reset()}
+            onClick={() => void resetConfirmed()}
             className="rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
           >
             Reset

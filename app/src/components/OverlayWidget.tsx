@@ -102,6 +102,8 @@ export function OverlayWidget() {
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
+    }).catch(() => {
+      // Without the native event bridge, calibration stays inactive.
     });
     return () => {
       disposed = true;

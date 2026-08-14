@@ -597,31 +597,34 @@ pub async fn set_overlay_vertical_offset(
             .map_err(|_| "overlay position update timed out".to_string())?
             .map_err(|_| "overlay position update was dropped".to_string())??;
 
-        match settled_outer_position(app, overlay, (x, y)).await {
-            Ok(actual) => tracing::info!(
-                target: "system",
-                event_code = "overlay.position_offset_applied",
-                offset_logical = offset,
-                target_x_physical = x,
-                target_y_physical = y,
-                actual_x_physical = actual.0,
-                actual_y_physical = actual.1,
-                matches_target = actual == (x, y),
-                monitor_x_physical = monitor_x,
-                monitor_y_physical = monitor_y,
-                scale_factor,
-                "Overlay calibrated position applied"
-            ),
-            Err(error) => tracing::warn!(
-                target: "system",
-                event_code = "overlay.position_read_failed",
-                offset_logical = offset,
-                target_x_physical = x,
-                target_y_physical = y,
-                error = %error,
-                "Overlay calibrated position applied, but its resulting frame could not be read"
-            ),
-        }
+        let probe_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            match settled_outer_position(probe_app, overlay, (x, y)).await {
+                Ok(actual) => tracing::info!(
+                    target: "system",
+                    event_code = "overlay.position_offset_applied",
+                    offset_logical = offset,
+                    target_x_physical = x,
+                    target_y_physical = y,
+                    actual_x_physical = actual.0,
+                    actual_y_physical = actual.1,
+                    matches_target = actual == (x, y),
+                    monitor_x_physical = monitor_x,
+                    monitor_y_physical = monitor_y,
+                    scale_factor,
+                    "Overlay calibrated position applied"
+                ),
+                Err(error) => tracing::warn!(
+                    target: "system",
+                    event_code = "overlay.position_read_failed",
+                    offset_logical = offset,
+                    target_x_physical = x,
+                    target_y_physical = y,
+                    error = %error,
+                    "Overlay calibrated position applied, but its resulting frame could not be read"
+                ),
+            }
+        });
         Ok(())
     }
 }
