@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Overlay calibration no longer restores stale off-notch positions from the
+  former drag band. Existing offsets are reset once, new offsets are bounded to
+  ±12pt and saved only after confirmation, and startup/applied native window
+  coordinates are recorded in privacy-safe diagnostics (#580).
 - The live Voice Query capture buffer is now resampled to 16 kHz before
   Core ML decode, matching the stop path (#561).
 - Voice Query listening words no longer stop updating after 20 seconds of

@@ -5,7 +5,7 @@ import {
   selectedDeviceExists,
   type AudioDeviceDescriptor,
 } from '../../lib/audioDevices';
-import { emit, listen } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   AUTO_STOP_SILENCE_OPTIONS,
@@ -65,6 +65,7 @@ import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
+import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import {
@@ -1052,15 +1053,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     }, 3000);
   };
 
-  const startOverlayCalibration = async () => {
-    try {
-      await invoke('show_overlay');
-      await emit('start-overlay-calibration');
-    } catch (error) {
-      console.warn('Could not start overlay calibration', error);
-    }
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-on-surface">
       <div className="flex shrink-0 flex-wrap items-center gap-3 px-5 pb-3 pt-1">
@@ -1892,7 +1884,10 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
               </summary>
               <div className="mt-3 space-y-2 border-t border-outline-variant/20 pt-3">
-                <button type="button" onClick={() => void startOverlayCalibration()} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Calibrate Overlay Position</button>
+                <OverlayCalibrationControl
+                  offset={settings.overlayVerticalOffset}
+                  onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
+                />
                 <button
                   type="button"
                   onClick={() => {

@@ -64,6 +64,27 @@ Every overlay dimension comes from one source: `geometry_for(notch)` in `command
 - **Nothing renders under the physical notch.** The wings hold ONLY the status indicator (left) and the waveform (right). Anything wider than a wing renders below notch height, in the dropdown row: the recording `m:ss` timer (shown when expanded + recording) and the "Tap missed" hotkey-miss label. The amber `!` badge and the amber border glow stay on the pill.
 - **Motion tokens** — durations and easing for the width/height transition — live in `app/src/lib/overlayMotion.ts` as the single source; see [Motion tokens](#motion-tokens) below rather than restating numbers here.
 
+### Position calibration
+
+The App → General → Advanced settings section can fine-tune the native overlay
+window vertically from -12pt through +12pt. Calibration uses explicit one-point
+up/down controls rather than dragging overlay content: each change previews the
+actual macOS window position, **Cancel** restores the position from the start of
+the session, **Save position** commits the draft to the durable Settings
+document, and **Reset** returns it to zero. Merely opening or closing calibration
+never saves a position.
+
+`show_overlay` only shows the existing window and re-enables mouse input; it does
+not first jump the overlay back to its default coordinates. Startup and display
+changes establish the default top-center position, after which the overlay root
+applies the confirmed setting. The native command clamps again and records both
+target and actual physical coordinates in structured, content-free telemetry.
+
+Settings schema v2 resets offsets produced by the former pointer-drag flow once
+and removes its standalone `murmur-overlay-vertical-offset` key. That flow could
+persist its +48pt limit even though its preview moved only DOM content, which is
+why affected installs could reopen far below the notch.
+
 ## Expansion Controller
 
 Hovering the pill expands it downward into a quick-settings dropdown. The dropdown is identical regardless of state — only the top bar differs.
@@ -87,7 +108,7 @@ The controller runs a four-phase state machine:
 - **Motion tokens** — see [Motion tokens](#motion-tokens).
 - **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Gating: ticks do **no IPC** (no `outerPosition`/`cursorPosition`) while the overlay is **hidden**; while **disabled**, DOM and poller entry are blocked, but the exit watchdog stays alive during an active interaction so clicking the dropdown's own Disable control cannot strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount; hiding also cancels timers, resets the phase, and serializes a collapse. In-flight cursor results are generation-guarded so they cannot reopen after a visibility or display reset. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
   - **Note:** `overlay-visible-changed` is emitted by the `show_overlay`/`hide_overlay` commands, which are **not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible. The visibility ref therefore defaults to `true` so first-hover works from mount, and the `disabled`-phase gate is the active battery saver today; the visibility gate is plumbing that activates if/when show/hide get wired to dynamic callers.
-- Only the **top bar** is a drag region (`data-tauri-drag-region`, set in `OverlayPill.tsx`); the dropdown buttons are not, so they stay clickable. The dropdown is labeled as the `Quick settings` group and is `aria-hidden` until the expanded-frame acknowledgment reveals it. (Overlay position save/restore itself is currently disabled — TODO: re-enable after notch positioning is stable.)
+- Only the **top bar** is a drag region (`data-tauri-drag-region`, set in `OverlayPill.tsx`); the dropdown buttons are not, so they stay clickable. The dropdown is labeled as the `Quick settings` group and is `aria-hidden` until the expanded-frame acknowledgment reveals it.
 
 ### Motion tokens
 
@@ -100,7 +121,7 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 | Hook | Owns |
 |------|------|
 | `useOverlayGeometry` | Fetches/subscribes to `OverlayGeometry` (see [Geometry Contract](#geometry-contract)). |
-| `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
+| `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`, `overlayVerticalOffset`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
 | `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), `auto-paste-failed` (clipboard-only `⌘V` cue), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
 | `useOverlayExpansion` (pre-existing, see [Expansion Controller](#expansion-controller)) | The hover-expand lifecycle. |
 | `useWaveform` | The `audio-level` listener and the rAF bar-height animation (see [Waveform Animation](#waveform-animation)). |
@@ -129,7 +150,7 @@ The dropdown row also carries content too wide for a wing, in a left-anchored sl
 
 ### Cross-window settings sync
 
-The overlay runs in a separate window with no shared React context. Writes go through `saveSettings()` plus an `emit('settings-changed')`; the main window listens and applies the change (`configure` for auto-paste, `set_app_disabled` for disable) with a diff-guard that prevents an echo loop. The main window also emits `settings-changed` on its own auto-paste/disable changes so an already-expanded overlay updates live. `useOverlaySettingsMirror` also re-applies the snapshot whenever the expansion controller's `phase` becomes `'opening'`, so the dropdown always shows current settings by the time it is revealed.
+The overlay runs in a separate window with no shared React context. Writes go through `saveSettings()` plus an `emit('settings-changed')`; the main window listens and applies the change (`configure` for auto-paste, `set_app_disabled` for disable) with a diff-guard that prevents an echo loop. The main window also emits `settings-changed` on its own auto-paste/disable/calibration changes so an already-open overlay updates live. `useOverlaySettingsMirror` also re-applies the snapshot whenever the expansion controller's `phase` becomes `'opening'`, so the dropdown always shows current settings by the time it is revealed. The Settings calibration control separately emits `overlay-calibration-changed { active }` to switch the overlay into and out of its non-interactive calibration visual while the native window is previewed.
 
 ## Visual States
 

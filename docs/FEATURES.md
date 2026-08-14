@@ -186,7 +186,7 @@ exported.
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
-Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. A Settings action opens a full-width calibration band whose bounded vertical offset is saved locally and reapplied after launch or display changes.
+Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. Settings provides a native live calibration preview with one-point controls, explicit Save/Cancel, Reset, and a bounded ±12pt durable offset.
 
 ### Settings — [reference/settings.md](reference/settings.md)
 Four horizontal, cross-searchable tabs: **Dictation** (recording and delivery),

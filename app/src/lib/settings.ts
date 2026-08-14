@@ -231,6 +231,8 @@ export interface Settings {
   autoStopSilenceMs: number;
   microphone: string;
   launchAtLogin: boolean;
+  /** Confirmed vertical fine-tuning for the notch overlay, in logical points. */
+  overlayVerticalOffset: number;
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   /** @deprecated Migration-only mirror; structured entries are authoritative. */
@@ -406,6 +408,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoStopSilenceMs: 0,
   microphone: 'system_default',
   launchAtLogin: false,
+  overlayVerticalOffset: 0,
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   customVocabulary: '',
@@ -439,8 +442,22 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export const STORAGE_KEY = 'dictation-settings';
-const SETTINGS_VERSION = 1;
+export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
+export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
+export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
+const SETTINGS_VERSION = 2;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
+const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
+
+export function clampOverlayVerticalOffset(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.overlayVerticalOffset;
+  }
+  return Math.max(
+    OVERLAY_VERTICAL_OFFSET_MIN,
+    Math.min(OVERLAY_VERTICAL_OFFSET_MAX, Math.trunc(value)),
+  );
+}
 
 type PersistedSettings = Partial<Settings> & {
   settingsVersion?: unknown;
@@ -579,6 +596,17 @@ export function loadSettings(): Settings {
           ? parsed.settingsVersion
           : 0;
       delete parsed.settingsVersion;
+
+      // v2: the original overlay calibration preview moved only DOM content,
+      // committed on pointer-up, and could persist a +48pt launch displacement.
+      // None of those offsets are trustworthy. Reset them once, then persist
+      // future confirmed offsets inside the durable Settings document.
+      if (storedSettingsVersion < OVERLAY_CALIBRATION_MIGRATION_VERSION) {
+        parsed.overlayVerticalOffset = DEFAULT_SETTINGS.overlayVerticalOffset;
+      } else {
+        parsed.overlayVerticalOffset = clampOverlayVerticalOffset(parsed.overlayVerticalOffset);
+      }
+      localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
 
       // v1: installs that persisted the former 50 ms default should adopt the
       // zero-delay fast path once. A user can set 50 ms again after migration,
@@ -873,6 +901,7 @@ export function loadSettings(): Settings {
       }
       return settings;
     }
+    localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
   } catch (e) {
     console.error('Failed to load settings:', e);
   }

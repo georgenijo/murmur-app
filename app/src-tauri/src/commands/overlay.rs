@@ -57,7 +57,9 @@ const FALLBACK_NOTCH_W: f64 = 80.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 const MAX_REASONABLE_MENU_BAR_H: f64 = 128.0;
 const MIN_VERTICAL_OFFSET: f64 = -12.0;
-const MAX_VERTICAL_OFFSET: f64 = 48.0;
+const MAX_VERTICAL_OFFSET: f64 = 12.0;
+const POSITION_SETTLE_PROBE_MS: u64 = 50;
+const POSITION_SETTLE_PROBES: usize = 3;
 
 fn clamp_vertical_offset(offset: f64) -> f64 {
     if offset.is_finite() {
@@ -146,6 +148,41 @@ fn centered_physical_position(
     let overlay_physical_w = overlay_w * scale_factor;
     let x = monitor_position.0 as f64 + (monitor_size.0 as f64 - overlay_physical_w) / 2.0;
     (x.round() as i32, monitor_position.1)
+}
+
+/// WindowServer applies frame changes asynchronously. Reading `outer_position`
+/// immediately after `set_position` can return the previous frame, so position
+/// telemetry samples on the main thread until the requested frame is observed
+/// or a short bounded settle window expires.
+#[cfg(target_os = "macos")]
+async fn settled_outer_position(
+    app: tauri::AppHandle,
+    overlay: tauri::WebviewWindow,
+    target: (i32, i32),
+) -> Result<(i32, i32), String> {
+    let mut last_observed = None;
+    for _ in 0..POSITION_SETTLE_PROBES {
+        tokio::time::sleep(std::time::Duration::from_millis(POSITION_SETTLE_PROBE_MS)).await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let window = overlay.clone();
+        app.run_on_main_thread(move || {
+            let result = window
+                .outer_position()
+                .map(|position| (position.x, position.y))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx)
+            .await
+            .map_err(|_| "overlay position read timed out".to_string())?
+            .map_err(|_| "overlay position read was dropped".to_string())??;
+        last_observed = Some(observed);
+        if observed == target {
+            return Ok(observed);
+        }
+    }
+    last_observed.ok_or_else(|| "overlay position was not observed".to_string())
 }
 
 /// Detect notch width and configure the overlay as a notch-level window.
@@ -261,7 +298,7 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
                         return;
                     }
                     if let Some(overlay) = handle.get_webview_window("overlay") {
-                        position_overlay_default(&overlay, notch);
+                        position_overlay_default(&overlay, notch, "display_change");
                     }
                     let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
                 }) {
@@ -341,6 +378,7 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
 pub(crate) fn position_overlay_default(
     overlay: &tauri::WebviewWindow,
     notch_info: Option<(f64, f64)>,
+    reason: &'static str,
 ) {
     let g = geometry_for(notch_info);
     let overlay_w = g.window_w;
@@ -363,6 +401,8 @@ pub(crate) fn position_overlay_default(
     if let Some(monitor) = monitor {
         let size = monitor.size();
         let position = monitor.position();
+        let monitor_x = position.x;
+        let monitor_y = position.y;
         let sf = monitor.scale_factor();
         let physical_w = (overlay_w * sf).round().max(1.0) as u32;
         let physical_h = (overlay_h * sf).round().max(1.0) as u32;
@@ -379,6 +419,38 @@ pub(crate) fn position_overlay_default(
         tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
         if let Err(e) = overlay.set_position(tauri::PhysicalPosition::new(x, y)) {
             tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
+        } else {
+            let overlay = overlay.clone();
+            let app = overlay.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match settled_outer_position(app, overlay, (x, y)).await {
+                    Ok(actual) => tracing::info!(
+                        target: "system",
+                        event_code = "overlay.position_default",
+                        reason,
+                        target_x_physical = x,
+                        target_y_physical = y,
+                        actual_x_physical = actual.0,
+                        actual_y_physical = actual.1,
+                        matches_target = actual == (x, y),
+                        monitor_x_physical = monitor_x,
+                        monitor_y_physical = monitor_y,
+                        scale_factor = sf,
+                        window_w_logical = overlay_w,
+                        window_h_logical = overlay_h,
+                        "Overlay default position applied"
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: "system",
+                        event_code = "overlay.position_read_failed",
+                        reason,
+                        target_x_physical = x,
+                        target_y_physical = y,
+                        error = %error,
+                        "Overlay default position applied, but its resulting frame could not be read"
+                    ),
+                }
+            });
         }
     } else {
         tracing::warn!(target: "system", "position_overlay_default: no monitor available, retaining configured position");
@@ -396,19 +468,17 @@ pub fn get_overlay_geometry(state: tauri::State<'_, State>) -> OverlayGeometry {
 
 /// Show the always-on-top macOS notch overlay window.
 #[tauri::command]
-pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Result<(), String> {
+pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (&app, &state);
+        let _ = &app;
         return Ok(());
     }
 
     #[cfg(target_os = "macos")]
     {
-        let notch = *state.notch_info.lock_or_recover();
         match app.get_webview_window("overlay") {
             Some(overlay) => {
-                position_overlay_default(&overlay, notch);
                 overlay.show().map_err(|e| e.to_string())?;
                 let _ = overlay.set_ignore_cursor_events(false);
                 // Tell the overlay it is visible so it can gate cursor polling.
@@ -426,8 +496,8 @@ pub fn show_overlay(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Re
 /// Resize the overlay for the hover dropdown and return the applied frame as an
 /// acknowledgment. All dimensions come from `geometry_for()`, the same source as
 /// `position_overlay_default`, so the collapsed size matches what `show_overlay`
-/// set. Only the size changes — the window stays anchored at y=0, so the extra
-/// height grows downward.
+/// set. Only the size changes — the window keeps its current calibrated top
+/// edge, so the extra height grows downward.
 ///
 /// Returning the `AppliedSurface` lets the expansion controller await this call
 /// and start the CSS reveal only once the native window is known to have grown,
@@ -510,10 +580,13 @@ pub async fn set_overlay_vertical_offset(
             scale_factor,
             g.window_w,
         );
+        let monitor_x = position.x;
+        let monitor_y = position.y;
         let y = base_y + (offset * scale_factor).round() as i32;
+        let overlay_to_move = overlay.clone();
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         app.run_on_main_thread(move || {
-            let result = overlay
+            let result = overlay_to_move
                 .set_position(tauri::PhysicalPosition::new(x, y))
                 .map_err(|error| error.to_string());
             let _ = tx.send(result);
@@ -522,7 +595,34 @@ pub async fn set_overlay_vertical_offset(
         tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
             .map_err(|_| "overlay position update timed out".to_string())?
-            .map_err(|_| "overlay position update was dropped".to_string())?
+            .map_err(|_| "overlay position update was dropped".to_string())??;
+
+        match settled_outer_position(app, overlay, (x, y)).await {
+            Ok(actual) => tracing::info!(
+                target: "system",
+                event_code = "overlay.position_offset_applied",
+                offset_logical = offset,
+                target_x_physical = x,
+                target_y_physical = y,
+                actual_x_physical = actual.0,
+                actual_y_physical = actual.1,
+                matches_target = actual == (x, y),
+                monitor_x_physical = monitor_x,
+                monitor_y_physical = monitor_y,
+                scale_factor,
+                "Overlay calibrated position applied"
+            ),
+            Err(error) => tracing::warn!(
+                target: "system",
+                event_code = "overlay.position_read_failed",
+                offset_logical = offset,
+                target_x_physical = x,
+                target_y_physical = y,
+                error = %error,
+                "Overlay calibrated position applied, but its resulting frame could not be read"
+            ),
+        }
+        Ok(())
     }
 }
 
@@ -642,7 +742,7 @@ mod tests {
     fn vertical_calibration_offset_is_finite_and_bounded() {
         assert_eq!(clamp_vertical_offset(-13.0), MIN_VERTICAL_OFFSET);
         assert_eq!(clamp_vertical_offset(49.0), MAX_VERTICAL_OFFSET);
-        assert_eq!(clamp_vertical_offset(12.5), 12.5);
+        assert_eq!(clamp_vertical_offset(7.5), 7.5);
         assert_eq!(clamp_vertical_offset(f64::NAN), 0.0);
         assert_eq!(clamp_vertical_offset(f64::INFINITY), 0.0);
     }
