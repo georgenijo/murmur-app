@@ -208,7 +208,7 @@ def scan_install(path, install_id, cohorts, reliability_slo):
         for line in handle:
             try:
                 event = json.loads(line)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 malformed += 1
                 reliability_slo.observe_malformed_source_line()
                 continue

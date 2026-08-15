@@ -584,7 +584,8 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             self.write_install(root, "12345678-abcd", items)
             path = Path(root) / "12345678-abcd" / "events.jsonl"
             with path.open("a", encoding="utf-8") as handle:
-                handle.write("{broken\n[]\n")
+                deeply_nested = "[" * 2_000 + "0" + "]" * 2_000
+                handle.write("{broken\n[]\n" + deeply_nested + "\n")
             (Path(root) / "12345678-abcd" / "ignored.jsonl").write_text(
                 "{also broken\n",
                 encoding="utf-8",
@@ -600,11 +601,11 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             )
             healed = watch.build_report(root)
 
-        self.assertEqual(report["malformed_lines"], 2)
+        self.assertEqual(report["malformed_lines"], 3)
         self.assertEqual(report["status"], "alert")
         self.assertEqual(
             report["reliability_slo"]["integrity"]["malformed_source_lines"],
-            2,
+            3,
         )
         self.assertEqual(
             report["reliability_slo"]["integrity"]["status"],
