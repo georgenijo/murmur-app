@@ -3341,8 +3341,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             }
         }
         AudioLifecycleEvent::RecoveryStalled => {
-            if is_current() {
-                if app_handle
+            if is_current()
+                && app_handle
                     .emit("recording-recovery-stalled", {
                         let (status_code, action_code) =
                             DictationPresentation::CleanupStalled.codes();
@@ -3353,12 +3353,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                         })
                     })
                     .is_ok()
-                {
-                    emit_dictation_presentation(
-                        recording_id,
-                        DictationPresentation::CleanupStalled,
-                    );
-                }
+            {
+                emit_dictation_presentation(recording_id, DictationPresentation::CleanupStalled);
             }
         }
         AudioLifecycleEvent::Interrupted {

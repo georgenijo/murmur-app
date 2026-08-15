@@ -558,10 +558,10 @@ fn is_safe_dictation_slo_field(event_code: &str, key: &str, value: &serde_json::
 }
 
 fn valid_dictation_slo_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
-    if !data
+    if data
         .get("recording_id")
         .and_then(serde_json::Value::as_u64)
-        .is_some_and(|value| value > 0)
+        .is_none_or(|value| value == 0)
     {
         return false;
     }
