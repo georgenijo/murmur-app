@@ -191,12 +191,91 @@ replaced at `~/murmur-logs/capture-watch.json`; an alert also makes the one-shot
 exit nonzero for systemd/journal visibility and appears on the protected
 dashboard.
 
+The same line-by-line pass also evaluates the versioned
+`murmur-reliability-slo/v1` contract. Only native dictation requests with exact
+numeric `slo_contract: 1` are eligible. Historical requests without the marker
+remain useful to the legacy capture funnel but cannot enter a weekly SLO or
+make a pre-contract week pass.
+
+The evaluator recomputes the current partial ISO week and the previous eight
+complete Monday-to-Monday UTC weeks from the full retained log on every run.
+This deliberate full rescan lets a late-arriving event repair its original
+week; the atomically replaced `reliability_slo` subtree is the persisted rolling
+result. Its policy is:
+
+- at least 200 eligible requests are required for a complete week's sufficient
+  sample;
+- at least 99.5% of all eligible requests—including missing-ready and failed
+  attempts—must reach the first matching retained-PCM readiness event within
+  400 ms of the request timestamp;
+- a stable microphone-permission-prompt record excludes that attempt from the
+  startup denominator. It remains in requested/accepted/ready/terminal,
+  state, and actionable-presentation counts, so a prompt cannot hide a stuck
+  state or unpresented failure;
+- a `Recovering` or `Processing` interval that exits before the next startup is
+  `self_recovered`; one still open at the next `system.startup_baseline` is
+  `restart_required`; an interval still open at the end of the full scan, or
+  one with malformed/orphan transition evidence, is `indeterminate`. Durations
+  are reported for valid closed intervals, but there is no invented time
+  threshold that turns a slow self-recovery into a restart;
+- capture-initialization and runtime-interruption failures require their exact
+  actionable presentation pair. A stop failure is covered only by a correlated
+  cleanup-stalled/restart-app presentation; fast stop failures without that
+  real UI evidence and pipeline failures fail the presentation clause.
+
+An exact contract-v1 request whose timestamp is malformed or in the future
+cannot be assigned to an invented week. Valid history older than the retained
+weekly horizon expires normally and is not an integrity error.
+The report instead increments the bounded aggregate
+`integrity.unassigned_contract_requests` count, marks source integrity
+`indeterminate`, forces the two-week proof false, and raises the outer capture
+watch alert. Attempts or per-attempt event evidence beyond the evaluator's
+fixed memory/cardinality bounds increment the separate aggregate
+`integrity.overflowed_events` count and have the same fail-closed effect. These
+integrity counts have no install or event-content breakdown. Every malformed
+JSON or non-object line in the retained `events.jsonl` scan increments bounded
+`integrity.malformed_source_lines`; any nonzero count also makes integrity
+indeterminate and blocks the two-week proof. Because each run is a full scan,
+a concurrently partial final line self-heals after the writer completes it.
+
+A correlated accepted/ready/prompt/terminal/presentation/state record with a
+malformed timestamp or a timestamp later than the evaluation instant cannot
+supply healthy evidence early. The evaluator ignores that record's claimed
+lifecycle effect, increments the bounded weekly
+`invalid_evidence_timestamps` count, and makes the request week indeterminate.
+This prevents future evidence from curing an otherwise open or failed attempt.
+
+Every week carries `sample_status` (`partial`, `below_minimum`, or
+`sufficient`), a verdict, bounded reason codes, denominator/outcome/actionable
+counts, startup p50/p95/max, and aggregate state-interval counts/durations. A
+partial week is always `insufficient`. Complete weeks prefer
+`indeterminate`, then `fail`, then below-minimum `insufficient`; only a
+sufficient, contradiction-free week meeting every clause can `pass`. The
+two-week finish line becomes true only when the newest two complete weeks both
+pass. The newest non-insufficient complete verdict controls the outer watch: a
+failure or indeterminate result raises the status and the `--fail-on-alert`
+service exit until a later decisive pass supersedes it. Intervening
+insufficient weeks remain visible and cannot mask or clear that evidence.
+
+Per-install IDs remain internal join keys. The published
+`reliability_slo` subtree and dashboard are aggregate-only and contain no
+install UUID, device label/UID, app version, transcript/audio, path, bundle ID,
+raw event summary, or free-form error. The dashboard shows the current and two
+newest complete windows, their verdict/sample status, supporting counts,
+latency distribution, state evidence, bounded integrity/reason counts,
+actionable-presentation coverage, and whether two consecutive complete weeks
+pass. The renderer strictly validates the exact nested schema, window sequence,
+numeric bounds, and cross-field equations before displaying a verdict; a
+truncated or contradictory local report falls back to a diagnostic card.
+
 ### Operator event semantics
 
 High-value producers attach an allowlisted, privacy-safe `event_code` inside
 the structured `data` object. Examples include
 `audio.capture_backend_timeout`, `audio.fallback_started`,
 `audio.capture_ready`, `audio.capture_failed`,
+`audio.permission_prompt_changed`, `pipeline.dictation_state_changed`,
+`pipeline.dictation_presentation`,
 `audio.device_reresolution_started`, `audio.input_resolution_observed`,
 `keyboard.listener_silent`, `pipeline.dictation_terminal`,
 `transform.pass_outcome`, and `updater.install_failed`.

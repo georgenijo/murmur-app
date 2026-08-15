@@ -219,7 +219,10 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.capture_ready" => Some("audio.capture_ready"),
         "audio.capture_failed" => Some("audio.capture_failed"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
+        "audio.permission_prompt_changed" => Some("audio.permission_prompt_changed"),
         "pipeline.dictation_requested" => Some("pipeline.dictation_requested"),
+        "pipeline.dictation_state_changed" => Some("pipeline.dictation_state_changed"),
+        "pipeline.dictation_presentation" => Some("pipeline.dictation_presentation"),
         "pipeline.dictation_stop_handoff" => Some("pipeline.dictation_stop_handoff"),
         "pipeline.dictation_terminal" => Some("pipeline.dictation_terminal"),
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
@@ -399,6 +402,200 @@ fn sanitize_audio_device_reresolution_event(data: &mut serde_json::Map<String, s
     }
 }
 
+fn is_audio_permission_prompt_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.permission_prompt_changed")
+}
+
+fn is_safe_audio_permission_prompt_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("audio.permission_prompt_changed"),
+        "recording_id" | "owner" => value.as_u64().is_some_and(|value| value > 0),
+        "owner_kind" => value.as_str() == Some("dictation"),
+        "state" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "pending" | "resolved")),
+        "prompt_pending_ms" => value.as_u64().is_some_and(|value| value <= 300_000),
+        _ => false,
+    }
+}
+
+fn valid_audio_permission_prompt_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let recording_id = data.get("recording_id").and_then(serde_json::Value::as_u64);
+    let owner = data.get("owner").and_then(serde_json::Value::as_u64);
+    if recording_id.is_none() || owner != recording_id {
+        return false;
+    }
+    if data.get("owner_kind").and_then(serde_json::Value::as_str) != Some("dictation") {
+        return false;
+    }
+    match data.get("state").and_then(serde_json::Value::as_str) {
+        Some("pending") => data.get("prompt_pending_ms").is_none(),
+        Some("resolved") => data
+            .get("prompt_pending_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some(),
+        _ => false,
+    }
+}
+
+fn sanitize_audio_permission_prompt_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_invalid_known_field = data.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "event_code" | "recording_id" | "owner" | "owner_kind" | "state" | "prompt_pending_ms"
+        ) && !is_safe_audio_permission_prompt_field(key, value)
+    });
+    data.retain(|key, value| is_safe_audio_permission_prompt_field(key, value));
+    if has_invalid_known_field || !valid_audio_permission_prompt_shape(data) {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
+fn is_dictation_requested_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_requested")
+}
+
+fn is_safe_dictation_requested_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("pipeline.dictation_requested"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "slo_contract" => value.as_u64() == Some(1),
+        "origin" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "hold" | "toggle")),
+        "device_selection" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "explicit" | "system_default")),
+        _ => false,
+    }
+}
+
+fn valid_dictation_requested_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.len() == 5
+        && data
+            .iter()
+            .all(|(key, value)| is_safe_dictation_requested_field(key, value))
+}
+
+fn sanitize_dictation_requested_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_invalid_known_field = data.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "event_code" | "recording_id" | "slo_contract" | "origin" | "device_selection"
+        ) && !is_safe_dictation_requested_field(key, value)
+    });
+    data.retain(|key, value| is_safe_dictation_requested_field(key, value));
+    if has_invalid_known_field || !valid_dictation_requested_shape(data) {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
+fn is_dictation_slo_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some("pipeline.dictation_state_changed" | "pipeline.dictation_presentation")
+    )
+}
+
+fn is_safe_dictation_state(value: &str) -> bool {
+    matches!(
+        value,
+        "idle" | "starting" | "recording" | "recovering" | "processing"
+    )
+}
+
+fn valid_dictation_presentation_pair(status_code: &str, action_code: &str) -> bool {
+    matches!(
+        (status_code, action_code),
+        ("microphone_cleanup_in_progress", "wait")
+            | ("microphone_initialization_failed", "retry")
+            | (
+                "microphone_initialization_failed",
+                "open_microphone_settings"
+            )
+            | ("microphone_initialization_failed", "choose_microphone")
+            | ("microphone_cleanup_stalled", "restart_app")
+            | ("microphone_interrupted", "retry")
+            | ("microphone_interrupted", "wait_for_partial_transcription")
+    )
+}
+
+fn is_safe_dictation_slo_field(event_code: &str, key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some(event_code),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "from" | "to" if event_code == "pipeline.dictation_state_changed" => {
+            value.as_str().is_some_and(is_safe_dictation_state)
+        }
+        "status_code" if event_code == "pipeline.dictation_presentation" => {
+            value.as_str().is_some_and(|value| {
+                matches!(
+                    value,
+                    "microphone_cleanup_in_progress"
+                        | "microphone_initialization_failed"
+                        | "microphone_cleanup_stalled"
+                        | "microphone_interrupted"
+                )
+            })
+        }
+        "action_code" if event_code == "pipeline.dictation_presentation" => {
+            value.as_str().is_some_and(|value| {
+                matches!(
+                    value,
+                    "wait"
+                        | "retry"
+                        | "open_microphone_settings"
+                        | "choose_microphone"
+                        | "restart_app"
+                        | "wait_for_partial_transcription"
+                )
+            })
+        }
+        _ => false,
+    }
+}
+
+fn valid_dictation_slo_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    if !data
+        .get("recording_id")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|value| value > 0)
+    {
+        return false;
+    }
+    match data.get("event_code").and_then(serde_json::Value::as_str) {
+        Some("pipeline.dictation_state_changed") => {
+            let from = data.get("from").and_then(serde_json::Value::as_str);
+            let to = data.get("to").and_then(serde_json::Value::as_str);
+            from.is_some() && to.is_some() && from != to
+        }
+        Some("pipeline.dictation_presentation") => {
+            let status_code = data.get("status_code").and_then(serde_json::Value::as_str);
+            let action_code = data.get("action_code").and_then(serde_json::Value::as_str);
+            status_code
+                .zip(action_code)
+                .is_some_and(|(status, action)| valid_dictation_presentation_pair(status, action))
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_dictation_slo_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(event_code) = data
+        .get("event_code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    data.retain(|key, value| is_safe_dictation_slo_field(&event_code, key, value));
+    if !valid_dictation_slo_shape(data) {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
 fn is_performance_store_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
     data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("performance.store_operation_failed")
@@ -503,6 +700,19 @@ fn sanitized_summary(
         == Some("audio.device_reresolution_started")
     {
         "Microphone device re-resolution started".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.permission_prompt_changed")
+    {
+        "Microphone permission prompt state changed".to_string()
+    } else if matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some(
+            "pipeline.dictation_requested"
+                | "pipeline.dictation_state_changed"
+                | "pipeline.dictation_presentation"
+        )
+    ) {
+        "Dictation reliability event".to_string()
     } else if stream == "meeting" {
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
@@ -760,6 +970,18 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_audio_device_reresolution_event(obj) {
         sanitize_audio_device_reresolution_event(obj);
+        return;
+    }
+    if is_audio_permission_prompt_event(obj) {
+        sanitize_audio_permission_prompt_event(obj);
+        return;
+    }
+    if is_dictation_requested_event(obj) {
+        sanitize_dictation_requested_event(obj);
+        return;
+    }
+    if is_dictation_slo_event(obj) {
+        sanitize_dictation_slo_event(obj);
         return;
     }
     if is_performance_store_event(obj) {
@@ -1742,6 +1964,226 @@ mod tests {
         assert_eq!(data["attempts"], 3);
         assert_eq!(data["recording_id"], 35);
         assert_eq!(data.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn permission_prompt_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for (state, prompt_pending_ms, expected_len) in
+                [("pending", None, 5), ("resolved", Some(42_000), 6)]
+            {
+                let mut data = serde_json::json!({
+                    "event_code": "audio.permission_prompt_changed",
+                    "recording_id": 17,
+                    "owner": 17,
+                    "owner_kind": "dictation",
+                    "state": state,
+                    "device_name": "SENTINEL_PRIVATE_MICROPHONE",
+                    "device_id": "SENTINEL_PRIVATE_UID",
+                    "error": "/Users/private/CoreAudio",
+                    "transcript": "SENTINEL_PRIVATE_TRANSCRIPT"
+                });
+                if let Some(prompt_pending_ms) = prompt_pending_ms {
+                    data["prompt_pending_ms"] = prompt_pending_ms.into();
+                }
+
+                sanitize_event_data("audio", &mut data, debug_build);
+
+                assert_eq!(data["event_code"], "audio.permission_prompt_changed");
+                assert_eq!(data["recording_id"], 17);
+                assert_eq!(data["owner"], 17);
+                assert_eq!(data["owner_kind"], "dictation");
+                assert_eq!(data["state"], state);
+                assert_eq!(data.as_object().unwrap().len(), expected_len);
+                let encoded = serde_json::to_string(&data).unwrap();
+                assert!(!encoded.contains("SENTINEL"));
+                assert!(!encoded.contains("Users"));
+                assert_eq!(
+                    sanitized_summary(
+                        "audio",
+                        Some("SENTINEL /Users/private".to_string()),
+                        &data,
+                        debug_build,
+                    ),
+                    "Microphone permission prompt state changed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn permission_prompt_schema_rejects_cross_field_contradictions() {
+        for mut data in [
+            serde_json::json!({
+                "event_code": "audio.permission_prompt_changed",
+                "recording_id": 17,
+                "owner": 18,
+                "owner_kind": "dictation",
+                "state": "pending"
+            }),
+            serde_json::json!({
+                "event_code": "audio.permission_prompt_changed",
+                "recording_id": 17,
+                "owner": 17,
+                "owner_kind": "transform",
+                "state": "pending"
+            }),
+            serde_json::json!({
+                "event_code": "audio.permission_prompt_changed",
+                "recording_id": 17,
+                "owner": 17,
+                "owner_kind": "dictation",
+                "state": "pending",
+                "prompt_pending_ms": 1
+            }),
+            serde_json::json!({
+                "event_code": "audio.permission_prompt_changed",
+                "recording_id": 17,
+                "owner": 17,
+                "owner_kind": "dictation",
+                "state": "resolved"
+            }),
+            serde_json::json!({
+                "event_code": "audio.permission_prompt_changed",
+                "recording_id": 17,
+                "owner": 17,
+                "owner_kind": "dictation",
+                "state": "pending",
+                "prompt_pending_ms": 300_001
+            }),
+        ] {
+            sanitize_event_data("audio", &mut data, true);
+            assert_eq!(data["event_code"], "audio.permission_prompt_changed");
+            assert_eq!(data.as_object().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn dictation_slo_schemas_are_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for mut data in [
+                serde_json::json!({
+                    "event_code": "pipeline.dictation_requested",
+                    "recording_id": 31,
+                    "slo_contract": 1,
+                    "origin": "hold",
+                    "device_selection": "explicit",
+                    "content": "SENTINEL_PRIVATE_TRANSCRIPT",
+                    "device_id": "/Users/private/device",
+                    "nested": {"raw_error": "SENTINEL"}
+                }),
+                serde_json::json!({
+                    "event_code": "pipeline.dictation_state_changed",
+                    "recording_id": 31,
+                    "from": "recording",
+                    "to": "processing",
+                    "error": "/Users/private/error",
+                    "content": "SENTINEL_PRIVATE_TRANSCRIPT"
+                }),
+                serde_json::json!({
+                    "event_code": "pipeline.dictation_presentation",
+                    "recording_id": 31,
+                    "status_code": "microphone_initialization_failed",
+                    "action_code": "choose_microphone",
+                    "device_id": "/Users/private/device",
+                    "message": "SENTINEL_PRIVATE_TRANSCRIPT"
+                }),
+                serde_json::json!({
+                    "event_code": "pipeline.dictation_presentation",
+                    "recording_id": 31,
+                    "status_code": "microphone_interrupted",
+                    "action_code": "wait_for_partial_transcription",
+                    "message": "SENTINEL_PRIVATE_TRANSCRIPT",
+                    "path": "/Users/private/project"
+                }),
+            ] {
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data["recording_id"], 31);
+                assert_eq!(
+                    data.as_object().unwrap().len(),
+                    if data["event_code"] == "pipeline.dictation_requested" {
+                        5
+                    } else {
+                        4
+                    }
+                );
+                let encoded = serde_json::to_string(&data).unwrap();
+                assert!(!encoded.contains("SENTINEL"));
+                assert!(!encoded.contains("Users"));
+                assert_eq!(
+                    sanitized_summary(
+                        "pipeline",
+                        Some("SENTINEL /Users/private".to_string()),
+                        &data,
+                        debug_build,
+                    ),
+                    "Dictation reliability event"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dictation_slo_schemas_reject_invalid_states_and_presentations() {
+        for mut data in [
+            serde_json::json!({
+                "event_code": "pipeline.dictation_requested",
+                "recording_id": 31,
+                "slo_contract": 2,
+                "origin": "hold",
+                "device_selection": "explicit"
+            }),
+            serde_json::json!({
+                "event_code": "pipeline.dictation_requested",
+                "recording_id": 31,
+                "slo_contract": 1,
+                "origin": "SENTINEL_PRIVATE_ORIGIN",
+                "device_selection": "system_default"
+            }),
+            serde_json::json!({
+                "event_code": "pipeline.dictation_requested",
+                "recording_id": 31,
+                "slo_contract": 1,
+                "origin": "toggle",
+                "device_selection": "SENTINEL_PRIVATE_DEVICE"
+            }),
+            serde_json::json!({
+                "event_code": "pipeline.dictation_state_changed",
+                "recording_id": 31,
+                "from": "processing",
+                "to": "processing"
+            }),
+            serde_json::json!({
+                "event_code": "pipeline.dictation_state_changed",
+                "recording_id": 0,
+                "from": "SENTINEL_PRIVATE_STATE",
+                "to": "idle"
+            }),
+            serde_json::json!({
+                "event_code": "pipeline.dictation_presentation",
+                "recording_id": 31,
+                "status_code": "microphone_cleanup_stalled",
+                "action_code": "retry"
+            }),
+            serde_json::json!({
+                "event_code": "pipeline.dictation_presentation",
+                "recording_id": 31,
+                "status_code": "SENTINEL_PRIVATE_STATUS",
+                "action_code": "restart_app"
+            }),
+        ] {
+            sanitize_event_data("pipeline", &mut data, true);
+            assert!(matches!(
+                data["event_code"].as_str(),
+                Some(
+                    "pipeline.dictation_requested"
+                        | "pipeline.dictation_state_changed"
+                        | "pipeline.dictation_presentation"
+                )
+            ));
+            assert_eq!(data.as_object().unwrap().len(), 1);
+            assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+        }
     }
 
     #[test]

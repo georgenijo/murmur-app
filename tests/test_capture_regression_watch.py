@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
@@ -583,10 +584,41 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             self.write_install(root, "12345678-abcd", items)
             path = Path(root) / "12345678-abcd" / "events.jsonl"
             with path.open("a", encoding="utf-8") as handle:
-                handle.write("{broken\n")
+                handle.write("{broken\n[]\n")
+            (Path(root) / "12345678-abcd" / "ignored.jsonl").write_text(
+                "{also broken\n",
+                encoding="utf-8",
+            )
             report = watch.build_report(root)
 
-        self.assertEqual(report["malformed_lines"], 1)
+            # The hourly evaluator is a full rescan. Replacing a concurrently
+            # partial tail with the next complete scan must self-heal instead
+            # of persisting an integrity failure forever.
+            path.write_text(
+                "\n".join(json.dumps(item) for item in items) + "\n",
+                encoding="utf-8",
+            )
+            healed = watch.build_report(root)
+
+        self.assertEqual(report["malformed_lines"], 2)
+        self.assertEqual(report["status"], "alert")
+        self.assertEqual(
+            report["reliability_slo"]["integrity"]["malformed_source_lines"],
+            2,
+        )
+        self.assertEqual(
+            report["reliability_slo"]["integrity"]["status"],
+            "indeterminate",
+        )
+        self.assertFalse(
+            report["reliability_slo"]["two_consecutive_complete_weeks_pass"]
+        )
+        self.assertEqual(healed["malformed_lines"], 0)
+        self.assertEqual(
+            healed["reliability_slo"]["integrity"]["malformed_source_lines"],
+            0,
+        )
+        self.assertEqual(healed["reliability_slo"]["integrity"]["status"], "complete")
         timeouts = report["cohorts"][0]["capture_backend_timeouts"]
         self.assertIn(
             {"backend": "unknown", "last_setup_step": "unknown", "count": 1},
@@ -809,6 +841,212 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(len(versions), watch.MAX_VERSIONS_PER_INSTALL + 1)
         self.assertIn("overflow", versions)
 
+    def test_full_scan_adds_aggregate_slo_and_precontract_data_stays_insufficient(self) -> None:
+        private_sentinel = "SENTINEL_PRIVATE_INSTALL_DEVICE_TRANSCRIPT"
+        events = [
+            event(
+                private_sentinel,
+                "2026-08-04T00:00:00Z",
+                version="1.2.3",
+                data={
+                    "event_code": "pipeline.dictation_requested",
+                    "recording_id": 1,
+                    # No slo_contract: historical records are deliberately
+                    # ineligible even if all later lifecycle stages exist.
+                    "transcript": private_sentinel,
+                    "device_id": private_sentinel,
+                },
+            ),
+            event(
+                private_sentinel,
+                "2026-08-04T00:00:00.100Z",
+                version="1.2.3",
+                data={
+                    "event_code": "audio.capture_ready",
+                    "recording_id": 1,
+                    "owner": 1,
+                    "owner_kind": "dictation",
+                    "startup_ms": 100,
+                    "raw_error": private_sentinel,
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(
+                root,
+                now=datetime(2026, 8, 17, tzinfo=timezone.utc),
+            )
+
+        slo = report["reliability_slo"]
+        self.assertEqual(slo["report"], "murmur-reliability-slo/v1")
+        self.assertEqual(slo["privacy"], "aggregate_only")
+        self.assertFalse(slo["two_consecutive_complete_weeks_pass"])
+        self.assertTrue(all(week["verdict"] == "insufficient" for week in slo["weeks"]))
+        encoded = json.dumps(slo, sort_keys=True)
+        self.assertNotIn("12345678-abcd", encoded)
+        self.assertNotIn("1.2.3", encoded)
+        self.assertNotIn(private_sentinel, encoded)
+
+    def test_complete_contract_week_can_alert_without_per_install_slo_output(self) -> None:
+        baseline = datetime(2026, 8, 11, tzinfo=timezone.utc)
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-10T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            )
+        ]
+        for index in range(200):
+            recording_id = index + 1
+            requested_at = baseline + timedelta(seconds=index)
+            ready_at = requested_at + timedelta(milliseconds=100)
+            requested = requested_at.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            )
+            ready = ready_at.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            )
+            events.extend(
+                [
+                    # Production ordering intentionally permits state evidence
+                    # immediately before the request marker.
+                    event(
+                        "ignored",
+                        requested,
+                        version="1.2.3",
+                        data={
+                            "event_code": "pipeline.dictation_state_changed",
+                            "recording_id": recording_id,
+                            "from": "idle",
+                            "to": "starting",
+                        },
+                    ),
+                    event(
+                        "ignored",
+                        requested,
+                        version="1.2.3",
+                        data={
+                            "event_code": "pipeline.dictation_requested",
+                            "recording_id": recording_id,
+                            "slo_contract": 1,
+                        },
+                    ),
+                    event(
+                        "ignored",
+                        requested,
+                        version="1.2.3",
+                        data={
+                            "event_code": "audio.capture_started",
+                            "recording_id": recording_id,
+                            "owner": recording_id,
+                            "owner_kind": "dictation",
+                        },
+                    ),
+                ]
+            )
+            # One accepted request deliberately fails before first PCM and has
+            # no actionable presentation. The other 199 are within 400 ms, so
+            # the startup fraction is exactly 99.5% and the presentation clause
+            # alone makes the complete week fail.
+            if index < 199:
+                events.append(
+                    event(
+                        "ignored",
+                        ready,
+                        version="1.2.3",
+                        data={
+                            "event_code": "audio.capture_ready",
+                            "recording_id": recording_id,
+                            "owner": recording_id,
+                            "owner_kind": "dictation",
+                            "startup_ms": 100,
+                        },
+                    )
+                )
+                outcome = "success"
+            else:
+                outcome = "pipeline_failure"
+            events.append(
+                event(
+                    "ignored",
+                    ready,
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_terminal",
+                        "recording_id": recording_id,
+                        "outcome": outcome,
+                    },
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(
+                root,
+                now=datetime(2026, 8, 24, tzinfo=timezone.utc),
+            )
+
+        complete = next(
+            week
+            for week in report["reliability_slo"]["weeks"]
+            if week["week_start"] == "2026-08-10T00:00:00Z"
+        )
+        self.assertEqual(complete["sample_status"], "sufficient")
+        self.assertEqual(complete["verdict"], "fail")
+        self.assertEqual(complete["counts"]["eligible_requests"], 200)
+        self.assertEqual(complete["counts"]["within_400"], 199)
+        self.assertEqual(complete["startup_ms"]["within_400_fraction"], 0.995)
+        self.assertEqual(
+            complete["counts"]["failures_without_actionable_presentation"],
+            1,
+        )
+        self.assertEqual(report["status"], "alert")
+        self.assertEqual(report["alerts"], [])
+        self.assertNotIn("install_id", json.dumps(report["reliability_slo"]))
+
+    def test_unassigned_contract_request_forces_outer_watch_alert(self) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-10T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            event(
+                "ignored",
+                "not-a-time",
+                version="1.2.3",
+                data={
+                    "event_code": "pipeline.dictation_requested",
+                    "recording_id": 1,
+                    "slo_contract": 1,
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(
+                root,
+                now=datetime(2026, 8, 17, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(report["status"], "alert")
+        self.assertEqual(report["alerts"], [])
+        self.assertEqual(
+            report["reliability_slo"]["integrity"],
+            {
+                "status": "indeterminate",
+                "unassigned_contract_requests": 1,
+                "overflowed_events": 0,
+                "malformed_source_lines": 0,
+            },
+        )
+        self.assertFalse(
+            report["reliability_slo"]["two_consecutive_complete_weeks_pass"]
+        )
+
     def test_cli_writes_report_before_returning_alert_exit(self) -> None:
         events = self.ready_events("1.0.0", "01", [100] * 5)
         events += self.ready_events("1.1.0", "02", [300] * 5)
@@ -829,6 +1067,35 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertEqual(saved["schema_version"], 1)
         self.assertEqual(saved["status"], "alert")
+
+    def test_cli_malformed_source_persists_integrity_and_returns_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "12345678-abcd"
+            directory.mkdir()
+            (directory / "events.jsonl").write_text("{partial", encoding="utf-8")
+            output = Path(root) / "watch.json"
+
+            result = watch.main(
+                [
+                    "--root",
+                    root,
+                    "--output",
+                    str(output),
+                    "--fail-on-alert",
+                ]
+            )
+            saved = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 2)
+        self.assertEqual(saved["status"], "alert")
+        self.assertEqual(saved["malformed_lines"], 1)
+        self.assertEqual(
+            saved["reliability_slo"]["integrity"]["malformed_source_lines"],
+            1,
+        )
+        self.assertFalse(
+            saved["reliability_slo"]["two_consecutive_complete_weeks_pass"]
+        )
 
 
 if __name__ == "__main__":

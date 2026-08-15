@@ -8,6 +8,11 @@ import {
   isHotkeyTapRejectedPayload,
   shouldShowHotkeyMissFeedback,
 } from '../hotkeyFeedback';
+import {
+  initializationPresentationFromPayload,
+  interruptedPresentationFromPayload,
+  type DictationPresentationActionCode,
+} from '../dictationPresentation';
 
 const CANCELLED_FLASH_MS = 800;
 /** How long the secure-field refusal flash shows (issue #312 PR-C2). */
@@ -17,7 +22,11 @@ const TRANSFORM_BUSY_FLASH_MS = 800;
 export const MICROPHONE_FAILURE_FLASH_MS = 5000;
 export const CLIPBOARD_ONLY_FLASH_MS = 5000;
 
-export type MicrophoneFailureCue = 'deviceUnavailable' | 'generic';
+export type MicrophoneFailureCue =
+  | 'retry'
+  | 'openMicrophoneSettings'
+  | 'chooseMicrophone'
+  | 'waitForPartialTranscription';
 
 type DictationDeliveryOutcome =
   | 'clipboardOnly'
@@ -52,11 +61,16 @@ function isDictationDeliveryOutcomePayload(
     ].includes(payload.outcome as string);
 }
 
-function microphoneFailureCueFromPayload(value: unknown): MicrophoneFailureCue | null {
-  if (recordingIdFromPayload(value) == null) return null;
-  return (value as Record<string, unknown>).errorKind === 'device_unavailable'
-    ? 'deviceUnavailable'
-    : 'generic';
+function microphoneFailureCueFromAction(
+  actionCode: DictationPresentationActionCode,
+): MicrophoneFailureCue | null {
+  switch (actionCode) {
+    case 'retry': return 'retry';
+    case 'open_microphone_settings': return 'openMicrophoneSettings';
+    case 'choose_microphone': return 'chooseMicrophone';
+    case 'wait_for_partial_transcription': return 'waitForPartialTranscription';
+    default: return null;
+  }
 }
 
 export interface UseOverlayRuntimeArgs {
@@ -340,9 +354,11 @@ export function useOverlayRuntime({
     };
     const unlistens: (() => void)[] = [];
     listen<unknown>('recording-initialization-failed', (event) => {
-      const recordingId = recordingIdFromPayload(event.payload);
-      const cue = microphoneFailureCueFromPayload(event.payload);
-      if (recordingId != null && cue != null) flashFailure(recordingId, cue);
+      const presentation = initializationPresentationFromPayload(event.payload);
+      const cue = presentation
+        ? microphoneFailureCueFromAction(presentation.actionCode)
+        : null;
+      if (presentation && cue) flashFailure(presentation.recordingId, cue);
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     }).catch((cause: unknown) => {
@@ -353,8 +369,11 @@ export function useOverlayRuntime({
       }
     });
     listen<unknown>('recording-interrupted', (event) => {
-      const recordingId = recordingIdFromPayload(event.payload);
-      if (recordingId != null) flashFailure(recordingId, 'generic');
+      const presentation = interruptedPresentationFromPayload(event.payload);
+      const cue = presentation
+        ? microphoneFailureCueFromAction(presentation.actionCode)
+        : null;
+      if (presentation && cue) flashFailure(presentation.recordingId, cue);
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     }).catch((cause: unknown) => {

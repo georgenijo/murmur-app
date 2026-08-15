@@ -175,7 +175,9 @@ returns to Idle only after the exclusively owned Core Audio thread exits.
 Terminal microphone failure gets a five-second, non-interactive red status cue
 without expanding, focusing, or resizing the overlay. `device_unavailable`
 uses a mic-off glyph whose accessibility label directs the user to Settings to
-choose another input; other failures use a generic capture warning. A newer
+choose another input; permission denial points to microphone settings, ordinary
+capture failures recommend retry, and an interrupted partial capture says to
+wait for transcription. A newer
 recording generation clears the prior cue immediately so successful retries
 cannot remain covered by stale failure feedback. A normal
 recording stop whose teardown remains blocked surfaces persistent guidance in

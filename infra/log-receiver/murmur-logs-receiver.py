@@ -26,7 +26,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
@@ -44,6 +44,45 @@ MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
 CAPTURE_WATCH_REPORT = "capture-watch.json"
 APP_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
+SLO_UTC_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+)
+SLO_COUNT_KEYS = {
+    "requested",
+    "eligible_requests",
+    "excluded_permission_prompts",
+    "accepted",
+    "ready",
+    "ready_without_accepted",
+    "within_400",
+    "failed",
+    "cancelled",
+    "missing_terminals",
+    "duplicate_terminals",
+    "unknown_terminals",
+    "failures_with_actionable_presentation",
+    "failures_without_actionable_presentation",
+    "duplicate_requests",
+    "invalid_startup_timings",
+    "invalid_state_transitions",
+    "invalid_evidence_timestamps",
+}
+SLO_REASON_CODES = {
+    "partial_week",
+    "missing_terminal",
+    "duplicate_terminal",
+    "unknown_terminal",
+    "duplicate_request",
+    "invalid_startup_timing",
+    "ready_without_accepted",
+    "invalid_state_transition",
+    "invalid_evidence_timestamp",
+    "state_interval_indeterminate",
+    "restart_required_state",
+    "startup_target_missed",
+    "failure_presentation_missing",
+    "eligible_requests_below_minimum",
+}
 DICTATION_TERMINAL_OUTCOMES = {
     "success",
     "no_speech",
@@ -236,6 +275,513 @@ def render_capture_watch(report):
             "" if len(alerts) == 1 else "s",
             generated or "unknown",
             "".join(rows) or "<li>Unrecognized bounded alert record</li>",
+        )
+    )
+
+
+def _slo_count(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "—"
+    return "{:,}".format(value) if 0 <= value <= 1_000_000_000 else "—"
+
+
+def _slo_milliseconds(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    # The evaluator bounds state intervals to 31 days. Keep that evidence
+    # visible: a restart-required interval can legitimately be much longer
+    # than a capture-start latency sample.
+    maximum_duration_ms = 31 * 24 * 60 * 60 * 1_000
+    return ("%g ms" % value) if 0 <= value <= maximum_duration_ms else "—"
+
+
+def _slo_fraction(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return ("%.2f%%" % (value * 100)) if 0 <= value <= 1 else "—"
+
+
+def _slo_timestamp(value):
+    if not isinstance(value, str) or SLO_UTC_TIMESTAMP_RE.fullmatch(value) is None:
+        return "unknown"
+    return html.escape(value)
+
+
+def _parse_slo_timestamp(value):
+    if not isinstance(value, str) or SLO_UTC_TIMESTAMP_RE.fullmatch(value) is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def _valid_slo_count(value):
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and 0 <= value <= 1_000_000_000
+    )
+
+
+def _valid_slo_metric(value, *, nullable=False):
+    if value is None:
+        return nullable
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and 0 <= value <= 31 * 24 * 60 * 60 * 1_000
+    )
+
+
+def _valid_slo_distribution(value, expected_samples):
+    if not isinstance(value, dict) or set(value) != {"sample_count", "p50", "p95", "max"}:
+        return False
+    if value.get("sample_count") != expected_samples:
+        return False
+    p50, p95, maximum = value.get("p50"), value.get("p95"), value.get("max")
+    if expected_samples == 0:
+        return p50 is None and p95 is None and maximum is None
+    return (
+        _valid_slo_metric(p50)
+        and _valid_slo_metric(p95)
+        and _valid_slo_metric(maximum)
+        and p50 <= p95 <= maximum
+    )
+
+
+def _valid_slo_state(value):
+    if not isinstance(value, dict) or set(value) != {
+        "self_recovered",
+        "restart_required",
+        "indeterminate",
+        "duration_ms",
+    }:
+        return False
+    if not all(
+        _valid_slo_count(value.get(key))
+        for key in ("self_recovered", "restart_required", "indeterminate")
+    ):
+        return False
+    duration_samples = value["self_recovered"] + value["restart_required"]
+    return _valid_slo_distribution(value.get("duration_ms"), duration_samples)
+
+
+def _expected_slo_reasons(counts, startup, states, complete):
+    indeterminate = []
+    if counts["missing_terminals"]:
+        indeterminate.append("missing_terminal")
+    if counts["duplicate_terminals"]:
+        indeterminate.append("duplicate_terminal")
+    if counts["unknown_terminals"]:
+        indeterminate.append("unknown_terminal")
+    if counts["duplicate_requests"]:
+        indeterminate.append("duplicate_request")
+    if counts["invalid_startup_timings"]:
+        indeterminate.append("invalid_startup_timing")
+    if counts["ready_without_accepted"]:
+        indeterminate.append("ready_without_accepted")
+    if counts["invalid_state_transitions"]:
+        indeterminate.append("invalid_state_transition")
+    if counts["invalid_evidence_timestamps"]:
+        indeterminate.append("invalid_evidence_timestamp")
+    if any(states[name]["indeterminate"] for name in ("recovering", "processing")):
+        indeterminate.append("state_interval_indeterminate")
+
+    failures = []
+    if any(states[name]["restart_required"] for name in ("recovering", "processing")):
+        failures.append("restart_required_state")
+    fraction = startup["within_400_fraction"]
+    if fraction is not None and fraction < 0.995:
+        failures.append("startup_target_missed")
+    if counts["failures_without_actionable_presentation"]:
+        failures.append("failure_presentation_missing")
+
+    if not complete:
+        return "insufficient", ["partial_week", *indeterminate, *failures]
+    if indeterminate:
+        return "indeterminate", indeterminate
+    if failures:
+        return "fail", failures
+    if counts["eligible_requests"] < 200:
+        return "insufficient", ["eligible_requests_below_minimum"]
+    return "pass", []
+
+
+def _valid_slo_week(week, index, expected_start):
+    if not isinstance(week, dict) or set(week) != {
+        "week_start",
+        "week_end",
+        "complete",
+        "sample_status",
+        "verdict",
+        "reasons",
+        "counts",
+        "startup_ms",
+        "states",
+    }:
+        return False
+    start = _parse_slo_timestamp(week.get("week_start"))
+    end = _parse_slo_timestamp(week.get("week_end"))
+    complete = week.get("complete")
+    if (
+        start != expected_start
+        or end != expected_start + timedelta(weeks=1)
+        or not isinstance(complete, bool)
+        or complete != (index > 0)
+    ):
+        return False
+
+    counts = week.get("counts")
+    if (
+        not isinstance(counts, dict)
+        or set(counts) != SLO_COUNT_KEYS
+        or not all(_valid_slo_count(value) for value in counts.values())
+    ):
+        return False
+    if (
+        counts["requested"]
+        != counts["eligible_requests"] + counts["excluded_permission_prompts"]
+        or counts["accepted"] > counts["requested"]
+        or counts["ready"] > counts["requested"]
+        or counts["ready_without_accepted"] > counts["ready"]
+        or counts["ready"] - counts["ready_without_accepted"]
+        > counts["accepted"]
+        or counts["failed"] + counts["cancelled"] > counts["requested"]
+        or counts["failures_with_actionable_presentation"]
+        + counts["failures_without_actionable_presentation"]
+        != counts["failed"]
+        or any(
+            counts[key] > counts["requested"]
+            for key in (
+                "missing_terminals",
+                "duplicate_terminals",
+                "unknown_terminals",
+                "duplicate_requests",
+                "invalid_startup_timings",
+            )
+        )
+    ):
+        return False
+
+    startup = week.get("startup_ms")
+    if not isinstance(startup, dict) or set(startup) != {
+        "sample_count",
+        "p50",
+        "p95",
+        "max",
+        "within_400_fraction",
+    }:
+        return False
+    sample_count = startup.get("sample_count")
+    if (
+        not _valid_slo_count(sample_count)
+        or sample_count > counts["eligible_requests"]
+        or sample_count > counts["ready"]
+        or sample_count + counts["invalid_startup_timings"]
+        > counts["eligible_requests"]
+        or sample_count + counts["invalid_startup_timings"] > counts["ready"]
+        or counts["within_400"] > sample_count
+        or not _valid_slo_distribution(
+            {key: startup.get(key) for key in ("sample_count", "p50", "p95", "max")},
+            sample_count,
+        )
+    ):
+        return False
+    fraction = startup.get("within_400_fraction")
+    expected_fraction = (
+        counts["within_400"] / counts["eligible_requests"]
+        if counts["eligible_requests"]
+        else None
+    )
+    if expected_fraction is None:
+        if fraction is not None:
+            return False
+    elif (
+        isinstance(fraction, bool)
+        or not isinstance(fraction, (int, float))
+        or not math.isfinite(fraction)
+        or not math.isclose(fraction, expected_fraction, rel_tol=0, abs_tol=1e-12)
+    ):
+        return False
+
+    states = week.get("states")
+    if (
+        not isinstance(states, dict)
+        or set(states) != {"recovering", "processing"}
+        or not all(_valid_slo_state(states.get(name)) for name in states)
+    ):
+        return False
+    reasons = week.get("reasons")
+    if (
+        not isinstance(reasons, list)
+        or len(reasons) > len(SLO_REASON_CODES)
+        or not all(isinstance(reason, str) for reason in reasons)
+        or len(reasons) != len(set(reasons))
+        or any(reason not in SLO_REASON_CODES for reason in reasons)
+    ):
+        return False
+    expected_verdict, expected_reasons = _expected_slo_reasons(
+        counts, startup, states, complete
+    )
+    expected_sample_status = (
+        "partial"
+        if not complete
+        else "below_minimum"
+        if counts["eligible_requests"] < 200
+        else "sufficient"
+    )
+    return (
+        week.get("verdict") == expected_verdict
+        and reasons == expected_reasons
+        and week.get("sample_status") == expected_sample_status
+    )
+
+
+def _valid_reliability_slo(slo):
+    if (
+        not isinstance(slo, dict)
+        or set(slo) != {
+            "schema_version",
+            "report",
+            "generated_at",
+            "contract_version",
+            "privacy",
+            "thresholds",
+            "integrity",
+            "two_consecutive_complete_weeks_pass",
+            "weeks",
+        }
+        or slo.get("schema_version") != 1
+        or slo.get("report") != "murmur-reliability-slo/v1"
+        or slo.get("contract_version") != 1
+        or slo.get("privacy") != "aggregate_only"
+        or not isinstance(slo.get("two_consecutive_complete_weeks_pass"), bool)
+    ):
+        return False
+    thresholds = slo.get("thresholds")
+    if thresholds != {
+        "complete_weeks": 8,
+        "minimum_eligible_requests": 200,
+        "startup_target_ms": 400.0,
+        "startup_target_fraction": 0.995,
+    }:
+        return False
+    integrity = slo.get("integrity")
+    if (
+        not isinstance(integrity, dict)
+        or set(integrity)
+        != {
+            "status",
+            "unassigned_contract_requests",
+            "overflowed_events",
+            "malformed_source_lines",
+        }
+        or not _valid_slo_count(integrity.get("unassigned_contract_requests"))
+        or not _valid_slo_count(integrity.get("overflowed_events"))
+        or not _valid_slo_count(integrity.get("malformed_source_lines"))
+        or integrity.get("status")
+        != (
+            "complete"
+            if integrity.get("unassigned_contract_requests") == 0
+            and integrity.get("overflowed_events") == 0
+            and integrity.get("malformed_source_lines") == 0
+            else "indeterminate"
+        )
+    ):
+        return False
+    generated = _parse_slo_timestamp(slo.get("generated_at"))
+    weeks = slo.get("weeks")
+    if generated is None or not isinstance(weeks, list) or len(weeks) != 9:
+        return False
+    try:
+        current_start = (generated - timedelta(days=generated.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        valid_weeks = all(
+            _valid_slo_week(week, index, current_start - timedelta(weeks=index))
+            for index, week in enumerate(weeks)
+        )
+    except (OverflowError, ValueError):
+        return False
+    if not valid_weeks:
+        return False
+    expected_two_week = (
+        integrity["status"] == "complete"
+        and all(week["verdict"] == "pass" for week in weeks[1:3])
+    )
+    return slo["two_consecutive_complete_weeks_pass"] == expected_two_week
+
+
+def render_reliability_slo(report):
+    slo = report.get("reliability_slo") if isinstance(report, dict) else None
+    if not _valid_reliability_slo(slo):
+        return (
+            "<div class='watch-banner diagnostic'><strong>Dictation reliability SLO</strong>"
+            "<span>No aggregate contract report is available yet. Historical "
+            "pre-contract data is insufficient.</span></div>"
+        )
+
+    weeks = [week for week in slo["weeks"][:9] if isinstance(week, dict)]
+    complete_weeks = [week for week in weeks if week.get("complete") is True]
+    newest_complete = complete_weeks[0] if complete_weeks else None
+    newest_decisive = next(
+        (
+            week
+            for week in complete_weeks
+            if week.get("verdict") in ("pass", "fail", "indeterminate")
+        ),
+        None,
+    )
+    headline_week = newest_decisive or newest_complete
+    integrity = slo["integrity"]
+    verdict = (
+        "indeterminate"
+        if integrity["status"] == "indeterminate"
+        else headline_week.get("verdict")
+        if isinstance(headline_week, dict)
+        else "insufficient"
+    )
+    if verdict not in ("pass", "fail", "insufficient", "indeterminate"):
+        verdict = "indeterminate"
+    css_class = "healthy" if verdict == "pass" else (
+        "alert" if verdict in ("fail", "indeterminate") else "diagnostic"
+    )
+    # Treat the persisted convenience flag as an assertion, not authority.
+    # A truncated or manually corrupted local report must never make the
+    # dashboard claim the finish line unless the two newest complete rows
+    # independently prove sufficient passing samples.
+    derived_two_week_pass = (
+        len(complete_weeks) >= 2
+        and all(
+            week.get("verdict") == "pass"
+            and week.get("sample_status") == "sufficient"
+            for week in complete_weeks[:2]
+        )
+    )
+    two_week_pass = (
+        slo.get("two_consecutive_complete_weeks_pass") is True
+        and integrity["status"] == "complete"
+        and derived_two_week_pass
+    )
+    two_week_label = (
+        "Two consecutive complete weeks pass"
+        if two_week_pass
+        else "Two consecutive complete passing weeks not yet proven"
+    )
+
+    rows = []
+    for week in weeks[:3]:
+        week_verdict = week.get("verdict")
+        if week_verdict not in ("pass", "fail", "insufficient", "indeterminate"):
+            week_verdict = "indeterminate"
+        sample_status = week.get("sample_status")
+        if sample_status not in ("partial", "below_minimum", "sufficient"):
+            sample_status = "unknown_sample_status"
+        counts = week.get("counts") if isinstance(week.get("counts"), dict) else {}
+        startup = (
+            week.get("startup_ms")
+            if isinstance(week.get("startup_ms"), dict)
+            else {}
+        )
+        states = week.get("states") if isinstance(week.get("states"), dict) else {}
+        recovering = (
+            states.get("recovering")
+            if isinstance(states.get("recovering"), dict)
+            else {}
+        )
+        processing = (
+            states.get("processing")
+            if isinstance(states.get("processing"), dict)
+            else {}
+        )
+        recovering_duration = (
+            recovering.get("duration_ms")
+            if isinstance(recovering.get("duration_ms"), dict)
+            else {}
+        )
+        processing_duration = (
+            processing.get("duration_ms")
+            if isinstance(processing.get("duration_ms"), dict)
+            else {}
+        )
+        window = "%s → %s" % (
+            _slo_timestamp(week.get("week_start")),
+            _slo_timestamp(week.get("week_end")),
+        )
+        completeness = "complete" if week.get("complete") is True else "partial"
+        rows.append(
+            "<li><strong>%s · %s</strong> <span class='slo-window'>%s (%s; %s sample)</span>"
+            "<div class='slo-metrics'>requests %s total · latency denominator %s eligible / %s prompt-excluded · "
+            "accepted %s · ready %s · failed %s · cancelled %s · missing terminal %s · "
+            "startup ≤400 ms %s (%s samples; p50 %s, p95 %s, max %s) · "
+            "failure presentation %s covered / %s missing · "
+            "integrity duplicate request/terminal/unknown terminal/ready-without-accepted/"
+            "invalid-startup/invalid-state/invalid-evidence-time %s/%s/%s/%s/%s/%s/%s · reasons %s · "
+            "recovering self/restart/unknown %s/%s/%s (p95 %s, max %s) · "
+            "processing self/restart/unknown %s/%s/%s (p95 %s, max %s)</div></li>"
+            % (
+                html.escape(str(week_verdict).upper()),
+                completeness,
+                window,
+                completeness,
+                html.escape(sample_status.replace("_", " ")),
+                _slo_count(counts.get("requested")),
+                _slo_count(counts.get("eligible_requests")),
+                _slo_count(counts.get("excluded_permission_prompts")),
+                _slo_count(counts.get("accepted")),
+                _slo_count(counts.get("ready")),
+                _slo_count(counts.get("failed")),
+                _slo_count(counts.get("cancelled")),
+                _slo_count(counts.get("missing_terminals")),
+                _slo_fraction(startup.get("within_400_fraction")),
+                _slo_count(startup.get("sample_count")),
+                _slo_milliseconds(startup.get("p50")),
+                _slo_milliseconds(startup.get("p95")),
+                _slo_milliseconds(startup.get("max")),
+                _slo_count(counts.get("failures_with_actionable_presentation")),
+                _slo_count(counts.get("failures_without_actionable_presentation")),
+                _slo_count(counts.get("duplicate_requests")),
+                _slo_count(counts.get("duplicate_terminals")),
+                _slo_count(counts.get("unknown_terminals")),
+                _slo_count(counts.get("ready_without_accepted")),
+                _slo_count(counts.get("invalid_startup_timings")),
+                _slo_count(counts.get("invalid_state_transitions")),
+                _slo_count(counts.get("invalid_evidence_timestamps")),
+                html.escape(", ".join(week.get("reasons", [])) or "none"),
+                _slo_count(recovering.get("self_recovered")),
+                _slo_count(recovering.get("restart_required")),
+                _slo_count(recovering.get("indeterminate")),
+                _slo_milliseconds(recovering_duration.get("p95")),
+                _slo_milliseconds(recovering_duration.get("max")),
+                _slo_count(processing.get("self_recovered")),
+                _slo_count(processing.get("restart_required")),
+                _slo_count(processing.get("indeterminate")),
+                _slo_milliseconds(processing_duration.get("p95")),
+                _slo_milliseconds(processing_duration.get("max")),
+            )
+        )
+
+    return (
+        "<div class='watch-banner %s'><strong>Dictation reliability SLO · %s</strong>"
+        "<span>%s · source integrity %s (%s unassigned contract request%s; "
+        "%s bounded-correlation overflow event%s; %s malformed source line%s) · "
+        "aggregate-only contract v1</span><ul class='slo-weeks'>%s</ul></div>"
+        % (
+            css_class,
+            html.escape(str(verdict).upper()),
+            two_week_label,
+            html.escape(integrity["status"]),
+            _slo_count(integrity["unassigned_contract_requests"]),
+            "" if integrity["unassigned_contract_requests"] == 1 else "s",
+            _slo_count(integrity["overflowed_events"]),
+            "" if integrity["overflowed_events"] == 1 else "s",
+            _slo_count(integrity["malformed_source_lines"]),
+            "" if integrity["malformed_source_lines"] == 1 else "s",
+            "".join(rows) or "<li>No weekly windows are available.</li>",
         )
     )
 
@@ -1986,7 +2532,9 @@ def render_problem_group(item):
 
 def render_dashboard():
     installs = collect_installs()
-    capture_watch = render_capture_watch(load_capture_watch_report())
+    capture_report = load_capture_watch_report()
+    capture_watch = render_capture_watch(capture_report)
+    reliability_slo = render_reliability_slo(capture_report)
     now = time.time()
     rows = []
     for i in installs:
@@ -2025,7 +2573,7 @@ def render_dashboard():
     body = (
         "<h1>murmur fleet logs</h1>"
         "<p class='sub'>%d install stream%s · refreshes every 30s · %s</p>"
-        "%s"
+        "%s%s"
         "<table><thead><tr><th>device</th><th>version</th>"
         "<th>last event</th></tr></thead>"
         "<tbody>%s</tbody></table>"
@@ -2034,6 +2582,7 @@ def render_dashboard():
             "" if len(installs) == 1 else "s",
             datetime.now(EASTERN).strftime("%Y-%m-%d %-I:%M %p ET"),
             capture_watch,
+            reliability_slo,
             "".join(rows) or '<tr><td colspan="3">no installs yet</td></tr>',
         )
     )
@@ -2059,6 +2608,7 @@ code{color:#93c5fd;font-size:.85em}
 .meta{color:#64748b;font-size:.75rem;margin-top:.15rem}
 .watch-banner{border:1px solid #1e293b;border-radius:10px;display:grid;gap:.3rem;margin:0 0 1.2rem;padding:.7rem .85rem}
 .watch-banner span{color:#94a3b8;font-size:.78rem}.watch-banner ul{margin:.25rem 0 0;padding-left:1.25rem}
+.watch-banner .slo-weeks{display:grid;gap:.45rem}.slo-window{margin-left:.35rem}.slo-metrics{color:#94a3b8;font-size:.78rem;margin-top:.12rem}
 .watch-banner.healthy{border-color:#14532d}.watch-banner.diagnostic{border-color:#334155}
 .watch-banner.alert{background:#2a0f14;border-color:#7f1d1d}
 a{color:#e2e8f0;text-decoration:none}a:hover{text-decoration:underline}
