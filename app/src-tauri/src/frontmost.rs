@@ -263,18 +263,18 @@ pub fn list_running_applications() -> Vec<RunningApplication> {
     Vec::new()
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 use std::time::Duration;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 const MAX_NATIVE_ATTEMPTS: usize = 3;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 const NATIVE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 type QueryResult = Result<Option<String>, ()>;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetectionSource {
     None,
@@ -282,18 +282,7 @@ enum DetectionSource {
     Osascript,
 }
 
-#[cfg(any(target_os = "macos", test))]
-impl DetectionSource {
-    const fn code(self) -> u64 {
-        match self {
-            Self::None => 0,
-            Self::Native => 1,
-            Self::Osascript => 2,
-        }
-    }
-}
-
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 struct DetectionResult {
     bundle_id: Option<String>,
@@ -301,14 +290,14 @@ struct DetectionResult {
     retry_count: usize,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 impl DetectionResult {
     fn outcome_code(&self) -> u64 {
         u64::from(self.bundle_id.is_some())
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn normalized_bundle_id(result: QueryResult) -> Option<String> {
     result.ok().flatten().and_then(|bundle_id| {
         let bundle_id = bundle_id.trim();
@@ -317,7 +306,7 @@ fn normalized_bundle_id(result: QueryResult) -> Option<String> {
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 fn detect_with<N, F, S>(mut native: N, mut fallback: F, mut sleep: S) -> DetectionResult
 where
     N: FnMut() -> QueryResult,
@@ -352,30 +341,6 @@ where
             retry_count,
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn native_frontmost_bundle_id() -> QueryResult {
-    use objc2_app_kit::NSWorkspace;
-
-    let app = NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .ok_or(())?;
-    Ok(app.bundleIdentifier().map(|value| value.to_string()))
-}
-
-#[cfg(target_os = "macos")]
-fn osascript_frontmost_bundle_id() -> QueryResult {
-    let output = crate::injector::run_osascript_with_timeout(
-        r#"tell application "System Events" to get bundle identifier of first process whose frontmost is true"#,
-    )
-    .map_err(|_| ())?;
-
-    if !output.status.success() {
-        return Err(());
-    }
-
-    Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
 fn app_transition_snapshot() -> AppTransitionSnapshot {
@@ -907,51 +872,6 @@ pub(crate) fn verify_delivery_target(
     evidence
 }
 
-/// Return the bundle identifier of the first frontmost macOS app observed by
-/// the bounded detector. Returns `None` on total failure so the caller resolves
-/// a global-only dictation context.
-#[cfg(target_os = "macos")]
-pub fn frontmost_bundle_id() -> Option<String> {
-    let started = std::time::Instant::now();
-    let result = detect_with(
-        native_frontmost_bundle_id,
-        osascript_frontmost_bundle_id,
-        std::thread::sleep,
-    );
-    tracing::info!(
-        target: "pipeline",
-        outcome_code = result.outcome_code(),
-        retry_count = result.retry_count as u64,
-        source_code = result.source.code(),
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "frontmost app detection completed"
-    );
-    result.bundle_id
-}
-
-/// Capture the frontmost bundle and PID as one privacy-bounded recording input.
-/// The bounded bundle detector retains its compatibility fallback. A PID is
-/// accepted only when a second native sample still reports the same bundle,
-/// preventing a focus transition from pairing identities from different apps.
-#[cfg(target_os = "macos")]
-pub fn frontmost_app_identity() -> FrontmostAppIdentity {
-    use objc2_app_kit::NSWorkspace;
-
-    let bundle_id = frontmost_bundle_id();
-    let process_id = NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .and_then(|application| {
-            let native_bundle = application
-                .bundleIdentifier()
-                .map(|value| value.to_string());
-            (native_bundle == bundle_id).then(|| application.processIdentifier())
-        });
-    FrontmostAppIdentity {
-        bundle_id,
-        process_id,
-    }
-}
-
 /// Freeze Voice Query's app identity from one native `NSWorkspace` sample.
 /// Unlike dictation's compatibility detector, this path never invokes
 /// AppleScript or any other child process: unavailable native state simply
@@ -1251,20 +1171,6 @@ fn ax_window_title(process_id: i32) -> Option<String> {
         return None;
     }
     string(copy_attribute(window.0, "AXTitle")?.0).filter(|title| !title.trim().is_empty())
-}
-
-/// Non-macOS platforms have no frontmost-app concept here; profiles are a no-op.
-#[cfg(not(target_os = "macos"))]
-pub fn frontmost_bundle_id() -> Option<String> {
-    None
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn frontmost_app_identity() -> FrontmostAppIdentity {
-    FrontmostAppIdentity {
-        bundle_id: None,
-        process_id: None,
-    }
 }
 
 #[cfg(not(target_os = "macos"))]

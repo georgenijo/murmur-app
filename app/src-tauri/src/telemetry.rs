@@ -2562,6 +2562,16 @@ mod tests {
             (
                 "partial_identity_mismatch",
                 "native",
+                0,
+                false,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                "partial_identity_mismatch",
+                "native",
                 1,
                 false,
                 true,

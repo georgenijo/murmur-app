@@ -228,15 +228,6 @@ fn write_clipboard_text_with_change_count(text: &str) -> Result<Option<i64>, Str
     Ok(pasteboard_change_count())
 }
 
-/// Mirror the final transcript to a local file NotchPill (a separate notch-overlay
-/// app) can tail. Opt-in and best-effort: any failure is swallowed so dictation is
-/// never affected. Only the final text + a timestamp leave this function, and only
-/// to the app's own data dir — nothing is sent off-device.
-#[cfg_attr(feature = "internal-benchmark", allow(dead_code))]
-pub fn mirror_caption(text: &str) {
-    let _ = prepare_mirrored_caption(text).map(PreparedCaption::publish);
-}
-
 /// A fully written, owner-only caption temp file. Preparing it may perform
 /// blocking filesystem work; publishing is a single atomic rename so callers
 /// can hold a short generation fence without holding it across write/flush.
@@ -299,8 +290,8 @@ fn remove_caption_in(dir: &std::path::Path) {
 
 /// Atomic write (temp file + rename) of the caption JSON to
 /// `<dir>/latest-caption.json`. Returns false (no write) for empty/whitespace
-/// text. Separated from `mirror_caption` so it can be unit-tested against a temp
-/// directory.
+/// text. Separated from the production preparation seam so it can be unit-tested
+/// against a temp directory.
 fn prepare_caption_to(dir: &std::path::Path, text: &str) -> Option<PreparedCaption> {
     if text.trim().is_empty() {
         return None;
