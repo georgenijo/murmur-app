@@ -227,6 +227,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_terminal" => Some("pipeline.dictation_terminal"),
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
+        "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
         "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
         "overlay.position_default" => Some("overlay.position_default"),
@@ -596,6 +597,217 @@ fn sanitize_dictation_slo_event(data: &mut serde_json::Map<String, serde_json::V
     }
 }
 
+fn is_delivery_target_verification_event(
+    data: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.delivery_target_verified")
+}
+
+fn is_safe_delivery_target_verification_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("pipeline.delivery_target_verified"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "outcome_code" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "verified"
+                    | "different_application"
+                    | "different_process"
+                    | "process_relaunched"
+                    | "partial_identity_mismatch"
+                    | "lookup_unavailable"
+                    | "start_identity_incomplete"
+                    | "start_target_is_self"
+                    | "stale_owner"
+            )
+        }),
+        "source_code" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "native" | "none")),
+        "retry_count" => value.as_u64().is_some_and(|value| value <= 2),
+        "elapsed_ms" => value.as_u64().is_some_and(|value| value <= 1_000),
+        "same_application"
+        | "same_process"
+        | "same_process_instance"
+        | "activation_changed"
+        | "space_changed"
+        | "current_is_self"
+        | "ownership_current" => value.is_boolean(),
+        "window_relation_code" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "unknown" | "same" | "different")),
+        _ => false,
+    }
+}
+
+fn valid_delivery_target_verification_shape(
+    data: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    const REQUIRED_FIELDS: [&str; 14] = [
+        "event_code",
+        "recording_id",
+        "outcome_code",
+        "source_code",
+        "retry_count",
+        "elapsed_ms",
+        "same_application",
+        "same_process",
+        "same_process_instance",
+        "window_relation_code",
+        "activation_changed",
+        "space_changed",
+        "current_is_self",
+        "ownership_current",
+    ];
+
+    data.len() == REQUIRED_FIELDS.len()
+        && REQUIRED_FIELDS.iter().all(|key| {
+            data.get(*key)
+                .is_some_and(|value| is_safe_delivery_target_verification_field(key, value))
+        })
+        && valid_delivery_target_verification_evidence(data)
+}
+
+fn valid_delivery_target_verification_evidence(
+    data: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let string = |key: &str| data.get(key).and_then(serde_json::Value::as_str);
+    let boolean = |key: &str| data.get(key).and_then(serde_json::Value::as_bool);
+    let unsigned = |key: &str| data.get(key).and_then(serde_json::Value::as_u64);
+
+    let Some(outcome) = string("outcome_code") else {
+        return false;
+    };
+    let Some(source) = string("source_code") else {
+        return false;
+    };
+    let Some(retry_count) = unsigned("retry_count") else {
+        return false;
+    };
+    let Some(same_application) = boolean("same_application") else {
+        return false;
+    };
+    let Some(same_process) = boolean("same_process") else {
+        return false;
+    };
+    let Some(same_process_instance) = boolean("same_process_instance") else {
+        return false;
+    };
+    let Some(activation_changed) = boolean("activation_changed") else {
+        return false;
+    };
+    let Some(space_changed) = boolean("space_changed") else {
+        return false;
+    };
+    let Some(current_is_self) = boolean("current_is_self") else {
+        return false;
+    };
+    let Some(ownership_current) = boolean("ownership_current") else {
+        return false;
+    };
+    let window_relation = string("window_relation_code");
+    let no_identity_comparison = !same_application
+        && !same_process
+        && !same_process_instance
+        && window_relation == Some("unknown")
+        && !activation_changed
+        && !space_changed;
+
+    match outcome {
+        "verified" => {
+            source == "native"
+                && ownership_current
+                && same_application
+                && same_process
+                && same_process_instance
+                && !current_is_self
+        }
+        "different_application" => {
+            source == "native" && ownership_current && !same_application && !same_process_instance
+        }
+        "different_process" => {
+            source == "native"
+                && ownership_current
+                && same_application
+                && !same_process
+                && !same_process_instance
+        }
+        "process_relaunched" => {
+            source == "native"
+                && ownership_current
+                && same_application
+                && same_process
+                && !same_process_instance
+        }
+        "partial_identity_mismatch" => {
+            source == "native"
+                && ownership_current
+                && !same_application
+                && !same_process_instance
+                && window_relation == Some("unknown")
+                && !current_is_self
+        }
+        "lookup_unavailable" => {
+            source == "none"
+                && ownership_current
+                && !current_is_self
+                && no_identity_comparison
+                && retry_count == 2
+        }
+        "start_identity_incomplete" => {
+            source == "none"
+                && ownership_current
+                && !current_is_self
+                && no_identity_comparison
+                && retry_count == 0
+        }
+        "start_target_is_self" => {
+            source == "native"
+                && ownership_current
+                && current_is_self
+                && no_identity_comparison
+                && retry_count == 0
+        }
+        "stale_owner" => {
+            source == "none"
+                && !ownership_current
+                && !current_is_self
+                && no_identity_comparison
+                && retry_count == 0
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_delivery_target_verification_event(
+    data: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let has_invalid_known_field = data.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "event_code"
+                | "recording_id"
+                | "outcome_code"
+                | "source_code"
+                | "retry_count"
+                | "elapsed_ms"
+                | "same_application"
+                | "same_process"
+                | "same_process_instance"
+                | "window_relation_code"
+                | "activation_changed"
+                | "space_changed"
+                | "current_is_self"
+                | "ownership_current"
+        ) && !is_safe_delivery_target_verification_field(key, value)
+    });
+    data.retain(|key, value| is_safe_delivery_target_verification_field(key, value));
+    if has_invalid_known_field || !valid_delivery_target_verification_shape(data) {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
 fn is_performance_store_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
     data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("performance.store_operation_failed")
@@ -713,6 +925,10 @@ fn sanitized_summary(
         )
     ) {
         "Dictation reliability event".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.delivery_target_verified")
+    {
+        "Dictation delivery target verification".to_string()
     } else if stream == "meeting" {
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
@@ -982,6 +1198,13 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_dictation_slo_event(obj) {
         sanitize_dictation_slo_event(obj);
+        return;
+    }
+    if is_delivery_target_verification_event(obj) {
+        // Delivery identity is privacy-sensitive even in debug builds. Keep
+        // only bounded equality facts and stable outcome/source codes so app,
+        // process, window, path, content, and native error detail cannot leak.
+        sanitize_delivery_target_verification_event(obj);
         return;
     }
     if is_performance_store_event(obj) {
@@ -2183,6 +2406,404 @@ mod tests {
             ));
             assert_eq!(data.as_object().unwrap().len(), 1);
             assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+        }
+    }
+
+    #[test]
+    fn delivery_target_verification_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "pipeline.delivery_target_verified",
+                "recording_id": 574,
+                "outcome_code": "different_process",
+                "source_code": "native",
+                "retry_count": 2,
+                "elapsed_ms": 1_000,
+                "same_application": true,
+                "same_process": false,
+                "same_process_instance": false,
+                "window_relation_code": "different",
+                "activation_changed": true,
+                "space_changed": false,
+                "current_is_self": false,
+                "ownership_current": true,
+                "app_name": "SENTINEL_PRIVATE_APPLICATION",
+                "bundle_id": "com.private.SENTINEL",
+                "process_id": 99_999,
+                "window_title": "SENTINEL_PRIVATE_WINDOW",
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT",
+                "clipboard": "SENTINEL_PRIVATE_CLIPBOARD",
+                "path": "/Users/private/SENTINEL",
+                "raw_error": "SENTINEL_PRIVATE_NATIVE_ERROR",
+                "nested": {"content": "SENTINEL_PRIVATE_CONTENT"}
+            });
+
+            sanitize_event_data("pipeline", &mut data, debug_build);
+
+            assert_eq!(data["event_code"], "pipeline.delivery_target_verified");
+            assert_eq!(data["recording_id"], 574);
+            assert_eq!(data["outcome_code"], "different_process");
+            assert_eq!(data["source_code"], "native");
+            assert_eq!(data["retry_count"], 2);
+            assert_eq!(data["elapsed_ms"], 1_000);
+            assert_eq!(data["same_application"], true);
+            assert_eq!(data["same_process"], false);
+            assert_eq!(data["same_process_instance"], false);
+            assert_eq!(data["window_relation_code"], "different");
+            assert_eq!(data["activation_changed"], true);
+            assert_eq!(data["space_changed"], false);
+            assert_eq!(data["current_is_self"], false);
+            assert_eq!(data["ownership_current"], true);
+            assert_eq!(data.as_object().unwrap().len(), 14);
+
+            let encoded = serde_json::to_string(&data).unwrap();
+            for sentinel in [
+                "SENTINEL",
+                "com.private",
+                "/Users/private",
+                "app_name",
+                "bundle_id",
+                "process_id",
+                "window_title",
+                "transcript",
+                "clipboard",
+                "path",
+                "raw_error",
+                "nested",
+            ] {
+                assert!(
+                    !encoded.contains(sentinel),
+                    "retained private field {sentinel}"
+                );
+            }
+
+            assert_eq!(
+                sanitized_summary(
+                    "pipeline",
+                    Some("SENTINEL_PRIVATE_APPLICATION /Users/private".to_string()),
+                    &data,
+                    debug_build,
+                ),
+                "Dictation delivery target verification"
+            );
+        }
+    }
+
+    #[test]
+    fn delivery_target_verification_schema_accepts_only_bounded_vocabularies() {
+        let base = serde_json::json!({
+            "event_code": "pipeline.delivery_target_verified",
+            "recording_id": 1,
+            "outcome_code": "verified",
+            "source_code": "native",
+            "retry_count": 0,
+            "elapsed_ms": 0,
+            "same_application": true,
+            "same_process": true,
+            "same_process_instance": true,
+            "window_relation_code": "same",
+            "activation_changed": false,
+            "space_changed": false,
+            "current_is_self": false,
+            "ownership_current": true
+        });
+
+        for (
+            outcome,
+            source,
+            retry_count,
+            same_application,
+            same_process,
+            same_instance,
+            current_is_self,
+            ownership_current,
+        ) in [
+            ("verified", "native", 0, true, true, true, false, true),
+            (
+                "different_application",
+                "native",
+                0,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                "different_process",
+                "native",
+                0,
+                true,
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                "process_relaunched",
+                "native",
+                0,
+                true,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                "partial_identity_mismatch",
+                "native",
+                0,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                "partial_identity_mismatch",
+                "native",
+                1,
+                false,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                "lookup_unavailable",
+                "none",
+                2,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                "start_identity_incomplete",
+                "none",
+                0,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            (
+                "start_target_is_self",
+                "native",
+                0,
+                false,
+                false,
+                false,
+                true,
+                true,
+            ),
+            ("stale_owner", "none", 0, false, false, false, false, false),
+        ] {
+            let mut data = base.clone();
+            data["outcome_code"] = outcome.into();
+            data["source_code"] = source.into();
+            data["retry_count"] = retry_count.into();
+            data["same_application"] = same_application.into();
+            data["same_process"] = same_process.into();
+            data["same_process_instance"] = same_instance.into();
+            data["current_is_self"] = current_is_self.into();
+            data["ownership_current"] = ownership_current.into();
+            if source == "none"
+                || matches!(
+                    outcome,
+                    "start_target_is_self" | "partial_identity_mismatch"
+                )
+            {
+                data["window_relation_code"] = "unknown".into();
+            }
+            sanitize_event_data("pipeline", &mut data, true);
+            assert_eq!(data.as_object().unwrap().len(), 14, "outcome {outcome}");
+        }
+
+        for relation in ["unknown", "same", "different"] {
+            let mut data = base.clone();
+            data["window_relation_code"] = relation.into();
+            sanitize_event_data("pipeline", &mut data, true);
+            assert_eq!(data.as_object().unwrap().len(), 14, "relation {relation}");
+        }
+    }
+
+    #[test]
+    fn delivery_target_verification_schema_collapses_malformed_evidence() {
+        let valid = serde_json::json!({
+            "event_code": "pipeline.delivery_target_verified",
+            "recording_id": 1,
+            "outcome_code": "lookup_unavailable",
+            "source_code": "none",
+            "retry_count": 2,
+            "elapsed_ms": 1_000,
+            "same_application": false,
+            "same_process": false,
+            "same_process_instance": false,
+            "window_relation_code": "unknown",
+            "activation_changed": false,
+            "space_changed": false,
+            "current_is_self": false,
+            "ownership_current": true
+        });
+
+        let mut malformed = Vec::new();
+        for (key, value) in [
+            ("recording_id", serde_json::json!(0)),
+            (
+                "outcome_code",
+                serde_json::json!("SENTINEL_PRIVATE_OUTCOME"),
+            ),
+            ("source_code", serde_json::json!("osascript:/Users/private")),
+            ("retry_count", serde_json::json!(3)),
+            ("elapsed_ms", serde_json::json!(1_001)),
+            ("same_application", serde_json::json!("true")),
+            ("same_process", serde_json::Value::Null),
+            ("same_process_instance", serde_json::json!(1)),
+            (
+                "window_relation_code",
+                serde_json::json!("SENTINEL_PRIVATE_WINDOW"),
+            ),
+            ("activation_changed", serde_json::json!([])),
+            ("space_changed", serde_json::json!({})),
+            ("current_is_self", serde_json::json!("false")),
+            ("ownership_current", serde_json::json!(0)),
+        ] {
+            let mut data = valid.clone();
+            data[key] = value;
+            malformed.push(data);
+        }
+        let mut missing_required = valid;
+        missing_required
+            .as_object_mut()
+            .unwrap()
+            .remove("window_relation_code");
+        malformed.push(missing_required);
+
+        for mut data in malformed {
+            sanitize_event_data("pipeline", &mut data, true);
+            assert_eq!(data["event_code"], "pipeline.delivery_target_verified");
+            assert_eq!(data.as_object().unwrap().len(), 1);
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(!encoded.contains("Users"));
+        }
+    }
+
+    #[test]
+    fn delivery_target_verification_schema_rejects_misleading_cross_fields() {
+        let event = |outcome,
+                     source,
+                     retry_count,
+                     same_application,
+                     same_process,
+                     same_process_instance,
+                     current_is_self,
+                     ownership_current| {
+            serde_json::json!({
+                "event_code": "pipeline.delivery_target_verified",
+                "recording_id": 9,
+                "outcome_code": outcome,
+                "source_code": source,
+                "retry_count": retry_count,
+                "elapsed_ms": 10,
+                "same_application": same_application,
+                "same_process": same_process,
+                "same_process_instance": same_process_instance,
+                "window_relation_code": if source == "native" && outcome != "start_target_is_self" {
+                    "same"
+                } else {
+                    "unknown"
+                },
+                "activation_changed": false,
+                "space_changed": false,
+                "current_is_self": current_is_self,
+                "ownership_current": ownership_current
+            })
+        };
+
+        for mut data in [
+            event("verified", "none", 0, true, true, true, false, true),
+            event("verified", "native", 0, true, true, true, true, true),
+            event("verified", "native", 0, true, true, true, false, false),
+            event("verified", "native", 0, true, true, false, false, true),
+            event(
+                "different_process",
+                "native",
+                0,
+                true,
+                true,
+                false,
+                false,
+                true,
+            ),
+            event(
+                "different_process",
+                "native",
+                0,
+                true,
+                false,
+                true,
+                false,
+                true,
+            ),
+            event(
+                "process_relaunched",
+                "native",
+                0,
+                true,
+                false,
+                false,
+                false,
+                true,
+            ),
+            event(
+                "partial_identity_mismatch",
+                "native",
+                0,
+                false,
+                true,
+                false,
+                false,
+                true,
+            ),
+            event(
+                "lookup_unavailable",
+                "none",
+                0,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            event(
+                "start_identity_incomplete",
+                "native",
+                0,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            event(
+                "start_target_is_self",
+                "native",
+                0,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+            event("stale_owner", "none", 0, false, false, false, false, true),
+        ] {
+            sanitize_event_data("pipeline", &mut data, true);
+            assert_eq!(data["event_code"], "pipeline.delivery_target_verified");
+            assert_eq!(data.as_object().unwrap().len(), 1);
         }
     }
 

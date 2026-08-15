@@ -12,11 +12,15 @@ use crate::state::{AppProfile, DictationState, WritingStyle};
 use crate::voice_commands::ResolvedVoiceCommand;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ActiveAppIdentity {
     pub bundle_id: Option<String>,
     /// Original frontmost process, retained only for final delivery ownership.
     pub process_id: Option<i32>,
+    /// Native-only target identity frozen at the accepted recording boundary.
+    /// The private application identity is memory-only and intentionally has
+    /// no `Debug` representation.
+    pub(crate) delivery_target: crate::frontmost::DeliveryTargetSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +275,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         app: ActiveAppIdentity {
             bundle_id: inputs.bundle_id.map(str::to_string),
             process_id: None,
+            delivery_target: crate::frontmost::DeliveryTargetSnapshot::Incomplete,
         },
         matched_profile,
         teaching_project_root,

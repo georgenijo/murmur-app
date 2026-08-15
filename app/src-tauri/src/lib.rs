@@ -596,6 +596,7 @@ pub fn run() {
             // to re-detect notch info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
+            frontmost::register_delivery_transition_observers();
             #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_update_wake_observer(app.handle().clone());
 
