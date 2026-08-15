@@ -205,4 +205,53 @@ describe('useRecordingState transition ordering', () => {
     expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);
     expect(current.transcription).toBe('one final transcript');
   });
+
+  it('clears an older failure for a new generation and ignores delayed stale presentations', async () => {
+    const initializationFailure = (recordingId: number) => ({
+      recordingId,
+      error: 'Microphone capture failed.',
+      errorKind: 'backend_error',
+      statusCode: 'microphone_initialization_failed',
+      actionCode: 'retry',
+    });
+
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({
+        payload: { recordingId: 2 },
+      });
+      mocks.listeners.get('recording-initialization-failed')?.({
+        payload: initializationFailure(2),
+      });
+    });
+    expect(current.error).toBe('Microphone capture failed.');
+
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({
+        payload: { recordingId: 3 },
+      });
+    });
+    expect(current.error).toBe('');
+
+    await act(async () => {
+      mocks.listeners.get('recording-initialization-failed')?.({
+        payload: initializationFailure(2),
+      });
+      mocks.listeners.get('recording-recovery-stalled')?.({
+        payload: {
+          recordingId: 2,
+          statusCode: 'microphone_cleanup_stalled',
+          actionCode: 'restart_app',
+        },
+      });
+      mocks.listeners.get('recording-interrupted')?.({
+        payload: {
+          recordingId: 2,
+          autoTranscribe: false,
+          statusCode: 'microphone_interrupted',
+          actionCode: 'retry',
+        },
+      });
+    });
+    expect(current.error).toBe('');
+  });
 });

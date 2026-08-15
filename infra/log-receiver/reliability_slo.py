@@ -434,7 +434,13 @@ class ReliabilitySloEvaluator:
     def _observe_state(self, attempt, data, timestamp):
         previous = data.get("from")
         current = data.get("to")
-        if previous not in STATE_VALUES or current not in STATE_VALUES or previous == current:
+        if previous not in STATE_VALUES or current not in STATE_VALUES:
+            attempt["state_chain_anomalies"] = min(
+                attempt["state_chain_anomalies"] + 1,
+                MAX_AGGREGATE_COUNT,
+            )
+            return
+        if previous == current:
             return
         cursor = attempt["state_cursor"]
         if cursor is not None and previous != cursor:

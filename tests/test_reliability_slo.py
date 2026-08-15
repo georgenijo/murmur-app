@@ -600,6 +600,32 @@ class ReliabilitySloLifecycleTests(unittest.TestCase):
         self.assertIn("invalid_state_transition", current["reasons"])
         self.assertEqual(current["verdict"], "indeterminate")
 
+    def test_unknown_state_is_indeterminate_but_unchanged_known_state_is_a_noop(self) -> None:
+        start = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+        items = [baseline(start - timedelta(minutes=1)), *complete_attempt(start, 1)]
+        items.extend(
+            [
+                event(
+                    "pipeline.dictation_state_changed",
+                    start + timedelta(seconds=3),
+                    1,
+                    **{"from": "recording", "to": "private_state"},
+                ),
+                event(
+                    "pipeline.dictation_state_changed",
+                    start + timedelta(seconds=4),
+                    1,
+                    **{"from": "recording", "to": "recording"},
+                ),
+            ]
+        )
+
+        current = week(feed(items), 1)
+
+        self.assertEqual(current["counts"]["invalid_state_transitions"], 1)
+        self.assertIn("invalid_state_transition", current["reasons"])
+        self.assertEqual(current["verdict"], "indeterminate")
+
     def test_future_state_exit_cannot_turn_a_complete_week_healthy(self) -> None:
         start = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
         items = ReliabilitySloVerdictTests.completed_week_events(start, 200)
