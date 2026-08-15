@@ -93,26 +93,26 @@ describe('deriveVisual', () => {
   it('microphone failure flash beats active lifecycle indicators', () => {
     expect(
       deriveVisual(
-        'recovering', false, false, false, false, false, false, 'deviceUnavailable',
+        'recovering', false, false, false, false, false, false, 'chooseMicrophone',
       ).indicator,
-    ).toEqual({ kind: 'microphoneFailure', failure: 'deviceUnavailable' });
+    ).toEqual({ kind: 'microphoneFailure', failure: 'chooseMicrophone' });
 
     expect(
       deriveVisual(
-        'recording', false, false, false, false, false, false, 'generic',
+        'recording', false, false, false, false, false, false, 'retry',
       ).indicator,
-    ).toEqual({ kind: 'microphoneFailure', failure: 'generic' });
+    ).toEqual({ kind: 'microphoneFailure', failure: 'retry' });
   });
 
   it('cancelled and secure-field cues retain priority over microphone failures', () => {
     expect(
       deriveVisual(
-        'idle', true, false, false, false, false, false, 'deviceUnavailable',
+        'idle', true, false, false, false, false, false, 'chooseMicrophone',
       ).indicator,
     ).toEqual({ kind: 'cancelled' });
     expect(
       deriveVisual(
-        'idle', false, false, false, false, true, false, 'deviceUnavailable',
+        'idle', false, false, false, false, true, false, 'chooseMicrophone',
       ).indicator,
     ).toEqual({ kind: 'secureField' });
   });
@@ -173,7 +173,7 @@ describe('deriveVisual', () => {
       true,
       true,
       true,
-      'generic',
+      'retry',
       true,
       true,
     );
@@ -211,10 +211,10 @@ describe('deriveVisual', () => {
     ).toEqual({ kind: 'cancelled' });
     expect(
       deriveVisual(
-        'idle', false, false, false, false, false, false, 'deviceUnavailable',
+        'idle', false, false, false, false, false, false, 'chooseMicrophone',
         false, false, 'idle', true,
       ).indicator,
-    ).toEqual({ kind: 'microphoneFailure', failure: 'deviceUnavailable' });
+    ).toEqual({ kind: 'microphoneFailure', failure: 'chooseMicrophone' });
     expect(
       deriveVisual('idle', false, true, false, false, false, false, false, false, false, 'idle', true).indicator,
     ).toEqual({ kind: 'hotkeyMiss' });

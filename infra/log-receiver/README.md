@@ -24,6 +24,7 @@ of truth and redeploy from it.
 | `murmur-logs.service` | `/etc/systemd/system/` | runs the receiver as `george`, restart-always |
 | `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
 | `dictation_lifecycle.py` | `/home/george/dictation_lifecycle.py` | deterministic per-session dictation funnel and terminal correlator |
+| `reliability_slo.py` | `/home/george/reliability_slo.py` | aggregate-only complete-week evaluator for the versioned dictation SLO contract |
 | `murmur-capture-watch.service` | `/etc/systemd/system/` | one-shot capture regression analysis |
 | `murmur-capture-watch.timer` | `/etc/systemd/system/` | runs the watch hourly with a randomized delay |
 | `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/healthz` |
@@ -68,6 +69,7 @@ Instead:
 ```bash
 cat infra/log-receiver/murmur-logs-receiver.py | tailscale ssh george@opti "cat > /home/george/murmur-logs-receiver.py"
 cat infra/log-receiver/dictation_lifecycle.py | tailscale ssh george@opti "cat > /home/george/dictation_lifecycle.py"
+cat infra/log-receiver/reliability_slo.py | tailscale ssh george@opti "cat > /home/george/reliability_slo.py"
 cat infra/log-receiver/murmur-capture-watch.py | tailscale ssh george@opti "cat > /home/george/murmur-capture-watch.py"
 cat infra/log-receiver/murmur-capture-watch.service | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.service"
 cat infra/log-receiver/murmur-capture-watch.timer | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.timer"
@@ -127,9 +129,12 @@ Accepted production events are annotated with the bounded
 client-collected field. Pre-deployment retained lines remain unmodified and the
 watch groups them under `unknown`, which is never used for version comparisons.
 
-`capture-watch.json` is a versioned, atomically replaced derived report. It
-contains no source event text or device metadata: only install UUID, bounded app
-version/backend/setup-step/outcome labels, counts, and startup durations.
+`capture-watch.json` is a versioned, atomically replaced derived report. Its
+legacy cohort/alert rows contain no source event text or device metadata: only
+install UUID, bounded app version/backend/setup-step/outcome labels, counts,
+and startup durations. Its `reliability_slo` subtree is stricter and
+aggregate-only: install UUIDs and app versions are internal joins and never
+enter that subtree or its dashboard card.
 
 ## Capture regression watch
 
@@ -147,6 +152,37 @@ cohorts per install. Further versions collapse into a non-comparable
   attempted dictation sessions in each cohort;
 - a stable-code dictation funnel with terminal outcome counts, per-stage
   drop-off, and missing/duplicate terminal counts.
+
+The same full scan feeds `ReliabilitySloEvaluator` in source order. Production
+emits the accepted request immediately before `idle` → `starting`, keeping the
+transition telemetry cost inside request-to-first-PCM latency. The evaluator
+still tolerates late or reordered transport and joins internally by install,
+`startup_baseline` app session, and positive recording ID, then publishes only
+weekly aggregate counts. It recomputes one partial and eight complete UTC weeks
+every run so late arrivals update their original window. Only requests marked
+`slo_contract: 1` count; pre-contract data is always insufficient. A complete
+week needs 200 eligible requests and 99.5% at or below 400 ms, has explicit
+permission-prompt exclusion, restart-boundary state classification, and
+actionable-presentation coverage. The newest two complete sufficient passing
+weeks are the only path to the two-week finish-line flag.
+
+Contract requests with invalid or future timestamps are not assigned to guessed
+windows. Valid history older than the retained horizon simply expires. Invalid
+requests increment a bounded aggregate integrity count, force the two-week flag
+false, and make the one-shot watch alert. Evidence beyond fixed evaluator
+memory/cardinality bounds increments a separate aggregate overflow count and
+fails closed the same way. Malformed JSON and non-object lines in the retained
+`events.jsonl` input increment a bounded malformed-source count and fail closed;
+the next complete full scan clears a transient partial-tail error. The dashboard
+validates the exact report shape and cross-field arithmetic before rendering;
+malformed or contradictory derived reports are shown as unavailable rather
+than trusted.
+
+Correlated non-request lifecycle evidence with a malformed or future timestamp
+is ignored as proof and counted in its request week's
+`invalid_evidence_timestamps`. That week is indeterminate rather than allowing
+future accepted/ready/prompt/terminal/presentation/state records to manufacture
+a healthy result.
 
 `startup_baseline` begins an app session. A session contributes to the
 zero-ready signal only after a later baseline proves it ended and only when it
@@ -183,6 +219,7 @@ bounds, HTML escaping, and dictation lifecycle correlation are covered by:
 python3 -m unittest tests/test_log_receiver.py
 python3 -m unittest tests/test_capture_regression_watch.py
 python3 -m unittest tests/test_dictation_lifecycle.py
+python3 -m unittest tests/test_reliability_slo.py
 ```
 
 Install pages expose raw JSONL downloads for the latest 200, latest 500, or the

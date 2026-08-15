@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import http.client
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import threading
@@ -20,6 +21,12 @@ SPEC = importlib.util.spec_from_file_location("murmur_logs_receiver", RECEIVER_P
 assert SPEC and SPEC.loader
 receiver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(receiver)
+
+SLO_PATH = RECEIVER_PATH.with_name("reliability_slo.py")
+SLO_SPEC = importlib.util.spec_from_file_location("reliability_slo_for_dashboard", SLO_PATH)
+assert SLO_SPEC and SLO_SPEC.loader
+reliability_slo = importlib.util.module_from_spec(SLO_SPEC)
+SLO_SPEC.loader.exec_module(reliability_slo)
 
 
 def event(
@@ -127,6 +134,239 @@ class LogReceiverHealthTests(unittest.TestCase):
                 receiver.ROOT = original_root
 
         self.assertIn("Diagnostics store begin failed 2 time(s) (busyLocked)", page)
+
+    def test_dashboard_surfaces_aggregate_reliability_slo_without_identity(self) -> None:
+        private_sentinel = "SENTINEL_PRIVATE_INSTALL_OR_CONTENT"
+        evaluator = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        )
+
+        def observe(code, when, recording_id=None, **data):
+            fields = {"event_code": code, **data}
+            if recording_id is not None:
+                fields["recording_id"] = recording_id
+            evaluator.observe(
+                private_sentinel,
+                {
+                    "timestamp": when.isoformat(timespec="milliseconds").replace(
+                        "+00:00", "Z"
+                    ),
+                    "data": fields,
+                },
+            )
+
+        week_start = datetime(2026, 8, 3, tzinfo=timezone.utc)
+        observe("system.startup_baseline", week_start)
+        for offset in range(200):
+            recording_id = offset + 1
+            requested = week_start + timedelta(seconds=offset * 10 + 1)
+            observe(
+                "pipeline.dictation_requested",
+                requested,
+                recording_id,
+                slo_contract=1,
+            )
+            observe(
+                "audio.capture_started",
+                requested + timedelta(milliseconds=10),
+                recording_id,
+                owner=recording_id,
+                owner_kind="dictation",
+            )
+            if offset < 199:
+                observe(
+                    "audio.capture_ready",
+                    requested + timedelta(milliseconds=100),
+                    recording_id,
+                    owner=recording_id,
+                    owner_kind="dictation",
+                )
+                outcome = "success"
+            else:
+                outcome = "pipeline_failure"
+            observe(
+                "pipeline.dictation_terminal",
+                requested + timedelta(seconds=1),
+                recording_id,
+                outcome=outcome,
+            )
+
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-17T00:00:00Z",
+            "status": "alert",
+            "alerts": [],
+            "reliability_slo": evaluator.report(),
+            "ignored_private_outer_field": private_sentinel,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Dictation reliability SLO · FAIL", page)
+        self.assertIn("Two consecutive complete passing weeks not yet proven", page)
+        self.assertIn("2026-08-03T00:00:00Z → 2026-08-10T00:00:00Z", page)
+        self.assertIn("(complete; sufficient sample)", page)
+        self.assertIn(
+            "requests 200 total · latency denominator 200 eligible / 0 prompt-excluded",
+            page,
+        )
+        self.assertIn("startup ≤400 ms 99.50%", page)
+        self.assertIn("failure presentation 0 covered / 1 missing", page)
+        self.assertIn("processing self/restart/unknown 0/0/0", page)
+        self.assertNotIn(private_sentinel, page)
+
+    def test_dashboard_labels_precontract_capture_report_insufficient_for_slo(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-17T00:00:00Z",
+            "status": "healthy",
+            "alerts": [],
+        }
+        rendered = receiver.render_reliability_slo(report)
+
+        self.assertIn("No aggregate contract report is available yet", rendered)
+        self.assertIn("Historical pre-contract data is insufficient", rendered)
+
+    def test_dashboard_never_trusts_a_contradictory_two_week_pass_flag(self) -> None:
+        report = {
+            "reliability_slo": {
+                "schema_version": 1,
+                "report": "murmur-reliability-slo/v1",
+                "contract_version": 1,
+                "privacy": "aggregate_only",
+                "two_consecutive_complete_weeks_pass": True,
+                "weeks": [],
+            }
+        }
+
+        rendered = receiver.render_reliability_slo(report)
+
+        self.assertNotIn("Two consecutive complete weeks pass", rendered)
+        self.assertIn("No aggregate contract report is available yet", rendered)
+
+    def test_dashboard_rejects_cross_field_or_extra_nested_slo_data(self) -> None:
+        evaluator = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        )
+        contradictory = evaluator.report()
+        contradictory["weeks"][0]["counts"]["requested"] = 1
+        contradictory["weeks"][0]["counts"]["eligible_requests"] = 0
+        contradictory["weeks"][0]["counts"]["excluded_permission_prompts"] = 0
+        rendered = receiver.render_reliability_slo(
+            {"reliability_slo": contradictory}
+        )
+        self.assertIn("No aggregate contract report is available yet", rendered)
+
+        private_sentinel = "SENTINEL_PRIVATE_NESTED_VALUE"
+        extra = evaluator.report()
+        extra["raw_error"] = private_sentinel
+        rendered = receiver.render_reliability_slo({"reliability_slo": extra})
+        self.assertIn("No aggregate contract report is available yet", rendered)
+        self.assertNotIn(private_sentinel, rendered)
+
+    def test_dashboard_corrupt_slo_boundaries_never_raise(self) -> None:
+        evaluator = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        )
+        cases = []
+
+        minimum_year = evaluator.report()
+        minimum_year["generated_at"] = "0001-01-01T00:00:00Z"
+        cases.append(minimum_year)
+
+        maximum_year = evaluator.report()
+        maximum_year["generated_at"] = "9999-12-31T00:00:00Z"
+        maximum_year["weeks"][0]["week_start"] = "9999-12-27T00:00:00Z"
+        maximum_year["weeks"][0]["week_end"] = "9999-12-31T00:00:00Z"
+        cases.append(maximum_year)
+
+        unhashable_reason = evaluator.report()
+        unhashable_reason["weeks"][0]["reasons"] = [{}]
+        cases.append(unhashable_reason)
+
+        for slo in cases:
+            with self.subTest(generated_at=slo["generated_at"]):
+                rendered = receiver.render_reliability_slo(
+                    {"reliability_slo": slo}
+                )
+                self.assertIn("No aggregate contract report is available yet", rendered)
+
+    def test_dashboard_surfaces_unassigned_contract_requests_as_indeterminate(self) -> None:
+        evaluator = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        )
+        evaluator.observe(
+            "internal-install-only",
+            {
+                "timestamp": "2026-08-10T00:00:00Z",
+                "data": {"event_code": "system.startup_baseline"},
+            },
+        )
+        evaluator.observe(
+            "internal-install-only",
+            {
+                "timestamp": "not-a-time",
+                "data": {
+                    "event_code": "pipeline.dictation_requested",
+                    "recording_id": 1,
+                    "slo_contract": 1,
+                },
+            },
+        )
+
+        rendered = receiver.render_reliability_slo(
+            {"reliability_slo": evaluator.report()}
+        )
+
+        self.assertIn("Dictation reliability SLO · INDETERMINATE", rendered)
+        self.assertIn(
+            "source integrity indeterminate (1 unassigned contract request; "
+            "0 bounded-correlation overflow events; 0 malformed source lines)",
+            rendered,
+        )
+        self.assertNotIn("Two consecutive complete weeks pass", rendered)
+
+    def test_dashboard_surfaces_bounded_correlation_overflow_as_indeterminate(self) -> None:
+        evaluator = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        )
+        report = evaluator.report()
+        report["integrity"] = {
+            "status": "indeterminate",
+            "unassigned_contract_requests": 0,
+            "overflowed_events": 1,
+            "malformed_source_lines": 0,
+        }
+        report["two_consecutive_complete_weeks_pass"] = False
+
+        rendered = receiver.render_reliability_slo({"reliability_slo": report})
+
+        self.assertIn("Dictation reliability SLO · INDETERMINATE", rendered)
+        self.assertIn("1 bounded-correlation overflow event", rendered)
+        self.assertNotIn("Two consecutive complete weeks pass", rendered)
+
+    def test_dashboard_surfaces_malformed_source_integrity_as_indeterminate(self) -> None:
+        evaluator = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        )
+        evaluator.observe_malformed_source_line()
+
+        rendered = receiver.render_reliability_slo(
+            {"reliability_slo": evaluator.report()}
+        )
+
+        self.assertIn("Dictation reliability SLO · INDETERMINATE", rendered)
+        self.assertIn("1 malformed source line", rendered)
+        self.assertNotIn("Two consecutive complete weeks pass", rendered)
 
     def test_stable_event_code_takes_precedence_over_compatibility_summary(self) -> None:
         item = event(

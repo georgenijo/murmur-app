@@ -19,9 +19,9 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `dictation-generation-started` | `{recordingId}` | `commands/recording.rs` | When a live or legacy in-memory dictation generation claims the pipeline. Content-free and monotonic. | Overlay (`useOverlayRuntime`): advances its stale-event floor and clears older clipboard-only and microphone-failure cues. |
 | `audio-initialization-stalled` | `{recordingId}` | `commands/recording.rs` | The current generation has spent 5 seconds in `Starting`; this is informational, not failure. | Overlay slow-connecting cue. |
 | `audio-recovery-started` | `{recordingId, reason}` | `commands/recording.rs` | A starting/recording owner was cancelled, including when the 30-second hard deadline begins recovery. The app reports `recovering` and retains exclusive logical ownership until its worker exits, then returns to `idle`. A hard deadline also emits the failure event below. | Overlay recovering cue and diagnostics. |
-| `recording-initialization-failed` | `{recordingId, error, errorKind}` | `commands/recording.rs` | Initialization/runtime capture failed or crossed the 30-second hard deadline. A hard deadline emits this after `audio-recovery-started`. `error` is a fixed user-facing message and `errorKind` is a stable content-free enum; raw backend messages are never emitted. Emitted exactly once per generation. | Main error surface. For exactly `errorKind: device_unavailable`, the overlay renders a five-second mic-off status with `aria-live="assertive"` and aria-label “Selected microphone unavailable. Open Settings to choose another.” All other kinds render the generic bounded failure cue; neither path expands, focuses, nor resizes the overlay. |
-| `recording-recovery-stalled` | `{recordingId}` | `commands/recording.rs` | A normal recording stop/teardown has remained blocked for the recovery grace period. | Main persistent, truthfully scoped restart guidance. |
-| `recording-interrupted` | `{recordingId, reason, deliveredSamples, durationMs, autoTranscribe}` | `commands/recording.rs` | The isolated capture worker ended unexpectedly after delivering zero or more samples. At least 8,000 delivered samples sets `autoTranscribe` and preserves a partial transcript; shorter captures fail without transcription. | Main window (`useRecordingState`) finalizes or discards the partial capture; overlay (`useOverlayRuntime`) flashes failure. |
+| `recording-initialization-failed` | `{recordingId, error, errorKind, statusCode, actionCode}` | `commands/recording.rs` | Initialization/runtime capture failed or crossed the 30-second hard deadline. A hard deadline emits this after `audio-recovery-started`. `error` is a fixed user-facing message; `errorKind` and the status/action pair are stable bounded enums validated together by consumers. Raw backend messages are never emitted. Emitted exactly once per generation. | Main error surface. A missing device renders the five-second mic-off/choose-microphone status; permission denial directs the user to microphone settings; other failures show bounded retry guidance. Neither path expands, focuses, nor resizes the overlay. |
+| `recording-recovery-stalled` | `{recordingId, statusCode, actionCode}` | `commands/recording.rs` | A normal recording stop/teardown has remained blocked for the recovery grace period. The exact pair is `microphone_cleanup_stalled`/`restart_app`. | Main persistent, truthfully scoped restart guidance. |
+| `recording-interrupted` | `{recordingId, reason, deliveredSamples, durationMs, autoTranscribe, statusCode, actionCode}` | `commands/recording.rs` | The isolated capture worker ended unexpectedly after delivering zero or more samples. At least 8,000 delivered samples sets `autoTranscribe` and pairs the status with `wait_for_partial_transcription`; shorter captures pair it with `retry`. | Main window (`useRecordingState`) finalizes or discards the partial capture; overlay (`useOverlayRuntime`) shows the same validated action. |
 | `transcription-complete` | `{recordingId, text, duration, teachingContext}` | `commands/recording.rs` | After a non-empty transcription is delivered. Broadcast to all windows. `teachingContext` seeds Correct and Teach. | Main window (`useRecordingState` → history, stats, display). |
 | `recording-cancelled` | `{recordingId}` | `commands/recording.rs` | A recording was discarded without transcription (speculative Both-mode hold, explicit cancel). | Main window, overlay (clears in-flight UI). |
 | `auto-paste-failed` | `string` (hint) | `commands/recording.rs` via `injector.rs` | Clipboard or automatic-paste delivery failed, a focus safety check refused paste, or completion could not be confirmed. Messages claim clipboard readiness only after a confirmed write. Disabled auto-paste and missing Accessibility permission do not emit this error event. | Main window (`useRecordingState`, detailed hint for 5s). |
@@ -133,6 +133,36 @@ only an allowlisted `outcome`, an allowlisted `error_code`, numeric
 vocabularies while dropping arbitrary string values. See
 [Transcription Pipeline](../features/transcription.md#per-recording-lifecycle-telemetry)
 for stage denominators and terminal semantics.
+
+The weekly reliability contract is opt-in per request through numeric
+`slo_contract: 1` on `pipeline.dictation_requested`; older requests never enter
+an SLO denominator. Its supporting records are exact-schema sanitized in every
+build:
+
+- `audio.permission_prompt_changed` carries positive matching
+  `recording_id`/`owner`, `owner_kind: "dictation"`, `state: "pending"` or
+  `"resolved"`, and `prompt_pending_ms` only for `resolved`. A pending prompt
+  excludes only startup latency; its attempt remains in every other reliability
+  count.
+- `pipeline.dictation_state_changed` carries a positive `recording_id` plus
+  unequal `from`/`to` values from `idle`, `starting`, `recording`,
+  `recovering`, and `processing`. The accepted request record is emitted
+  immediately before the `idle` to `starting` transition so telemetry work is
+  included in request-to-first-PCM latency. Fleet correlation still uses the
+  recording ID and app-session boundary rather than arrival order alone.
+- `pipeline.dictation_presentation` carries a positive `recording_id` and one
+  valid status/action pair: `microphone_cleanup_in_progress`/`wait`;
+  `microphone_initialization_failed`/(`retry` or
+  `open_microphone_settings` or `choose_microphone`);
+  `microphone_cleanup_stalled`/`restart_app`; or
+  `microphone_interrupted`/(`retry` or
+  `wait_for_partial_transcription`). It is emitted only after the corresponding
+  user-facing Tauri event succeeds.
+
+Unknown extra fields are stripped while a valid required core survives.
+Missing, invalid, or contradictory required/known fields collapse to the event
+code alone. Device/app identity, presentation text, transcript/audio, paths,
+and raw errors are never admitted.
 
 An exhausted dictation diagnostics-row start emits the stable structured code
 `performance.store_operation_failed`. Its all-build allowlist admits only

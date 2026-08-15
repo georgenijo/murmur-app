@@ -822,25 +822,50 @@ fn handle_worker_event(
         AudioWorkerEvent::PermissionPromptPending { .. } => {
             if current.phase == AttemptPhase::Starting && current.tcc_pending_since.is_none() {
                 current.tcc_pending_since = Some(Instant::now());
-                tracing::info!(
-                    target: "audio",
-                    owner = owner.telemetry_id(),
-                    owner_kind = owner.kind(),
-                    "microphone permission prompt pending; initialization deadlines suspended"
-                );
+                if let Some(recording_id) = owner.dictation_id() {
+                    tracing::info!(
+                        target: "audio",
+                        event_code = "audio.permission_prompt_changed",
+                        recording_id,
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        state = "pending",
+                        "microphone permission prompt pending; initialization deadlines suspended"
+                    );
+                } else {
+                    tracing::info!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        "microphone permission prompt pending; initialization deadlines suspended"
+                    );
+                }
             }
         }
         AudioWorkerEvent::PermissionPromptResolved { .. } => {
             if let Some(started) = current.tcc_pending_since.take() {
                 let paused = started.elapsed();
                 current.tcc_paused_total += paused;
-                tracing::info!(
-                    target: "audio",
-                    owner = owner.telemetry_id(),
-                    owner_kind = owner.kind(),
-                    prompt_pending_ms = paused.as_millis() as u64,
-                    "microphone permission prompt resolved; initialization deadlines resumed"
-                );
+                if let Some(recording_id) = owner.dictation_id() {
+                    tracing::info!(
+                        target: "audio",
+                        event_code = "audio.permission_prompt_changed",
+                        recording_id,
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        state = "resolved",
+                        prompt_pending_ms = paused.as_millis() as u64,
+                        "microphone permission prompt resolved; initialization deadlines resumed"
+                    );
+                } else {
+                    tracing::info!(
+                        target: "audio",
+                        owner = owner.telemetry_id(),
+                        owner_kind = owner.kind(),
+                        prompt_pending_ms = paused.as_millis() as u64,
+                        "microphone permission prompt resolved; initialization deadlines resumed"
+                    );
+                }
             }
         }
         AudioWorkerEvent::TerminationUnconfirmed { failure, .. } => {

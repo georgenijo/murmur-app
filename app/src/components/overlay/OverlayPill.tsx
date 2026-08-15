@@ -55,11 +55,14 @@ export function OverlayPill({
               !
             </span>
           ) : indicator.kind === 'microphoneFailure' ? (
-            indicator.failure === 'deviceUnavailable' ? (
+            indicator.failure === 'chooseMicrophone'
+              || indicator.failure === 'openMicrophoneSettings' ? (
               <span
                 role="status"
                 aria-live="assertive"
-                aria-label="Selected microphone unavailable. Open Settings to choose another."
+                aria-label={indicator.failure === 'chooseMicrophone'
+                  ? 'Selected microphone unavailable. Open Settings to choose another.'
+                  : 'Microphone access denied. Open System Settings to grant access.'}
                 className="flex h-4 w-4 items-center justify-center text-red-300"
               >
                 <svg
@@ -86,7 +89,9 @@ export function OverlayPill({
               <span
                 role="status"
                 aria-live="assertive"
-                aria-label="Microphone capture failed. Try recording again."
+                aria-label={indicator.failure === 'waitForPartialTranscription'
+                  ? 'Microphone capture was interrupted. Waiting for the partial transcription.'
+                  : 'Microphone capture failed. Try recording again.'}
                 className="w-3 h-3 rounded-full border border-red-400 text-red-300 text-[8px] leading-none flex items-center justify-center font-bold"
               >
                 !

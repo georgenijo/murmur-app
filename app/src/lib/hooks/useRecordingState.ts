@@ -7,6 +7,11 @@ import { updateStats } from '../stats';
 import { flog } from '../log';
 import type { TeachingContext } from '../correctAndTeach';
 import type { HistoryInterruption } from '../history';
+import {
+  cleanupStalledPresentationFromPayload,
+  initializationPresentationFromPayload,
+  interruptedPresentationFromPayload,
+} from '../dictationPresentation';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => void;
@@ -27,6 +32,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   const statusRef = useRef(status);
   const microphoneRef = useRef(microphone);
   const recordingStartTimeRef = useRef(recordingStartTime);
+  const latestRecordingGenerationRef = useRef(0);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   const isStartingRef = useRef(false);
@@ -96,15 +102,42 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   useEffect(() => {
     let cancelled = false;
     const unlistens: (() => void)[] = [];
-    listen<{ error?: unknown }>('recording-initialization-failed', (event) => {
-      const message = typeof event.payload?.error === 'string'
-        ? event.payload.error
+    const acceptPresentationGeneration = (recordingId: number) => {
+      if (recordingId < latestRecordingGenerationRef.current) return false;
+      if (recordingId > latestRecordingGenerationRef.current) {
+        latestRecordingGenerationRef.current = recordingId;
+        setError('');
+      }
+      return true;
+    };
+    listen<unknown>('dictation-generation-started', (event) => {
+      const payload = event.payload as Record<string, unknown> | null;
+      const recordingId = payload?.recordingId;
+      if (
+        typeof recordingId === 'number'
+        && Number.isSafeInteger(recordingId)
+        && recordingId > latestRecordingGenerationRef.current
+      ) {
+        latestRecordingGenerationRef.current = recordingId;
+        setError('');
+      }
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    listen<unknown>('recording-initialization-failed', (event) => {
+      const presentation = initializationPresentationFromPayload(event.payload);
+      if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
+      const payload = event.payload as Record<string, unknown>;
+      const message = typeof payload.error === 'string'
+        ? payload.error
         : 'Microphone initialization failed.';
       setError(message);
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
-    listen('recording-recovery-stalled', () => {
+    listen<unknown>('recording-recovery-stalled', (event) => {
+      const presentation = cleanupStalledPresentationFromPayload(event.payload);
+      if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
       setError(
         'Murmur is still waiting for macOS audio to finish stopping the microphone. '
         + 'Restarting Murmur clears this stop, but macOS audio may still need time to recover.',
@@ -112,8 +145,11 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
-    listen<{ autoTranscribe?: boolean }>('recording-interrupted', (event) => {
-      setError(event.payload?.autoTranscribe
+    listen<unknown>('recording-interrupted', (event) => {
+      const presentation = interruptedPresentationFromPayload(event.payload);
+      if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
+      const payload = event.payload as Record<string, unknown>;
+      setError(payload.autoTranscribe === true
         ? 'Microphone capture was interrupted. Murmur is transcribing the audio received so far.'
         : 'Microphone capture was interrupted before enough audio was received.');
     }).then((fn) => {

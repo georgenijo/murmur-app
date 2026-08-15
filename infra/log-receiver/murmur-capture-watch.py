@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scheduled capture-startup regression watch for shipped Murmur logs.
+"""Scheduled capture-health and reliability-SLO watch for shipped Murmur logs.
 
 The watch reads the already privacy-stripped per-install JSONL retained by the
 log receiver. It never reads diagnostic bundles, transcript history, audio, or
@@ -22,6 +22,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from dictation_lifecycle import DictationLifecycleCorrelator, STAGE_CODES
+from reliability_slo import ReliabilitySloEvaluator
 
 
 SCHEMA_VERSION = 1
@@ -199,7 +200,7 @@ def finish_session(session, cohorts, install_id, finished_at):
         cohort["last_attempted_session_at"] = finished_at
 
 
-def scan_install(path, install_id, cohorts):
+def scan_install(path, install_id, cohorts, reliability_slo):
     malformed = 0
     session = None
     session_id = 0
@@ -207,11 +208,13 @@ def scan_install(path, install_id, cohorts):
         for line in handle:
             try:
                 event = json.loads(line)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
                 malformed += 1
+                reliability_slo.observe_malformed_source_line()
                 continue
             if not isinstance(event, dict):
                 malformed += 1
+                reliability_slo.observe_malformed_source_line()
                 continue
 
             code = event_code(event)
@@ -227,6 +230,14 @@ def scan_install(path, install_id, cohorts):
                 and owner_kind != CAPTURE_HEALTH_OWNER_KIND
             ):
                 continue
+
+            # Feed the exact same dictation-or-unscoped record into the
+            # aggregate SLO evaluator during this full scan. Install identity
+            # is an internal correlation key only;
+            # ReliabilitySloEvaluator.report() exposes no per-install rows or
+            # identifiers. Explicitly non-dictation owners are rejected before
+            # they can create even provisional request/state correlation.
+            reliability_slo.observe(install_id, event)
 
             version = event_version(event)
             timestamp = event_timestamp(event)
@@ -495,7 +506,9 @@ def regression_alerts(cohort_rows):
     return alerts
 
 
-def build_report(root):
+def build_report(root, now=None):
+    now = now or datetime.now(timezone.utc)
+    reliability_evaluator = ReliabilitySloEvaluator(now=now, complete_weeks=8)
     cohorts = {}
     malformed_lines = 0
     scanned_installs = 0
@@ -507,11 +520,34 @@ def build_report(root):
             if not os.path.isfile(path):
                 continue
             scanned_installs += 1
-            malformed_lines += scan_install(path, install_id, cohorts)
+            malformed_lines += scan_install(
+                path,
+                install_id,
+                cohorts,
+                reliability_evaluator,
+            )
 
     rows = [serialize_cohort(cohort) for cohort in cohorts.values()]
     rows.sort(key=lambda row: (row["install_id"], row["last_event_at"], row["app_version"]))
     alerts = regression_alerts(rows)
+    reliability_slo = reliability_evaluator.report()
+    newest_decisive_slo_week = next(
+        (
+            week
+            for week in reliability_slo.get("weeks", [])
+            if isinstance(week, dict)
+            and week.get("complete") is True
+            and week.get("verdict") != "insufficient"
+        ),
+        None,
+    )
+    reliability_alert = (
+        reliability_slo.get("integrity", {}).get("status") == "indeterminate"
+        or (
+            isinstance(newest_decisive_slo_week, dict)
+            and newest_decisive_slo_week.get("verdict") in ("fail", "indeterminate")
+        )
+    )
     known_rows = [
         row
         for row in rows
@@ -523,10 +559,16 @@ def build_report(root):
         if row["startup_sample_count"] >= MIN_COMPARISON_SAMPLES
         or row["attempted_sessions"] >= REPEATED_ZERO_READY_SESSIONS
     ]
-    status = "alert" if alerts else "healthy" if evaluable_rows else "insufficient_data"
+    status = (
+        "alert"
+        if alerts or reliability_alert
+        else "healthy"
+        if evaluable_rows
+        else "insufficient_data"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": now.isoformat().replace("+00:00", "Z"),
         "status": status,
         "scanned_installs": scanned_installs,
         "malformed_lines": malformed_lines,
@@ -544,6 +586,7 @@ def build_report(root):
         },
         "alerts": alerts,
         "cohorts": rows,
+        "reliability_slo": reliability_slo,
     }
 
 
@@ -579,22 +622,42 @@ def main(argv=None):
     parser.add_argument(
         "--fail-on-alert",
         action="store_true",
-        help="exit 2 after writing the report when alerts are present",
+        help="exit 2 after writing the report when its status is alert",
     )
     args = parser.parse_args(argv)
     output = args.output or os.path.join(args.root, REPORT_NAME)
     report = build_report(args.root)
     atomic_write_report(output, report)
+    decisive_slo_week = next(
+        (
+            week
+            for week in report["reliability_slo"].get("weeks", [])
+            if isinstance(week, dict)
+            and week.get("complete") is True
+            and week.get("verdict") != "insufficient"
+        ),
+        None,
+    )
+    slo_verdict = (
+        "indeterminate"
+        if report["reliability_slo"].get("integrity", {}).get("status")
+        == "indeterminate"
+        else decisive_slo_week.get("verdict")
+        if isinstance(decisive_slo_week, dict)
+        else "insufficient"
+    )
     print(
-        "capture watch: %s, %d install(s), %d cohort(s), %d alert(s)"
+        "capture watch: %s, %d install(s), %d cohort(s), "
+        "%d legacy alert(s), reliability SLO %s"
         % (
             report["status"],
             report["scanned_installs"],
             len(report["cohorts"]),
             len(report["alerts"]),
+            slo_verdict,
         )
     )
-    return 2 if args.fail_on_alert and report["alerts"] else 0
+    return 2 if args.fail_on_alert and report["status"] == "alert" else 0
 
 
 if __name__ == "__main__":

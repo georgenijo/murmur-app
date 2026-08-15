@@ -60,7 +60,7 @@ describe('OverlayPill transient cues', () => {
 
   it('renders an actionable, non-interactive mic-off status for an unavailable device', async () => {
     await act(async () => root.render(
-      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'deviceUnavailable' }} />,
+      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'chooseMicrophone' }} />,
     ));
 
     const status = container.querySelector<HTMLElement>('[role="status"]');
@@ -75,7 +75,7 @@ describe('OverlayPill transient cues', () => {
 
   it('keeps other microphone failures generic and truthful', async () => {
     await act(async () => root.render(
-      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'generic' }} />,
+      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'retry' }} />,
     ));
 
     const status = container.querySelector<HTMLElement>('[role="status"]');
@@ -83,5 +83,22 @@ describe('OverlayPill transient cues', () => {
     expect(status?.getAttribute('aria-label')).toBe(
       'Microphone capture failed. Try recording again.',
     );
+  });
+
+  it('renders the exact permission and partial-transcription actions', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'microphoneFailure', failure: 'openMicrophoneSettings' }} />,
+    ));
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
+      .toBe('Microphone access denied. Open System Settings to grant access.');
+
+    await act(async () => root.render(
+      <CuePill indicator={{
+        kind: 'microphoneFailure',
+        failure: 'waitForPartialTranscription',
+      }} />,
+    ));
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
+      .toBe('Microphone capture was interrupted. Waiting for the partial transcription.');
   });
 });

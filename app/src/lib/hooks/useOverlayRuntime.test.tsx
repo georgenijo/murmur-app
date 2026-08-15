@@ -105,9 +105,32 @@ describe('useOverlayRuntime transient cues', () => {
   }
 
   async function emitInitializationFailure(errorKind: unknown, recordingId = 1) {
+    const actionCode = errorKind === 'permission_denied'
+      ? 'open_microphone_settings'
+      : errorKind === 'device_unavailable'
+        ? 'choose_microphone'
+        : 'retry';
     await act(async () => {
       mocks.handlers.get('recording-initialization-failed')?.({
-        payload: { recordingId, errorKind },
+        payload: {
+          recordingId,
+          errorKind,
+          statusCode: 'microphone_initialization_failed',
+          actionCode,
+        },
+      });
+    });
+  }
+
+  async function emitInterruption(recordingId: number, autoTranscribe: boolean) {
+    await act(async () => {
+      mocks.handlers.get('recording-interrupted')?.({
+        payload: {
+          recordingId,
+          autoTranscribe,
+          statusCode: 'microphone_interrupted',
+          actionCode: autoTranscribe ? 'wait_for_partial_transcription' : 'retry',
+        },
       });
     });
   }
@@ -116,18 +139,18 @@ describe('useOverlayRuntime transient cues', () => {
     expect(current?.showMicrophoneFailure).toBeNull();
 
     await emitInitializationFailure('device_unavailable');
-    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    expect(current?.showMicrophoneFailure).toBe('chooseMicrophone');
 
     await act(async () => vi.advanceTimersByTime(MICROPHONE_FAILURE_FLASH_MS - 1));
-    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    expect(current?.showMicrophoneFailure).toBe('chooseMicrophone');
 
     await act(async () => vi.advanceTimersByTime(1));
     expect(current?.showMicrophoneFailure).toBeNull();
   });
 
-  it('keeps unknown and interrupted failures generic and ignores malformed payloads', async () => {
+  it('uses exact permission and interruption actions and ignores malformed payloads', async () => {
     await emitInitializationFailure('permission_denied');
-    expect(current?.showMicrophoneFailure).toBe('generic');
+    expect(current?.showMicrophoneFailure).toBe('openMicrophoneSettings');
 
     await emitGeneration(2);
     await act(async () => {
@@ -138,7 +161,13 @@ describe('useOverlayRuntime transient cues', () => {
     await act(async () => {
       mocks.handlers.get('recording-interrupted')?.({ payload: { recordingId: 2 } });
     });
-    expect(current?.showMicrophoneFailure).toBe('generic');
+    expect(current?.showMicrophoneFailure).toBeNull();
+
+    await emitInterruption(2, false);
+    expect(current?.showMicrophoneFailure).toBe('retry');
+
+    await emitInterruption(2, true);
+    expect(current?.showMicrophoneFailure).toBe('waitForPartialTranscription');
   });
 
   it('restarts the full failure timeout and adopts the latest typed cue', async () => {
@@ -146,10 +175,10 @@ describe('useOverlayRuntime transient cues', () => {
     await act(async () => vi.advanceTimersByTime(MICROPHONE_FAILURE_FLASH_MS - 1000));
 
     await emitInitializationFailure('backend_error');
-    expect(current?.showMicrophoneFailure).toBe('generic');
+    expect(current?.showMicrophoneFailure).toBe('retry');
 
     await act(async () => vi.advanceTimersByTime(1000));
-    expect(current?.showMicrophoneFailure).toBe('generic');
+    expect(current?.showMicrophoneFailure).toBe('retry');
 
     await act(async () => vi.advanceTimersByTime(MICROPHONE_FAILURE_FLASH_MS - 1000));
     expect(current?.showMicrophoneFailure).toBeNull();
@@ -157,7 +186,7 @@ describe('useOverlayRuntime transient cues', () => {
 
   it('clears an older failure cue when a newer recording generation starts', async () => {
     await emitInitializationFailure('device_unavailable');
-    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    expect(current?.showMicrophoneFailure).toBe('chooseMicrophone');
 
     await emitGeneration(2);
     expect(current?.showMicrophoneFailure).toBeNull();
@@ -168,7 +197,14 @@ describe('useOverlayRuntime transient cues', () => {
     await emitGeneration(3);
     await emitInitializationFailure('device_unavailable', 2);
     await act(async () => {
-      mocks.handlers.get('recording-interrupted')?.({ payload: { recordingId: 2 } });
+      mocks.handlers.get('recording-interrupted')?.({
+        payload: {
+          recordingId: 2,
+          autoTranscribe: false,
+          statusCode: 'microphone_interrupted',
+          actionCode: 'retry',
+        },
+      });
     });
     expect(current?.showMicrophoneFailure).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
@@ -183,7 +219,7 @@ describe('useOverlayRuntime transient cues', () => {
 
   it('clears an older microphone failure when a newer delivery arrives first', async () => {
     await emitInitializationFailure('device_unavailable', 8);
-    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    expect(current?.showMicrophoneFailure).toBe('chooseMicrophone');
 
     await emitDelivery(9);
     await emitGeneration(9);
@@ -205,7 +241,7 @@ describe('useOverlayRuntime transient cues', () => {
     });
 
     await emitInitializationFailure('device_unavailable', 5);
-    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    expect(current?.showMicrophoneFailure).toBe('chooseMicrophone');
     await emitGeneration(6);
     expect(current?.showMicrophoneFailure).toBeNull();
   });
@@ -223,7 +259,7 @@ describe('useOverlayRuntime transient cues', () => {
     });
 
     await emitInitializationFailure('device_unavailable', 10);
-    expect(current?.showMicrophoneFailure).toBe('deviceUnavailable');
+    expect(current?.showMicrophoneFailure).toBe('chooseMicrophone');
     await act(async () => root.render(<Harness status="starting" />));
     expect(current?.showMicrophoneFailure).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
@@ -243,7 +279,14 @@ describe('useOverlayRuntime transient cues', () => {
 
     await act(async () => root.unmount());
     await act(async () => {
-      delayedHandler?.({ payload: { recordingId: 7, errorKind: 'device_unavailable' } });
+      delayedHandler?.({
+        payload: {
+          recordingId: 7,
+          errorKind: 'device_unavailable',
+          statusCode: 'microphone_initialization_failed',
+          actionCode: 'choose_microphone',
+        },
+      });
     });
     expect(vi.getTimerCount()).toBe(0);
     await act(async () => {

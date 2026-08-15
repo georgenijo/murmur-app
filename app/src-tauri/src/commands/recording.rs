@@ -31,6 +31,110 @@ const WHISPER_PROMPT_TERMS: usize = 96;
 /// [`WHISPER_PROMPT_TERMS`] (a rank-prefix of them) feed Whisper.
 const CORRECTION_TERMS: usize = 500;
 
+/// Version of the stable fleet reliability contract attached to every eligible
+/// live-dictation request. Historical attempts without this marker remain
+/// visible to the legacy funnel but cannot be treated as SLO evidence.
+const DICTATION_SLO_CONTRACT: u64 = 1;
+
+fn dictation_status_code(status: DictationStatus) -> &'static str {
+    match status {
+        DictationStatus::Idle => "idle",
+        DictationStatus::Starting => "starting",
+        DictationStatus::Recording => "recording",
+        DictationStatus::Recovering => "recovering",
+        DictationStatus::Processing => "processing",
+    }
+}
+
+fn emit_dictation_state_changed(recording_id: u64, from: DictationStatus, to: DictationStatus) {
+    if recording_id == 0 || from == to {
+        return;
+    }
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.dictation_state_changed",
+        recording_id,
+        from = dictation_status_code(from),
+        to = dictation_status_code(to),
+        "dictation state changed"
+    );
+}
+
+/// Mutate the live dictation state and publish its bounded, content-free
+/// transition evidence as one operation. Keep production status writes on this
+/// seam so early returns cannot silently create gaps in the SLO timeline.
+fn transition_dictation_status(
+    recording_id: u64,
+    dictation: &mut crate::state::DictationState,
+    to: DictationStatus,
+) -> DictationStatus {
+    let from = dictation.status;
+    dictation.status = to;
+    emit_dictation_state_changed(recording_id, from, to);
+    from
+}
+
+/// Mark an eligible live request at the exact Idle -> Starting boundary.
+/// Capture the performance origin and publish the denominator before the
+/// state-transition trace so diagnostic I/O cannot disappear from measured
+/// request-to-first-PCM latency.
+fn accept_live_dictation_request(
+    recording_id: u64,
+    dictation: &mut crate::state::DictationState,
+    emit_requested: impl FnOnce(DictationStatus),
+) -> i64 {
+    let performance_started_at_ms = chrono::Utc::now().timestamp_millis();
+    emit_requested(dictation.status);
+    transition_dictation_status(recording_id, dictation, DictationStatus::Starting);
+    performance_started_at_ms
+}
+
+#[derive(Clone, Copy)]
+enum DictationPresentation {
+    CleanupInProgress,
+    InitializationFailed(audio::AudioFailureKind),
+    CleanupStalled,
+    Interrupted { partial_transcription: bool },
+}
+
+impl DictationPresentation {
+    fn codes(self) -> (&'static str, &'static str) {
+        match self {
+            Self::CleanupInProgress => ("microphone_cleanup_in_progress", "wait"),
+            Self::InitializationFailed(audio::AudioFailureKind::PermissionDenied) => (
+                "microphone_initialization_failed",
+                "open_microphone_settings",
+            ),
+            Self::InitializationFailed(audio::AudioFailureKind::DeviceUnavailable) => {
+                ("microphone_initialization_failed", "choose_microphone")
+            }
+            Self::InitializationFailed(_) => ("microphone_initialization_failed", "retry"),
+            Self::CleanupStalled => ("microphone_cleanup_stalled", "restart_app"),
+            Self::Interrupted {
+                partial_transcription: true,
+            } => ("microphone_interrupted", "wait_for_partial_transcription"),
+            Self::Interrupted {
+                partial_transcription: false,
+            } => ("microphone_interrupted", "retry"),
+        }
+    }
+}
+
+fn emit_dictation_presentation(recording_id: u64, presentation: DictationPresentation) {
+    if recording_id == 0 {
+        return;
+    }
+    let (status_code, action_code) = presentation.codes();
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.dictation_presentation",
+        recording_id,
+        status_code,
+        action_code,
+        "dictation status presented"
+    );
+}
+
 /// Scan `folder` for code identifiers and build the cached folder-scan prompt
 /// string, ranked by descending frequency and capped at [`CORRECTION_TERMS`].
 /// The cache holds the larger (top-500) list; the Whisper path takes its
@@ -343,7 +447,7 @@ impl Drop for IdleGuard<'_> {
             if current_rid != self.recording_id {
                 return;
             }
-            dictation.status = DictationStatus::Idle;
+            transition_dictation_status(self.recording_id, &mut dictation, DictationStatus::Idle);
             keyboard::set_processing(false);
         }
     }
@@ -1866,8 +1970,9 @@ pub async fn process_audio(
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
-        dictation.status = DictationStatus::Processing;
-        state.app_state.next_recording_id()
+        let recording_id = state.app_state.next_recording_id();
+        transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
+        recording_id
     };
     drop(transition);
     keyboard::set_processing(true);
@@ -3070,7 +3175,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 );
                 return;
             }
-            dictation.status = DictationStatus::Recording;
+            transition_dictation_status(recording_id, &mut dictation, DictationStatus::Recording);
             *state.app_state.last_transcription_at.lock_or_recover() =
                 Some(std::time::Instant::now());
             let _ = app_handle.emit("recording-status-changed", "recording");
@@ -3106,13 +3211,21 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     );
                     return;
                 }
-                previous_status = dictation.status;
-                dictation.status = DictationStatus::Recovering;
+                previous_status = transition_dictation_status(
+                    recording_id,
+                    &mut dictation,
+                    DictationStatus::Recovering,
+                );
             }
             if reason != AudioCancelReason::RuntimeFailure {
                 state.app_state.clear_active_context(recording_id);
             }
-            let _ = app_handle.emit("recording-status-changed", "recovering");
+            if app_handle
+                .emit("recording-status-changed", "recovering")
+                .is_ok()
+            {
+                emit_dictation_presentation(recording_id, DictationPresentation::CleanupInProgress);
+            }
             let _ = app_handle.emit(
                 "audio-recovery-started",
                 serde_json::json!({
@@ -3207,21 +3320,41 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 None,
                 None,
             );
-            let _ = app_handle.emit(
-                "recording-initialization-failed",
-                serde_json::json!({
-                    "recordingId": recording_id,
-                    "error": error,
-                    "errorKind": kind.as_str(),
-                }),
-            );
+            if app_handle
+                .emit("recording-initialization-failed", {
+                    let presentation = DictationPresentation::InitializationFailed(kind);
+                    let (status_code, action_code) = presentation.codes();
+                    serde_json::json!({
+                        "recordingId": recording_id,
+                        "error": error,
+                        "errorKind": kind.as_str(),
+                        "statusCode": status_code,
+                        "actionCode": action_code,
+                    })
+                })
+                .is_ok()
+            {
+                emit_dictation_presentation(
+                    recording_id,
+                    DictationPresentation::InitializationFailed(kind),
+                );
+            }
         }
         AudioLifecycleEvent::RecoveryStalled => {
-            if is_current() {
-                let _ = app_handle.emit(
-                    "recording-recovery-stalled",
-                    serde_json::json!({ "recordingId": recording_id }),
-                );
+            if is_current()
+                && app_handle
+                    .emit("recording-recovery-stalled", {
+                        let (status_code, action_code) =
+                            DictationPresentation::CleanupStalled.codes();
+                        serde_json::json!({
+                            "recordingId": recording_id,
+                            "statusCode": status_code,
+                            "actionCode": action_code,
+                        })
+                    })
+                    .is_ok()
+            {
+                emit_dictation_presentation(recording_id, DictationPresentation::CleanupStalled);
             }
         }
         AudioLifecycleEvent::Interrupted {
@@ -3250,16 +3383,31 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 return;
             }
             let auto_transcribe = delivered_samples >= 8_000;
-            let _ = app_handle.emit(
-                "recording-interrupted",
-                serde_json::json!({
-                    "recordingId": recording_id,
-                    "reason": reason.as_str(),
-                    "deliveredSamples": delivered_samples,
-                    "durationMs": duration_ms,
-                    "autoTranscribe": auto_transcribe,
-                }),
-            );
+            if app_handle
+                .emit("recording-interrupted", {
+                    let presentation = DictationPresentation::Interrupted {
+                        partial_transcription: auto_transcribe,
+                    };
+                    let (status_code, action_code) = presentation.codes();
+                    serde_json::json!({
+                        "recordingId": recording_id,
+                        "reason": reason.as_str(),
+                        "deliveredSamples": delivered_samples,
+                        "durationMs": duration_ms,
+                        "autoTranscribe": auto_transcribe,
+                        "statusCode": status_code,
+                        "actionCode": action_code,
+                    })
+                })
+                .is_ok()
+            {
+                emit_dictation_presentation(
+                    recording_id,
+                    DictationPresentation::Interrupted {
+                        partial_transcription: auto_transcribe,
+                    },
+                );
+            }
             if auto_transcribe {
                 transcribe_interruption(app_handle.clone(), recording_id);
             } else {
@@ -3281,7 +3429,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     Some(ContentFreeInputSummaryV1::audio(duration_ms)),
                     None,
                 );
-                state.app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+                let mut dictation = state.app_state.dictation.lock_or_recover();
+                transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
+                drop(dictation);
                 keyboard::set_processing(false);
                 let _ = app_handle.emit("recording-status-changed", "idle");
             }
@@ -3320,7 +3470,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 None,
                 None,
             );
-            dictation.status = DictationStatus::Idle;
+            transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
             state.app_state.clear_active_context(recording_id);
             keyboard::set_processing(false);
             let _ = app_handle.emit("recording-status-changed", "idle");
@@ -3345,7 +3495,7 @@ fn publish_recording_ready_if_audio_ready<R: tauri::Runtime>(
         return false;
     }
 
-    dictation.status = DictationStatus::Recording;
+    transition_dictation_status(recording_id, &mut dictation, DictationStatus::Recording);
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(
@@ -3407,9 +3557,18 @@ pub async fn start_native_recording(
     // while a transform is in flight; the is_transform_busy guard below then
     // refuses this recording).
     state.transform_runtime.shutdown();
+    let origin = match origin.as_deref() {
+        Some("hold") => "hold",
+        _ => "toggle",
+    };
+    let device_selection = if device_name.is_some() {
+        "explicit"
+    } else {
+        "system_default"
+    };
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let rid = {
+    let (rid, performance_started_at_ms) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.meeting_blocks_asr() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
@@ -3509,24 +3668,23 @@ pub async fn start_native_recording(
                 // pending undo still needs.
                 crate::transform_apply::clear_session(&state.app_state);
                 let rid = state.app_state.next_recording_id();
-                dictation.status = DictationStatus::Starting;
-                rid
+                let performance_started_at_ms =
+                    accept_live_dictation_request(rid, &mut dictation, |status_at_acceptance| {
+                        debug_assert_eq!(status_at_acceptance, DictationStatus::Idle);
+                        tracing::info!(
+                            target: "pipeline",
+                            event_code = "pipeline.dictation_requested",
+                            slo_contract = DICTATION_SLO_CONTRACT,
+                            device_selection,
+                            recording_id = rid,
+                            origin,
+                            "start_native_recording"
+                        );
+                    });
+                (rid, performance_started_at_ms)
             }
         }
     };
-    let performance_started_at_ms = chrono::Utc::now().timestamp_millis();
-    let origin = match origin.as_deref() {
-        Some("hold") => "hold",
-        _ => "toggle",
-    };
-    tracing::info!(
-        target: "pipeline",
-        event_code = "pipeline.dictation_requested",
-        device_selection = if device_name.is_some() { "explicit" } else { "system_default" },
-        recording_id = rid,
-        origin,
-        "start_native_recording"
-    );
     // Publish Starting before the worker can report Ready. Otherwise a very
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.
@@ -3547,7 +3705,7 @@ pub async fn start_native_recording(
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
-            dictation.status = DictationStatus::Idle;
+            transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
         }
         let _ = app_handle.emit("recording-status-changed", "idle");
         return match error {
@@ -3738,7 +3896,7 @@ async fn stop_native_recording_for(
             DictationStatus::Starting => (DictationStatus::Starting, rid, None),
             DictationStatus::Recovering => {
                 if let Some(capture) = audio_lifecycle::take_interrupted_dictation(rid) {
-                    dictation.status = DictationStatus::Processing;
+                    transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                     (DictationStatus::Processing, rid, Some(capture))
                 } else {
                     return Ok(serde_json::json!({
@@ -3748,7 +3906,7 @@ async fn stop_native_recording_for(
                 }
             }
             DictationStatus::Recording => {
-                dictation.status = DictationStatus::Processing;
+                transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                 (DictationStatus::Recording, rid, None)
             }
         }
@@ -3775,7 +3933,7 @@ async fn stop_native_recording_for(
             );
             let mut dictation = state.app_state.dictation.lock_or_recover();
             if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
-                dictation.status = DictationStatus::Idle;
+                transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
             }
             keyboard::set_processing(false);
             let _ = app_handle.emit("recording-status-changed", "idle");
@@ -4096,7 +4254,7 @@ pub async fn cancel_native_recording(
             DictationStatus::Starting | DictationStatus::Recording => {}
             DictationStatus::Recovering => return Ok(()),
             DictationStatus::Processing => {
-                dictation.status = DictationStatus::Idle;
+                transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
             }
         }
         (prev, rid)
@@ -4826,6 +4984,101 @@ mod tests {
         assert!(!status_allows_model_preparation(
             DictationStatus::Processing
         ));
+    }
+
+    #[test]
+    fn reliability_codes_are_bounded_and_actions_follow_existing_presentations() {
+        assert_eq!(DICTATION_SLO_CONTRACT, 1);
+        assert_eq!(dictation_status_code(DictationStatus::Idle), "idle");
+        assert_eq!(dictation_status_code(DictationStatus::Starting), "starting");
+        assert_eq!(
+            dictation_status_code(DictationStatus::Recording),
+            "recording"
+        );
+        assert_eq!(
+            dictation_status_code(DictationStatus::Recovering),
+            "recovering"
+        );
+        assert_eq!(
+            dictation_status_code(DictationStatus::Processing),
+            "processing"
+        );
+        assert_eq!(
+            DictationPresentation::CleanupInProgress.codes(),
+            ("microphone_cleanup_in_progress", "wait")
+        );
+        assert_eq!(
+            DictationPresentation::InitializationFailed(audio::AudioFailureKind::PermissionDenied)
+                .codes(),
+            (
+                "microphone_initialization_failed",
+                "open_microphone_settings"
+            )
+        );
+        assert_eq!(
+            DictationPresentation::InitializationFailed(audio::AudioFailureKind::BackendError)
+                .codes(),
+            ("microphone_initialization_failed", "retry")
+        );
+        assert_eq!(
+            DictationPresentation::InitializationFailed(audio::AudioFailureKind::DeviceUnavailable)
+                .codes(),
+            ("microphone_initialization_failed", "choose_microphone")
+        );
+        assert_eq!(
+            DictationPresentation::CleanupStalled.codes(),
+            ("microphone_cleanup_stalled", "restart_app")
+        );
+        assert_eq!(
+            DictationPresentation::Interrupted {
+                partial_transcription: false,
+            }
+            .codes(),
+            ("microphone_interrupted", "retry")
+        );
+        assert_eq!(
+            DictationPresentation::Interrupted {
+                partial_transcription: true,
+            }
+            .codes(),
+            ("microphone_interrupted", "wait_for_partial_transcription")
+        );
+    }
+
+    #[test]
+    fn reliability_transition_seam_mutates_once_and_returns_prior_state() {
+        let mut dictation = crate::state::DictationState::default();
+        assert_eq!(
+            transition_dictation_status(71, &mut dictation, DictationStatus::Starting),
+            DictationStatus::Idle
+        );
+        assert_eq!(dictation.status, DictationStatus::Starting);
+        assert_eq!(
+            transition_dictation_status(71, &mut dictation, DictationStatus::Recovering),
+            DictationStatus::Starting
+        );
+        assert_eq!(dictation.status, DictationStatus::Recovering);
+        assert_eq!(
+            transition_dictation_status(71, &mut dictation, DictationStatus::Idle),
+            DictationStatus::Recovering
+        );
+        assert_eq!(dictation.status, DictationStatus::Idle);
+    }
+
+    #[test]
+    fn accepted_request_is_published_before_the_starting_transition() {
+        let mut dictation = crate::state::DictationState::default();
+        let mut requested = false;
+
+        let performance_started_at_ms =
+            accept_live_dictation_request(72, &mut dictation, |status_at_acceptance| {
+                assert_eq!(status_at_acceptance, DictationStatus::Idle);
+                requested = true;
+            });
+
+        assert!(requested);
+        assert!(performance_started_at_ms > 0);
+        assert_eq!(dictation.status, DictationStatus::Starting);
     }
 
     #[test]

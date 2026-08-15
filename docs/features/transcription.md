@@ -176,8 +176,10 @@ Transcription processing is local. Network access occurs for model setup and may
   `recording-initialization-failed` event with `errorKind: device_unavailable`.
   The overlay shows a truthful mic-off status for five seconds with the exact
   accessible label “Selected microphone unavailable. Open Settings to choose
-  another.” Other capture failures use the generic failure cue. The cue neither
-  expands nor focuses the overlay and does not mutate native geometry.
+  another.” Permission denial points to microphone settings, ordinary capture
+  failures recommend retry, and interrupted retained audio says to wait for
+  partial transcription. The cue neither expands nor focuses the overlay and
+  does not mutate native geometry.
 - Recording duration begins at accepted readiness, not at the user's initial
   activation.
 - Multi-channel to mono conversion (averages channels) supports every PCM
@@ -199,6 +201,36 @@ capture cannot enter dictation reports.
 | Capture ready | `audio.capture_ready` | Accepted IDs that retained their first nonempty PCM buffer |
 | Stop handoff | `pipeline.dictation_stop_handoff` | Accepted IDs handed from capture to final processing |
 | Terminal | `pipeline.dictation_terminal` | Accepted IDs that emitted exactly one terminal event |
+
+The reliability SLO uses only native hotkey/input requests carrying
+`slo_contract: 1` on `pipeline.dictation_requested`. That marker defines the
+contract-v1 population and keeps historical records from being mistaken for
+complete evidence after the contract is deployed. Prompted requests are split
+out of the startup-latency denominator as described below. Historical requests
+remain available to the legacy funnel, but the weekly evaluator labels windows
+that contain only pre-contract data as insufficient.
+
+Three additional exact-schema records make the SLO clauses measurable:
+
+- `audio.permission_prompt_changed` marks a dictation-owned microphone prompt
+  as `pending` or `resolved`. A request with a valid prompt record is excluded
+  only from the start-to-first-PCM denominator; it still contributes to
+  lifecycle, terminal, state, and presentation coverage. The resolved event
+  includes only the bounded pending duration.
+- `pipeline.dictation_state_changed` records unequal transitions among
+  `idle`, `starting`, `recording`, `recovering`, and `processing`. The fleet
+  evaluator closes intervals only from matching recording generations and
+  treats unclosed intervals as unknown evidence, never as healthy recovery.
+- `pipeline.dictation_presentation` proves that a successfully emitted native
+  status carried one allowlisted action. Cleanup-in-progress maps to `wait`,
+  initialization failure maps to `retry`, `open_microphone_settings`, or
+  `choose_microphone`, a
+  cleanup stall maps to `restart_app`, and an interrupted capture maps to
+  `retry` or `wait_for_partial_transcription`.
+
+All three records are reduced to exact, content-free schemas in debug and
+release builds. They contain no microphone identity, app identity, transcript,
+audio, path, raw error, or free-form presentation text.
 
 The terminal `outcome` vocabulary is `success`, `no_speech`, `too_short`,
 `user_cancelled_starting`, `user_cancelled_recording`,
