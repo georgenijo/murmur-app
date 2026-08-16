@@ -6,6 +6,39 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-16: Shipped diagnostic history uses a gated SQLite query projection
+
+**Decision:** Keep each production install's append-only, already-sanitized
+JSONL as the recovery/export source and add a stdlib-only SQLite projection for
+historical dashboard reads. Canonical install-scoped SHA-256 hashes make the
+at-least-once shipper idempotent. The receiver validates a whole batch, inserts
+new hashes in one immediate transaction, appends and fsyncs only those new raw
+lines, then commits before acknowledging. Request-scoped connections use WAL,
+foreign keys, bounded busy/cache/journal settings, explicit quotas, and
+integrity checks. No retention job auto-deletes history.
+
+A bounded streaming backfill persists source byte checkpoints with each
+transaction. Dashboard reads remain on JSONL until a content-free
+reconciliation proves per-install unique counts and timestamp bounds and marks
+the database ready. Historical search then uses bounded filters, FTS5 summary
+terms, escaped output, and signed filter-bound keyset cursors; raw and LLM-ready
+exports continue to use JSONL. Development batches remain acknowledged and
+discarded. Only the current aggregate microphone-state contract is accepted or
+rendered.
+
+**Rationale:** JSONL is simple and recoverable but full rescans do not support
+bounded arbitrary-date investigation. Treating SQLite as a rebuildable,
+explicitly gated projection preserves the established privacy/export boundary
+and provides indexed history without allowing a database failure or lost HTTP
+response to advance the client past uncommitted data.
+
+**Status:** active
+
+**References:** issue #434; `infra/log-receiver/event_store.py`,
+`murmur-logs-receiver.py`, `docs/features/log-shipping.md`
+
+---
+
 ## 2026-08-14: Pinned microphone re-resolution is bounded and never substitutes
 
 **Decision:** When both AUHAL and CPAL fail `device_unavailable` before first
