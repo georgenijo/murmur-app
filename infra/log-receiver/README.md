@@ -84,14 +84,14 @@ git fetch origin
 git cat-file -e "$MERGED_SHA^{commit}"
 
 # Back up source, raw recovery archives, metadata, and any existing database.
-fleet exec opti 'stamp=$(date -u +%Y%m%dT%H%M%SZ); backup=/home/george/murmur-logs-backups/$stamp; mkdir -p "$backup"; cp -a /home/george/murmur-logs-receiver.py "$backup"/; test ! -e /home/george/event_store.py || cp -a /home/george/event_store.py "$backup"/; tar -C /home/george -czf "$backup/murmur-logs-raw.tgz" --exclude="murmur-logs/events.sqlite3*" murmur-logs; if test -e /home/george/murmur-logs/events.sqlite3; then python3 /home/george/event_store.py --root /home/george/murmur-logs backup "$backup/events.sqlite3"; fi; echo "$backup"'
+fleet exec opti 'set -eu; stamp=$(date -u +%Y%m%dT%H%M%SZ); backup=/home/george/murmur-logs-backups/$stamp; mkdir -p "$backup"; cp -a /home/george/murmur-logs-receiver.py "$backup"/; test ! -e /home/george/event_store.py || cp -a /home/george/event_store.py "$backup"/; tar -C /home/george -czf "$backup/murmur-logs-raw.tgz" --exclude="murmur-logs/events.sqlite3*" murmur-logs; if test -e /home/george/murmur-logs/events.sqlite3; then python3 /home/george/event_store.py --root /home/george/murmur-logs backup "$backup/events.sqlite3"; fi; echo "$backup"'
 
 # Stage, compile, and install both exact source files together.
 LOCAL_STAGE=$(mktemp -d)
 git archive "$MERGED_SHA" infra/log-receiver/murmur-logs-receiver.py infra/log-receiver/event_store.py | tar -x -C "$LOCAL_STAGE"
 fleet cp "$LOCAL_STAGE/infra/log-receiver/event_store.py" opti:/tmp/event_store.py.$MERGED_SHA
 fleet cp "$LOCAL_STAGE/infra/log-receiver/murmur-logs-receiver.py" opti:/tmp/murmur-logs-receiver.py.$MERGED_SHA
-fleet exec opti "python3 -m py_compile /tmp/event_store.py.$MERGED_SHA /tmp/murmur-logs-receiver.py.$MERGED_SHA; install -m 0755 /tmp/event_store.py.$MERGED_SHA /home/george/event_store.py; install -m 0755 /tmp/murmur-logs-receiver.py.$MERGED_SHA /home/george/murmur-logs-receiver.py"
+fleet exec opti "set -eu; python3 -m py_compile /tmp/event_store.py.$MERGED_SHA /tmp/murmur-logs-receiver.py.$MERGED_SHA; install -m 0755 /tmp/event_store.py.$MERGED_SHA /home/george/event_store.py; install -m 0755 /tmp/murmur-logs-receiver.py.$MERGED_SHA /home/george/murmur-logs-receiver.py"
 fleet exec opti 'sudo systemctl restart murmur-logs && systemctl is-active murmur-logs'
 curl -fsS https://georgenijo.com/murmur/healthz
 ```
@@ -109,7 +109,7 @@ Stop the receiver briefly for the final proof so the source snapshot cannot
 grow. A failed reconciliation leaves the readiness flag unchanged:
 
 ```bash
-fleet exec opti 'sudo systemctl stop murmur-logs; python3 /home/george/event_store.py --root /home/george/murmur-logs backfill --max-lines 100000; python3 /home/george/event_store.py --root /home/george/murmur-logs reconcile --mark-ready | tee /home/george/murmur-logs/reconciliation.json; sudo systemctl start murmur-logs; systemctl is-active murmur-logs'
+fleet exec opti 'status=0; report=/home/george/murmur-logs/reconciliation.json; temporary=$report.tmp; sudo systemctl stop murmur-logs || exit $?; python3 /home/george/event_store.py --root /home/george/murmur-logs backfill --max-lines 100000 || status=$?; if test "$status" -eq 0; then python3 /home/george/event_store.py --root /home/george/murmur-logs reconcile --mark-ready >"$temporary" || status=$?; fi; if test "$status" -eq 0; then mv "$temporary" "$report"; else rm -f "$temporary"; fi; sudo systemctl start murmur-logs || exit $?; test "$status" -eq 0 || exit "$status"; systemctl is-active murmur-logs'
 ```
 
 The versioned reconciliation report is content-free. Per install it records
