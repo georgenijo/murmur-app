@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 
@@ -281,6 +283,22 @@ class EventStoreBackfillTests(EventStoreTestCase):
         )
 
         first = store_module.backfill(self.store, self.root, max_lines=2, batch_size=2)
+        checkpoint = self.store.checkpoint_offset(
+            f"{self.install_id}/events.jsonl"
+        )
+        with self.assertRaises(store_module.StoreError):
+            self.store.import_backfill_chunk(
+                self.install_id,
+                f"{self.install_id}/events.jsonl",
+                events=[valid],
+                raw_lines=1,
+                malformed_lines=0,
+                start_offset=0,
+                end_offset=checkpoint,
+                source_size=self.archive.stat().st_size,
+                source_mtime_ns=self.archive.stat().st_mtime_ns,
+                complete=False,
+            )
         second = store_module.backfill(self.store, self.root, max_lines=2, batch_size=2)
         report = store_module.reconcile(self.store, self.root, mark_ready=True)
 
@@ -447,6 +465,29 @@ class EventStoreQueryTests(EventStoreTestCase):
 
 
 class EventStoreOperationsTests(EventStoreTestCase):
+    def test_operator_cli_integrity_and_disable_dashboard(self) -> None:
+        self.store.set_dashboard_ready(True)
+        integrity_output = io.StringIO()
+        with redirect_stdout(integrity_output):
+            result = store_module.main(
+                ["--root", str(self.root), "integrity"]
+            )
+        integrity = json.loads(integrity_output.getvalue())
+
+        disable_output = io.StringIO()
+        with redirect_stdout(disable_output):
+            disabled_result = store_module.main(
+                ["--root", str(self.root), "disable-dashboard"]
+            )
+        disabled = json.loads(disable_output.getvalue())
+
+        self.assertEqual((result, disabled_result), (0, 0))
+        self.assertEqual(integrity["schema"], "murmur-event-integrity/v1")
+        self.assertEqual(integrity["result"], "ok")
+        self.assertEqual(integrity["schema_version"], store_module.SCHEMA_VERSION)
+        self.assertEqual(disabled, {"dashboard_reads_enabled": False})
+        self.assertFalse(self.store.is_dashboard_ready())
+
     def test_backup_integrity_and_restore_preserve_a_pre_restore_copy(self) -> None:
         self.ingest([event("before backup")])
         backup = self.root / "backup?#%.sqlite3"
@@ -490,15 +531,29 @@ class EventStoreOperationsTests(EventStoreTestCase):
                 "input_device_count": 2,
                 "input_device_count_capped": False,
                 "input_enumeration_ok": True,
+                "app_version": "1.2.3",
             },
             received_at=1_786_000_000,
         )
         self.store.update_state(self.install_id, normalized)
 
+        self.assertNotIn("app_version", normalized)
+
         install = self.store.get_install(self.install_id)
         assert install is not None
         self.assertEqual(install["state"]["input_device_count"], 2)
         self.assertNotIn("default_input", install["state"])
+
+        with self.assertRaises(store_module.StoreError):
+            self.store.update_state(self.install_id, {})
+        with self.assertRaises(store_module.StoreError):
+            self.store.update_state(
+                self.install_id,
+                {
+                    **normalized,
+                    "received_at": float("nan"),
+                },
+            )
 
 
 if __name__ == "__main__":

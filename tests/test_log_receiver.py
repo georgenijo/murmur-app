@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import http.client
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
@@ -1257,6 +1258,23 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         connection.close()
         return status, payload
 
+    def post_with_headers(
+        self,
+        path: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> tuple[int, dict[str, str], bytes]:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=5
+        )
+        connection.request("POST", path, body=body, headers=headers)
+        response = connection.getresponse()
+        payload = response.read()
+        response_headers = dict(response.getheaders())
+        status = response.status
+        connection.close()
+        return status, response_headers, payload
+
     def test_ingest_stamps_receiver_observed_app_version_on_each_event(self) -> None:
         item = event(
             "audio readiness accepted",
@@ -1385,6 +1403,34 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(body, b"rejected event in batch")
         self.assertEqual(path.read_bytes(), before)
 
+    def test_ingest_storage_statuses_preserve_retry_contract(self) -> None:
+        store = receiver.event_store()
+        payload = b"{}\n"
+        headers = {
+            "Authorization": "Bearer " + receiver.TOKEN,
+            "X-Install-Id": self.install_id,
+        }
+        cases = (
+            (receiver.StoreQuota("quota"), 507, None),
+            (receiver.StoreBusy("busy"), 503, "2"),
+        )
+        for error, expected_status, retry_after in cases:
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                store, "ingest_batch", side_effect=error
+            ), mock.patch.object(receiver, "event_store", return_value=store):
+                status, response_headers, _ = self.post_with_headers(
+                    "/ingest", payload, headers
+                )
+
+            self.assertEqual(status, expected_status)
+            self.assertEqual(response_headers.get("Retry-After"), retry_after)
+
+    def test_search_before_reconciliation_returns_retry_after(self) -> None:
+        status, headers, _ = self.get("/search")
+
+        self.assertEqual(status, 503)
+        self.assertEqual(headers.get("Retry-After"), "30")
+
     def test_oversized_event_count_is_rejected_before_mutation(self) -> None:
         path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
         before = path.read_bytes()
@@ -1414,6 +1460,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             events=events,
             raw_lines=len(events),
             malformed_lines=0,
+            start_offset=0,
             end_offset=path.stat().st_size,
             source_size=path.stat().st_size,
             source_mtime_ns=path.stat().st_mtime_ns,
@@ -1465,13 +1512,13 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             f"/search?install={self.install_id}&limit=25"
         )
         first_page = first_body.decode("utf-8")
-        marker = 'href="/search?'
-        link_start = first_page.rfind(marker)
-        self.assertGreaterEqual(link_start, 0)
-        link_end = first_page.index('"', link_start + len('href="'))
-        next_path = receiver.html.unescape(
-            first_page[link_start + len('href="'):link_end]
+        match = re.search(
+            r'<p class="pagination"><a class="download-link" href="([^"]+)"',
+            first_page,
         )
+        self.assertIsNotNone(match)
+        assert match is not None
+        next_path = receiver.html.unescape(match.group(1))
         second_status, _, second_body = self.get(urlsplit(next_path).path + "?" + urlsplit(next_path).query)
         second_page = second_body.decode("utf-8")
 
@@ -1504,6 +1551,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         headers = {
             "Authorization": "Bearer " + receiver.TOKEN,
             "X-Install-Id": self.install_id,
+            "X-App-Version": "1.2.3",
             "Content-Type": "application/json",
         }
         legacy_status, _ = self.post(
@@ -1521,6 +1569,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
                     "input_device_count": 2,
                     "input_device_count_capped": False,
                     "input_enumeration_ok": True,
+                    "app_version": "1.2.3",
                 }
             ).encode(),
             headers,
@@ -1534,6 +1583,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertIn("Available", page)
         self.assertIn("2 detected", page)
         self.assertNotIn("PRIVATE MIC", page)
+        self.assertNotIn('"app_version"', page)
         self.assertNotIn("Legacy state snapshot", page)
 
     def test_recent_raw_routes_return_exact_windows_and_safe_filenames(self) -> None:

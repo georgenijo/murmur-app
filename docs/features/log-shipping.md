@@ -106,8 +106,8 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
   are appended and fsynced, and the database commits before a 2xx response.
   Exact retries are no-ops in both stores. Busy, quota, disk-full, corruption,
   archive, or commit failure returns non-2xx so the shipper offset stays put.
-  The caps are 8 MB/request, 200 MB raw JSONL/install, 10 GB raw total, 150
-  installs, and 10 GB SQLite; history is never auto-deleted.
+  The caps are 8 MiB/request, 200 MiB raw JSONL/install, 10 GiB raw total, 150
+  installs, and 10 GiB SQLite; history is never auto-deleted.
 - SQLite uses migrations, request-scoped connections, foreign keys, WAL,
   bounded busy wait/cache/WAL size, startup integrity checking, indexed event
   fields, and FTS5 over summary text. Raw JSONL remains the exact
@@ -152,6 +152,11 @@ The readiness flag defaults off and can be enabled only by a successful
 reconciliation command. Raw latest-200/latest-500/full downloads and
 LLM-ready latest-200/latest-500 reports keep reading JSONL, so rollout and
 query-store rollback do not change their bytes or privacy boundary.
+
+The current `/state` body contains four aggregate microphone fields plus a
+bounded app version. The receiver validates the complete current shape, drops
+the redundant body version (the authenticated request metadata already carries
+it), and persists only the four aggregate fields and receiver timestamp.
 
 The per-install **quick info** table shows two retained-log activity metrics:
 **Last activated** is the newest dictation-owned `audio.capture_ready` event

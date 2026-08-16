@@ -245,6 +245,13 @@ def current_state_snapshot(value):
         return {}
 
 
+def microphone_label(state):
+    count = current_state_snapshot(state).get("input_device_count")
+    if not isinstance(count, int):
+        return ""
+    return "%d input%s" % (count, "" if count == 1 else "s")
+
+
 def ingest_app_version(value):
     """Accept only the bounded release identifier already sent by the shipper."""
     return value if isinstance(value, str) and APP_VERSION_RE.fullmatch(value) else None
@@ -944,18 +951,11 @@ def collect_installs():
         installs = []
         for item in store.list_installs():
             path = os.path.join(ROOT, item["id"], "events.jsonl")
-            state = current_state_snapshot(item.get("state"))
-            input_count = state.get("input_device_count")
-            microphone = (
-                "%d input%s" % (input_count, "" if input_count == 1 else "s")
-                if isinstance(input_count, int)
-                else ""
-            )
             installs.append(
                 {
                     **item,
                     "kind": "prod",
-                    "mic": microphone,
+                    "mic": microphone_label(item.get("state")),
                     "bytes": os.path.getsize(path) if os.path.exists(path) else 0,
                     "last_ts": "",
                     "last_summary": "",
@@ -1000,15 +1000,7 @@ def collect_installs():
                 "os": meta.get("os", ""),
                 "hw": meta.get("hw", ""),
                 "specs": meta.get("specs", ""),
-                "mic": (
-                    "%d input%s"
-                    % (
-                        state.get("input_device_count"),
-                        "" if state.get("input_device_count") == 1 else "s",
-                    )
-                    if current_state_snapshot(state)
-                    else ""
-                ),
+                "mic": microphone_label(state),
                 "version": meta.get("last_version", "?"),
                 "events": count_lines(path),
                 "bytes": os.path.getsize(path),
@@ -2727,8 +2719,13 @@ def render_dashboard():
             "".join(rows) or '<tr><td colspan="3">no installs yet</td></tr>',
         )
     )
+    return page_shell(body, refresh=True)
+
+
+def page_shell(body, *, refresh=False):
+    refresh_meta = '<meta http-equiv="refresh" content="30">' if refresh else ""
     return """<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="30">
+%s
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>murmur fleet logs</title><style>
 body{background:#0b1120;color:#e2e8f0;font:15px/1.5 -apple-system,system-ui,sans-serif;margin:2rem auto;max-width:78rem;padding:0 1rem}
@@ -2797,7 +2794,7 @@ tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .search-results{margin-top:1rem}.search-results .install-link{font-family:ui-monospace,monospace;font-size:.75rem}.pagination{margin:1rem 0}
 .raw-timeline{border-top:1px solid #1e293b;margin-top:1.8rem;padding-top:.6rem}
 .raw-timeline>summary{cursor:pointer;font-size:1rem;font-weight:700;margin:.6rem 0}
-</style></head><body>%s</body></html>""" % body
+</style></head><body>%s</body></html>""" % (refresh_meta, body)
 
 
 def render_install(install_id, kind, n=200):
@@ -2994,8 +2991,7 @@ def render_install(install_id, kind, n=200):
             "".join(raw_event_row(event) for event in reversed(events)),
         )
     )
-    page = render_dashboard()  # reuse the <style> shell
-    return page[: page.index("<body>") + 6] + body + "</body></html>"
+    return page_shell(body)
 
 
 def _one_query_value(params, name, default=""):
@@ -3153,10 +3149,7 @@ def render_search(params):
             next_link,
         )
     )
-    shell = render_dashboard()
-    head = shell[: shell.index("<body>") + 6]
-    head = head.replace('<meta http-equiv="refresh" content="30">', "")
-    return head + body + "</body></html>"
+    return page_shell(body)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3307,6 +3300,9 @@ class Handler(BaseHTTPRequestHandler):
             "os": self.headers.get("X-Os-Version", "")[:120],
             "hw": self.headers.get("X-Hw-Model", "")[:120],
             "specs": self.headers.get("X-Hw-Specs", "")[:120],
+            "last_version": ingest_app_version(
+                self.headers.get("X-App-Version", "")
+            ) or "",
         }
         try:
             event_store().update_state(install_id, state, metadata=meta)

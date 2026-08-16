@@ -14,11 +14,13 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -215,8 +217,14 @@ def normalize_state_snapshot(value: object, *, received_at: float | None = None)
         "input_device_count_capped",
         "input_enumeration_ok",
     }
-    if set(value) != required:
+    keys = set(value)
+    if not required.issubset(keys) or not keys.issubset(required | {"app_version"}):
         raise StoreError("state does not match aggregate contract")
+    app_version = value.get("app_version")
+    if app_version is not None and (
+        not isinstance(app_version, str) or not APP_VERSION_RE.fullmatch(app_version)
+    ):
+        raise StoreError("state has invalid app version")
     count = value["input_device_count"]
     if (
         not isinstance(value["default_input_available"], bool)
@@ -227,8 +235,16 @@ def normalize_state_snapshot(value: object, *, received_at: float | None = None)
         or not isinstance(value["input_enumeration_ok"], bool)
     ):
         raise StoreError("state has invalid aggregate values")
-    normalized = dict(value)
-    normalized["received_at"] = float(time.time() if received_at is None else received_at)
+    observed_at = time.time() if received_at is None else received_at
+    if (
+        not isinstance(observed_at, (int, float))
+        or isinstance(observed_at, bool)
+        or not math.isfinite(observed_at)
+        or not 0 < observed_at <= MAX_TIME_US / 1_000_000
+    ):
+        raise StoreError("state has invalid receive time")
+    normalized = {key: value[key] for key in required}
+    normalized["received_at"] = float(observed_at)
     return normalized
 
 
@@ -299,6 +315,17 @@ class EventStore:
             raise _sqlite_error(error) from error
 
     def initialize(self, *, check_integrity: bool = True) -> None:
+        deadline = time.monotonic() + self.busy_timeout_ms / 1000
+        while True:
+            try:
+                self._initialize_once(check_integrity=check_integrity)
+                return
+            except StoreBusy:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
+    def _initialize_once(self, *, check_integrity: bool) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         connection = self._connect()
         try:
@@ -711,8 +738,14 @@ class EventStore:
         metadata: dict | None = None,
     ) -> None:
         install_id = normalize_install_id(install_id)
+        if not isinstance(state, dict) or "received_at" not in state:
+            raise StoreError("state does not match aggregate contract")
         received_at = state.get("received_at")
-        seen_us = int(float(received_at) * 1_000_000)
+        state = normalize_state_snapshot(
+            {key: value for key, value in state.items() if key != "received_at"},
+            received_at=received_at,
+        )
+        seen_us = int(state["received_at"] * 1_000_000)
         state_json = json.dumps(
             state, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
@@ -961,6 +994,7 @@ class EventStore:
         events: Sequence[dict],
         raw_lines: int,
         malformed_lines: int,
+        start_offset: int,
         end_offset: int,
         source_size: int,
         source_mtime_ns: int,
@@ -978,8 +1012,15 @@ class EventStore:
             self._upsert_install(connection, install_id, metadata, seen_us)
             previous = self._checkpoint(connection, source_path)
             expected_offset = int(previous["byte_offset"]) if previous else 0
-            if end_offset < expected_offset:
-                raise StoreError("backfill source offset moved backwards")
+            if (
+                start_offset != expected_offset
+                or raw_lines < 1
+                or malformed_lines < 0
+                or raw_lines != len(prepared) + malformed_lines
+                or not 0 <= start_offset < end_offset <= source_size
+                or complete != (end_offset == source_size)
+            ):
+                raise StoreError("backfill chunk is not contiguous")
             for item in prepared:
                 if self._insert_prepared(connection, install_id, item, seen_us):
                     inserted += 1
@@ -1254,7 +1295,8 @@ def backfill(
     if not 1 <= batch_size <= MAX_BACKFILL_BATCH:
         raise StoreError("batch-size is out of bounds")
     processed = inserted = duplicates = malformed = 0
-    for install_id, path, relative in discover_sources(root):
+    sources = discover_sources(root)
+    for install_id, path, relative in sources:
         if processed >= max_lines:
             break
         stat = path.stat()
@@ -1269,6 +1311,7 @@ def backfill(
         with path.open("rb") as handle:
             handle.seek(offset)
             while offset < snapshot_size and processed < max_lines:
+                batch_start = offset
                 events: list[dict] = []
                 raw_count = malformed_count = 0
                 retained_bytes = 0
@@ -1310,6 +1353,7 @@ def backfill(
                     events=events,
                     raw_lines=raw_count,
                     malformed_lines=malformed_count,
+                    start_offset=batch_start,
                     end_offset=batch_end,
                     source_size=snapshot_size,
                     source_mtime_ns=stat.st_mtime_ns,
@@ -1321,11 +1365,16 @@ def backfill(
                 inserted += result.inserted
                 duplicates += result.duplicates
                 malformed += malformed_count
-    complete = all(
-        report["complete"] == 1
+    reports = store.checkpoint_reports()
+    finished = {
+        report["source_path"]
+        for report in reports
+        if report["complete"] == 1
         and report["byte_offset"] == report["source_size"]
-        for report in store.checkpoint_reports()
-    ) and len(store.checkpoint_reports()) == len(discover_sources(root))
+    }
+    complete = bool(sources) and all(
+        relative in finished for _, _, relative in sources
+    )
     return {
         "schema": "murmur-event-backfill/v1",
         "processed_lines": processed,
@@ -1620,5 +1669,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except StoreError as error:
-        print("event store error: %s" % error, file=os.sys.stderr)
-        raise SystemExit(1)
+        print("event store error: %s" % error, file=sys.stderr)
+        raise SystemExit(1) from error
