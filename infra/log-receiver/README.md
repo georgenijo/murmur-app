@@ -21,6 +21,7 @@ of truth and redeploy from it.
 | File | Deploys to | Purpose |
 |---|---|---|
 | `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, dashboard |
+| `event_store.py` | `/home/george/event_store.py` | stdlib-only SQLite migrations, transactional query projection, backfill/reconciliation, integrity, backup, and restore commands |
 | `murmur-logs.service` | `/etc/systemd/system/` | runs the receiver as `george`, restart-always |
 | `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
 | `dictation_lifecycle.py` | `/home/george/dictation_lifecycle.py` | deterministic per-session dictation funnel and terminal correlator |
@@ -64,24 +65,84 @@ Instead:
   unchanged by this move; reference copy in fleet secrets:
   `fleet secret get murmur-log-ingest-token`.
 
-## Redeploy after editing the receiver
+## SQLite rollout and exact-source deployment
+
+The production query store is `/home/george/murmur-logs/events.sqlite3`. Each
+HTTP request gets its own configured connection. The store uses foreign keys,
+WAL, `synchronous=FULL`, a two-second busy timeout, a 2 MiB connection cache,
+a 10 GiB database quota, and a 16 MiB WAL journal limit. FTS5 indexes only the
+already-sanitized event summary; the full sanitized object remains in
+`events.event_json`.
+
+Deploy from the exact merged commit, not a moving checkout or a patch against
+the older deployed receiver. Replace `<merge-sha>` with GitHub's recorded merge
+commit:
 
 ```bash
-cat infra/log-receiver/murmur-logs-receiver.py | tailscale ssh george@opti "cat > /home/george/murmur-logs-receiver.py"
-cat infra/log-receiver/dictation_lifecycle.py | tailscale ssh george@opti "cat > /home/george/dictation_lifecycle.py"
-cat infra/log-receiver/reliability_slo.py | tailscale ssh george@opti "cat > /home/george/reliability_slo.py"
-cat infra/log-receiver/murmur-capture-watch.py | tailscale ssh george@opti "cat > /home/george/murmur-capture-watch.py"
-cat infra/log-receiver/murmur-capture-watch.service | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.service"
-cat infra/log-receiver/murmur-capture-watch.timer | tailscale ssh george@opti "cat > /tmp/murmur-capture-watch.timer"
-tailscale ssh george@opti "sudo install -m 0644 /tmp/murmur-capture-watch.service /etc/systemd/system/ && sudo install -m 0644 /tmp/murmur-capture-watch.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now murmur-capture-watch.timer"
-tailscale ssh george@opti "sudo systemctl restart murmur-logs && systemctl is-active murmur-logs"
-tailscale ssh george@opti "sudo systemctl start murmur-capture-watch.service || true; systemctl status --no-pager murmur-capture-watch.service; systemctl list-timers --no-pager murmur-capture-watch.timer"
-curl -s https://georgenijo.com/murmur/healthz   # expect: ok
+MERGED_SHA=<merge-sha>
+git fetch origin
+git cat-file -e "$MERGED_SHA^{commit}"
+
+# Back up source, raw recovery archives, metadata, and any existing database.
+fleet exec opti 'set -eu; stamp=$(date -u +%Y%m%dT%H%M%SZ); backup=/home/george/murmur-logs-backups/$stamp; mkdir -p "$backup"; cp -a /home/george/murmur-logs-receiver.py "$backup"/; test ! -e /home/george/event_store.py || cp -a /home/george/event_store.py "$backup"/; tar -C /home/george -czf "$backup/murmur-logs-raw.tgz" --exclude="murmur-logs/events.sqlite3*" murmur-logs; if test -e /home/george/murmur-logs/events.sqlite3; then python3 /home/george/event_store.py --root /home/george/murmur-logs backup "$backup/events.sqlite3"; fi; echo "$backup"'
+
+# Stage, compile, and install both exact source files together.
+LOCAL_STAGE=$(mktemp -d)
+git archive "$MERGED_SHA" infra/log-receiver/murmur-logs-receiver.py infra/log-receiver/event_store.py | tar -x -C "$LOCAL_STAGE"
+fleet cp "$LOCAL_STAGE/infra/log-receiver/event_store.py" opti:/tmp/event_store.py.$MERGED_SHA
+fleet cp "$LOCAL_STAGE/infra/log-receiver/murmur-logs-receiver.py" opti:/tmp/murmur-logs-receiver.py.$MERGED_SHA
+fleet exec opti "set -eu; python3 -m py_compile /tmp/event_store.py.$MERGED_SHA /tmp/murmur-logs-receiver.py.$MERGED_SHA; install -m 0755 /tmp/event_store.py.$MERGED_SHA /home/george/event_store.py; install -m 0755 /tmp/murmur-logs-receiver.py.$MERGED_SHA /home/george/murmur-logs-receiver.py"
+fleet exec opti 'sudo systemctl restart murmur-logs && systemctl is-active murmur-logs'
+curl -fsS https://georgenijo.com/murmur/healthz
 ```
 
-george has passwordless sudo on `opti`, so the commands above run
-non-interactively. Equivalently, any of these can run via
-`fleet exec opti "..."` instead of `tailscale ssh george@opti "..."`.
+The first restart migrates SQLite but leaves `dashboard_ready=0`. New
+production ingests transactionally update SQLite and raw JSONL while dashboard
+reads deliberately stay on JSONL. Run the bounded, checkpointed backfill until
+it reports `"complete":true`:
+
+```bash
+fleet exec opti 'python3 /home/george/event_store.py --root /home/george/murmur-logs backfill --max-lines 100000'
+```
+
+Stop the receiver briefly for the final proof so the source snapshot cannot
+grow. A failed reconciliation leaves the readiness flag unchanged:
+
+```bash
+fleet exec opti 'status=0; report=/home/george/murmur-logs/reconciliation.json; temporary=$report.tmp; sudo systemctl stop murmur-logs || exit $?; python3 /home/george/event_store.py --root /home/george/murmur-logs backfill --max-lines 100000 || status=$?; if test "$status" -eq 0; then python3 /home/george/event_store.py --root /home/george/murmur-logs reconcile --mark-ready >"$temporary" || status=$?; fi; if test "$status" -eq 0; then mv "$temporary" "$report"; else rm -f "$temporary"; fi; sudo systemctl start murmur-logs || exit $?; test "$status" -eq 0 || exit "$status"; systemctl is-active murmur-logs'
+```
+
+The versioned reconciliation report is content-free. Per install it records
+raw lines, valid objects, malformed/non-object lines, duplicate hashes,
+untimed events, backfill insertions, database rows, and earliest/latest valid
+timestamps. Unique valid-object counts, untimed counts, timestamp bounds, and
+the complete event-hash set must match SQLite for every available production
+archive before indexed reads can be enabled.
+
+Verify the unchanged exposure boundary. An unauthenticated dashboard request
+must enter Cloudflare Access, while nginx's public apex still returns 404 for
+a dashboard path:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://murmur.georgenijo.com/
+curl -sS -o /dev/null -w '%{http_code}\n' https://georgenijo.com/murmur/search
+```
+
+Use an Access-authenticated browser to exercise an arbitrary date search and a
+second keyset page. Never print or publish production event rows while
+validating.
+
+### Isolated staging on `opti`
+
+Stage only synthetic data under a temporary root on an unused loopback port.
+The overrides do not change production service defaults:
+
+```bash
+fleet exec opti 'root=$(mktemp -d /tmp/murmur-434-stage.XXXXXX); MURMUR_LOG_ROOT="$root" MURMUR_LOG_PORT=18600 python3 /home/george/murmur-logs-receiver.py'
+```
+
+Use a named tmux session for a longer staging run, check the port first, and
+remove the temporary root only after recording the content-free results.
 
 Redeploying the nginx or cloudflared config after editing it in this
 directory:
@@ -97,9 +158,44 @@ entry; the timer continues to run on schedule. The fleet dashboard reads the
 same report and shows the bounded alert details. A healthy later run clears the
 failed state and replaces the report.
 
-Rollback stops/disables the timer, removes its two units and script, reloads
-systemd, and redeploys the preceding receiver. Retained `events.jsonl` remains
-valid: `ingest_app_version` is an additive receiver annotation.
+## Retention, failure handling, backup, restore, and rollback
+
+- History is retained indefinitely. Nothing automatically deletes database or
+  raw history. Limits are admission controls: 8 MiB/request, 200 MiB raw JSONL
+  per install, 10 GiB total raw install directories, 150 installs, and 10 GiB
+  for SQLite. Raising a limit is an explicit reviewed operator change.
+- The receiver parses a complete batch before mutation. New event hashes enter
+  one `BEGIN IMMEDIATE` transaction, their raw lines are appended and fsynced,
+  and SQLite commits last. An exact retry inserts and appends nothing. Archive
+  or commit failure rolls back SQLite and truncates JSONL to its original byte
+  boundary. Busy, quota, `SQLITE_FULL`, corruption, and commit errors return
+  non-2xx, leaving the shipper offset unchanged.
+- Disk full is not repaired by deleting history. Reject ingest, expand storage
+  or remove unrelated data, run integrity checking, and let clients retry. Do
+  not use a 2xx override.
+- Create an online database backup with
+  `event_store.py --root /home/george/murmur-logs backup <destination>`. The
+  command uses SQLite's backup API, integrity-checks and fsyncs the result, and
+  publishes it atomically. Back up JSONL and metadata with it because JSONL is
+  still the recovery/export source.
+- Run a full check with
+  `event_store.py --root /home/george/murmur-logs integrity`. Startup also runs
+  `quick_check`; corruption prevents receiver startup and ingest
+  acknowledgement.
+- Restore only while `murmur-logs.service` is stopped. Preserve the suspect
+  database plus WAL/SHM for investigation, then run
+  `event_store.py --root /home/george/murmur-logs restore <verified-backup>`.
+  Restore validates schema and integrity, creates a SQLite-consistent
+  `.pre-restore-<UTC>` copy when possible (or an exact forensic copy when the
+  current database is corrupt), preserves any WAL/SHM beside that copy,
+  atomically installs the backup, and removes stale live WAL/SHM files. Run
+  `integrity`, restart, and reconcile before enabling indexed reads.
+- Query rollback is immediate and non-destructive:
+  `event_store.py --root /home/george/murmur-logs disable-dashboard` switches
+  dashboard reads back to JSONL. For code rollback, install the two source
+  files saved before deployment (or the exact prior commit) and restart. Raw
+  JSONL remains compatible; retain SQLite for diagnosis. Restoring an older
+  database is not required for a code rollback.
 
 ## Pending: historical data migration
 
@@ -119,10 +215,12 @@ good. This is a manual, one-time step — not automated by anything here.
 
 ## Data layout
 
-`/home/george/murmur-logs/<install-uuid>/` — `events[.dev].jsonl` (append-only),
-`meta.json` (device identity), `state.json` (latest mic/device snapshot).
-Caps: 8 MB/request, 200 MB/install, 10 GB global, 150 installs.
-Dev-tagged batches are acked and discarded.
+`/home/george/murmur-logs/<install-uuid>/` contains production
+`events.jsonl` (append-only), bounded `meta.json`, and `state.json` with only
+the current privacy-safe aggregate microphone contract. The root contains
+`events.sqlite3`, its transient WAL/SHM files, and the content-free
+`reconciliation.json`. Dev-tagged batches are acknowledged and discarded;
+historical `events.dev.jsonl` files are not backfilled.
 
 Accepted production events are annotated with the bounded
 `ingest_app_version` already supplied in the request header. This adds no
@@ -216,6 +314,7 @@ LLM-ready Markdown rendering, bounded retained-log activity metrics, route
 bounds, HTML escaping, and dictation lifecycle correlation are covered by:
 
 ```bash
+python3 -m unittest tests/test_event_store.py
 python3 -m unittest tests/test_log_receiver.py
 python3 -m unittest tests/test_capture_regression_watch.py
 python3 -m unittest tests/test_dictation_lifecycle.py

@@ -1,9 +1,10 @@
 # Diagnostic Log Shipping
 
-Zero-config telemetry upload. Every install tails its own structured event log
-(`events.jsonl`, see [log-viewer.md](log-viewer.md)) and ships new lines to a
-central ingest endpoint. No user setup, no UI, no permissions prompts —
-install the app (or receive an auto-update) and logs flow.
+Zero-config telemetry upload for production builds. A production install tails
+its structured event log (`events.jsonl`, see [log-viewer.md](log-viewer.md))
+and ships new lines to a central ingest endpoint. Normal development builds do
+not ship or persist server-side history; old `X-Dev: 1` batches are
+acknowledged and discarded. No user setup, UI, or permissions prompt is added.
 
 ## Privacy model
 
@@ -56,11 +57,16 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
                                     murmur-logs.service (127.0.0.1:8600)
                                                    │
                                                    ▼
-                                    ~/murmur-logs/<install-uuid>/events[.dev].jsonl
+                         ┌──────────▶ ~/murmur-logs/<install-uuid>/events.jsonl
+                         │                         │
+                         │            recovery/export + hourly watch
+                         │                         ▼
+                         │              capture-watch.json
+                         │
+                         └──────────▶ events.sqlite3 (WAL + FTS5)
                                                    │
-                                      hourly systemd timer
                                                    ▼
-                                    capture-watch.json + dashboard alert
+                              Access-protected historical dashboard search
 ```
 
 ### Shipper (`app/src-tauri/src/log_shipper.rs`)
@@ -94,8 +100,18 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
   `127.0.0.1:8600`, run by systemd unit `murmur-logs.service` (user `george`),
   on the fleet node `opti` (a Dell Optiplex on the tailnet with no public
   IP).
-- Validates the bearer token, the `X-Install-Id` shape, and that every line
-  parses as JSON before appending. 8 MB request cap, 200 MB per-install cap.
+- Validates the bearer token, install ID, and complete bounded batch before any
+  mutation. Each production event receives an install-scoped canonical hash.
+  New hashes are inserted in one SQLite transaction, corresponding JSONL lines
+  are appended and fsynced, and the database commits before a 2xx response.
+  Exact retries are no-ops in both stores. Busy, quota, disk-full, corruption,
+  archive, or commit failure returns non-2xx so the shipper offset stays put.
+  The caps are 8 MiB/request, 200 MiB raw JSONL/install, 10 GiB raw total, 150
+  installs, and 10 GiB SQLite; history is never auto-deleted.
+- SQLite uses migrations, request-scoped connections, foreign keys, WAL,
+  bounded busy wait/cache/WAL size, startup integrity checking, indexed event
+  fields, and FTS5 over summary text. Raw JSONL remains the exact
+  recovery/export source.
 - Adds a bounded `ingest_app_version` annotation from the app-version request
   header to each accepted production event. This is receiver-side attribution
   from an existing header, not a new client-collected field. Historical lines
@@ -120,6 +136,28 @@ events remain available in an expandable technical timeline and as exact
 latest-200, latest-500, or complete JSONL downloads. Served by the same receiver
 process.
 
+After a bounded resumable backfill and content-free per-install reconciliation
+prove the SQLite projection, the dashboard switches its production history
+reads from JSONL to SQLite. Operators can filter by install/device, UTC or
+Eastern date range, receiver-observed app version, level, stream, and bounded
+FTS5 summary terms. A dedicated full-history warning/error view uses the same
+stable `(timestamp, event_id)` keyset cursor, including when timestamps are
+identical; offset pagination is never used. Cursors are signed and bound to the
+exact filter set, parameters are strictly bounded, and every rendered event or
+metadata value is escaped. A retained object without a valid event timestamp is
+reported as untimed during reconciliation and remains searchable, using its
+bounded receiver/backfill receipt time only for ordering and date filtering.
+
+The readiness flag defaults off and can be enabled only by a successful
+reconciliation command. Raw latest-200/latest-500/full downloads and
+LLM-ready latest-200/latest-500 reports keep reading JSONL, so rollout and
+query-store rollback do not change their bytes or privacy boundary.
+
+The current `/state` body contains four aggregate microphone fields plus a
+bounded app version. The receiver validates the complete current shape, drops
+the redundant body version (the authenticated request metadata already carries
+it), and persists only the four aggregate fields and receiver timestamp.
+
 The per-install **quick info** table shows two retained-log activity metrics:
 **Last activated** is the newest dictation-owned `audio.capture_ready` event
 that proves microphone audio became ready, while **Last successful
@@ -129,8 +167,8 @@ historical fallbacks. Start requests,
 failed initialization, cancelled/no-speech runs, empty output, and imported-file
 transcription do not advance those metrics. Each value includes relative age and
 an exact Eastern timestamp. The receiver scans the complete retained JSONL with
-a strict per-record memory bound, independent of the visible 200/1,000/5,000
-event window; an absent match is reported as not found in the retained log.
+a strict per-record memory bound, independent of the visible latest-200 event
+window; an absent match is reported as not found in the retained log.
 
 Each install page also offers latest-200 and latest-500 **LLM-ready Markdown**
 reports. The versioned `murmur-fleet-llm/v1` format includes bounded device and
@@ -323,3 +361,5 @@ tailscale ssh george@opti \
 | opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~10 MB rotation window (current + `.jsonl.1`) is lost if the outage outlives it. |
 | Endpoint URL changes | Old binaries go dark until auto-update delivers the new constant. |
 | Install exceeds 200 MB on server | Receiver returns 507; shipper keeps retrying but nothing is appended (effectively paused for that install). |
+| SQLite busy, quota, disk full, corruption, archive fsync, or commit failure | Receiver returns non-2xx and never acknowledges a partial batch. JSONL is truncated back after a failed pre-commit append; the client retries from the same offset. |
+| Query-store reconciliation fails | Indexed dashboard reads stay disabled; ingest continues dual-writing and the protected dashboard stays on raw JSONL until the mismatch is investigated. |

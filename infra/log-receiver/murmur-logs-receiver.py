@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Murmur log ingest receiver + fleet dashboard.
 
-Accepts NDJSON batches from murmur-app installs and appends them to
-per-install JSONL files under ~/murmur-logs/. Stdlib only.
+Accepts NDJSON batches from murmur-app installs and transactionally projects
+them into SQLite while retaining per-install JSONL under ~/murmur-logs/.
+Stdlib only.
 
     POST /ingest
       Authorization: Bearer <token>
@@ -12,6 +13,7 @@ per-install JSONL files under ~/murmur-logs/. Stdlib only.
       body: NDJSON (one JSON object per line)
 
     GET /dashboard   — HTML overview of every install (gate behind CF Access)
+    GET /search      — indexed historical filters and keyset pages (CF Access)
     GET /install/<id>/raw?limit=200|500 — bounded or complete JSONL download
     GET /install/<id>/llm?limit=200|500 — LLM-ready Markdown report
     GET /healthz     — liveness
@@ -20,20 +22,53 @@ Responses: 204 ok, 401 bad token, 400 bad payload, 413 too large.
 """
 
 import html
+import io
 import json
 import math
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 from zoneinfo import ZoneInfo
 
+RECEIVER_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if RECEIVER_DIRECTORY not in sys.path:
+    sys.path.insert(0, RECEIVER_DIRECTORY)
+
+from event_store import (  # noqa: E402
+    ArchiveError,
+    EventQuery,
+    EventStore,
+    InvalidEvent,
+    InvalidQuery,
+    StoreBusy,
+    StoreCommitError,
+    StoreCorrupt,
+    StoreError,
+    StoreQuota,
+    decode_cursor,
+    encode_cursor,
+    normalize_state_snapshot,
+    parse_event_line,
+    parse_local_datetime,
+)
+
 TOKEN = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0"
-ROOT = os.path.expanduser("~/murmur-logs")
+ROOT = os.path.abspath(
+    os.path.expanduser(os.environ.get("MURMUR_LOG_ROOT", "~/murmur-logs"))
+)
+try:
+    LISTEN_PORT = int(os.environ.get("MURMUR_LOG_PORT", "8600"))
+except ValueError:
+    LISTEN_PORT = 0
+if not 1024 <= LISTEN_PORT <= 65535:
+    raise RuntimeError("MURMUR_LOG_PORT must be between 1024 and 65535")
 MAX_BODY = 8 * 1024 * 1024  # 8 MB
+MAX_BATCH_EVENTS = 10_000
 MAX_FILE = 200 * 1024 * 1024  # per-install cap: stop appending past 200 MB
 INSTALL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 MAX_INSTALLS = 150
@@ -44,6 +79,9 @@ MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
 CAPTURE_WATCH_REPORT = "capture-watch.json"
 APP_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$")
+DATABASE_NAME = "events.sqlite3"
+DATABASE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024
+SEARCH_LIMITS = (25, 50, 100, 200)
 SLO_UTC_TIMESTAMP_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
 )
@@ -131,6 +169,8 @@ DICTATION_ERROR_CODES = {
     "signature_invalid",
 }
 _usage_cache = {"t": 0.0, "bytes": 0, "dirs": 0}
+_store_init_lock = threading.Lock()
+_initialized_store_paths = set()
 
 
 def root_usage():
@@ -151,14 +191,65 @@ def root_usage():
     return _usage_cache
 
 
-def atomic_write_json(path, obj):
-    tmp = path + ".tmp"
+def event_store():
+    """Return a connection factory after one integrity-checked initialization."""
+    path = os.path.join(ROOT, DATABASE_NAME)
+    store = EventStore(path, quota_bytes=DATABASE_QUOTA_BYTES)
+    if path not in _initialized_store_paths:
+        with _store_init_lock:
+            if path not in _initialized_store_paths:
+                store.initialize()
+                _initialized_store_paths.add(path)
+    return store
+
+
+def dashboard_store():
+    store = event_store()
     try:
-        with open(tmp, "w") as f:
-            json.dump(obj, f)
-        os.replace(tmp, path)
-    except OSError:
-        pass
+        ready = store.is_dashboard_ready()
+    except StoreBusy:
+        return None
+    return store if ready else None
+
+
+def atomic_write_json(path, obj):
+    """Atomically persist required recovery metadata or raise."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    descriptor = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def current_state_snapshot(value):
+    """Return only the current aggregate state shape, including receive time."""
+    if not isinstance(value, dict):
+        return {}
+    received_at = value.get("received_at")
+    fields = {key: item for key, item in value.items() if key != "received_at"}
+    if (
+        not isinstance(received_at, (int, float))
+        or isinstance(received_at, bool)
+        or received_at <= 0
+    ):
+        return {}
+    try:
+        return normalize_state_snapshot(fields, received_at=received_at)
+    except StoreError:
+        return {}
+
+
+def microphone_label(state):
+    count = current_state_snapshot(state).get("input_device_count")
+    if not isinstance(count, int):
+        return ""
+    return "%d input%s" % (count, "" if count == 1 else "s")
 
 
 def ingest_app_version(value):
@@ -855,6 +946,22 @@ def count_lines(path):
 
 
 def collect_installs():
+    store = dashboard_store()
+    if store is not None:
+        installs = []
+        for item in store.list_installs():
+            path = os.path.join(ROOT, item["id"], "events.jsonl")
+            installs.append(
+                {
+                    **item,
+                    "kind": "prod",
+                    "mic": microphone_label(item.get("state")),
+                    "bytes": os.path.getsize(path) if os.path.exists(path) else 0,
+                    "last_ts": "",
+                    "last_summary": "",
+                }
+            )
+        return installs
     installs = []
     if not os.path.isdir(ROOT):
         return installs
@@ -893,7 +1000,7 @@ def collect_installs():
                 "os": meta.get("os", ""),
                 "hw": meta.get("hw", ""),
                 "specs": meta.get("specs", ""),
-                "mic": state.get("default_input") or "",
+                "mic": microphone_label(state),
                 "version": meta.get("last_version", "?"),
                 "events": count_lines(path),
                 "bytes": os.path.getsize(path),
@@ -2407,7 +2514,7 @@ def export_limit(params, default=None):
     return int(values[0])
 
 
-def raw_event_row(event):
+def raw_event_cells(event):
     level = str(event.get("level", "info"))
     row_class = level if level in ("warn", "error") else ""
     data = event.get("data")
@@ -2415,13 +2522,12 @@ def raw_event_row(event):
     data_str = " ".join(
         "%s=%s" % (key, value) for key, value in list(data.items())[:6]
     )
-    return (
-        '<tr class="%s"><td class="num">%s</td>'
+    cells = (
+        '<td class="num">%s</td>'
         '<td><span class="stream">%s</span></td>'
         '<td><span class="lvl %s">%s</span></td>'
-        '<td><code>%s</code><div class="meta">%s</div></td></tr>'
+        '<td><code>%s</code><div class="meta">%s</div></td>'
         % (
-            row_class,
             html.escape(eastern_time(str(event.get("timestamp", "")))),
             html.escape(str(event.get("stream", ""))),
             html.escape(level),
@@ -2430,6 +2536,12 @@ def raw_event_row(event):
             html.escape(data_str[:160]),
         )
     )
+    return row_class, cells
+
+
+def raw_event_row(event):
+    row_class, cells = raw_event_cells(event)
+    return '<tr class="%s">%s</tr>' % (row_class, cells)
 
 
 def compact_event(event):
@@ -2570,10 +2682,30 @@ def render_dashboard():
                 ago(i["mtime"]),
             )
         )
+    install_options = ['<option value="">All production installs</option>']
+    for item in installs:
+        label = item["device"] or item["id"][:8]
+        install_options.append(
+            '<option value="%s">%s · %s</option>'
+            % (
+                html.escape(item["id"], quote=True),
+                html.escape(str(label)),
+                html.escape(item["id"][:8]),
+            )
+        )
+    search_panel = (
+        "<section class='search-panel'><div><strong>Historical search</strong>"
+        "<span>Indexed production history with stable pages</span></div>"
+        "<form action='/search' method='get'><label>Install / device<select name='install'>%s</select></label>"
+        "<label>Summary text<input name='q' maxlength='200' placeholder='capture timeout'></label>"
+        "<button type='submit'>Search history</button>"
+        "<a class='download-link' href='/search?view=problems'>All warnings &amp; errors</a>"
+        "</form></section>" % "".join(install_options)
+    )
     body = (
         "<h1>murmur fleet logs</h1>"
         "<p class='sub'>%d install stream%s · refreshes every 30s · %s</p>"
-        "%s%s"
+        "%s%s%s"
         "<table><thead><tr><th>device</th><th>version</th>"
         "<th>last event</th></tr></thead>"
         "<tbody>%s</tbody></table>"
@@ -2583,11 +2715,17 @@ def render_dashboard():
             datetime.now(EASTERN).strftime("%Y-%m-%d %-I:%M %p ET"),
             capture_watch,
             reliability_slo,
+            search_panel,
             "".join(rows) or '<tr><td colspan="3">no installs yet</td></tr>',
         )
     )
+    return page_shell(body, refresh=True)
+
+
+def page_shell(body, *, refresh=False):
+    refresh_meta = '<meta http-equiv="refresh" content="30">' if refresh else ""
     return """<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="30">
+%s
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>murmur fleet logs</title><style>
 body{background:#0b1120;color:#e2e8f0;font:15px/1.5 -apple-system,system-ui,sans-serif;margin:2rem auto;max-width:78rem;padding:0 1rem}
@@ -2648,9 +2786,15 @@ tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .download-label{color:#94a3b8;font-size:.78rem;min-width:8.5rem}
 .download-link{border:1px solid #334155;border-radius:6px;color:#bfdbfe;font-size:.75rem;padding:.18rem .5rem}
 .download-link:hover{background:#1e293b;text-decoration:none}
+.search-panel{align-items:end;background:#111827;border:1px solid #1e293b;border-radius:10px;display:grid;gap:.75rem;margin:0 0 1.2rem;padding:.8rem .9rem}
+.search-panel>div{display:flex;flex-direction:column}.search-panel>div span{color:#64748b;font-size:.75rem}
+.search-panel form,.filter-grid{align-items:end;display:flex;flex-wrap:wrap;gap:.55rem}.search-panel label,.filter-grid label{color:#94a3b8;display:grid;font-size:.7rem;gap:.2rem}
+.search-panel input,.search-panel select,.filter-grid input,.filter-grid select{background:#0b1120;border:1px solid #334155;border-radius:6px;color:#e2e8f0;max-width:18rem;padding:.32rem .45rem}
+.search-panel button,.filter-grid button{background:#1d4ed8;border:0;border-radius:6px;color:white;cursor:pointer;padding:.38rem .65rem}
+.search-results{margin-top:1rem}.search-results .install-link{font-family:ui-monospace,monospace;font-size:.75rem}.pagination{margin:1rem 0}
 .raw-timeline{border-top:1px solid #1e293b;margin-top:1.8rem;padding-top:.6rem}
 .raw-timeline>summary{cursor:pointer;font-size:1rem;font-weight:700;margin:.6rem 0}
-</style></head><body>%s</body></html>""" % body
+</style></head><body>%s</body></html>""" % (refresh_meta, body)
 
 
 def render_install(install_id, kind, n=200):
@@ -2659,20 +2803,40 @@ def render_install(install_id, kind, n=200):
     path = os.path.join(ROOT, install_id, fname)
     if not os.path.exists(path):
         return None
-    meta = {}
-    try:
-        with open(os.path.join(ROOT, install_id, "meta.json")) as f:
-            meta = json.load(f)
-    except (OSError, ValueError):
-        pass
-    total = count_lines(path)
-    size_mb = os.path.getsize(path) / 1048576
-    events = []
-    for line in tail_lines(path, n, max_bytes=max(512 * 1024, n * 600)):
+    store = dashboard_store() if kind == "prod" else None
+    stored_install = store.get_install(install_id) if store is not None else None
+    if store is not None and stored_install is None:
+        return None
+    if stored_install is not None:
+        meta = {
+            "device_name": stored_install["device"],
+            "os": stored_install["os"],
+            "hw": stored_install["hw"],
+            "specs": stored_install["specs"],
+            "last_version": stored_install["version"],
+        }
+        total = stored_install["events"]
+        page = store.query_events(
+            EventQuery(install_id=install_id, limit=min(n, 200))
+        )
+        events = list(reversed(page.events))
+    else:
+        meta = {}
         try:
-            events.append(json.loads(line))
-        except ValueError:
-            continue
+            with open(os.path.join(ROOT, install_id, "meta.json")) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            pass
+        total = count_lines(path)
+        events = []
+        for line in tail_lines(path, n, max_bytes=max(512 * 1024, n * 600)):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+    size_mb = os.path.getsize(path) / 1048576
 
     title = meta.get("device_name") or install_id[:8]
     sub = " · ".join(
@@ -2684,12 +2848,12 @@ def render_install(install_id, kind, n=200):
             install_id,
         ) if x
     )
-    state = {}
-    try:
-        with open(os.path.join(ROOT, install_id, "state.json")) as f:
-            state = json.load(f)
-    except (OSError, ValueError):
-        pass
+    if stored_install is not None:
+        state = current_state_snapshot(stored_install.get("state"))
+    else:
+        state = current_state_snapshot(
+            load_json_file(os.path.join(ROOT, install_id, "state.json"))
+        )
     activity = find_activity_metrics(path)
 
     signals = build_health_signals(events)
@@ -2714,30 +2878,18 @@ def render_install(install_id, kind, n=200):
     enumeration = "No device state received"
     state_age = "Unavailable"
     if state:
-        if "default_input_available" in state:
-            microphone = "Available" if state.get("default_input_available") else "Unavailable"
-            input_count = state.get("input_device_count")
-            inputs = (
-                "%s detected%s"
-                % (
-                    input_count,
-                    " (count capped)" if state.get("input_device_count_capped") else "",
-                )
-                if isinstance(input_count, int)
-                else "unknown"
+        microphone = "Available" if state.get("default_input_available") else "Unavailable"
+        input_count = state.get("input_device_count")
+        inputs = (
+            "%s detected%s"
+            % (
+                input_count,
+                " (count capped)" if state.get("input_device_count_capped") else "",
             )
-            enumeration = (
-                "Succeeded" if state.get("input_enumeration_ok") else "Failed"
-            )
-        else:
-            microphone = state.get("default_input") or "unknown"
-            others = [
-                device
-                for device in state.get("input_devices", [])
-                if device != state.get("default_input")
-            ]
-            inputs = ", ".join(others) or "unknown"
-            enumeration = "Legacy state snapshot"
+            if isinstance(input_count, int)
+            else "unknown"
+        )
+        enumeration = "Succeeded" if state.get("input_enumeration_ok") else "Failed"
         received_at = state.get("received_at")
         if (
             isinstance(received_at, (int, float))
@@ -2817,9 +2969,9 @@ def render_install(install_id, kind, n=200):
         '<p class="back"><a href="/">&larr; all devices</a></p>'
         "<h1>%s</h1><p class='sub'>%s</p>"
         "<p class='sub'>%s events on server (%.1f MB) &middot; "
-        "show last <a href='%s?kind=%s&n=200'>200</a> / "
-        "<a href='%s?kind=%s&n=1000'>1,000</a> / "
-        "<a href='%s?kind=%s&n=5000'>5,000</a></p>"
+        "show latest <a href='%s?kind=%s&n=200'>200</a> &middot; "
+        "<a href='/search?install=%s'>search complete history</a> &middot; "
+        "<a href='/search?install=%s&amp;view=problems'>full-history warnings/errors</a></p>"
         "%s%s%s%s"
         "<details class='raw-timeline'><summary>Raw technical timeline "
         "(%d loaded events)</summary><table><tbody>%s</tbody></table></details>"
@@ -2828,7 +2980,9 @@ def render_install(install_id, kind, n=200):
             html.escape(sub),
             "{:,}".format(total),
             size_mb,
-            base, kind, base, kind, base, kind,
+            base, kind,
+            html.escape(install_id, quote=True),
+            html.escape(install_id, quote=True),
             downloads_html,
             health_html,
             info_html,
@@ -2837,8 +2991,165 @@ def render_install(install_id, kind, n=200):
             "".join(raw_event_row(event) for event in reversed(events)),
         )
     )
-    page = render_dashboard()  # reuse the <style> shell
-    return page[: page.index("<body>") + 6] + body + "</body></html>"
+    return page_shell(body)
+
+
+def _one_query_value(params, name, default=""):
+    values = params.get(name)
+    if values is None:
+        return default
+    if len(values) != 1:
+        raise InvalidQuery("duplicate query parameter")
+    value = values[0]
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 1024:
+        raise InvalidQuery("query parameter is too long")
+    return value
+
+
+def search_query_from_params(params):
+    allowed = {
+        "install", "tz", "start", "end", "version", "level", "stream",
+        "q", "view", "limit", "cursor",
+    }
+    if set(params) - allowed:
+        raise InvalidQuery("unknown query parameter")
+    install_id = _one_query_value(params, "install") or None
+    zone = _one_query_value(params, "tz", "utc")
+    start = parse_local_datetime(_one_query_value(params, "start"), zone)
+    end = parse_local_datetime(_one_query_value(params, "end"), zone, end=True)
+    version = _one_query_value(params, "version") or None
+    level = _one_query_value(params, "level") or None
+    stream = _one_query_value(params, "stream") or None
+    search = _one_query_value(params, "q") or None
+    view = _one_query_value(params, "view")
+    if view not in ("", "problems"):
+        raise InvalidQuery("invalid history view")
+    limit_value = _one_query_value(params, "limit", "100")
+    if not limit_value.isdigit() or int(limit_value) not in SEARCH_LIMITS:
+        raise InvalidQuery("invalid page size")
+    query = EventQuery(
+        install_id=install_id,
+        start_us=start,
+        end_us=end,
+        app_version=version,
+        level=level,
+        stream=stream,
+        search=search,
+        problems_only=view == "problems",
+        limit=int(limit_value),
+    )
+    return EventStore.validate_query(query), zone
+
+
+def _selected(actual, expected):
+    return " selected" if actual == expected else ""
+
+
+def search_event_row(event):
+    install_id = str(event.get("_store_install_id", ""))
+    row_class, cells = raw_event_cells(event)
+    return (
+        '<tr class="%s"><td><a class="install-link" href="/install/%s">%s</a></td>%s</tr>'
+        % (
+            row_class,
+            html.escape(install_id, quote=True),
+            html.escape(install_id[:8]),
+            cells,
+        )
+    )
+
+
+def render_search(params):
+    store = dashboard_store()
+    if store is None:
+        raise StoreBusy("historical database is awaiting reconciliation")
+    query, zone = search_query_from_params(params)
+    cursor = _one_query_value(params, "cursor")
+    cursor_secret = store.cursor_secret()
+    before = decode_cursor(cursor_secret, query, cursor) if cursor else None
+    page = store.query_events(query, before=before)
+    installs = store.list_installs()
+    options = ['<option value="">All production installs</option>']
+    for item in installs:
+        label = item["device"] or item["id"][:8]
+        options.append(
+            '<option value="%s"%s>%s · %s</option>'
+            % (
+                html.escape(item["id"], quote=True),
+                _selected(query.install_id, item["id"]),
+                html.escape(str(label)),
+                html.escape(item["id"][:8]),
+            )
+        )
+    level_options = ['<option value="">All levels</option>']
+    for level in ("trace", "debug", "info", "warn", "error"):
+        level_options.append(
+            '<option value="%s"%s>%s</option>'
+            % (level, _selected(query.level, level), level)
+        )
+    form = (
+        "<form class='filter-grid' action='/search' method='get'>"
+        "<label>Install / device<select name='install'>%s</select></label>"
+        "<label>Time zone<select name='tz'><option value='utc'%s>UTC</option>"
+        "<option value='eastern'%s>Eastern / local</option></select></label>"
+        "<label>From<input type='datetime-local' name='start' value='%s'></label>"
+        "<label>Through<input type='datetime-local' name='end' value='%s'></label>"
+        "<label>App version<input name='version' maxlength='40' value='%s' placeholder='1.2.3 or unknown'></label>"
+        "<label>Level<select name='level'>%s</select></label>"
+        "<label>Stream<input name='stream' maxlength='40' value='%s' placeholder='audio'></label>"
+        "<label>Summary text<input name='q' maxlength='200' value='%s' placeholder='capture timeout'></label>"
+        "<label>View<select name='view'><option value=''%s>All events</option>"
+        "<option value='problems'%s>Warnings &amp; errors</option></select></label>"
+        "<label>Page size<select name='limit'>%s</select></label>"
+        "<button type='submit'>Apply filters</button></form>"
+        % (
+            "".join(options),
+            _selected(zone, "utc"),
+            _selected(zone, "eastern"),
+            html.escape(_one_query_value(params, "start"), quote=True),
+            html.escape(_one_query_value(params, "end"), quote=True),
+            html.escape(query.app_version or "", quote=True),
+            "".join(level_options),
+            html.escape(query.stream or "", quote=True),
+            html.escape(query.search or "", quote=True),
+            _selected("problems" if query.problems_only else "", ""),
+            _selected("problems" if query.problems_only else "", "problems"),
+            "".join(
+                '<option value="%d"%s>%d</option>'
+                % (limit, _selected(query.limit, limit), limit)
+                for limit in SEARCH_LIMITS
+            ),
+        )
+    )
+    next_link = ""
+    if page.next_position is not None:
+        next_params = {
+            key: values[0]
+            for key, values in params.items()
+            if key != "cursor" and len(values) == 1 and values[0] != ""
+        }
+        next_params["cursor"] = encode_cursor(
+            cursor_secret, query, page.next_position
+        )
+        next_link = (
+            '<p class="pagination"><a class="download-link" href="/search?%s">Older events &rarr;</a></p>'
+            % html.escape(urlencode(next_params), quote=True)
+        )
+    rows = "".join(search_event_row(item) for item in page.events)
+    body = (
+        '<p class="back"><a href="/">&larr; fleet dashboard</a></p>'
+        "<h1>historical diagnostic search</h1>"
+        "<p class='sub'>Production SQLite history · newest first · stable keyset pages. "
+        "Summary search uses bounded FTS5 tokens; all times are interpreted in the selected zone.</p>"
+        "%s<div class='search-results'><table><thead><tr><th>install</th><th>time</th>"
+        "<th>stream</th><th>level</th><th>event</th></tr></thead><tbody>%s</tbody></table></div>%s"
+        % (
+            form,
+            rows or '<tr><td colspan="5">No matching events.</td></tr>',
+            next_link,
+        )
+    )
+    return page_shell(body)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2848,10 +3159,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def _reply(self, code, msg=b"", ctype="text/plain"):
+    def _reply(self, code, msg=b"", ctype="text/plain", headers=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(msg)))
+        if ctype.startswith("text/html"):
+            self.send_header("Cache-Control", "private, no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         if msg:
             self.wfile.write(msg)
@@ -2886,47 +3201,38 @@ class Handler(BaseHTTPRequestHandler):
         if length > MAX_BODY:
             return self._reply(413)
         body = self.rfile.read(length)
+        if len(body) != length:
+            return self._reply(400, b"incomplete body")
 
         # Dev builds are not part of the fleet; ack so old debug builds
         # advance their offset, but store nothing.
         if self.headers.get("X-Dev") == "1":
             return self._reply(204)
 
-        lines = []
+        events = []
         app_version = ingest_app_version(self.headers.get("X-App-Version", ""))
-        for raw in body.split(b"\n"):
+        for raw in io.BytesIO(body):
             raw = raw.strip()
             if not raw:
                 continue
+            if len(events) >= MAX_BATCH_EVENTS:
+                return self._reply(413, b"too many events")
             try:
-                event = json.loads(raw)
-            except ValueError:
-                return self._reply(400, b"bad json line")
+                event = parse_event_line(raw)
+            except InvalidEvent:
+                return self._reply(400, b"bad json object line")
             event = annotate_ingested_event(event, app_version)
-            lines.append(
-                json.dumps(
-                    event,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
-        if not lines:
+            events.append(event)
+        if not events:
             return self._reply(400, b"empty")
 
-        suffix = ".dev" if self.headers.get("X-Dev") == "1" else ""
         dirpath = os.path.join(ROOT, install_id.lower())
         usage = root_usage()
         if usage["bytes"] > MAX_TOTAL:
             return self._reply(507, b"global quota exceeded")
         if not os.path.isdir(dirpath) and usage["dirs"] >= MAX_INSTALLS:
             return self._reply(507, b"install limit reached")
-        os.makedirs(dirpath, exist_ok=True)
-        path = os.path.join(dirpath, "events%s.jsonl" % suffix)
-        try:
-            if os.path.exists(path) and os.path.getsize(path) > MAX_FILE:
-                return self._reply(507, b"install quota exceeded")
-        except OSError:
-            pass
+        path = os.path.join(dirpath, "events.jsonl")
         meta_path = os.path.join(dirpath, "meta.json")
         meta = {}
         try:
@@ -2935,7 +3241,7 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             pass
         updates = {
-            "last_version": self.headers.get("X-App-Version", ""),
+            "last_version": app_version or "",
             "device_name": self.headers.get("X-Device-Name", ""),
             "os": self.headers.get("X-Os-Version", ""),
             "hw": self.headers.get("X-Hw-Model", ""),
@@ -2946,9 +3252,26 @@ class Handler(BaseHTTPRequestHandler):
                 if k == "device_name":
                     v = re.sub(r"(\w)\?(s\b)", r"\1'\2", v)
                 meta[k] = v[:120]
-        atomic_write_json(meta_path, meta)
-        with open(path, "ab") as f:
-            f.write(b"\n".join(lines) + b"\n")
+        try:
+            event_store().ingest_batch(
+                install_id,
+                events,
+                metadata=meta,
+                archive_path=path,
+                archive_quota_bytes=MAX_FILE,
+            )
+            atomic_write_json(meta_path, meta)
+        except (StoreQuota, ArchiveError):
+            return self._reply(507, b"storage unavailable")
+        except StoreBusy:
+            return self._reply(
+                503, b"database busy", headers={"Retry-After": "2"}
+            )
+        except InvalidEvent:
+            return self._reply(400, b"rejected event in batch")
+        except (StoreCommitError, StoreCorrupt, StoreError, OSError):
+            return self._reply(503, b"storage commit failed")
+        _usage_cache["t"] = 0.0
         self._reply(204)
 
     def _do_state(self):
@@ -2965,28 +3288,73 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(413)
         try:
             state = json.loads(self.rfile.read(length))
-            assert isinstance(state, dict)
-        except (ValueError, AssertionError):
-            return self._reply(400, b"bad json")
-        state["received_at"] = time.time()
+            state = normalize_state_snapshot(state)
+        except (ValueError, StoreError):
+            return self._reply(400, b"bad aggregate state")
         dirpath = os.path.join(ROOT, install_id.lower())
         usage = root_usage()
         if not os.path.isdir(dirpath) and usage["dirs"] >= MAX_INSTALLS:
             return self._reply(507, b"install limit reached")
-        os.makedirs(dirpath, exist_ok=True)
-        atomic_write_json(os.path.join(dirpath, "state.json"), state)
+        meta = {
+            "device_name": self.headers.get("X-Device-Name", "")[:120],
+            "os": self.headers.get("X-Os-Version", "")[:120],
+            "hw": self.headers.get("X-Hw-Model", "")[:120],
+            "specs": self.headers.get("X-Hw-Specs", "")[:120],
+            "last_version": ingest_app_version(
+                self.headers.get("X-App-Version", "")
+            ) or "",
+        }
+        try:
+            event_store().update_state(install_id, state, metadata=meta)
+            os.makedirs(dirpath, exist_ok=True)
+            atomic_write_json(os.path.join(dirpath, "state.json"), state)
+        except StoreQuota:
+            return self._reply(507, b"storage unavailable")
+        except StoreBusy:
+            return self._reply(
+                503, b"database busy", headers={"Retry-After": "2"}
+            )
+        except (StoreCommitError, StoreCorrupt, StoreError, OSError):
+            return self._reply(503, b"storage commit failed")
+        _usage_cache["t"] = 0.0
         self._reply(204)
 
     def do_GET(self):
         if self.path == "/healthz":
             return self._reply(200, b"ok")
         if self.path in ("/", "/dashboard"):
-            page = render_dashboard().encode("utf-8")
+            try:
+                page = render_dashboard().encode("utf-8")
+            except (StoreBusy, StoreCorrupt, StoreError):
+                return self._reply(503, b"historical store unavailable")
+            return self._reply(200, page, "text/html; charset=utf-8")
+        if self.path == "/search" or self.path.startswith("/search?"):
+            _, _, query = self.path.partition("?")
+            try:
+                params = parse_qs(
+                    query, keep_blank_values=True, max_num_fields=32
+                )
+                page = render_search(params).encode("utf-8")
+            except (InvalidQuery, ValueError):
+                return self._reply(400, b"invalid search query")
+            except StoreBusy:
+                return self._reply(
+                    503,
+                    b"historical store awaiting reconciliation",
+                    headers={"Retry-After": "30"},
+                )
+            except (StoreCorrupt, StoreError):
+                return self._reply(503, b"historical store unavailable")
             return self._reply(200, page, "text/html; charset=utf-8")
         if self.path.startswith("/install/"):
             rest = self.path[len("/install/"):]
             loc, _, query = rest.partition("?")
-            params = parse_qs(query, keep_blank_values=True)
+            try:
+                params = parse_qs(
+                    query, keep_blank_values=True, max_num_fields=32
+                )
+            except ValueError:
+                return self._reply(400, b"too many query parameters")
             kind = "dev" if params.get("kind", ["prod"])[-1] == "dev" else "prod"
             install_id, _, sub = loc.partition("/")
             if not INSTALL_ID_RE.match(install_id):
@@ -3079,7 +3447,10 @@ class Handler(BaseHTTPRequestHandler):
             n_values = params.get("n")
             if n_values and len(n_values) == 1 and n_values[0].isdigit():
                 n = int(n_values[0])
-            page = render_install(install_id, kind, n)
+            try:
+                page = render_install(install_id, kind, n)
+            except (StoreBusy, StoreCorrupt, StoreError):
+                return self._reply(503, b"historical store unavailable")
             if page is None:
                 return self._reply(404, b"no such install")
             return self._reply(200, page.encode("utf-8"), "text/html; charset=utf-8")
@@ -3088,8 +3459,13 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     os.makedirs(ROOT, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", 8600), Handler)
-    sys.stderr.write("murmur-logs receiver on 127.0.0.1:8600\n")
+    store = event_store()
+    readiness = "sqlite" if store.is_dashboard_ready() else "raw-awaiting-reconciliation"
+    server = ThreadingHTTPServer(("127.0.0.1", LISTEN_PORT), Handler)
+    sys.stderr.write(
+        "murmur-logs receiver on 127.0.0.1:%d dashboard=%s\n"
+        % (LISTEN_PORT, readiness)
+    )
     server.serve_forever()
 
 
