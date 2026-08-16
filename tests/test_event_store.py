@@ -424,6 +424,24 @@ class EventStoreOperationsTests(EventStoreTestCase):
         self.assertEqual(restored.integrity_check(), "ok")
         self.assertEqual(restored.event_count(self.install_id), 1)
 
+    def test_restore_recovers_when_current_database_is_corrupt(self) -> None:
+        self.ingest([event("good backup")])
+        backup = self.root / "backup.sqlite3"
+        self.store.backup(str(backup))
+        self.database.write_bytes(b"not a sqlite database")
+        Path(str(self.database) + "-wal").write_bytes(b"wal evidence")
+        Path(str(self.database) + "-shm").write_bytes(b"shm evidence")
+
+        preserved = store_module.restore_database(str(self.database), str(backup))
+        restored = store_module.EventStore(self.database)
+        restored.initialize()
+
+        self.assertEqual(Path(preserved).read_bytes(), b"not a sqlite database")
+        self.assertEqual(Path(preserved + "-wal").read_bytes(), b"wal evidence")
+        self.assertEqual(Path(preserved + "-shm").read_bytes(), b"shm evidence")
+        self.assertEqual(restored.integrity_check(), "ok")
+        self.assertEqual(restored.event_count(self.install_id), 1)
+
     def test_state_contract_rejects_legacy_and_accepts_current_aggregate(self) -> None:
         with self.assertRaises(store_module.StoreError):
             store_module.normalize_state_snapshot(

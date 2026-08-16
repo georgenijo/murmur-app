@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -1491,25 +1492,46 @@ def restore_database(database: str, source: str) -> str:
     finally:
         temporary_connection.close()
         source_connection.close()
-    if os.path.exists(database):
-        current_connection = sqlite3.connect(
-            "file:%s?mode=ro" % database, uri=True
-        )
-        preserved_connection = sqlite3.connect(preserved)
-        try:
-            current_connection.backup(
-                preserved_connection, pages=256, sleep=0.05
+    try:
+        with open(temporary, "rb") as handle:
+            os.fsync(handle.fileno())
+        if os.path.exists(database):
+            for suffix in ("-wal", "-shm"):
+                sidecar = database + suffix
+                if os.path.exists(sidecar):
+                    shutil.copy2(sidecar, preserved + suffix)
+            current_connection = sqlite3.connect(
+                "file:%s?mode=ro" % database, uri=True
             )
-        finally:
-            preserved_connection.close()
-            current_connection.close()
-    os.replace(temporary, database)
-    for suffix in ("-wal", "-shm"):
+            preserved_connection = sqlite3.connect(preserved)
+            try:
+                current_connection.backup(
+                    preserved_connection, pages=256, sleep=0.05
+                )
+            except sqlite3.Error:
+                preserved_connection.close()
+                current_connection.close()
+                try:
+                    os.unlink(preserved)
+                except FileNotFoundError:
+                    pass
+                shutil.copy2(database, preserved)
+            else:
+                preserved_connection.close()
+                current_connection.close()
+        os.replace(temporary, database)
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.unlink(database + suffix)
+            except FileNotFoundError:
+                pass
+        _fsync_directory(os.path.dirname(database) or ".")
+    except BaseException:
         try:
-            os.unlink(database + suffix)
+            os.unlink(temporary)
         except FileNotFoundError:
             pass
-    _fsync_directory(os.path.dirname(database) or ".")
+        raise
     return preserved
 
 

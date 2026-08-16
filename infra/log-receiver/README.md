@@ -87,7 +87,11 @@ git cat-file -e "$MERGED_SHA^{commit}"
 fleet exec opti 'stamp=$(date -u +%Y%m%dT%H%M%SZ); backup=/home/george/murmur-logs-backups/$stamp; mkdir -p "$backup"; cp -a /home/george/murmur-logs-receiver.py "$backup"/; test ! -e /home/george/event_store.py || cp -a /home/george/event_store.py "$backup"/; tar -C /home/george -czf "$backup/murmur-logs-raw.tgz" --exclude="murmur-logs/events.sqlite3*" murmur-logs; if test -e /home/george/murmur-logs/events.sqlite3; then python3 /home/george/event_store.py --root /home/george/murmur-logs backup "$backup/events.sqlite3"; fi; echo "$backup"'
 
 # Stage, compile, and install both exact source files together.
-git archive "$MERGED_SHA" infra/log-receiver/murmur-logs-receiver.py infra/log-receiver/event_store.py | fleet exec opti 'stage=$(mktemp -d); tar -x -C "$stage"; python3 -m py_compile "$stage"/infra/log-receiver/{event_store.py,murmur-logs-receiver.py}; install -m 0755 "$stage"/infra/log-receiver/event_store.py /home/george/event_store.py; install -m 0755 "$stage"/infra/log-receiver/murmur-logs-receiver.py /home/george/murmur-logs-receiver.py'
+LOCAL_STAGE=$(mktemp -d)
+git archive "$MERGED_SHA" infra/log-receiver/murmur-logs-receiver.py infra/log-receiver/event_store.py | tar -x -C "$LOCAL_STAGE"
+fleet cp "$LOCAL_STAGE/infra/log-receiver/event_store.py" opti:/tmp/event_store.py.$MERGED_SHA
+fleet cp "$LOCAL_STAGE/infra/log-receiver/murmur-logs-receiver.py" opti:/tmp/murmur-logs-receiver.py.$MERGED_SHA
+fleet exec opti "python3 -m py_compile /tmp/event_store.py.$MERGED_SHA /tmp/murmur-logs-receiver.py.$MERGED_SHA; install -m 0755 /tmp/event_store.py.$MERGED_SHA /home/george/event_store.py; install -m 0755 /tmp/murmur-logs-receiver.py.$MERGED_SHA /home/george/murmur-logs-receiver.py"
 fleet exec opti 'sudo systemctl restart murmur-logs && systemctl is-active murmur-logs'
 curl -fsS https://georgenijo.com/murmur/healthz
 ```
@@ -181,9 +185,10 @@ failed state and replaces the report.
   database plus WAL/SHM for investigation, then run
   `event_store.py --root /home/george/murmur-logs restore <verified-backup>`.
   Restore validates schema and integrity, creates a SQLite-consistent
-  `.pre-restore-<UTC>` copy, atomically installs the backup, and removes stale
-  WAL/SHM files. Run `integrity`, restart, and reconcile before enabling
-  indexed reads.
+  `.pre-restore-<UTC>` copy when possible (or an exact forensic copy when the
+  current database is corrupt), preserves any WAL/SHM beside that copy,
+  atomically installs the backup, and removes stale live WAL/SHM files. Run
+  `integrity`, restart, and reconcile before enabling indexed reads.
 - Query rollback is immediate and non-destructive:
   `event_store.py --root /home/george/murmur-logs disable-dashboard` switches
   dashboard reads back to JSONL. For code rollback, install the two source
