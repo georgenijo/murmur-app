@@ -205,7 +205,11 @@ def event_store():
 
 def dashboard_store():
     store = event_store()
-    return store if store.is_dashboard_ready() else None
+    try:
+        ready = store.is_dashboard_ready()
+    except StoreBusy:
+        return None
+    return store if ready else None
 
 
 def atomic_write_json(path, obj):
@@ -2518,7 +2522,7 @@ def export_limit(params, default=None):
     return int(values[0])
 
 
-def raw_event_row(event):
+def raw_event_cells(event):
     level = str(event.get("level", "info"))
     row_class = level if level in ("warn", "error") else ""
     data = event.get("data")
@@ -2526,13 +2530,12 @@ def raw_event_row(event):
     data_str = " ".join(
         "%s=%s" % (key, value) for key, value in list(data.items())[:6]
     )
-    return (
-        '<tr class="%s"><td class="num">%s</td>'
+    cells = (
+        '<td class="num">%s</td>'
         '<td><span class="stream">%s</span></td>'
         '<td><span class="lvl %s">%s</span></td>'
-        '<td><code>%s</code><div class="meta">%s</div></td></tr>'
+        '<td><code>%s</code><div class="meta">%s</div></td>'
         % (
-            row_class,
             html.escape(eastern_time(str(event.get("timestamp", "")))),
             html.escape(str(event.get("stream", ""))),
             html.escape(level),
@@ -2541,6 +2544,12 @@ def raw_event_row(event):
             html.escape(data_str[:160]),
         )
     )
+    return row_class, cells
+
+
+def raw_event_row(event):
+    row_class, cells = raw_event_cells(event)
+    return '<tr class="%s">%s</tr>' % (row_class, cells)
 
 
 def compact_event(event):
@@ -3042,11 +3051,11 @@ def _selected(actual, expected):
 
 def search_event_row(event):
     install_id = str(event.get("_store_install_id", ""))
-    raw = raw_event_row(event)
-    cells = raw[raw.index(">") + 1:-5]
+    row_class, cells = raw_event_cells(event)
     return (
-        '<tr><td><a class="install-link" href="/install/%s">%s</a></td>%s</tr>'
+        '<tr class="%s"><td><a class="install-link" href="/install/%s">%s</a></td>%s</tr>'
         % (
+            row_class,
             html.escape(install_id, quote=True),
             html.escape(install_id[:8]),
             cells,
@@ -3265,6 +3274,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(
                 503, b"database busy", headers={"Retry-After": "2"}
             )
+        except InvalidEvent:
+            return self._reply(400, b"rejected event in batch")
         except (StoreCommitError, StoreCorrupt, StoreError, OSError):
             return self._reply(503, b"storage commit failed")
         _usage_cache["t"] = 0.0

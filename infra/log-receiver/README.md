@@ -114,9 +114,10 @@ fleet exec opti 'status=0; report=/home/george/murmur-logs/reconciliation.json; 
 
 The versioned reconciliation report is content-free. Per install it records
 raw lines, valid objects, malformed/non-object lines, duplicate hashes,
-backfill insertions, database rows, and earliest/latest timestamps. Unique
-valid-object counts and timestamp bounds must match SQLite for every available
-production archive before indexed reads can be enabled.
+untimed events, backfill insertions, database rows, and earliest/latest valid
+timestamps. Unique valid-object counts, untimed counts, timestamp bounds, and
+the complete event-hash set must match SQLite for every available production
+archive before indexed reads can be enabled.
 
 Verify the unchanged exposure boundary. An unauthenticated dashboard request
 must enter Cloudflare Access, while nginx's public apex still returns 404 for

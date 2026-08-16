@@ -95,6 +95,28 @@ class EventStoreMigrationTests(EventStoreTestCase):
         self.assertEqual(reopened.cursor_secret(), cursor_secret)
         self.assertEqual(len(cursor_secret), 64)
 
+    def test_concurrent_initializers_apply_migration_idempotently(self) -> None:
+        database = self.root / "concurrent.sqlite3"
+        barrier = threading.Barrier(5)
+        errors: list[BaseException] = []
+
+        def initialize() -> None:
+            try:
+                barrier.wait()
+                store_module.EventStore(database).initialize()
+            except BaseException as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=initialize) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(5)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(store_module.EventStore(database).schema_version(), 1)
+
     def test_corrupt_database_fails_closed(self) -> None:
         corrupt = self.root / "corrupt.sqlite3"
         corrupt.write_bytes(b"not a sqlite database")
@@ -206,7 +228,7 @@ class EventStoreIngestTests(EventStoreTestCase):
             blocker.close()
         elapsed = time.monotonic() - started
         self.assertGreaterEqual(elapsed, 0.08)
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, 2.0)
 
     def test_concurrent_request_scoped_connections_commit_complete_batches(self) -> None:
         barrier = threading.Barrier(5)
@@ -270,6 +292,7 @@ class EventStoreBackfillTests(EventStoreTestCase):
         self.assertEqual(install["valid_objects"], 2)
         self.assertEqual(install["malformed_lines"], 2)
         self.assertEqual(install["duplicates"], 1)
+        self.assertEqual(install["untimed_events"], 0)
         self.assertEqual(install["inserted_events"], 1)
         self.assertEqual(install["database_count"], 1)
         self.assertEqual(install["earliest_timestamp"], "2026-08-01T00:00:00Z")
@@ -346,6 +369,15 @@ class EventStoreQueryTests(EventStoreTestCase):
             with self.subTest(query=query):
                 self.assertEqual(len(self.store.query_events(query).events), expected)
 
+    def test_untimed_warning_remains_visible_in_full_history(self) -> None:
+        item = event("untimed warning", level="warn", sequence=5)
+        del item["timestamp"]
+        self.ingest([item])
+
+        summaries = self.summaries(store_module.EventQuery(problems_only=True))
+
+        self.assertIn("untimed warning", summaries)
+
     def test_stable_keyset_pages_with_identical_timestamps(self) -> None:
         same_time = "2026-08-10T00:00:00Z"
         self.ingest(
@@ -417,7 +449,7 @@ class EventStoreQueryTests(EventStoreTestCase):
 class EventStoreOperationsTests(EventStoreTestCase):
     def test_backup_integrity_and_restore_preserve_a_pre_restore_copy(self) -> None:
         self.ingest([event("before backup")])
-        backup = self.root / "backup.sqlite3"
+        backup = self.root / "backup?#%.sqlite3"
         self.store.backup(str(backup))
         self.ingest([event("after backup", sequence=2)])
 

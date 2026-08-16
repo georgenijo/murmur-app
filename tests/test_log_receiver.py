@@ -1363,6 +1363,28 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(path.read_bytes(), before)
 
+    def test_store_event_validation_failure_returns_400_without_mutation(self) -> None:
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = path.read_bytes()
+        store = receiver.event_store()
+        with mock.patch.object(
+            store,
+            "ingest_batch",
+            side_effect=receiver.InvalidEvent("synthetic invalid event"),
+        ), mock.patch.object(receiver, "event_store", return_value=store):
+            status, body = self.post(
+                "/ingest",
+                b"{}\n",
+                {
+                    "Authorization": "Bearer " + receiver.TOKEN,
+                    "X-Install-Id": self.install_id,
+                },
+            )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(body, b"rejected event in batch")
+        self.assertEqual(path.read_bytes(), before)
+
     def test_oversized_event_count_is_rejected_before_mutation(self) -> None:
         path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
         before = path.read_bytes()
@@ -1434,6 +1456,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertIn("PRIVATE_SENTINEL_&lt;script&gt;alert(1)&lt;/script&gt;", page)
         self.assertNotIn("<script>alert(1)</script>", page)
         self.assertIn("audio.private_sentinel", page)
+        self.assertIn('<tr class="error"><td><a class="install-link"', page)
         self.assertEqual(invalid_status, 400)
 
     def test_search_uses_stable_keyset_pages_for_identical_timestamps(self) -> None:
@@ -1465,6 +1488,17 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             page = receiver.render_dashboard()
         self.assertIn("600 events", page)
         self.assertIn("Historical search", page)
+
+    def test_dashboard_busy_readiness_probe_falls_back_to_raw(self) -> None:
+        store = receiver.event_store()
+        with mock.patch.object(
+            store, "is_dashboard_ready", side_effect=receiver.StoreBusy("busy")
+        ), mock.patch.object(receiver, "event_store", return_value=store):
+            installs = receiver.collect_installs()
+
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0]["kind"], "prod")
+        self.assertEqual(installs[0]["events"], 600)
 
     def test_state_route_rejects_legacy_and_renders_current_aggregate_only(self) -> None:
         headers = {

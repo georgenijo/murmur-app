@@ -370,13 +370,13 @@ class EventStore:
                     );
 
                     CREATE INDEX IF NOT EXISTS events_install_time
-                        ON events(install_id, event_time_us DESC, event_id DESC);
+                        ON events(install_id, COALESCE(event_time_us, received_at_us) DESC, event_id DESC);
                     CREATE INDEX IF NOT EXISTS events_level_time
-                        ON events(level, event_time_us DESC, event_id DESC);
+                        ON events(level, COALESCE(event_time_us, received_at_us) DESC, event_id DESC);
                     CREATE INDEX IF NOT EXISTS events_stream_time
-                        ON events(stream, event_time_us DESC, event_id DESC);
+                        ON events(stream, COALESCE(event_time_us, received_at_us) DESC, event_id DESC);
                     CREATE INDEX IF NOT EXISTS events_version_time
-                        ON events(app_version, event_time_us DESC, event_id DESC);
+                        ON events(app_version, COALESCE(event_time_us, received_at_us) DESC, event_id DESC);
 
                     CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
                         summary,
@@ -427,7 +427,7 @@ class EventStore:
                     (secrets.token_hex(32),),
                 )
                 connection.execute(
-                    "INSERT INTO schema_migrations(version, applied_at_us) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at_us) VALUES (?, ?)",
                     (1, int(time.time() * 1_000_000)),
                 )
                 connection.execute("COMMIT")
@@ -851,17 +851,18 @@ class EventStore:
         before: tuple[int, int] | None = None,
     ) -> EventPage:
         query = self.validate_query(query)
-        clauses = ["e.event_time_us IS NOT NULL"]
+        sort_time = "COALESCE(e.event_time_us, e.received_at_us)"
+        clauses = []
         values: list[object] = []
         join = ""
         if query.install_id:
             clauses.append("e.install_id = ?")
             values.append(query.install_id)
         if query.start_us is not None:
-            clauses.append("e.event_time_us >= ?")
+            clauses.append("%s >= ?" % sort_time)
             values.append(query.start_us)
         if query.end_us is not None:
-            clauses.append("e.event_time_us <= ?")
+            clauses.append("%s <= ?" % sort_time)
             values.append(query.end_us)
         if query.app_version:
             clauses.append("e.app_version = ?")
@@ -885,14 +886,17 @@ class EventStore:
                 or not all(isinstance(item, int) and item >= 0 for item in before)
             ):
                 raise InvalidQuery("invalid cursor position")
-            clauses.append("(e.event_time_us < ? OR (e.event_time_us = ? AND e.event_id < ?))")
+            clauses.append(
+                "(%s < ? OR (%s = ? AND e.event_id < ?))"
+                % (sort_time, sort_time)
+            )
             values.extend((before[0], before[0], before[1]))
         values.append(query.limit + 1)
         sql = (
-            "SELECT e.event_id, e.install_id, e.event_time_us, e.event_json "
+            "SELECT e.event_id, e.install_id, %s AS sort_time_us, e.event_json "
             "FROM events e%s WHERE %s "
-            "ORDER BY e.event_time_us DESC, e.event_id DESC LIMIT ?"
-            % (join, " AND ".join(clauses))
+            "ORDER BY %s DESC, e.event_id DESC LIMIT ?"
+            % (sort_time, join, " AND ".join(clauses) or "1", sort_time)
         )
         connection = self._connect(write=False)
         rows = []
@@ -925,7 +929,7 @@ class EventStore:
         next_position = None
         if has_more and rows:
             last = rows[-1]
-            next_position = (int(last["event_time_us"]), int(last["event_id"]))
+            next_position = (int(last["sort_time_us"]), int(last["event_id"]))
         return EventPage(tuple(events), next_position)
 
     def event_count(self, install_id: str) -> int:
@@ -1086,7 +1090,7 @@ class EventStore:
                 raise StoreCorrupt("backup integrity check failed")
             target.close()
             source.close()
-            with open(temporary, "rb") as handle:
+            with open(temporary, "r+b") as handle:
                 os.fsync(handle.fileno())
             os.replace(temporary, destination)
             _fsync_directory(os.path.dirname(destination) or ".")
@@ -1335,7 +1339,7 @@ def backfill(
 def _scan_reconciliation_source(
     install_id: str, path: Path, temporary_directory: str
 ) -> dict:
-    raw_lines = valid_objects = malformed_lines = duplicates = 0
+    raw_lines = valid_objects = malformed_lines = duplicates = untimed_events = 0
     earliest = latest = None
     dedupe_path = os.path.join(temporary_directory, "hashes.sqlite3")
     dedupe = sqlite3.connect(dedupe_path)
@@ -1361,6 +1365,8 @@ def _scan_reconciliation_source(
                 malformed_lines += 1
                 continue
             valid_objects += 1
+            if prepared.timestamp_us is None:
+                untimed_events += 1
             cursor = dedupe.execute(
                 "INSERT OR IGNORE INTO hashes(value) VALUES (?)", (prepared.event_hash,)
             )
@@ -1383,6 +1389,7 @@ def _scan_reconciliation_source(
         "valid_objects": valid_objects,
         "malformed_lines": malformed_lines,
         "duplicates": duplicates,
+        "untimed_events": untimed_events,
         "earliest_time_us": earliest,
         "latest_time_us": latest,
         "source_size": snapshot_size,
@@ -1400,7 +1407,10 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
                 source = _scan_reconciliation_source(install_id, path, directory)
             row = connection.execute(
                 """
-                SELECT COUNT(*) AS count, MIN(event_time_us) AS earliest, MAX(event_time_us) AS latest
+                SELECT COUNT(*) AS count,
+                       MIN(event_time_us) AS earliest,
+                       MAX(event_time_us) AS latest,
+                       SUM(CASE WHEN event_time_us IS NULL THEN 1 ELSE 0 END) AS untimed
                 FROM events WHERE install_id = ?
                 """,
                 (install_id,),
@@ -1423,6 +1433,7 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
             expected_count = source["valid_objects"] - source["duplicates"]
             ready = (
                 database_count == expected_count
+                and int(row["untimed"] or 0) == source["untimed_events"]
                 and row["earliest"] == source["earliest_time_us"]
                 and row["latest"] == source["latest_time_us"]
                 and checkpoint is not None
@@ -1441,6 +1452,7 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
                     "valid_objects": source["valid_objects"],
                     "malformed_lines": source["malformed_lines"],
                     "duplicates": source["duplicates"],
+                    "untimed_events": source["untimed_events"],
                     "inserted_events": int(checkpoint[0]) if checkpoint else 0,
                     "database_count": database_count,
                     "earliest_timestamp": _format_timestamp(source["earliest_time_us"]),
@@ -1474,12 +1486,16 @@ def _format_timestamp(value: int | None) -> str | None:
     )
 
 
+def _read_only_uri(path: str) -> str:
+    return Path(path).as_uri() + "?mode=ro"
+
+
 def restore_database(database: str, source: str) -> str:
     database = os.path.abspath(database)
     source = os.path.abspath(source)
     if database == source:
         raise StoreError("restore source must differ from database")
-    validation = sqlite3.connect("file:%s?mode=ro" % source, uri=True)
+    validation = sqlite3.connect(_read_only_uri(source), uri=True)
     try:
         if validation.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise StoreCorrupt("restore source failed integrity check")
@@ -1493,7 +1509,7 @@ def restore_database(database: str, source: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     preserved = database + ".pre-restore-" + stamp
     temporary = database + ".restore-%d" % os.getpid()
-    source_connection = sqlite3.connect("file:%s?mode=ro" % source, uri=True)
+    source_connection = sqlite3.connect(_read_only_uri(source), uri=True)
     temporary_connection = sqlite3.connect(temporary)
     try:
         source_connection.backup(temporary_connection, pages=256, sleep=0.05)
@@ -1501,16 +1517,14 @@ def restore_database(database: str, source: str) -> str:
         temporary_connection.close()
         source_connection.close()
     try:
-        with open(temporary, "rb") as handle:
+        with open(temporary, "r+b") as handle:
             os.fsync(handle.fileno())
         if os.path.exists(database):
             for suffix in ("-wal", "-shm"):
                 sidecar = database + suffix
                 if os.path.exists(sidecar):
                     shutil.copy2(sidecar, preserved + suffix)
-            current_connection = sqlite3.connect(
-                "file:%s?mode=ro" % database, uri=True
-            )
+            current_connection = sqlite3.connect(_read_only_uri(database), uri=True)
             preserved_connection = sqlite3.connect(preserved)
             try:
                 current_connection.backup(

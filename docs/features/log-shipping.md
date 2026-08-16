@@ -144,7 +144,9 @@ FTS5 summary terms. A dedicated full-history warning/error view uses the same
 stable `(timestamp, event_id)` keyset cursor, including when timestamps are
 identical; offset pagination is never used. Cursors are signed and bound to the
 exact filter set, parameters are strictly bounded, and every rendered event or
-metadata value is escaped.
+metadata value is escaped. A retained object without a valid event timestamp is
+reported as untimed during reconciliation and remains searchable, using its
+bounded receiver/backfill receipt time only for ordering and date filtering.
 
 The readiness flag defaults off and can be enabled only by a successful
 reconciliation command. Raw latest-200/latest-500/full downloads and
