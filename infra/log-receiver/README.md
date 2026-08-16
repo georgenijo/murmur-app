@@ -109,7 +109,7 @@ Stop the receiver briefly for the final proof so the source snapshot cannot
 grow. A failed reconciliation leaves the readiness flag unchanged:
 
 ```bash
-fleet exec opti 'status=0; report=/home/george/murmur-logs/reconciliation.json; temporary=$report.tmp; sudo systemctl stop murmur-logs || exit $?; python3 /home/george/event_store.py --root /home/george/murmur-logs backfill --max-lines 100000 || status=$?; if test "$status" -eq 0; then python3 /home/george/event_store.py --root /home/george/murmur-logs reconcile --mark-ready >"$temporary" || status=$?; fi; if test "$status" -eq 0; then mv "$temporary" "$report"; else rm -f "$temporary"; fi; sudo systemctl start murmur-logs || exit $?; test "$status" -eq 0 || exit "$status"; systemctl is-active murmur-logs'
+fleet exec opti 'result_code=0; report=/home/george/murmur-logs/reconciliation.json; temporary=$report.tmp; sudo systemctl stop murmur-logs || exit $?; python3 /home/george/event_store.py --root /home/george/murmur-logs backfill --max-lines 100000 || result_code=$?; if test "$result_code" -eq 0; then python3 /home/george/event_store.py --root /home/george/murmur-logs reconcile --mark-ready >"$temporary" || result_code=$?; fi; if test "$result_code" -eq 0; then mv "$temporary" "$report"; else rm -f "$temporary"; fi; sudo systemctl start murmur-logs || exit $?; test "$result_code" -eq 0 || exit "$result_code"; systemctl is-active murmur-logs'
 ```
 
 The versioned reconciliation report is content-free. Per install it records
