@@ -22,6 +22,7 @@ Responses: 204 ok, 401 bad token, 400 bad payload, 413 too large.
 """
 
 import html
+import io
 import json
 import math
 import os
@@ -67,6 +68,7 @@ except ValueError:
 if not 1024 <= LISTEN_PORT <= 65535:
     raise RuntimeError("MURMUR_LOG_PORT must be between 1024 and 65535")
 MAX_BODY = 8 * 1024 * 1024  # 8 MB
+MAX_BATCH_EVENTS = 10_000
 MAX_FILE = 200 * 1024 * 1024  # per-install cap: stop appending past 200 MB
 INSTALL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 MAX_INSTALLS = 150
@@ -3207,10 +3209,12 @@ class Handler(BaseHTTPRequestHandler):
 
         events = []
         app_version = ingest_app_version(self.headers.get("X-App-Version", ""))
-        for raw in body.split(b"\n"):
+        for raw in io.BytesIO(body):
             raw = raw.strip()
             if not raw:
                 continue
+            if len(events) >= MAX_BATCH_EVENTS:
+                return self._reply(413, b"too many events")
             try:
                 event = parse_event_line(raw)
             except InvalidEvent:

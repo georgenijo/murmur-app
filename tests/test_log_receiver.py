@@ -1363,6 +1363,25 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(path.read_bytes(), before)
 
+    def test_oversized_event_count_is_rejected_before_mutation(self) -> None:
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = path.read_bytes()
+        payload = b"{}\n" * (receiver.MAX_BATCH_EVENTS + 1)
+
+        status, body = self.post(
+            "/ingest",
+            payload,
+            {
+                "Authorization": "Bearer " + receiver.TOKEN,
+                "X-Install-Id": self.install_id,
+            },
+        )
+
+        self.assertEqual(status, 413)
+        self.assertEqual(body, b"too many events")
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(receiver.event_store().event_count(self.install_id), 0)
+
     def _enable_historical_store(self, *, metadata: dict | None = None) -> object:
         path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
         events = [json.loads(line) for line in path.read_text().splitlines()]
