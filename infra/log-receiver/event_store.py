@@ -282,7 +282,15 @@ class EventStore:
             connection.execute("PRAGMA temp_store = FILE")
             connection.execute("PRAGMA cache_size = -2048")
             connection.execute("PRAGMA mmap_size = 0")
-            if not write:
+            if write:
+                connection.execute("PRAGMA synchronous = FULL")
+                connection.execute("PRAGMA journal_size_limit = 16777216")
+                page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+                connection.execute(
+                    "PRAGMA max_page_count = %d"
+                    % max(1, self.quota_bytes // page_size)
+                )
+            else:
                 connection.execute("PRAGMA query_only = ON")
             return connection
         except sqlite3.Error as error:
@@ -1482,7 +1490,7 @@ def restore_database(database: str, source: str) -> str:
             raise StoreError("restore source schema is incompatible")
     finally:
         validation.close()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     preserved = database + ".pre-restore-" + stamp
     temporary = database + ".restore-%d" % os.getpid()
     source_connection = sqlite3.connect("file:%s?mode=ro" % source, uri=True)

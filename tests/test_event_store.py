@@ -83,6 +83,11 @@ class EventStoreMigrationTests(EventStoreTestCase):
                 connection.execute("PRAGMA journal_mode").fetchone()[0].lower(),
                 "wal",
             )
+            self.assertEqual(connection.execute("PRAGMA synchronous").fetchone()[0], 2)
+            self.assertEqual(
+                connection.execute("PRAGMA journal_size_limit").fetchone()[0],
+                16 * 1024 * 1024,
+            )
         finally:
             connection.close()
         self.assertEqual(reopened.schema_version(), store_module.SCHEMA_VERSION)
