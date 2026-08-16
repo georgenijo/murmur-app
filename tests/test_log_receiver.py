@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
+from urllib.parse import urlsplit
 
 
 RECEIVER_PATH = (
@@ -1280,6 +1281,207 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(body, b"")
         self.assertEqual(saved["ingest_app_version"], "1.2.4")
         self.assertEqual(saved["data"]["startup_ms"], 240)
+
+    def test_ingest_exact_retry_is_idempotent_in_database_and_raw_archive(self) -> None:
+        item = event(
+            "retry-safe",
+            timestamp="2026-08-05T00:00:01Z",
+            data={"event_code": "runtime.retry_safe"},
+        )
+        payload = (json.dumps(item) + "\n").encode("utf-8")
+        headers = {
+            "Authorization": "Bearer " + receiver.TOKEN,
+            "X-Install-Id": self.install_id,
+            "X-App-Version": "1.2.4",
+        }
+
+        first, _ = self.post("/ingest", payload, headers)
+        retry, _ = self.post("/ingest", payload, headers)
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        matching = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if json.loads(line).get("summary") == "retry-safe"
+        ]
+
+        self.assertEqual((first, retry), (204, 204))
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(receiver.event_store().event_count(self.install_id), 1)
+
+    def test_commit_failure_returns_non_2xx_without_archive_mutation(self) -> None:
+        store = receiver.event_store()
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = path.read_bytes()
+        with mock.patch.object(
+            store,
+            "_commit",
+            side_effect=receiver.StoreCommitError("synthetic failure"),
+        ), mock.patch.object(receiver, "event_store", return_value=store):
+            status, body = self.post(
+                "/ingest",
+                (json.dumps(event("uncommitted", timestamp="2026-08-06T00:00:00Z")) + "\n").encode(),
+                {
+                    "Authorization": "Bearer " + receiver.TOKEN,
+                    "X-Install-Id": self.install_id,
+                    "X-App-Version": "1.2.4",
+                },
+            )
+
+        self.assertEqual(status, 503)
+        self.assertIn(b"commit failed", body)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(store.event_count(self.install_id), 0)
+
+    def test_dev_batches_are_acknowledged_and_discarded(self) -> None:
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = path.read_bytes()
+        status, body = self.post(
+            "/ingest",
+            b"not even validated in the discarded dev lane\n",
+            {
+                "Authorization": "Bearer " + receiver.TOKEN,
+                "X-Install-Id": self.install_id,
+                "X-Dev": "1",
+            },
+        )
+
+        self.assertEqual((status, body), (204, b""))
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(receiver.event_store().event_count(self.install_id), 0)
+
+    def test_non_object_ingest_is_rejected_before_mutation(self) -> None:
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = path.read_bytes()
+        status, _ = self.post(
+            "/ingest",
+            b"[]\n",
+            {
+                "Authorization": "Bearer " + receiver.TOKEN,
+                "X-Install-Id": self.install_id,
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(path.read_bytes(), before)
+
+    def _enable_historical_store(self, *, metadata: dict | None = None) -> object:
+        path = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        store = receiver.event_store()
+        store.import_backfill_chunk(
+            self.install_id,
+            f"{self.install_id}/events.jsonl",
+            events=events,
+            raw_lines=len(events),
+            malformed_lines=0,
+            end_offset=path.stat().st_size,
+            source_size=path.stat().st_size,
+            source_mtime_ns=path.stat().st_mtime_ns,
+            complete=True,
+            metadata=metadata or {"device_name": "Test Mac", "last_version": "1.2.3"},
+        )
+        store.set_dashboard_ready(True)
+        return store
+
+    def test_search_route_filters_escapes_html_and_rejects_tampered_cursor(self) -> None:
+        private = "PRIVATE_SENTINEL_<script>alert(1)</script>"
+        store = self._enable_historical_store(
+            metadata={"device_name": private, "last_version": "1.2.3"}
+        )
+        store.ingest_batch(
+            self.install_id,
+            [
+                event(
+                    private,
+                    timestamp="2026-08-07T12:00:00Z",
+                    level="error",
+                    stream="audio",
+                    data={"event_code": "audio.private_sentinel"},
+                )
+            ],
+            metadata={"device_name": private, "last_version": "1.2.4"},
+            archive_path=str(Path(receiver.ROOT) / self.install_id / "events.jsonl"),
+        )
+
+        status, headers, body = self.get(
+            f"/search?install={self.install_id}&level=error&stream=audio&q=PRIVATE_SENTINEL&tz=utc&start=2026-08-07T00%3A00&end=2026-08-07T23%3A59"
+        )
+        page = body.decode("utf-8")
+        invalid_status, _, _ = self.get(
+            f"/search?install={self.install_id}&cursor=tampered"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "private, no-store")
+        self.assertIn("PRIVATE_SENTINEL_&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("audio.private_sentinel", page)
+        self.assertEqual(invalid_status, 400)
+
+    def test_search_uses_stable_keyset_pages_for_identical_timestamps(self) -> None:
+        self._enable_historical_store()
+        status, _, first_body = self.get(
+            f"/search?install={self.install_id}&limit=25"
+        )
+        first_page = first_body.decode("utf-8")
+        marker = 'href="/search?'
+        link_start = first_page.rfind(marker)
+        self.assertGreaterEqual(link_start, 0)
+        link_end = first_page.index('"', link_start + len('href="'))
+        next_path = receiver.html.unescape(
+            first_page[link_start + len('href="'):link_end]
+        )
+        second_status, _, second_body = self.get(urlsplit(next_path).path + "?" + urlsplit(next_path).query)
+        second_page = second_body.decode("utf-8")
+
+        self.assertEqual((status, second_status), (200, 200))
+        self.assertIn("sequence=599", first_page)
+        self.assertIn("sequence=575", first_page)
+        self.assertNotIn("sequence=574", first_page)
+        self.assertIn("sequence=574", second_page)
+        self.assertNotIn("sequence=575", second_page)
+
+    def test_dashboard_switches_to_database_only_after_readiness(self) -> None:
+        self._enable_historical_store()
+        with mock.patch.object(receiver, "count_lines", side_effect=AssertionError("raw scan")):
+            page = receiver.render_dashboard()
+        self.assertIn("600 events", page)
+        self.assertIn("Historical search", page)
+
+    def test_state_route_rejects_legacy_and_renders_current_aggregate_only(self) -> None:
+        headers = {
+            "Authorization": "Bearer " + receiver.TOKEN,
+            "X-Install-Id": self.install_id,
+            "Content-Type": "application/json",
+        }
+        legacy_status, _ = self.post(
+            "/state",
+            json.dumps(
+                {"default_input": "PRIVATE MIC", "input_devices": ["PRIVATE MIC"]}
+            ).encode(),
+            headers,
+        )
+        current_status, _ = self.post(
+            "/state",
+            json.dumps(
+                {
+                    "default_input_available": True,
+                    "input_device_count": 2,
+                    "input_device_count_capped": False,
+                    "input_enumeration_ok": True,
+                }
+            ).encode(),
+            headers,
+        )
+        page_status, _, page_body = self.get(f"/install/{self.install_id}")
+        page = page_body.decode("utf-8")
+
+        self.assertEqual(legacy_status, 400)
+        self.assertEqual(current_status, 204)
+        self.assertEqual(page_status, 200)
+        self.assertIn("Available", page)
+        self.assertIn("2 detected", page)
+        self.assertNotIn("PRIVATE MIC", page)
+        self.assertNotIn("Legacy state snapshot", page)
 
     def test_recent_raw_routes_return_exact_windows_and_safe_filenames(self) -> None:
         for limit, first_sequence in ((200, 400), (500, 100)):

@@ -163,6 +163,7 @@ def validate_ci(ci: str) -> int:
     assert "tests/test_release_version.py" in ci
     assert "tests/test_workflow_policy.py" in ci
     assert "tests/test_capture_agent_matrix.py" in ci
+    assert "tests/test_event_store.py" in ci
     capture_build = named_step_block(
         rust_macos, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )

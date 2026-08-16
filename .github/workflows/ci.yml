@@ -64,6 +64,7 @@ jobs:
               - 'tests/test_capture_agent_matrix.py'
               - 'tests/test_capture_worker_smoke.py'
               - 'tests/test_log_receiver.py'
+              - 'tests/test_event_store.py'
 
       - name: Validate workflow policy
         run: |
@@ -77,6 +78,7 @@ jobs:
             tests/test_workflow_policy.py \
             tests/test_capture_agent_matrix.py \
             tests/test_capture_worker_smoke.py \
+            tests/test_event_store.py \
             tests/test_log_receiver.py
 
   typecheck:
