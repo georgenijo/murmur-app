@@ -18,6 +18,7 @@ pub(crate) enum ClipboardOnlyReason {
     AccessibilityDenied,
     TargetChanged,
     FocusNotEditable,
+    ClipboardChanged,
     PasteFailed,
 }
 
@@ -26,6 +27,160 @@ pub(crate) enum InjectionOutcome {
     NoText,
     ClipboardOnly(ClipboardOnlyReason),
     AutoPasted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InjectionResult {
+    pub outcome: InjectionOutcome,
+    pub verification: Option<crate::frontmost::VerificationEvidence>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PasteboardChangeToken(i64);
+
+enum FirstPastePreflight {
+    Ready {
+        verification: crate::frontmost::VerificationEvidence,
+        pasteboard_change: PasteboardChangeToken,
+    },
+    Refused {
+        reason: ClipboardOnlyReason,
+        verification: crate::frontmost::VerificationEvidence,
+    },
+}
+
+fn refuse_after_clipboard_write<W, C>(
+    reason: ClipboardOnlyReason,
+    verification: crate::frontmost::VerificationEvidence,
+    write_clipboard: &mut W,
+    pasteboard_unchanged: &mut C,
+) -> Result<FirstPastePreflight, String>
+where
+    W: FnMut() -> Result<Option<i64>, String>,
+    C: FnMut(PasteboardChangeToken) -> bool,
+{
+    let pasteboard_change = write_clipboard()?.map(PasteboardChangeToken);
+    let reason = match pasteboard_change {
+        Some(token) if pasteboard_unchanged(token) => reason,
+        _ => ClipboardOnlyReason::ClipboardChanged,
+    };
+    Ok(FirstPastePreflight::Refused {
+        reason,
+        verification,
+    })
+}
+
+fn first_paste_preflight<V, F, W, C>(
+    mut verify: V,
+    mut focused_state: F,
+    mut write_clipboard: W,
+    mut pasteboard_unchanged: C,
+) -> Result<FirstPastePreflight, String>
+where
+    V: FnMut() -> crate::frontmost::VerificationEvidence,
+    F: FnMut() -> FocusedFieldState,
+    W: FnMut() -> Result<Option<i64>, String>,
+    C: FnMut(PasteboardChangeToken) -> bool,
+{
+    let initial_verification = verify();
+    if !initial_verification.verified() {
+        return refuse_after_clipboard_write(
+            ClipboardOnlyReason::TargetChanged,
+            initial_verification,
+            &mut write_clipboard,
+            &mut pasteboard_unchanged,
+        );
+    }
+
+    let focused_state = focused_state();
+    // AX can block while activation changes. Always classify the post-AX
+    // target before deciding whether the observed field itself was editable.
+    let post_ax_verification = verify();
+    if !post_ax_verification.verified() {
+        return refuse_after_clipboard_write(
+            ClipboardOnlyReason::TargetChanged,
+            post_ax_verification,
+            &mut write_clipboard,
+            &mut pasteboard_unchanged,
+        );
+    }
+    if focused_state == FocusedFieldState::NonEditable {
+        return refuse_after_clipboard_write(
+            ClipboardOnlyReason::FocusNotEditable,
+            post_ax_verification,
+            &mut write_clipboard,
+            &mut pasteboard_unchanged,
+        );
+    }
+
+    let pasteboard_change = write_clipboard()?.map(PasteboardChangeToken);
+    let post_clipboard_verification = verify();
+    // Inspect only the content-free change token, and do so before returning a
+    // target result: an external clipboard write during verification means the
+    // transcript is no longer proven ready regardless of target state.
+    let Some(pasteboard_change) = pasteboard_change else {
+        return Ok(FirstPastePreflight::Refused {
+            reason: ClipboardOnlyReason::ClipboardChanged,
+            verification: post_clipboard_verification,
+        });
+    };
+    if !pasteboard_unchanged(pasteboard_change) {
+        return Ok(FirstPastePreflight::Refused {
+            reason: ClipboardOnlyReason::ClipboardChanged,
+            verification: post_clipboard_verification,
+        });
+    }
+    if !post_clipboard_verification.verified() {
+        return Ok(FirstPastePreflight::Refused {
+            reason: ClipboardOnlyReason::TargetChanged,
+            verification: post_clipboard_verification,
+        });
+    }
+
+    Ok(FirstPastePreflight::Ready {
+        verification: post_clipboard_verification,
+        pasteboard_change,
+    })
+}
+
+fn retry_paste_if_safe<F, V, C, P>(
+    mut focused_state: F,
+    mut verify: V,
+    mut pasteboard_unchanged: C,
+    mut paste: P,
+) -> (InjectionOutcome, crate::frontmost::VerificationEvidence)
+where
+    F: FnMut() -> FocusedFieldState,
+    V: FnMut() -> crate::frontmost::VerificationEvidence,
+    C: FnMut() -> bool,
+    P: FnMut() -> Result<(), String>,
+{
+    let focused_state = focused_state();
+    let verification = verify();
+    let pasteboard_unchanged = pasteboard_unchanged();
+    if !pasteboard_unchanged {
+        return (
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
+            verification,
+        );
+    }
+    if !verification.verified() {
+        return (
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::TargetChanged),
+            verification,
+        );
+    }
+    if focused_state == FocusedFieldState::NonEditable {
+        return (
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::FocusNotEditable),
+            verification,
+        );
+    }
+    let outcome = match paste() {
+        Ok(()) => InjectionOutcome::AutoPasted,
+        Err(_) => InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::PasteFailed),
+    };
+    (outcome, verification)
 }
 
 pub(crate) fn clipboard_write_generation() -> u64 {
@@ -56,15 +211,55 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Mirror the final transcript to a local file NotchPill (a separate notch-overlay
-/// app) can tail. Opt-in and best-effort: any failure is swallowed so dictation is
-/// never affected. Only the final text + a timestamp leave this function, and only
-/// to the app's own data dir — nothing is sent off-device.
-pub fn mirror_caption(text: &str) {
+#[cfg(target_os = "macos")]
+fn pasteboard_change_count() -> Option<i64> {
+    use objc2_app_kit::NSPasteboard;
+
+    Some(NSPasteboard::generalPasteboard().changeCount() as i64)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pasteboard_change_count() -> Option<i64> {
+    None
+}
+
+fn write_clipboard_text_with_change_count(text: &str) -> Result<Option<i64>, String> {
+    write_clipboard_text(text)?;
+    Ok(pasteboard_change_count())
+}
+
+/// A fully written, owner-only caption temp file. Preparing it may perform
+/// blocking filesystem work; publishing is a single atomic rename so callers
+/// can hold a short generation fence without holding it across write/flush.
+pub(crate) struct PreparedCaption {
+    tmp: std::path::PathBuf,
+    target: std::path::PathBuf,
+}
+
+impl PreparedCaption {
+    pub(crate) fn publish(self) -> bool {
+        std::fs::rename(&self.tmp, &self.target).is_ok()
+    }
+}
+
+impl Drop for PreparedCaption {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.tmp);
+    }
+}
+
+pub(crate) fn prepare_mirrored_caption(text: &str) -> Option<PreparedCaption> {
+    let dir = dirs::data_dir()?.join("local-dictation");
+    prepare_caption_to(&dir, text)
+}
+
+/// Remove only the published caption. Orphan-temp cleanup is deliberately not
+/// performed under a recording-generation fence.
+pub(crate) fn remove_published_mirrored_caption() {
     let Some(dir) = dirs::data_dir().map(|d| d.join("local-dictation")) else {
         return;
     };
-    let _ = write_caption_to(&dir, text);
+    let _ = std::fs::remove_file(dir.join("latest-caption.json"));
 }
 
 /// Delete the mirrored caption. Called when the setting is switched off, so
@@ -95,14 +290,14 @@ fn remove_caption_in(dir: &std::path::Path) {
 
 /// Atomic write (temp file + rename) of the caption JSON to
 /// `<dir>/latest-caption.json`. Returns false (no write) for empty/whitespace
-/// text. Separated from `mirror_caption` so it can be unit-tested against a temp
-/// directory.
-fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
+/// text. Separated from the production preparation seam so it can be unit-tested
+/// against a temp directory.
+fn prepare_caption_to(dir: &std::path::Path, text: &str) -> Option<PreparedCaption> {
     if text.trim().is_empty() {
-        return false;
+        return None;
     }
     if std::fs::create_dir_all(dir).is_err() {
-        return false;
+        return None;
     }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -110,7 +305,7 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
         .unwrap_or(0);
     let payload = serde_json::json!({ "text": text, "timestamp": ts });
     let Ok(bytes) = serde_json::to_vec(&payload) else {
-        return false;
+        return None;
     };
     let target = dir.join("latest-caption.json");
     // Pid *and* a per-write counter. Pid alone gave two overlapping writes from
@@ -149,40 +344,48 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
         }
         Err(_) => false,
     };
-    if !wrote || std::fs::rename(&tmp, &target).is_err() {
+    if !wrote {
         let _ = std::fs::remove_file(&tmp);
-        return false;
+        return None;
     }
-    true
+    Some(PreparedCaption { tmp, target })
+}
+
+#[cfg(test)]
+fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
+    prepare_caption_to(dir, text).is_some_and(PreparedCaption::publish)
 }
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
-/// `delay_ms` controls the pause before pasting (window focus settling).
-/// On paste failure, retries once after a 100ms backoff. When
-/// `target_process_id` is known, auto-paste fails closed if focus moved to a
-/// different application after recording began; the clipboard copy remains.
+/// The async caller applies `delay_ms` before dispatching this function to the
+/// main thread; the value is retained here only for timing telemetry.
+/// Auto-paste is bound to the complete native target snapshot frozen at the
+/// accepted recording transition. Target verification is repeated after the
+/// focused-field query and before either key post, closing focus changes during
+/// those potentially blocking operations.
 pub(crate) fn inject_text(
     text: &str,
     auto_paste: bool,
     delay_ms: u64,
-    target_process_id: Option<i32>,
-) -> Result<InjectionOutcome, String> {
+    delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> Result<InjectionResult, String> {
     let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
     // Skip if text is empty
     if text.trim().is_empty() {
         tracing::info!(target: "pipeline", "inject_text: text is empty, skipping");
-        return Ok(InjectionOutcome::NoText);
+        return Ok(InjectionResult {
+            outcome: InjectionOutcome::NoText,
+            verification: None,
+        });
     }
-
-    // Copy transcription to clipboard
-    write_clipboard_text(text)?;
-    let clipboard_ms = inject_started.elapsed().as_millis() as u64;
-    tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
 
     // If auto-paste is disabled, we're done
     if !auto_paste {
+        write_clipboard_text(text)?;
+        let clipboard_ms = inject_started.elapsed().as_millis() as u64;
+        tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
         tracing::info!(
             target: "pipeline",
             clipboard_ms,
@@ -192,9 +395,10 @@ pub(crate) fn inject_text(
             total_ms = inject_started.elapsed().as_millis() as u64,
             "inject timing"
         );
-        return Ok(InjectionOutcome::ClipboardOnly(
-            ClipboardOnlyReason::AutoPasteDisabled,
-        ));
+        return Ok(InjectionResult {
+            outcome: InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AutoPasteDisabled),
+            verification: None,
+        });
     }
 
     {
@@ -203,25 +407,12 @@ pub(crate) fn inject_text(
 
         // Check accessibility permission before attempting paste simulation (macOS only)
         if !is_accessibility_enabled() {
+            write_clipboard_text(text)?;
             tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
-            return Ok(InjectionOutcome::ClipboardOnly(
-                ClipboardOnlyReason::AccessibilityDenied,
-            ));
-        }
-
-        // Wait for window focus to settle
-        thread::sleep(Duration::from_millis(delay_ms));
-
-        if let Some(target_process_id) = target_process_id {
-            if !target_process_is_frontmost(target_process_id) {
-                tracing::warn!(
-                    target: "pipeline",
-                    "inject_text: recording target is no longer frontmost — skipping paste, text in clipboard only"
-                );
-                return Ok(InjectionOutcome::ClipboardOnly(
-                    ClipboardOnlyReason::TargetChanged,
-                ));
-            }
+            return Ok(InjectionResult {
+                outcome: InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied),
+                verification: None,
+            });
         }
 
         // Guard against pasting when nothing editable is focused (e.g. Finder
@@ -230,34 +421,75 @@ pub(crate) fn inject_text(
         // element is non-editable; on any uncertainty we allow the paste so the
         // common "a field is focused" case is never broken. See
         // `focused_field_state` for the false-negative bias.
-        let focus_started = Instant::now();
-        let focused_state = focused_field_state();
-        let focus_ms = focus_started.elapsed().as_millis() as u64;
-        if focused_state == FocusedFieldState::NonEditable {
-            tracing::info!(
-                target: "pipeline",
-                clipboard_ms,
-                delay_ms,
-                focus_ms,
-                key_event_ms = 0_u64,
-                total_ms = inject_started.elapsed().as_millis() as u64,
-                "inject timing"
-            );
-            tracing::warn!(target: "pipeline", "inject_text: focused element is not an editable text field — skipping paste, text in clipboard only");
-            return Ok(InjectionOutcome::ClipboardOnly(
-                ClipboardOnlyReason::FocusNotEditable,
-            ));
-        }
+        let mut focus_ms = 0_u64;
+        let mut clipboard_ms = 0_u64;
+        let preflight = first_paste_preflight(
+            || crate::frontmost::verify_delivery_target(delivery_target, true),
+            || {
+                let started = Instant::now();
+                let state = focused_field_state();
+                focus_ms = started.elapsed().as_millis() as u64;
+                state
+            },
+            || {
+                let started = Instant::now();
+                let result = write_clipboard_text_with_change_count(text);
+                clipboard_ms = started.elapsed().as_millis() as u64;
+                result
+            },
+            |token| pasteboard_change_count() == Some(token.0),
+        )?;
+        let (mut verification, expected_pasteboard_change) = match preflight {
+            FirstPastePreflight::Ready {
+                verification,
+                pasteboard_change,
+            } => (verification, pasteboard_change),
+            FirstPastePreflight::Refused {
+                reason,
+                verification,
+            } => {
+                tracing::info!(
+                    target: "pipeline",
+                    clipboard_ms,
+                    delay_ms,
+                    focus_ms,
+                    key_event_ms = 0_u64,
+                    total_ms = inject_started.elapsed().as_millis() as u64,
+                    "inject timing"
+                );
+                tracing::warn!(target: "pipeline", "inject_text: first paste preflight refused before key post");
+                return Ok(InjectionResult {
+                    outcome: InjectionOutcome::ClipboardOnly(reason),
+                    verification: Some(verification),
+                });
+            }
+        };
+        tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
 
         // Simulate paste keystroke, retry once on failure
         let key_event_started = Instant::now();
-        let result = match simulate_paste() {
-            Ok(()) => Ok(()),
+        let outcome = match simulate_paste_native() {
+            Ok(()) => InjectionOutcome::AutoPasted,
             Err(first_err) => {
                 tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
                 thread::sleep(Duration::from_millis(100));
-                simulate_paste()
-                    .map_err(|retry_err| format!("Auto-paste failed after retry: {}", retry_err))
+
+                let (retry_outcome, retry_verification) = retry_paste_if_safe(
+                    || {
+                        let started = Instant::now();
+                        let state = focused_field_state();
+                        focus_ms = focus_ms.saturating_add(started.elapsed().as_millis() as u64);
+                        state
+                    },
+                    || crate::frontmost::verify_delivery_target(delivery_target, true),
+                    // Content-free NSPasteboard generation equality proves
+                    // nothing else wrote the clipboard after Murmur. Never
+                    // read arbitrary clipboard content on this path.
+                    || pasteboard_change_count() == Some(expected_pasteboard_change.0),
+                    simulate_paste_native,
+                );
+                verification = retry_verification;
+                retry_outcome
             }
         };
         tracing::info!(
@@ -269,30 +501,11 @@ pub(crate) fn inject_text(
             total_ms = inject_started.elapsed().as_millis() as u64,
             "inject timing"
         );
-        match result {
-            Ok(()) => Ok(InjectionOutcome::AutoPasted),
-            Err(error) => {
-                tracing::warn!(target: "pipeline", "inject_text: {}", error);
-                Ok(InjectionOutcome::ClipboardOnly(
-                    ClipboardOnlyReason::PasteFailed,
-                ))
-            }
-        }
+        Ok(InjectionResult {
+            outcome,
+            verification: Some(verification),
+        })
     }
-}
-
-#[cfg(target_os = "macos")]
-fn target_process_is_frontmost(target_process_id: i32) -> bool {
-    use objc2_app_kit::NSWorkspace;
-
-    NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .is_some_and(|application| application.processIdentifier() == target_process_id)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn target_process_is_frontmost(_target_process_id: i32) -> bool {
-    false
 }
 
 /// Simulate Cmd+V using native CoreGraphics events. Event posting itself has no
@@ -347,6 +560,11 @@ fn simulate_paste_native() -> Result<(), String> {
     thread::sleep(Duration::from_millis(3));
     key_up.post(CGEventTapLocation::HID);
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn simulate_paste_native() -> Result<(), String> {
+    Err("native paste is unavailable on this platform".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -779,6 +997,268 @@ pub fn is_accessibility_enabled() -> bool {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
+    use crate::frontmost::{
+        VerificationEvidence, VerificationOutcome, VerificationSource, WindowRelation,
+    };
+    use std::cell::Cell;
+
+    fn verification(outcome: VerificationOutcome) -> VerificationEvidence {
+        VerificationEvidence {
+            outcome,
+            source: VerificationSource::Native,
+            retry_count: 0,
+            elapsed_ms: 0,
+            same_application: outcome == VerificationOutcome::Verified,
+            same_process: outcome == VerificationOutcome::Verified,
+            same_process_instance: outcome == VerificationOutcome::Verified,
+            window_relation: WindowRelation::Unknown,
+            activation_changed: false,
+            space_changed: false,
+            current_is_self: false,
+            ownership_current: true,
+        }
+    }
+
+    #[test]
+    fn first_preflight_catches_target_switch_during_ax_and_writes_clipboard_once() {
+        let mut verifications = std::collections::VecDeque::from([
+            verification(VerificationOutcome::Verified),
+            verification(VerificationOutcome::DifferentApplication),
+        ]);
+        let writes = Cell::new(0);
+        let result = first_paste_preflight(
+            || verifications.pop_front().expect("bounded verification"),
+            || FocusedFieldState::NonEditable,
+            || {
+                writes.set(writes.get() + 1);
+                Ok(Some(7))
+            },
+            |token| token == PasteboardChangeToken(7),
+        )
+        .expect("preflight result");
+
+        match result {
+            FirstPastePreflight::Refused {
+                reason,
+                verification,
+            } => {
+                assert_eq!(reason, ClipboardOnlyReason::TargetChanged);
+                assert_eq!(
+                    verification.outcome,
+                    VerificationOutcome::DifferentApplication
+                );
+            }
+            FirstPastePreflight::Ready { .. } => panic!("target switch must not become ready"),
+        }
+        assert_eq!(writes.get(), 1);
+        assert!(verifications.is_empty());
+    }
+
+    #[test]
+    fn early_preflight_refusal_reports_changed_clipboard_as_unconfirmed() {
+        let writes = Cell::new(0);
+        let result = first_paste_preflight(
+            || verification(VerificationOutcome::DifferentApplication),
+            || panic!("initial target refusal must not query focused state"),
+            || {
+                writes.set(writes.get() + 1);
+                Ok(Some(13))
+            },
+            |_| false,
+        )
+        .expect("preflight result");
+
+        assert!(matches!(
+            result,
+            FirstPastePreflight::Refused {
+                reason: ClipboardOnlyReason::ClipboardChanged,
+                ..
+            }
+        ));
+        assert_eq!(writes.get(), 1);
+    }
+
+    #[test]
+    fn first_preflight_allows_same_identity_in_a_different_window() {
+        let verify_calls = Cell::new(0);
+        let writes = Cell::new(0);
+        let result = first_paste_preflight(
+            || {
+                verify_calls.set(verify_calls.get() + 1);
+                let mut evidence = verification(VerificationOutcome::Verified);
+                evidence.window_relation = WindowRelation::Different;
+                evidence
+            },
+            || FocusedFieldState::Editable,
+            || {
+                writes.set(writes.get() + 1);
+                Ok(Some(7))
+            },
+            |token| token == PasteboardChangeToken(7),
+        )
+        .expect("preflight result");
+
+        match result {
+            FirstPastePreflight::Ready {
+                verification,
+                pasteboard_change,
+            } => {
+                assert!(verification.verified());
+                assert_eq!(verification.window_relation, WindowRelation::Different);
+                assert!(pasteboard_change == PasteboardChangeToken(7));
+            }
+            FirstPastePreflight::Refused { .. } => {
+                panic!("same process in another window remains eligible")
+            }
+        }
+        assert_eq!(verify_calls.get(), 3);
+        assert_eq!(writes.get(), 1);
+    }
+
+    #[test]
+    fn first_preflight_catches_target_switch_during_clipboard_write() {
+        let mut verifications = std::collections::VecDeque::from([
+            verification(VerificationOutcome::Verified),
+            verification(VerificationOutcome::Verified),
+            verification(VerificationOutcome::DifferentApplication),
+        ]);
+        let result = first_paste_preflight(
+            || verifications.pop_front().expect("bounded verification"),
+            || FocusedFieldState::Editable,
+            || Ok(Some(9)),
+            |token| token == PasteboardChangeToken(9),
+        )
+        .expect("preflight result");
+
+        assert!(matches!(
+            result,
+            FirstPastePreflight::Refused {
+                reason: ClipboardOnlyReason::TargetChanged,
+                ..
+            }
+        ));
+        assert!(verifications.is_empty());
+    }
+
+    #[test]
+    fn first_preflight_prioritizes_changed_clipboard_after_final_verification() {
+        let mut verifications = std::collections::VecDeque::from([
+            verification(VerificationOutcome::Verified),
+            verification(VerificationOutcome::Verified),
+            verification(VerificationOutcome::DifferentApplication),
+        ]);
+        let result = first_paste_preflight(
+            || verifications.pop_front().expect("bounded verification"),
+            || FocusedFieldState::Editable,
+            || Ok(Some(11)),
+            |_| false,
+        )
+        .expect("preflight result");
+
+        assert!(matches!(
+            result,
+            FirstPastePreflight::Refused {
+                reason: ClipboardOnlyReason::ClipboardChanged,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn paste_retry_checks_generation_then_refuses_target_mismatch_without_posting() {
+        let clipboard_reads = Cell::new(0);
+        let paste_posts = Cell::new(0);
+        let (outcome, evidence) = retry_paste_if_safe(
+            || FocusedFieldState::Editable,
+            || verification(VerificationOutcome::DifferentApplication),
+            || {
+                clipboard_reads.set(clipboard_reads.get() + 1);
+                true
+            },
+            || {
+                paste_posts.set(paste_posts.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::TargetChanged)
+        );
+        assert_eq!(evidence.outcome, VerificationOutcome::DifferentApplication);
+        assert_eq!(clipboard_reads.get(), 1);
+        assert_eq!(paste_posts.get(), 0);
+    }
+
+    #[test]
+    fn paste_retry_refuses_changed_clipboard_without_overwriting_or_posting() {
+        let paste_posts = Cell::new(0);
+        let (outcome, evidence) = retry_paste_if_safe(
+            || FocusedFieldState::Editable,
+            || verification(VerificationOutcome::Verified),
+            || false,
+            || {
+                paste_posts.set(paste_posts.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged)
+        );
+        assert!(evidence.verified());
+        assert_eq!(paste_posts.get(), 0);
+    }
+
+    #[test]
+    fn paste_retry_posts_only_after_verified_target_and_equal_clipboard() {
+        let paste_posts = Cell::new(0);
+        let (outcome, evidence) = retry_paste_if_safe(
+            || FocusedFieldState::Editable,
+            || verification(VerificationOutcome::Verified),
+            || true,
+            || {
+                paste_posts.set(paste_posts.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(outcome, InjectionOutcome::AutoPasted);
+        assert!(evidence.verified());
+        assert_eq!(paste_posts.get(), 1);
+    }
+
+    #[test]
+    fn paste_retry_rechecks_focus_and_refuses_noneditable_target() {
+        let verify_calls = Cell::new(0);
+        let clipboard_checks = Cell::new(0);
+        let paste_posts = Cell::new(0);
+        let (outcome, evidence) = retry_paste_if_safe(
+            || FocusedFieldState::NonEditable,
+            || {
+                verify_calls.set(verify_calls.get() + 1);
+                verification(VerificationOutcome::Verified)
+            },
+            || {
+                clipboard_checks.set(clipboard_checks.get() + 1);
+                true
+            },
+            || {
+                paste_posts.set(paste_posts.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            outcome,
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::FocusNotEditable)
+        );
+        assert!(evidence.verified());
+        assert_eq!(verify_calls.get(), 1);
+        assert_eq!(clipboard_checks.get(), 1);
+        assert_eq!(paste_posts.get(), 0);
+    }
 
     #[test]
     fn editable_roles_are_editable() {

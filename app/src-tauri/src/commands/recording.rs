@@ -260,6 +260,7 @@ pub(crate) fn resolve_live_context(
     app_state: &AppState,
     knowledge: &crate::knowledge_store::KnowledgeStore,
     app_identity: &crate::frontmost::FrontmostAppIdentity,
+    delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
 ) -> Arc<DictationContextSnapshot> {
     let bundle_id = app_identity.bundle_id.as_deref();
     let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
@@ -319,6 +320,7 @@ pub(crate) fn resolve_live_context(
             session_overrides: SessionOverrides::default(),
         });
         context.app.process_id = app_identity.process_id;
+        context.app.delivery_target = delivery_target.clone();
         return Arc::new(context);
     }
 }
@@ -693,6 +695,9 @@ impl DictationDeliveryOutcome {
 fn confirmed_delivery_outcome(outcome: injector::InjectionOutcome) -> DictationDeliveryOutcome {
     match outcome {
         injector::InjectionOutcome::NoText => DictationDeliveryOutcome::Unconfirmed,
+        injector::InjectionOutcome::ClipboardOnly(
+            injector::ClipboardOnlyReason::ClipboardChanged,
+        ) => DictationDeliveryOutcome::Unconfirmed,
         injector::InjectionOutcome::ClipboardOnly(_) => DictationDeliveryOutcome::ClipboardOnly,
         injector::InjectionOutcome::AutoPasted => DictationDeliveryOutcome::AutoPastePosted,
     }
@@ -730,6 +735,60 @@ fn with_current_delivery_owner<T>(
     Some(operation())
 }
 
+/// Run a generation-owned best-effort side effect even after Processing has
+/// completed. Holding the dictation lock through the operation prevents a new
+/// recording from advancing the generation between the ownership check and a
+/// local caption publication. Blocking preparation happens before this fence;
+/// the guarded operation is only an atomic rename or one published-file delete.
+fn with_current_recording_generation<T>(
+    app_state: &AppState,
+    recording_id: u64,
+    operation: impl FnOnce() -> T,
+) -> Option<T> {
+    let _dictation = app_state.dictation.lock_or_recover();
+    if app_state.recording_id.load(Ordering::SeqCst) != recording_id
+        || app_state.is_cancelled(recording_id)
+    {
+        return None;
+    }
+    Some(operation())
+}
+
+fn emit_auto_paste_failure_if_current(
+    app_handle: &tauri::AppHandle,
+    app_state: &AppState,
+    recording_id: u64,
+    message: &'static str,
+) {
+    let _ = with_current_delivery_owner(app_state, recording_id, || {
+        app_handle.emit("auto-paste-failed", message)
+    });
+}
+
+fn emit_delivery_target_verification(
+    recording_id: u64,
+    evidence: crate::frontmost::VerificationEvidence,
+) {
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.delivery_target_verified",
+        recording_id,
+        outcome_code = evidence.outcome.as_str(),
+        source_code = evidence.source.as_str(),
+        retry_count = evidence.retry_count,
+        elapsed_ms = evidence.elapsed_ms,
+        same_application = evidence.same_application,
+        same_process = evidence.same_process,
+        same_process_instance = evidence.same_process_instance,
+        window_relation_code = evidence.window_relation.as_str(),
+        activation_changed = evidence.activation_changed,
+        space_changed = evidence.space_changed,
+        current_is_self = evidence.current_is_self,
+        ownership_current = evidence.ownership_current,
+        "delivery target verification"
+    );
+}
+
 #[cfg(test)]
 mod clipboard_delivery_tests {
     use super::*;
@@ -763,6 +822,12 @@ mod clipboard_delivery_tests {
     fn empty_text_is_not_classified_as_clipboard_ready() {
         assert_eq!(
             confirmed_delivery_outcome(InjectionOutcome::NoText),
+            DictationDeliveryOutcome::Unconfirmed
+        );
+        assert_eq!(
+            confirmed_delivery_outcome(InjectionOutcome::ClipboardOnly(
+                ClipboardOnlyReason::ClipboardChanged,
+            )),
             DictationDeliveryOutcome::Unconfirmed
         );
     }
@@ -834,6 +899,43 @@ mod clipboard_delivery_tests {
             with_current_delivery_owner(&cancelled_state, 12, || 45),
             None
         );
+    }
+
+    #[test]
+    fn delayed_generation_side_effect_cannot_cross_cancel_or_supersession() {
+        let app_state = AppState::default();
+        app_state.recording_id.store(12, Ordering::SeqCst);
+
+        let mut calls = 0;
+        assert_eq!(
+            with_current_recording_generation(&app_state, 12, || {
+                assert!(matches!(
+                    app_state.dictation.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                calls += 1;
+                42
+            }),
+            Some(42)
+        );
+
+        app_state.recording_id.store(13, Ordering::SeqCst);
+        assert_eq!(
+            with_current_recording_generation(&app_state, 12, || {
+                calls += 1;
+                43
+            }),
+            None
+        );
+
+        let cancelled_state = AppState::default();
+        cancelled_state.recording_id.store(12, Ordering::SeqCst);
+        cancelled_state.cancel_recording(12);
+        assert_eq!(
+            with_current_recording_generation(&cancelled_state, 12, || 44),
+            None
+        );
+        assert_eq!(calls, 1);
     }
 
     #[test]
@@ -1741,15 +1843,21 @@ async fn run_transcription_pipeline(
         0
     };
 
-    // Phase: Text injection (clipboard write + optional osascript paste)
+    // Phase: Text injection (clipboard write + optional verified native paste)
     let t_inject = std::time::Instant::now();
     performance_guard.enter(PerformanceStageV1::ClipboardPaste);
     if !text.is_empty() {
         let text_to_inject = text.clone();
         let paste_delay_ms = delivery.paste_delay_ms;
-        let target_process_id = context.app.process_id;
+        let delivery_target = context.app.delivery_target.clone();
+        // Keep the configurable focus-settle wait off the macOS main thread so
+        // activation/Space notification callbacks can advance their
+        // content-free counters before target verification runs.
+        if effective_auto_paste && paste_delay_ms > 0 && injector::is_accessibility_enabled() {
+            tokio::time::sleep(std::time::Duration::from_millis(paste_delay_ms)).await;
+        }
         let (tx, rx) =
-            tokio::sync::oneshot::channel::<Option<Result<injector::InjectionOutcome, String>>>();
+            tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
         app_handle
             .run_on_main_thread(move || {
@@ -1759,9 +1867,21 @@ async fn run_transcription_pipeline(
                         &text_to_inject,
                         effective_auto_paste,
                         paste_delay_ms,
-                        target_process_id,
+                        &delivery_target,
                     )
                 });
+                match &attempt {
+                    Some(Ok(result)) => {
+                        if let Some(evidence) = result.verification {
+                            emit_delivery_target_verification(recording_id, evidence);
+                        }
+                    }
+                    None => emit_delivery_target_verification(
+                        recording_id,
+                        crate::frontmost::verify_delivery_target(&delivery_target, false),
+                    ),
+                    Some(Err(_)) => {}
+                }
                 let _ = tx.send(attempt);
             })
             .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
@@ -1773,11 +1893,14 @@ async fn run_transcription_pipeline(
         let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
         {
-            Ok(Ok(Some(Ok(outcome)))) => {
-                if let injector::InjectionOutcome::ClipboardOnly(reason) = outcome {
+            Ok(Ok(Some(Ok(result)))) => {
+                if let injector::InjectionOutcome::ClipboardOnly(reason) = result.outcome {
                     let failure_message = match reason {
                         injector::ClipboardOnlyReason::TargetChanged => Some(
                             "App focus changed. Text is in your clipboard; paste it when ready.",
+                        ),
+                        injector::ClipboardOnlyReason::ClipboardChanged => Some(
+                            "The clipboard changed before Murmur could retry. Copy the transcription from History.",
                         ),
                         injector::ClipboardOnlyReason::FocusNotEditable
                         | injector::ClipboardOnlyReason::PasteFailed => Some(paste_hint),
@@ -1785,15 +1908,22 @@ async fn run_transcription_pipeline(
                         | injector::ClipboardOnlyReason::AccessibilityDenied => None,
                     };
                     if let Some(message) = failure_message {
-                        let _ = app_handle.emit("auto-paste-failed", message);
+                        emit_auto_paste_failure_if_current(
+                            app_handle,
+                            app_state,
+                            recording_id,
+                            message,
+                        );
                     }
                 }
-                confirmed_delivery_outcome(outcome)
+                confirmed_delivery_outcome(result.outcome)
             }
             Ok(Ok(Some(Err(e)))) => {
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
-                let _ = app_handle.emit(
-                    "auto-paste-failed",
+                emit_auto_paste_failure_if_current(
+                    app_handle,
+                    app_state,
+                    recording_id,
                     "Couldn't copy the transcription to the clipboard.",
                 );
                 DictationDeliveryOutcome::ClipboardWriteFailed
@@ -1817,16 +1947,20 @@ async fn run_transcription_pipeline(
             }
             Ok(Err(_)) => {
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
-                let _ = app_handle.emit(
-                    "auto-paste-failed",
+                emit_auto_paste_failure_if_current(
+                    app_handle,
+                    app_state,
+                    recording_id,
                     "Text delivery did not finish. Check the clipboard before pasting.",
                 );
                 DictationDeliveryOutcome::Unconfirmed
             }
             Err(_) => {
                 tracing::warn!(target: "pipeline", "Text injection timed out");
-                let _ = app_handle.emit(
-                    "auto-paste-failed",
+                emit_auto_paste_failure_if_current(
+                    app_handle,
+                    app_state,
+                    recording_id,
                     "Text delivery timed out. Check the clipboard before pasting.",
                 );
                 DictationDeliveryOutcome::Unconfirmed
@@ -1862,20 +1996,23 @@ async fn run_transcription_pipeline(
             let mirror_app_handle = app_handle.clone();
             tokio::task::spawn_blocking(move || {
                 let state = mirror_app_handle.state::<State>();
-                if state.app_state.recording_id.load(Ordering::SeqCst) != recording_id
-                    || state.app_state.is_cancelled(recording_id)
-                {
-                    return;
-                }
-
-                if super::integrations::notchpill_installed() {
-                    injector::mirror_caption(&caption);
-                } else {
-                    // The preference may survive an uninstall so it can resume
-                    // after a reinstall, but no speech should remain mirrored
-                    // while the companion app is absent.
-                    injector::remove_mirrored_caption();
-                }
+                let installed = super::integrations::notchpill_installed();
+                let prepared = installed
+                    .then(|| injector::prepare_mirrored_caption(&caption))
+                    .flatten();
+                let _ =
+                    with_current_recording_generation(&state.app_state, recording_id, move || {
+                        if installed {
+                            if let Some(prepared) = prepared {
+                                let _ = prepared.publish();
+                            }
+                        } else {
+                            // The preference may survive an uninstall so it can
+                            // resume after a reinstall, but no speech should
+                            // remain mirrored while the companion app is absent.
+                            injector::remove_published_mirrored_caption();
+                        }
+                    });
             });
         }
     }
@@ -1938,7 +2075,7 @@ pub async fn process_audio(
     // helper before recording. Fail-fast no-op while a transform is in flight —
     // the is_transform_busy guard below then refuses this recording.
     state.transform_runtime.shutdown();
-    let rid = {
+    let (rid, delivery_target) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
         // path also runs the shared Whisper backend, so refuse while a file
@@ -1972,7 +2109,8 @@ pub async fn process_audio(
         }
         let recording_id = state.app_state.next_recording_id();
         transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
-        recording_id
+        let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
+        (recording_id, delivery_target)
     };
     drop(transition);
     keyboard::set_processing(true);
@@ -1981,8 +2119,13 @@ pub async fn process_audio(
         serde_json::json!({ "recordingId": rid }),
     );
     let _ = app_handle.emit("recording-status-changed", "processing");
-    let app_identity = crate::frontmost::frontmost_app_identity();
-    let context = resolve_live_context(&state.app_state, &state.knowledge, &app_identity);
+    let app_identity = crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
+    let context = resolve_live_context(
+        &state.app_state,
+        &state.knowledge,
+        &app_identity,
+        &delivery_target,
+    );
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
         runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
@@ -3568,7 +3711,7 @@ pub async fn start_native_recording(
     };
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let (rid, performance_started_at_ms) = {
+    let (rid, performance_started_at_ms, delivery_target) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.meeting_blocks_asr() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
@@ -3681,7 +3824,12 @@ pub async fn start_native_recording(
                             "start_native_recording"
                         );
                     });
-                (rid, performance_started_at_ms)
+                // Freeze the native delivery target immediately after the
+                // accepted Idle -> Starting transition, under the same
+                // ownership lock. This startup work is therefore included in
+                // request-to-first-PCM SLO timing.
+                let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
+                (rid, performance_started_at_ms, delivery_target)
             }
         }
     };
@@ -3722,16 +3870,21 @@ pub async fn start_native_recording(
     }
     tracing::info!(target: "pipeline", "start_native_recording: starting");
 
-    // Capture first so frontmost-app detection, profile resolution, and IDE
-    // refresh cannot clip the opening word. The lifecycle Ready bridge waits
-    // for this immutable snapshot before it publishes Recording.
-    let app_identity = crate::frontmost::frontmost_app_identity();
+    // Resolve profile and IDE context from the same native sample frozen at
+    // acceptance. A later focus change cannot splice another application's
+    // context into the recording while retaining the original paste target.
+    let app_identity = crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
     refresh_expired_ide_context(
         &app_handle,
         &state.app_state,
         app_identity.bundle_id.as_deref(),
     );
-    let context = resolve_live_context(&state.app_state, &state.knowledge, &app_identity);
+    let context = resolve_live_context(
+        &state.app_state,
+        &state.knowledge,
+        &app_identity,
+        &delivery_target,
+    );
     let context_action = {
         let dictation = state.app_state.dictation.lock_or_recover();
         let action = native_start_context_action(

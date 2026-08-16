@@ -44,7 +44,8 @@ Existing stored profile objects remain valid; missing, `null`, or malformed styl
 
 The snapshot contains only typed values used by the live pipeline:
 
-- Active app bundle identifier and the first matched profile identity
+- Active app bundle identifier, the first matched profile identity, and the
+  private native process-instance evidence needed to verify the delivery target
 - Effective transcription, transformation, and delivery settings
 - Vocabulary source plus a monotonic configuration version
 - The resolved prompt and immutable correction matcher
@@ -53,13 +54,25 @@ The snapshot contains only typed values used by the live pipeline:
 - Context-capture permissions
 - An optional ready, memory-only IDE index for the exact matching opted-in profile
 
-`AppState` stores the snapshot with its `recording_id`. Stop and processing paths can retrieve only the matching generation. Cleanup also checks the generation, so a stale pipeline cannot read or clear a newer recording's snapshot. Focus changes and settings changes after recording starts affect only later recordings.
+`AppState` stores the snapshot with its `recording_id`. Stop and processing paths can retrieve only the matching generation. Cleanup also checks the generation, so a stale pipeline cannot read or clear a newer recording's snapshot. Focus and settings changes after recording starts affect only later recordings' profile resolution. Delivery separately compares the current native identity with the frozen start identity for the same `recording_id`; it never re-resolves the profile or adopts a new target.
 
 ### Frontmost-app sampling
 
-At recording start, Murmur queries the native macOS `NSWorkspace` frontmost application first. An unavailable or empty native result is retried twice at 10 ms intervals, then the timeout-bounded System Events query is attempted once as a compatibility fallback. The nominal worst-case query budget is 270 ms: 20 ms of retry delay plus the fallback's 250 ms timeout.
+At the accepted `Idle -> Starting` transition, live dictation takes exactly one native macOS `NSWorkspace` sample. A complete bundle, PID, and launch-instance token from that retained `NSRunningApplication` object become both the immutable profile identity and the private delivery target. The optional focused-window token and content-free activation/Space counters come from the same boundary. This work runs under recording ownership and is included in request-to-first-PCM timing.
 
-The first successful sample wins and is resolved into the immutable snapshot exactly once. If focus changes after a successful native sample, the original app remains active for that recording. If an early native sample is unavailable while the user switches apps, the first later successful native or fallback sample becomes active for the recording. If every query fails, Murmur resolves an unmatched global-only context; app-specific IDE/context reads remain disabled.
+Live dictation does not retry this start sample or adopt a later application. An unavailable, partial, changing, or self-owned sample resolves an unmatched global-only context; app-specific IDE/context reads remain disabled and auto-paste later fails closed. Voice Query retains its own exact native one-sample identity boundary, but no System Events fallback can choose a live recording's profile or paste destination. Literal AppleScript `missing value` is normalized to unavailable in the regression seam rather than treated as a bundle identifier.
+
+At delivery, a bounded native verifier requires the same application, PID, and
+process-instance evidence. A process relaunch therefore cannot pass merely by
+reusing a bundle identifier or PID. Different windows in that exact process
+instance remain eligible; window relation, activation changes, and Space
+changes are recorded only as content-free diagnostic facts. A different app or
+process, relaunch, unavailable lookup, incomplete start identity, self target,
+or unprovable identity remains clipboard-only. Contradictory native PID or
+launch-instance evidence is terminal even when an unbundled process withholds
+its bundle identity; it is reported content-free as
+`partial_identity_mismatch` and cannot be erased by a later sample of the
+expected target. A stale recording owner performs no delivery write at all.
 
 ## Privacy boundary
 
@@ -77,7 +90,15 @@ Writing styles do not change the ASR model, language, file-saving behavior, clip
 
 Vocabulary aliases use this same immutable context. Global aliases always apply. Typed app aliases require the matching snapshot bundle identifier; typed project aliases additionally require the matching profile's enabled local project context and configured root. Settings currently creates global aliases first. No alias path re-detects the frontmost app.
 
-Frontmost-app detection telemetry likewise contains only a numeric outcome code, retry count, numeric source code, and elapsed milliseconds. It never contains the detected bundle identifier, application name, profile label, project roots, or user content.
+Frontmost-app detection telemetry likewise contains only a numeric outcome code,
+retry count, numeric source code, and elapsed milliseconds. Delivery verification
+uses the exact all-build `pipeline.delivery_target_verified` schema documented in
+[Text Injection](text-injection.md#delivery-target-diagnostics-and-privacy): a
+bounded outcome/source/window-relation vocabulary, equality and transition
+booleans, retry/timing numbers, and the positive `recording_id`. Neither path
+contains the detected bundle identifier, PID, process-instance token,
+application name, window title, profile label, project roots, raw errors,
+transcript or clipboard content, or other user content.
 
 ## Extension points
 

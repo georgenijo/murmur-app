@@ -1876,6 +1876,7 @@ pub(crate) async fn start_query_capture(
         &state.app_state,
         &state.knowledge,
         &identity,
+        &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
     );
     if !state
         .query

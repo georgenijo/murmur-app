@@ -164,6 +164,30 @@ Missing, invalid, or contradictory required/known fields collapse to the event
 code alone. Device/app identity, presentation text, transcript/audio, paths,
 and raw errors are never admitted.
 
+Delivery-target verification uses the separate exact-schema code
+`pipeline.delivery_target_verified`. It carries a positive `recording_id`;
+`outcome_code` from `verified`, `different_application`, `different_process`,
+`process_relaunched`, `partial_identity_mismatch`, `lookup_unavailable`,
+`start_identity_incomplete`, `start_target_is_self`, or `stale_owner`;
+`source_code` as `native` or `none`;
+`retry_count` from 0 through 2; `elapsed_ms` capped at 1,000;
+`window_relation_code` as `unknown`, `same`, or `different`; and the booleans
+`same_application`, `same_process`, `same_process_instance`,
+`activation_changed`, `space_changed`, `current_is_self`, and
+`ownership_current`. The window/activation/Space fields are diagnostics only:
+same-process-instance window changes remain eligible, while any identity
+mismatch or ambiguity fails closed. A self-owned start target is
+`start_target_is_self`; a later switch to Murmur remains
+`different_application` with `current_is_self: true`. Equality booleans are
+positive proof rather than invented negative evidence: contradictory native
+PID or launch-instance evidence while bundle identity is unavailable is the
+terminal `partial_identity_mismatch` outcome and is never retried into a later
+target. The all-build sanitizer
+strips unknown fields, collapses malformed required fields to the event code,
+and always uses a constant summary. It never admits application or bundle
+identity, PID/process-instance evidence, window titles, transcript or clipboard
+content, paths, or raw errors.
+
 An exhausted dictation diagnostics-row start emits the stable structured code
 `performance.store_operation_failed`. Its all-build allowlist admits only
 `operation`, `error_class`, numeric `attempts`, and numeric `recording_id`.
