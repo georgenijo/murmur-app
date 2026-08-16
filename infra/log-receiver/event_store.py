@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import time
@@ -413,10 +414,19 @@ class EventStore:
                     """
                 )
                 connection.execute(
+                    "INSERT OR IGNORE INTO store_metadata(key, value) VALUES ('cursor_secret', ?)",
+                    (secrets.token_hex(32),),
+                )
+                connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at_us) VALUES (?, ?)",
                     (1, int(time.time() * 1_000_000)),
                 )
                 connection.execute("COMMIT")
+            else:
+                connection.execute(
+                    "INSERT OR IGNORE INTO store_metadata(key, value) VALUES ('cursor_secret', ?)",
+                    (secrets.token_hex(32),),
+                )
         except BaseException:
             try:
                 connection.execute("ROLLBACK")
@@ -453,6 +463,20 @@ class EventStore:
                 "SELECT value FROM store_metadata WHERE key = 'dashboard_ready'"
             ).fetchone()
             return bool(row and row[0] == "1")
+        except sqlite3.Error as error:
+            raise _sqlite_error(error) from error
+        finally:
+            connection.close()
+
+    def cursor_secret(self) -> str:
+        connection = self._connect(write=False)
+        try:
+            row = connection.execute(
+                "SELECT value FROM store_metadata WHERE key = 'cursor_secret'"
+            ).fetchone()
+            if not row or not isinstance(row[0], str) or len(row[0]) != 64:
+                raise StoreCorrupt("cursor secret is missing")
+            return row[0]
         except sqlite3.Error as error:
             raise _sqlite_error(error) from error
         finally:
@@ -567,31 +591,40 @@ class EventStore:
         path: str,
         lines: Sequence[bytes],
         max_bytes: int | None = None,
-    ) -> tuple[int, bool] | None:
+    ) -> tuple[int, bool, bool] | None:
         if not lines:
             return None
         parent = os.path.dirname(path)
-        os.makedirs(parent, exist_ok=True)
+        parent_existed = os.path.isdir(parent)
         existed = os.path.exists(path)
         original_size = os.path.getsize(path) if existed else 0
         append_bytes = sum(len(line) + 1 for line in lines)
         if max_bytes is not None and original_size + append_bytes > max_bytes:
             raise StoreQuota("raw archive quota exceeded")
+        os.makedirs(parent, exist_ok=True)
         try:
             with open(path, "ab") as handle:
                 handle.write(b"\n".join(lines) + b"\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             _fsync_directory(parent)
-            return original_size, existed
+            return original_size, existed, parent_existed
         except OSError as error:
+            checkpoint = (original_size, existed, parent_existed)
+            try:
+                EventStore._restore_archive(path, checkpoint)
+            except ArchiveError as rollback_error:
+                raise rollback_error from error
             raise ArchiveError("raw archive append failed") from error
 
     @staticmethod
-    def _restore_archive(path: str, checkpoint: tuple[int, bool] | None) -> None:
+    def _restore_archive(
+        path: str, checkpoint: tuple[int, bool, bool] | None
+    ) -> None:
         if checkpoint is None:
             return
-        original_size, existed = checkpoint
+        original_size, existed, parent_existed = checkpoint
+        parent = os.path.dirname(path)
         try:
             if not existed and original_size == 0:
                 if os.path.exists(path):
@@ -601,7 +634,12 @@ class EventStore:
                     handle.truncate(original_size)
                     handle.flush()
                     os.fsync(handle.fileno())
-            _fsync_directory(os.path.dirname(path))
+            _fsync_directory(parent)
+            if not parent_existed:
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass
         except OSError as error:
             raise ArchiveError("raw archive rollback failed") from error
 

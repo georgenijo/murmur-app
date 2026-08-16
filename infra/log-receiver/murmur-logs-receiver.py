@@ -3058,7 +3058,8 @@ def render_search(params):
         raise StoreBusy("historical database is awaiting reconciliation")
     query, zone = search_query_from_params(params)
     cursor = _one_query_value(params, "cursor")
-    before = decode_cursor(TOKEN, query, cursor) if cursor else None
+    cursor_secret = store.cursor_secret()
+    before = decode_cursor(cursor_secret, query, cursor) if cursor else None
     page = store.query_events(query, before=before)
     installs = store.list_installs()
     options = ['<option value="">All production installs</option>']
@@ -3120,7 +3121,9 @@ def render_search(params):
             for key, values in params.items()
             if key != "cursor" and len(values) == 1 and values[0] != ""
         }
-        next_params["cursor"] = encode_cursor(TOKEN, query, page.next_position)
+        next_params["cursor"] = encode_cursor(
+            cursor_secret, query, page.next_position
+        )
         next_link = (
             '<p class="pagination"><a class="download-link" href="/search?%s">Older events &rarr;</a></p>'
             % html.escape(urlencode(next_params), quote=True)

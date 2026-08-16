@@ -68,6 +68,7 @@ class EventStoreTestCase(unittest.TestCase):
 
 class EventStoreMigrationTests(EventStoreTestCase):
     def test_migrations_reopen_with_wal_foreign_keys_and_integrity(self) -> None:
+        cursor_secret = self.store.cursor_secret()
         reopened = store_module.EventStore(self.database)
         reopened.initialize()
 
@@ -86,6 +87,8 @@ class EventStoreMigrationTests(EventStoreTestCase):
             connection.close()
         self.assertEqual(reopened.schema_version(), store_module.SCHEMA_VERSION)
         self.assertEqual(reopened.integrity_check(), "ok")
+        self.assertEqual(reopened.cursor_secret(), cursor_secret)
+        self.assertEqual(len(cursor_secret), 64)
 
     def test_corrupt_database_fails_closed(self) -> None:
         corrupt = self.root / "corrupt.sqlite3"
@@ -137,6 +140,18 @@ class EventStoreIngestTests(EventStoreTestCase):
                 self.ingest([event("not archived")])
 
         self.assertEqual(self.store.event_count(self.install_id), 0)
+
+    def test_partial_archive_fsync_failure_restores_file_and_new_directory(self) -> None:
+        with mock.patch.object(
+            store_module.os,
+            "fsync",
+            side_effect=[OSError("synthetic disk full"), None],
+        ), self.assertRaises(store_module.ArchiveError):
+            self.ingest([event("partially written")])
+
+        self.assertEqual(self.store.list_installs(), [])
+        self.assertFalse(self.archive.exists())
+        self.assertFalse(self.archive.parent.exists())
 
     def test_sqlite_disk_full_is_classified_as_quota_and_not_archived(self) -> None:
         with mock.patch.object(
