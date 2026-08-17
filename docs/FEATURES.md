@@ -202,7 +202,12 @@ metering, quiet/clipping guidance, automatic pause/resume around dictation,
 exact device switching, and no retained PCM.
 
 ### Appearance — [features/appearance.md](features/appearance.md)
-Local System/Light/Dark appearance with accessible custom accent, background, foreground, and contrast controls. The main window owns the revisioned local document and native title-bar appearance; the transparent overlay and transform review remain unsynchronized always-dark glass. Import/export is bounded, atomic, UTF-8 JSON and never touches the clipboard.
+System/Light/Dark appearance with accessible custom controls, a durable local
+theme library, independent light/dark selection, VS Code JSON/JSONC import, and
+an explicit Open VSX community browser. Community search/download is
+user-initiated, license- and integrity-checked, and never executes extension
+code. The main window owns the active cache and native title-bar appearance;
+transparent utility windows remain unsynchronized always-dark glass.
 
 ### UI design system — [features/ui-design-system.md](features/ui-design-system.md)
 Shared native chrome, semantic appearance colors, constrained geometry/type

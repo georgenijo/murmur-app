@@ -138,7 +138,7 @@ export function MainHeader({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="rounded-md px-3 py-1 text-[length:var(--ui-font-label)] font-semibold text-on-surface transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="min-w-16 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-1 text-[length:var(--ui-font-label)] font-semibold text-on-surface shadow-sm transition-colors hover:border-primary hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           Done
         </button>

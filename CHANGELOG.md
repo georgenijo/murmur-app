@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Appearance now includes a durable named theme library, independent light and
+  dark variants, VS Code JSON/JSONC conversion, and an opt-in Open VSX browser
+  with supported-license filtering, checksum and bounded-archive validation,
+  atomic collection updates, source links, and no extension-code execution
+  (#592).
+
 ## [0.35.0] - 2026-08-17
 
 ### Added

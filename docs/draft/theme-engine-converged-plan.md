@@ -1,6 +1,6 @@
 # Theme Engine — Converged Implementation Plan
 
-**Status:** Converged draft — canonical candidate, ready to ticket  
+**Status:** Historical draft — implemented by #377; library/marketplace scope superseded by #592
 **Date:** 2026-07-28  
 **Scope:** Local Appearance theming for Murmur  
 **Converges:** `cursor/theme-engine-plan` (v1) and `docs/draft/theme-engine-plan-v2.md`

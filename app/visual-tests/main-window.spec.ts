@@ -140,7 +140,7 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
 
   const fixture = page.locator('[data-visual-ready="true"]');
   await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Text', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: 'Text & Vocabulary', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Aliases', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
@@ -148,6 +148,84 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
+});
+
+test('appearance matches the compact collection-card layout', async ({ page }) => {
+  const source = {
+    kind: 'open-vsx',
+    extensionId: 'h1dr0n.claude-theme',
+    version: '1.0.0',
+    license: 'MIT',
+  } as const;
+  const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Claude Theme' };
+  const entry = (
+    id: string,
+    label: string,
+    modes: Array<'light' | 'dark'>,
+    theme: Record<string, unknown>,
+  ) => ({
+    version: 1,
+    id,
+    label,
+    modes,
+    theme: { version: 1, presetId: 'custom', ...theme },
+    source,
+    collection,
+  });
+  const library = {
+    version: 1,
+    revision: 1,
+    themes: [
+      entry('claude-classic', 'Claude Classic', ['light', 'dark'], {
+        light: { background: '#f1efe7', foreground: '#141413', accent: '#0060a4' },
+        dark: { background: '#1a1d23', foreground: '#d6d6d6', accent: '#74a9d8' },
+      }),
+      entry('claude-dusk', 'Claude Dusk (Deep Slate)', ['dark'], {
+        dark: { background: '#1a1d23', foreground: '#d6d6d6', accent: '#74a9d8' },
+      }),
+      entry('claude-midnight', 'Claude Midnight (OLED Black)', ['dark'], {
+        dark: { background: '#000000', foreground: '#f5f5f5', accent: '#74a9d8' },
+      }),
+      entry('claude-midnight-light', 'Claude Midnight Light (Pure High-Contrast)', ['light'], {
+        light: { background: '#ffffff', foreground: '#000000', accent: '#000000' },
+      }),
+    ],
+  };
+  await page.addInitScript((value) => {
+    localStorage.setItem('murmur-theme-library', JSON.stringify(value));
+  }, library);
+  await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=light');
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await page.getByRole('button', { name: 'Use Claude Theme theme' }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  const sonicCard = page.locator('[data-theme-collection="Sonic"]');
+  const claudeCard = page.locator('[data-theme-collection="Claude Theme"]');
+  await expect(claudeCard).toHaveCount(1);
+  await expect(sonicCard).toHaveCSS('width', '208px');
+  await expect(sonicCard).toHaveCSS('height', '94px');
+  await expect(claudeCard).toHaveCSS('width', '208px');
+  await expect(claudeCard).toHaveCSS('height', '94px');
+  await expect(claudeCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(page.getByText('Active theme', { exact: false })).toHaveCount(0);
+  await expect(page.getByText('Partly active')).toHaveCount(0);
+  await expect(page.getByText('Choose dark style')).toHaveCount(0);
+  await expect(page.getByText('Import a file or browse Open VSX')).toHaveCount(0);
+  await expect(fixture).toHaveScreenshot('light-settings-appearance.png');
+
+  await page.getByRole('radio', { name: /dark/i }).click();
+  await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
+
+  const cardHeight = await claudeCard.evaluate((element) => element.getBoundingClientRect().height);
+  await claudeCard.locator('button[aria-label^="Choose dark variant"]').hover();
+  const midnight = page.getByRole('button', { name: /Use .*Midnight.* for dark mode/ });
+  await expect(midnight).toBeVisible();
+  await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
+  await midnight.click();
+  await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-label*="Midnight"]')).toBeVisible();
+  await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
 });
 
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {

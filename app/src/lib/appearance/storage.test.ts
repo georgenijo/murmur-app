@@ -3,9 +3,11 @@ import {
   APPEARANCE_STORAGE_KEY,
   APPEARANCE_REVISION_ROLLOVER_AT,
   MAX_APPEARANCE_BYTES,
+  MAX_THEME_FILE_BYTES,
   MAX_APPEARANCE_REVISION,
   createAppearanceDocument,
   exportAppearanceText,
+  exportThemeLibraryEntryText,
   isNewerAppearanceRevision,
   loadAppearanceDocument,
   nextAppearanceRevision,
@@ -13,6 +15,7 @@ import {
   readAppearancePreview,
   writeAppearanceDocument,
   writeAppearanceExport,
+  makeLocalThemeEntry,
   type StorageLike,
 } from '.';
 
@@ -126,6 +129,20 @@ describe('appearance storage', () => {
     });
   });
 
+  it('preserves independent library ownership in the active document', () => {
+    const document = createAppearanceDocument('system', {
+      version: 1,
+      presetId: 'custom',
+      light: { background: '#ffffff' },
+      dark: { background: '#101010' },
+    }, 8, { light: 'paper', dark: 'midnight' });
+    writeAppearanceDocument(document, storage);
+    expect(loadAppearanceDocument(storage).document.selection).toEqual({
+      light: 'paper',
+      dark: 'midnight',
+    });
+  });
+
   it('repairs semantically equivalent documents into canonical key order once', () => {
     const document = createAppearanceDocument('dark', {
       version: 1,
@@ -189,9 +206,49 @@ describe('theme file transport helpers', () => {
     ['unsupported document version', JSON.stringify({ version: 2 })],
     ['unsupported theme version', JSON.stringify({ version: 1, mode: 'system', theme: { version: 2 } })],
     ['invalid mode', JSON.stringify({ version: 1, mode: 'sepia', theme: { version: 1, presetId: 'sonic' } })],
-    ['oversized', ' '.repeat(MAX_APPEARANCE_BYTES + 1)],
+    ['oversized', ' '.repeat(MAX_THEME_FILE_BYTES + 1)],
   ])('rejects %s imports before commit', (_case, text) => {
     expect(() => previewAppearanceImport(text)).toThrow();
+  });
+
+  it('imports JSONC VS Code themes through the same accessibility resolver', () => {
+    const preview = previewAppearanceImport(`{
+      // VS Code-style comments and trailing commas are accepted.
+      "name": "night-drive",
+      "type": "dark",
+      "colors": {
+        "editor.background": "#101214",
+        "editor.foreground": "#eef2f4",
+        "button.background": "#7cccf0",
+      },
+    }`);
+    expect(preview).toMatchObject({
+      mode: 'dark',
+      label: 'Night Drive',
+      modes: ['dark'],
+      theme: { presetId: 'custom' },
+    });
+    expect(preview.dark.background).toBe('#101214');
+  });
+
+  it('exports and previews named library theme files without source provenance', () => {
+    const entry = makeLocalThemeEntry('paper', 'Paper', {
+      version: 1,
+      presetId: 'custom',
+      background: '#fbfbfa',
+      foreground: '#202020',
+      accent: '#176b88',
+    }, ['light']);
+    const text = exportThemeLibraryEntryText(entry);
+    const raw = JSON.parse(text);
+    expect(raw).toMatchObject({ version: 2, name: 'Paper', modes: ['light'] });
+    expect(raw).not.toHaveProperty('source');
+    expect(raw).not.toHaveProperty('id');
+    expect(previewAppearanceImport(text)).toMatchObject({
+      label: 'Paper',
+      modes: ['light'],
+      mode: 'light',
+    });
   });
 
   it('uses provided read/write callbacks and never the clipboard', async () => {

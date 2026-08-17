@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 164 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 167 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -201,7 +201,7 @@ frontend.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 64 KiB of UTF-8 from a regular, non-symlink file. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
+| `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 256 KiB of UTF-8 from a regular, non-symlink file, enough for bounded VS Code JSON/JSONC themes. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
 | `write_theme_file` | `path: String`, `contents: String` | `Result<(), String>` | Rejects content over 64 KiB and symlink/non-regular destinations, writes and fsyncs a unique sibling temporary file, atomically renames it over the destination, then syncs the parent directory. New Unix files use mode `0600`; replacements preserve the existing regular target's permissions. A failed write/publish cleans the temporary file and preserves an existing target. |
 
 ## Correct and Teach (`commands/correct_and_teach.rs`)
@@ -256,8 +256,8 @@ frontend.
 
 ## Durable frontend data store (`commands/settings_store.rs`)
 
-The durable home for frontend-owned settings, bounded transcript history, and
-usage statistics under the per-bundle app data directory. Blobs are opaque to
+The durable home for frontend-owned settings, bounded transcript history,
+usage statistics, and the saved theme library under the per-bundle app data directory. Blobs are opaque to
 Rust: only their size and top-level JSON container are checked, so schema and
 migration rules stay in TypeScript. Writes are atomic, serialized, and created
 with owner-only permissions on Unix; rejected files are quarantined locally
@@ -273,6 +273,9 @@ without logging their content.
 | `load_stats_blob` | — | `Result<Option<String>, String>` | Reads `stats.json`. `None` means absent or quarantined; the 1 MiB JSON-object bound is checked before returning content. |
 | `save_stats_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a statistics JSON object up to 1 MiB. |
 | `clear_stats_blob` | — | `Result<(), String>` | Idempotently removes `stats.json` without touching settings or history. |
+| `load_theme_library_blob` | — | `Result<Option<String>, String>` | Main-window-only read of `theme-library.json`. `None` means absent or quarantined; the 1 MiB JSON-object boundary is enforced before content reaches the renderer. |
+| `save_theme_library_blob` | `blob: String` | `Result<(), String>` | Main-window-only atomic publish of a theme-library JSON object up to 1 MiB. Rust treats the schema as opaque; TypeScript validates every entry and revision. |
+| `clear_theme_library_blob` | — | `Result<(), String>` | Main-window-only, idempotent removal of `theme-library.json`, independent of settings, history, stats, and the active appearance cache. |
 
 ## Overlay (`commands/overlay.rs`)
 

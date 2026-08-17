@@ -206,7 +206,7 @@ and safe error class.
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `appearance-changed` | `{revision, reason}` where `reason` is `"user"` \| `"repair"` \| `"reset"` \| `"import"` | Main window appearance controller | After main commits a user edit, reset, import, derived-cache repair, or explicit high-water revision rollover to `1` in `murmur-appearance`. The event carries no colors or file contents. System-mode OS changes do not emit. | Log viewer appearance controller; it reloads storage with a bounded retry, ignores stale revisions, and accepts the single high-water-to-`1` repair rollover. |
+| `appearance-changed` | `{revision, reason}` where `reason` is `"user"` \| `"repair"` \| `"reset"` \| `"import"` \| `"library"` | Main window appearance controller | After main commits a user edit, reset, import, library selection/update, derived-cache repair, or explicit high-water revision rollover to `1` in `murmur-appearance`. The event carries no colors, source metadata, queries, or file contents. System-mode OS changes do not emit. | Diagnostics appearance controller; it reloads storage with a bounded retry, ignores stale revisions, and accepts the single high-water-to-`1` repair rollover. |
 | `settings-changed` | `()` | `useSettings`, `useOverlaySettingsMirror` | A window mutates persisted settings, so the other windows re-read localStorage. | Main window, overlay. |
 | `overlay-calibration-changed` | `{active: boolean}` | Main Settings calibration control | Calibration starts or finishes. It carries no position; native preview movement remains command-owned. | Overlay switches its visual into or out of calibration mode and suppresses normal click/hover behavior. |
 | `open-settings` | `()` | `useOverlaySettingsMirror` | The overlay's quick-settings card asks the main window to open Settings. | Main window (`useOpenSettingsListener`). |
@@ -242,7 +242,7 @@ Streams correspond to Rust tracing targets; levels to standard tracing severitie
 ```typescript
 interface AppearanceChangedEvent {
   revision: number;
-  reason: 'user' | 'repair' | 'reset' | 'import';
+  reason: 'user' | 'repair' | 'reset' | 'import' | 'library';
 }
 ```
 

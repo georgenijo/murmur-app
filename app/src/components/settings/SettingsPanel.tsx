@@ -253,7 +253,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'punctuation', title: 'Smart Punctuation', detail: 'Add punctuation and sentence capitalization.', keywords: 'automatic punctuation' },
   { page: 'text', target: 'cleanup', title: 'Transcript Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
   { page: 'text', target: 'text-editors', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
-  { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors palette' },
+  { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
   { page: 'general', target: 'setup', title: 'Setup Assistant', detail: 'Re-check permissions and model setup.', keywords: 'onboarding microphone accessibility' },
   { page: 'general', target: 'updates', title: 'Updates', detail: 'Check for a newer Murmur release.', keywords: 'version upgrade' },
@@ -1967,7 +1967,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             )}
           </SettingsSection>
 
-          <SettingsSection pageId="appearance" activePage={activeCat} title="Appearance" subtitle="Theme, contrast, and color customization">
+          <SettingsSection plain pageId="appearance" activePage={activeCat} title="Appearance">
             <div data-setting-target="appearance"><AppearanceSettings /></div>
           </SettingsSection>
 

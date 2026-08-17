@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAIN_WINDOW_LABEL: &str = "main";
-const MAX_THEME_FILE_BYTES: usize = 64 * 1024;
+const MAX_THEME_IMPORT_BYTES: usize = 256 * 1024;
+const MAX_THEME_EXPORT_BYTES: usize = 64 * 1024;
 const TEMP_FILE_ATTEMPTS: usize = 32;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -34,8 +35,8 @@ fn open_regular_file(path: &Path) -> Result<File, String> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err("Choose a valid theme file.".to_string());
     }
-    if metadata.len() > MAX_THEME_FILE_BYTES as u64 {
-        return Err("Theme files must be 64 KiB or smaller.".to_string());
+    if metadata.len() > MAX_THEME_IMPORT_BYTES as u64 {
+        return Err("Theme files must be 256 KiB or smaller.".to_string());
     }
 
     let mut options = OpenOptions::new();
@@ -60,12 +61,12 @@ fn open_regular_file(path: &Path) -> Result<File, String> {
 
 fn read_theme_file_at(path: &Path) -> Result<String, String> {
     let file = open_regular_file(path)?;
-    let mut bytes = Vec::with_capacity(MAX_THEME_FILE_BYTES.min(4096));
-    file.take(MAX_THEME_FILE_BYTES as u64 + 1)
+    let mut bytes = Vec::with_capacity(MAX_THEME_IMPORT_BYTES.min(4096));
+    file.take(MAX_THEME_IMPORT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "Murmur could not read the theme file.".to_string())?;
-    if bytes.len() > MAX_THEME_FILE_BYTES {
-        return Err("Theme files must be 64 KiB or smaller.".to_string());
+    if bytes.len() > MAX_THEME_IMPORT_BYTES {
+        return Err("Theme files must be 256 KiB or smaller.".to_string());
     }
     String::from_utf8(bytes).map_err(|_| "Theme files must be valid UTF-8.".to_string())
 }
@@ -143,7 +144,7 @@ where
     F: FnOnce(&Path, &Path) -> io::Result<()>,
     S: FnOnce(&Path) -> io::Result<()>,
 {
-    if contents.len() > MAX_THEME_FILE_BYTES {
+    if contents.len() > MAX_THEME_EXPORT_BYTES {
         return Err("Theme exports must be 64 KiB or smaller.".to_string());
     }
     let target_permissions = validate_export_target(path)?;
@@ -249,20 +250,20 @@ mod tests {
     }
 
     #[test]
-    fn read_accepts_exactly_64_kib_and_rejects_one_more_byte() {
+    fn read_accepts_exactly_256_kib_and_rejects_one_more_byte() {
         let temp = tempfile::tempdir().unwrap();
         let exact = temp.path().join("exact.json");
         let oversized = temp.path().join("oversized.json");
-        fs::write(&exact, vec![b'a'; MAX_THEME_FILE_BYTES]).unwrap();
-        fs::write(&oversized, vec![b'a'; MAX_THEME_FILE_BYTES + 1]).unwrap();
+        fs::write(&exact, vec![b'a'; MAX_THEME_IMPORT_BYTES]).unwrap();
+        fs::write(&oversized, vec![b'a'; MAX_THEME_IMPORT_BYTES + 1]).unwrap();
 
         assert_eq!(
             read_theme_file_at(&exact).unwrap().len(),
-            MAX_THEME_FILE_BYTES
+            MAX_THEME_IMPORT_BYTES
         );
         assert_eq!(
             read_theme_file_at(&oversized).unwrap_err(),
-            "Theme files must be 64 KiB or smaller."
+            "Theme files must be 256 KiB or smaller."
         );
     }
 
@@ -299,7 +300,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("theme.json");
         fs::write(&path, "old").unwrap();
-        let exact = "é".repeat(MAX_THEME_FILE_BYTES / 2);
+        let exact = "é".repeat(MAX_THEME_EXPORT_BYTES / 2);
 
         write_theme_file_at(&path, &exact).unwrap();
 

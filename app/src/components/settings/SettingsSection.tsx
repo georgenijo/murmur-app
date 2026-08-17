@@ -10,9 +10,10 @@ interface SettingsSectionProps {
   // Used by the tabbed settings layout where the horizontal nav owns page switching.
   pageId?: string;
   activePage?: string;
+  plain?: boolean;
 }
 
-export function SettingsSection({ title, subtitle, defaultExpanded = true, children, pageId, activePage }: SettingsSectionProps) {
+export function SettingsSection({ title, subtitle, defaultExpanded = true, children, pageId, activePage, plain = false }: SettingsSectionProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [overflowVisible, setOverflowVisible] = useState(defaultExpanded);
   const contentId = useId();
@@ -34,12 +35,12 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   if (pageId !== undefined) {
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
-      <section className="mb-8 last:mb-0">
-        <h1 className="text-2xl font-semibold tracking-tight text-on-surface">{title}</h1>
+      <section className={plain ? "mb-7 last:mb-0" : "mb-8 last:mb-0"}>
+        <h1 className={plain ? "text-base font-semibold text-on-surface" : "text-2xl font-semibold tracking-tight text-on-surface"}>{title}</h1>
         {subtitle && (
-          <p className="mt-1 text-sm text-on-surface-variant">{subtitle}</p>
+          <p className={plain ? "mt-2 text-[13px] leading-[1.45] text-on-surface-variant" : "mt-1 text-sm text-on-surface-variant"}>{subtitle}</p>
         )}
-        <div className="mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20">{children}</div>
+        <div className={plain ? "mt-3" : "mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20"}>{children}</div>
       </section>
     );
   }

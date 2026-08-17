@@ -254,7 +254,7 @@ export function Select<T extends string = string>({
           ref={listboxRef}
           role="listbox"
           id={`${id}-listbox`}
-          className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-outline-variant/30 bg-surface-container-lowest py-1 shadow-lg"
+          className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-on-surface-variant bg-surface-container-lowest py-1 shadow-lg"
         >
           {isGrouped(items)
             ? items.map((group, gi) => (

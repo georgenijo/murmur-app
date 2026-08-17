@@ -1,12 +1,13 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AppearanceMode,
   ThemeAdjustment,
   ThemeConfigV1,
-  ThemeImportPreview,
 } from "../../lib/appearance";
 import { useAppearance } from "../../lib/hooks/useAppearance";
+import { CommunityThemeDialog } from "./CommunityThemeDialog";
+import { ThemeLibrary } from "./ThemeLibrary";
 
 const MODE_OPTIONS: readonly {
   value: AppearanceMode;
@@ -48,31 +49,6 @@ function adjustmentText(
     return `Your selected foreground ${theme.foreground} resolves to ${adjustment.to} in ${adjustment.appearance} mode ${reason}`;
   }
   return `${adjustment.token} resolves to ${adjustment.to} in ${adjustment.appearance} mode ${reason}`;
-}
-
-function OverrideList({
-  label,
-  entries,
-}: {
-  label: string;
-  entries: readonly (readonly [string, string])[];
-}) {
-  if (entries.length === 0) return null;
-  return (
-    <div>
-      <p className="text-xs font-medium text-on-surface">{label} overrides</p>
-      <dl className="mt-1 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 text-xs">
-        {entries.map(([token, value]) => (
-          <div key={token} className="contents">
-            <dt className="truncate font-mono text-on-surface">
-              {token}
-            </dt>
-            <dd className="font-mono text-on-surface">{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  );
 }
 
 function ColorControl({
@@ -168,18 +144,13 @@ export function AppearanceSettings() {
   const [contrastDraft, setContrastDraft] = useState(
     appearance.document.theme.contrast ?? 0,
   );
-  const [importPreview, setImportPreview] = useState<ThemeImportPreview | null>(
-    null,
-  );
   const [localError, setLocalError] = useState<string | null>(null);
+  const [communityOpen, setCommunityOpen] = useState(false);
+  const [customEditorOpen, setCustomEditorOpen] = useState(false);
   const contrastDraftRef = useRef(contrastDraft);
   const lastCommittedContrastRef = useRef(
     appearance.document.theme.contrast ?? 0,
   );
-  const importButtonRef = useRef<HTMLButtonElement>(null);
-  const importPreviewRef = useRef<HTMLDivElement>(null);
-  const importPreviewTitleId = useId();
-  const importPreviewDescriptionId = useId();
 
   useEffect(() => {
     const contrast = appearance.document.theme.contrast ?? 0;
@@ -187,10 +158,6 @@ export function AppearanceSettings() {
     contrastDraftRef.current = contrast;
     lastCommittedContrastRef.current = contrast;
   }, [appearance.document.theme.contrast]);
-
-  useEffect(() => {
-    if (importPreview) importPreviewRef.current?.focus();
-  }, [importPreview]);
 
   const updateTheme = (patch: Partial<ThemeConfigV1>) => {
     setLocalError(null);
@@ -217,7 +184,14 @@ export function AppearanceSettings() {
         ],
       });
       if (typeof path === "string") {
-        setImportPreview(await appearance.importFromPath(path));
+        const preview = await appearance.importFromPath(path);
+        const entry = await appearance.library.savePreview(
+          preview.label ?? "Imported theme",
+          preview,
+        );
+        await appearance.commitImport(
+          appearance.library.previewSelection(entry.id),
+        );
       }
     } catch (error) {
       setLocalError(String(error));
@@ -239,12 +213,6 @@ export function AppearanceSettings() {
     }
   };
 
-  const previewTheme = importPreview?.theme;
-  const previewAdjustments = importPreview?.adjustments ?? [];
-  const lightOverrides = Object.entries(previewTheme?.light ?? {});
-  const darkOverrides = Object.entries(previewTheme?.dark ?? {});
-  const lightOverrideCount = lightOverrides.length;
-  const darkOverrideCount = darkOverrides.length;
   const selectedAdjustments = appearance.adjustments.filter((adjustment) => {
     if (appearance.document.theme.accent && adjustment.token === "primary") {
       return true;
@@ -268,22 +236,26 @@ export function AppearanceSettings() {
     updateTheme({ presetId: "custom", contrast });
   };
 
-  const dismissImportPreview = () => {
-    setImportPreview(null);
-    requestAnimationFrame(() => importButtonRef.current?.focus());
-  };
+  useEffect(() => {
+    if (!customEditorOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCustomEditorOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [customEditorOpen]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <fieldset>
-        <legend className="text-sm font-medium text-on-surface">
-          Appearance mode
-        </legend>
-        <div
-          role="radiogroup"
-          aria-label="Appearance mode"
-          className="mt-2 grid grid-cols-3 gap-2"
-        >
+        <legend className="sr-only">Color scheme</legend>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span id="appearance-mode-label" className="text-sm font-medium text-on-surface">Color scheme</span>
+          <div
+            role="radiogroup"
+            aria-labelledby="appearance-mode-label"
+            className="inline-flex rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest p-0.5"
+          >
           {MODE_OPTIONS.map((option, index) => {
             const selected = appearance.document.mode === option.value;
             return (
@@ -314,273 +286,27 @@ export function AppearanceSettings() {
                     appearance.setMode(MODE_OPTIONS[nextIndex].value),
                   );
                 }}
-                className={`rounded-xl border p-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
+                aria-label={option.value === "system" ? "Follow the system appearance" : `Use ${option.value} mode`}
+                title={option.description}
+                className={`h-8 rounded-md px-3 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
                   selected
-                    ? "border-primary bg-primary/10 text-on-surface"
-                    : "border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container"
+                    ? "bg-primary text-on-primary"
+                    : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
                 }`}
               >
-                <span className="block text-sm font-medium">
-                  {option.label}
-                </span>
-                <span className="mt-1 block text-[11px] leading-4 text-on-surface">
-                  {option.description}
-                </span>
+                {option.label}
               </button>
             );
           })}
+          </div>
         </div>
-        <p className="mt-2 text-xs text-on-surface-variant">
-          Currently rendered as {appearance.resolvedAppearance}. The overlay and
-          transform-review glass always stay dark.
-        </p>
       </fieldset>
 
-      <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-on-surface">Sonic</p>
-            <p className="mt-1 text-xs text-on-surface-variant">
-              Reset restores Murmur’s exact built-in Sonic palette. Clearing
-              individual color overrides keeps the theme Custom.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={appearance.busy}
-            onClick={() => runControllerAction(appearance.reset())}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
-          >
-            Reset to Sonic
-          </button>
-        </div>
-      </div>
-
-      <ColorControl
-        label="Accent"
-        description="Used for selected controls, progress, and focus."
-        value={appearance.document.theme.accent}
-        fallback={resolvedTokens.primary}
-        onCommit={(accent) => updateTheme({ presetId: "custom", accent })}
+      <ThemeLibrary
+        onBrowse={() => setCommunityOpen(true)}
+        onImport={() => void importTheme()}
+        onCustomize={() => setCustomEditorOpen(true)}
       />
-
-      <ColorControl
-        label="Background"
-        description="Sets the canvas and derives surface ladder."
-        value={appearance.document.theme.background}
-        fallback={resolvedTokens.background}
-        onCommit={(background) =>
-          updateTheme({ presetId: "custom", background })
-        }
-      />
-
-      <ColorControl
-        label="Foreground"
-        description="Sets primary readable text across derived surfaces."
-        value={appearance.document.theme.foreground}
-        fallback={resolvedTokens["on-surface"]}
-        onCommit={(foreground) =>
-          updateTheme({ presetId: "custom", foreground })
-        }
-      />
-
-      <div>
-        <div className="flex items-center justify-between">
-          <label
-            htmlFor="appearance-contrast"
-            className="text-sm font-medium text-on-surface"
-          >
-            Contrast
-          </label>
-          <span className="text-xs tabular-nums text-on-surface-variant">
-            {contrastDraft > 0 ? "+" : ""}
-            {contrastDraft}
-          </span>
-        </div>
-        <input
-          id="appearance-contrast"
-          type="range"
-          min={-100}
-          max={100}
-          step={1}
-          value={contrastDraft}
-          onChange={(event) => {
-            const contrast = Number(event.currentTarget.value);
-            setContrastDraft(contrast);
-            contrastDraftRef.current = contrast;
-          }}
-          onPointerUp={commitContrast}
-          onPointerCancel={commitContrast}
-          onKeyUp={(event) => {
-            if (
-              event.key.startsWith("Arrow") ||
-              event.key === "Home" ||
-              event.key === "End" ||
-              event.key === "PageUp" ||
-              event.key === "PageDown"
-            ) {
-              commitContrast();
-            }
-          }}
-          onBlur={commitContrast}
-          className="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
-        />
-        <p className="mt-1 text-xs text-on-surface-variant">
-          Adjusts separation between surfaces while preserving required
-          contrast.
-        </p>
-      </div>
-
-      {selectedAdjustments.length > 0 && (
-        <div
-          role="status"
-          className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
-        >
-          <p className="font-medium">Adjusted for accessibility</p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4">
-            {selectedAdjustments.map((adjustment, index) => (
-              <li key={index}>
-                {adjustmentText(adjustment, appearance.document.theme)}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="border-t border-outline-variant/20 pt-4">
-        <p className="text-sm font-medium text-on-surface">Theme file</p>
-        <p className="mt-1 text-xs text-on-surface-variant">
-          Import or export authoritative theme settings. Resolved caches are
-          never trusted on import.
-        </p>
-        <div className="mt-3 flex gap-2">
-          <button
-            ref={importButtonRef}
-            type="button"
-            disabled={appearance.busy}
-            onClick={() => void importTheme()}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
-          >
-            Import Theme
-          </button>
-          <button
-            type="button"
-            disabled={appearance.busy}
-            onClick={() => void exportTheme()}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
-          >
-            Export Theme
-          </button>
-        </div>
-      </div>
-
-      {importPreview && (
-        <div
-          ref={importPreviewRef}
-          role="dialog"
-          aria-labelledby={importPreviewTitleId}
-          aria-describedby={importPreviewDescriptionId}
-          tabIndex={-1}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              dismissImportPreview();
-            }
-          }}
-          className="rounded-xl border border-primary/30 bg-primary/5 p-3"
-        >
-          <p
-            id={importPreviewTitleId}
-            className="text-sm font-medium text-on-surface"
-          >
-            Import preview
-          </p>
-          <p
-            id={importPreviewDescriptionId}
-            className="mt-1 text-xs text-on-surface"
-          >
-            {previewTheme?.presetId === "custom"
-              ? "Custom theme"
-              : "Sonic theme"}
-            {previewAdjustments.length > 0
-              ? ` · ${previewAdjustments.length} accessibility adjustment${previewAdjustments.length === 1 ? "" : "s"}`
-              : ""}
-            {` · ${lightOverrideCount} light token override${lightOverrideCount === 1 ? "" : "s"} · ${darkOverrideCount} dark token override${darkOverrideCount === 1 ? "" : "s"}`}
-          </p>
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-            <dt className="text-on-surface">Mode</dt>
-            <dd className="text-on-surface">{importPreview.mode}</dd>
-            {previewTheme?.accent && (
-              <>
-                <dt className="text-on-surface">Accent</dt>
-                <dd className="font-mono text-on-surface">
-                  {previewTheme.accent}
-                </dd>
-              </>
-            )}
-            {previewTheme?.background && (
-              <>
-                <dt className="text-on-surface">Background</dt>
-                <dd className="font-mono text-on-surface">
-                  {previewTheme.background}
-                </dd>
-              </>
-            )}
-            {previewTheme?.foreground && (
-              <>
-                <dt className="text-on-surface">Foreground</dt>
-                <dd className="font-mono text-on-surface">
-                  {previewTheme.foreground}
-                </dd>
-              </>
-            )}
-            {previewTheme?.contrast !== undefined && (
-              <>
-                <dt className="text-on-surface">Contrast</dt>
-                <dd className="text-on-surface">{previewTheme.contrast}</dd>
-              </>
-            )}
-          </dl>
-          <div className="mt-3 grid gap-3 rounded-lg border border-outline-variant/20 bg-surface-container-lowest p-2.5">
-            <OverrideList label="Light" entries={lightOverrides} />
-            <OverrideList label="Dark" entries={darkOverrides} />
-            {lightOverrides.length === 0 && darkOverrides.length === 0 && (
-              <p className="text-xs text-on-surface">
-                No explicit token overrides.
-              </p>
-            )}
-          </div>
-          {previewAdjustments.length > 0 && (
-            <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-on-surface">
-              {previewAdjustments.map((adjustment, index) => (
-                <li key={index}>
-                  {adjustmentText(adjustment, importPreview.theme)}
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() =>
-                void Promise.resolve(appearance.commitImport(importPreview))
-                  .then(dismissImportPreview)
-                  .catch((error) => setLocalError(String(error)))
-              }
-              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary"
-            >
-              Apply Theme
-            </button>
-            <button
-              type="button"
-              onClick={dismissImportPreview}
-              className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
 
       {(localError || appearance.error) && (
         <p
@@ -590,6 +316,94 @@ export function AppearanceSettings() {
           {localError ?? appearance.error}
         </p>
       )}
+
+      {customEditorOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-5 backdrop-blur-[2px]"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCustomEditorOpen(false);
+          }}
+        >
+          <div role="dialog" aria-modal="true" aria-labelledby="theme-editor-title" className="max-h-[86vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-on-surface-variant bg-surface p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>
+                <p className="mt-1 text-xs text-on-surface-variant">Start from the colors currently on screen.</p>
+              </div>
+              <button autoFocus type="button" aria-label="Close theme editor" onClick={() => setCustomEditorOpen(false)} className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
+            </div>
+
+            <div className="mt-5 space-y-5">
+              <ColorControl
+                label="Accent"
+                description="Selected controls, progress, and focus."
+                value={appearance.document.theme.accent}
+                fallback={resolvedTokens.primary}
+                onCommit={(accent) => updateTheme({ presetId: "custom", accent })}
+              />
+              <ColorControl
+                label="Background"
+                description="Canvas color and derived surfaces."
+                value={appearance.document.theme.background}
+                fallback={resolvedTokens.background}
+                onCommit={(background) => updateTheme({ presetId: "custom", background })}
+              />
+              <ColorControl
+                label="Foreground"
+                description="Primary readable text."
+                value={appearance.document.theme.foreground}
+                fallback={resolvedTokens["on-surface"]}
+                onCommit={(foreground) => updateTheme({ presetId: "custom", foreground })}
+              />
+
+              <div>
+                <div className="flex items-center justify-between">
+                  <label htmlFor="appearance-contrast" className="text-sm font-medium text-on-surface">Contrast</label>
+                  <span className="text-xs tabular-nums text-on-surface-variant">{contrastDraft > 0 ? "+" : ""}{contrastDraft}</span>
+                </div>
+                <input
+                  id="appearance-contrast"
+                  type="range"
+                  min={-100}
+                  max={100}
+                  step={1}
+                  value={contrastDraft}
+                  onChange={(event) => {
+                    const contrast = Number(event.currentTarget.value);
+                    setContrastDraft(contrast);
+                    contrastDraftRef.current = contrast;
+                  }}
+                  onPointerUp={commitContrast}
+                  onPointerCancel={commitContrast}
+                  onKeyUp={(event) => {
+                    if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End" || event.key === "PageUp" || event.key === "PageDown") commitContrast();
+                  }}
+                  onBlur={commitContrast}
+                  className="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
+                />
+              </div>
+
+              {selectedAdjustments.length > 0 && (
+                <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  <p className="font-medium">Adjusted for accessibility</p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                    {selectedAdjustments.map((adjustment, index) => <li key={index}>{adjustmentText(adjustment, appearance.document.theme)}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex items-center justify-between gap-3 border-t border-outline-variant pt-4">
+              <button type="button" disabled={appearance.busy} onClick={() => runControllerAction(appearance.reset())} className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-50">Reset to Sonic</button>
+              <div className="flex gap-2">
+                <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>
+                <button type="button" onClick={() => setCustomEditorOpen(false)} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <CommunityThemeDialog open={communityOpen} onClose={() => setCommunityOpen(false)} />
     </div>
   );
 }

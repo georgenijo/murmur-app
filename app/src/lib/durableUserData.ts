@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
-interface DurableBlobStore {
+export interface DurableBlobStore {
   label: string;
   storageKey: string;
   loadCommand: string;
@@ -22,6 +22,14 @@ export const STATS_STORE: DurableBlobStore = {
   loadCommand: 'load_stats_blob',
   saveCommand: 'save_stats_blob',
   clearCommand: 'clear_stats_blob',
+};
+
+export const THEME_LIBRARY_STORE: DurableBlobStore = {
+  label: 'theme library',
+  storageKey: 'murmur-theme-library',
+  loadCommand: 'load_theme_library_blob',
+  saveCommand: 'save_theme_library_blob',
+  clearCommand: 'clear_theme_library_blob',
 };
 
 function tauriAvailable(): boolean {
@@ -74,7 +82,7 @@ export function clearDurableBlob(store: DurableBlobStore): void {
   }
 }
 
-async function hydrateStore(store: DurableBlobStore): Promise<void> {
+export async function hydrateDurableStore(store: DurableBlobStore): Promise<void> {
   try {
     if (!tauriAvailable()) return;
     const blob = await invoke<string | null>(store.loadCommand);
@@ -100,7 +108,12 @@ async function hydrateStore(store: DurableBlobStore): Promise<void> {
 /** Seed history and usage-stat caches before the main React tree renders. */
 export async function hydrateUserDataFromDisk(): Promise<void> {
   await Promise.all([
-    hydrateStore(HISTORY_STORE),
-    hydrateStore(STATS_STORE),
+    hydrateDurableStore(HISTORY_STORE),
+    hydrateDurableStore(STATS_STORE),
   ]);
+}
+
+/** Hydrate the main-window-only installed theme library before its provider mounts. */
+export async function hydrateThemeLibraryFromDisk(): Promise<void> {
+  await hydrateDurableStore(THEME_LIBRARY_STORE);
 }

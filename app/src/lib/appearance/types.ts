@@ -1,6 +1,6 @@
 export type AppearanceMode = 'system' | 'light' | 'dark';
 export type ResolvedAppearance = 'light' | 'dark';
-export type AppearanceChangeReason = 'user' | 'repair' | 'reset' | 'import';
+export type AppearanceChangeReason = 'user' | 'repair' | 'reset' | 'import' | 'library';
 
 export const MURMUR_TOKEN_NAMES = [
   'background',
@@ -47,6 +47,42 @@ export interface ThemeConfigV1 {
   dark?: Partial<MurmurTokens>;
 }
 
+export interface AppearanceSelectionV1 {
+  light: string;
+  dark: string;
+}
+
+export type ThemeLibrarySourceV1 =
+  | { kind: 'local' }
+  | {
+      kind: 'open-vsx';
+      extensionId: string;
+      version: string;
+      license: string;
+      sourceUrl?: string;
+    };
+
+export interface ThemeLibraryCollectionV1 {
+  id: string;
+  label: string;
+}
+
+export interface ThemeLibraryEntryV1 {
+  version: 1;
+  id: string;
+  label: string;
+  modes: ResolvedAppearance[];
+  theme: ThemeConfigV1;
+  source: ThemeLibrarySourceV1;
+  collection?: ThemeLibraryCollectionV1;
+}
+
+export interface ThemeLibraryDocumentV1 {
+  version: 1;
+  revision: number;
+  themes: ThemeLibraryEntryV1[];
+}
+
 export interface ResolvedThemeCacheV1 {
   version: 1;
   light: MurmurTokens;
@@ -59,6 +95,8 @@ export interface AppearanceDocumentV1 {
   mode: AppearanceMode;
   theme: ThemeConfigV1;
   cache: ResolvedThemeCacheV1;
+  /** Source ownership for each compiled half. Missing on pre-library documents. */
+  selection?: AppearanceSelectionV1;
 }
 
 export interface AppearanceChangedEvent {
@@ -89,6 +127,29 @@ export interface ThemeImportPreview {
   light: MurmurTokens;
   dark: MurmurTokens;
   adjustments: ThemeAdjustment[];
+  selection?: AppearanceSelectionV1;
+  label?: string;
+  modes?: ResolvedAppearance[];
+}
+
+export interface ThemeLibraryController {
+  document: ThemeLibraryDocumentV1;
+  error: string | null;
+  saveCurrent: (label: string) => Promise<ThemeLibraryEntryV1>;
+  savePreview: (label: string, preview: ThemeImportPreview) => Promise<ThemeLibraryEntryV1>;
+  install: (entries: readonly ThemeLibraryEntryV1[]) => Promise<void>;
+  replaceCollection: (
+    collectionId: string,
+    entries: readonly ThemeLibraryEntryV1[],
+    expectedCollection: readonly ThemeLibraryEntryV1[],
+  ) => Promise<void>;
+  remove: (themeIds: readonly string[]) => Promise<void>;
+  previewSelection: (
+    themeId: string,
+    appearance?: ResolvedAppearance,
+  ) => ThemeImportPreview;
+  exportEntryToPath: (entry: ThemeLibraryEntryV1, path: string) => Promise<void>;
+  clearError: () => void;
 }
 
 export interface AppearanceController {
@@ -105,5 +166,6 @@ export interface AppearanceController {
   commitImport: (preview: ThemeImportPreview) => Promise<void>;
   exportText: () => string;
   exportToPath: (path: string) => Promise<void>;
+  library: ThemeLibraryController;
   clearError: () => void;
 }
