@@ -140,6 +140,7 @@ function ModePreview({
 }) {
   const modeLabel = mode === 'light' ? 'Light' : 'Dark';
   const selectedLabel = labels.get(selected.entry.id) ?? selected.entry.label;
+  const displayLabel = selectedLabel.split(/\s+/)[0] ?? selectedLabel;
   const preview = (
     <>
       <ThemeOrb tokens={selected.tokens} mode={mode} />
@@ -183,7 +184,7 @@ function ModePreview({
           className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-20 -translate-x-1/2 items-center gap-1 text-[10px] font-medium text-on-surface"
           style={{ marginLeft: offset }}
         >
-          <span className="truncate">{selectedLabel}</span>
+          <span className="truncate">{displayLabel}</span>
           {options.length > 1 && (
             <span className="shrink-0 rounded-full bg-surface-container-high px-1 text-[9px] text-on-surface-variant">
               +{options.length - 1}
@@ -296,12 +297,12 @@ function CollectionCard({
     <article
       data-theme-collection={label}
       onClick={handleCardClick}
-      className="w-52 max-w-full cursor-pointer overflow-hidden rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest transition-colors hover:bg-surface-container-low"
+      className="h-[94px] w-52 max-w-full cursor-pointer overflow-hidden rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest transition-colors hover:bg-surface-container-low"
     >
       <div
         role="group"
         aria-label={`${label} light and dark styles`}
-        className={showVariantLabels ? "relative h-16" : "relative h-12"}
+        className="relative h-14"
         onMouseLeave={() => setRadialOpen(null)}
         onBlurCapture={(event) => {
           const next = event.relatedTarget;
@@ -312,7 +313,7 @@ function CollectionCard({
         }}
       >
         {groups.map((group, index) => {
-          const offset = groups.length === 1 ? 0 : index === 0 ? -34 : 34;
+          const offset = groups.length === 1 ? 0 : index === 0 ? -36 : 36;
           return (
             <ModePreview
               key={group.mode}
@@ -334,7 +335,7 @@ function CollectionCard({
           );
         })}
       </div>
-      <div className="flex min-h-9 items-center gap-2 px-2.5 pb-2 pt-1">
+      <div className="flex h-9 items-center gap-2 px-2.5 pb-2 pt-1">
         <button
           type="button"
           aria-label={`Use ${label} theme`}
