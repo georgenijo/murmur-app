@@ -82,7 +82,10 @@ export function MainHeader({
   const waveformEnvelope = [0.55, 0.8, 1, 0.8, 0.55];
 
   return (
-    <WindowHeader contextLabel={mode === 'settings' ? 'Settings' : undefined}>
+    <WindowHeader
+      contextLabel={mode === 'settings' ? 'Settings' : undefined}
+      className={mode === 'settings' ? 'settings-window-header' : ''}
+    >
       <div
         data-testid="main-status-chip"
         className={`ui-status-chip ${

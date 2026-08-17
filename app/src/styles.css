@@ -393,16 +393,26 @@ textarea {
   color: var(--murmur-on-surface);
 }
 
-.settings-search {
-  width: 14.375rem;
-  flex: none;
-  transition:
-    width 250ms var(--ui-ease-out),
-    border-color var(--ui-motion-standard);
+.settings-window-header {
+  background-image: linear-gradient(
+    to right,
+    var(--murmur-surface-container-low) 0,
+    var(--murmur-surface-container-low) 210px,
+    var(--murmur-background) 210px,
+    var(--murmur-background) 100%
+  );
 }
 
-.settings-search:focus-within {
-  width: 20rem;
+@media (max-width: 760px) {
+  .settings-window-header {
+    background-image: linear-gradient(
+      to right,
+      var(--murmur-surface-container-low) 0,
+      var(--murmur-surface-container-low) 184px,
+      var(--murmur-background) 184px,
+      var(--murmur-background) 100%
+    );
+  }
 }
 
 /* History and Settings stay rasterized on separate compositor layers so
