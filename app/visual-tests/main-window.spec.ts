@@ -195,7 +195,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
     localStorage.setItem('murmur-theme-library', JSON.stringify(value));
   }, library);
   await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=light');
-  await page.getByRole('button', { name: 'App', exact: true }).click();
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('button', { name: 'Use Claude Theme theme' }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
