@@ -147,10 +147,12 @@ Main and Diagnostics hide on close instead of being destroyed. The overlay and t
 
 Rust is the sole author of every overlay and popover pixel: `geometry_for()` and `popover_geometry_for()` are pure functions asserted by checked-in fixtures on both sides (cargo test + vitest). The frontend never hardcodes dimensions.
 
-Main owns appearance writes and application-level native `setTheme`. Main and
-Diagnostics resolve System mode to a concrete `data-appearance` with a
+Main owns appearance writes, the durable saved-theme library, Open VSX
+discovery, and application-level native `setTheme`. Main and Diagnostics resolve System mode to a concrete `data-appearance` with a
 parser-blocking, same-origin bootstrap plus a strictly validated resolved-token
-cache to avoid a wrong-theme first paint. The Diagnostics pop-out observes the
+cache to avoid a wrong-theme first paint. Library variants are compiled into
+that small active document, so first paint never depends on the larger library
+or a network. The Diagnostics pop-out observes the
 same local storage as Main so its latency table updates while the user
 navigates. Overlay and transform-review remain unsynchronized transparent,
 always-dark glass surfaces.
@@ -192,7 +194,7 @@ retained audio, or an unavailable device after first PCM remain terminal.
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 164 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 167 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -243,7 +245,7 @@ retained audio, or an unavailable device after first PCM remain terminal.
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `microphone_startup_benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated, 64 KiB UTF-8 file-transport boundary with regular-file reads and atomic sibling-temp writes.
+Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `settings_store`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `microphone_startup_benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated UTF-8 file-transport boundary with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
@@ -397,14 +399,14 @@ Two rules keep the multi-window state coherent:
 
 - **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
 - **The overlay reads settings from localStorage directly** (`useOverlaySettingsMirror`), not through React context or IPC. There is no shared context across windows.
-- **Appearance has a separate ownership domain.** Main is the only writer and runtime for `murmur-appearance`; transparent utility windows remain outside theme synchronization.
+- **Appearance has a separate ownership domain.** Main is the only writer and runtime for the small `murmur-appearance` active cache and the revisioned `murmur-theme-library`. Open VSX access is explicit and renderer-side; installed variants compile locally into the active cache. Transparent utility windows remain outside theme synchronization.
 - **Meeting history is Rust-owned.** `useMeetings` reads SQLite through bounded commands and events; transcript localStorage remains dictation-only.
 
 ---
 
 ## Tauri Commands
 
-164 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+167 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -530,4 +532,5 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | Durable chunk before inference | A crash loses at most each channel's open VAD chunk; published chunks remain recoverable from SQLite + fsynced spool audio |
 | Per-window least privilege | Overlay and transform popover get minimal capabilities; only the main window gets the full set |
 | Main-only native appearance | Main owns application `setTheme`; transparent glass windows never join theme synchronization |
-| Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read/write at most 64 KiB of UTF-8 and publish exports atomically without touching the clipboard |
+| Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read up to 256 KiB of UTF-8, keep exports at 64 KiB, and publish exports atomically without touching the clipboard |
+| Data-only community themes | Open VSX is queried only from an explicit dialog; supported-license packages are checksum/ZIP/identity bounded and only declared workbench colors are converted—extension code and assets never execute |

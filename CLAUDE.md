@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (164 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (167 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 164 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 167 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -108,7 +108,7 @@ Read these before working on a feature:
 | `commands/microphone_preview.rs` | Main-window microphone test commands, lifecycle bridge, exact-owner teardown |
 | `commands/keyboard.rs` | Dictation + transform listener commands, global disable |
 | `commands/export.rs` | `save_text_export` — validated, atomic user-chosen text export sink |
-| `commands/settings_store.rs` | Durable `settings.json`, `history.json`, and `stats.json`: bounded opaque blobs, atomic write, clear, corrupt-file quarantine |
+| `commands/settings_store.rs` | Durable `settings.json`, `history.json`, `stats.json`, and main-only `theme-library.json`: bounded opaque blobs, atomic write, clear, corrupt-file quarantine |
 | `commands/logging.rs` | Log commands, delegates to telemetry.rs |
 | `commands/models.rs` | Model catalog/status queries and the download pipeline |
 | `commands/knowledge.rs` | Personal knowledge store CRUD, resolve, preview, export/import |
@@ -175,7 +175,9 @@ Read these before working on a feature:
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
 | `lib/history.ts` | History entries, rolling trim, search + match segmentation, export rendering |
-| `lib/durableUserData.ts` | History/stats disk hydration, localStorage migration, write-through and clear |
+| `lib/durableUserData.ts` | History/stats/theme-library disk hydration, localStorage migration, write-through and clear |
+| `lib/appearance/` | Semantic resolver, active storage/boot, durable library, VS Code conversion, and bounded Open VSX package ingestion |
+| `lib/hooks/useAppearance.ts` | Main-only active appearance and theme-library controller |
 | `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
 | `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
 | `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |

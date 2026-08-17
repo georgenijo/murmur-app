@@ -6,6 +6,38 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-17: Community themes are data-only and compile into the local appearance cache
+
+**Decision:** Keep the parser-blocking `murmur-appearance` document as the
+small, authoritative active light/dark cache and add a separate revisioned,
+main-window-only durable theme library. Each saved entry has a stable ID,
+variant coverage, and local or Open VSX provenance; the active document records
+an owner for each appearance and embeds the resolved tokens. Manual edits
+detach to Custom, active removals fall back to Sonic, and confirmed extension
+updates atomically replace the expected collection.
+
+Open VSX access is opt-in from a disclosure-bearing dialog. Search and package
+requests go directly to `open-vsx.org` without credentials. Only supported
+open-source licenses are listed. Add verifies response bounds, SHA-256, ZIP
+structure/expansion/path constraints, packaged identity/version/license, and
+bounded JSONC includes. Murmur converts an allowlist of workbench colors
+through its existing accessibility resolver and never loads extension code,
+commands, fonts, icons, grammars, binaries, or dependencies.
+
+**Rationale:** Reusing editor themes is useful only if it does not compromise
+flash-free first paint, window-specific glass invariants, accessibility, or the
+privacy-first no-background-network contract. A data-only converter and a
+separate library preserve those boundaries while allowing independent
+light/dark selection, local imports, and explicit community discovery.
+
+**Status:** active
+
+**References:** issue #592; `docs/features/appearance.md`,
+`app/src/lib/appearance/themeLibrary.ts`,
+`app/src/lib/appearance/openVsxThemes.ts`
+
+---
+
 ## 2026-08-16: Shipped diagnostic history uses a gated SQLite query projection
 
 **Decision:** Keep each production install's append-only, already-sanitized

@@ -9,6 +9,7 @@ import {
   THEME_CONTRAST_MAX,
   THEME_CONTRAST_MIN,
   type AppearanceMode,
+  type AppearanceSelectionV1,
   type MurmurTokens,
   type ResolvedThemeCacheV1,
   type ThemeConfigV1,
@@ -20,6 +21,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function sanitizeMode(value: unknown): AppearanceMode {
   return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
+}
+
+export function sanitizeAppearanceSelection(value: unknown): AppearanceSelectionV1 | undefined {
+  if (!isRecord(value)) return undefined;
+  const isOwner = (candidate: unknown): candidate is string =>
+    typeof candidate === 'string'
+    && /^[a-z0-9](?:[a-z0-9-]{0,63})$/.test(candidate);
+  return isOwner(value.light) && isOwner(value.dark)
+    ? { light: value.light, dark: value.dark }
+    : undefined;
 }
 
 function sanitizeOverrides(value: unknown): Partial<MurmurTokens> | undefined {
@@ -90,6 +101,7 @@ export interface SanitizedStoredAppearance {
   mode: AppearanceMode;
   theme: ThemeConfigV1;
   cache: ResolvedThemeCacheV1 | null;
+  selection?: AppearanceSelectionV1;
 }
 
 export function sanitizeStoredAppearance(value: unknown): SanitizedStoredAppearance {
@@ -108,5 +120,6 @@ export function sanitizeStoredAppearance(value: unknown): SanitizedStoredAppeara
     mode: sanitizeMode(value.mode),
     theme: sanitizeTheme(value.theme),
     cache: validateCache(value.cache),
+    selection: sanitizeAppearanceSelection(value.selection),
   };
 }

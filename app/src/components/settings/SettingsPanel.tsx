@@ -235,7 +235,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { tab: 'text', title: 'Voice Query', detail: 'Ask a configured local CLI agent with a dedicated shortcut.', keywords: 'agent command executable cloud answer hotkey history logging privacy question clipboard copy automatic' },
   { tab: 'text', title: 'Selected-text Transform', detail: 'Configure on-device rewriting.', keywords: 'llm rewrite shortcut' },
   { tab: 'app', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
-  { tab: 'app', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors' },
+  { tab: 'app', title: 'Appearance', detail: 'Themes, community library, accent, contrast, and color controls.', keywords: 'dark light colors open vsx vscode import palette' },
   { tab: 'app', title: 'Updates', detail: 'Check for a newer Murmur release.', keywords: 'version upgrade' },
   { tab: 'app', title: 'Setup Assistant', detail: 'Re-check permissions and model setup.', keywords: 'onboarding microphone accessibility' },
 ] as const;

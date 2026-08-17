@@ -65,6 +65,18 @@ function controller(): AppearanceController {
     commitImport: vi.fn(async () => {}),
     exportText: vi.fn(() => "{}"),
     exportToPath: vi.fn(async () => {}),
+    library: {
+      document: { version: 1, revision: 0, themes: [] },
+      error: null,
+      saveCurrent: vi.fn(),
+      savePreview: vi.fn(),
+      install: vi.fn(async () => {}),
+      replaceCollection: vi.fn(async () => {}),
+      remove: vi.fn(async () => {}),
+      previewSelection: vi.fn(),
+      exportEntryToPath: vi.fn(async () => {}),
+      clearError: vi.fn(),
+    },
     clearError: vi.fn(),
   };
 }
@@ -290,7 +302,7 @@ describe("AppearanceSettings", () => {
     await act(async () => importButton.click());
 
     const applyButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Apply Theme",
+      (button) => button.textContent === "Apply without saving",
     )!;
     await act(async () => {
       applyButton.click();

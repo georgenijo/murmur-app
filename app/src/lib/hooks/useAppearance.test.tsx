@@ -6,8 +6,10 @@ import {
   APPEARANCE_STORAGE_KEY,
   MAX_APPEARANCE_REVISION,
   MURMUR_TOKEN_NAMES,
+  THEME_LIBRARY_STORAGE_KEY,
   createAppearanceDocument,
   exportAppearanceText,
+  makeLocalThemeEntry,
   type AppearanceChangedEvent,
   type AppearanceController,
 } from '../appearance';
@@ -280,6 +282,112 @@ describe('appearance runtime hooks', () => {
     expect(preview.mode).toBe('dark');
     expect(controller!.error).toContain('disk full');
     setItem.mockRestore();
+  });
+
+  it('installs, selects, and detaches a saved theme when the user edits it', async () => {
+    await act(async () => root.render(<Provider><Consumer /></Provider>));
+    const entry = makeLocalThemeEntry('ocean', 'Ocean', {
+      version: 1,
+      presetId: 'custom',
+      accent: '#12759a',
+      background: '#102027',
+      foreground: '#eef8fb',
+    });
+    await act(async () => {
+      await controller!.library.install([entry]);
+      await controller!.commitImport(controller!.library.previewSelection(entry.id));
+    });
+    expect(controller!.document.selection).toEqual({ light: 'ocean', dark: 'ocean' });
+    expect(JSON.parse(localStorage.getItem(THEME_LIBRARY_STORAGE_KEY)!)).toMatchObject({
+      revision: 1,
+      themes: [{ id: 'ocean' }],
+    });
+
+    await act(async () => {
+      await controller!.updateTheme({ accent: '#cc5500' });
+    });
+    expect(controller!.document.selection).toEqual({ light: 'custom', dark: 'custom' });
+    expect(controller!.document.theme).toMatchObject({
+      presetId: 'custom',
+      accent: '#cc5500',
+    });
+    expect(controller!.document.theme.light).toBeUndefined();
+    expect(controller!.document.theme.dark).toBeUndefined();
+  });
+
+  it('falls active collection variants back to Sonic when an update removes their IDs', async () => {
+    await act(async () => root.render(<Provider><Consumer /></Provider>));
+    const collection = { id: 'open-vsx:sample.aurora', label: 'Aurora' };
+    const source = {
+      kind: 'open-vsx' as const,
+      extensionId: 'sample.aurora',
+      version: '1.0.0',
+      license: 'MIT',
+    };
+    const oldEntry = {
+      ...makeLocalThemeEntry('aurora-old', 'Aurora', {
+        version: 1,
+        presetId: 'custom',
+        accent: '#1680a8',
+      }),
+      source,
+      collection,
+    };
+    const newEntry = {
+      ...makeLocalThemeEntry('aurora-new', 'Aurora Next', {
+        version: 1,
+        presetId: 'custom',
+        accent: '#7ec9e8',
+      }),
+      source: { ...source, version: '2.0.0' },
+      collection,
+    };
+    await act(async () => {
+      await controller!.library.install([oldEntry]);
+      await controller!.commitImport(controller!.library.previewSelection(oldEntry.id));
+      await controller!.library.replaceCollection(collection.id, [newEntry], [oldEntry]);
+    });
+    expect(controller!.library.document.themes.map((theme) => theme.id)).toEqual(['aurora-new']);
+    expect(controller!.document.selection).toEqual({ light: 'sonic', dark: 'sonic' });
+    expect(controller!.document.theme.presetId).toBe('sonic');
+    expect(mocks.emit).toHaveBeenLastCalledWith(
+      APPEARANCE_CHANGED_EVENT,
+      expect.objectContaining({ reason: 'library' }),
+    );
+  });
+
+  it('reconciles a stale active cache from the durable library during startup', async () => {
+    const entry = makeLocalThemeEntry('current-theme', 'Current Theme', {
+      version: 1,
+      presetId: 'custom',
+      accent: '#8cd7f5',
+      background: '#111518',
+      foreground: '#edf4f7',
+    });
+    localStorage.setItem(THEME_LIBRARY_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      revision: 4,
+      themes: [entry],
+    }));
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(
+      createAppearanceDocument('dark', {
+        version: 1,
+        presetId: 'custom',
+        accent: '#ff0000',
+      }, 7, { light: entry.id, dark: entry.id }),
+    ));
+
+    await act(async () => root.render(<Provider><Consumer /></Provider>));
+
+    expect(controller!.document.selection).toEqual({
+      light: entry.id,
+      dark: entry.id,
+    });
+    expect(controller!.document.theme).toEqual(entry.theme);
+    expect(mocks.emit).toHaveBeenCalledWith(
+      APPEARANCE_CHANGED_EVENT,
+      expect.objectContaining({ reason: 'repair' }),
+    );
   });
 
 });

@@ -1,6 +1,6 @@
 //! Durable, host-owned home for frontend persistence blobs.
 //!
-//! The frontend owns the settings, history, and statistics schemas and their
+//! The frontend owns the settings, history, statistics, and theme-library schemas and their
 //! migration rules. This module validates only each bounded JSON container,
 //! then publishes it atomically in the per-bundle app data directory. The
 //! durable files survive WKWebView storage eviction and a manual reinstall;
@@ -49,6 +49,23 @@ const STATS: BlobSpec = BlobSpec {
     max_bytes: 1024 * 1024,
     shape: JsonShape::Object,
 };
+
+const THEME_LIBRARY: BlobSpec = BlobSpec {
+    label: "Theme library",
+    file_name: "theme-library.json",
+    max_bytes: 1024 * 1024,
+    shape: JsonShape::Object,
+};
+
+const MAIN_WINDOW_LABEL: &str = "main";
+
+fn require_main_window(label: &str) -> Result<(), String> {
+    if label == MAIN_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("Theme library access is only available from the main window.".to_string())
+    }
+}
 
 /// Serializes writers across every window and blob. Each file has its own temp
 /// sibling, while one lock keeps publish/delete ordering deterministic.
@@ -238,6 +255,34 @@ pub fn clear_stats_blob(app: tauri::AppHandle) -> Result<(), String> {
     delete_blob(&data_dir(&app)?, STATS)
 }
 
+#[tauri::command]
+pub fn load_theme_library_blob(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    require_main_window(window.label())?;
+    read_blob(&data_dir(&app)?, THEME_LIBRARY)
+}
+
+#[tauri::command]
+pub fn save_theme_library_blob(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    blob: String,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
+    write_blob(&data_dir(&app)?, THEME_LIBRARY, &blob)
+}
+
+#[tauri::command]
+pub fn clear_theme_library_blob(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
+    delete_blob(&data_dir(&app)?, THEME_LIBRARY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,13 +315,19 @@ mod tests {
             (SETTINGS, r#"{"model":"tiny.en","settingsVersion":1}"#),
             (HISTORY, r#"[{"id":"one","text":"private transcript"}]"#),
             (STATS, r#"{"totalWords":42,"totalRecordings":2}"#),
+            (THEME_LIBRARY, r#"{"version":1,"revision":1,"themes":[]}"#),
         ] {
             write_blob(&dir, spec, blob).unwrap();
             assert_eq!(read_blob(&dir, spec).unwrap().as_deref(), Some(blob));
         }
         assert_eq!(
             entries(&dir),
-            vec!["history.json", "settings.json", "stats.json"]
+            vec![
+                "history.json",
+                "settings.json",
+                "stats.json",
+                "theme-library.json"
+            ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -287,6 +338,7 @@ mod tests {
         assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
         assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
         assert_eq!(read_blob(&dir, STATS).unwrap(), None);
+        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -422,5 +474,22 @@ mod tests {
         let temp = temp_path_for(&path);
         assert_eq!(temp.parent(), path.parent());
         assert_ne!(temp.file_name(), path.file_name());
+    }
+
+    #[test]
+    fn theme_library_access_is_strictly_scoped_to_main() {
+        assert!(require_main_window(MAIN_WINDOW_LABEL).is_ok());
+        for label in [
+            "diagnostics",
+            "overlay",
+            "transform-review",
+            "query-review",
+            "",
+        ] {
+            assert!(
+                require_main_window(label).is_err(),
+                "unexpected access for {label:?}"
+            );
+        }
     }
 }

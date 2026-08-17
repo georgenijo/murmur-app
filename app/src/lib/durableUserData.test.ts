@@ -13,7 +13,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 import {
   HISTORY_STORE,
   STATS_STORE,
+  THEME_LIBRARY_STORE,
   clearDurableBlob,
+  hydrateThemeLibraryFromDisk,
   hydrateUserDataFromDisk,
   mirrorDurableBlob,
   saveDurableBlob,
@@ -107,6 +109,18 @@ describe('durable history and statistics hydration', () => {
 
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(localStorage.getItem(HISTORY_STORE.storageKey)).toBe('[{"id":"browser"}]');
+  });
+
+  it('hydrates the main-window theme library through its independent blob commands', async () => {
+    const library = '{"version":1,"revision":3,"themes":[]}';
+    mocks.invoke.mockImplementation(async (command: string) => (
+      command === 'load_theme_library_blob' ? library : undefined
+    ));
+
+    await hydrateThemeLibraryFromDisk();
+
+    expect(localStorage.getItem(THEME_LIBRARY_STORE.storageKey)).toBe(library);
+    expect(mocks.invoke).toHaveBeenCalledWith('load_theme_library_blob');
   });
 });
 

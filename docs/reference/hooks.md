@@ -103,8 +103,11 @@ Listens for `show-about`. **Currently inert** — the tray menu no longer has an
 Main-window controller for the independent `murmur-appearance` document. It
 loads and sanitizes authoritative configuration, recomputes the light/dark
 cache, applies the current concrete appearance, owns application-level native
-`setTheme`, and exposes mode/color/reset/import/export actions to Appearance
-Settings. Main is the only writer and emits one revisioned
+`setTheme`, and exposes mode/color/reset/import/export plus durable library
+actions to Appearance Settings. The library supports independent light/dark
+owners, local saved themes, atomic Open VSX collection install/update/removal,
+and named theme-file export. Editing a library-owned palette deliberately
+detaches both halves to a seed-based Custom theme. Main is the only writer and emits one revisioned
 `appearance-changed` event per committed edit or repair.
 
 Its System-mode `matchMedia` listener applies OS changes locally without

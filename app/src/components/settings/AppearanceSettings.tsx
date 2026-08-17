@@ -7,6 +7,8 @@ import type {
   ThemeImportPreview,
 } from "../../lib/appearance";
 import { useAppearance } from "../../lib/hooks/useAppearance";
+import { CommunityThemeDialog } from "./CommunityThemeDialog";
+import { ThemeLibrary } from "./ThemeLibrary";
 
 const MODE_OPTIONS: readonly {
   value: AppearanceMode;
@@ -172,6 +174,9 @@ export function AppearanceSettings() {
     null,
   );
   const [localError, setLocalError] = useState<string | null>(null);
+  const [communityOpen, setCommunityOpen] = useState(false);
+  const [previewSourceLabel, setPreviewSourceLabel] = useState<string | null>(null);
+  const [previewAlreadySaved, setPreviewAlreadySaved] = useState(false);
   const contrastDraftRef = useRef(contrastDraft);
   const lastCommittedContrastRef = useRef(
     appearance.document.theme.contrast ?? 0,
@@ -217,7 +222,10 @@ export function AppearanceSettings() {
         ],
       });
       if (typeof path === "string") {
-        setImportPreview(await appearance.importFromPath(path));
+        const preview = await appearance.importFromPath(path);
+        setPreviewSourceLabel(preview.label ?? null);
+        setPreviewAlreadySaved(false);
+        setImportPreview(preview);
       }
     } catch (error) {
       setLocalError(String(error));
@@ -270,7 +278,25 @@ export function AppearanceSettings() {
 
   const dismissImportPreview = () => {
     setImportPreview(null);
+    setPreviewSourceLabel(null);
+    setPreviewAlreadySaved(false);
     requestAnimationFrame(() => importButtonRef.current?.focus());
+  };
+
+  const addAndApplyPreview = async () => {
+    if (!importPreview) return;
+    try {
+      setLocalError(null);
+      const entry = await appearance.library.savePreview(
+        previewSourceLabel ?? importPreview.label ?? "Imported theme",
+        importPreview,
+      );
+      const selectionPreview = appearance.library.previewSelection(entry.id);
+      await appearance.commitImport(selectionPreview);
+      dismissImportPreview();
+    } catch (cause) {
+      setLocalError(String(cause));
+    }
   };
 
   return (
@@ -336,13 +362,24 @@ export function AppearanceSettings() {
         </p>
       </fieldset>
 
+      <ThemeLibrary
+        onBrowse={() => setCommunityOpen(true)}
+        onPreview={(preview, label) => {
+          setPreviewSourceLabel(label);
+          setPreviewAlreadySaved(true);
+          setImportPreview(preview);
+        }}
+      />
+
       <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-medium text-on-surface">Sonic</p>
+            <p className="text-sm font-medium text-on-surface">Custom editor</p>
             <p className="mt-1 text-xs text-on-surface-variant">
-              Reset restores Murmur’s exact built-in Sonic palette. Clearing
-              individual color overrides keeps the theme Custom.
+              Reset restores Murmur’s exact built-in Sonic palette. Editing
+              detaches the current palette from any installed community source;
+              save it to keep a named copy. Clearing individual color overrides
+              keeps the theme Custom.
             </p>
           </div>
           <button
@@ -500,7 +537,7 @@ export function AppearanceSettings() {
             className="mt-1 text-xs text-on-surface"
           >
             {previewTheme?.presetId === "custom"
-              ? "Custom theme"
+              ? previewSourceLabel ?? "Custom theme"
               : "Sonic theme"}
             {previewAdjustments.length > 0
               ? ` · ${previewAdjustments.length} accessibility adjustment${previewAdjustments.length === 1 ? "" : "s"}`
@@ -560,6 +597,15 @@ export function AppearanceSettings() {
             </ul>
           )}
           <div className="mt-3 flex gap-2">
+            {!previewAlreadySaved && (
+              <button
+                type="button"
+                onClick={() => void addAndApplyPreview()}
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary"
+              >
+                Add &amp; Apply
+              </button>
+            )}
             <button
               type="button"
               onClick={() =>
@@ -567,9 +613,9 @@ export function AppearanceSettings() {
                   .then(dismissImportPreview)
                   .catch((error) => setLocalError(String(error)))
               }
-              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary"
+              className={`${previewAlreadySaved ? "bg-primary text-on-primary" : "border border-outline-variant/30 text-on-surface hover:bg-surface-container"} rounded-lg px-3 py-1.5 text-xs font-medium`}
             >
-              Apply Theme
+              {previewAlreadySaved ? "Apply theme" : "Apply without saving"}
             </button>
             <button
               type="button"
@@ -590,6 +636,7 @@ export function AppearanceSettings() {
           {localError ?? appearance.error}
         </p>
       )}
+      <CommunityThemeDialog open={communityOpen} onClose={() => setCommunityOpen(false)} />
     </div>
   );
 }

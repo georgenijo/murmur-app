@@ -9,9 +9,10 @@ For the hook that manages settings, see [hooks.md](hooks.md). For the backend co
 ## Settings Overview
 
 Dictation settings are one JSON object, stored durably in `settings.json` and
-cached in `localStorage` under the key `dictation-settings`. Appearance is an independent
-versioned document under `murmur-appearance`; it is never merged into this
-interface or emitted through `dictation-settings`.
+cached in `localStorage` under the key `dictation-settings`. Appearance is an
+independent versioned active document under `murmur-appearance`, with saved
+themes in `murmur-theme-library`; neither is merged into this interface or
+emitted through `dictation-settings`.
 
 The native Settings workspace has four horizontal tabs in this order
 (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`). The search field above them
@@ -340,12 +341,13 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 
 ## Related Durable User Data
 
-History and usage statistics are not part of the `Settings` object, but use the
-same durable-source/localStorage-cache contract. On main-window boot,
-`hydrateUserDataFromDisk()` loads `history.json` and `stats.json` before React
-renders. Disk wins over stale caches; when a durable file is absent, the
-corresponding existing localStorage blob migrates to disk once. Failures are
-isolated per file and never block boot.
+History, usage statistics, and the saved theme library are not part of the
+`Settings` object, but use the same durable-source/localStorage-cache contract.
+On main-window boot, hydration loads `history.json`, `stats.json`, and
+`theme-library.json` before React renders. Disk wins over stale caches; when a
+durable file is absent, the corresponding existing localStorage blob migrates
+to disk once. Failures are isolated per file and never block boot. Theme-library
+disk commands are additionally restricted to the main window.
 
 Voice Query history is intentionally outside this cache contract. Its content
 stays in `query-history/query-history.sqlite3` and enters main-window memory
@@ -358,6 +360,7 @@ Other localStorage caches and browser-scoped state:
 |-----|---------|---------|
 | `dictation-history` | Synchronous cache for durable `history.json` entries (rolling max 200) | `useHistoryManagement` |
 | `murmur-appearance` | Versioned appearance mode/theme configuration plus a strictly validated derived light/dark token cache. Independent from `Settings`; imports discard and regenerate revision/cache data. | Main appearance controller (writer/native theme) |
+| `murmur-theme-library` | Versioned, revisioned saved-theme collection with stable IDs, supported appearance variants, and local or Open VSX provenance. Mirrored to main-window-only durable `theme-library.json`; bounded to 1 MiB and 128 entries. | Main appearance controller and Appearance Settings |
 | `dictation-stats` | Synchronous cache for durable `stats.json` usage aggregates | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |

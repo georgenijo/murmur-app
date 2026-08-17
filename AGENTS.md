@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (164 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (167 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -95,7 +95,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 164 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 167 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -166,7 +166,9 @@ Read these before working on a feature:
 | `lib/onboarding.ts` | First-launch setup-assistant completion flag |
 | `lib/events.ts` | Event types, stream/level definitions, color constants |
 | `lib/history.ts` | History entry types, rolling trim, and durable write-through persistence |
-| `lib/durableUserData.ts` | History/stats disk hydration, localStorage migration, write-through and clear |
+| `lib/durableUserData.ts` | History/stats/theme-library disk hydration, localStorage migration, write-through and clear |
+| `lib/appearance/` | Semantic resolver, active storage/boot, durable library, VS Code conversion, and bounded Open VSX package ingestion |
+| `lib/hooks/useAppearance.ts` | Main-only active appearance and theme-library controller |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
 | `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
 | `lib/updater.ts` | Semver parsing, min-version checking, update utilities |
@@ -207,6 +209,7 @@ Read these before working on a feature:
 | `lib/transformReview.ts` | Review state/error types + content guards |
 | `components/onboarding/OnboardingFlow.tsx` | First-launch setup assistant (permissions + model wizard) |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
+| `components/settings/AppearanceSettings.tsx` | Appearance editor, local import preview, saved library, and community-theme dialog |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |
 | `components/settings/PerformanceLab.tsx` | Benchmark UI, scoring tables, report save/export |
