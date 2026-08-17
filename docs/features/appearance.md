@@ -198,10 +198,11 @@ Import and export never read or write the clipboard.
 
 ## Appearance interaction
 
-Appearance presents System, Light, and Dark as compact wireframe cards. The
-page is flat rather than wrapped in an additional settings container. The theme
+Appearance presents System, Light, and Dark as one compact segmented control.
+The page is flat rather than wrapped in an additional settings container. The theme
 library follows T3 Code's collection model: one imported extension is one
-fixed-height card, not one card per source variant. Each card shows light and
+fixed-width, fixed-height tile, not one card per source variant. Tiles wrap from
+the left and never stretch to fill unused page width. Each card shows light and
 dark preview circles. The ring and sun/moon badge on each circle identify the
 effective owner of that appearance without a second Active badge.
 

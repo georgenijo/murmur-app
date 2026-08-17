@@ -79,7 +79,7 @@ function ThemeOrb({ tokens, mode, small = false }: { tokens: MurmurTokens; mode:
   return (
     <span
       aria-hidden="true"
-      className={`${small ? 'h-14 w-14 scale-[0.43]' : 'h-14 w-14'} block shrink-0 rounded-full border-2 border-surface-container-lowest`}
+      className={`${small ? 'h-9 w-9 scale-[0.55]' : 'h-9 w-9'} block shrink-0 rounded-full border-2 border-surface-container-lowest`}
       style={{
         backgroundColor: tokens.background,
         backgroundImage: [
@@ -153,22 +153,22 @@ function ModePreview({
         }}
         onFocus={onOpen}
         onMouseEnter={onOpen}
-        className="absolute left-1/2 top-2 z-20 flex h-14 w-14 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
+        className="absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
         style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
       >
         <ThemeOrb tokens={selected.tokens} mode={mode} />
         {active && (
           <>
             <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary" />
-            <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-on-surface-variant bg-background text-on-surface shadow-sm">
-              {mode === 'light' ? <SunIcon /> : <MoonIcon />}
+            <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-on-surface-variant bg-background text-on-surface shadow-sm">
+              {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
             </span>
           </>
         )}
       </button>
       {showLabel && (
         <span
-          className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-24 -translate-x-1/2 items-center gap-1 text-[11px] font-medium text-on-surface"
+          className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-20 -translate-x-1/2 items-center gap-1 text-[10px] font-medium text-on-surface"
           style={{ marginLeft: offset }}
         >
           <span className="truncate">{selectedLabel}</span>
@@ -181,8 +181,8 @@ function ModePreview({
       )}
       {options.length > 1 && options.map((option, index) => {
         const progress = index / (options.length - 1) - 0.5;
-        const childOffsetX = offset + progress * 68;
-        const childOffsetY = Math.abs(progress) * 10;
+        const childOffsetX = offset + progress * 44;
+        const childOffsetY = Math.abs(progress) * 7;
         const optionActive = option.entry.id === selected.entry.id;
         const optionLabel = labels.get(option.entry.id) ?? option.entry.label;
         return (
@@ -198,11 +198,11 @@ function ModePreview({
             }}
             onFocus={onOpen}
             onMouseEnter={onOpen}
-            className={`absolute left-1/2 top-1 z-30 flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-background shadow-sm outline-none transition-[transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-primary ${optionActive ? 'ring-2 ring-primary' : 'ring-1 ring-on-surface-variant'}`}
+            className={`absolute left-1/2 top-0 z-30 flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-background shadow-sm outline-none transition-[transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-primary ${optionActive ? 'ring-2 ring-primary' : 'ring-1 ring-on-surface-variant'}`}
             style={{
               opacity: open ? 1 : 0,
               pointerEvents: open ? 'auto' : 'none',
-              transform: `translate(calc(-50% + ${open ? childOffsetX : offset}px), ${open ? childOffsetY : 28}px) scale(${open ? 1 : 0.55})`,
+              transform: `translate(calc(-50% + ${open ? childOffsetX : offset}px), ${open ? childOffsetY : 20}px) scale(${open ? 1 : 0.55})`,
               transitionDelay: open ? `${index * 35}ms` : '0ms',
             }}
           >
@@ -229,7 +229,7 @@ function ActionButton({ label, onClick, children, danger = false }: {
         event.stopPropagation();
         onClick();
       }}
-      className={`grid h-7 w-7 place-items-center rounded-md outline-none hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary ${danger ? 'text-on-surface-variant hover:text-error' : 'text-on-surface-variant hover:text-on-surface'}`}
+      className={`grid h-6 w-6 place-items-center rounded-md outline-none hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary ${danger ? 'text-on-surface-variant hover:text-error' : 'text-on-surface-variant hover:text-on-surface'}`}
     >
       {children}
     </button>
@@ -282,12 +282,12 @@ function CollectionCard({
     <article
       data-theme-collection={label}
       onClick={handleCardClick}
-      className="cursor-pointer overflow-hidden rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest transition-colors hover:bg-surface-container-low"
+      className="w-52 max-w-full cursor-pointer overflow-hidden rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest transition-colors hover:bg-surface-container-low"
     >
       <div
         role="group"
         aria-label={`${label} light and dark styles`}
-        className="relative h-20"
+        className="relative h-16"
         onMouseLeave={() => setRadialOpen(null)}
         onBlurCapture={(event) => {
           const next = event.relatedTarget;
@@ -298,7 +298,7 @@ function CollectionCard({
         }}
       >
         {groups.map((group, index) => {
-          const offset = groups.length === 1 ? 0 : index === 0 ? -52 : 52;
+          const offset = groups.length === 1 ? 0 : index === 0 ? -34 : 34;
           return (
             <ModePreview
               key={group.mode}
@@ -319,7 +319,7 @@ function CollectionCard({
           );
         })}
       </div>
-      <div className="flex min-h-11 items-center gap-2 px-3 pb-3 pt-2">
+      <div className="flex min-h-9 items-center gap-2 px-2.5 pb-2 pt-1">
         <button
           type="button"
           aria-label={`Use ${label} theme`}
@@ -434,7 +434,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
   });
 
   return (
-    <section aria-labelledby="themes-heading" className="space-y-3">
+    <section aria-labelledby="themes-heading" className="space-y-2">
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 pt-1">
         <h2 id="themes-heading" className="text-sm font-medium text-on-surface">Themes</h2>
         <div className="flex items-center gap-2">
@@ -474,7 +474,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
         </div>
       </div>
 
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 17rem), 1fr))' }}>
+      <div className="flex flex-wrap items-start gap-2">
         <CollectionCard
           label="Sonic"
           entries={sonicEntries}

@@ -31,30 +31,6 @@ const MODE_OPTIONS: readonly {
   },
 ];
 
-function ModeWireframe({
-  mode,
-  light,
-  dark,
-}: {
-  mode: AppearanceMode;
-  light: ReturnType<typeof useAppearance>["document"]["cache"]["light"];
-  dark: ReturnType<typeof useAppearance>["document"]["cache"]["dark"];
-}) {
-  const panes = mode === "system" ? [light, dark] : [mode === "dark" ? dark : light];
-  return (
-    <span aria-hidden="true" className="mb-2 flex h-16 overflow-hidden rounded-lg border border-on-surface-variant bg-surface-container-lowest">
-      {panes.map((tokens, index) => (
-        <span key={index} className="relative min-w-0 flex-1" style={{ background: tokens.background }}>
-          <span className="absolute inset-y-0 left-0 w-1/4" style={{ background: tokens["surface-container-low"] }} />
-          <span className="absolute left-[32%] right-3 top-3 h-2 rounded-full" style={{ background: tokens["on-surface"], opacity: 0.72 }} />
-          <span className="absolute left-[32%] right-8 top-7 h-1.5 rounded-full" style={{ background: tokens["on-surface-variant"], opacity: 0.7 }} />
-          <span className="absolute bottom-3 right-3 h-2.5 w-7 rounded-full" style={{ background: tokens.primary }} />
-        </span>
-      ))}
-    </span>
-  );
-}
-
 function adjustmentText(
   adjustment: ThemeAdjustment,
   theme: ThemeConfigV1,
@@ -272,14 +248,14 @@ export function AppearanceSettings() {
   return (
     <div className="space-y-3">
       <fieldset>
-        <legend className="text-sm font-medium text-on-surface">
-          Color scheme
-        </legend>
-        <div
-          role="radiogroup"
-          aria-label="Appearance mode"
-          className="mt-2 grid grid-cols-3 gap-3"
-        >
+        <legend className="sr-only">Color scheme</legend>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span id="appearance-mode-label" className="text-sm font-medium text-on-surface">Color scheme</span>
+          <div
+            role="radiogroup"
+            aria-labelledby="appearance-mode-label"
+            className="inline-flex rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest p-0.5"
+          >
           {MODE_OPTIONS.map((option, index) => {
             const selected = appearance.document.mode === option.value;
             return (
@@ -312,23 +288,17 @@ export function AppearanceSettings() {
                 }}
                 aria-label={option.value === "system" ? "Follow the system appearance" : `Use ${option.value} mode`}
                 title={option.description}
-                className={`flex flex-col gap-1.5 rounded-xl border p-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
+                className={`h-8 rounded-md px-3 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
                   selected
-                    ? "border-transparent bg-primary/10 text-on-surface ring-1 ring-primary"
-                    : "border-on-surface-variant/70 bg-surface-container-lowest text-on-surface hover:bg-surface-container-low"
+                    ? "bg-primary text-on-primary"
+                    : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
                 }`}
               >
-                <ModeWireframe
-                  mode={option.value}
-                  light={appearance.document.cache.light}
-                  dark={appearance.document.cache.dark}
-                />
-                <span className="block text-center text-xs font-medium text-on-surface">
-                  {option.label}
-                </span>
+                {option.label}
               </button>
             );
           })}
+          </div>
         </div>
       </fieldset>
 

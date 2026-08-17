@@ -1845,7 +1845,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </details>
           </SettingsSection>
 
-          <SettingsSection plain pageId="app" activePage={activeCat} title="Appearance" subtitle="Choose how Murmur looks. Use a built-in theme or make your own.">
+          <SettingsSection plain pageId="app" activePage={activeCat} title="Appearance">
             <AppearanceSettings />
           </SettingsSection>
 
