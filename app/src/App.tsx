@@ -703,7 +703,7 @@ function App() {
 
       <div
         aria-hidden={isSettingsOpen}
-        className={`shrink-0 ${isSettingsOpen ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+        className={`shrink-0 ${isSettingsOpen ? 'hidden' : ''}`}
       >
         <FooterStats statsVersion={combinedStatsVersion} />
       </div>

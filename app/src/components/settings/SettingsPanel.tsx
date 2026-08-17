@@ -1088,8 +1088,8 @@ export const SettingsPanel = memo(function SettingsPanel({
   };
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden bg-background text-on-surface">
-      <aside className="flex w-[210px] shrink-0 flex-col border-r border-outline-variant/20 bg-surface-container-low px-3 pb-3 pt-2 max-[760px]:w-[184px]">
-        <label className="settings-search relative mb-3 block">
+      <aside className="flex min-h-0 w-[210px] shrink-0 flex-col overflow-hidden bg-surface-container-low px-3 pb-3 pt-2 max-[760px]:w-[184px]">
+        <label className="relative mb-3 block w-full min-w-0 shrink-0">
           <span className="sr-only">Search all settings</span>
           <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
