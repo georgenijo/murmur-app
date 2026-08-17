@@ -150,6 +150,7 @@ describe('SettingsPanel information architecture', () => {
     scrollTo.mockReset();
     onUpdateSettings.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: vi.fn(), configurable: true });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -161,19 +162,22 @@ describe('SettingsPanel information architecture', () => {
     container.remove();
   });
 
-  it('renders the four redesigned settings tabs with Dictation selected first', () => {
+  it('renders direct settings destinations with General selected first', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Dictation', 'Model', 'Text', 'App',
+      'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
-    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Dictation');
-    expect(container.querySelector('h1')?.textContent).toBe('Microphone & Trigger');
-    expect(container.textContent).toContain('Microphone');
-    expect(container.textContent).toContain('Always copied to clipboard');
+    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('General');
+    expect(container.querySelector('h1')?.textContent).toBe('General');
+    expect(container.textContent).toContain('Launch at Login');
   });
 
   it('commits keyboard changes to voice-detection sensitivity', async () => {
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
     const heading = Array.from(container.querySelectorAll('p')).find(
       (item) => item.textContent === 'Voice Detection',
     ) as HTMLParagraphElement;
@@ -203,6 +207,10 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('announces inventory failures without presenting stale choices', async () => {
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
     await act(async () => {
       eventMocks.listeners.get('audio-input-inventory-changed')?.({ payload: {
         schemaVersion: 1,
@@ -219,6 +227,10 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('shows the NotchPill setting when the companion app is installed', async () => {
+    const delivery = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Delivery',
+    ) as HTMLButtonElement;
+    await act(async () => delivery.click());
     coreMocks.notchPillInstalled = true;
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
@@ -229,6 +241,10 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('hides the NotchPill setting when detection fails', async () => {
+    const delivery = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Delivery',
+    ) as HTMLButtonElement;
+    await act(async () => delivery.click());
     coreMocks.notchPillInstalled = true;
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
@@ -245,11 +261,12 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
   });
 
-  it('groups the previous settings pages into Model, Text, and App', async () => {
+  it('opens focused Recording, Meetings, Text, and AI destinations', async () => {
     for (const [page, expected] of [
-      ['Model', 'Performance lab'],
-      ['Text', 'Vocabulary'],
-      ['App', 'Launch at Login'],
+      ['Recording', 'Voice Detection'],
+      ['Meetings', 'Keep Meeting Audio'],
+      ['Text & Vocabulary', 'Vocabulary'],
+      ['AI & Models', 'Speech-to-Text'],
     ] as const) {
       const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === page) as HTMLButtonElement;
       await act(async () => button.click());
@@ -259,9 +276,13 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
-  it('shows the Voice Query egress and no-shell contracts on the Text tab', async () => {
-    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Text') as HTMLButtonElement;
+  it('opens Voice Query as a focused AI & Models drill-down', async () => {
+    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'AI & Models') as HTMLButtonElement;
     await act(async () => button.click());
+    const voiceQuery = Array.from(container.querySelectorAll('button')).find(
+      (item) => item.textContent?.includes('Voice Query') && item.textContent?.includes('Configure'),
+    ) as HTMLButtonElement;
+    await act(async () => voiceQuery.click());
 
     expect(container.textContent).toContain('Voice Query');
     expect(container.textContent).toContain('may send the question or answer to cloud services');
@@ -290,7 +311,7 @@ describe('SettingsPanel information architecture', () => {
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Text',
+      (button) => button.textContent === 'Text & Vocabulary',
     ) as HTMLButtonElement;
     await act(async () => textTab.click());
 
@@ -300,7 +321,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => aliases.click());
 
     expect(settingsPages.isConnected).toBe(true);
-    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text');
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
     expect(container.querySelector('nav[aria-label="Settings editors"]')).toBeNull();
     expect(container.querySelector('h1')?.textContent).toBe('Aliases');
 
@@ -312,13 +333,13 @@ describe('SettingsPanel information architecture', () => {
 
     expect(container.textContent).toContain('Text & Vocabulary');
     expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
-    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text');
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
   });
 
   it('returns from an editor with Escape', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Text',
+      (button) => button.textContent === 'Text & Vocabulary',
     ) as HTMLButtonElement;
     await act(async () => textTab.click());
     const vocabulary = Array.from(container.querySelectorAll('button')).find(
@@ -329,28 +350,21 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('h1')?.textContent).toBe('Vocabulary');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
     expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
-    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text');
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
   });
 
-  it('keeps advanced diagnostics behind a disclosure on the Model tab', async () => {
-    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Model') as HTMLButtonElement;
+  it('opens diagnostics as a dedicated tool destination', async () => {
+    const button = Array.from(container.querySelectorAll('button')).find((item) => item.textContent === 'Diagnostics') as HTMLButtonElement;
     await act(async () => button.click());
-
-    expect(container.textContent).not.toContain('Diagnostics workspace');
-    const summary = Array.from(container.querySelectorAll('summary'))
-      .find((item) => item.textContent?.includes('Advanced')) as HTMLElement;
-    expect(summary).toBeTruthy();
-    expect(Array.from(container.querySelectorAll('details')).every((details) => !details.hasAttribute('open'))).toBe(true);
-
-    await act(async () => summary.click());
     expect(container.textContent).toContain('Diagnostics workspace');
     expect(diagnosticsWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({
       storeHealthEnabled: true,
     }));
+    expect(button.getAttribute('aria-current')).toBe('page');
   });
 
   it('searches across tabs and routes a result to its owning tab', async () => {
-    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'appearance');
@@ -359,12 +373,12 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('1 result');
     const result = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Appearance')) as HTMLButtonElement;
     await act(async () => result.click());
-    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('App');
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Appearance');
     expect(container.textContent).toContain('Appearance settings');
   });
 
   it('finds the Voice Query clipboard preference from settings search', async () => {
-    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'clipboard copy');
@@ -376,14 +390,14 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     expect(result).toBeDefined();
     await act(async () => result.click());
-    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Text');
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('AI & Models');
     expect(container.querySelector(
       '[role="switch"][aria-label="Automatically copy answers"]',
     )).not.toBeNull();
   });
 
   it('opens diagnostics when the cross-tab result explicitly targets them', async () => {
-    const input = container.querySelector('input[placeholder="Search all settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'diagnostics');
@@ -393,14 +407,14 @@ describe('SettingsPanel information architecture', () => {
     const result = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Diagnostics'),
     ) as HTMLButtonElement;
-    expect(result.textContent).toContain('Model');
+    expect(result.textContent).toContain('Diagnostics');
     await act(async () => result.click());
 
-    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Model');
-    const diagnostics = Array.from(container.querySelectorAll('details')).find(
-      (details) => details.textContent?.includes('Diagnostics workspace'),
-    ) as HTMLDetailsElement;
-    expect(diagnostics.open).toBe(true);
+    const selectedTool = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-current') === 'page' && button.textContent === 'Diagnostics',
+    );
+    expect(selectedTool).toBeTruthy();
+    expect(container.textContent).toContain('Diagnostics workspace');
   });
 });
 
@@ -473,7 +487,7 @@ describe('SettingsPanel Voice Query async ownership', () => {
           onCheckForUpdate={vi.fn(async () => {})}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
-          pageRequest={{ page: 'text', token: 1 }}
+          pageRequest={{ page: 'voice-query', token: 1 }}
         />
       );
     }
@@ -1009,10 +1023,9 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
         onCheckForUpdate={vi.fn(async () => {})}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
+        pageRequest={{ page: 'transform', token: 1 }}
       />,
     ));
-    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'Text') as HTMLButtonElement;
-    await act(async () => button.click());
     // Let the transformModelStatus() fetch effect resolve.
     await act(async () => {});
   }

@@ -34,12 +34,12 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   if (pageId !== undefined) {
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
-      <section className="mb-7 last:mb-0">
-        <h1 className="text-[11px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">{title}</h1>
+      <section className="mb-8 last:mb-0">
+        <h1 className="text-2xl font-semibold tracking-tight text-on-surface">{title}</h1>
         {subtitle && (
-          <p className="mt-1 text-xs text-on-surface-variant">{subtitle}</p>
+          <p className="mt-1 text-sm text-on-surface-variant">{subtitle}</p>
         )}
-        <div className="mt-3 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest [&>*]:p-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/15">{children}</div>
+        <div className="mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20">{children}</div>
       </section>
     );
   }

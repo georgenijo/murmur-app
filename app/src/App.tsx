@@ -6,6 +6,7 @@ import {
   SettingsPanel,
   SettingsSurfaceActiveContext,
   SETTINGS_CATEGORIES,
+  SETTINGS_TOOLS,
   settingsLatencyView,
 } from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
@@ -533,13 +534,15 @@ function App() {
         keywords: ['preferences', 'options'],
         run: () => openSettingsPage(category.id),
       })),
-      {
-        id: 'logs',
-        title: 'Open performance diagnostics',
-        section: 'Diagnostics',
-        keywords: ['events', 'debug', 'log', 'logs', 'runs', 'performance'],
-        run: () => openSettingsPage('performance'),
-      },
+      ...SETTINGS_TOOLS.map((tool) => ({
+        id: `settings-${tool.id}`,
+        title: `Open ${tool.label}`,
+        section: 'Tools',
+        keywords: tool.id === 'diagnostics'
+          ? ['events', 'debug', 'log', 'logs', 'runs', 'performance']
+          : ['benchmark', 'models', 'speed', 'accuracy'],
+        run: () => openSettingsPage(tool.id),
+      })),
       {
         id: 'check-updates',
         title: 'Check for updates',
