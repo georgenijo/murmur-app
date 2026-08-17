@@ -118,6 +118,7 @@ function ModePreview({
   options,
   selected,
   active,
+  interactive,
   labels,
   open,
   offset,
@@ -129,6 +130,7 @@ function ModePreview({
   options: readonly ModeOption[];
   selected: ModeOption;
   active: boolean;
+  interactive: boolean;
   labels: ReadonlyMap<string, string>;
   open: boolean;
   offset: number;
@@ -138,34 +140,44 @@ function ModePreview({
 }) {
   const modeLabel = mode === 'light' ? 'Light' : 'Dark';
   const selectedLabel = labels.get(selected.entry.id) ?? selected.entry.label;
+  const preview = (
+    <>
+      <ThemeOrb tokens={selected.tokens} mode={mode} />
+      <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-on-surface-variant bg-background text-on-surface shadow-sm">
+        {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
+      </span>
+    </>
+  );
   return (
     <>
-      <button
-        type="button"
-        aria-label={options.length > 1
-          ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`
-          : `Use ${mode} variant, currently ${selectedLabel}`}
-        aria-pressed={active}
-        title={options.length > 1 ? `${modeLabel}: ${selectedLabel} · hover for variants` : `${modeLabel}: ${selectedLabel}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onChoose(selected.entry);
-        }}
-        onFocus={onOpen}
-        onMouseEnter={onOpen}
-        className="absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
-        style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
-      >
-        <ThemeOrb tokens={selected.tokens} mode={mode} />
-        {active && (
-          <>
-            <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary" />
-            <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-on-surface-variant bg-background text-on-surface shadow-sm">
-              {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
-            </span>
-          </>
-        )}
-      </button>
+      {interactive ? (
+        <button
+          type="button"
+          aria-label={`Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`}
+          aria-pressed={active}
+          title={`${modeLabel}: ${selectedLabel} · hover for variants`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onChoose(selected.entry);
+          }}
+          onFocus={onOpen}
+          onMouseEnter={onOpen}
+          className="absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
+          style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
+        >
+          {preview}
+        </button>
+      ) : (
+        <span
+          aria-label={`${modeLabel} preview: ${selectedLabel}`}
+          role="img"
+          title={`${modeLabel}: ${selectedLabel}`}
+          className="pointer-events-none absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center"
+          style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
+        >
+          {preview}
+        </span>
+      )}
       {showLabel && (
         <span
           className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-20 -translate-x-1/2 items-center gap-1 text-[10px] font-medium text-on-surface"
@@ -269,6 +281,8 @@ function CollectionCard({
   });
   const light = groups.find((group) => group.mode === 'light')?.selected.entry ?? null;
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
+  const ids = new Set(entries.map((entry) => entry.id));
+  const fullyActive = ids.has(selection.light) && ids.has(selection.dark);
   const showVariantLabels = new Set(entries.map((entry) => entry.id)).size > 1;
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
     ?? groups[0]?.selected.entry;
@@ -287,7 +301,7 @@ function CollectionCard({
       <div
         role="group"
         aria-label={`${label} light and dark styles`}
-        className="relative h-16"
+        className={showVariantLabels ? "relative h-16" : "relative h-12"}
         onMouseLeave={() => setRadialOpen(null)}
         onBlurCapture={(event) => {
           const next = event.relatedTarget;
@@ -306,6 +320,7 @@ function CollectionCard({
               options={group.options}
               selected={group.selected}
               active={selection[group.mode] === group.selected.entry.id}
+              interactive={group.options.length > 1}
               labels={labels}
               open={radialOpen === group.mode}
               offset={offset}
@@ -323,13 +338,17 @@ function CollectionCard({
         <button
           type="button"
           aria-label={`Use ${label} theme`}
+          aria-pressed={fullyActive}
           onClick={(event) => {
             event.stopPropagation();
             applyPair();
           }}
           className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
-          {label}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="truncate">{label}</span>
+            {fullyActive && <span aria-label="Active theme" title="Active theme" className="text-xs font-bold text-primary">✓</span>}
+          </span>
         </button>
         {(onCustomize || onExport || onRemove) && (
           <div className="flex shrink-0 items-center gap-0.5">

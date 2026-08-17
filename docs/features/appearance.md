@@ -206,10 +206,12 @@ the left and never stretch to fill unused page width. Each card shows light and
 dark preview circles. The ring and sun/moon badge on each circle identify the
 effective owner of that appearance without a second Active badge.
 
-Clicking a card applies its default light/dark pair in one commit. Clicking a
-preview circle applies that appearance directly. Collections with multiple
-source variants reveal small radial choices on hover or keyboard focus; they
-never insert an expanding selector panel into the page. Export and removal are
+Clicking a card applies its default light/dark pair in one commit. A single
+light or dark circle is a labelled preview, not a no-op button; the active tile
+has a compact check beside its name. Collections with multiple source variants
+turn their circles into controls and reveal small radial choices on hover or
+keyboard focus. They never insert an expanding selector panel into the page.
+Export and removal are
 compact icon actions in the title row and stop card-click propagation.
 
 The top-level actions are **Create theme** and **Import theme**. Import opens a

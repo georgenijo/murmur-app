@@ -376,7 +376,8 @@ describe("AppearanceSettings", () => {
     expect(container.querySelectorAll('button[aria-label="Use Claude Theme theme"]')).toHaveLength(1);
     const claudeCard = container.querySelector('[data-theme-collection="Claude Theme"]')!;
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
-    expect(claudeCard.querySelector('button[aria-label*="light variant"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(claudeCard.querySelector('[role="img"][aria-label^="Light preview"]')).not.toBeNull();
+    expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(container.textContent).not.toContain("Active theme");
     expect(container.textContent).not.toContain("Partly active");
     expect(container.textContent).not.toContain("Choose dark style");
