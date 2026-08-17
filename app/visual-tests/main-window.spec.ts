@@ -140,7 +140,7 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
 
   const fixture = page.locator('[data-visual-ready="true"]');
   await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Text', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: 'Text & Vocabulary', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Aliases', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
