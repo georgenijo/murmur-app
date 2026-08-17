@@ -10,6 +10,7 @@ import {
   loadThemeLibrary,
   makeLocalThemeEntry,
   previewThemeLibrarySelection,
+  previewThemeLibraryPairSelection,
   removeThemeLibraryEntries,
   replaceThemeLibraryCollection,
   writeThemeLibrary,
@@ -194,5 +195,41 @@ describe('theme library selection', () => {
       .toThrow(/not installed/);
     expect(() => previewThemeLibrarySelection(createAppearanceDocument(), library, lightOnly.id, 'dark'))
       .toThrow(/no dark variant/);
+  });
+
+  it('composes a collection light and dark choice in one transaction', () => {
+    const light = makeLocalThemeEntry('aurora-light', 'Aurora Light', {
+      version: 1,
+      presetId: 'custom',
+      background: '#f8f4ec',
+      foreground: '#171717',
+      accent: '#17627a',
+    }, ['light']);
+    const dark = makeLocalThemeEntry('aurora-dark', 'Aurora Dark', {
+      version: 1,
+      presetId: 'custom',
+      background: '#11151a',
+      foreground: '#f2f5f7',
+      accent: '#8ccfff',
+    }, ['dark']);
+    const library = { version: 1 as const, revision: 1, themes: [light, dark] };
+    const preview = previewThemeLibraryPairSelection(
+      createAppearanceDocument(),
+      library,
+      light.id,
+      dark.id,
+    );
+
+    expect(preview.selection).toEqual({ light: light.id, dark: dark.id });
+    expect(preview.light.background).not.toBe(preview.dark.background);
+    expect(preview.theme).toEqual(
+      composeThemeSelection(createAppearanceDocument(), library, preview.selection!),
+    );
+    expect(() => previewThemeLibraryPairSelection(
+      createAppearanceDocument(),
+      library,
+      dark.id,
+      dark.id,
+    )).toThrow(/no light variant/);
   });
 });

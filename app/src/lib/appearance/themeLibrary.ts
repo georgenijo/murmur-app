@@ -431,3 +431,33 @@ export function previewThemeLibrarySelection(
     selection,
   };
 }
+
+export function previewThemeLibraryPairSelection(
+  current: AppearanceDocumentV1,
+  library: ThemeLibraryDocumentV1,
+  lightThemeId: string,
+  darkThemeId: string,
+): ThemeImportPreview {
+  const available = (themeId: string, appearance: ResolvedAppearance) => {
+    if (themeId === 'sonic') return;
+    const entry = library.themes.find((theme) => theme.id === themeId);
+    if (!entry) throw new Error('That theme is not installed.');
+    if (!entry.modes.includes(appearance)) {
+      throw new Error(`That theme has no ${appearance} variant.`);
+    }
+  };
+  available(lightThemeId, 'light');
+  available(darkThemeId, 'dark');
+  const selection = { light: lightThemeId, dark: darkThemeId };
+  const theme = composeThemeSelection(current, library, selection);
+  const light = resolveTheme(theme, 'light');
+  const dark = resolveTheme(theme, 'dark');
+  return {
+    mode: current.mode,
+    theme,
+    light: light.tokens,
+    dark: dark.tokens,
+    adjustments: [...light.adjustments, ...dark.adjustments],
+    selection,
+  };
+}

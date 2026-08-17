@@ -7,6 +7,7 @@ import { HistoryPanel } from './components/history/HistoryPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { DEFAULT_SETTINGS } from './lib/settings';
+import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import './styles.css';
 
@@ -93,7 +94,7 @@ const entries = [
 ];
 
 function VisualFixture() {
-  const settingsOpen = requestedState === 'settings';
+  const settingsOpen = requestedState === 'settings' || requestedState === 'settings-appearance';
 
   return (
     <div
@@ -155,6 +156,12 @@ function VisualFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <VisualFixture />
+    {requestedState === 'settings-appearance' ? (
+      <AppearanceProvider>
+        <VisualFixture />
+      </AppearanceProvider>
+    ) : (
+      <VisualFixture />
+    )}
   </React.StrictMode>,
 );

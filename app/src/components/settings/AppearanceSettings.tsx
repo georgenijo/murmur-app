@@ -31,6 +31,30 @@ const MODE_OPTIONS: readonly {
   },
 ];
 
+function ModeWireframe({
+  mode,
+  light,
+  dark,
+}: {
+  mode: AppearanceMode;
+  light: ReturnType<typeof useAppearance>["document"]["cache"]["light"];
+  dark: ReturnType<typeof useAppearance>["document"]["cache"]["dark"];
+}) {
+  const panes = mode === "system" ? [light, dark] : [mode === "dark" ? dark : light];
+  return (
+    <span aria-hidden="true" className="mb-2 flex h-16 overflow-hidden rounded-lg border border-on-surface-variant bg-surface-container-lowest">
+      {panes.map((tokens, index) => (
+        <span key={index} className="relative min-w-0 flex-1" style={{ background: tokens.background }}>
+          <span className="absolute inset-y-0 left-0 w-1/4" style={{ background: tokens["surface-container-low"] }} />
+          <span className="absolute left-[32%] right-3 top-3 h-2 rounded-full" style={{ background: tokens["on-surface"], opacity: 0.72 }} />
+          <span className="absolute left-[32%] right-8 top-7 h-1.5 rounded-full" style={{ background: tokens["on-surface-variant"], opacity: 0.7 }} />
+          <span className="absolute bottom-3 right-3 h-2.5 w-7 rounded-full" style={{ background: tokens.primary }} />
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function adjustmentText(
   adjustment: ThemeAdjustment,
   theme: ThemeConfigV1,
@@ -147,6 +171,7 @@ export function AppearanceSettings() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [communityOpen, setCommunityOpen] = useState(false);
   const contrastDraftRef = useRef(contrastDraft);
+  const customEditorRef = useRef<HTMLDivElement>(null);
   const lastCommittedContrastRef = useRef(
     appearance.document.theme.contrast ?? 0,
   );
@@ -276,12 +301,17 @@ export function AppearanceSettings() {
                     appearance.setMode(MODE_OPTIONS[nextIndex].value),
                   );
                 }}
-                className={`rounded-xl border p-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
+                className={`rounded-xl border p-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
                   selected
                     ? "border-primary bg-primary/10 text-on-surface"
                     : "border-on-surface-variant bg-surface-container-lowest text-on-surface hover:border-primary hover:bg-surface-container"
                 }`}
               >
+                <ModeWireframe
+                  mode={option.value}
+                  light={appearance.document.cache.light}
+                  dark={appearance.document.cache.dark}
+                />
                 <span className="block text-sm font-medium">
                   {option.label}
                 </span>
@@ -301,9 +331,13 @@ export function AppearanceSettings() {
       <ThemeLibrary
         onBrowse={() => setCommunityOpen(true)}
         onImport={() => void importTheme()}
+        onCustomize={() => {
+          customEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          customEditorRef.current?.focus({ preventScroll: true });
+        }}
       />
 
-      <div className="rounded-xl border border-on-surface-variant bg-surface-container-lowest p-3">
+      <div ref={customEditorRef} tabIndex={-1} className="scroll-mt-3 rounded-xl border border-on-surface-variant bg-surface-container-lowest p-3 outline-none focus-visible:ring-2 focus-visible:ring-primary">
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-semibold text-on-surface">Customize current</p>

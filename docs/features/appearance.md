@@ -198,12 +198,19 @@ Import and export never read or write the clipboard.
 
 ## Appearance interaction
 
-Appearance presents System, Light, and Dark as explicit mode cards. The theme
-library uses large palette cards rather than icon-only controls: clicking the
-main body of a theme card immediately applies every light/dark variant carried
-by that entry, and the selected card has a visible Active state. Export and
-collection removal remain separate secondary actions so they cannot be
-triggered by applying a theme.
+Appearance presents System, Light, and Dark as explicit wireframe cards. The
+theme library follows T3 Code's collection model: one imported extension is one
+card, not one card per source variant. Each card shows its effective light and
+dark style selectors; variant lists open only from those clearly labelled
+selectors. The only prominent Active state belongs to the card currently
+rendered by the resolved appearance, so dark mode never presents a second
+light-only card as simultaneously active.
+
+Clicking any non-action pixel in a theme card applies its light/dark pair in one
+commit. A full-card button sits behind the presentation layer, including the
+footer, so there are no visual card regions that silently do nothing. Export,
+remove, and light/dark variant selection are visibly bounded controls layered
+above that hit target and stop propagation deliberately.
 
 The top-level actions are **Import theme** and **Browse community**. There is no
 ambiguous “Save current” action; manual color edits are already durable in the

@@ -276,7 +276,7 @@ describe("AppearanceSettings", () => {
     });
 
     const importButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Import theme",
+      (button) => button.textContent?.includes("Import theme"),
     )!;
     await act(async () => importButton.click());
     expect(mocks.controller!.importFromPath).toHaveBeenCalledWith(
@@ -320,6 +320,60 @@ describe("AppearanceSettings", () => {
 
     expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith("sonic");
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
+  });
+
+  it("collapses imported collections into one card with one current active state", async () => {
+    const collection = { id: "open-vsx:h1dr0n.claude-theme", label: "Claude Theme" };
+    const entry = (
+      id: string,
+      label: string,
+      mode: "light" | "dark",
+      background: `#${string}`,
+    ): ThemeLibraryEntryV1 => ({
+      version: 1,
+      id,
+      label,
+      modes: [mode],
+      theme: {
+        version: 1,
+        presetId: "custom",
+        [mode]: { background, surface: background },
+      },
+      source: {
+        kind: "open-vsx",
+        extensionId: "h1dr0n.claude-theme",
+        version: "1.0.0",
+        license: "MIT",
+      },
+      collection,
+    });
+    const light = entry("claude-light", "Claude Dusk Light", "light", "#f1efe7");
+    const dark = entry("claude-dark", "Claude Dusk", "dark", "#1a1d23");
+    const midnight = entry("claude-midnight", "Claude Midnight", "dark", "#000000");
+    mocks.controller!.library.document = {
+      version: 1,
+      revision: 1,
+      themes: [light, dark, midnight],
+    };
+    mocks.controller!.document.selection = { light: light.id, dark: midnight.id };
+    mocks.controller!.resolvedAppearance = "dark";
+    await act(async () => root.render(<AppearanceSettings />));
+
+    expect(container.querySelectorAll('[data-theme-collection="Claude Theme"]')).toHaveLength(1);
+    expect(container.querySelectorAll('button[aria-label="Use Claude Theme theme"]')).toHaveLength(1);
+    expect(container.textContent).toContain("✓ Active theme · dark");
+    expect(container.textContent).not.toContain("Partly active");
+    expect(container.textContent).not.toContain("Claude Midnight (OLED Black)");
+
+    const card = container.querySelector(
+      'button[aria-label="Use Claude Theme theme"]',
+    ) as HTMLButtonElement;
+    await act(async () => card.click());
+    expect(mocks.controller!.commitImport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selection: { light: light.id, dark: midnight.id },
+      }),
+    );
   });
 
   it("reports only adjustments attributable to selected controls", async () => {

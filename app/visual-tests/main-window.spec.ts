@@ -150,6 +150,65 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
 });
 
+test('community variants collapse into one readable theme card', async ({ page }) => {
+  const source = {
+    kind: 'open-vsx',
+    extensionId: 'h1dr0n.claude-theme',
+    version: '1.0.0',
+    license: 'MIT',
+  } as const;
+  const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Claude Theme' };
+  const entry = (
+    id: string,
+    label: string,
+    modes: Array<'light' | 'dark'>,
+    theme: Record<string, unknown>,
+  ) => ({
+    version: 1,
+    id,
+    label,
+    modes,
+    theme: { version: 1, presetId: 'custom', ...theme },
+    source,
+    collection,
+  });
+  const library = {
+    version: 1,
+    revision: 1,
+    themes: [
+      entry('claude-classic', 'Claude Classic', ['light', 'dark'], {
+        light: { background: '#f1efe7', foreground: '#141413', accent: '#0060a4' },
+        dark: { background: '#1a1d23', foreground: '#d6d6d6', accent: '#74a9d8' },
+      }),
+      entry('claude-dusk', 'Claude Dusk (Deep Slate)', ['dark'], {
+        dark: { background: '#1a1d23', foreground: '#d6d6d6', accent: '#74a9d8' },
+      }),
+      entry('claude-midnight', 'Claude Midnight (OLED Black)', ['dark'], {
+        dark: { background: '#000000', foreground: '#f5f5f5', accent: '#74a9d8' },
+      }),
+      entry('claude-midnight-light', 'Claude Midnight Light (Pure High-Contrast)', ['light'], {
+        light: { background: '#ffffff', foreground: '#000000', accent: '#000000' },
+      }),
+    ],
+  };
+  await page.addInitScript((value) => {
+    localStorage.setItem('murmur-theme-library', JSON.stringify(value));
+  }, library);
+  await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=light');
+  await page.getByRole('button', { name: 'App', exact: true }).click();
+  await page.getByRole('button', { name: 'Use Claude Theme theme' }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  await expect(page.locator('[data-theme-collection="Claude Theme"]')).toHaveCount(1);
+  await expect(page.getByText('✓ Active theme · light')).toBeVisible();
+  await expect(page.getByText('Partly active')).toHaveCount(0);
+  await expect(fixture).toHaveScreenshot('light-settings-appearance.png');
+
+  await page.getByRole('radio', { name: /Dark/ }).click();
+  await expect(page.getByText('✓ Active theme · dark')).toBeVisible();
+  await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
+});
+
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=recording&appearance=dark');
   const waveform = page.getByTestId('main-recording-waveform');
