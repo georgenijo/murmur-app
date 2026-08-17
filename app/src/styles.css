@@ -285,7 +285,7 @@ textarea {
   height: var(--ui-control-standard);
   flex-shrink: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--murmur-on-surface-variant) 70%, transparent);
   border-radius: 0.5rem;
   background: var(--murmur-surface-container-lowest);
   transition:
@@ -313,7 +313,7 @@ textarea {
 .transcript-card {
   position: relative;
   width: 100%;
-  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 25%, transparent);
+  border: 1px solid color-mix(in srgb, var(--murmur-on-surface-variant) 65%, transparent);
   border-radius: var(--ui-radius-card);
   padding: var(--ui-history-card-y) var(--ui-history-card-x);
   background: var(--murmur-surface-container-lowest);
@@ -324,7 +324,7 @@ textarea {
 }
 
 .transcript-card:hover {
-  border-color: color-mix(in srgb, var(--murmur-outline-variant) 45%, transparent);
+  border-color: var(--murmur-primary);
   background: var(--murmur-surface-container-low);
 }
 

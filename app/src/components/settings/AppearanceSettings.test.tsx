@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppearanceController,
   ThemeImportPreview,
+  ThemeLibraryEntryV1,
 } from "../../lib/appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 
@@ -136,8 +137,9 @@ describe("AppearanceSettings", () => {
       "Reset restores Murmur’s exact built-in Sonic palette",
     );
     expect(container.textContent).toContain(
-      "Clearing individual color overrides keeps the theme Custom",
+      "Clearing an individual color override keeps the theme Custom",
     );
+    expect(container.textContent).not.toContain("Save current");
   });
 
   it("consumes mode and reset rejections while preserving hook error UI", async () => {
@@ -240,7 +242,7 @@ describe("AppearanceSettings", () => {
     expect(mocks.controller!.updateTheme).toHaveBeenCalledTimes(2);
   });
 
-  it("focuses and describes import previews, supports Escape, and returns focus", async () => {
+  it("installs and applies imported files immediately, without a token preview", async () => {
     const preview: ThemeImportPreview = {
       mode: "dark",
       theme: {
@@ -257,6 +259,16 @@ describe("AppearanceSettings", () => {
     mocks.open.mockResolvedValue("/tmp/in.json");
     mocks.save.mockResolvedValue("/tmp/out.json");
     vi.mocked(mocks.controller!.importFromPath).mockResolvedValue(preview);
+    const savedEntry: ThemeLibraryEntryV1 = {
+      version: 1,
+      id: "imported-theme",
+      label: "Imported theme",
+      modes: ["light", "dark"],
+      theme: preview.theme,
+      source: { kind: "local" as const },
+    };
+    vi.mocked(mocks.controller!.library.savePreview).mockResolvedValue(savedEntry);
+    vi.mocked(mocks.controller!.library.previewSelection).mockReturnValue(preview);
     const clipboardWrite = vi.fn();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -264,61 +276,50 @@ describe("AppearanceSettings", () => {
     });
 
     const importButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Import Theme",
+      (button) => button.textContent === "Import theme",
     )!;
     await act(async () => importButton.click());
     expect(mocks.controller!.importFromPath).toHaveBeenCalledWith(
       "/tmp/in.json",
     );
-    expect(mocks.controller!.commitImport).not.toHaveBeenCalled();
-    const dialog = container.querySelector('[role="dialog"]') as HTMLDivElement;
-    expect(dialog.textContent).toContain("Custom theme");
-    expect(dialog.textContent).toContain("1 light token override");
-    expect(dialog.textContent).toContain("2 dark token overrides");
-    expect(dialog.getAttribute("aria-modal")).toBeNull();
-    expect(dialog.textContent).toContain("Light overrides");
-    expect(dialog.textContent).toContain("primary");
-    expect(dialog.textContent).toContain("#112233");
-    expect(dialog.textContent).toContain("Dark overrides");
-    expect(dialog.textContent).toContain("primary-dim");
-    expect(dialog.textContent).toContain("#ccddee");
-    expect(document.activeElement).toBe(dialog);
-    expect(
-      document.getElementById(dialog.getAttribute("aria-labelledby")!),
-    ).toBeTruthy();
-    expect(
-      document.getElementById(dialog.getAttribute("aria-describedby")!),
-    ).toBeTruthy();
-
-    await act(async () => {
-      dialog.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(importButton);
-
-    await act(async () => importButton.click());
-
-    const applyButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Apply without saving",
-    )!;
-    await act(async () => {
-      applyButton.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    expect(mocks.controller!.library.savePreview).toHaveBeenCalledWith(
+      "Imported theme",
+      preview,
+    );
+    expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith(
+      "imported-theme",
+    );
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
-    expect(document.activeElement).toBe(importButton);
+    expect(container.textContent).not.toContain("Import preview");
+    expect(container.textContent).not.toContain("token override");
 
     const exportButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Export Theme",
+      (button) => button.textContent === "Export current",
     )!;
     await act(async () => exportButton.click());
     expect(mocks.controller!.exportToPath).toHaveBeenCalledWith(
       "/tmp/out.json",
     );
     expect(clipboardWrite).not.toHaveBeenCalled();
+  });
+
+  it("applies a theme when its card is clicked", async () => {
+    const preview: ThemeImportPreview = {
+      mode: "system",
+      theme: { version: 1, presetId: "sonic" },
+      light: tokens,
+      dark: tokens,
+      adjustments: [],
+    };
+    vi.mocked(mocks.controller!.library.previewSelection).mockReturnValue(preview);
+
+    const sonicCard = container.querySelector(
+      'button[aria-label="Use Sonic theme"]',
+    ) as HTMLButtonElement;
+    await act(async () => sonicCard.click());
+
+    expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith("sonic");
+    expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
   });
 
   it("reports only adjustments attributable to selected controls", async () => {

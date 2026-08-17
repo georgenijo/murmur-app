@@ -97,6 +97,16 @@ function button(container: HTMLElement, label: string): HTMLButtonElement {
   return match;
 }
 
+async function waitFor(condition: () => boolean, message: string) {
+  const deadline = Date.now() + 2_000;
+  while (!condition() && Date.now() < deadline) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+  expect(condition(), message).toBe(true);
+}
+
 describe('CommunityThemeDialog', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -124,10 +134,11 @@ describe('CommunityThemeDialog', () => {
     expect(container.textContent).toContain('Search sends your query');
     expect(container.textContent).toContain('never runs extension code');
     mocks.search.mockResolvedValueOnce([extension]);
-    await act(async () => {
-      button(container, 'Dracula').click();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await act(async () => button(container, 'Dracula').click());
+    await waitFor(
+      () => mocks.search.mock.calls.length === 1 && container.textContent?.includes('Aurora') === true,
+      'Open VSX search should render its result',
+    );
     expect(mocks.search).toHaveBeenCalledWith('Dracula', expect.objectContaining({
       sortBy: 'downloadCount',
       signal: expect.any(AbortSignal),
@@ -144,10 +155,11 @@ describe('CommunityThemeDialog', () => {
       source: { kind: 'local' as const },
     };
     mocks.importExtension.mockResolvedValueOnce([entry]);
-    await act(async () => {
-      button(container, 'Add').click();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await act(async () => button(container, 'Add').click());
+    await waitFor(
+      () => vi.mocked(mocks.controller!.library.install).mock.calls.length === 1,
+      'install should finish',
+    );
     expect(mocks.controller!.library.install).toHaveBeenCalledWith([entry]);
     expect(container.textContent).toContain('added to your theme library');
 
@@ -167,20 +179,22 @@ describe('CommunityThemeDialog', () => {
     };
     mocks.controller!.library.document.themes = [installed];
     mocks.search.mockResolvedValueOnce([extension]);
-    await act(async () => {
-      button(container, 'Nord').click();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await act(async () => button(container, 'Nord').click());
+    await waitFor(
+      () => container.textContent?.includes('Aurora') === true,
+      'installed theme search should render its result',
+    );
     await act(async () => button(container, 'Update').click());
     expect(container.textContent).toContain('Update Aurora?');
     expect(mocks.importExtension).not.toHaveBeenCalled();
 
     const replacement = { ...installed, id: 'aurora-new' };
     mocks.importExtension.mockResolvedValueOnce([replacement]);
-    await act(async () => {
-      button(container, 'Update collection').click();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await act(async () => button(container, 'Update collection').click());
+    await waitFor(
+      () => vi.mocked(mocks.controller!.library.replaceCollection).mock.calls.length === 1,
+      'collection replacement should finish',
+    );
     expect(mocks.controller!.library.replaceCollection).toHaveBeenCalledWith(
       extension.collectionId,
       [replacement],

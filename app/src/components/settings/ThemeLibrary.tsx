@@ -5,14 +5,13 @@ import {
   resolveTheme,
   type MurmurTokens,
   type ResolvedAppearance,
-  type ThemeImportPreview,
   type ThemeLibraryEntryV1,
 } from '../../lib/appearance';
 import { useAppearance } from '../../lib/hooks/useAppearance';
 
 interface Props {
   onBrowse: () => void;
-  onPreview: (preview: ThemeImportPreview, sourceLabel: string) => void;
+  onImport: () => void;
 }
 
 function PalettePreview({ tokens, label }: { tokens: MurmurTokens; label: string }) {
@@ -20,127 +19,96 @@ function PalettePreview({ tokens, label }: { tokens: MurmurTokens; label: string
     <span
       role="img"
       aria-label={label}
-      className="relative block h-12 w-12 overflow-hidden rounded-full border border-outline-variant/30 shadow-sm"
+      className="relative block h-16 min-w-0 flex-1 overflow-hidden rounded-xl border border-on-surface-variant bg-background shadow-sm"
       style={{ background: tokens.background }}
     >
       <span
-        className="absolute inset-x-1.5 bottom-1.5 top-5 rounded-md"
+        className="absolute bottom-2 left-2 top-2 w-5 rounded-md"
         style={{ background: tokens['surface-container-high'] }}
       />
       <span
-        className="absolute bottom-2 left-2 h-2.5 w-5 rounded-full"
-        style={{ background: tokens.primary }}
+        className="absolute left-9 right-2 top-3 h-2 rounded-full"
+        style={{ background: tokens['on-surface'] }}
       />
       <span
-        className="absolute right-2 top-2 h-1.5 w-5 rounded-full"
-        style={{ background: tokens['on-surface'] }}
+        className="absolute left-9 right-5 top-7 h-1.5 rounded-full"
+        style={{ background: tokens['on-surface-variant'] }}
+      />
+      <span
+        className="absolute bottom-3 right-2 h-3 w-7 rounded-full"
+        style={{ background: tokens.primary }}
       />
     </span>
   );
 }
 
-function ModeButton({
-  mode,
-  active,
-  tokens,
+function ThemeCard({
   label,
-  onClick,
-}: {
-  mode: ResolvedAppearance;
-  active: boolean;
-  tokens: MurmurTokens;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={`Use ${label} for ${mode} appearance`}
-      aria-pressed={active}
-      onClick={onClick}
-      className={`relative rounded-full p-0.5 outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary ${active ? 'ring-2 ring-primary' : ''}`}
-    >
-      <PalettePreview tokens={tokens} label={`${label} ${mode} palette`} />
-      <span className="absolute -bottom-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full border border-outline-variant/30 bg-surface-container-lowest px-1 text-[9px] font-medium text-on-surface">
-        {mode === 'light' ? '☀' : '☾'}
-      </span>
-    </button>
-  );
-}
-
-function ThemeVariant({
-  entry,
-  activeLight,
-  activeDark,
-  onPreview,
+  source,
+  palettes,
+  activeModes,
+  onApply,
   onExport,
 }: {
-  entry: ThemeLibraryEntryV1;
-  activeLight: boolean;
-  activeDark: boolean;
-  onPreview: (entry: ThemeLibraryEntryV1, mode?: ResolvedAppearance) => void;
-  onExport: (entry: ThemeLibraryEntryV1) => void;
+  label: string;
+  source: string;
+  palettes: readonly { mode: ResolvedAppearance; tokens: MurmurTokens }[];
+  activeModes: readonly ResolvedAppearance[];
+  onApply: () => void;
+  onExport?: () => void;
 }) {
-  const light = entry.modes.includes('light') ? resolveTheme(entry.theme, 'light').tokens : null;
-  const dark = entry.modes.includes('dark') ? resolveTheme(entry.theme, 'dark').tokens : null;
+  const active = palettes.every(({ mode }) => activeModes.includes(mode));
+  const partiallyActive = !active && activeModes.length > 0;
+
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-outline-variant/20 bg-surface-container-lowest p-2.5">
-      <div className="flex shrink-0 gap-2">
-        {light && (
-          <ModeButton
-            mode="light"
-            active={activeLight}
-            tokens={light}
-            label={entry.label}
-            onClick={() => onPreview(entry, 'light')}
-          />
-        )}
-        {dark && (
-          <ModeButton
-            mode="dark"
-            active={activeDark}
-            tokens={dark}
-            label={entry.label}
-            onClick={() => onPreview(entry, 'dark')}
-          />
-        )}
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-on-surface">{entry.label}</p>
-        <p className="mt-0.5 truncate text-[11px] text-on-surface-variant">
-          {entry.source.kind === 'open-vsx'
-            ? `${entry.source.extensionId} · ${entry.source.license}`
-            : 'Saved on this Mac'}
-        </p>
-      </div>
-      <div className="flex shrink-0 gap-1">
-        {entry.modes.length === 2 && (
+    <article
+      className={`overflow-hidden rounded-xl border bg-surface-container-lowest transition-colors ${
+        active
+          ? 'border-primary ring-1 ring-primary'
+          : 'border-on-surface-variant hover:border-primary'
+      }`}
+    >
+      <button
+        type="button"
+        aria-label={`Use ${label} theme`}
+        aria-pressed={active}
+        onClick={onApply}
+        className="block w-full p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+      >
+        <span className="flex gap-2">
+          {palettes.map(({ mode, tokens }) => (
+            <PalettePreview key={mode} tokens={tokens} label={`${label} ${mode} palette`} />
+          ))}
+        </span>
+        <span className="mt-2 flex min-w-0 items-start justify-between gap-2">
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-on-surface">{label}</span>
+            <span className="mt-0.5 block truncate text-[11px] text-on-surface-variant">{source}</span>
+          </span>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${active ? 'bg-primary text-on-primary' : 'bg-surface-container-high text-on-surface'}`}>
+            {active ? 'Active' : partiallyActive ? 'Partly active' : 'Apply'}
+          </span>
+        </span>
+      </button>
+      {onExport && (
+        <div className="border-t border-outline-variant px-3 py-1.5 text-right">
           <button
             type="button"
-            onClick={() => onPreview(entry)}
-            className="rounded-md px-2 py-1 text-[11px] font-medium text-on-surface hover:bg-surface-container"
+            aria-label={`Export ${label}`}
+            onClick={onExport}
+            className="rounded-md px-2 py-1 text-[11px] font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
           >
-            Use both
+            Export
           </button>
-        )}
-        <button
-          type="button"
-          aria-label={`Export ${entry.label}`}
-          onClick={() => onExport(entry)}
-          className="rounded-md px-2 py-1 text-[11px] text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
-        >
-          Export
-        </button>
-      </div>
-    </div>
+        </div>
+      )}
+    </article>
   );
 }
 
-export function ThemeLibrary({ onBrowse, onPreview }: Props) {
+export function ThemeLibrary({ onBrowse, onImport }: Props) {
   const appearance = useAppearance();
   const selection = appearanceSelection(appearance.document);
-  const [saveName, setSaveName] = useState('Custom theme');
-  const [showSave, setShowSave] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{
     label: string;
     ids: string[];
@@ -161,19 +129,11 @@ export function ThemeLibrary({ onBrowse, onPreview }: Props) {
     return [...grouped.entries()];
   }, [appearance.library.document.themes]);
 
-  const previewInstalled = (entry: ThemeLibraryEntryV1, mode?: ResolvedAppearance) => {
+  const applyTheme = async (id: string) => {
     try {
       setError(null);
-      onPreview(appearance.library.previewSelection(entry.id, mode), entry.label);
-    } catch (cause) {
-      setError(String(cause));
-    }
-  };
-
-  const previewSonic = (mode?: ResolvedAppearance) => {
-    try {
-      setError(null);
-      onPreview(appearance.library.previewSelection('sonic', mode), 'Sonic');
+      const preview = appearance.library.previewSelection(id);
+      await appearance.commitImport(preview);
     } catch (cause) {
       setError(String(cause));
     }
@@ -192,22 +152,6 @@ export function ThemeLibrary({ onBrowse, onPreview }: Props) {
     }
   };
 
-  const saveCurrent = async () => {
-    const label = saveName.trim();
-    if (!label) {
-      setError('Enter a name for the theme.');
-      return;
-    }
-    try {
-      setError(null);
-      await appearance.library.saveCurrent(label);
-      setShowSave(false);
-      setSaveName('Custom theme');
-    } catch (cause) {
-      setError(String(cause));
-    }
-  };
-
   const sonicLight = appearance.document.theme.presetId === 'sonic'
     ? appearance.document.cache.light
     : resolveTheme({ version: 1, presetId: 'sonic' }, 'light').tokens;
@@ -216,82 +160,55 @@ export function ThemeLibrary({ onBrowse, onPreview }: Props) {
     : resolveTheme({ version: 1, presetId: 'sonic' }, 'dark').tokens;
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <section aria-labelledby="themes-heading" className="space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-on-surface">Theme library</p>
+          <h2 id="themes-heading" className="text-sm font-semibold text-on-surface">Themes</h2>
           <p className="mt-0.5 text-xs text-on-surface-variant">
-            Pick each appearance independently or use a paired theme for both.
+            Click any theme to apply it immediately.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => setShowSave(true)}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container"
+            onClick={onImport}
+            className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-1.5 text-xs font-semibold text-on-surface hover:border-primary hover:bg-surface-container"
           >
-            Save current
+            Import theme
           </button>
           <button
             type="button"
             onClick={onBrowse}
-            className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim"
+            className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim"
           >
             Browse community
           </button>
         </div>
       </div>
 
-      {showSave && (
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
-          <label className="min-w-0 flex-1 text-xs font-medium text-on-surface">
-            Theme name
-            <input
-              autoFocus
-              value={saveName}
-              maxLength={64}
-              onChange={(event) => setSaveName(event.currentTarget.value)}
-              onKeyDown={(event) => { if (event.key === 'Enter') void saveCurrent(); }}
-              className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-1.5 text-sm text-on-surface outline-none focus:border-primary"
-            />
-          </label>
-          <button type="button" onClick={() => void saveCurrent()} className="mt-4 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary">
-            Save
-          </button>
-          <button type="button" onClick={() => setShowSave(false)} className="mt-4 rounded-lg px-3 py-1.5 text-xs text-on-surface hover:bg-surface-container">
-            Cancel
-          </button>
-        </div>
-      )}
-
-      <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
-        <div className="flex items-center gap-3">
-          <div className="flex gap-2">
-            <ModeButton mode="light" active={selection.light === 'sonic'} tokens={sonicLight} label="Sonic" onClick={() => previewSonic('light')} />
-            <ModeButton mode="dark" active={selection.dark === 'sonic'} tokens={sonicDark} label="Sonic" onClick={() => previewSonic('dark')} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-on-surface">Sonic</p>
-            <p className="mt-0.5 text-xs text-on-surface-variant">Murmur’s built-in accessible palette.</p>
-          </div>
-          <button type="button" onClick={() => previewSonic()} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container">
-            Use both
-          </button>
-        </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ThemeCard
+          label="Sonic"
+          source="Built in · Light + Dark"
+          palettes={[
+            { mode: 'light', tokens: sonicLight },
+            { mode: 'dark', tokens: sonicDark },
+          ]}
+          activeModes={[
+            ...(selection.light === 'sonic' ? ['light' as const] : []),
+            ...(selection.dark === 'sonic' ? ['dark' as const] : []),
+          ]}
+          onApply={() => void applyTheme('sonic')}
+        />
       </div>
 
-      {groups.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-outline-variant/40 px-4 py-6 text-center">
-          <p className="text-sm font-medium text-on-surface">No saved themes yet</p>
-          <p className="mt-1 text-xs text-on-surface-variant">Save your current colors, import a file, or browse Open VSX.</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
+      {groups.length > 0 && (
+        <div className="space-y-4">
           {groups.map(([key, group]) => (
-            <section key={key} className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
+            <section key={key} aria-label={group.label}>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <h3 className="truncate text-sm font-semibold text-on-surface">{group.label}</h3>
+                  <h3 className="truncate text-xs font-semibold text-on-surface">{group.label}</h3>
                   {group.entries.length > 1 && (
                     <p className="text-[11px] text-on-surface-variant">{group.entries.length} variants</p>
                   )}
@@ -299,30 +216,47 @@ export function ThemeLibrary({ onBrowse, onPreview }: Props) {
                 <button
                   type="button"
                   onClick={() => setRemoveTarget({ label: group.label, ids: group.entries.map((entry) => entry.id) })}
-                  className="rounded-md px-2 py-1 text-[11px] text-on-surface-variant hover:bg-error/10 hover:text-error"
+                  className="rounded-md px-2 py-1 text-[11px] font-medium text-on-surface-variant hover:bg-error/10 hover:text-error"
                 >
                   Remove
                 </button>
               </div>
-              <div className="space-y-2">
-                {group.entries.map((entry) => (
-                  <ThemeVariant
-                    key={entry.id}
-                    entry={entry}
-                    activeLight={selection.light === entry.id}
-                    activeDark={selection.dark === entry.id}
-                    onPreview={previewInstalled}
-                    onExport={(theme) => void exportEntry(theme)}
-                  />
-                ))}
+              <div className="grid gap-3 sm:grid-cols-2">
+                {group.entries.map((entry) => {
+                  const palettes = entry.modes.map((mode) => ({
+                    mode,
+                    tokens: resolveTheme(entry.theme, mode).tokens,
+                  }));
+                  const activeModes = entry.modes.filter((mode) => selection[mode] === entry.id);
+                  return (
+                    <ThemeCard
+                      key={entry.id}
+                      label={entry.label}
+                      source={entry.source.kind === 'open-vsx'
+                        ? `${entry.source.extensionId} · ${entry.source.license}`
+                        : entry.modes.map((mode) => mode[0].toUpperCase() + mode.slice(1)).join(' + ')}
+                      palettes={palettes}
+                      activeModes={activeModes}
+                      onApply={() => void applyTheme(entry.id)}
+                      onExport={() => void exportEntry(entry)}
+                    />
+                  );
+                })}
               </div>
             </section>
           ))}
         </div>
       )}
 
+      {groups.length === 0 && (
+        <div className="rounded-xl border border-dashed border-on-surface-variant bg-surface-container-lowest px-4 py-6 text-center">
+          <p className="text-sm font-medium text-on-surface">No community themes installed</p>
+          <p className="mt-1 text-xs text-on-surface-variant">Import a file or browse Open VSX to add one.</p>
+        </div>
+      )}
+
       {removeTarget && (
-        <div className="rounded-xl border border-error/30 bg-error/10 p-3">
+        <div className="rounded-xl border border-error bg-error/10 p-3">
           <p className="text-sm font-medium text-on-surface">Remove {removeTarget.label}?</p>
           <p className="mt-1 text-xs text-on-surface">Any active light or dark variant will fall back to Sonic.</p>
           <div className="mt-3 flex gap-2">
@@ -333,11 +267,11 @@ export function ThemeLibrary({ onBrowse, onPreview }: Props) {
                 setRemoveTarget(null);
                 void appearance.library.remove(target.ids).catch((cause) => setError(String(cause)));
               }}
-              className="rounded-lg border border-error/40 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10"
+              className="rounded-lg border border-error bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10"
             >
               Remove
             </button>
-            <button type="button" onClick={() => setRemoveTarget(null)} className="rounded-lg px-3 py-1.5 text-xs text-on-surface hover:bg-surface-container">
+            <button type="button" onClick={() => setRemoveTarget(null)} className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs text-on-surface hover:bg-surface-container">
               Cancel
             </button>
           </div>
@@ -345,10 +279,10 @@ export function ThemeLibrary({ onBrowse, onPreview }: Props) {
       )}
 
       {(error || appearance.library.error) && (
-        <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+        <p role="alert" className="rounded-lg border border-error bg-error/10 px-3 py-2 text-xs text-error">
           {error ?? appearance.library.error}
         </p>
       )}
-    </div>
+    </section>
   );
 }

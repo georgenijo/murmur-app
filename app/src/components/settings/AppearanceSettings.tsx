@@ -1,10 +1,9 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AppearanceMode,
   ThemeAdjustment,
   ThemeConfigV1,
-  ThemeImportPreview,
 } from "../../lib/appearance";
 import { useAppearance } from "../../lib/hooks/useAppearance";
 import { CommunityThemeDialog } from "./CommunityThemeDialog";
@@ -50,31 +49,6 @@ function adjustmentText(
     return `Your selected foreground ${theme.foreground} resolves to ${adjustment.to} in ${adjustment.appearance} mode ${reason}`;
   }
   return `${adjustment.token} resolves to ${adjustment.to} in ${adjustment.appearance} mode ${reason}`;
-}
-
-function OverrideList({
-  label,
-  entries,
-}: {
-  label: string;
-  entries: readonly (readonly [string, string])[];
-}) {
-  if (entries.length === 0) return null;
-  return (
-    <div>
-      <p className="text-xs font-medium text-on-surface">{label} overrides</p>
-      <dl className="mt-1 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 text-xs">
-        {entries.map(([token, value]) => (
-          <div key={token} className="contents">
-            <dt className="truncate font-mono text-on-surface">
-              {token}
-            </dt>
-            <dd className="font-mono text-on-surface">{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  );
 }
 
 function ColorControl({
@@ -170,21 +144,12 @@ export function AppearanceSettings() {
   const [contrastDraft, setContrastDraft] = useState(
     appearance.document.theme.contrast ?? 0,
   );
-  const [importPreview, setImportPreview] = useState<ThemeImportPreview | null>(
-    null,
-  );
   const [localError, setLocalError] = useState<string | null>(null);
   const [communityOpen, setCommunityOpen] = useState(false);
-  const [previewSourceLabel, setPreviewSourceLabel] = useState<string | null>(null);
-  const [previewAlreadySaved, setPreviewAlreadySaved] = useState(false);
   const contrastDraftRef = useRef(contrastDraft);
   const lastCommittedContrastRef = useRef(
     appearance.document.theme.contrast ?? 0,
   );
-  const importButtonRef = useRef<HTMLButtonElement>(null);
-  const importPreviewRef = useRef<HTMLDivElement>(null);
-  const importPreviewTitleId = useId();
-  const importPreviewDescriptionId = useId();
 
   useEffect(() => {
     const contrast = appearance.document.theme.contrast ?? 0;
@@ -192,10 +157,6 @@ export function AppearanceSettings() {
     contrastDraftRef.current = contrast;
     lastCommittedContrastRef.current = contrast;
   }, [appearance.document.theme.contrast]);
-
-  useEffect(() => {
-    if (importPreview) importPreviewRef.current?.focus();
-  }, [importPreview]);
 
   const updateTheme = (patch: Partial<ThemeConfigV1>) => {
     setLocalError(null);
@@ -223,9 +184,13 @@ export function AppearanceSettings() {
       });
       if (typeof path === "string") {
         const preview = await appearance.importFromPath(path);
-        setPreviewSourceLabel(preview.label ?? null);
-        setPreviewAlreadySaved(false);
-        setImportPreview(preview);
+        const entry = await appearance.library.savePreview(
+          preview.label ?? "Imported theme",
+          preview,
+        );
+        await appearance.commitImport(
+          appearance.library.previewSelection(entry.id),
+        );
       }
     } catch (error) {
       setLocalError(String(error));
@@ -247,12 +212,6 @@ export function AppearanceSettings() {
     }
   };
 
-  const previewTheme = importPreview?.theme;
-  const previewAdjustments = importPreview?.adjustments ?? [];
-  const lightOverrides = Object.entries(previewTheme?.light ?? {});
-  const darkOverrides = Object.entries(previewTheme?.dark ?? {});
-  const lightOverrideCount = lightOverrides.length;
-  const darkOverrideCount = darkOverrides.length;
   const selectedAdjustments = appearance.adjustments.filter((adjustment) => {
     if (appearance.document.theme.accent && adjustment.token === "primary") {
       return true;
@@ -274,29 +233,6 @@ export function AppearanceSettings() {
     if (contrast === lastCommittedContrastRef.current) return;
     lastCommittedContrastRef.current = contrast;
     updateTheme({ presetId: "custom", contrast });
-  };
-
-  const dismissImportPreview = () => {
-    setImportPreview(null);
-    setPreviewSourceLabel(null);
-    setPreviewAlreadySaved(false);
-    requestAnimationFrame(() => importButtonRef.current?.focus());
-  };
-
-  const addAndApplyPreview = async () => {
-    if (!importPreview) return;
-    try {
-      setLocalError(null);
-      const entry = await appearance.library.savePreview(
-        previewSourceLabel ?? importPreview.label ?? "Imported theme",
-        importPreview,
-      );
-      const selectionPreview = appearance.library.previewSelection(entry.id);
-      await appearance.commitImport(selectionPreview);
-      dismissImportPreview();
-    } catch (cause) {
-      setLocalError(String(cause));
-    }
   };
 
   return (
@@ -343,7 +279,7 @@ export function AppearanceSettings() {
                 className={`rounded-xl border p-3 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
                   selected
                     ? "border-primary bg-primary/10 text-on-surface"
-                    : "border-outline-variant/30 bg-surface-container-lowest text-on-surface hover:bg-surface-container"
+                    : "border-on-surface-variant bg-surface-container-lowest text-on-surface hover:border-primary hover:bg-surface-container"
                 }`}
               >
                 <span className="block text-sm font-medium">
@@ -364,29 +300,24 @@ export function AppearanceSettings() {
 
       <ThemeLibrary
         onBrowse={() => setCommunityOpen(true)}
-        onPreview={(preview, label) => {
-          setPreviewSourceLabel(label);
-          setPreviewAlreadySaved(true);
-          setImportPreview(preview);
-        }}
+        onImport={() => void importTheme()}
       />
 
-      <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
+      <div className="rounded-xl border border-on-surface-variant bg-surface-container-lowest p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-medium text-on-surface">Custom editor</p>
+            <p className="text-sm font-semibold text-on-surface">Customize current</p>
             <p className="mt-1 text-xs text-on-surface-variant">
               Reset restores Murmur’s exact built-in Sonic palette. Editing
-              detaches the current palette from any installed community source;
-              save it to keep a named copy. Clearing individual color overrides
-              keeps the theme Custom.
+              creates a custom palette from the current theme. Clearing an
+              individual color override keeps the theme Custom.
             </p>
           </div>
           <button
             type="button"
             disabled={appearance.busy}
             onClick={() => runControllerAction(appearance.reset())}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
+            className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-medium text-on-surface hover:border-primary hover:bg-surface-container disabled:opacity-50"
           >
             Reset to Sonic
           </button>
@@ -484,149 +415,22 @@ export function AppearanceSettings() {
         </div>
       )}
 
-      <div className="border-t border-outline-variant/20 pt-4">
-        <p className="text-sm font-medium text-on-surface">Theme file</p>
+      <div className="border-t border-outline-variant pt-4">
+        <p className="text-sm font-medium text-on-surface">Export current theme</p>
         <p className="mt-1 text-xs text-on-surface-variant">
-          Import or export authoritative theme settings. Resolved caches are
-          never trusted on import.
+          Save the active appearance as a portable Murmur theme file.
         </p>
-        <div className="mt-3 flex gap-2">
-          <button
-            ref={importButtonRef}
-            type="button"
-            disabled={appearance.busy}
-            onClick={() => void importTheme()}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
-          >
-            Import Theme
-          </button>
+        <div className="mt-3">
           <button
             type="button"
             disabled={appearance.busy}
             onClick={() => void exportTheme()}
-            className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
+            className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-medium text-on-surface hover:border-primary hover:bg-surface-container disabled:opacity-50"
           >
-            Export Theme
+            Export current
           </button>
         </div>
       </div>
-
-      {importPreview && (
-        <div
-          ref={importPreviewRef}
-          role="dialog"
-          aria-labelledby={importPreviewTitleId}
-          aria-describedby={importPreviewDescriptionId}
-          tabIndex={-1}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              dismissImportPreview();
-            }
-          }}
-          className="rounded-xl border border-primary/30 bg-primary/5 p-3"
-        >
-          <p
-            id={importPreviewTitleId}
-            className="text-sm font-medium text-on-surface"
-          >
-            Import preview
-          </p>
-          <p
-            id={importPreviewDescriptionId}
-            className="mt-1 text-xs text-on-surface"
-          >
-            {previewTheme?.presetId === "custom"
-              ? previewSourceLabel ?? "Custom theme"
-              : "Sonic theme"}
-            {previewAdjustments.length > 0
-              ? ` · ${previewAdjustments.length} accessibility adjustment${previewAdjustments.length === 1 ? "" : "s"}`
-              : ""}
-            {` · ${lightOverrideCount} light token override${lightOverrideCount === 1 ? "" : "s"} · ${darkOverrideCount} dark token override${darkOverrideCount === 1 ? "" : "s"}`}
-          </p>
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-            <dt className="text-on-surface">Mode</dt>
-            <dd className="text-on-surface">{importPreview.mode}</dd>
-            {previewTheme?.accent && (
-              <>
-                <dt className="text-on-surface">Accent</dt>
-                <dd className="font-mono text-on-surface">
-                  {previewTheme.accent}
-                </dd>
-              </>
-            )}
-            {previewTheme?.background && (
-              <>
-                <dt className="text-on-surface">Background</dt>
-                <dd className="font-mono text-on-surface">
-                  {previewTheme.background}
-                </dd>
-              </>
-            )}
-            {previewTheme?.foreground && (
-              <>
-                <dt className="text-on-surface">Foreground</dt>
-                <dd className="font-mono text-on-surface">
-                  {previewTheme.foreground}
-                </dd>
-              </>
-            )}
-            {previewTheme?.contrast !== undefined && (
-              <>
-                <dt className="text-on-surface">Contrast</dt>
-                <dd className="text-on-surface">{previewTheme.contrast}</dd>
-              </>
-            )}
-          </dl>
-          <div className="mt-3 grid gap-3 rounded-lg border border-outline-variant/20 bg-surface-container-lowest p-2.5">
-            <OverrideList label="Light" entries={lightOverrides} />
-            <OverrideList label="Dark" entries={darkOverrides} />
-            {lightOverrides.length === 0 && darkOverrides.length === 0 && (
-              <p className="text-xs text-on-surface">
-                No explicit token overrides.
-              </p>
-            )}
-          </div>
-          {previewAdjustments.length > 0 && (
-            <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-on-surface">
-              {previewAdjustments.map((adjustment, index) => (
-                <li key={index}>
-                  {adjustmentText(adjustment, importPreview.theme)}
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="mt-3 flex gap-2">
-            {!previewAlreadySaved && (
-              <button
-                type="button"
-                onClick={() => void addAndApplyPreview()}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary"
-              >
-                Add &amp; Apply
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() =>
-                void Promise.resolve(appearance.commitImport(importPreview))
-                  .then(dismissImportPreview)
-                  .catch((error) => setLocalError(String(error)))
-              }
-              className={`${previewAlreadySaved ? "bg-primary text-on-primary" : "border border-outline-variant/30 text-on-surface hover:bg-surface-container"} rounded-lg px-3 py-1.5 text-xs font-medium`}
-            >
-              {previewAlreadySaved ? "Apply theme" : "Apply without saving"}
-            </button>
-            <button
-              type="button"
-              onClick={dismissImportPreview}
-              className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
 
       {(localError || appearance.error) && (
         <p

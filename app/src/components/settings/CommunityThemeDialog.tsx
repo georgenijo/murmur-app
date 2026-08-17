@@ -174,9 +174,9 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="community-theme-title"
-        className="flex max-h-[86vh] w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-outline-variant/30 bg-surface shadow-2xl"
+        className="flex max-h-[86vh] w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-on-surface-variant bg-surface shadow-2xl"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-outline-variant/20 px-5 py-4">
+        <div className="flex items-start justify-between gap-4 border-b border-outline-variant px-5 py-4">
           <div>
             <h2 id="community-theme-title" className="text-base font-semibold text-on-surface">
               Community themes
@@ -295,7 +295,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
             </div>
           )}
           {results && results.length === 0 && (
-            <div className="mt-4 flex min-h-40 items-center justify-center rounded-xl border border-dashed border-outline-variant/40 text-center">
+            <div className="mt-4 flex min-h-40 items-center justify-center rounded-xl border border-dashed border-on-surface-variant text-center">
               <div>
                 <p className="text-sm font-medium text-on-surface">No supported themes found</p>
                 <p className="mt-1 text-xs text-on-surface-variant">Try a broader search.</p>
@@ -310,7 +310,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
                 return (
                   <article
                     key={extension.id}
-                    className="flex min-w-0 flex-col gap-2 rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3"
+                    className="flex min-w-0 flex-col gap-2 rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest p-3 shadow-sm"
                   >
                     <div className="flex items-start gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-on-surface" aria-hidden>
@@ -343,7 +343,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
                         type="button"
                         disabled={installingId !== null}
                         onClick={() => void install(extension, false)}
-                        className="rounded-lg border border-outline-variant/40 px-2.5 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50"
+                        className="rounded-lg border border-on-surface-variant px-2.5 py-1.5 text-xs font-medium text-on-surface hover:border-primary hover:bg-surface-container disabled:opacity-50"
                       >
                         {installing ? (installed ? 'Updating…' : 'Adding…') : installed ? 'Update' : 'Add'}
                       </button>

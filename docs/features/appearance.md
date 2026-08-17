@@ -181,7 +181,10 @@ exports preserve the existing regular file's permissions. A failed write or
 publish removes the temporary file and preserves an existing destination.
 Paths and contents are not logged.
 
-The frontend owns schema validation, preview, adjustment reporting, and commit.
+The frontend owns schema validation, adjustment reporting, library persistence,
+and commit. A successful local file selection is installed and applied as one
+operation; there is no raw token-dump confirmation step. Invalid or unsupported
+files still fail before either the library or active appearance changes.
 Murmur theme-file v1 remains compatible for active appearance exchange. Named
 library-theme v2 files carry only name, supported modes, and authoritative
 theme configuration—never library IDs or remote provenance. VS Code imports
@@ -192,6 +195,23 @@ runs through the normal Murmur accessibility resolver. Imported revisions and
 resolved caches are ignored and regenerated before storage. Malformed,
 unsupported, or oversized imports fail before changing the live appearance.
 Import and export never read or write the clipboard.
+
+## Appearance interaction
+
+Appearance presents System, Light, and Dark as explicit mode cards. The theme
+library uses large palette cards rather than icon-only controls: clicking the
+main body of a theme card immediately applies every light/dark variant carried
+by that entry, and the selected card has a visible Active state. Export and
+collection removal remain separate secondary actions so they cannot be
+triggered by applying a theme.
+
+The top-level actions are **Import theme** and **Browse community**. There is no
+ambiguous “Save current” action; manual color edits are already durable in the
+active appearance document, and **Export current** creates a portable file.
+Meaningful control and card boundaries use the readable foreground-variant
+token, while `outline-variant` is reserved for non-interactive dividers. This
+keeps controls discernible even when an imported editor theme supplies a very
+subtle outline color.
 
 ## Open VSX community themes
 
