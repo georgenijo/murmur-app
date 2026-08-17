@@ -125,21 +125,18 @@ describe("AppearanceSettings", () => {
     expect(mocks.controller!.setMode).toHaveBeenCalledWith("light");
     expect(document.activeElement).toBe(radios[1]);
 
+    const createTheme = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create theme"),
+    )!;
+    await act(async () => createTheme.click());
     const reset = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Reset to Sonic",
     )!;
     await act(async () => reset.click());
     expect(mocks.controller!.reset).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain(
-      "overlay and transform-review glass always stay dark",
-    );
-    expect(container.textContent).toContain(
-      "Reset restores Murmur’s exact built-in Sonic palette",
-    );
-    expect(container.textContent).toContain(
-      "Clearing an individual color override keeps the theme Custom",
-    );
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Start from the colors currently on screen");
     expect(container.textContent).not.toContain("Save current");
+    expect(container.textContent).not.toContain("Choose dark style");
   });
 
   it("consumes mode and reset rejections while preserving hook error UI", async () => {
@@ -159,6 +156,10 @@ describe("AppearanceSettings", () => {
     vi.mocked(mocks.controller!.reset).mockRejectedValueOnce(
       new Error("reset failed"),
     );
+    const createTheme = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create theme"),
+    )!;
+    await act(async () => createTheme.click());
     const reset = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Reset to Sonic",
     )!;
@@ -177,6 +178,10 @@ describe("AppearanceSettings", () => {
   });
 
   it("validates typed hex and coalesces pointer and keyboard contrast commits", async () => {
+    const createTheme = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create theme"),
+    )!;
+    await act(async () => createTheme.click());
     const accent = container.querySelector(
       "#appearance-accent",
     ) as HTMLInputElement;
@@ -276,9 +281,13 @@ describe("AppearanceSettings", () => {
     });
 
     const importButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Import theme"),
+      (button) => button.textContent?.trim().includes("Import theme"),
     )!;
     await act(async () => importButton.click());
+    const importFileButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Import file",
+    )!;
+    await act(async () => importFileButton.click());
     expect(mocks.controller!.importFromPath).toHaveBeenCalledWith(
       "/tmp/in.json",
     );
@@ -293,8 +302,12 @@ describe("AppearanceSettings", () => {
     expect(container.textContent).not.toContain("Import preview");
     expect(container.textContent).not.toContain("token override");
 
+    const createTheme = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create theme"),
+    )!;
+    await act(async () => createTheme.click());
     const exportButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Export current",
+      (button) => button.textContent === "Export",
     )!;
     await act(async () => exportButton.click());
     expect(mocks.controller!.exportToPath).toHaveBeenCalledWith(
@@ -322,7 +335,7 @@ describe("AppearanceSettings", () => {
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
   });
 
-  it("collapses imported collections into one card with one current active state", async () => {
+  it("collapses imported collections into one fixed-height card with direct radial variants", async () => {
     const collection = { id: "open-vsx:h1dr0n.claude-theme", label: "Claude Theme" };
     const entry = (
       id: string,
@@ -361,8 +374,12 @@ describe("AppearanceSettings", () => {
 
     expect(container.querySelectorAll('[data-theme-collection="Claude Theme"]')).toHaveLength(1);
     expect(container.querySelectorAll('button[aria-label="Use Claude Theme theme"]')).toHaveLength(1);
-    expect(container.textContent).toContain("✓ Active theme · dark");
+    const claudeCard = container.querySelector('[data-theme-collection="Claude Theme"]')!;
+    expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(claudeCard.querySelector('button[aria-label*="light variant"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).not.toContain("Active theme");
     expect(container.textContent).not.toContain("Partly active");
+    expect(container.textContent).not.toContain("Choose dark style");
     expect(container.textContent).not.toContain("Claude Midnight (OLED Black)");
 
     const card = container.querySelector(
@@ -407,6 +424,11 @@ describe("AppearanceSettings", () => {
       },
     ];
     await act(async () => root.render(<AppearanceSettings />));
+
+    const createTheme = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create theme"),
+    )!;
+    await act(async () => createTheme.click());
 
     const notice = container.querySelector('[role="status"]')!;
     expect(notice.textContent).toContain(

@@ -1,5 +1,5 @@
 import { save } from '@tauri-apps/plugin-dialog';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   appearanceSelection,
   previewThemeLibraryPairSelection,
@@ -17,28 +17,69 @@ interface Props {
   onCustomize: () => void;
 }
 
-function SunIcon() {
+function SunIcon({ className = 'h-3 w-3' }: { className?: string }) {
   return (
-    <svg aria-hidden="true" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+    <svg aria-hidden="true" className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
     </svg>
   );
 }
 
-function MoonIcon() {
+function MoonIcon({ className = 'h-3 w-3' }: { className?: string }) {
   return (
-    <svg aria-hidden="true" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+    <svg aria-hidden="true" className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
       <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z" />
     </svg>
   );
 }
 
-function ThemeOrb({ tokens, mode }: { tokens: MurmurTokens; mode: ResolvedAppearance }) {
+function DownloadIcon() {
+  return (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v3h16v-3" />
+    </svg>
+  );
+}
+
+function UploadIcon() {
+  return (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M12 21V9m0 0 4 4m-4-4-4 4M4 7V4h16v3" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7m4 4v6m4-6v6" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Zm10-12 3 3" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+      <rect x="8" y="8" width="11" height="11" rx="2" />
+      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+    </svg>
+  );
+}
+
+function ThemeOrb({ tokens, mode, small = false }: { tokens: MurmurTokens; mode: ResolvedAppearance; small?: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className="block h-14 w-14 shrink-0 rounded-full border-2 border-surface-container-lowest"
+      className={`${small ? 'h-14 w-14 scale-[0.43]' : 'h-14 w-14'} block shrink-0 rounded-full border-2 border-surface-container-lowest`}
       style={{
         backgroundColor: tokens.background,
         backgroundImage: [
@@ -67,213 +108,241 @@ function shortVariantLabels(entries: readonly ThemeLibraryEntryV1[]) {
   ]));
 }
 
-function ModeChoice({
+interface ModeOption {
+  entry: ThemeLibraryEntryV1;
+  tokens: MurmurTokens;
+}
+
+function ModePreview({
   mode,
-  entry,
-  label,
-  optionCount,
+  options,
   selected,
+  active,
+  labels,
+  open,
+  offset,
+  showLabel,
   onOpen,
+  onChoose,
 }: {
   mode: ResolvedAppearance;
-  entry: ThemeLibraryEntryV1 | null;
-  label: string;
-  optionCount: number;
-  selected: boolean;
+  options: readonly ModeOption[];
+  selected: ModeOption;
+  active: boolean;
+  labels: ReadonlyMap<string, string>;
+  open: boolean;
+  offset: number;
+  showLabel: boolean;
   onOpen: () => void;
+  onChoose: (entry: ThemeLibraryEntryV1) => void;
 }) {
-  const tokens = entry ? resolveTheme(entry.theme, mode).tokens : resolveTheme({ version: 1, presetId: 'sonic' }, mode).tokens;
   const modeLabel = mode === 'light' ? 'Light' : 'Dark';
+  const selectedLabel = labels.get(selected.entry.id) ?? selected.entry.label;
   return (
-    <button
-      type="button"
-      aria-label={`Choose ${modeLabel.toLowerCase()} variant, currently ${label}`}
-      aria-pressed={selected}
-      disabled={entry === null}
-      onClick={onOpen}
-      className={`relative flex min-w-0 flex-1 flex-col items-center rounded-xl px-2 py-1.5 outline-none focus-visible:ring-2 focus-visible:ring-primary ${entry ? 'pointer-events-auto cursor-pointer hover:bg-surface-container' : 'pointer-events-none'}`}
-    >
-      <span className={`relative rounded-full p-1 ${selected ? 'ring-2 ring-primary' : ''}`}>
-        <ThemeOrb tokens={tokens} mode={mode} />
-        <span className="absolute bottom-0 right-0 flex h-5 w-5 items-center justify-center rounded-full border border-on-surface-variant bg-surface-container-lowest text-on-surface shadow-sm">
-          {mode === 'light' ? <SunIcon /> : <MoonIcon />}
-        </span>
-      </span>
-      <span className="mt-1 flex max-w-full items-center gap-1 text-[11px] font-semibold text-on-surface">
-        <span className="truncate">{modeLabel}: {entry ? label : 'Sonic fallback'}</span>
-        {optionCount > 1 && (
-          <span className="shrink-0 rounded-full bg-surface-container-high px-1.5 py-0.5 text-[9px] text-on-surface-variant">
-            +{optionCount - 1}
-          </span>
+    <>
+      <button
+        type="button"
+        aria-label={options.length > 1
+          ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`
+          : `Use ${mode} variant, currently ${selectedLabel}`}
+        aria-pressed={active}
+        title={options.length > 1 ? `${modeLabel}: ${selectedLabel} · hover for variants` : `${modeLabel}: ${selectedLabel}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onChoose(selected.entry);
+        }}
+        onFocus={onOpen}
+        onMouseEnter={onOpen}
+        className="absolute left-1/2 top-2 z-20 flex h-14 w-14 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
+        style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
+      >
+        <ThemeOrb tokens={selected.tokens} mode={mode} />
+        {active && (
+          <>
+            <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-primary" />
+            <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-on-surface-variant bg-background text-on-surface shadow-sm">
+              {mode === 'light' ? <SunIcon /> : <MoonIcon />}
+            </span>
+          </>
         )}
-      </span>
-    </button>
+      </button>
+      {showLabel && (
+        <span
+          className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-24 -translate-x-1/2 items-center gap-1 text-[11px] font-medium text-on-surface"
+          style={{ marginLeft: offset }}
+        >
+          <span className="truncate">{selectedLabel}</span>
+          {options.length > 1 && (
+            <span className="shrink-0 rounded-full bg-surface-container-high px-1 text-[9px] text-on-surface-variant">
+              +{options.length - 1}
+            </span>
+          )}
+        </span>
+      )}
+      {options.length > 1 && options.map((option, index) => {
+        const progress = index / (options.length - 1) - 0.5;
+        const childOffsetX = offset + progress * 68;
+        const childOffsetY = Math.abs(progress) * 10;
+        const optionActive = option.entry.id === selected.entry.id;
+        const optionLabel = labels.get(option.entry.id) ?? option.entry.label;
+        return (
+          <button
+            type="button"
+            key={`${mode}-${option.entry.id}`}
+            aria-label={`Use ${optionLabel} for ${mode} mode${optionActive ? ', currently selected' : ''}`}
+            aria-pressed={optionActive}
+            title={`Use ${optionLabel} for ${mode} mode`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onChoose(option.entry);
+            }}
+            onFocus={onOpen}
+            onMouseEnter={onOpen}
+            className={`absolute left-1/2 top-1 z-30 flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-background shadow-sm outline-none transition-[transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-primary ${optionActive ? 'ring-2 ring-primary' : 'ring-1 ring-on-surface-variant'}`}
+            style={{
+              opacity: open ? 1 : 0,
+              pointerEvents: open ? 'auto' : 'none',
+              transform: `translate(calc(-50% + ${open ? childOffsetX : offset}px), ${open ? childOffsetY : 28}px) scale(${open ? 1 : 0.55})`,
+              transitionDelay: open ? `${index * 35}ms` : '0ms',
+            }}
+          >
+            <ThemeOrb tokens={option.tokens} mode={mode} small />
+          </button>
+        );
+      })}
+    </>
   );
 }
 
-function VariantPicker({
-  mode,
-  entries,
-  selectedId,
-  labels,
-  onChoose,
-  onClose,
-}: {
-  mode: ResolvedAppearance;
-  entries: readonly ThemeLibraryEntryV1[];
-  selectedId: string;
-  labels: ReadonlyMap<string, string>;
-  onChoose: (entry: ThemeLibraryEntryV1) => void;
-  onClose: () => void;
+function ActionButton({ label, onClick, children, danger = false }: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  danger?: boolean;
 }) {
   return (
-    <div className="pointer-events-auto relative z-20 border-t border-outline-variant bg-surface-container-low px-3 pb-3 pt-2">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold text-on-surface">Choose {mode} style</p>
-        <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface">
-          Done
-        </button>
-      </div>
-      <div className="grid gap-1.5 sm:grid-cols-2">
-        {entries.map((entry) => {
-          const active = entry.id === selectedId;
-          return (
-            <button
-              type="button"
-              key={entry.id}
-              aria-pressed={active}
-              onClick={() => onChoose(entry)}
-              className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-primary ${active ? 'border-primary bg-primary/10 text-on-surface' : 'border-on-surface-variant/70 bg-surface-container-lowest text-on-surface hover:border-primary'}`}
-            >
-              <span className="shrink-0">{active ? '✓' : '○'}</span>
-              <span className="truncate">{labels.get(entry.id) ?? entry.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className={`grid h-7 w-7 place-items-center rounded-md outline-none hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary ${danger ? 'text-on-surface-variant hover:text-error' : 'text-on-surface-variant hover:text-on-surface'}`}
+    >
+      {children}
+    </button>
   );
 }
 
 function CollectionCard({
   label,
-  source,
   entries,
   selection,
-  currentAppearance,
   onApplyPair,
   onApplyMode,
+  onCustomize,
+  customizeAsCopy = false,
   onExport,
   onRemove,
 }: {
   label: string;
-  source: string;
   entries: readonly ThemeLibraryEntryV1[];
   selection: { light: string; dark: string };
-  currentAppearance: ResolvedAppearance;
   onApplyPair: (light: ThemeLibraryEntryV1 | null, dark: ThemeLibraryEntryV1 | null) => void;
   onApplyMode: (entry: ThemeLibraryEntryV1, mode: ResolvedAppearance) => void;
+  onCustomize?: () => void;
+  customizeAsCopy?: boolean;
   onExport?: (entry: ThemeLibraryEntryV1) => void;
   onRemove?: () => void;
 }) {
-  const [picker, setPicker] = useState<ResolvedAppearance | null>(null);
-  const ids = new Set(entries.map((entry) => entry.id));
-  const forMode = (mode: ResolvedAppearance) => entries.filter((entry) => entry.modes.includes(mode));
-  const lightEntries = forMode('light');
-  const darkEntries = forMode('dark');
-  const light = lightEntries.find((entry) => entry.id === selection.light) ?? lightEntries[0] ?? null;
-  const dark = darkEntries.find((entry) => entry.id === selection.dark) ?? darkEntries[0] ?? null;
+  const [radialOpen, setRadialOpen] = useState<ResolvedAppearance | null>(null);
   const labels = shortVariantLabels(entries);
-  const activeNow = ids.has(selection[currentAppearance]);
-  const lightSelected = light !== null && selection.light === light.id;
-  const darkSelected = dark !== null && selection.dark === dark.id;
-  const exportEntry = currentAppearance === 'light' ? light ?? dark : dark ?? light;
+  const groups = (['light', 'dark'] as const).flatMap((mode) => {
+    const options = entries
+      .filter((entry) => entry.modes.includes(mode))
+      .map((entry) => ({ entry, tokens: resolveTheme(entry.theme, mode).tokens }));
+    if (options.length === 0) return [];
+    const selected = options.find((option) => option.entry.id === selection[mode]) ?? options[0]!;
+    return [{ mode, options, selected }];
+  });
+  const light = groups.find((group) => group.mode === 'light')?.selected.entry ?? null;
+  const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
+  const showVariantLabels = new Set(entries.map((entry) => entry.id)).size > 1;
+  const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
+    ?? groups[0]?.selected.entry;
+  const applyPair = () => onApplyPair(light, dark);
+  const handleCardClick = (event: ReactMouseEvent<HTMLElement>) => {
+    if (event.defaultPrevented) return;
+    applyPair();
+  };
 
   return (
     <article
       data-theme-collection={label}
-      className={`relative overflow-hidden rounded-xl border-2 bg-surface-container-lowest shadow-sm transition-colors ${activeNow ? 'border-primary' : 'border-on-surface-variant/70 hover:border-primary'}`}
+      onClick={handleCardClick}
+      className="cursor-pointer overflow-hidden rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest transition-colors hover:bg-surface-container-low"
     >
-      <button
-        type="button"
-        aria-label={`Use ${label} theme`}
-        aria-pressed={activeNow}
-        onClick={() => onApplyPair(light, dark)}
-        className="absolute inset-0 z-0 cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-      />
-      <div className="pointer-events-none relative z-10 px-3 pb-3 pt-2.5">
-        <div className="flex min-h-24 items-start justify-center gap-3">
-          <ModeChoice
-            mode="light"
-            entry={light}
-            label={light ? labels.get(light.id) ?? light.label : 'Sonic'}
-            optionCount={lightEntries.length}
-            selected={lightSelected}
-            onOpen={() => setPicker((open) => open === 'light' ? null : 'light')}
-          />
-          <ModeChoice
-            mode="dark"
-            entry={dark}
-            label={dark ? labels.get(dark.id) ?? dark.label : 'Sonic'}
-            optionCount={darkEntries.length}
-            selected={darkSelected}
-            onOpen={() => setPicker((open) => open === 'dark' ? null : 'dark')}
-          />
-        </div>
-        <div className="mt-1 flex min-w-0 items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-bold text-on-surface">{label}</h3>
-            <p className="mt-0.5 truncate text-[11px] text-on-surface-variant">{source}</p>
-          </div>
-          <span className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${activeNow ? 'bg-primary text-on-primary' : 'border border-on-surface-variant bg-surface-container-low text-on-surface'}`}>
-            {activeNow ? `✓ Active theme · ${currentAppearance}` : 'Use theme'}
-          </span>
-        </div>
+      <div
+        role="group"
+        aria-label={`${label} light and dark styles`}
+        className="relative h-20"
+        onMouseLeave={() => setRadialOpen(null)}
+        onBlurCapture={(event) => {
+          const next = event.relatedTarget;
+          if (!(next instanceof Node) || !event.currentTarget.contains(next)) setRadialOpen(null);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') setRadialOpen(null);
+        }}
+      >
+        {groups.map((group, index) => {
+          const offset = groups.length === 1 ? 0 : index === 0 ? -52 : 52;
+          return (
+            <ModePreview
+              key={group.mode}
+              mode={group.mode}
+              options={group.options}
+              selected={group.selected}
+              active={selection[group.mode] === group.selected.entry.id}
+              labels={labels}
+              open={radialOpen === group.mode}
+              offset={offset}
+              showLabel={showVariantLabels}
+              onOpen={() => setRadialOpen(group.mode)}
+              onChoose={(entry) => {
+                onApplyMode(entry, group.mode);
+                setRadialOpen(null);
+              }}
+            />
+          );
+        })}
       </div>
-      {(onExport || onRemove) && (
-        <div className="pointer-events-none relative z-10 flex min-h-10 items-center justify-end gap-1 border-t border-outline-variant px-2">
-          {onExport && exportEntry && (
-            <button
-              type="button"
-              aria-label={`Export ${exportEntry.label}`}
-              onClick={() => onExport(exportEntry)}
-              className="pointer-events-auto rounded-lg border border-on-surface-variant px-2.5 py-1.5 text-xs font-semibold text-on-surface hover:border-primary hover:bg-surface-container"
-            >
-              Export
-            </button>
-          )}
-          {onRemove && (
-            <button
-              type="button"
-              aria-label={`Remove ${label}`}
-              onClick={onRemove}
-              className="pointer-events-auto rounded-lg px-2.5 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-error/10 hover:text-error"
-            >
-              Remove
-            </button>
-          )}
-        </div>
-      )}
-      {picker === 'light' && lightEntries.length > 0 && (
-        <VariantPicker
-          mode="light"
-          entries={lightEntries}
-          selectedId={selection.light}
-          labels={labels}
-          onChoose={(entry) => { onApplyMode(entry, 'light'); setPicker(null); }}
-          onClose={() => setPicker(null)}
-        />
-      )}
-      {picker === 'dark' && darkEntries.length > 0 && (
-        <VariantPicker
-          mode="dark"
-          entries={darkEntries}
-          selectedId={selection.dark}
-          labels={labels}
-          onChoose={(entry) => { onApplyMode(entry, 'dark'); setPicker(null); }}
-          onClose={() => setPicker(null)}
-        />
-      )}
+      <div className="flex min-h-11 items-center gap-2 px-3 pb-3 pt-2">
+        <button
+          type="button"
+          aria-label={`Use ${label} theme`}
+          onClick={(event) => {
+            event.stopPropagation();
+            applyPair();
+          }}
+          className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          {label}
+        </button>
+        {(onCustomize || onExport || onRemove) && (
+          <div className="flex shrink-0 items-center gap-0.5">
+            {onCustomize && (
+              <ActionButton label={customizeAsCopy ? `Create theme from ${label}` : `Edit ${label}`} onClick={onCustomize}>
+                {customizeAsCopy ? <CopyIcon /> : <EditIcon />}
+              </ActionButton>
+            )}
+            {onExport && exportEntry && <ActionButton label={`Export ${label}`} onClick={() => onExport(exportEntry)}><UploadIcon /></ActionButton>}
+            {onRemove && <ActionButton label={`Remove ${label}`} onClick={onRemove} danger><TrashIcon /></ActionButton>}
+          </div>
+        )}
+      </div>
     </article>
   );
 }
@@ -282,6 +351,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
   const appearance = useAppearance();
   const selection = appearanceSelection(appearance.document);
   const [removeTarget, setRemoveTarget] = useState<{ label: string; ids: string[] } | null>(null);
+  const [importMenuOpen, setImportMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const groups = useMemo(() => {
@@ -338,14 +408,14 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
     }
   };
 
-  const sonicEntry = (mode: ResolvedAppearance): ThemeLibraryEntryV1 => ({
+  const sonicEntries: ThemeLibraryEntryV1[] = (['light', 'dark'] as const).map((mode) => ({
     version: 1,
     id: 'sonic',
     label: 'Sonic',
     modes: [mode],
     theme: { version: 1, presetId: 'sonic' },
     source: { kind: 'local' },
-  });
+  }));
   const customEntry: ThemeLibraryEntryV1 = {
     version: 1,
     id: 'custom',
@@ -365,31 +435,50 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
 
   return (
     <section aria-labelledby="themes-heading" className="space-y-3">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 id="themes-heading" className="text-sm font-semibold text-on-surface">Themes</h2>
-          <p className="mt-0.5 text-xs text-on-surface-variant">One card per theme. Click anywhere on a card to use its light and dark styles.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={onCustomize} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-1.5 text-xs font-semibold text-on-surface hover:border-primary hover:bg-surface-container">
-            + Create theme
+      <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 pt-1">
+        <h2 id="themes-heading" className="text-sm font-medium text-on-surface">Themes</h2>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={onCustomize} className="inline-flex h-7 items-center gap-1 rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest px-2.5 text-xs font-medium text-on-surface hover:bg-surface-container">
+            <span aria-hidden="true">＋</span> Create theme
           </button>
-          <button type="button" onClick={onImport} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-1.5 text-xs font-semibold text-on-surface hover:border-primary hover:bg-surface-container">
-            ↓ Import theme
-          </button>
-          <button type="button" onClick={onBrowse} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim">
-            Browse community
-          </button>
+          <div
+            className="relative"
+            onBlurCapture={(event) => {
+              const next = event.relatedTarget;
+              if (!(next instanceof Node) || !event.currentTarget.contains(next)) setImportMenuOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={importMenuOpen}
+              onClick={() => setImportMenuOpen((open) => !open)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setImportMenuOpen(false);
+              }}
+              className="inline-flex h-7 items-center gap-1 rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest px-2.5 text-xs font-medium text-on-surface hover:bg-surface-container"
+            >
+              <DownloadIcon /> Import theme
+            </button>
+            {importMenuOpen && (
+              <div role="menu" className="absolute right-0 top-9 z-40 w-44 overflow-hidden rounded-lg border border-on-surface-variant bg-surface-container-lowest p-1 shadow-lg">
+                <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onImport(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-on-surface hover:bg-surface-container">
+                  <DownloadIcon /> Import file
+                </button>
+                <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onBrowse(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-on-surface hover:bg-surface-container">
+                  <span aria-hidden="true" className="text-sm">⌕</span> Browse Open VSX
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 17rem), 1fr))' }}>
         <CollectionCard
           label="Sonic"
-          source="Built into Murmur"
-          entries={[sonicEntry('light'), sonicEntry('dark')]}
+          entries={sonicEntries}
           selection={selection}
-          currentAppearance={appearance.resolvedAppearance}
           onApplyPair={() => {
             try { void commit(appearance.library.previewSelection('sonic')); }
             catch (cause) { setError(String(cause)); }
@@ -398,65 +487,42 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
             try { void commit(appearance.library.previewSelection('sonic', mode)); }
             catch (cause) { setError(String(cause)); }
           }}
+          onCustomize={onCustomize}
+          customizeAsCopy
         />
         {(selection.light === 'custom' || selection.dark === 'custom') && (
           <CollectionCard
             label="Custom"
-            source="Your current color edits"
             entries={[customEntry]}
             selection={selection}
-            currentAppearance={appearance.resolvedAppearance}
             onApplyPair={applyCustom}
             onApplyMode={applyCustom}
+            onCustomize={onCustomize}
           />
         )}
-        {groups.map(([key, group]) => {
-          const first = group.entries[0]!;
-          const source = first.source.kind === 'open-vsx'
-            ? `${first.source.extensionId} · ${first.source.license}`
-            : 'Saved on this Mac';
-          return (
-            <CollectionCard
-              key={key}
-              label={group.label}
-              source={source}
-              entries={group.entries}
-              selection={selection}
-              currentAppearance={appearance.resolvedAppearance}
-              onApplyPair={applyPair}
-              onApplyMode={applyMode}
-              onExport={(entry) => void exportEntry(entry)}
-              onRemove={() => setRemoveTarget({ label: group.label, ids: group.entries.map((entry) => entry.id) })}
-            />
-          );
-        })}
+        {groups.map(([key, group]) => (
+          <CollectionCard
+            key={key}
+            label={group.label}
+            entries={group.entries}
+            selection={selection}
+            onApplyPair={applyPair}
+            onApplyMode={applyMode}
+            onExport={(entry) => void exportEntry(entry)}
+            onRemove={() => setRemoveTarget({ label: group.label, ids: group.entries.map((entry) => entry.id) })}
+          />
+        ))}
       </div>
 
-      {groups.length === 0 && (
-        <p className="rounded-xl border border-dashed border-on-surface-variant bg-surface-container-lowest px-4 py-5 text-center text-xs text-on-surface-variant">
-          Import a file or browse Open VSX to add community themes.
-        </p>
-      )}
-
       {removeTarget && (
-        <div className="rounded-xl border border-error bg-error/10 p-3">
-          <p className="text-sm font-semibold text-on-surface">Remove {removeTarget.label}?</p>
-          <p className="mt-1 text-xs text-on-surface">Every imported variant in this collection will be removed. Any affected appearance falls back to Sonic.</p>
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const target = removeTarget;
-                setRemoveTarget(null);
-                void appearance.library.remove(target.ids).catch((cause) => setError(String(cause)));
-              }}
-              className="rounded-lg border border-error bg-surface-container-lowest px-3 py-1.5 text-xs font-semibold text-error hover:bg-error/10"
-            >
-              Remove collection
-            </button>
-            <button type="button" onClick={() => setRemoveTarget(null)} className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container">
-              Cancel
-            </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-5 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveTarget(null); }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="remove-theme-title" className="w-full max-w-sm rounded-2xl border border-on-surface-variant bg-surface p-5 shadow-2xl">
+            <h2 id="remove-theme-title" className="text-base font-semibold text-on-surface">Remove {removeTarget.label}?</h2>
+            <p className="mt-1 text-xs text-on-surface-variant">Every imported variant in this collection will be removed. You can import it again later.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setRemoveTarget(null)} className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container">Cancel</button>
+              <button type="button" onClick={() => { const target = removeTarget; setRemoveTarget(null); void appearance.library.remove(target.ids).catch((cause) => setError(String(cause))); }} className="rounded-lg border border-error bg-error/10 px-3 py-1.5 text-xs font-medium text-error">Remove</button>
+            </div>
           </div>
         </div>
       )}

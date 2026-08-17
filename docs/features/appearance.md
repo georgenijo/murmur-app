@@ -198,22 +198,23 @@ Import and export never read or write the clipboard.
 
 ## Appearance interaction
 
-Appearance presents System, Light, and Dark as explicit wireframe cards. The
-theme library follows T3 Code's collection model: one imported extension is one
-card, not one card per source variant. Each card shows its effective light and
-dark style selectors; variant lists open only from those clearly labelled
-selectors. The only prominent Active state belongs to the card currently
-rendered by the resolved appearance, so dark mode never presents a second
-light-only card as simultaneously active.
+Appearance presents System, Light, and Dark as compact wireframe cards. The
+page is flat rather than wrapped in an additional settings container. The theme
+library follows T3 Code's collection model: one imported extension is one
+fixed-height card, not one card per source variant. Each card shows light and
+dark preview circles. The ring and sun/moon badge on each circle identify the
+effective owner of that appearance without a second Active badge.
 
-Clicking any non-action pixel in a theme card applies its light/dark pair in one
-commit. A full-card button sits behind the presentation layer, including the
-footer, so there are no visual card regions that silently do nothing. Export,
-remove, and light/dark variant selection are visibly bounded controls layered
-above that hit target and stop propagation deliberately.
+Clicking a card applies its default light/dark pair in one commit. Clicking a
+preview circle applies that appearance directly. Collections with multiple
+source variants reveal small radial choices on hover or keyboard focus; they
+never insert an expanding selector panel into the page. Export and removal are
+compact icon actions in the title row and stop card-click propagation.
 
-The top-level actions are **Import theme** and **Browse community**. There is no
-ambiguous “Save current” action; manual color edits are already durable in the
+The top-level actions are **Create theme** and **Import theme**. Import opens a
+compact choice between a local file and Open VSX discovery. The color editor is
+modal, so manual controls do not lengthen the normal Appearance page. There is
+no ambiguous “Save current” action; manual color edits are already durable in the
 active appearance document, and **Export current** creates a portable file.
 Meaningful control and card boundaries use the readable foreground-variant
 token, while `outline-variant` is reserved for non-interactive dividers. This
