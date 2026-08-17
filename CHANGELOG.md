@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-17
+
+### Added
+
+- Voice Query can now automatically copy completed answers through a durable,
+  default-on preference while preserving exact-pass ownership and manual-copy
+  behavior when disabled (#572).
+- Performance Lab now includes a five-cycle microphone startup benchmark with
+  per-backend timing distributions, fallback evidence, cancellation, and
+  privacy-safe JSON export (#449).
+- Fleet diagnostics now evaluate weekly dictation reliability SLOs from
+  content-free startup, recovery, terminal, and presentation evidence (#537).
+- Shipped diagnostic history is now indexed in a durable SQLite/WAL/FTS5 store
+  with protected search, filters, pagination, deduplication, reconciliation,
+  backup, and recovery controls (#434).
+
+### Changed
+
+- Settings, microphone preview, Performance Lab, and corpus recording now
+  share one Rust-owned microphone inventory that refreshes when device topology
+  or the system default input changes (#534).
+- Automatic paste now verifies the immutable application process and launch
+  instance captured at recording acceptance, while preserving clipboard-first
+  recovery when the target can no longer be proven safe (#574).
+
+### Fixed
+
+- Every confirmed clipboard-only dictation now shows the accessible Command-V
+  cue, including delayed and reordered delivery outcomes (#571).
+- Performance diagnostics store failures now expose privacy-safe health and
+  bounded recovery states without interrupting ordinary dictation (#536).
+- Temporarily unavailable pinned microphones are re-resolved through bounded
+  retries without silently substituting the system default, and the overlay
+  gives a clear microphone-unavailable status (#542).
+
 ## [0.34.0] - 2026-08-14
 
 ### Added
