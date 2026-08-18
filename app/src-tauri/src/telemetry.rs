@@ -622,6 +622,9 @@ fn is_safe_delivery_target_verification_field(key: &str, value: &serde_json::Val
                     | "stale_owner"
             )
         }),
+        "anchor_code" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "stop" | "start")),
         "source_code" => value
             .as_str()
             .is_some_and(|value| matches!(value, "native" | "none")),
@@ -644,9 +647,10 @@ fn is_safe_delivery_target_verification_field(key: &str, value: &serde_json::Val
 fn valid_delivery_target_verification_shape(
     data: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
-    const REQUIRED_FIELDS: [&str; 14] = [
+    const REQUIRED_FIELDS: [&str; 15] = [
         "event_code",
         "recording_id",
+        "anchor_code",
         "outcome_code",
         "source_code",
         "retry_count",
@@ -2415,6 +2419,7 @@ mod tests {
             let mut data = serde_json::json!({
                 "event_code": "pipeline.delivery_target_verified",
                 "recording_id": 574,
+                "anchor_code": "stop",
                 "outcome_code": "different_process",
                 "source_code": "native",
                 "retry_count": 2,
@@ -2442,6 +2447,7 @@ mod tests {
 
             assert_eq!(data["event_code"], "pipeline.delivery_target_verified");
             assert_eq!(data["recording_id"], 574);
+            assert_eq!(data["anchor_code"], "stop");
             assert_eq!(data["outcome_code"], "different_process");
             assert_eq!(data["source_code"], "native");
             assert_eq!(data["retry_count"], 2);
@@ -2454,7 +2460,7 @@ mod tests {
             assert_eq!(data["space_changed"], false);
             assert_eq!(data["current_is_self"], false);
             assert_eq!(data["ownership_current"], true);
-            assert_eq!(data.as_object().unwrap().len(), 14);
+            assert_eq!(data.as_object().unwrap().len(), 15);
 
             let encoded = serde_json::to_string(&data).unwrap();
             for sentinel in [
@@ -2494,6 +2500,7 @@ mod tests {
         let base = serde_json::json!({
             "event_code": "pipeline.delivery_target_verified",
             "recording_id": 1,
+            "anchor_code": "stop",
             "outcome_code": "verified",
             "source_code": "native",
             "retry_count": 0,
@@ -2629,14 +2636,21 @@ mod tests {
                 data["window_relation_code"] = "unknown".into();
             }
             sanitize_event_data("pipeline", &mut data, true);
-            assert_eq!(data.as_object().unwrap().len(), 14, "outcome {outcome}");
+            assert_eq!(data.as_object().unwrap().len(), 15, "outcome {outcome}");
         }
 
         for relation in ["unknown", "same", "different"] {
             let mut data = base.clone();
             data["window_relation_code"] = relation.into();
             sanitize_event_data("pipeline", &mut data, true);
-            assert_eq!(data.as_object().unwrap().len(), 14, "relation {relation}");
+            assert_eq!(data.as_object().unwrap().len(), 15, "relation {relation}");
+        }
+
+        for anchor in ["stop", "start"] {
+            let mut data = base.clone();
+            data["anchor_code"] = anchor.into();
+            sanitize_event_data("pipeline", &mut data, true);
+            assert_eq!(data.as_object().unwrap().len(), 15, "anchor {anchor}");
         }
     }
 
@@ -2645,6 +2659,7 @@ mod tests {
         let valid = serde_json::json!({
             "event_code": "pipeline.delivery_target_verified",
             "recording_id": 1,
+            "anchor_code": "start",
             "outcome_code": "lookup_unavailable",
             "source_code": "none",
             "retry_count": 2,
@@ -2662,6 +2677,7 @@ mod tests {
         let mut malformed = Vec::new();
         for (key, value) in [
             ("recording_id", serde_json::json!(0)),
+            ("anchor_code", serde_json::json!("SENTINEL_PRIVATE_ANCHOR")),
             (
                 "outcome_code",
                 serde_json::json!("SENTINEL_PRIVATE_OUTCOME"),
@@ -2715,6 +2731,7 @@ mod tests {
             serde_json::json!({
                 "event_code": "pipeline.delivery_target_verified",
                 "recording_id": 9,
+                "anchor_code": "stop",
                 "outcome_code": outcome,
                 "source_code": source,
                 "retry_count": retry_count,

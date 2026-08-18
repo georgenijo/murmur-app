@@ -54,7 +54,7 @@ The snapshot contains only typed values used by the live pipeline:
 - Context-capture permissions
 - An optional ready, memory-only IDE index for the exact matching opted-in profile
 
-`AppState` stores the snapshot with its `recording_id`. Stop and processing paths can retrieve only the matching generation. Cleanup also checks the generation, so a stale pipeline cannot read or clear a newer recording's snapshot. Focus and settings changes after recording starts affect only later recordings' profile resolution. Delivery separately compares the current native identity with the frozen start identity for the same `recording_id`; it never re-resolves the profile or adopts a new target.
+`AppState` stores the snapshot with its `recording_id`. Stop and processing paths can retrieve only the matching generation. Cleanup also checks the generation, so a stale pipeline cannot read or clear a newer recording's snapshot. Focus and settings changes after recording starts affect only later recordings' profile resolution. Delivery separately compares the current native identity with a frozen identity for the same `recording_id`; it never re-resolves the profile or adopts a new target.
 
 ### Frontmost-app sampling
 
@@ -62,12 +62,20 @@ At the accepted `Idle -> Starting` transition, live dictation takes exactly one 
 
 Live dictation does not retry this start sample or adopt a later application. An unavailable, partial, changing, or self-owned sample resolves an unmatched global-only context; app-specific IDE/context reads remain disabled and auto-paste later fails closed. Voice Query retains its own exact native one-sample identity boundary, but no System Events fallback can choose a live recording's profile or paste destination. Literal AppleScript `missing value` is normalized to unavailable in the regression seam rather than treated as a bundle identifier.
 
+Delivery uses a second sample taken at the accepted stop transition, under the
+same ownership lock that commits Processing. That stop anchor authorizes
+verification only when it is a complete identity; a self-owned, incomplete,
+mismatched, or absent stop sample falls back to the recording-start anchor, so a
+degraded stop sample can never make delivery more permissive. Profile
+resolution is unaffected: per-app context stays bound to the immutable
+recording-start identity.
+
 At delivery, a bounded native verifier requires the same application, PID, and
-process-instance evidence. A process relaunch therefore cannot pass merely by
-reusing a bundle identifier or PID. Different windows in that exact process
+process-instance evidence as the anchored target. A process relaunch therefore
+cannot pass merely by reusing a bundle identifier or PID. Different windows in that exact process
 instance remain eligible; window relation, activation changes, and Space
 changes are recorded only as content-free diagnostic facts. A different app or
-process, relaunch, unavailable lookup, incomplete start identity, self target,
+process, relaunch, unavailable lookup, incomplete anchored identity, self target,
 or unprovable identity remains clipboard-only. Contradictory native PID or
 launch-instance evidence is terminal even when an unbundled process withholds
 its bundle identity; it is reported content-free as
@@ -94,8 +102,8 @@ Frontmost-app detection telemetry likewise contains only a numeric outcome code,
 retry count, numeric source code, and elapsed milliseconds. Delivery verification
 uses the exact all-build `pipeline.delivery_target_verified` schema documented in
 [Text Injection](text-injection.md#delivery-target-diagnostics-and-privacy): a
-bounded outcome/source/window-relation vocabulary, equality and transition
-booleans, retry/timing numbers, and the positive `recording_id`. Neither path
+bounded anchor/outcome/source/window-relation vocabulary, equality and
+transition booleans, retry/timing numbers, and the positive `recording_id`. Neither path
 contains the detected bundle identifier, PID, process-instance token,
 application name, window title, profile label, project roots, raw errors,
 transcript or clipboard content, or other user content.

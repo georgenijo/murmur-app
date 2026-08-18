@@ -649,6 +649,42 @@ fn capture_current_delivery_target_snapshot(
     )
 }
 
+/// Which frozen sample authorized delivery verification. Content-free, so it is
+/// safe to emit alongside the verification outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeliveryAnchor {
+    Stop,
+    Start,
+}
+
+impl DeliveryAnchor {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Start => "start",
+        }
+    }
+}
+
+/// Choose the identity that delivery must match. The accepted stop transition is
+/// the user's last deliberate act, so it bounds the fail-closed window to
+/// transcription instead of the whole recording. Only a complete stop identity
+/// may replace the start anchor: a degraded stop sample must never make delivery
+/// less permissive than the start-anchored behavior it replaces — stopping by
+/// clicking Murmur's own overlay would otherwise force clipboard-only even after
+/// the user refocuses the original target.
+pub(crate) fn select_delivery_anchor<'a>(
+    start: &'a DeliveryTargetSnapshot,
+    stop: Option<&'a DeliveryTargetSnapshot>,
+) -> (&'a DeliveryTargetSnapshot, DeliveryAnchor) {
+    match stop {
+        Some(snapshot) if matches!(snapshot, DeliveryTargetSnapshot::Complete(_)) => {
+            (snapshot, DeliveryAnchor::Stop)
+        }
+        _ => (start, DeliveryAnchor::Start),
+    }
+}
+
 /// Resolve profile identity from the same accepted native sample that owns
 /// delivery. Live dictation must never combine profile/context from a later
 /// frontmost app with an earlier immutable paste target.
@@ -1820,6 +1856,46 @@ mod tests {
                     process_id: None,
                 }
             );
+        }
+    }
+
+    #[test]
+    fn delivery_anchor_prefers_a_complete_stop_sample_and_otherwise_falls_back() {
+        let start =
+            DeliveryTargetSnapshot::Complete(delivery_target("com.example.Editor", 41, 100, None));
+        let stop =
+            DeliveryTargetSnapshot::Complete(delivery_target("com.example.Browser", 42, 200, None));
+
+        let (selected, anchor) = select_delivery_anchor(&start, Some(&stop));
+        assert_eq!(anchor, DeliveryAnchor::Stop);
+        assert_eq!(anchor.as_str(), "stop");
+        assert!(matches!(
+            selected,
+            DeliveryTargetSnapshot::Complete(identity) if identity.bundle_id == "com.example.Browser"
+        ));
+
+        for degraded in [
+            None,
+            Some(DeliveryTargetSnapshot::SelfTarget),
+            Some(DeliveryTargetSnapshot::Incomplete),
+            Some(DeliveryTargetSnapshot::Mismatch(DeliveryTargetMismatch {
+                kind: DeliveryTargetMismatchKind::DifferentApplication,
+                same_application: false,
+                same_process: false,
+                transitions: AppTransitionSnapshot {
+                    activation_generation: 0,
+                    space_generation: 0,
+                },
+            })),
+        ] {
+            let (selected, anchor) = select_delivery_anchor(&start, degraded.as_ref());
+            assert_eq!(anchor, DeliveryAnchor::Start);
+            assert_eq!(anchor.as_str(), "start");
+            assert!(matches!(
+                selected,
+                DeliveryTargetSnapshot::Complete(identity)
+                    if identity.bundle_id == "com.example.Editor"
+            ));
         }
     }
 

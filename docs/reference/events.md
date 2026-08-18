@@ -166,6 +166,7 @@ and raw errors are never admitted.
 
 Delivery-target verification uses the separate exact-schema code
 `pipeline.delivery_target_verified`. It carries a positive `recording_id`;
+`anchor_code` as `stop` or `start`, naming the frozen sample that was verified;
 `outcome_code` from `verified`, `different_application`, `different_process`,
 `process_relaunched`, `partial_identity_mismatch`, `lookup_unavailable`,
 `start_identity_incomplete`, `start_target_is_self`, or `stale_owner`;
@@ -176,7 +177,10 @@ Delivery-target verification uses the separate exact-schema code
 `activation_changed`, `space_changed`, `current_is_self`, and
 `ownership_current`. The window/activation/Space fields are diagnostics only:
 same-process-instance window changes remain eligible, while any identity
-mismatch or ambiguity fails closed. A self-owned start target is
+mismatch or ambiguity fails closed. Verification prefers the sample frozen at
+the accepted stop transition and falls back to the recording-start sample
+whenever the stop sample is not a complete identity; `anchor_code` reports that
+choice and never relaxes an outcome. A self-owned anchored target is
 `start_target_is_self`; a later switch to Murmur remains
 `different_application` with `current_is_self: true`. Equality booleans are
 positive proof rather than invented negative evidence: contradictory native
