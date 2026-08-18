@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-17
+
 ### Added
 
 - Appearance now includes a durable named theme library, independent light and
