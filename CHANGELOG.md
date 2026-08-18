@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-08-18
+
+### Fixed
+
+- Auto-paste now verifies the delivery target against the app that was
+  frontmost when the recording **stopped**, not when it started. Switching
+  apps while dictating, or starting dictation immediately after a Cmd+Tab, no
+  longer strands the transcript in the clipboard; a degraded stop sample
+  safely falls back to the recording-start target, and the
+  `pipeline.delivery_target_verified` event now reports which anchor decided
+  delivery via `anchor_code` (#596).
+- On machines where the first capture attempt of a recording reliably hangs in
+  stream start and the fallback rescues it within a second, the sacrificial
+  primary budget now shrinks a second time — 2 s to 750 ms — once the pattern
+  has held for four consecutive recordings, cutting the per-recording dead
+  time from about 2.5 s to about 1.2 s. One primary success still restores
+  full budgets (#597).
+
 ## [0.36.0] - 2026-08-17
 
 ### Added
