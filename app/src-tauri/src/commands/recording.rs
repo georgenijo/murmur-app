@@ -767,12 +767,14 @@ fn emit_auto_paste_failure_if_current(
 
 fn emit_delivery_target_verification(
     recording_id: u64,
+    anchor: crate::frontmost::DeliveryAnchor,
     evidence: crate::frontmost::VerificationEvidence,
 ) {
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.delivery_target_verified",
         recording_id,
+        anchor_code = anchor.as_str(),
         outcome_code = evidence.outcome.as_str(),
         source_code = evidence.source.as_str(),
         retry_count = evidence.retry_count,
@@ -1588,6 +1590,7 @@ async fn run_transcription_pipeline(
     recording_id: u64,
     performance_guard: &mut impl DictationPerformanceStageRecorder,
     context: Arc<DictationContextSnapshot>,
+    stop_delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
 ) -> Result<PipelineResult, String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
@@ -1849,7 +1852,11 @@ async fn run_transcription_pipeline(
     if !text.is_empty() {
         let text_to_inject = text.clone();
         let paste_delay_ms = delivery.paste_delay_ms;
-        let delivery_target = context.app.delivery_target.clone();
+        let (anchored_target, delivery_anchor) = crate::frontmost::select_delivery_anchor(
+            &context.app.delivery_target,
+            stop_delivery_target.as_ref(),
+        );
+        let delivery_target = anchored_target.clone();
         // Keep the configurable focus-settle wait off the macOS main thread so
         // activation/Space notification callbacks can advance their
         // content-free counters before target verification runs.
@@ -1873,11 +1880,16 @@ async fn run_transcription_pipeline(
                 match &attempt {
                     Some(Ok(result)) => {
                         if let Some(evidence) = result.verification {
-                            emit_delivery_target_verification(recording_id, evidence);
+                            emit_delivery_target_verification(
+                                recording_id,
+                                delivery_anchor,
+                                evidence,
+                            );
                         }
                     }
                     None => emit_delivery_target_verification(
                         recording_id,
+                        delivery_anchor,
                         crate::frontmost::verify_delivery_target(&delivery_target, false),
                     ),
                     Some(Err(_)) => {}
@@ -2172,6 +2184,9 @@ pub async fn process_audio(
         rid,
         &mut performance_guard,
         Arc::clone(&context),
+        // Imported audio has no live stop transition: its snapshot is already
+        // taken at the accepted Idle -> Processing transition.
+        None,
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
@@ -4029,7 +4044,7 @@ async fn stop_native_recording_for(
         }));
     }
     // Atomic check-and-set + generation capture in a single lock.
-    let (status, rid, interrupted_capture) = {
+    let (status, rid, interrupted_capture, stop_delivery_target) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let rid = current_recording_id;
         match dictation.status {
@@ -4046,11 +4061,20 @@ async fn stop_native_recording_for(
                     "state": "idle"
                 }));
             }
-            DictationStatus::Starting => (DictationStatus::Starting, rid, None),
+            // A cancelled start never delivers, so it needs no stop anchor.
+            DictationStatus::Starting => (DictationStatus::Starting, rid, None, None),
             DictationStatus::Recovering => {
                 if let Some(capture) = audio_lifecycle::take_interrupted_dictation(rid) {
                     transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
-                    (DictationStatus::Processing, rid, Some(capture))
+                    // Freeze the native delivery target at the accepted stop
+                    // transition, under the same ownership lock that commits
+                    // Processing.
+                    (
+                        DictationStatus::Processing,
+                        rid,
+                        Some(capture),
+                        Some(crate::frontmost::capture_delivery_target_snapshot()),
+                    )
                 } else {
                     return Ok(serde_json::json!({
                         "type": "audio_recovering",
@@ -4060,7 +4084,15 @@ async fn stop_native_recording_for(
             }
             DictationStatus::Recording => {
                 transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
-                (DictationStatus::Recording, rid, None)
+                // Freeze the native delivery target at the accepted stop
+                // transition, under the same ownership lock that commits
+                // Processing.
+                (
+                    DictationStatus::Recording,
+                    rid,
+                    None,
+                    Some(crate::frontmost::capture_delivery_target_snapshot()),
+                )
             }
         }
     };
@@ -4247,6 +4279,7 @@ async fn stop_native_recording_for(
         rid,
         &mut performance_guard,
         Arc::clone(&context),
+        stop_delivery_target,
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.

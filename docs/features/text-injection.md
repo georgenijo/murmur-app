@@ -17,8 +17,8 @@ When `auto_paste` is enabled in settings:
 1. Use a read-only `AXIsProcessTrusted()` precheck only to decide whether the configurable focus-settle delay is useful. When permission is already available, wait asynchronously for that delay (default 0ms) before main-thread dispatch so macOS activation and Space notifications can advance. The definitive permission decision still occurs later under ownership.
 2. Re-check that the exact `recording_id` still owns delivery. A stale completion stops here without writing or pasting, so it cannot overwrite a newer recording's delivery state.
 3. Check `AXIsProcessTrusted()` under that ownership fence. If accessibility is not granted, write the transcript to the clipboard and stop.
-4. Verify the immutable recording-start target against the current native frontmost identity. The start target must be complete and external to Murmur, and the current bundle, PID, and process-instance evidence must identify that same process instance. A temporarily unavailable native lookup may be retried only within the bounded verifier; it never changes the frozen target or tries a different process.
-5. Fail closed to clipboard-only for a different application, different process, process relaunch, partial identity mismatch, unavailable/incomplete identity, or self-owned start target. Contradictory native PID or launch-instance evidence is terminal even when an unbundled process withholds its bundle identity; a later sample cannot erase it. Moving to a different window in the same exact process instance remains eligible. Window relation, application activation, and Space changes are diagnostic facts only and never override identity verification. Every current refusal writes the transcript before returning clipboard-only.
+4. Verify the anchored target against the current native frontmost identity. The anchor is the sample frozen at the accepted stop transition when that sample is a complete identity, and otherwise the recording-start sample; a self-owned, incomplete, mismatched, or absent stop sample never makes delivery more permissive than the start-anchored behavior it replaces. The anchored target must be complete and external to Murmur, and the current bundle, PID, and process-instance evidence must identify that same process instance. A temporarily unavailable native lookup may be retried only within the bounded verifier; it never changes the frozen target or tries a different process.
+5. Fail closed to clipboard-only for a different application, different process, process relaunch, partial identity mismatch, unavailable/incomplete identity, or self-owned anchored target. Contradictory native PID or launch-instance evidence is terminal even when an unbundled process withholds its bundle identity; a later sample cannot erase it. Moving to a different window in the same exact process instance remains eligible. Window relation, application activation, and Space changes are diagnostic facts only and never override identity verification. Every current refusal writes the transcript before returning clipboard-only.
 6. Query the verified process's focused element role with the native macOS Accessibility API. Native AX timeout (`-25204`) remains `Unknown` without launching the compatibility query. A no-value result (`-25212`) does the same for non-Finder apps; Finder retains the bounded System Events role query so its desktop/file-view guard remains effective. Other native failures may also use that compatibility query. Skip auto-paste only when the role is on the confirmed non-editable denylist; unknown roles still allow paste.
 7. Verify the exact target again because the Accessibility query may have blocked while focus changed.
 8. Write the transcript to `NSPasteboard` and capture only its numeric `changeCount` generation. Clipboard contents are never read back.
@@ -51,6 +51,9 @@ Each auto-paste delivery that reaches target verification emits its final struct
 `pipeline.delivery_target_verified`, correlated only by the positive monotonic
 `recording_id`. Its exact all-build telemetry schema admits:
 
+- `anchor_code`: `stop` when the accepted stop transition produced the complete
+  identity that authorized verification, or `start` when the immutable
+  recording-start sample was used instead;
 - `outcome_code`: `verified`, `different_application`, `different_process`,
   `process_relaunched`, `partial_identity_mismatch`, `lookup_unavailable`,
   `start_identity_incomplete`, `start_target_is_self`, or `stale_owner`;
@@ -65,9 +68,12 @@ The equality booleans are positive proof: `false` does not invent an inequality
 when native metadata was unavailable. `partial_identity_mismatch` records the
 specific case where bundle identity was unavailable but native PID or
 launch-instance evidence provably contradicted the frozen target. The equality and transition fields explain a
-refusal without becoming a second authorization path. In particular,
-`start_target_is_self` means the immutable
-start target was Murmur and is refused directly; switching to Murmur later is a
+refusal without becoming a second authorization path. `anchor_code` records
+which frozen sample was verified; it is evidence only and never relaxes any
+outcome. The `start_identity_incomplete` and `start_target_is_self` codes keep
+their names for schema stability and describe the anchored target, which may be
+either sample. In particular, `start_target_is_self` means the anchored
+target was Murmur and is refused directly; switching to Murmur later is a
 `different_application` outcome with `current_is_self: true`. Malformed required
 evidence collapses to the event code alone. The sanitizer runs identically in
 debug and release builds and rejects application names, bundle identifiers,
