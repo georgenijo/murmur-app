@@ -82,10 +82,14 @@ hangs in `AudioOutputUnitStart` while the second attempt succeeds within
 before first PCM: promotion is then disabled for that key for the session
 (otherwise the order oscillates), a promoted backend's budget is always capped
 at the default primary's 8s so a wrong promotion can never worsen the worst
-case, and after two consecutive recordings of "primary failed before first
-PCM, fallback delivered it within 1s" the primary attempt budget shrinks to
-2s so the reliable rescue starts sooner. A primary success or a slow rescue
-resets that counter and restores full budgets — a machine where both backends
+case, and the primary attempt budget shrinks in two tiers so the reliable
+rescue starts sooner: after two consecutive recordings of "primary failed
+before first PCM, fallback delivered it within 1s" it shrinks to 2s, and after
+four such recordings in a row it shrinks again to 750ms. The deeper tier's
+higher count keeps a slow-but-working primary from being cut off by one flukey
+recording, and 750ms still leaves headroom over the ~300ms a healthy start
+takes. A primary success or a slow rescue
+resets that counter and restores full budgets from either tier — a machine where both backends
 are slow never arms the short budget. The memo only reorders and shrinks: both backends
 always stay in the sequence, budgets never grow, and termination confirmation
 and fallback-eligibility rules are unchanged. It is never persisted, and
