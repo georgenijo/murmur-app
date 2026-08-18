@@ -6,6 +6,32 @@ Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md`
 
 ---
 
+## 2026-08-18: The capture fast-fail primary budget gets a deeper second tier
+
+**Decision:** Keep the 2026-08-04 fast-fail tier as-is and add a second one:
+after four consecutive recordings of "primary failed before first PCM, fallback
+delivered it within 1 second", the primary attempt budget shrinks again from 2
+seconds to 750ms. A primary success or a slow rescue still resets the counter
+and restores full budgets from either tier. Nothing else changes — both
+backends stay in the sequence, budgets only ever shrink, termination and
+fallback rules are untouched, and the memo remains session-only.
+
+**Rationale:** On an affected machine (macOS 26.6 / M5) the first tier leaves a
+steady state of roughly 2.45s of dead time per recording — a 2s sacrificial
+primary, ~250ms of confirmed termination, and a ~200ms rescue. Field telemetry
+shows the rescue landing at 160–450ms, well inside the 1s detector threshold,
+so the sacrifice can shrink further once the pattern is proven more deeply. Four
+consecutive qualifying recordings, rather than two, is what makes the smaller
+budget safe: a slow-but-working primary cannot be cut off by one fluke, and
+750ms still clears the ~300ms a healthy start takes on known-good machines.
+Expected effect is ~2.45s → ~1.2s per recording.
+
+**Status:** active
+
+**References:** extends the 2026-08-04 fast-fail decision; `app/src-tauri/src/audio.rs`
+
+---
+
 ## 2026-08-17: Community themes are data-only and compile into the local appearance cache
 
 **Decision:** Keep the parser-blocking `murmur-appearance` document as the

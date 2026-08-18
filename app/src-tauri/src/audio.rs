@@ -1324,10 +1324,27 @@ fn preferred_backends() -> [CaptureBackend; 2] {
 //   primary attempt budget shrinks to FAST_FAIL_PRIMARY_BUDGET so the
 //   reliable rescue starts sooner. A primary success resets the counter and
 //   restores full budgets.
+//
+// The fast-fail shrink has a second, deeper tier. Once the same pattern has
+// repeated FAST_FAIL_DEEP_ARM_COUNT times in a row the primary budget shrinks
+// again to FAST_FAIL_DEEP_PRIMARY_BUDGET. The deeper arm count is what makes
+// this safe: a slow-but-working primary would have to die before first PCM in
+// four consecutive recordings — each time rescued inside FAST_RESCUE_THRESHOLD
+// — before it is cut off, so one flukey recording can never trigger it. A
+// healthy start reaches first PCM in roughly 300ms on known-good machines, so
+// 750ms still leaves headroom for a primary that is merely slow. As in the
+// first tier the budget is only ever taken as a minimum, so it can shrink and
+// never grow, and a single primary success clears consecutive_fast_rescues in
+// note_first_pcm, which drops out of both tiers at once and restores the full
+// per-backend budgets. On an affected machine this takes the steady-state dead
+// time from about 2.45s per recording (2s sacrificial primary + ~250ms
+// confirmed termination + ~200ms rescue) to about 1.2s.
 const PROMOTED_PRIMARY_BUDGET_CAP: Duration = AUHAL_ATTEMPT_BUDGET;
 const FAST_FAIL_PRIMARY_BUDGET: Duration = Duration::from_secs(2);
 const FAST_RESCUE_THRESHOLD: Duration = Duration::from_secs(1);
 const FAST_FAIL_ARM_COUNT: u32 = 2;
+const FAST_FAIL_DEEP_ARM_COUNT: u32 = 4;
+const FAST_FAIL_DEEP_PRIMARY_BUDGET: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct BackendMemo {
@@ -1437,10 +1454,14 @@ fn primary_attempt_budget(
         // case beyond the default order's.
         budget = budget.min(PROMOTED_PRIMARY_BUDGET_CAP);
     }
-    if read_memo(device_id, |memo| {
-        memo.is_some_and(|memo| memo.consecutive_fast_rescues >= FAST_FAIL_ARM_COUNT)
-    }) {
+    let consecutive_fast_rescues = read_memo(device_id, |memo| {
+        memo.map_or(0, |memo| memo.consecutive_fast_rescues)
+    });
+    if consecutive_fast_rescues >= FAST_FAIL_ARM_COUNT {
         budget = budget.min(FAST_FAIL_PRIMARY_BUDGET);
+    }
+    if consecutive_fast_rescues >= FAST_FAIL_DEEP_ARM_COUNT {
+        budget = budget.min(FAST_FAIL_DEEP_PRIMARY_BUDGET);
     }
     budget
 }
@@ -3031,6 +3052,74 @@ mod tests {
         note_first_pcm(key, default_order[1], false, FAST);
         // fast, slow, fast -> counter is 1, not 2: still the full budget.
         assert_eq!(primary_attempt_budget(default_order[0], key, false), full);
+    }
+
+    #[test]
+    fn four_fast_rescues_arm_the_deep_primary_budget_and_success_resets_it() {
+        let key = Some("memo-device-deepfastfail");
+        let default_order = preferred_backends();
+        let full = backend_attempt_budget(default_order[0]);
+
+        // Two and three consecutive fast rescues arm only the first tier.
+        note_first_pcm(key, default_order[1], false, FAST);
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            FAST_FAIL_PRIMARY_BUDGET
+        );
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            FAST_FAIL_PRIMARY_BUDGET
+        );
+
+        // The fourth arms the deeper tier.
+        note_first_pcm(key, default_order[1], false, FAST);
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            FAST_FAIL_DEEP_PRIMARY_BUDGET
+        );
+
+        // A primary success drops out of both tiers at once.
+        note_first_pcm(key, default_order[0], true, FAST);
+        assert_eq!(primary_attempt_budget(default_order[0], key, false), full);
+    }
+
+    #[test]
+    fn a_slow_rescue_resets_out_of_the_deep_fast_fail_tier() {
+        let key = Some("memo-device-deepslowrescue");
+        let default_order = preferred_backends();
+        let full = backend_attempt_budget(default_order[0]);
+
+        for _ in 0..FAST_FAIL_DEEP_ARM_COUNT {
+            note_first_pcm(key, default_order[1], false, FAST);
+        }
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            FAST_FAIL_DEEP_PRIMARY_BUDGET
+        );
+
+        // One rescue that took longer than FAST_RESCUE_THRESHOLD is not the
+        // first-attempt-bound pathology: the counter resets to zero.
+        note_first_pcm(key, default_order[1], false, SLOW);
+        assert_eq!(primary_attempt_budget(default_order[0], key, false), full);
+    }
+
+    #[test]
+    fn a_promoted_primary_with_deep_arming_takes_the_smaller_of_cap_and_deep_budget() {
+        let key = Some("memo-device-deepcap");
+        for _ in 0..FAST_FAIL_DEEP_ARM_COUNT {
+            note_first_pcm(key, CaptureBackend::Auhal, false, FAST);
+        }
+        // min(PROMOTED_PRIMARY_BUDGET_CAP = 8s, deep = 750ms) = 750ms.
+        assert_eq!(
+            primary_attempt_budget(CaptureBackend::Cpal, key, true),
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            primary_attempt_budget(CaptureBackend::Cpal, key, true),
+            FAST_FAIL_DEEP_PRIMARY_BUDGET
+        );
     }
 
     #[test]
