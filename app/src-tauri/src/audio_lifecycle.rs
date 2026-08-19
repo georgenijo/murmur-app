@@ -1741,11 +1741,9 @@ pub(crate) struct AudioLifecycleSnapshot {
 /// waits on the lock it is trying to describe.
 pub(crate) fn diagnostic_snapshot() -> Option<AudioLifecycleSnapshot> {
     let supervisor = SUPERVISOR.get()?;
-    let owner = match supervisor.public.owner.try_lock() {
-        Ok(guard) => render_owner(*guard),
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => render_owner(*poisoned.into_inner()),
-        Err(std::sync::TryLockError::WouldBlock) => "<busy>".to_string(),
-    };
+    let owner = crate::MutexExt::try_lock_or_recover(&supervisor.public.owner)
+        .map(|guard| render_owner(*guard))
+        .unwrap_or_else(|| "<busy>".to_string());
     Some(AudioLifecycleSnapshot {
         phase: supervisor.public.phase().as_str(),
         owner,

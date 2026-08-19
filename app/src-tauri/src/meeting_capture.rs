@@ -159,6 +159,13 @@ impl MeetingCoordinator {
         self.inner.lock_or_recover().status.clone()
     }
 
+    /// Non-blocking status read for hang diagnostics. `None` means the meeting
+    /// lock was contended, which is itself reportable: a probe must never wait
+    /// on the subsystem it is describing.
+    pub fn status_if_uncontended(&self) -> Option<MeetingRuntimeStatus> {
+        Some(self.inner.try_lock_or_recover()?.status.clone())
+    }
+
     pub fn permission_status(&self) -> SystemAudioPermissionState {
         self.inner.lock_or_recover().permission
     }

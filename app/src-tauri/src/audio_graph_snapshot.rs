@@ -16,30 +16,49 @@
 //! which is itself diagnostic evidence. Nothing here may run on the capture
 //! supervisor thread or gate the fallback/kill sequence.
 //!
+//! Timing: the observation runs *before* the hung worker is killed, because the
+//! field evidence says the blocker frequently clears the moment the killed
+//! client's transport tears down — a post-kill graph would routinely observe an
+//! already-drained queue. The live-hang snapshot is therefore taken once at the
+//! timeout and cached by capture ID ([`observe_capture_timeout`]); the armed
+//! bundle claims it with [`take_live_hang_report`] instead of re-probing, and
+//! adds a second fresh post-kill snapshot so the before/after difference is
+//! itself evidence.
+//!
 //! Privacy: the rendered report names devices, taps, and processes, so it is
 //! only ever placed in the server-armed hang bundle (same consent boundary as
-//! the existing `system_profiler` sections). The structured event emitted from
-//! every install carries [`AudioGraphCounts`] only — integers and one boolean.
+//! the existing `system_profiler` sections) and is only ever *rendered* on an
+//! armed install. The structured event emitted from every install carries
+//! [`AudioGraphCounts`] only — integers and booleans.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{mpsc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::hang_diagnostics::{run_capped, truncate_at_boundary};
+use crate::MutexExt;
 
-/// Hard deadline for the whole HAL query. Two seconds is far longer than a
+/// Hard deadline for the HAL query itself. Two seconds is far longer than a
 /// healthy HAL round trip and far shorter than a capture attempt budget.
 const QUERY_DEADLINE: Duration = Duration::from_secs(2);
 const QUERY_TIMED_OUT_BODY: &str = "<audio graph query timed out after 2s>";
-const PROCESS_NAME_DEADLINE: Duration = Duration::from_secs(5);
+const PROBE_UNAVAILABLE_BODY: &str = "<audio graph probe thread could not be started>";
+/// Name resolution is a plain `ps` call that cannot touch coreaudiod, so it
+/// cannot hang for the reason under investigation. It is still capped, and it
+/// is deliberately excluded from the reported `elapsed_ms`, which measures the
+/// HAL query alone.
+const PROCESS_NAME_DEADLINE: Duration = Duration::from_secs(2);
+/// How long the armed bundle waits for an in-flight live-hang probe. The probe
+/// is bounded by `QUERY_DEADLINE`, so this only covers scheduling slack.
+const LIVE_SNAPSHOT_WAIT: Duration = Duration::from_secs(3);
 
 /// Object-list bounds. A healthy machine reports a handful of each; these caps
-/// only stop a pathological HAL from producing an unbounded report.
+/// only stop a pathological HAL from producing an unbounded report — and they
+/// bound the *allocation*, not just the rendering.
 const MAX_PROCESS_OBJECTS: usize = 256;
 const MAX_TAP_OBJECTS: usize = 64;
 const MAX_DEVICE_OBJECTS: usize = 64;
-const MAX_SUB_DEVICES: usize = 64;
 const MAX_TEXT_CHARS: usize = 128;
 const REPORT_CAP_BYTES: usize = 64_000;
 
@@ -47,6 +66,19 @@ const REPORT_CAP_BYTES: usize = 64_000;
 /// contributes at most one `audio.system_audio_graph_observed` event.
 static LAST_OBSERVED_CAPTURE_ID: AtomicU64 = AtomicU64::new(0);
 static APP_HANDLE: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+/// The live-hang snapshot taken before the kill, waiting to be claimed by the
+/// armed bundle. Only populated on armed installs (an unarmed install never
+/// renders an identity-bearing report at all).
+#[allow(clippy::type_complexity)]
+static LIVE_SNAPSHOT: OnceLock<(Mutex<Option<LiveSnapshotSlot>>, Condvar)> = OnceLock::new();
+
+/// A pre-kill observation for one capture attempt. `report` is `None` while the
+/// probe is still in flight, so a waiting bundle can tell "not finished yet"
+/// from "finished with nothing".
+struct LiveSnapshotSlot {
+    capture_id: u64,
+    report: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Observation model (platform independent, so rendering and counting are
@@ -105,14 +137,23 @@ pub(crate) struct AudioGraphObservation {
 }
 
 /// The content-free aggregate. This is the only shape allowed to leave an
-/// unarmed install: integers and one boolean, no PIDs, names, or UIDs.
+/// unarmed install: integers and booleans, no PIDs, names, or UIDs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AudioGraphCounts {
     pub(crate) running_audio_process_count: u64,
     pub(crate) tap_count: u64,
     pub(crate) device_count: u64,
     pub(crate) devices_running_count: u64,
+    /// The HAL query was started but did not answer within `QUERY_DEADLINE` —
+    /// direct evidence of a wedged audio server.
     pub(crate) query_timed_out: bool,
+    /// The probe thread could not be started at all. Deliberately distinct
+    /// from `query_timed_out`: a wedge we never observed must not be reported
+    /// as one we did.
+    pub(crate) probe_unavailable: bool,
+    /// Wall-clock time of the HAL query alone. Name resolution and rendering
+    /// happen afterwards and are excluded, so this stays comparable to
+    /// `QUERY_DEADLINE`.
     pub(crate) elapsed_ms: u64,
 }
 
@@ -120,12 +161,13 @@ impl AudioGraphCounts {
     /// One-line content-free rendering for the armed bundle's hang context.
     pub(crate) fn render_line(&self) -> String {
         format!(
-            "running_audio_process_count: {}\ntap_count: {}\ndevice_count: {}\ndevices_running_count: {}\naudio_graph_query_timed_out: {}\naudio_graph_query_elapsed_ms: {}",
+            "running_audio_process_count: {}\ntap_count: {}\ndevice_count: {}\ndevices_running_count: {}\naudio_graph_query_timed_out: {}\naudio_graph_probe_unavailable: {}\naudio_graph_hal_elapsed_ms: {}",
             self.running_audio_process_count,
             self.tap_count,
             self.device_count,
             self.devices_running_count,
             self.query_timed_out,
+            self.probe_unavailable,
             self.elapsed_ms
         )
     }
@@ -133,19 +175,25 @@ impl AudioGraphCounts {
 
 pub(crate) struct AudioGraphSnapshot {
     pub(crate) counts: AudioGraphCounts,
-    /// Identity-bearing rendering. Armed bundle only.
+    /// Identity-bearing rendering, empty unless [`Detail::Full`] was requested.
+    /// Armed installs only.
     pub(crate) report: String,
+}
+
+/// How much of an observation to materialize. Unarmed installs never render
+/// the identity-bearing report, which also spares them the `ps` call on every
+/// capture timeout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Detail {
+    CountsOnly,
+    Full,
 }
 
 // ---------------------------------------------------------------------------
 // Pure counting and rendering
 // ---------------------------------------------------------------------------
 
-pub(crate) fn counts_for(
-    observation: &AudioGraphObservation,
-    query_timed_out: bool,
-    elapsed_ms: u64,
-) -> AudioGraphCounts {
+pub(crate) fn counts_for(observation: &AudioGraphObservation, elapsed_ms: u64) -> AudioGraphCounts {
     AudioGraphCounts {
         running_audio_process_count: observation
             .processes
@@ -159,7 +207,8 @@ pub(crate) fn counts_for(
             .iter()
             .filter(|device| device.running_somewhere == Some(true))
             .count() as u64,
-        query_timed_out,
+        query_timed_out: false,
+        probe_unavailable: false,
         elapsed_ms,
     }
 }
@@ -202,7 +251,7 @@ pub(crate) fn render_report(
     observation: &AudioGraphObservation,
     process_names: &BTreeMap<i32, String>,
 ) -> String {
-    let counts = counts_for(observation, false, 0);
+    let counts = counts_for(observation, 0);
     let mut report = String::new();
 
     for note in &observation.notes {
@@ -298,30 +347,43 @@ pub(crate) fn render_report(
 // Deadline-guarded query entry point
 // ---------------------------------------------------------------------------
 
-/// Query the HAL on a throwaway thread with a hard deadline and render the
-/// result. Safe to call from any non-critical-path thread; never called from
-/// the capture supervisor.
-pub(crate) fn snapshot() -> AudioGraphSnapshot {
+/// Query the HAL on a throwaway thread with a hard deadline, and render the
+/// result when `detail` is [`Detail::Full`]. Safe to call from any
+/// non-critical-path thread; never called from the capture supervisor.
+///
+/// `counts.elapsed_ms` covers the HAL query only. Name resolution and
+/// rendering run afterwards, off the deadline, and are excluded.
+pub(crate) fn snapshot(detail: Detail) -> AudioGraphSnapshot {
     let started = Instant::now();
     let (sender, receiver) = mpsc::channel();
     // Deliberately detached: if coreaudiod is wedged this thread stays blocked
     // inside the HAL until the server recovers. Abandoning it is the whole
     // point — the process must not wait on a hung audio server.
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("murmur-audio-graph-probe".to_string())
         .spawn(move || {
             let _ = sender.send(query_audio_graph());
-        })
-        .ok();
+        });
+    if spawned.is_err() {
+        // We never observed the HAL, so we must not claim it was wedged.
+        return AudioGraphSnapshot {
+            counts: AudioGraphCounts {
+                probe_unavailable: true,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                ..AudioGraphCounts::default()
+            },
+            report: report_for(detail, PROBE_UNAVAILABLE_BODY),
+        };
+    }
 
     match receiver.recv_timeout(QUERY_DEADLINE) {
         Ok(observation) => {
-            let elapsed_ms = started.elapsed().as_millis() as u64;
-            let names = process_names(&observation);
-            AudioGraphSnapshot {
-                counts: counts_for(&observation, false, elapsed_ms),
-                report: render_report(&observation, &names),
-            }
+            let counts = counts_for(&observation, started.elapsed().as_millis() as u64);
+            let report = match detail {
+                Detail::CountsOnly => String::new(),
+                Detail::Full => render_report(&observation, &process_names(&observation)),
+            };
+            AudioGraphSnapshot { counts, report }
         }
         Err(_) => AudioGraphSnapshot {
             counts: AudioGraphCounts {
@@ -329,9 +391,34 @@ pub(crate) fn snapshot() -> AudioGraphSnapshot {
                 elapsed_ms: started.elapsed().as_millis() as u64,
                 ..AudioGraphCounts::default()
             },
-            report: QUERY_TIMED_OUT_BODY.to_string(),
+            report: report_for(detail, QUERY_TIMED_OUT_BODY),
         },
     }
+}
+
+fn report_for(detail: Detail, body: &str) -> String {
+    match detail {
+        Detail::CountsOnly => String::new(),
+        Detail::Full => body.to_string(),
+    }
+}
+
+/// How many objects to allocate for a HAL-reported property size, and whether
+/// the cap truncated the list.
+///
+/// Split out of the FFI so the bound is testable on any OS: the HAL reports
+/// the size, and a pathological value must never reach `vec!` — a release
+/// build aborts on allocation failure, which would turn a diagnostic into a
+/// crash.
+fn planned_object_read(byte_size: u32, object_size: usize, limit: usize) -> (usize, bool) {
+    let reported = byte_size as usize / object_size.max(1);
+    (reported.min(limit), reported > limit)
+}
+
+/// `CFArrayGetCount` returns a signed `CFIndex`. A negative count is not a
+/// value we can believe, so report it as unknown rather than saturating.
+fn cf_array_count_to_usize(count: isize) -> Option<usize> {
+    usize::try_from(count).ok()
 }
 
 /// Resolve PID to process name with one bounded `ps` call. Runs outside the
@@ -375,7 +462,7 @@ fn parse_process_names(output: &str) -> BTreeMap<i32, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Content-free structured event, at most once per capture attempt
+// Live-hang observation: content-free event everywhere, cached report if armed
 // ---------------------------------------------------------------------------
 
 /// True exactly once per new capture ID.
@@ -383,19 +470,98 @@ fn take_capture_observation(last: &AtomicU64, capture_id: u64) -> bool {
     capture_id != 0 && last.fetch_max(capture_id, Ordering::Relaxed) < capture_id
 }
 
-/// Called from the capture backend timeout path on every install. Spawns its
-/// own thread so the kill/fallback sequence is never delayed, and emits at
-/// most one content-free event per capture attempt.
+fn live_snapshot_cell() -> &'static (Mutex<Option<LiveSnapshotSlot>>, Condvar) {
+    LIVE_SNAPSHOT.get_or_init(|| (Mutex::new(None), Condvar::new()))
+}
+
+/// Called from the capture backend timeout path on every install, *before* the
+/// hung worker is killed. Spawns its own thread so the kill/fallback sequence
+/// is never delayed, emits at most one content-free event per capture attempt,
+/// and — on an armed install — caches the identity-bearing report for the
+/// bundle to claim so the bundle never has to re-probe for the live view.
 pub(crate) fn observe_capture_timeout(capture_id: u64) {
     if !take_capture_observation(&LAST_OBSERVED_CAPTURE_ID, capture_id) {
         return;
     }
-    std::thread::Builder::new()
+    // Deciding the detail here, on the caller's side of the spawn, keeps the
+    // rule simple: an unarmed install never renders the report at all.
+    let detail = if crate::hang_diagnostics::armed() {
+        Detail::Full
+    } else {
+        Detail::CountsOnly
+    };
+    if detail == Detail::Full {
+        // Publish the pending slot before spawning, so a bundle that starts
+        // collecting while the probe is still running waits for it instead of
+        // concluding there was no live observation.
+        let (slot, _) = live_snapshot_cell();
+        *slot.lock_or_recover() = Some(LiveSnapshotSlot {
+            capture_id,
+            report: None,
+        });
+    }
+    let spawned = std::thread::Builder::new()
         .name("murmur-audio-graph-observe".to_string())
         .spawn(move || {
-            emit_counts(capture_id, snapshot().counts);
-        })
-        .ok();
+            let observation = snapshot(detail);
+            if detail == Detail::Full {
+                publish_live_snapshot(capture_id, observation.report);
+            }
+            emit_counts(capture_id, observation.counts);
+        });
+    if spawned.is_err() && detail == Detail::Full {
+        // Never leave a bundle waiting on a probe that will never run.
+        publish_live_snapshot(capture_id, PROBE_UNAVAILABLE_BODY.to_string());
+    }
+}
+
+fn publish_live_snapshot(capture_id: u64, report: String) {
+    let (slot, ready) = live_snapshot_cell();
+    let mut guard = slot.lock_or_recover();
+    // A newer capture attempt owns the slot now; drop this stale report.
+    if guard
+        .as_ref()
+        .is_some_and(|pending| pending.capture_id == capture_id)
+    {
+        *guard = Some(LiveSnapshotSlot {
+            capture_id,
+            report: Some(report),
+        });
+    }
+    drop(guard);
+    ready.notify_all();
+}
+
+/// Claim the pre-kill report for `capture_id`, waiting briefly if its probe is
+/// still in flight. Returns `None` when no live observation exists for this
+/// attempt, so the caller can say so explicitly rather than imply one was
+/// taken. Consuming the slot keeps a stale report out of a later bundle.
+pub(crate) fn take_live_hang_report(capture_id: u64) -> Option<String> {
+    let (slot, ready) = live_snapshot_cell();
+    let mut guard = slot.lock_or_recover();
+    let deadline = Instant::now() + LIVE_SNAPSHOT_WAIT;
+    loop {
+        match guard.as_ref() {
+            // Some other attempt's observation, or none at all.
+            None => return None,
+            Some(pending) if pending.capture_id != capture_id => return None,
+            Some(pending) if pending.report.is_some() => {
+                return guard.take().and_then(|pending| pending.report);
+            }
+            // In flight: wait for it rather than starting a second probe.
+            Some(_) => {}
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return None;
+        };
+        let (next, timeout) = ready
+            .wait_timeout(guard, remaining)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard = next;
+        if timeout.timed_out() {
+            return None;
+        }
+    }
 }
 
 fn emit_counts(capture_id: u64, counts: AudioGraphCounts) {
@@ -408,6 +574,7 @@ fn emit_counts(capture_id: u64, counts: AudioGraphCounts) {
         device_count = counts.device_count,
         devices_running_count = counts.devices_running_count,
         query_timed_out = counts.query_timed_out,
+        probe_unavailable = counts.probe_unavailable,
         elapsed_ms = counts.elapsed_ms,
         "observed the system audio graph after a capture backend timeout"
     );
@@ -462,26 +629,30 @@ pub(crate) fn internal_owners_report() -> String {
         return report;
     };
 
-    let preview = state.app_state.microphone_preview.status();
-    report.push_str(&format!(
-        "microphone preview: state={} preview_id={} still_connecting={}\n",
-        preview.state,
-        preview
-            .preview_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        preview.still_connecting,
-    ));
+    match state.app_state.microphone_preview.status_if_uncontended() {
+        Some(preview) => report.push_str(&format!(
+            "microphone preview: state={} preview_id={} still_connecting={}\n",
+            preview.state,
+            preview
+                .preview_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            preview.still_connecting,
+        )),
+        None => report.push_str("microphone preview: <busy>\n"),
+    }
 
-    let meeting = state.meetings.status();
-    report.push_str(&format!(
-        "meeting capture: phase={:?} generation={} microphone_active={} system_audio_active={} error_code={}\n",
-        meeting.phase,
-        meeting.generation,
-        meeting.microphone_active,
-        meeting.system_audio_active,
-        meeting.error_code.as_deref().unwrap_or("none"),
-    ));
+    match state.meetings.status_if_uncontended() {
+        Some(meeting) => report.push_str(&format!(
+            "meeting capture: phase={:?} generation={} microphone_active={} system_audio_active={} error_code={}\n",
+            meeting.phase,
+            meeting.generation,
+            meeting.microphone_active,
+            meeting.system_audio_active,
+            meeting.error_code.as_deref().unwrap_or("none"),
+        )),
+        None => report.push_str("meeting capture: <busy>\n"),
+    }
     report.push_str(&format!(
         "meeting flags: active={} inference_active={} summary_active={}\n",
         state.app_state.meeting_active.load(Ordering::SeqCst),
@@ -495,17 +666,23 @@ pub(crate) fn internal_owners_report() -> String {
             .load(Ordering::SeqCst),
     ));
 
-    let query_status = state.query.status();
-    report.push_str(&format!(
-        "voice query: status={} active_pass={} holds_microphone={}\n",
-        query_status.as_str(),
-        state
-            .query
-            .active_pass_id()
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        query_status.blocks_capture(),
-    ));
+    // The active pass ID is an atomic, so it is reportable even when the
+    // status lock itself is contended.
+    let query_pass = state
+        .query
+        .active_pass_id()
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    match state.query.status_if_uncontended() {
+        Some(status) => report.push_str(&format!(
+            "voice query: status={} active_pass={query_pass} holds_microphone={}\n",
+            status.as_str(),
+            status.blocks_capture(),
+        )),
+        None => report.push_str(&format!(
+            "voice query: status=<busy> active_pass={query_pass}\n"
+        )),
+    }
 
     report.push_str(&format!(
         "dictation: status={}\n",
@@ -517,7 +694,11 @@ pub(crate) fn internal_owners_report() -> String {
     ));
     report.push_str(&format!(
         "transform: status={} active_pass={}\n",
-        state.app_state.transform_status().as_str(),
+        state
+            .app_state
+            .transform_status_if_uncontended()
+            .map(|status| status.as_str().to_string())
+            .unwrap_or_else(|| "<busy>".to_string()),
         state
             .app_state
             .active_transform_pass_id()
@@ -606,11 +787,11 @@ mod hal {
         kAudioProcessPropertyPID, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize,
         AudioObjectID, AudioObjectPropertyAddress,
     };
-    use objc2_core_foundation::{CFRetained, CFString};
+    use objc2_core_foundation::{CFArray, CFRetained, CFString};
 
     use super::{
         AudioGraphObservation, DeviceObservation, ProcessObservation, TapObservation,
-        MAX_DEVICE_OBJECTS, MAX_PROCESS_OBJECTS, MAX_SUB_DEVICES, MAX_TAP_OBJECTS,
+        MAX_DEVICE_OBJECTS, MAX_PROCESS_OBJECTS, MAX_TAP_OBJECTS,
     };
 
     fn global_address(selector: u32) -> AudioObjectPropertyAddress {
@@ -653,9 +834,23 @@ mod hal {
 
     /// Read a `CFStringRef`-valued property and copy it into an owned `String`.
     fn read_string(object: AudioObjectID, selector: u32) -> Option<String> {
+        // Safety hinges on the HAL having written a whole pointer: a short or
+        // odd-sized read would leave `value` part stale stack bytes, and
+        // `from_raw` would then release memory we never owned. Fail closed.
+        let value = read_cf_object::<CFString>(object, selector)?;
+        Some(value.to_string())
+    }
+
+    /// Read a `CFTypeRef`-valued property, taking ownership of the +1
+    /// reference the HAL hands back (these properties are documented as
+    /// "the caller is responsible for releasing the returned CFObject").
+    fn read_cf_object<T: objc2_core_foundation::Type>(
+        object: AudioObjectID,
+        selector: u32,
+    ) -> Option<CFRetained<T>> {
         let address = global_address(selector);
-        let mut value: *const CFString = std::ptr::null();
-        let mut size = std::mem::size_of::<*const CFString>() as u32;
+        let mut value: *const T = std::ptr::null();
+        let mut size = std::mem::size_of::<*const T>() as u32;
         let status = unsafe {
             AudioObjectGetPropertyData(
                 object,
@@ -666,13 +861,23 @@ mod hal {
                 NonNull::from(&mut value).cast::<c_void>(),
             )
         };
-        if status != 0 {
+        if status != 0 || size as usize != std::mem::size_of::<*const T>() {
             return None;
         }
         let value = NonNull::new(value.cast_mut())?;
-        // The HAL returns a +1 reference for CFString-valued properties.
-        let string = unsafe { CFRetained::from_raw(value) };
-        Some(string.to_string())
+        Some(unsafe { CFRetained::from_raw(value) })
+    }
+
+    /// Count the entries of a `CFArray`-valued property.
+    ///
+    /// `kAudioAggregateDevicePropertyFullSubDeviceList` is documented as "a
+    /// CFArray of CFStrings that contain the UIDs" — *not* an `AudioObjectID`
+    /// array. Reading it as one both miscounts (a pointer-sized read divided by
+    /// four) and leaks the array's +1 reference on every aggregate device.
+    /// `CFRetained` releases it for us here.
+    fn read_cf_array_count(object: AudioObjectID, selector: u32) -> Option<usize> {
+        let array = read_cf_object::<CFArray>(object, selector)?;
+        super::cf_array_count_to_usize(array.count())
     }
 
     /// Read an `AudioObjectID` array property, capped at `limit`. Returns the
@@ -696,9 +901,16 @@ mod hal {
         if status != 0 {
             return None;
         }
-        let count = byte_size as usize / std::mem::size_of::<AudioObjectID>();
+        // Clamp the allocation to the cap BEFORE allocating: a pathological
+        // HAL-reported size would otherwise OOM the probe thread, and release
+        // builds abort on allocation failure.
+        let (count, truncated) = super::planned_object_read(
+            byte_size,
+            std::mem::size_of::<AudioObjectID>(),
+            limit,
+        );
         if count == 0 {
-            return Some((Vec::new(), false));
+            return Some((Vec::new(), truncated));
         }
         let mut objects = vec![0 as AudioObjectID; count];
         let mut byte_size = (count * std::mem::size_of::<AudioObjectID>()) as u32;
@@ -717,8 +929,6 @@ mod hal {
         }
         let returned = byte_size as usize / std::mem::size_of::<AudioObjectID>();
         objects.truncate(returned.min(count));
-        let truncated = objects.len() > limit;
-        objects.truncate(limit);
         Some((objects, truncated))
     }
 
@@ -781,12 +991,10 @@ mod hal {
                         let sub_device_count = (transport_type
                             == Some(kAudioDeviceTransportTypeAggregate))
                         .then(|| {
-                            read_object_list(
+                            read_cf_array_count(
                                 object_id,
                                 kAudioAggregateDevicePropertyFullSubDeviceList,
-                                MAX_SUB_DEVICES,
                             )
-                            .map(|(objects, _)| objects.len())
                         })
                         .flatten();
                         DeviceObservation {
@@ -869,13 +1077,14 @@ mod tests {
 
     #[test]
     fn counts_only_admit_proven_live_io_and_running_devices() {
-        let counts = counts_for(&sample_observation(), false, 42);
+        let counts = counts_for(&sample_observation(), 42);
         // Two processes prove live IO: one via `running`, one via output only.
         assert_eq!(counts.running_audio_process_count, 2);
         assert_eq!(counts.tap_count, 1);
         assert_eq!(counts.device_count, 2);
         assert_eq!(counts.devices_running_count, 1);
         assert!(!counts.query_timed_out);
+        assert!(!counts.probe_unavailable);
         assert_eq!(counts.elapsed_ms, 42);
     }
 
@@ -898,7 +1107,7 @@ mod tests {
             }],
             ..AudioGraphObservation::default()
         };
-        let counts = counts_for(&observation, false, 0);
+        let counts = counts_for(&observation, 0);
         assert_eq!(counts.running_audio_process_count, 0);
         assert_eq!(counts.devices_running_count, 0);
         assert_eq!(counts.device_count, 1);
@@ -999,7 +1208,8 @@ mod tests {
         };
         let line = counts.render_line();
         assert!(line.contains("audio_graph_query_timed_out: true"));
-        assert!(line.contains("audio_graph_query_elapsed_ms: 2001"));
+        assert!(line.contains("audio_graph_probe_unavailable: false"));
+        assert!(line.contains("audio_graph_hal_elapsed_ms: 2001"));
         assert!(line.contains("running_audio_process_count: 0"));
         assert_eq!(
             QUERY_TIMED_OUT_BODY,
@@ -1008,17 +1218,142 @@ mod tests {
     }
 
     #[test]
+    fn an_unstartable_probe_is_not_reported_as_an_observed_wedge() {
+        // The two failures are distinct evidence and must stay distinguishable
+        // in the bundle's hang context, not just in telemetry.
+        let unavailable = AudioGraphCounts {
+            probe_unavailable: true,
+            ..AudioGraphCounts::default()
+        };
+        let line = unavailable.render_line();
+        assert!(line.contains("audio_graph_probe_unavailable: true"));
+        assert!(line.contains("audio_graph_query_timed_out: false"));
+        assert_ne!(PROBE_UNAVAILABLE_BODY, QUERY_TIMED_OUT_BODY);
+    }
+
+    #[test]
+    fn the_allocation_cap_is_applied_before_allocating() {
+        let object_size = std::mem::size_of::<u32>();
+        // A pathological HAL-reported size must not become a 1 GiB `vec!`.
+        let (count, truncated) = planned_object_read(u32::MAX, object_size, MAX_PROCESS_OBJECTS);
+        assert_eq!(count, MAX_PROCESS_OBJECTS);
+        assert!(truncated);
+        // Ordinary sizes pass through untouched and are not marked truncated.
+        let (count, truncated) = planned_object_read((7 * object_size) as u32, object_size, 64);
+        assert_eq!(count, 7);
+        assert!(!truncated);
+        // Exactly at the cap is not truncation.
+        let (count, truncated) = planned_object_read((64 * object_size) as u32, object_size, 64);
+        assert_eq!(count, 64);
+        assert!(!truncated);
+        // An empty list stays empty.
+        assert_eq!(planned_object_read(0, object_size, 64), (0, false));
+    }
+
+    #[test]
+    fn a_cf_array_count_is_only_believed_when_it_is_non_negative() {
+        // `kAudioAggregateDevicePropertyFullSubDeviceList` is a CFArray of
+        // CFString UIDs, so the sub-device count comes from CFArrayGetCount —
+        // a signed CFIndex.
+        assert_eq!(cf_array_count_to_usize(0), Some(0));
+        assert_eq!(cf_array_count_to_usize(3), Some(3));
+        assert_eq!(cf_array_count_to_usize(-1), None);
+        assert_eq!(cf_array_count_to_usize(isize::MIN), None);
+    }
+
+    #[test]
     fn snapshot_returns_bounded_output_within_its_deadline() {
         let started = Instant::now();
-        let snapshot = snapshot();
+        let snapshot = snapshot(Detail::Full);
         // The deadline plus the bounded `ps` resolution; never unbounded.
         assert!(
             started.elapsed() < QUERY_DEADLINE + PROCESS_NAME_DEADLINE + Duration::from_secs(2)
         );
         assert!(snapshot.report.len() <= REPORT_CAP_BYTES);
+        // `elapsed_ms` is the HAL query alone, so it stays inside the deadline
+        // even though rendering and name resolution happened afterwards.
+        assert!(snapshot.counts.elapsed_ms <= QUERY_DEADLINE.as_millis() as u64 + 500);
         if snapshot.counts.query_timed_out {
             assert_eq!(snapshot.report, QUERY_TIMED_OUT_BODY);
         }
+    }
+
+    #[test]
+    fn a_counts_only_snapshot_never_materializes_the_identity_bearing_report() {
+        // Unarmed installs take this path on every capture timeout; it must
+        // not render names, and it must not shell out to `ps`.
+        let snapshot = snapshot(Detail::CountsOnly);
+        assert!(snapshot.report.is_empty());
+    }
+
+    #[test]
+    fn the_bundle_claims_the_pre_kill_report_for_its_own_attempt_only() {
+        // Simulates the real ordering: the timeout path publishes a pending
+        // slot, the probe finishes, then the post-kill bundle claims it.
+        let (slot, _) = live_snapshot_cell();
+        *slot.lock_or_recover() = Some(LiveSnapshotSlot {
+            capture_id: 4_100,
+            report: None,
+        });
+        publish_live_snapshot(4_100, "during-hang graph".to_string());
+
+        // A different attempt must never receive this report.
+        assert_eq!(take_live_hang_report(4_101), None);
+        // The owning attempt gets it exactly once; the slot is then consumed
+        // so a later bundle cannot ship a stale live-hang view.
+        assert_eq!(
+            take_live_hang_report(4_100).as_deref(),
+            Some("during-hang graph")
+        );
+        assert_eq!(take_live_hang_report(4_100), None);
+    }
+
+    #[test]
+    fn a_stale_probe_result_cannot_overwrite_a_newer_attempts_slot() {
+        let (slot, _) = live_snapshot_cell();
+        *slot.lock_or_recover() = Some(LiveSnapshotSlot {
+            capture_id: 4_200,
+            report: None,
+        });
+        // An older attempt's probe finishing late must not land in the slot.
+        publish_live_snapshot(4_199, "stale graph".to_string());
+        assert_eq!(take_live_hang_report(4_200), None);
+        assert_eq!(take_live_hang_report(4_199), None);
+    }
+
+    #[test]
+    fn claiming_a_report_that_was_never_observed_gives_up_rather_than_waiting() {
+        let (slot, _) = live_snapshot_cell();
+        *slot.lock_or_recover() = None;
+        let started = Instant::now();
+        assert_eq!(take_live_hang_report(9_999), None);
+        // No pending slot means no wait at all — the bundle is never delayed
+        // by an observation that was never started.
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn the_owners_report_reports_contention_instead_of_blocking_on_it() {
+        // The State-backed subsystems need a live app handle, but the
+        // lifecycle line is reachable here and proves the contract's shape:
+        // a diagnostic answers, it does not hang.
+        let started = Instant::now();
+        let report = internal_owners_report();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(report.contains("capture lifecycle:"));
+        assert!(report.len() <= REPORT_CAP_BYTES);
+    }
+
+    #[test]
+    fn a_held_lock_is_reported_as_busy_rather_than_waited_out() {
+        // The exact primitive every owners-report reader is built on.
+        let lock = Mutex::new(7);
+        let held = lock.lock().expect("uncontended");
+        let started = Instant::now();
+        assert!(lock.try_lock_or_recover().is_none());
+        assert!(started.elapsed() < Duration::from_millis(100));
+        drop(held);
+        assert_eq!(lock.try_lock_or_recover().map(|value| *value), Some(7));
     }
 
     /// Manual proof on real hardware:
@@ -1026,13 +1361,14 @@ mod tests {
     #[test]
     #[ignore = "requires real Core Audio hardware; run manually"]
     fn print_real_audio_graph_snapshot() {
-        let snapshot = snapshot();
+        let snapshot = snapshot(Detail::Full);
         println!("counts: {:?}", snapshot.counts);
         println!("{}", snapshot.report);
         assert!(
             !snapshot.counts.query_timed_out,
             "healthy hardware must answer"
         );
+        assert!(!snapshot.counts.probe_unavailable);
         assert!(snapshot.counts.device_count > 0, "a Mac always has devices");
     }
 }

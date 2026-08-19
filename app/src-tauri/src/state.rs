@@ -564,11 +564,17 @@ impl AppState {
     /// the lock was contended, which is itself a reportable fact — a probe
     /// investigating a stall must never join the queue behind it.
     pub fn dictation_status_if_uncontended(&self) -> Option<DictationStatus> {
-        match self.dictation.try_lock() {
-            Ok(dictation) => Some(dictation.status),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().status),
-            Err(std::sync::TryLockError::WouldBlock) => None,
-        }
+        self.dictation
+            .try_lock_or_recover()
+            .map(|dictation| dictation.status)
+    }
+
+    /// Non-blocking sibling of [`AppState::transform_status`], for the same
+    /// reason as [`AppState::dictation_status_if_uncontended`].
+    pub fn transform_status_if_uncontended(&self) -> Option<TransformStatus> {
+        self.transform_status
+            .try_lock_or_recover()
+            .map(|status| *status)
     }
 
     pub fn next_transform_pass_id(&self) -> u64 {

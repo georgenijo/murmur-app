@@ -120,6 +120,13 @@ use tauri::{Emitter, Manager};
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
+
+    /// Non-blocking sibling of [`MutexExt::lock_or_recover`]: recovers from
+    /// poisoning exactly the same way, but returns `None` instead of waiting
+    /// when the lock is held. Diagnostics use this so a probe investigating a
+    /// stall can never join the queue behind it — contention is reported as a
+    /// fact rather than waited out.
+    fn try_lock_or_recover(&self) -> Option<MutexGuard<'_, T>>;
 }
 
 impl<T> MutexExt<T> for Mutex<T> {
@@ -128,6 +135,14 @@ impl<T> MutexExt<T> for Mutex<T> {
             tracing::warn!(target: "system", "Mutex was poisoned, recovering data");
             poisoned.into_inner()
         })
+    }
+
+    fn try_lock_or_recover(&self) -> Option<MutexGuard<'_, T>> {
+        match self.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 }
 

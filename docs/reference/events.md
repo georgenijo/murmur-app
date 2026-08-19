@@ -204,19 +204,26 @@ content, paths, or raw errors.
 A capture backend that exceeds its initialization budget emits the stable
 structured code `audio.system_audio_graph_observed` from every install, armed
 for hang diagnostics or not. It is a strictly content-free aggregate of the
-Core Audio HAL at the hang instant, collected on a throwaway thread behind a
-two-second deadline so a wedged `coreaudiod` cannot delay the kill/fallback
-sequence. Its all-build allowlist admits only `event_code`, positive
-`capture_id`, the counts `running_audio_process_count`, `tap_count`,
-`device_count`, and `devices_running_count` (each at most 4,096), boolean
-`query_timed_out`, and `elapsed_ms` (at most 60,000). PIDs, process names, tap
-UIDs, device names and UIDs, and raw errors are rejected at the telemetry
-layer, and the summary is the constant `System audio graph observed`. Counts
-that contradict each other — more running devices than devices, or a timed-out
-query that still counted objects — collapse to the event code alone. At most
-one such event is emitted per capture attempt (keyed on the monotonic
-`capture_id`). The identity-bearing rendering of the same observation stays in
-the server-armed hang bundle; see
+Core Audio HAL at the hang instant — observed *before* the hung worker is
+killed, because the blocker often clears when the killed client's transport
+tears down — collected on a throwaway thread behind a two-second deadline so a
+wedged `coreaudiod` cannot delay the kill/fallback sequence. Its all-build
+allowlist admits only `event_code`, positive `capture_id`, the counts
+`running_audio_process_count`, `tap_count`, `device_count`, and
+`devices_running_count` (each at most 4,096), the booleans `query_timed_out`
+and `probe_unavailable`, and `elapsed_ms` (at most 60,000). `elapsed_ms`
+measures the HAL query alone; name resolution and rendering happen afterwards
+and are excluded. `query_timed_out` means the query was started and did not
+answer — direct evidence of a wedge — while `probe_unavailable` means the
+probe thread could never be started, which is deliberately not reported as an
+observed wedge. PIDs, process names, tap UIDs, device names and UIDs, and raw
+errors are rejected at the telemetry layer, and the summary is the constant
+`System audio graph observed`. Counts that contradict each other — more
+running devices than devices, a timed-out or unstarted query that still
+counted objects, or both failure flags at once — collapse to the event code
+alone. At most one such event is emitted per capture attempt (keyed on the
+monotonic `capture_id`). The identity-bearing rendering of the same
+observation is retained only on armed installs, for the hang bundle; see
 [Log Shipping](../features/log-shipping.md#server-armed-hang-diagnostics-hang_diagnosticsrs).
 
 An exhausted dictation diagnostics-row start emits the stable structured code

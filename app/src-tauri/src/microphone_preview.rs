@@ -1,3 +1,4 @@
+use crate::MutexExt;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -303,7 +304,17 @@ impl MicrophonePreviewState {
     }
 
     pub(crate) fn status(&self) -> MicrophonePreviewStatus {
-        let inner = self.inner();
+        Self::status_from(&self.inner())
+    }
+
+    /// Non-blocking status read for hang diagnostics. `None` means the preview
+    /// lock was contended, which is itself reportable: a probe must never wait
+    /// on the subsystem it is describing.
+    pub(crate) fn status_if_uncontended(&self) -> Option<MicrophonePreviewStatus> {
+        Some(Self::status_from(&self.inner.try_lock_or_recover()?))
+    }
+
+    fn status_from(inner: &PreviewInner) -> MicrophonePreviewStatus {
         if let Some(active) = inner.active.as_ref() {
             let error = active.error.as_ref();
             return MicrophonePreviewStatus {

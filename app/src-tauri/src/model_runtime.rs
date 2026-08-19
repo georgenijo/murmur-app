@@ -454,11 +454,7 @@ impl ModelRuntimeManager {
     /// `snapshot`/`catalog`) and never touches `inner`, which is held across a
     /// whole model load. `None` means the status map was contended.
     pub fn lifecycle_states(&self) -> Option<Vec<(String, LifecycleState, bool)>> {
-        let statuses = match self.statuses.try_lock() {
-            Ok(statuses) => statuses,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
+        let statuses = self.statuses.try_lock_or_recover()?;
         Some(
             statuses
                 .iter()
@@ -471,13 +467,9 @@ impl ModelRuntimeManager {
     /// load holds that lock for its whole duration, so a diagnostic must not
     /// block on it.
     pub fn active_model_if_uncontended(&self) -> Option<Option<String>> {
-        match self.inner.try_lock() {
-            Ok(inner) => Some(inner.active_model.clone()),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                Some(poisoned.into_inner().active_model.clone())
-            }
-            Err(std::sync::TryLockError::WouldBlock) => None,
-        }
+        self.inner
+            .try_lock_or_recover()
+            .map(|inner| inner.active_model.clone())
     }
 
     pub fn any_model_installed(&self) -> bool {

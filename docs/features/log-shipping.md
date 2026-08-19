@@ -31,10 +31,11 @@ carries `{"diagnostics": bool}` per install UUID (armed by listing the UUID in
 `~/murmur-logs/diag-installs.txt` on the receiver; no restart needed). Only on
 an armed install, a capture attempt that reaches half its budget without first
 PCM gets a native stack `sample` of the hung worker, and after the confirmed
-kill a single bounded text bundle — worker stack, system audio graph, Murmur
-internal audio owners, 90s of coreaudiod unified log, audio/Bluetooth
-topology, process list, power assertions, installed HAL plug-ins — is uploaded
-to `POST /bundle`. This content names devices and installed software, so an
+kill a single bounded text bundle — worker stack, the system audio graph
+during the hang and again after the kill, Murmur internal audio owners, 90s of
+coreaudiod unified log, audio/Bluetooth topology, process list, power
+assertions, installed HAL plug-ins — is uploaded to
+`POST /bundle`. This content names devices and installed software, so an
 install must only be armed with its owner's agreement; disarming is
 server-side and takes effect within one shipper tick. Arming is logged
 loudly in the armed install's own event stream.
@@ -49,30 +50,47 @@ server-supplied text. The last honored epoch is process-lifetime state, so
 clear the install's `collect-now.txt` line once its bundle arrives to avoid
 a re-collection on the next app launch.
 
-Two sections (`audio_graph_snapshot.rs`) name the blocker rather than only the
-machine:
+Three sections (`audio_graph_snapshot.rs`) name the blocker rather than only
+the machine. The graph content is the public Core Audio HAL's process objects
+(PID, resolved executable name, and the `IsRunning`/`IsRunningInput`/
+`IsRunningOutput` flags), taps (object ID and UID), and devices (name,
+transport type, `DeviceIsRunningSomewhere`, and — for aggregates — the
+`FullSubDeviceList` CFArray count):
 
-- **system audio graph** — the public Core Audio HAL's process objects (PID,
-  resolved executable name, and the `IsRunning`/`IsRunningInput`/
-  `IsRunningOutput` flags), taps (object ID and UID), and devices (name,
-  transport type, `DeviceIsRunningSomewhere`, and aggregate sub-device count).
-  Because a wedged `coreaudiod` also blocks these property reads, the whole
-  query runs on a dedicated throwaway thread behind a two-second deadline; on
-  expiry the thread is abandoned and the section reads
-  `<audio graph query timed out after 2s>`, which is itself the evidence. It
-  never runs on the capture supervisor thread and never gates the
-  fallback/kill sequence. Object lists, per-value text, and the whole section
-  are individually capped.
+- **system audio graph (during hang)** — observed *before* the hung worker is
+  killed. This is the section that matters: the field evidence says the
+  blocker frequently clears the moment the killed client's transport tears
+  down, so a post-kill-only graph would routinely show an already-drained
+  queue. The observation is taken once at the capture timeout, cached by
+  capture ID, and claimed here rather than re-queried, so an armed install
+  never runs two competing probes for the same attempt. If no live observation
+  finished in time the section says so explicitly instead of implying one was
+  taken.
+- **system audio graph (after kill)** — a fresh observation at collection
+  time. The difference between the two is itself evidence about who held the
+  engine queue.
 - **murmur internal audio owners** — what Murmur itself holds at collection
   time: capture lifecycle phase/owner, microphone preview, meeting capture and
   its ASR flags, Voice Query, dictation, transform, file transcription, and
-  model-runtime lifecycle. Every read is `try_lock`-based and reports `<busy>`
-  rather than waiting, so the probe never joins the queue it is describing.
+  model-runtime lifecycle. Every read goes through `MutexExt::try_lock_or_recover`
+  and reports `<busy>` on contention rather than waiting, so the probe never
+  joins the queue it is describing.
+
+Because a wedged `coreaudiod` also blocks the HAL property reads themselves,
+every query runs on a dedicated throwaway thread behind a two-second deadline;
+on expiry the thread is abandoned and the section reads `<audio graph query
+timed out after 2s>`, which is itself the evidence. A probe thread that cannot
+be started at all is reported distinctly, never as an observed wedge. None of
+this runs on the capture supervisor thread or gates the fallback/kill
+sequence. Object lists are capped before allocation, and per-value text and
+each whole section are capped independently.
 
 The same observation's content-free counts also appear in the bundle's `hang
 context` header and ship from **every** install as the
 `audio.system_audio_graph_observed` structured event (see
-[events reference](../../docs/reference/events.md#structured-logging)).
+[events reference](../reference/events.md#structured-logging)). Unarmed
+installs compute only those counts — the identity-bearing report is never
+rendered, and the `ps` name resolution never runs.
 
 ## Architecture
 
