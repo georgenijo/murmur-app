@@ -1946,26 +1946,9 @@ mod tests {
             "query_timed_out": false,
             "elapsed_ms": 9
         });
-        let mutations: [(&str, fn(&mut serde_json::Value)); 5] = [
-            ("more running devices than devices", |data| {
-                data["devices_running_count"] = serde_json::json!(9);
-            }),
-            ("a timed-out query that still counted objects", |data| {
-                data["query_timed_out"] = serde_json::json!(true);
-            }),
-            ("a zero capture id", |data| {
-                data["capture_id"] = serde_json::json!(0);
-            }),
-            ("a stringly-typed count", |data| {
-                data["tap_count"] = serde_json::json!("1");
-            }),
-            ("an out-of-range elapsed time", |data| {
-                data["elapsed_ms"] = serde_json::json!(60_001);
-            }),
-        ];
-        for (label, mutate) in mutations {
+        let collapses = |label: &str, key: &str, value: serde_json::Value| {
             let mut data = base.clone();
-            mutate(&mut data);
+            data[key] = value;
             sanitize_event_data("audio", &mut data, true);
             assert_eq!(
                 data.as_object().unwrap().len(),
@@ -1973,7 +1956,28 @@ mod tests {
                 "{label} must collapse to the event code alone"
             );
             assert_eq!(data["event_code"], "audio.system_audio_graph_observed");
-        }
+        };
+        collapses(
+            "more running devices than devices",
+            "devices_running_count",
+            serde_json::json!(9),
+        );
+        collapses(
+            "a timed-out query that still counted objects",
+            "query_timed_out",
+            serde_json::json!(true),
+        );
+        collapses("a zero capture id", "capture_id", serde_json::json!(0));
+        collapses(
+            "a stringly-typed count",
+            "tap_count",
+            serde_json::json!("1"),
+        );
+        collapses(
+            "an out-of-range elapsed time",
+            "elapsed_ms",
+            serde_json::json!(60_001),
+        );
     }
 
     #[test]
