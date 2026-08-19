@@ -193,8 +193,10 @@ mod tests {
 
     #[test]
     fn app_binding_temporarily_overrides_and_leaving_restores_manual_mode() {
-        let mut state = DictationState::default();
-        state.manual_mode_id = "builtin.notes".into();
+        let mut state = DictationState {
+            manual_mode_id: "builtin.notes".into(),
+            ..DictationState::default()
+        };
         state.app_profiles.push(AppProfile {
             bundle_id: "com.example.mail".into(),
             label: "Mail".into(),
@@ -226,8 +228,10 @@ mod tests {
 
     #[test]
     fn disabled_or_unknown_modes_fail_back_to_everyday() {
-        let mut state = DictationState::default();
-        state.manual_mode_id = "missing".into();
+        let state = DictationState {
+            manual_mode_id: "missing".into(),
+            ..DictationState::default()
+        };
         let status = resolved_status(&state, None);
         assert_eq!(status.id, "builtin.everyday");
         assert_eq!(status.source, ModeSource::Manual);
