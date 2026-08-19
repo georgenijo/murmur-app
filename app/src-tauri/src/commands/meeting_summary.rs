@@ -80,7 +80,8 @@ fn stable_error(error: TransformError) -> &'static str {
         TransformError::NotDownloaded => "model_not_downloaded",
         TransformError::Busy | TransformError::HeavyRuntimeActive => "runtime_busy",
         TransformError::Timeout => "timeout",
-        TransformError::InvalidRequest | TransformError::OutputInvalid => "invalid_output",
+        TransformError::InvalidRequest => "invalid_request",
+        TransformError::OutputInvalid => "invalid_output",
         _ => "generation_failed",
     }
 }
@@ -152,11 +153,12 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
         let input = render_chunk_input(&chunk);
         let result = state
             .transform_runtime
-            .transform(
+            .transform_bounded(
                 SUMMARY_INSTRUCTION,
                 &input,
                 SUMMARY_CHUNK_TIMEOUT,
                 cancel.clone(),
+                256,
             )
             .await;
         peak_rss_mb = peak_rss_mb.max(state.transform_runtime.resident_rss_mb());
@@ -180,7 +182,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
         let Some(artifact) = artifact else {
             state.meeting_summaries.update(&app, |status| {
                 status.phase = MeetingSummaryPhase::Failed;
-                status.error_code = Some("invalid_output".into());
+                status.error_code = Some("artifact_invalid".into());
                 status.elapsed_ms = started.elapsed().as_millis() as u64;
                 status.peak_rss_mb = peak_rss_mb;
             });

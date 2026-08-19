@@ -987,9 +987,38 @@ mod supported {
             deadline: Duration,
             cancel: CancelToken,
         ) -> Result<TransformOutput, TransformError> {
-            self.transform_inner(instruction, input, deadline, cancel, None, None)
-                .await
-                .result
+            self.transform_inner(
+                instruction,
+                input,
+                deadline,
+                cancel,
+                None,
+                None,
+                MAX_OUTPUT_TOKENS,
+            )
+            .await
+            .result
+        }
+
+        pub async fn transform_bounded(
+            self: &Arc<Self>,
+            instruction: &str,
+            input: &str,
+            deadline: Duration,
+            cancel: CancelToken,
+            max_output_tokens: u32,
+        ) -> Result<TransformOutput, TransformError> {
+            self.transform_inner(
+                instruction,
+                input,
+                deadline,
+                cancel,
+                None,
+                None,
+                max_output_tokens,
+            )
+            .await
+            .result
         }
 
         /// Correlated transform entry point for the selected-text flow. The
@@ -1009,6 +1038,7 @@ mod supported {
                 cancel,
                 Some(transform_pass_id),
                 None,
+                MAX_OUTPUT_TOKENS,
             )
             .await
         }
@@ -1032,10 +1062,12 @@ mod supported {
                 cancel,
                 Some(transform_pass_id),
                 Some(on_chunk),
+                MAX_OUTPUT_TOKENS,
             )
             .await
         }
 
+        #[allow(clippy::too_many_arguments)]
         async fn transform_inner(
             self: &Arc<Self>,
             instruction: &str,
@@ -1044,6 +1076,7 @@ mod supported {
             cancel: CancelToken,
             transform_pass_id: Option<u64>,
             on_chunk: Option<ChunkCallback>,
+            max_output_tokens: u32,
         ) -> CorrelatedTransformOutcome {
             // App-side limit enforcement (defence in depth over the helper).
             if instruction.len() > MAX_INSTRUCTION_BYTES
@@ -1052,6 +1085,8 @@ mod supported {
                 || input.contains('\0')
                 || deadline.is_zero()
                 || deadline > Duration::from_millis(MAX_DEADLINE_MS)
+                || max_output_tokens == 0
+                || max_output_tokens > MAX_OUTPUT_TOKENS
             {
                 return CorrelatedTransformOutcome::before_runtime(TransformError::InvalidRequest);
             }
@@ -1094,6 +1129,7 @@ mod supported {
                     deadline,
                     &cancel,
                     on_chunk.as_deref(),
+                    max_output_tokens,
                 )
             })
             .await;
@@ -1141,6 +1177,7 @@ mod supported {
             deadline: Duration,
             cancel: &CancelToken,
             on_chunk: Option<&(dyn Fn(u32, String) + Send + Sync)>,
+            max_output_tokens: u32,
         ) -> CorrelatedTransformOutcome {
             let mut inner = self.lock();
             let cache_hit = inner.child.is_some();
@@ -1231,6 +1268,7 @@ mod supported {
                     cancel,
                     &mut diagnostics,
                     on_chunk,
+                    max_output_tokens,
                 )
             };
 
@@ -1738,6 +1776,7 @@ mod supported {
         cancel: &CancelToken,
         diagnostics: &mut SidecarDiagnostics,
         on_chunk: Option<&(dyn Fn(u32, String) + Send + Sync)>,
+        max_output_tokens: u32,
     ) -> RequestOutcome {
         let transform = HostMessage::Transform {
             protocol: PROTOCOL_NAME.to_string(),
@@ -1746,7 +1785,7 @@ mod supported {
             request_id: request_id.to_string(),
             instruction: instruction.to_string(),
             input: input.to_string(),
-            max_output_tokens: MAX_OUTPUT_TOKENS,
+            max_output_tokens,
             deadline_ms: deadline.as_millis() as u64,
         };
         if write_frame(&mut child.stdin, &transform).is_err() {
@@ -2132,6 +2171,17 @@ impl LlmSidecar {
         _input: &str,
         _deadline: Duration,
         _cancel: CancelToken,
+    ) -> Result<TransformOutput, TransformError> {
+        Err(TransformError::Unsupported)
+    }
+
+    pub async fn transform_bounded(
+        self: &Arc<Self>,
+        _instruction: &str,
+        _input: &str,
+        _deadline: Duration,
+        _cancel: CancelToken,
+        _max_output_tokens: u32,
     ) -> Result<TransformOutput, TransformError> {
         Err(TransformError::Unsupported)
     }

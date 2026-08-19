@@ -102,7 +102,9 @@ per-process nonce appear in every frame. The allowlist is:
 
 There is one in-flight transform. Frames are limited to 64 KiB, instructions to
 4 KiB, inputs and outputs to 16 KiB, outputs to 2,048 tokens, context to 8,192
-tokens, and deadlines to 30 seconds. Error payloads are stable enums with no raw
+tokens, and deadlines to 120 seconds. Selected-text transforms retain their
+shorter call-site deadline; bounded meeting-summary chunks may use the extended
+limit for local generation. Error payloads are stable enums with no raw
 stderr. The schema has no executable, arguments, environment, working
 directory, path, URL, host, port, model override, tool, clipboard, selection,
 or screen fields.
@@ -117,8 +119,9 @@ retry, undo, paste, and transform-management UI remain issue #254.
 ### Lifecycle and resources
 
 The helper is lazy-spawned and unloads after five idle minutes. Model load has a
-30-second deadline; transformations default to 15 seconds and cannot exceed 30
-seconds. Cancellation is cooperative between decoding steps, followed by a
+30-second deadline; selected-text transformations default to 15 seconds, while
+meeting-summary chunks use an explicit bounded 120-second ceiling and a smaller
+output-token budget. Cancellation is cooperative between decoding steps, followed by a
 forced process kill if it does not complete within 250 ms. Three crashes within
 ten minutes disable the runtime until explicit retry.
 

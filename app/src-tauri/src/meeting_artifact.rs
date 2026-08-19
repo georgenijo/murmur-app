@@ -104,14 +104,27 @@ pub fn validate_artifact(artifact: &mut MeetingArtifactV1, allowed: &HashSet<i64
 
 pub fn parse_artifact(output: &str, allowed: &HashSet<i64>) -> Option<MeetingArtifactV1> {
     let output = output.trim();
-    let candidate = if output.starts_with('{') && output.ends_with('}') {
-        output
-    } else {
-        let start = output.find('{')?;
-        let end = output.rfind('}')?;
-        output.get(start..=end)?
-    };
-    let mut artifact: MeetingArtifactV1 = serde_json::from_str(candidate).ok()?;
+    let start = output.find('{')?;
+    let candidate = output.get(start..)?;
+    let mut values = serde_json::Deserializer::from_str(candidate).into_iter::<serde_json::Value>();
+    let mut value = values.next()?.ok()?;
+    for field in ["decisions", "openQuestions"] {
+        if let Some(items) = value
+            .get_mut(field)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for item in items {
+                if let Some(object) = item.as_object_mut() {
+                    for optional in ["owner", "dueDate"] {
+                        if object.get(optional).is_some_and(serde_json::Value::is_null) {
+                            object.remove(optional);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut artifact: MeetingArtifactV1 = serde_json::from_value(value).ok()?;
     validate_artifact(&mut artifact, allowed).then_some(artifact)
 }
 
@@ -206,7 +219,7 @@ pub fn render_chunk_input(segments: &[MeetingSegment]) -> String {
         .join("\n")
 }
 
-pub const SUMMARY_INSTRUCTION: &str = r#"Return ONLY compact JSON with this exact shape: {"schema":"murmur.meeting-artifact.v1","summary":{"text":"...","sourceSegmentIds":[1]},"decisions":[],"actionItems":[{"text":"...","owner":null,"dueDate":null,"sourceSegmentIds":[1]}],"openQuestions":[]}. Use only supplied segment IDs. Every claim needs supporting IDs. Never guess owners or dates; use null. No markdown."#;
+pub const SUMMARY_INSTRUCTION: &str = r#"Return one line of JSON and stop after the final }. Use this exact shape: {"schema":"murmur.meeting-artifact.v1","summary":{"text":"...","sourceSegmentIds":[1]},"decisions":[],"actionItems":[{"text":"...","owner":null,"dueDate":null,"sourceSegmentIds":[1]}],"openQuestions":[]}. Use at most 80 words total and at most 3 items per array. Use only supplied segment IDs. Every claim needs supporting IDs. Never guess owners or dates; use null. No markdown, commentary, repetition, or extra keys."#;
 
 #[cfg(test)]
 mod tests {
@@ -218,6 +231,16 @@ mod tests {
         let json = r#"{"schema":"murmur.meeting-artifact.v1","summary":{"text":"Done","sourceSegmentIds":[1]},"decisions":[],"actionItems":[],"openQuestions":[]}"#;
         assert!(parse_artifact(json, &allowed).is_some());
         assert!(parse_artifact(&format!("```json\n{json}\n```"), &allowed).is_some());
+        let compatible = json.replace(
+            r#""openQuestions":[]"#,
+            r#""openQuestions":[{"text":"Pending","owner":null,"dueDate":null,"sourceSegmentIds":[1]}]"#,
+        );
+        assert!(parse_artifact(&compatible, &allowed).is_some());
+        assert!(parse_artifact(
+            &compatible.replace("\"owner\":null", "\"owner\":\"guess\""),
+            &allowed
+        )
+        .is_none());
         assert!(parse_artifact(&json.replace("[1]", "[2]"), &allowed).is_none());
     }
 }
