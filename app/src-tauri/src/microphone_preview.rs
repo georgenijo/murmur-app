@@ -311,7 +311,8 @@ impl MicrophonePreviewState {
     /// lock was contended, which is itself reportable: a probe must never wait
     /// on the subsystem it is describing.
     pub(crate) fn status_if_uncontended(&self) -> Option<MicrophonePreviewStatus> {
-        Some(Self::status_from(&self.inner.try_lock_or_recover()?))
+        let inner = self.inner.try_lock_or_recover()?;
+        Some(Self::status_from(&inner))
     }
 
     fn status_from(inner: &PreviewInner) -> MicrophonePreviewStatus {
