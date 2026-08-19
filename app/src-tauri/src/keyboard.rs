@@ -945,10 +945,10 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 let listener_generation = LISTENER_GENERATION.load(Ordering::SeqCst);
                 trace_raw_callback(&event, mode);
 
-                if PASTE_LAST_ACTIVE.load(Ordering::SeqCst) {
-                    if handle_paste_last_chord(&event.event_type) {
-                        crate::delivery_recovery::spawn_retry(handle.clone());
-                    }
+                if PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
+                    && handle_paste_last_chord(&event.event_type)
+                {
+                    crate::delivery_recovery::spawn_retry(handle.clone());
                 }
 
                 // Escape key: cancel recording/transcription regardless of mode.
