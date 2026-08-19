@@ -100,6 +100,22 @@ fail-closed.
 |---------|------------------|
 | Clipboard copy | None |
 | Auto-paste | Accessibility |
+| Paste Last global shortcut | Accessibility |
+
+## Paste Last / Retry Delivery
+
+The latest nonempty final text that completed clipboard delivery is retained in
+one process-memory slot with its immutable delivery target. The command palette,
+tray, and optional global `⌘⇧V` shortcut all call
+the same Rust command. It runs `inject_text()` again, including Accessibility,
+focused-role, exact-process, process-instance, and pasteboard-generation checks.
+If the original target is no longer focused, the text is copied to the clipboard
+and automatic paste fails closed. Before the first completed delivery the action
+returns the explicit message “Nothing to paste yet.”
+
+Retry never records, transcribes, transforms, adds History, changes statistics,
+or updates correction learning. The retained text is replaced only by a later
+successful final delivery and disappears when Murmur exits.
 
 Settings > Delivery shows accessibility permission status when effective
 auto-paste is enabled, with a "Grant" button that opens System Settings.

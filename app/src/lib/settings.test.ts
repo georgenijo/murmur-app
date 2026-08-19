@@ -154,6 +154,19 @@ describe('loadSettings', () => {
     }
   });
 
+  it('keeps the Paste Last shortcut opt-in and rejects malformed persistence', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      pasteLastShortcutEnabled: 'yes',
+    }));
+    expect(loadSettings().pasteLastShortcutEnabled).toBe(false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      pasteLastShortcutEnabled: true,
+    }));
+    expect(loadSettings().pasteLastShortcutEnabled).toBe(true);
+  });
+
   it('defaults and bounds persisted sound cue settings', () => {
     for (const [stored, expected] of [
       [undefined, DEFAULT_SETTINGS.soundCueVolume],

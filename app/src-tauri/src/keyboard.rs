@@ -774,6 +774,41 @@ static TRANSFORM_ACTIVE: AtomicBool = AtomicBool::new(false);
 static QUERY_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static QUERY_GENERATION: AtomicU64 = AtomicU64::new(0);
+static PASTE_LAST_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PASTE_LAST_META_DOWN: AtomicBool = AtomicBool::new(false);
+static PASTE_LAST_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
+static PASTE_LAST_LATCHED: AtomicBool = AtomicBool::new(false);
+
+fn handle_paste_last_chord(event_type: &EventType) -> bool {
+    match event_type {
+        EventType::KeyPress(Key::MetaLeft | Key::MetaRight) => {
+            PASTE_LAST_META_DOWN.store(true, Ordering::SeqCst);
+        }
+        EventType::KeyRelease(Key::MetaLeft | Key::MetaRight) => {
+            PASTE_LAST_META_DOWN.store(false, Ordering::SeqCst);
+            PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+        }
+        EventType::KeyPress(Key::ShiftLeft | Key::ShiftRight) => {
+            PASTE_LAST_SHIFT_DOWN.store(true, Ordering::SeqCst);
+        }
+        EventType::KeyRelease(Key::ShiftLeft | Key::ShiftRight) => {
+            PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
+            PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+        }
+        EventType::KeyPress(Key::KeyV)
+            if PASTE_LAST_META_DOWN.load(Ordering::SeqCst)
+                && PASTE_LAST_SHIFT_DOWN.load(Ordering::SeqCst)
+                && !PASTE_LAST_LATCHED.swap(true, Ordering::SeqCst) =>
+        {
+            return true;
+        }
+        EventType::KeyRelease(Key::KeyV) => {
+            PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+        }
+        _ => {}
+    }
+    false
+}
 
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
@@ -896,6 +931,7 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst)
                     && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
                     && !QUERY_ACTIVE.load(Ordering::SeqCst)
+                    && !PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
                 {
                     return;
                 }
@@ -908,6 +944,12 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 };
                 let listener_generation = LISTENER_GENERATION.load(Ordering::SeqCst);
                 trace_raw_callback(&event, mode);
+
+                if PASTE_LAST_ACTIVE.load(Ordering::SeqCst) {
+                    if handle_paste_last_chord(&event.event_type) {
+                        crate::delivery_recovery::spawn_retry(handle.clone());
+                    }
+                }
 
                 // Escape key: cancel recording/transcription regardless of mode.
                 // Must be checked before mode-specific logic so it works even
@@ -1440,6 +1482,21 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
     }
 }
 
+pub fn start_paste_last_listener(app_handle: tauri::AppHandle) {
+    PASTE_LAST_META_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+    PASTE_LAST_ACTIVE.store(true, Ordering::SeqCst);
+    ensure_listener_thread_spawned(app_handle);
+}
+
+pub fn stop_paste_last_listener() {
+    PASTE_LAST_ACTIVE.store(false, Ordering::SeqCst);
+    PASTE_LAST_META_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+}
+
 /// Publish cancellation for the exact physical transform pass whose hold
 /// context Escape consumed.
 ///
@@ -1744,6 +1801,21 @@ mod tests {
 
     fn release(key: Key) -> EventType {
         EventType::KeyRelease(key)
+    }
+
+    #[test]
+    fn paste_last_chord_requires_command_shift_v_and_latches_key_repeat() {
+        stop_paste_last_listener();
+        assert!(!handle_paste_last_chord(&press(Key::MetaLeft)));
+        assert!(!handle_paste_last_chord(&press(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&release(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&press(Key::ShiftLeft)));
+        assert!(handle_paste_last_chord(&press(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&press(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&release(Key::KeyV)));
+        assert!(handle_paste_last_chord(&press(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&release(Key::MetaLeft)));
+        assert!(!handle_paste_last_chord(&release(Key::ShiftLeft)));
     }
 
     #[test]

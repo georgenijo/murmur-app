@@ -470,6 +470,19 @@ describe('SettingsPanel information architecture', () => {
     expect(selectedTool).toBeTruthy();
     expect(container.textContent).toContain('Diagnostics workspace');
   });
+  it('offers the opt-in Paste Last global shortcut in Delivery settings', async () => {
+    const delivery = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Delivery',
+    ) as HTMLButtonElement;
+    await act(async () => delivery.click());
+    const toggle = container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    await act(async () => toggle.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ pasteLastShortcutEnabled: true });
+    expect(container.textContent).toContain('⌘⇧V');
+    expect(container.textContent).toContain('secure target checks');
+  });
 });
 
 describe('SettingsPanel Voice Query async ownership', () => {

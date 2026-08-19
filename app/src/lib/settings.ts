@@ -223,6 +223,8 @@ export interface Settings {
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
+  /** Opt-in global Command-Shift-V shortcut for Paste Last. */
+  pasteLastShortcutEnabled: boolean;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -413,6 +415,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Native CGEvents can paste immediately in the common case. Apps that move
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
+  pasteLastShortcutEnabled: false,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -671,6 +674,9 @@ export function loadSettings(): Settings {
         parsed.autoPasteDelayMs = DEFAULT_SETTINGS.autoPasteDelayMs;
       } else {
         parsed.autoPasteDelayMs = Math.max(0, Math.min(500, Math.trunc(parsed.autoPasteDelayMs)));
+      }
+      if (typeof parsed.pasteLastShortcutEnabled !== 'boolean') {
+        parsed.pasteLastShortcutEnabled = DEFAULT_SETTINGS.pasteLastShortcutEnabled;
       }
 
       // transformHoldKey: `null` (disabled) or one of TRANSFORM_KEY_OPTIONS.

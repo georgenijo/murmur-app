@@ -17,6 +17,7 @@ mod code_signing;
 mod commands;
 mod correct_and_teach;
 mod correction;
+mod delivery_recovery;
 mod dictation_context;
 mod dictation_telemetry;
 pub mod evaluation;
@@ -138,6 +139,7 @@ pub(crate) struct State {
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) meeting_store: meeting_store::MeetingStore,
     pub(crate) meetings: meeting_capture::MeetingCoordinator,
+    pub(crate) delivery_recovery: delivery_recovery::DeliveryRecoveryState,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
@@ -243,6 +245,7 @@ pub fn run() {
             knowledge: knowledge_store::KnowledgeStore::default(),
             meeting_store: meeting_store::MeetingStore::default(),
             meetings: meeting_capture::MeetingCoordinator::default(),
+            delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
@@ -257,6 +260,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
+            delivery_recovery::retry_last_delivery,
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
@@ -303,6 +307,7 @@ pub fn run() {
             commands::keyboard::set_keyboard_recording,
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
+            commands::keyboard::set_paste_last_shortcut,
             commands::keyboard::start_transform_listener,
             commands::keyboard::stop_transform_listener,
             commands::keyboard::set_transform_key,
@@ -611,6 +616,8 @@ pub fn run() {
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
+            let paste_last_item =
+                MenuItemBuilder::with_id("paste_last", "Paste Last / Retry Delivery").build(app)?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
                 .checked(false)
                 .build(app)?;
@@ -623,6 +630,7 @@ pub fn run() {
                 (tray_menu.item(&update_item), update_item)
             };
             let tray_menu = tray_menu
+                .item(&paste_last_item)
                 .separator()
                 .item(&disabled_item)
                 .separator()
@@ -651,6 +659,9 @@ pub fn run() {
                             if let Err(e) = commands::keyboard::set_app_disabled(app_handle.clone(), new_disabled) {
                                 tracing::warn!(target: "keyboard", "tray disable toggle failed: {}", e);
                             }
+                        }
+                        "paste_last" => {
+                            delivery_recovery::spawn_retry(app_handle.clone());
                         }
                         "check_updates" => {
                             if let Some(win) = app_handle.get_webview_window("main") {

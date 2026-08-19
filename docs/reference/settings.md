@@ -85,6 +85,7 @@ interface Settings {
   // Delivery
   autoPaste: boolean;
   autoPasteDelayMs: number;
+  pasteLastShortcutEnabled: boolean;
   retainHistory: boolean;
   meetingRetainAudio: boolean;
   meetingRetentionDays: number;            // 0 = no age limit
@@ -213,6 +214,7 @@ The Settings disclosure explicitly states that the configured CLI may send the q
 |---------|------|---------|-------------------|-------------|
 | `autoPaste` | `boolean` | `false` | `true` / `false` | Stored preference for automatically pasting transcribed text after clipboard copy. Requires macOS Accessibility permission. Text is always copied. When either file-output toggle is on, the UI shows auto-paste unavailable without overwriting this preference. An enabled preference is labeled paused and resumes when file output is off; a disabled preference remains off. |
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
+| `pasteLastShortcutEnabled` | `boolean` | `false` | `true` / `false` | Enables global ⌘⇧V for Paste Last. Retried text stays memory-only and uses the normal secure delivery checks. |
 | `retainHistory` | `boolean` | `true` | `true` / `false` | Persist new microphone and imported-file transcripts in the local History workspace. When false, delivery and content-free statistics continue but new transcript content is discarded at the history boundary. Existing entries remain until explicitly cleared. |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
