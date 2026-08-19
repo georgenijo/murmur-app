@@ -68,6 +68,22 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|_| "Murmur could not create the meeting transcript database.".to_string())?;
     }
+    if schema_version(connection)? == 1 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE meeting_artifacts (
+                   session_id TEXT PRIMARY KEY NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+                   artifact_json TEXT NOT NULL,
+                   created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                   runtime_ms INTEGER NOT NULL CHECK(runtime_ms >= 0),
+                   peak_rss_mb INTEGER NOT NULL CHECK(peak_rss_mb >= 0)
+                 );
+                 PRAGMA user_version=2;
+                 COMMIT;",
+            )
+            .map_err(|_| "Murmur could not migrate meeting summaries.".to_string())?;
+    }
     validate_schema(connection)
 }
 
@@ -76,6 +92,7 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
         "meeting_sessions",
         "meeting_segments",
         "meeting_segments_fts",
+        "meeting_artifacts",
     ] {
         let exists: i64 = connection
             .query_row(

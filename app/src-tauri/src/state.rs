@@ -399,6 +399,8 @@ pub struct AppState {
     /// of crash-durable pending chunks. Other ASR entry points fail fast while
     /// this is set instead of waiting behind an invisible model lock.
     pub meeting_inference_active: AtomicBool,
+    /// Owns the signed local-LLM while deriving a meeting artifact.
+    pub meeting_summary_active: AtomicBool,
     /// Monotonic revision for settings and vocabulary inputs captured by each
     /// immutable dictation context snapshot.
     pub settings_revision: AtomicU64,
@@ -482,6 +484,7 @@ impl AppState {
     pub fn meeting_blocks_asr(&self) -> bool {
         self.meeting_active.load(Ordering::SeqCst)
             || self.meeting_inference_active.load(Ordering::SeqCst)
+            || self.meeting_summary_active.load(Ordering::SeqCst)
     }
 
     /// Increment and return the next recording ID.
@@ -680,6 +683,7 @@ impl Default for AppState {
             meeting_generation: AtomicU64::new(0),
             meeting_active: AtomicBool::new(false),
             meeting_inference_active: AtomicBool::new(false),
+            meeting_summary_active: AtomicBool::new(false),
             settings_revision: AtomicU64::new(0),
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),

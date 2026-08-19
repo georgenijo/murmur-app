@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const MEETING_STORE_SCHEMA_VERSION: u32 = 1;
+pub const MEETING_STORE_SCHEMA_VERSION: u32 = 2;
 pub const MAX_MEETING_PAGE_SIZE: u32 = 100;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -156,4 +156,5 @@ pub struct MeetingPage {
 pub struct MeetingDetail {
     pub session: MeetingSession,
     pub segments: Vec<MeetingSegment>,
+    pub artifact: Option<crate::meeting_artifact::MeetingArtifactV1>,
 }

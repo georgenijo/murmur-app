@@ -4,11 +4,14 @@ import { flog } from '../log';
 import type { Settings } from '../settings';
 import {
   IDLE_MEETING_STATUS,
+  IDLE_MEETING_SUMMARY_STATUS,
+  cancelMeetingSummary,
   copyMeeting,
   deleteAllMeetings,
   deleteMeeting,
   getMeeting,
   getMeetingStatus,
+  getMeetingSummaryStatus,
   getSystemAudioPermissionStatus,
   listMeetings,
   openSystemAudioPreferences,
@@ -16,10 +19,12 @@ import {
   requestSystemAudioPermission,
   saveMeetingExport,
   startMeeting,
+  startMeetingSummary,
   stopMeeting,
   type MeetingDetail,
   type MeetingPage,
   type MeetingRuntimeStatus,
+  type MeetingSummaryStatus,
   type MeetingSegment,
   type SystemAudioPermissionState,
 } from '../meetings';
@@ -35,6 +40,7 @@ export function useMeetings(settings: Settings) {
   const [liveSegments, setLiveSegments] = useState<MeetingSegment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
   const selectedIdRef = useRef<string | null>(null);
 
@@ -67,6 +73,7 @@ export function useMeetings(settings: Settings) {
   useEffect(() => {
     void Promise.all([
       getMeetingStatus().then(setStatus),
+      getMeetingSummaryStatus().then(setSummaryStatus),
       getSystemAudioPermissionStatus().then(setPermission),
       refresh(),
     ]).catch((cause) => {
@@ -102,6 +109,12 @@ export function useMeetings(settings: Settings) {
         'meeting-segment-failed',
         () => setError('A meeting transcript chunk could not be transcribed. Its local audio remains available until you delete the meeting.'),
       ),
+      listen<MeetingSummaryStatus>('meeting-summary-status-changed', (event) => {
+        setSummaryStatus(event.payload);
+        if (event.payload.phase === 'complete' && selectedIdRef.current === event.payload.sessionId) {
+          void select(event.payload.sessionId);
+        }
+      }),
     ]).then((values) => {
       if (disposed) values.forEach((unlisten) => unlisten());
       else unlisteners.push(...values);
@@ -224,6 +237,21 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
+  const summarize = useCallback(async (sessionId: string) => {
+    setError(null);
+    try {
+      setSummaryStatus(await startMeetingSummary(sessionId));
+    } catch (cause) {
+      setError(String(cause));
+    }
+  }, []);
+
+  const cancelSummary = useCallback(async () => {
+    if (await cancelMeetingSummary()) {
+      setSummaryStatus((current) => ({ ...current, phase: 'cancelling' }));
+    }
+  }, []);
+
   return {
     status,
     permission,
@@ -232,6 +260,7 @@ export function useMeetings(settings: Settings) {
     liveSegments,
     loading,
     error,
+    summaryStatus,
     refresh,
     select,
     start,
@@ -242,5 +271,7 @@ export function useMeetings(settings: Settings) {
     exportText,
     remove,
     clear,
+    summarize,
+    cancelSummary,
   };
 }

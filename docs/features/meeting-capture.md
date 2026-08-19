@@ -3,7 +3,8 @@
 Meeting Capture is an explicit, local-only long-form recording mode for macOS
 14.2 and newer. It records the selected microphone and Mac playback as separate
 streams, transcribes both incrementally with the selected local model, and
-stores an ordered transcript in SQLite.
+stores an ordered transcript in SQLite. After capture, an explicit action can
+derive a local summary, decisions, action items, and open questions.
 
 ## Derived artifact foundation
 
@@ -23,6 +24,21 @@ Artifacts export as Markdown, plain text, or self-identifying JSON. All three
 retain source-segment provenance; Markdown and text render unknown action
 owners/dates explicitly. The foundation is local and pure: it does not upload
 transcripts or log meeting content.
+
+## Local summary execution
+
+Completed and interrupted meetings with finalized transcript text expose a
+**Summarize** action. The coordinator chunks the immutable ordered transcript,
+runs one request at a time through the signed local-LLM sidecar, validates exact
+JSON and source provenance after every request, merges bounded results
+deterministically, and atomically upserts one artifact for the session. Retry
+replaces the artifact only after the new result fully succeeds.
+
+The UI shows chunk progress, elapsed runtime, cancellation, retry, and the final
+summary with source segment IDs. Cancellation targets the exact generation and
+keeps any prior artifact. Summary ownership blocks competing capture and model
+work until the sidecar exits. Runtime and peak helper RSS remain content-free
+status evidence.
 
 ## User contract
 
@@ -97,11 +113,13 @@ live or recovery inference owns the meeting flag.
 
 The store lives under the app data directory in `meetings/`:
 
-- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v1.
+- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v2.
 - `meeting_sessions` stores start/end, status, selected model/language, frozen
   punctuation/audio policy, and a stable content-free failure code.
 - `meeting_segments` stores speaker, per-channel sequence, relative timing,
   pending/final/failed status, text, and an optional relative spool path.
+- `meeting_artifacts` stores one validated schema-v1 derived result plus its
+  content-free runtime and peak helper RSS; deleting the session cascades it.
 - FTS5 indexes finalized segment text for bounded session search.
 - Checked SQLite backups are retained before migrations; corrupt databases are
   quarantined and restored from the newest valid backup when possible.
@@ -139,5 +157,6 @@ Mac.
 
 ## Non-goals
 
-No system-channel diarization, summaries, action items, calendar integration,
-auto-start, cloud sync, translation, or caption overlay is part of phase 1.
+No system-channel diarization, calendar integration, auto-start, cloud sync,
+translation, or caption overlay is part of phase 1. Action items are derived
+text only; Murmur does not execute, send, or sync them.

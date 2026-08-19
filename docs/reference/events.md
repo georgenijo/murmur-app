@@ -48,6 +48,7 @@ sanitized, and the fleet log shipper drops the entire `meeting` stream.
 | `meeting-status-changed` | `MeetingRuntimeStatus {generation, sessionId, phase, elapsedMs, microphoneActive, systemAudioActive, errorCode}` | `meeting_capture.rs` | On start/setup/channel-ready/stop/processing/failure transitions. Contains no transcript or path. | Main (`useMeetings`), overlay (distinct meeting state). |
 | `meeting-segment-finalized` | `MeetingSegment` | `meeting_capture.rs` | After a pending chunk transcribes and its final segment transaction commits. | Main (`useMeetings` bounded live transcript). |
 | `meeting-segment-failed` | `{sessionId, segmentId, errorCode}` | `meeting_capture.rs` | A durable pending chunk could not be read or transcribed and transitioned to failed. Contains no text/path. | Main (`useMeetings` actionable warning). |
+| `meeting-summary-status-changed` | `MeetingSummaryStatus {generation, sessionId, phase, completedChunks, totalChunks, elapsedMs, peakRssMb, errorCode}` | `commands/meeting_summary.rs` | On summary start, chunk progress, cancellation, completion, or failure. Contains no transcript or derived content. | Main (`useMeetings` progress and result refresh). |
 | `system-audio-permission-changed` | `"unknown" \| "granted" \| "denied" \| "unsupported"` | `commands/meeting.rs` | After the user explicitly runs the short-lived permission probe. | Main permission banner and `useMeetings`. |
 
 ## Models

@@ -375,7 +375,49 @@ impl MeetingRepository {
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)?;
-        Ok(MeetingDetail { session, segments })
+        let mut artifact = connection
+            .query_row(
+                "SELECT artifact_json FROM meeting_artifacts WHERE session_id=?",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .and_then(|json| serde_json::from_str(&json).ok());
+        if let Some(value) = artifact.as_mut() {
+            let allowed = segments.iter().map(|segment| segment.id).collect();
+            if !crate::meeting_artifact::validate_artifact(value, &allowed) {
+                artifact = None;
+            }
+        }
+        Ok(MeetingDetail {
+            session,
+            segments,
+            artifact,
+        })
+    }
+
+    pub fn save_artifact(
+        &self,
+        session_id: &str,
+        artifact: &crate::meeting_artifact::MeetingArtifactV1,
+        runtime_ms: u64,
+        peak_rss_mb: u64,
+    ) -> Result<(), String> {
+        if !valid_session_id(session_id) {
+            return Err(storage_error());
+        }
+        let json = serde_json::to_string(artifact).map_err(|_| storage_error())?;
+        let connection = self.open_checked()?;
+        connection
+            .execute(
+                "INSERT INTO meeting_artifacts(session_id, artifact_json, created_at_ms, runtime_ms, peak_rss_mb)
+                 VALUES(?,?,?,?,?)
+                 ON CONFLICT(session_id) DO UPDATE SET artifact_json=excluded.artifact_json, created_at_ms=excluded.created_at_ms, runtime_ms=excluded.runtime_ms, peak_rss_mb=excluded.peak_rss_mb",
+                params![session_id, json, to_i64(now_ms())?, to_i64(runtime_ms)?, to_i64(peak_rss_mb)?],
+            )
+            .map_err(db_error)?;
+        Ok(())
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {

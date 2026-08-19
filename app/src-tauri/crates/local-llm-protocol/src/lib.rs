@@ -11,7 +11,7 @@ pub const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 pub const MAX_OUTPUT_TOKENS: u32 = 2_048;
 pub const MAX_CONTEXT_TOKENS: u32 = 8_192;
 pub const DEFAULT_DEADLINE_MS: u64 = 15_000;
-pub const MAX_DEADLINE_MS: u64 = 30_000;
+pub const MAX_DEADLINE_MS: u64 = 120_000;
 pub const MAX_DIAGNOSTIC_PHASE_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

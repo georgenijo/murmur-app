@@ -42,6 +42,9 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
     meetings.status.sessionId ? meetings.liveSegments.filter((segment) => segment.sessionId === meetings.status.sessionId) : []
   );
   const failure = meetingErrorMessage(meetings.status.errorCode);
+  const summaryForSelected = meetings.summaryStatus.sessionId === meetings.detail?.session.id
+    ? meetings.summaryStatus : null;
+  const summaryBusy = summaryForSelected?.phase === 'running' || summaryForSelected?.phase === 'cancelling';
 
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -254,6 +257,19 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
                 <button type="button" onClick={() => void exportSelected()} className="rounded-lg px-2 py-1.5 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-low hover:text-primary">Export</button>
                 <button
                   type="button"
+                  disabled={active || processing || summaryBusy}
+                  onClick={() => void meetings.summarize(meetings.detail!.session.id)}
+                  className="rounded-lg bg-surface-container-high px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40"
+                >
+                  {meetings.detail.artifact ? 'Retry Summary' : summaryForSelected?.phase === 'failed' || summaryForSelected?.phase === 'cancelled' ? 'Retry Summary' : 'Summarize'}
+                </button>
+                {summaryBusy && (
+                  <button type="button" onClick={() => void meetings.cancelSummary()} className="rounded-lg px-2 py-1.5 text-xs font-semibold text-error">
+                    {summaryForSelected?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel Summary'}
+                  </button>
+                )}
+                <button
+                  type="button"
                   disabled={active && meetings.status.sessionId === meetings.detail.session.id}
                   onClick={() => void deleteSelected()}
                   className={`rounded-lg px-2 py-1.5 text-xs font-semibold disabled:opacity-40 ${confirmDelete === meetings.detail.session.id ? 'bg-error/10 text-error' : 'text-on-surface-variant hover:text-error'}`}
@@ -262,6 +278,32 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
+                {summaryForSelected && summaryForSelected.phase !== 'idle' && (
+                  <div role="status" className="mb-3 rounded-xl border border-outline-variant/20 bg-surface-container-low p-3 text-xs text-on-surface-variant">
+                    {summaryBusy
+                      ? `Summarizing chunk ${summaryForSelected.completedChunks} of ${summaryForSelected.totalChunks || '…'} · ${formatMeetingTimestamp(summaryForSelected.elapsedMs)}`
+                      : summaryForSelected.phase === 'failed'
+                        ? `Summary failed (${summaryForSelected.errorCode ?? 'generation_failed'}). Retry when ready.`
+                        : summaryForSelected.phase === 'cancelled'
+                          ? 'Summary cancelled. The prior stored result, if any, was kept.'
+                          : summaryForSelected.phase === 'complete'
+                            ? `Summary complete in ${formatMeetingTimestamp(summaryForSelected.elapsedMs)} · peak helper RSS ${summaryForSelected.peakRssMb} MB`
+                            : 'Summary is stopping…'}
+                  </div>
+                )}
+                {meetings.detail.artifact && (
+                  <article className="mb-4 rounded-xl border border-primary/20 bg-surface-container-low p-4">
+                    <h3 className="text-sm font-semibold text-on-surface">Meeting summary</h3>
+                    <p className="mt-2 text-xs leading-relaxed text-on-surface">{meetings.detail.artifact.summary.text}</p>
+                    <p className="mt-1 text-[10px] text-on-surface-variant">Segments {meetings.detail.artifact.summary.sourceSegmentIds.join(', ')}</p>
+                    {meetings.detail.artifact.decisions.length > 0 && <h4 className="mt-3 text-xs font-semibold text-on-surface">Decisions</h4>}
+                    {meetings.detail.artifact.decisions.map((item) => <p key={`${item.text}-${item.sourceSegmentIds.join()}`} className="mt-1 text-xs text-on-surface">• {item.text} <span className="text-[10px] text-on-surface-variant">[{item.sourceSegmentIds.join(', ')}]</span></p>)}
+                    {meetings.detail.artifact.actionItems.length > 0 && <h4 className="mt-3 text-xs font-semibold text-on-surface">Action items</h4>}
+                    {meetings.detail.artifact.actionItems.map((item) => <p key={`${item.text}-${item.sourceSegmentIds.join()}`} className="mt-1 text-xs text-on-surface">• {item.text} — {item.owner ?? 'Unknown'} · {item.dueDate ?? 'Unknown'} <span className="text-[10px] text-on-surface-variant">[{item.sourceSegmentIds.join(', ')}]</span></p>)}
+                    {meetings.detail.artifact.openQuestions.length > 0 && <h4 className="mt-3 text-xs font-semibold text-on-surface">Open questions</h4>}
+                    {meetings.detail.artifact.openQuestions.map((item) => <p key={`${item.text}-${item.sourceSegmentIds.join()}`} className="mt-1 text-xs text-on-surface">• {item.text} <span className="text-[10px] text-on-surface-variant">[{item.sourceSegmentIds.join(', ')}]</span></p>)}
+                  </article>
+                )}
                 {visibleSegments.length === 0 ? (
                   <p className="py-8 text-center text-xs text-on-surface-variant">
                     {active || processing ? 'Transcript segments appear here as speech is processed.' : 'No speech segments were saved.'}

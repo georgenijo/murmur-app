@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 173 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 176 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -59,11 +59,19 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `request_system_audio_permission` | — | `Result<SystemAudioPermissionState, String>` | Explicitly creates one short-lived tap probe, then tears it down and emits the resulting permission state. |
 | `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
 | `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches finalized transcript text through FTS5. |
-| `get_meeting` | `id` | `Result<MeetingDetail, String>` | One session plus its ordered Me/Them segments. |
+| `get_meeting` | `id` | `Result<MeetingDetail, String>` | One session plus its ordered Me/Them segments and optional validated derived artifact. |
 | `get_meeting_export_text` | `id` | `Result<String, String>` | Renders `[MM:SS] Me/Them` plain text for clipboard or validated file export. |
 | `delete_meeting` | `id` | `Result<(), String>` | Deletes one inactive session, its segments/FTS rows, and owned chunk audio. |
 | `delete_all_meetings` | — | `Result<(), String>` | Deletes all sessions and owned chunk audio; refused while a meeting is active. |
 | `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Deletes completed/interrupted sessions beyond the bounded age/count policy. |
+
+## Meeting summaries (`commands/meeting_summary.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `start_meeting_summary` | `sessionId` | `Result<MeetingSummaryStatus, String>` | Starts explicit, cancellable schema-v1 summary/action-item derivation for a completed meeting through the signed local sidecar; refuses competing owners. |
+| `get_meeting_summary_status` | — | `MeetingSummaryStatus` | Current generation, session, phase, bounded chunk progress, elapsed runtime, helper peak RSS, and stable content-free error code. |
+| `cancel_meeting_summary` | — | `bool` | Cancels the exact active generation and in-flight sidecar request; a previously stored artifact remains intact. |
 
 ## Microphone input test (`commands/microphone_preview.rs`)
 
