@@ -65,6 +65,7 @@ export interface MurmurMode {
   id: string;
   name: string;
   builtIn: boolean;
+  enabled: boolean;
   writingStyle: WritingStyle | null;
   cleanupEnabled: boolean | null;
   smartFormattingEnabled: boolean | null;
@@ -82,7 +83,7 @@ const builtinMode = (
   writingStyle: WritingStyle | null,
   overrides: Partial<MurmurMode> = {},
 ): MurmurMode => ({
-  id, name, builtIn: true, writingStyle,
+  id, name, builtIn: true, enabled: true, writingStyle,
   cleanupEnabled: null, smartFormattingEnabled: null, cliFormattingEnabled: null,
   vocabularyPolicy: 'inherit', contextPolicy: 'none', modelId: null,
   language: null, autoPaste: null, ...overrides,
@@ -664,7 +665,7 @@ function sanitizeModes(raw: unknown): MurmurMode[] {
     if (mode.modelId != null && (typeof mode.modelId !== 'string' || !models.has(mode.modelId))) continue;
     if (mode.language != null && (typeof mode.language !== 'string' || !languages.has(mode.language))) continue;
     if (mode.writingStyle != null && !styles.has(mode.writingStyle as WritingStyle)) continue;
-    if ([mode.cleanupEnabled, mode.smartFormattingEnabled, mode.cliFormattingEnabled, mode.autoPaste]
+    if ([mode.enabled, mode.cleanupEnabled, mode.smartFormattingEnabled, mode.cliFormattingEnabled, mode.autoPaste]
       .some((field) => field != null && typeof field !== 'boolean')) continue;
     if (mode.vocabularyPolicy != null && !['inherit', 'general', 'technical'].includes(mode.vocabularyPolicy)) continue;
     if (mode.contextPolicy != null && !['none', 'project'].includes(mode.contextPolicy)) continue;
@@ -673,7 +674,7 @@ function sanitizeModes(raw: unknown): MurmurMode[] {
       : null;
     const nullableBoolean = (input: unknown) => typeof input === 'boolean' ? input : null;
     modes.push({
-      id, name, builtIn: false, writingStyle,
+      id, name, builtIn: false, enabled: mode.enabled !== false, writingStyle,
       cleanupEnabled: nullableBoolean(mode.cleanupEnabled),
       smartFormattingEnabled: nullableBoolean(mode.smartFormattingEnabled),
       cliFormattingEnabled: nullableBoolean(mode.cliFormattingEnabled),

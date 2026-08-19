@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Settings now includes a local Modes manager for creating, duplicating,
+  editing, enabling, deleting, testing, and binding reusable Modes across app
+  profiles without injecting preview text (#603).
 - Per-app dictation can now resolve through reusable Murmur Modes, with seven
   built-ins, bounded custom policy storage, immutable recording snapshots, and
   fail-closed invalid references while legacy profiles retain their behavior

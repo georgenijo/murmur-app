@@ -166,6 +166,7 @@ pub enum ModeContextPolicy {
 pub struct MurmurMode {
     pub id: String,
     pub name: String,
+    pub enabled: bool,
     pub writing_style: Option<WritingStyle>,
     pub cleanup_enabled: Option<bool>,
     pub smart_formatting_enabled: Option<bool>,
