@@ -7,6 +7,7 @@ interface OverlayPillProps {
   geometry: OverlayGeometry;
   visual: OverlayVisual;
   status: DictationStatus;
+  partialText?: string;
   barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
 }
 
@@ -25,6 +26,7 @@ export function OverlayPill({
   geometry,
   visual,
   status,
+  partialText = '',
   barRefs,
 }: OverlayPillProps) {
   const topH = geometry.collapsedH;
@@ -162,7 +164,16 @@ export function OverlayPill({
           style={{ width: wingW, opacity: visual.waveformVisible ? 1 : 0 }}
           aria-hidden={!visual.waveformVisible}
         >
-          <div className="flex items-center gap-[1.5px] h-4">
+          {status === 'recording' && partialText ? (
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label={`Live transcription preview: ${partialText}`}
+              className="block w-full truncate px-1 text-center text-[9px] leading-none text-white/80"
+            >
+              {partialText}
+            </span>
+          ) : <div className="flex items-center gap-[1.5px] h-4">
             {Array.from({ length: BAR_COUNT }, (_, i) => (
               <div
                 key={i}
@@ -174,7 +185,7 @@ export function OverlayPill({
                 }}
               />
             ))}
-          </div>
+          </div>}
         </div>
       </div>
     </>
