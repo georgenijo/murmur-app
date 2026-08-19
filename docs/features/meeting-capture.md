@@ -5,6 +5,25 @@ Meeting Capture is an explicit, local-only long-form recording mode for macOS
 streams, transcribes both incrementally with the selected local model, and
 stores an ordered transcript in SQLite.
 
+## Derived artifact foundation
+
+Meeting summaries use the portable `murmur.meeting-artifact.v1` contract. Every
+summary, decision, action item, and open question carries one or more source
+segment IDs. Action owners and due dates are nullable; absent, informal, or
+unsupported values remain `null` and are displayed as Unknown rather than
+being guessed.
+
+Long transcripts are divided in capture order with both character and
+segment-count bounds. Partial artifacts merge with a fan-in of eight and repeat
+hierarchically until one bounded artifact remains. Duplicate claims are folded
+deterministically. Validation rejects unknown schema fields, oversized arrays
+or text, malformed values, and source IDs that do not belong to the meeting.
+
+Artifacts export as Markdown, plain text, or self-identifying JSON. All three
+retain source-segment provenance; Markdown and text render unknown action
+owners/dates explicitly. The foundation is local and pure: it does not upload
+transcripts or log meeting content.
+
 ## User contract
 
 - Start or stop from **History → Meetings**, or with the command palette.
