@@ -25,13 +25,13 @@ export function HomeInsightsRail({
     <aside className="home-insights-rail" aria-label="Usage summary">
       <section className="dashboard-card usage-summary-card">
         <div className="dashboard-card-heading">
-          <p className="dashboard-eyebrow">All time</p>
+          <p className="dashboard-eyebrow">This month</p>
           <button type="button" onClick={onOpenInsights}>View insights</button>
         </div>
         <dl>
-          <div><dt>Words</dt><dd>{usage.totalWords.toLocaleString()}</dd></div>
+          <div><dt>Words</dt><dd>{usage.wordsThisMonth.toLocaleString()}</dd></div>
           <div><dt>Average WPM</dt><dd>{usage.averageWpm || '—'}</dd></div>
-          <div><dt>Recordings</dt><dd>{usage.totalRecordings.toLocaleString()}</dd></div>
+          <div><dt>Recordings</dt><dd>{usage.recordingsThisMonth.toLocaleString()}</dd></div>
           <div><dt>Day streak</dt><dd>{usage.currentStreak}</dd></div>
         </dl>
       </section>

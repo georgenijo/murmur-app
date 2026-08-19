@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   sidebar navigation, a 64px recording row, recent dictations above the fold,
   real usage insights, and explicit personalization setup milestones instead
   of an opaque tuning percentage (#613).
+- The Home dashboard now preserves its approved sidebar, compact date-grouped
+  history table, and monthly Insights rail at the native 880×720 window size
+  instead of collapsing the rail below oversized transcript cards (#615).
 
 ## [0.36.1] - 2026-08-18
 

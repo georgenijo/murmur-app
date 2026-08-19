@@ -17,7 +17,7 @@ export function PersonalizationCard({
     <section className={`personalization-card ${expanded ? 'is-expanded' : ''}`} aria-labelledby={expanded ? 'personalization-title-expanded' : 'personalization-title'}>
       <div className="personalization-heading">
         <div>
-          <p className="dashboard-eyebrow">Personalization</p>
+          <p className="dashboard-eyebrow">{expanded ? 'Personalization' : 'Voice profile'}</p>
           <h2 id={expanded ? 'personalization-title-expanded' : 'personalization-title'}>{summary.stage}</h2>
         </div>
         <span className="personalization-stage">{summary.completed} of {summary.total} set up</span>
