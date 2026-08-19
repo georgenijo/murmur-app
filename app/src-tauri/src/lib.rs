@@ -270,6 +270,7 @@ pub fn run() {
             commands::recording::cancel_audio_initialization,
             commands::recording::count_vocab_tokens,
             commands::recording::preview_vocabulary_aliases,
+            commands::recording::reformat_history_text,
             commands::recording::transcribe_file,
             commands::recording::scan_code_vocab,
             commands::recording::cancel_code_vocab_scan,

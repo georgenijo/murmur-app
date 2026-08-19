@@ -8,6 +8,7 @@ import {
   loadHistory,
   saveHistory,
   addHistoryEntry,
+  addDerivedHistoryEntry,
   updateHistoryEntry,
   clearHistory as clearPersistedHistory,
 } from '../history';
@@ -36,10 +37,19 @@ export function useHistoryManagement(retainHistory = true) {
     });
   }, []);
 
+  const addDerivedEntry = useCallback((source: HistoryEntry, text: string, modeId: string, stages: import('../history').HistoryStageResult[]) => {
+    if (!retainHistoryRef.current) return;
+    setHistoryEntries(prev => {
+      const next = addDerivedHistoryEntry(prev, source, text, modeId, stages);
+      saveHistory(next);
+      return next;
+    });
+  }, []);
+
   const clearHistory = useCallback(() => {
     setHistoryEntries([]);
     clearPersistedHistory();
   }, []);
 
-  return { historyEntries, addEntry, updateEntry, clearHistory };
+  return { historyEntries, addEntry, addDerivedEntry, updateEntry, clearHistory };
 }

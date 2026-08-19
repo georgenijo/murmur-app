@@ -1124,10 +1124,10 @@ struct PipelineHistory {
 }
 
 #[derive(serde::Serialize)]
-struct HistoryStageResult {
-    stage: &'static str,
-    outcome: &'static str,
-    changed: bool,
+pub struct HistoryStageResult {
+    pub stage: &'static str,
+    pub outcome: &'static str,
+    pub changed: bool,
 }
 
 fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<RuntimeIdentityV1> {
@@ -4896,6 +4896,96 @@ pub async fn preview_vocabulary_aliases(
     } else {
         Ok(corrected)
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryReformatResult {
+    text: String,
+    mode_id: String,
+    stages: Vec<HistoryStageResult>,
+}
+
+/// Reformat retained raw recognition through one explicit Mode. This path has
+/// no audio, injection, statistics, history write, or correction-learning side effects.
+#[tauri::command]
+pub async fn reformat_history_text(
+    raw_text: String,
+    mode_id: String,
+    state: tauri::State<'_, State>,
+) -> Result<HistoryReformatResult, String> {
+    if raw_text.len() > 256 * 1024 {
+        return Err("Retained recognition text is too large to reformat.".to_string());
+    }
+    let mode_id = mode_id.trim().to_string();
+    if mode_id.is_empty() {
+        return Err("Select a Mode to reformat this entry.".to_string());
+    }
+    let mut global = state.app_state.dictation.lock_or_recover().clone();
+    const BUNDLE: &str = "local.history.reformat";
+    global.app_profiles = vec![crate::state::AppProfile {
+        bundle_id: BUNDLE.to_string(),
+        label: String::new(),
+        auto_paste_override: None,
+        cleanup_override: None,
+        cli_formatting_override: None,
+        smart_formatting_override: None,
+        writing_style: None,
+        ide_context_enabled: false,
+        ide_project_roots: Vec::new(),
+        query_context_excluded: true,
+        mode_id: Some(mode_id.clone()),
+    }];
+    let snapshot = crate::dictation_context::resolve(crate::dictation_context::ResolverInputs {
+        bundle_id: Some(BUNDLE),
+        global: &global,
+        prompt: None,
+        correction_matcher: None,
+        ide_context_index: None,
+        vocabulary_version: 0,
+        voice_commands: Some(Vec::new()),
+        session_overrides: crate::dictation_context::SessionOverrides::default(),
+    });
+    if snapshot.resolved_mode_id.as_deref() != Some(mode_id.as_str()) {
+        return Err("The selected Mode is unavailable or disabled.".to_string());
+    }
+    let context = crate::transcript_transform::TranscriptContext {
+        session_id: state.app_state.next_transcript_session_id(),
+        source: crate::transcript_transform::TranscriptSource::Live,
+        context_handle: None,
+        cli_formatting_mode: snapshot.transformations.cli_formatting_mode,
+        stages: crate::transcript_transform::TranscriptStageConfig {
+            cleanup_enabled: snapshot.transformations.cleanup_enabled,
+            cleanup_remove_filler: snapshot.transformations.cleanup_remove_filler,
+            cleanup_capitalize: snapshot.transformations.cleanup_capitalize,
+            voice_commands_enabled: false,
+            smart_correction_enabled: false,
+            smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
+            spoken_structure_policy: snapshot.transformations.spoken_structure_policy,
+            spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
+            ide_context_enabled: false,
+            cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
+        },
+    };
+    let output = crate::transcript_transform::transform_transcript(
+        raw_text,
+        &context,
+        crate::transcript_transform::TranscriptTransformResources::empty(),
+    )
+    .map_err(|_| "The selected Mode could not reformat this entry.".to_string())?;
+    Ok(HistoryReformatResult {
+        text: output.text,
+        mode_id,
+        stages: output
+            .stages
+            .into_iter()
+            .map(|stage| HistoryStageResult {
+                stage: stage.stage,
+                outcome: stage.outcome.as_str(),
+                changed: stage.changed,
+            })
+            .collect(),
+    })
 }
 
 /// Transcribe an existing audio file (WAV/MP3/M4A) through the same Whisper

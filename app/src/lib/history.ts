@@ -49,6 +49,26 @@ export interface HistoryEntry {
   interruption?: HistoryInterruption;
   /** Present for live dictations recorded with the v2 completion contract. */
   recording?: HistoryRecordingContext;
+  /** Provenance for a new entry derived by reformatting retained raw text. */
+  derived?: { sourceEntryId: string; modeId: string; createdAt: number; stages: HistoryStageResult[] };
+}
+
+export function addDerivedHistoryEntry(
+  entries: HistoryEntry[], source: HistoryEntry, text: string, modeId: string,
+  stages: HistoryStageResult[],
+): HistoryEntry[] {
+  const createdAt = Date.now();
+  return trimHistory([...entries, {
+    schemaVersion: 2,
+    id: nextEntryId(),
+    text,
+    rawText: source.rawText,
+    timestamp: createdAt,
+    duration: source.duration,
+    source: source.source ?? 'recording',
+    ...(source.sourceName ? { sourceName: source.sourceName } : {}),
+    derived: { sourceEntryId: source.id, modeId, createdAt, stages },
+  }]);
 }
 
 /** Rolling cap on stored entries. */
@@ -333,6 +353,7 @@ export function formatHistoryExport(
         text: entry.text,
         ...(entry.rawText !== undefined ? { rawText: entry.rawText } : {}),
         ...(entry.recording ? { recording: entry.recording } : {}),
+        ...(entry.derived ? { derived: entry.derived } : {}),
       })),
     }, null, 2)}\n`;
   }

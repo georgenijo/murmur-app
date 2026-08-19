@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- History entries with preserved raw recognition can now create a separate,
+  provenance-linked result through another Mode without retranscribing audio,
+  injecting text, updating dictation stats, or teaching corrections (#605).
 - Settings now includes a local Modes manager for creating, duplicating,
   editing, enabling, deleting, testing, and binding reusable Modes across app
   profiles without injecting preview text (#603).

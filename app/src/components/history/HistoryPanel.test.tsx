@@ -284,4 +284,21 @@ describe('HistoryPanel', () => {
     await act(async () => byText('Transcribe audio file…')!.click());
     expect(onTranscribeFile).toHaveBeenCalledOnce();
   });
+
+  it('reformats retained raw text into a derived entry without mutating the source', async () => {
+    const source = entry({ id: 'raw', text: 'Delivered text.', rawText: 'um delivered text' });
+    const onAddDerived = vi.fn();
+    invoke.mockResolvedValueOnce({
+      text: 'Delivered text', modeId: 'builtin.everyday', stages: [],
+    });
+    await render({ entries: [source], onAddDerived });
+    await act(async () => byText('Reformat')!.click());
+    expect(container.textContent).toContain('not audio retranscription');
+    await act(async () => byText('Create reformatted entry')!.click());
+    expect(invoke).toHaveBeenCalledWith('reformat_history_text', {
+      rawText: 'um delivered text', modeId: 'builtin.everyday',
+    });
+    expect(onAddDerived).toHaveBeenCalledWith(source, 'Delivered text', 'builtin.everyday', []);
+    expect(source.text).toBe('Delivered text.');
+  });
 });
