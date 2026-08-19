@@ -268,6 +268,13 @@ pub struct DictationState {
     /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
     pub modes: Vec<MurmurMode>,
+    /// Last explicit Mode selected from a native quick surface or Settings.
+    pub manual_mode_id: String,
+    /// App-scoped native override. Cleared as soon as focus leaves its bundle.
+    #[serde(skip)]
+    pub temporary_mode_id: Option<String>,
+    #[serde(skip)]
+    pub temporary_mode_bundle_id: Option<String>,
     pub voice_commands_enabled: bool,
     /// User-defined voice commands applied after the built-in set.
     #[serde(default)]
@@ -335,6 +342,9 @@ impl Default for DictationState {
             output_dir: String::new(),
             app_profiles: Vec::new(),
             modes: Vec::new(),
+            manual_mode_id: "builtin.everyday".to_string(),
+            temporary_mode_id: None,
+            temporary_mode_bundle_id: None,
             voice_commands_enabled: false,
             voice_command_pairs: Vec::new(),
             cleanup_enabled: false,

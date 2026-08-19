@@ -2,6 +2,22 @@ use std::sync::OnceLock;
 use tauri::menu::MenuItem;
 
 static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+static MODE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+
+pub(crate) fn register_mode_item(item: MenuItem<tauri::Wry>) {
+    let _ = MODE_MENU_ITEM.set(item);
+}
+
+pub(crate) fn set_mode_menu_status(status: &super::mode_runtime::ModeRuntimeStatus) {
+    if let Some(item) = MODE_MENU_ITEM.get() {
+        let suffix = match status.source {
+            super::mode_runtime::ModeSource::Manual => "",
+            super::mode_runtime::ModeSource::AppBinding => " · App",
+            super::mode_runtime::ModeSource::Temporary => " · Temporary",
+        };
+        let _ = item.set_text(format!("Mode: {}{}", status.name, suffix));
+    }
+}
 
 #[cfg(not(feature = "internal-benchmark"))]
 pub(crate) fn register_tray_update_item(item: MenuItem<tauri::Wry>) {

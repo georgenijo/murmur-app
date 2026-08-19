@@ -82,6 +82,7 @@ export interface ConfigureOptions {
   outputDir?: string;
   appProfiles?: AppProfile[];
   modes?: MurmurMode[];
+  activeModeId?: string;
   voiceCommandsEnabled?: boolean;
   voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
@@ -120,6 +121,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
     modes: s.modes,
+    activeModeId: s.activeModeId,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
     voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,

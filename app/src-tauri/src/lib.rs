@@ -264,6 +264,9 @@ pub fn run() {
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
+            commands::mode_runtime::get_mode_runtime_status,
+            commands::mode_runtime::cycle_mode,
+            commands::mode_runtime::clear_temporary_mode_override,
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,
@@ -619,6 +622,7 @@ pub fn run() {
             let show_item = MenuItemBuilder::with_id("show", "Show Murmur").build(app)?;
             let paste_last_item =
                 MenuItemBuilder::with_id("paste_last", "Paste Last / Retry Delivery").build(app)?;
+            let mode_item = MenuItemBuilder::with_id("cycle_mode", "Mode: Everyday").build(app)?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
                 .checked(false)
                 .build(app)?;
@@ -632,12 +636,14 @@ pub fn run() {
             };
             let tray_menu = tray_menu
                 .item(&paste_last_item)
+                .item(&mode_item)
                 .separator()
                 .item(&disabled_item)
                 .separator()
                 .item(&quit_item)
                 .build()?;
             commands::keyboard::register_tray_disabled_item(disabled_item.clone());
+            commands::tray::register_mode_item(mode_item);
             #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_tray_update_item(update_item);
             let handle = app.handle().clone();
@@ -663,6 +669,10 @@ pub fn run() {
                         }
                         "paste_last" => {
                             delivery_recovery::spawn_retry(app_handle.clone());
+                        }
+                        "cycle_mode" => {
+                            let state = app_handle.state::<State>();
+                            let _ = commands::mode_runtime::cycle_mode(app_handle.clone(), state);
                         }
                         "check_updates" => {
                             if let Some(win) = app_handle.get_webview_window("main") {
@@ -690,6 +700,8 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            commands::mode_runtime::spawn_mode_watcher(app.handle().clone());
 
             Ok(())
         })

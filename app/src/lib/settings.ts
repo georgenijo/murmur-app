@@ -318,6 +318,8 @@ export interface Settings {
   appProfiles: AppProfile[];
   /** User-defined reusable Modes. Built-ins are code-owned and not duplicated here. */
   modes: MurmurMode[];
+  /** Last Mode explicitly selected outside an automatic app binding. */
+  activeModeId: string;
   voiceCommandsEnabled: boolean;
   /** User-defined voice commands applied after the built-in set. */
   voiceCommands: VoiceCommand[];
@@ -490,6 +492,7 @@ export const DEFAULT_SETTINGS: Settings = {
   benchmarkAutoSave: false,
   appProfiles: [],
   modes: [],
+  activeModeId: 'builtin.everyday',
   voiceCommandsEnabled: false,
   voiceCommands: [],
   cleanupEnabled: false,
@@ -864,6 +867,13 @@ export function loadSettings(): Settings {
       parsed.customVocabulary = vocabularyPrompt(parsed.vocabularyEntries);
 
       parsed.modes = sanitizeModes(parsed.modes);
+      const availableModeIds = new Set([
+        ...BUILTIN_MODES.map((mode) => mode.id),
+        ...parsed.modes.filter((mode) => mode.enabled).map((mode) => mode.id),
+      ]);
+      if (typeof parsed.activeModeId !== 'string' || !availableModeIds.has(parsed.activeModeId)) {
+        parsed.activeModeId = DEFAULT_SETTINGS.activeModeId;
+      }
 
       // appProfiles drives per-app delivery and transformation overrides. Drop
       // malformed entries and coerce a non-array back to the empty default so

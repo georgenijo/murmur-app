@@ -116,6 +116,7 @@ interface Settings {
 
   // Per-app
   modes: MurmurMode[];                     // user Modes; built-ins are code-owned
+  activeModeId: string;                    // last native/manual Mode selection
   appProfiles: AppProfile[];
 
   // Performance Lab

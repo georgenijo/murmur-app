@@ -39,3 +39,16 @@ leaving an unsafe dangling binding.
 Each Mode shows a compact effective-policy summary. Its before/after tester is
 a pure in-window preview: sample text remains in React memory and the tester
 does not invoke clipboard, paste, text injection, or target-app commands.
+
+## Native activation
+
+The overlay and tray display the currently resolved Mode without activating or
+focusing Murmur. Clicking the Mode control cycles enabled built-ins and custom
+Modes. Outside an app binding this updates the durable last-manual Mode; inside
+a bound app it creates a memory-only override tied to that exact bundle ID.
+Leaving the app clears the override and restores the last manual Mode.
+
+At recording acceptance, the existing frontmost bundle-ID snapshot resolves
+temporary override → app binding → last manual Mode. The result is immutable
+for that recording. Focus polling exposes only Mode status; it never captures
+site identity, window contents, selected text, or screen content.
