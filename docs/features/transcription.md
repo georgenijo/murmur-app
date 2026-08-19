@@ -102,7 +102,8 @@ fast-fail tier re-armed. It is stored as a bounded, versioned
 the last ready backend, the promotion-disabled flag, and the consecutive
 fast-rescue count) beside `settings.json` in the per-bundle app data directory.
 It is read once during app setup, before any capture can start, and republished
-atomically after each update from the capture supervisor thread. Persistence is
+atomically on a detached writer thread after each update that actually changes
+a value, so no capture-path thread ever waits on the disk. Persistence is
 fail-open in both directions: a missing, oversized, corrupt, or wrong-version
 file starts from defaults and is overwritten on the next update, and a failed
 write never blocks, delays, or fails a capture start. The file is local-only —

@@ -193,9 +193,10 @@ retained audio, or an unavailable device after first PCM remain terminal.
 The per-device backend memo that resolves that order (last ready backend,
 promotion-disabled flag, consecutive fast-rescue count) is durable: a bounded,
 versioned `capture-memo.json` beside `settings.json` in the app data
-directory, loaded once during setup and republished atomically after each
-update, so a relaunch keeps the shrunken retry budgets an affected machine
-already earned. It is fail-open and never blocks capture start; device keys
+directory, loaded once during setup and republished atomically on a detached
+writer thread after each change, so a relaunch keeps the shrunken retry budgets
+an affected machine already earned. It is fail-open and never blocks capture
+start; device keys
 stay local and never reach logs or telemetry. See
 [transcription.md](features/transcription.md).
 
