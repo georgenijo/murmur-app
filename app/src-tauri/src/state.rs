@@ -560,6 +560,17 @@ impl AppState {
         *self.transform_status.lock_or_recover()
     }
 
+    /// Non-blocking dictation phase read for hang diagnostics. `None` means
+    /// the lock was contended, which is itself a reportable fact — a probe
+    /// investigating a stall must never join the queue behind it.
+    pub fn dictation_status_if_uncontended(&self) -> Option<DictationStatus> {
+        match self.dictation.try_lock() {
+            Ok(dictation) => Some(dictation.status),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner().status),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
     pub fn next_transform_pass_id(&self) -> u64 {
         self.transform_pass_sequence.fetch_add(1, Ordering::SeqCst) + 1
     }

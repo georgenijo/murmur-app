@@ -138,6 +138,7 @@ Read these before working on a feature:
 | `llm_sidecar.rs` | Host supervisor for signed local-LLM helper (no in-process llama) |
 | `log_shipper.rs` | Zero-config diagnostic log upload (tails events.jsonl → central ingest) |
 | `hang_diagnostics.rs` | Consented, bounded capture-hang diagnostic arming and probe collection |
+| `audio_graph_snapshot.rs` | Deadline-guarded Core Audio HAL graph introspection, content-free counts, and Murmur's own audio-owner readout |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
 | `spoken_numbers.rs` / `spoken_structure.rs` | Deterministic spoken-number, punctuation, layout, symbol, and backtracking grammar |
 | `ide_context.rs` | Memory-only bounded IDE symbol and root-relative file index |

@@ -1988,6 +1988,11 @@ fn run_backend(
                     .unwrap_or("none"),
                 "capture backend exceeded its active initialization budget"
             );
+            // Observe the system audio graph while the hang is still live, so
+            // the counts describe the moment coreaudiod refused to start us.
+            // Runs on its own thread with its own deadline: this must never
+            // delay the kill/fallback sequence below.
+            crate::audio_graph_snapshot::observe_capture_timeout(capture_id);
             if !terminate_or_quarantine(
                 child,
                 Some(input),

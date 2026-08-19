@@ -99,6 +99,11 @@ block2 = "0.6"
 core-graphics = { version = "0.25", features = ["elcapitan"] }
 core-foundation = "0.10"
 security-framework = "3.7"
+# Read-only Core Audio HAL introspection for capture-hang diagnostics
+# (audio_graph_snapshot.rs). Bindings only: the app never opens an audio
+# device — capture stays in the isolated worker.
+objc2-core-audio = "0.3"
+objc2-core-foundation = { version = "0.3", features = ["CFString"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 fluidaudio-rs = { git = "https://github.com/FluidInference/fluidaudio-rs", rev = "2d1083314104c812944b5150866d1e334db8eed7", default-features = false, features = ["asr"] }

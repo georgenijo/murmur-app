@@ -31,9 +31,10 @@ carries `{"diagnostics": bool}` per install UUID (armed by listing the UUID in
 `~/murmur-logs/diag-installs.txt` on the receiver; no restart needed). Only on
 an armed install, a capture attempt that reaches half its budget without first
 PCM gets a native stack `sample` of the hung worker, and after the confirmed
-kill a single bounded text bundle — worker stack, 90s of coreaudiod unified
-log, audio/Bluetooth topology, installed HAL plug-ins — is uploaded to
-`POST /bundle`. This content names devices and installed software, so an
+kill a single bounded text bundle — worker stack, system audio graph, Murmur
+internal audio owners, 90s of coreaudiod unified log, audio/Bluetooth
+topology, process list, power assertions, installed HAL plug-ins — is uploaded
+to `POST /bundle`. This content names devices and installed software, so an
 install must only be armed with its owner's agreement; disarming is
 server-side and takes effect within one shipper tick. Arming is logged
 loudly in the armed install's own event stream.
@@ -47,6 +48,31 @@ assertions, and the standard bundle sections); the client never executes
 server-supplied text. The last honored epoch is process-lifetime state, so
 clear the install's `collect-now.txt` line once its bundle arrives to avoid
 a re-collection on the next app launch.
+
+Two sections (`audio_graph_snapshot.rs`) name the blocker rather than only the
+machine:
+
+- **system audio graph** — the public Core Audio HAL's process objects (PID,
+  resolved executable name, and the `IsRunning`/`IsRunningInput`/
+  `IsRunningOutput` flags), taps (object ID and UID), and devices (name,
+  transport type, `DeviceIsRunningSomewhere`, and aggregate sub-device count).
+  Because a wedged `coreaudiod` also blocks these property reads, the whole
+  query runs on a dedicated throwaway thread behind a two-second deadline; on
+  expiry the thread is abandoned and the section reads
+  `<audio graph query timed out after 2s>`, which is itself the evidence. It
+  never runs on the capture supervisor thread and never gates the
+  fallback/kill sequence. Object lists, per-value text, and the whole section
+  are individually capped.
+- **murmur internal audio owners** — what Murmur itself holds at collection
+  time: capture lifecycle phase/owner, microphone preview, meeting capture and
+  its ASR flags, Voice Query, dictation, transform, file transcription, and
+  model-runtime lifecycle. Every read is `try_lock`-based and reports `<busy>`
+  rather than waiting, so the probe never joins the queue it is describing.
+
+The same observation's content-free counts also appear in the bundle's `hang
+context` header and ship from **every** install as the
+`audio.system_audio_graph_observed` structured event (see
+[events reference](../../docs/reference/events.md#structured-logging)).
 
 ## Architecture
 
@@ -310,7 +336,8 @@ truncated or contradictory local report falls back to a diagnostic card.
 
 High-value producers attach an allowlisted, privacy-safe `event_code` inside
 the structured `data` object. Examples include
-`audio.capture_backend_timeout`, `audio.fallback_started`,
+`audio.capture_backend_timeout`, `audio.system_audio_graph_observed`,
+`audio.fallback_started`,
 `audio.capture_ready`, `audio.capture_failed`,
 `audio.permission_prompt_changed`, `pipeline.dictation_state_changed`,
 `pipeline.dictation_presentation`,

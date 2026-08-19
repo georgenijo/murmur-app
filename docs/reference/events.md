@@ -201,6 +201,24 @@ and always uses a constant summary. It never admits application or bundle
 identity, PID/process-instance evidence, window titles, transcript or clipboard
 content, paths, or raw errors.
 
+A capture backend that exceeds its initialization budget emits the stable
+structured code `audio.system_audio_graph_observed` from every install, armed
+for hang diagnostics or not. It is a strictly content-free aggregate of the
+Core Audio HAL at the hang instant, collected on a throwaway thread behind a
+two-second deadline so a wedged `coreaudiod` cannot delay the kill/fallback
+sequence. Its all-build allowlist admits only `event_code`, positive
+`capture_id`, the counts `running_audio_process_count`, `tap_count`,
+`device_count`, and `devices_running_count` (each at most 4,096), boolean
+`query_timed_out`, and `elapsed_ms` (at most 60,000). PIDs, process names, tap
+UIDs, device names and UIDs, and raw errors are rejected at the telemetry
+layer, and the summary is the constant `System audio graph observed`. Counts
+that contradict each other — more running devices than devices, or a timed-out
+query that still counted objects — collapse to the event code alone. At most
+one such event is emitted per capture attempt (keyed on the monotonic
+`capture_id`). The identity-bearing rendering of the same observation stays in
+the server-armed hang bundle; see
+[Log Shipping](../features/log-shipping.md#server-armed-hang-diagnostics-hang_diagnosticsrs).
+
 An exhausted dictation diagnostics-row start emits the stable structured code
 `performance.store_operation_failed`. Its all-build allowlist admits only
 `operation`, `error_class`, numeric `attempts`, and numeric `recording_id`.

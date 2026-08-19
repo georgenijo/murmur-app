@@ -2,6 +2,7 @@
 mod alloc;
 mod audio;
 mod audio_decode;
+mod audio_graph_snapshot;
 mod audio_inventory;
 mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
@@ -457,6 +458,7 @@ pub fn run() {
         .setup(|app| {
             telemetry::init(app.handle().clone());
             audio_inventory::initialize(app.handle().clone());
+            audio_graph_snapshot::set_app_handle(app.handle().clone());
             log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
