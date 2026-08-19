@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
+import type { ModeRuntimeStatus } from '../../lib/hooks/useModeRuntime';
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -51,6 +52,8 @@ interface OverlayDropdownProps {
   disabled: boolean;
   autoPaste: boolean;
   fileOutputEnabled: boolean;
+  mode?: ModeRuntimeStatus;
+  onCycleMode?: (e: React.MouseEvent) => void;
   onToggleDisabled: (e: React.MouseEvent) => void;
   onToggleAutoPaste: (e: React.MouseEvent) => void;
   onOpenSettings: (e: React.MouseEvent) => void;
@@ -72,6 +75,8 @@ export function OverlayDropdown({
   disabled,
   autoPaste,
   fileOutputEnabled,
+  mode = { id: 'builtin.everyday', name: 'Everyday', source: 'manual' },
+  onCycleMode = () => {},
   onToggleDisabled,
   onToggleAutoPaste,
   onOpenSettings,
@@ -167,6 +172,19 @@ export function OverlayDropdown({
           )}
         </span>
       )}
+
+      {/* Resolved Mode. The overlay window is non-activating, so cycling keeps
+          keyboard focus in the user's target app. */}
+      <button
+        type="button"
+        aria-label={`Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : ''}`}
+        title={mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name}
+        onClick={onCycleMode}
+        className="shrink-0 max-w-[72px] truncate rounded-[9px] px-2 text-[10px] font-medium text-sky-200 transition-colors"
+        style={{ height: 26, background: mode.source === 'temporary' ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)' }}
+      >
+        {mode.name}
+      </button>
 
       {/* Global disable */}
       <button

@@ -130,7 +130,7 @@ pub struct DictationContextSnapshot {
     pub resolved_mode_id: Option<String>,
 }
 
-fn builtin_mode(id: &str) -> Option<MurmurMode> {
+pub(crate) fn builtin_mode(id: &str) -> Option<MurmurMode> {
     let (name, writing_style, vocabulary_policy, cli_formatting_enabled) = match id {
         "builtin.everyday" => ("Everyday", None, ModeVocabularyPolicy::Inherit, None),
         "builtin.messages" => (
@@ -191,9 +191,14 @@ fn selected_mode(
     global: &DictationState,
     profile: Option<&AppProfile>,
 ) -> (Option<MurmurMode>, bool) {
-    let Some(id) = profile.and_then(|profile| profile.mode_id.as_deref()) else {
-        return (None, false);
-    };
+    let temporary = profile.and_then(|profile| {
+        (global.temporary_mode_bundle_id.as_deref() == Some(profile.bundle_id.as_str()))
+            .then_some(global.temporary_mode_id.as_deref())
+            .flatten()
+    });
+    let id = temporary
+        .or_else(|| profile.and_then(|profile| profile.mode_id.as_deref()))
+        .unwrap_or(global.manual_mode_id.as_str());
     let mode = builtin_mode(id).or_else(|| {
         global
             .modes

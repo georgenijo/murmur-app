@@ -2913,6 +2913,29 @@ pub async fn configure_dictation(
             })
             .collect();
     }
+    if let Some(id) = options.get("activeModeId").and_then(|value| value.as_str()) {
+        let id = id.trim();
+        if crate::dictation_context::builtin_mode(id).is_some()
+            || dictation
+                .modes
+                .iter()
+                .any(|mode| mode.id == id && mode.enabled)
+        {
+            dictation.manual_mode_id = id.to_string();
+        } else {
+            dictation.manual_mode_id = "builtin.everyday".to_string();
+        }
+    }
+    if dictation.temporary_mode_id.as_deref().is_some_and(|id| {
+        crate::dictation_context::builtin_mode(id).is_none()
+            && !dictation
+                .modes
+                .iter()
+                .any(|mode| mode.id == id && mode.enabled)
+    }) {
+        dictation.temporary_mode_id = None;
+        dictation.temporary_mode_bundle_id = None;
+    }
 
     // Per-app profiles carry nullable delivery/transformation overrides. A
     // missing/null value means "no override". Entries without a bundleId are

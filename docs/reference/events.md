@@ -30,6 +30,13 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `file-output-failed` | `string` (hint) | `commands/recording.rs` | Saving the transcript/audio file failed; clipboard delivery still happened. | Main window. |
 | `file-transcription-status-changed` | `boolean` | `commands/recording.rs` | `true` when an imported-file transcription starts, `false` when it finishes or aborts. Gates dictation and transform. | Main window (`useFileTranscription`). |
 
+## Modes
+
+| Event | Payload | Source | When it fires | Listeners |
+|-------|---------|--------|---------------|-----------|
+| `mode-runtime-changed` | `{id, name, source}` | `commands/mode_runtime.rs` | The resolved native Mode changes because of focus, binding, manual cycling, or temporary override. Local UI-only names are never logged. | Overlay (`useModeRuntime`); tray updates directly. |
+| `mode-manual-changed` | `{modeId}` | `commands/mode_runtime.rs` | Native cycling changes the last manual Mode outside an app binding. | Main settings hook persists the stable ID. |
+
 ## Meeting capture
 
 Meeting transcript text is carried only by the targeted finalized-segment UI

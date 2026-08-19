@@ -58,6 +58,25 @@ export function useSettings() {
     });
   }, []);
 
+  // Native overlay/tray cycling owns the immediate runtime transition. Mirror
+  // manual selections into durable Settings without replaying the command.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('mode-manual-changed', ({ payload }) => {
+      const modeId = (payload as { modeId?: unknown } | null)?.modeId;
+      if (typeof modeId !== 'string' || settingsRef.current.activeModeId === modeId) return;
+      const next = { ...settingsRef.current, activeModeId: modeId };
+      settingsRef.current = next;
+      setSettings(next);
+      saveSettings(next);
+      void emit('settings-changed');
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Persist backend-driven disabled changes (the tray's "Disable Murmur" item).
   // The equality guard makes this window's own set_app_disabled echo a no-op.
   useEffect(() => {
@@ -117,14 +136,14 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates) {
+    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
       emit('settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
       configure(buildConfigureOptions(newSettings))
         .catch(() => {
@@ -146,6 +165,8 @@ export function useSettings() {
               mirrorToNotchPill: previousSettings.mirrorToNotchPill,
               outputDir: previousSettings.outputDir,
               appProfiles: previousSettings.appProfiles,
+              modes: previousSettings.modes,
+              activeModeId: previousSettings.activeModeId,
               voiceCommandsEnabled: previousSettings.voiceCommandsEnabled,
               voiceCommands: previousSettings.voiceCommands,
               cleanupEnabled: previousSettings.cleanupEnabled,

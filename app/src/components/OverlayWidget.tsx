@@ -11,6 +11,7 @@ import { useOverlaySettingsMirror } from '../lib/hooks/useOverlaySettingsMirror'
 import { useRecordingControls } from '../lib/hooks/useRecordingControls';
 import { useWaveform } from '../lib/hooks/useWaveform';
 import { useDictationPartial } from '../lib/hooks/useDictationPartial';
+import { useModeRuntime } from '../lib/hooks/useModeRuntime';
 import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
@@ -53,6 +54,7 @@ export function OverlayWidget() {
 
   const waveform = useWaveform(status);
   const dictationPartial = useDictationPartial(status);
+  const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({
     status, statusRef, disabledRef: runtime.disabledRef, expandedRef,
@@ -246,6 +248,11 @@ export function OverlayWidget() {
           disabled={runtime.disabled}
           autoPaste={settingsMirror.autoPaste}
           fileOutputEnabled={settingsMirror.fileOutputEnabled}
+          mode={modeRuntime.status}
+          onCycleMode={(event) => {
+            event.stopPropagation();
+            void modeRuntime.cycle();
+          }}
           onToggleDisabled={settingsMirror.handleToggleDisabled}
           onToggleAutoPaste={settingsMirror.handleToggleAutoPaste}
           onOpenSettings={settingsMirror.handleOpenSettings}
