@@ -447,7 +447,7 @@ export function MicrophoneStartupBenchmark({
                       <td className="px-2 py-2">
                         <span className="font-medium">{backendLabel(cycle.backend)}</span>
                         <span className="block text-[10px] text-on-surface-variant">
-                          {cycle.backendOrder.map(backendLabel).join(' → ')} · {cycle.backendOrderSource === 'default' ? 'default order' : 'session memo'}
+                          {cycle.backendOrder.map(backendLabel).join(' → ')} · {cycle.backendOrderSource === 'default' ? 'default order' : 'learned memo'}
                         </span>
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums">{milliseconds(cycle.cycleStartToFirstPcmMs)}</td>

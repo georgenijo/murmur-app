@@ -205,7 +205,10 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
     }
 }
 
-fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+/// The per-bundle app data directory that owns every durable host-written
+/// file. Shared so non-command hosts (the capture backend memo) publish beside
+/// `settings.json` instead of resolving their own directory.
+pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()

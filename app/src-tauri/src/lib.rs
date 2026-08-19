@@ -451,6 +451,17 @@ pub fn run() {
         .setup(|app| {
             telemetry::init(app.handle().clone());
             audio_inventory::initialize(app.handle().clone());
+            // Restore the durable per-device capture backend memo before any
+            // capture can start, so a relaunch keeps the fast-fail tier a
+            // known-bad machine already earned. Fail-open: an unavailable
+            // directory just means this session stays in memory only.
+            match commands::settings_store::data_dir(app.handle()) {
+                Ok(dir) => audio::initialize_capture_memo_persistence(dir),
+                Err(error) => tracing::warn!(
+                    target: "audio",
+                    "capture backend memo persistence unavailable: {error}"
+                ),
+            }
             log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
