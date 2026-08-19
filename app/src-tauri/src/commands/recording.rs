@@ -1888,6 +1888,7 @@ async fn run_transcription_pipeline(
             stop_delivery_target.as_ref(),
         );
         let delivery_target = anchored_target.clone();
+        let recovery_target = delivery_target.clone();
         // Keep the configurable focus-settle wait off the macOS main thread so
         // activation/Space notification callbacks can advance their
         // content-free counters before target verification runs.
@@ -1937,6 +1938,13 @@ async fn run_transcription_pipeline(
             .await
         {
             Ok(Ok(Some(Ok(result)))) => {
+                if result.outcome != injector::InjectionOutcome::NoText {
+                    app_handle.state::<State>().delivery_recovery.remember(
+                        text.clone(),
+                        recovery_target,
+                        paste_delay_ms,
+                    );
+                }
                 if let injector::InjectionOutcome::ClipboardOnly(reason) = result.outcome {
                     let failure_message = match reason {
                         injector::ClipboardOnlyReason::TargetChanged => Some(
@@ -5344,6 +5352,7 @@ mod tests {
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
@@ -5467,6 +5476,7 @@ mod tests {
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),

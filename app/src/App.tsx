@@ -55,6 +55,7 @@ import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
+import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -87,6 +88,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
+  const [deliveryRecoveryMessage, setDeliveryRecoveryMessage] = useState('');
   const meetings = useMeetings(settings);
   useSoundCues(settings, meetings.status.phase);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
@@ -158,6 +160,22 @@ function App() {
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
+
+  useEffect(() => {
+    void setPasteLastShortcut(settings.pasteLastShortcutEnabled).catch((error: unknown) => {
+      setDeliveryRecoveryMessage(String(error));
+      if (settings.pasteLastShortcutEnabled) updateSettings({ pasteLastShortcutEnabled: false });
+    });
+  }, [settings.pasteLastShortcutEnabled, updateSettings]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<DeliveryRetryResult>('delivery-retry-feedback', ({ payload }) => {
+      setDeliveryRecoveryMessage(payload.message);
+      window.setTimeout(() => setDeliveryRecoveryMessage(''), 5000);
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => unlisten?.();
+  }, []);
 
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
@@ -492,6 +510,14 @@ function App() {
         run: () => { void pickAudioFiles(); },
       },
       {
+        id: 'paste-last',
+        title: 'Paste Last / Retry Delivery',
+        section: 'History',
+        keywords: ['clipboard', 'again', 'recover', 'retry', 'delivery'],
+        hint: settings.pasteLastShortcutEnabled ? '⌘⇧V' : undefined,
+        run: () => { void retryLastDelivery(); },
+      },
+      {
         id: 'history-search',
         title: 'Search transcripts',
         section: 'History',
@@ -579,12 +605,12 @@ function App() {
     ];
     return items;
   }, [
-    status, historyEntries, settings.disabled, updateSettings, handleStart, handleStop,
+    status, historyEntries, settings.disabled, settings.pasteLastShortcutEnabled, updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
     meetings,
   ]);
 
-  const error = initError || recordingError;
+  const error = initError || recordingError || deliveryRecoveryMessage;
 
   if (onboardingState === 'unknown' || modelReady === null) {
     return <div className="h-screen bg-background" />;

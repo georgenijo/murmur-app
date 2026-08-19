@@ -78,6 +78,21 @@ pub fn get_app_disabled() -> bool {
     keyboard::is_app_disabled()
 }
 
+#[tauri::command]
+pub fn set_paste_last_shortcut(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        if !injector::is_accessibility_enabled() {
+            return Err(
+                "Accessibility permission is required for the Paste Last shortcut.".to_string(),
+            );
+        }
+        keyboard::start_paste_last_listener(app_handle);
+    } else {
+        keyboard::stop_paste_last_listener();
+    }
+    Ok(())
+}
+
 // -- Transform hotkey (issue #312, PR-B1) --
 //
 // A second, independent hold-down shortcut coexisting with the dictation
