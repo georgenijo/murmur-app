@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Meetings now have a portable local artifact foundation with bounded
+  hierarchical chunk merging, strict sourced summary/action schemas, explicit
+  unknown owner/date values, and Markdown/text/JSON exports (#604).
 - History entries with preserved raw recognition can now create a separate,
   provenance-linked result through another Mode without retranscribing audio,
   injecting text, updating dictation stats, or teaching corrections (#605).
