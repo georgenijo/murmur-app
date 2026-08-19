@@ -46,7 +46,8 @@ Preview PCM follows the signed capture-worker protocol and the AUHAL → CPAL
 fallback path, but the parent never appends it to the shared transcription
 buffer. It is not transcribed, saved, copied, added to history, or emitted in
 telemetry. A successful first callback does count as real per-device readiness
-and intentionally trains the app-lifetime backend-selection memo.
+and intentionally trains the durable per-device backend-selection memo, which
+records only backend order and retry-budget state — never preview audio.
 
 The worker-side parent aggregates every finite sample between display-rate
 updates. RMS and peak are clamped to 0–1 and sent only to the main window as

@@ -72,14 +72,14 @@ never substitutes the system default or another input. A mixed failure, a
 system-default selection, retained audio, cancellation, or any non-
 `device_unavailable` result ends this re-resolution path immediately.
 
-A process-local session memo, keyed per requested device, adapts the attempt
+A durable backend memo, keyed per requested device, adapts the attempt
 sequence to two observed hang pathologies. For a backend-bound hang (one
 backend hangs, the other works), the backend that most recently delivered
-first PCM is ordered first, so the timeout is paid once per app run instead of
+first PCM is ordered first, so the timeout is paid once instead of
 per recording. For a first-attempt-bound hang (whichever backend goes first
 hangs in `AudioOutputUnitStart` while the second attempt succeeds within
 ~160ms), promotion is disproven the moment a promoted backend itself times out
-before first PCM: promotion is then disabled for that key for the session
+before first PCM: promotion is then disabled for that key
 (otherwise the order oscillates), a promoted backend's budget is always capped
 at the default primary's 8s so a wrong promotion can never worsen the worst
 case, and the primary attempt budget shrinks in two tiers so the reliable
@@ -92,8 +92,24 @@ takes. A primary success or a slow rescue
 resets that counter and restores full budgets from either tier — a machine where both backends
 are slow never arms the short budget. The memo only reorders and shrinks: both backends
 always stay in the sequence, budgets never grow, and termination confirmation
-and fallback-eligibility rules are unchanged. It is never persisted, and
-telemetry logs only backend names, never the device key.
+and fallback-eligibility rules are unchanged. Telemetry logs only backend
+names, never the device key.
+
+The memo survives relaunches, including auto-updates: without that, an
+affected machine paid two full ~8.5s recordings after every launch before the
+fast-fail tier re-armed. It is stored as a bounded, versioned
+`capture-memo.json` (at most 16 most-recently-updated device keys, holding only
+the last ready backend, the promotion-disabled flag, and the consecutive
+fast-rescue count) beside `settings.json` in the per-bundle app data directory.
+It is read once during app setup, before any capture can start, and republished
+atomically on a detached writer thread after each update that actually changes
+a value, so no capture-path thread ever waits on the disk. Persistence is
+fail-open in both directions: a missing, oversized, corrupt, or wrong-version
+file starts from defaults and is overwritten on the next update, and a failed
+write never blocks, delays, or fails a capture start. The file is local-only —
+its contents and the device keys inside it are never logged, shipped, or
+included in telemetry. Diagnostic microphone-startup benchmark runs still
+neither mutate nor persist it.
 
 ## Overview
 
