@@ -8,6 +8,7 @@ import {
   SETTINGS_CATEGORIES,
   SETTINGS_TOOLS,
   settingsLatencyView,
+  type SettingsPageRequest,
 } from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
@@ -16,8 +17,11 @@ import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { MainHeader } from './components/MainHeader';
-import { TranscriptionView, type HistoryWorkspace } from './components/TranscriptionView';
-import { FooterStats } from './components/FooterStats';
+import { MeetingsPanel, QueryHistoryPanel } from './components/history';
+import { HomeDashboard } from './components/home/HomeDashboard';
+import { HomeSidebar } from './components/home/HomeSidebar';
+import { InsightsView } from './components/home/InsightsView';
+import type { MainDestination } from './lib/homeDashboard';
 import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
@@ -90,9 +94,9 @@ function App() {
     setModelReady(true);
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
-  const [historyWorkspace, setHistoryWorkspace] = useState<HistoryWorkspace>('transcripts');
+  const [mainDestination, setMainDestination] = useState<MainDestination>('home');
   const queryHistorySurfaceActive = isQueryHistorySurfaceActive({
-    queriesSelected: historyWorkspace === 'queries',
+    queriesSelected: mainDestination === 'queries',
     settingsOpen: isSettingsOpen,
     onboardingState,
     modelReady,
@@ -341,7 +345,7 @@ function App() {
     });
   }, [updateStatus]);
 
-  const [settingsPageRequest, setSettingsPageRequest] = useState<{ page: string; token: number } | null>(null);
+  const [settingsPageRequest, setSettingsPageRequest] = useState<SettingsPageRequest | null>(null);
   const settingsViewRef = useRef('settings.dictation');
   const settingsActiveRef = useRef(isSettingsOpen);
   settingsActiveRef.current = isSettingsOpen;
@@ -360,16 +364,16 @@ function App() {
   }, []);
   useUiLatencyDestination(
     onboardingState === 'done' && modelReady === true && !isSettingsOpen
-      ? 'main.history'
+      ? `main.${mainDestination}`
       : null,
   );
   useUiLatencyDestination(isSettingsOpen ? settingsViewRef.current : null);
 
   const closeSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     if (!isSettingsOpen) return;
-    beginCurrentUiTransition('main.history', trigger);
+    beginCurrentUiTransition(`main.${mainDestination}`, trigger);
     setIsSettingsOpen(false);
-  }, [isSettingsOpen]);
+  }, [isSettingsOpen, mainDestination]);
 
   const openSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     if (isSettingsOpen) return;
@@ -381,7 +385,7 @@ function App() {
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
-    setHistoryWorkspace('transcripts');
+    setMainDestination('home');
     setHistorySearchToken((token) => (token ?? 0) + 1);
   }, [closeSettings]);
 
@@ -411,11 +415,17 @@ function App() {
 
   // ---- Command palette (⌘K) ----------------------------------------------
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
-  const openSettingsPage = useCallback((page: string) => {
-    beginCurrentUiTransition(settingsLatencyView(page), 'programmatic');
-    setSettingsPageRequest((previous) => ({ page, token: (previous?.token ?? 0) + 1 }));
+  const openSettingsTarget = useCallback((target: Omit<SettingsPageRequest, 'token'>) => {
+    beginCurrentUiTransition(settingsLatencyView(target.page), 'programmatic');
+    setSettingsPageRequest((previous) => ({
+      ...target,
+      token: (previous?.token ?? 0) + 1,
+    }));
     setIsSettingsOpen(true);
   }, []);
+  const openSettingsPage = useCallback((page: string) => {
+    openSettingsTarget({ page });
+  }, [openSettingsTarget]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -459,7 +469,7 @@ function App() {
         keywords: ['system audio', 'call', 'me', 'them', 'record'],
         run: () => {
           closeSettings('programmatic');
-          setHistoryWorkspace('meetings');
+          setMainDestination('meetings');
           if (meetings.status.phase === 'processing' || meetings.status.phase === 'stopping') return;
           void (meetingCanStop ? meetings.stop() : meetings.start());
         },
@@ -511,21 +521,21 @@ function App() {
         title: 'Show transcription history',
         section: 'Navigation',
         keywords: ['record', 'main'],
-        run: () => { closeSettings('programmatic'); setHistoryWorkspace('transcripts'); },
+        run: () => { closeSettings('programmatic'); setMainDestination('home'); },
       },
       {
         id: 'show-meetings',
         title: 'Show meeting transcripts',
         section: 'Navigation',
         keywords: ['system audio', 'calls', 'me', 'them'],
-        run: () => { closeSettings('programmatic'); setHistoryWorkspace('meetings'); },
+        run: () => { closeSettings('programmatic'); setMainDestination('meetings'); },
       },
       {
         id: 'show-query-history',
         title: 'Show Voice Query history',
         section: 'Navigation',
         keywords: ['questions', 'answers', 'agent', 'queries'],
-        run: () => { closeSettings('programmatic'); setHistoryWorkspace('queries'); },
+        run: () => { closeSettings('programmatic'); setMainDestination('queries'); },
       },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
@@ -621,6 +631,7 @@ function App() {
         buildBadge={PERFORMANCE_BUILD_BADGE}
         meetingPhase={meetings.status.phase}
         meetingElapsedMs={meetings.status.elapsedMs}
+        showRecordControls={false}
         updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
@@ -638,19 +649,57 @@ function App() {
           {...(isSettingsOpen ? { inert: '' } : {})}
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 flex-col overflow-hidden ${isSettingsOpen ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
         >
-          <TranscriptionView
-            historyEntries={historyEntries}
-            onClearHistory={clearHistory}
-            onUpdateHistoryEntry={updateEntry}
-            focusSearchToken={historySearchToken}
-            onTranscribeFile={pickAudioFiles}
-            workspace={historyWorkspace}
-            onWorkspaceChange={setHistoryWorkspace}
-            meetings={meetings}
-            queryHistory={queryHistory}
-            queryHistoryActive={queryHistorySurfaceActive}
-            retainQueryHistory={settings.retainQueryHistory}
-          />
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <HomeSidebar
+              active={mainDestination}
+              onNavigate={(destination) => {
+                closeSettings('pointer');
+                setMainDestination(destination);
+              }}
+              onOpenSettings={openSettingsTarget}
+            />
+            <div className="main-dashboard-workspace">
+              {mainDestination === 'home' ? (
+                <HomeDashboard
+                  historyEntries={historyEntries}
+                  onClearHistory={clearHistory}
+                  onUpdateHistoryEntry={updateEntry}
+                  focusSearchToken={historySearchToken}
+                  onTranscribeFile={pickAudioFiles}
+                  status={status}
+                  initialized={initialized}
+                  recordingDuration={recordingDuration}
+                  audioLevel={audioLevel}
+                  settings={settings}
+                  meetings={meetings}
+                  statsVersion={combinedStatsVersion}
+                  onRecord={handleStart}
+                  onStop={handleStop}
+                  onOpenInsights={() => setMainDestination('insights')}
+                  onOpenSettings={openSettingsTarget}
+                />
+              ) : mainDestination === 'meetings' ? (
+                <section className="main-secondary-view" aria-labelledby="meetings-view-title">
+                  <div className="main-secondary-heading"><h1 id="meetings-view-title">Notetaker</h1><p>Local meeting transcripts and summaries.</p></div>
+                  <MeetingsPanel meetings={meetings} />
+                </section>
+              ) : mainDestination === 'queries' ? (
+                <section className="main-secondary-view" aria-labelledby="queries-view-title">
+                  <div className="main-secondary-heading"><h1 id="queries-view-title">Queries</h1><p>Questions and answers retained explicitly on this Mac.</p></div>
+                  {queryHistorySurfaceActive && (
+                    <QueryHistoryPanel history={queryHistory} retentionEnabled={settings.retainQueryHistory} />
+                  )}
+                </section>
+              ) : (
+                <InsightsView
+                  statsVersion={combinedStatsVersion}
+                  settings={settings}
+                  onOpenVocabulary={() => openSettingsTarget({ page: 'text', editorTab: 'aliases' })}
+                  onOpenStyles={() => openSettingsTarget({ page: 'delivery', target: 'app-overrides' })}
+                />
+              )}
+            </div>
+          </div>
 
           {error && (
             <div className="absolute bottom-4 left-4 right-4 z-20 rounded-xl border border-error/30 bg-surface-container-lowest px-4 py-3 shadow-xl">
@@ -699,13 +748,6 @@ function App() {
             />
           </SettingsSurfaceActiveContext.Provider>
         </section>
-      </div>
-
-      <div
-        aria-hidden={isSettingsOpen}
-        className={`shrink-0 ${isSettingsOpen ? 'hidden' : ''}`}
-      >
-        <FooterStats statsVersion={combinedStatsVersion} />
       </div>
 
       <CommandPalette

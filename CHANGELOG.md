@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- The main window now uses a full-width local-first dashboard with compact
+  sidebar navigation, a 64px recording row, recent dictations above the fold,
+  real usage insights, and explicit personalization setup milestones instead
+  of an opaque tuning percentage (#613).
+
 ## [0.36.1] - 2026-08-18
 
 ### Fixed

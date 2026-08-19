@@ -179,6 +179,13 @@ function VadSensitivitySlider({
   );
 }
 
+export interface SettingsPageRequest {
+  page: string;
+  token: number;
+  editorTab?: SettingsEditorTab;
+  target?: string;
+}
+
 interface SettingsPanelProps {
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
@@ -192,7 +199,7 @@ interface SettingsPanelProps {
   configureError: string | null;
   /** Page to show, from the command palette. The token makes a repeat request
    *  for the page you are already on still register. */
-  pageRequest?: { page: string; token: number } | null;
+  pageRequest?: SettingsPageRequest | null;
   onLatencyViewChange?: (view: string) => void;
   /** Stable ref avoids re-rendering the warm Settings tree when its surface is hidden. */
   activeRef?: React.RefObject<boolean>;
@@ -409,9 +416,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (!pageRequest || pageRequest.token === requestTokenRef.current) return;
     requestTokenRef.current = pageRequest.token;
     setActiveCat(resolvePage(pageRequest.page));
-    setEditorTab(null);
+    setEditorTab(pageRequest.editorTab ?? null);
     setSearchQuery('');
-    setTargetRequest(null);
+    setTargetRequest(pageRequest.target ?? null);
   }, [pageRequest]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);

@@ -3,6 +3,7 @@ import type { HTMLAttributes, ReactNode } from 'react';
 interface WindowHeaderProps extends HTMLAttributes<HTMLElement> {
   contextLabel?: string;
   children?: ReactNode;
+  showWordmark?: boolean;
 }
 
 /**
@@ -12,6 +13,7 @@ interface WindowHeaderProps extends HTMLAttributes<HTMLElement> {
 export function WindowHeader({
   contextLabel,
   children,
+  showWordmark = true,
   className = '',
   ...props
 }: WindowHeaderProps) {
@@ -22,7 +24,7 @@ export function WindowHeader({
       {...props}
     >
       <div data-tauri-drag-region className="ui-window-header-content">
-        <span data-tauri-drag-region className="ui-window-wordmark">Murmur</span>
+        {showWordmark && <span data-tauri-drag-region className="ui-window-wordmark">Murmur</span>}
         {contextLabel && (
           <span
             data-tauri-drag-region

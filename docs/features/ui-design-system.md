@@ -42,6 +42,10 @@ The reusable CSS contracts are:
 - `.history-toolbar` / `.history-search` / `.history-list`
 - `.transcript-card` / `.transcript-meta` / `.transcript-text`
 - `.transcript-copy` / `.transcript-teach`
+- `.home-sidebar` / `.home-nav-item`
+- `.home-dashboard` / `.home-dashboard-grid`
+- `.home-recording-bar` / `.home-record-button`
+- `.dashboard-card` / `.personalization-card`
 
 Use these before creating a feature-local control or surface.
 
@@ -49,29 +53,32 @@ Use these before creating a feature-local control or surface.
 
 | Area | Contract |
 |------|----------|
-| Native chrome | Traffic lights, wordmark, status, hint, Record, and Settings share one row |
+| Native chrome | Traffic lights, status, updates, and Settings share one row; recording actions live in the dashboard |
 | Status | Minimum 72px; state changes do not remove its container |
-| Record | Minimum 72px border-box width; timer remains mounted and changes visibility |
+| Record | Home owns one 64px row with a stable Start/Stop action, truthful status, shortcut, and file action |
+| Sidebar | 216px normally, 64px icon rail at compact width; every item routes to a real surface |
+| Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
 | Toolbar | 28px controls; search is 180px and expands to 260px on focus |
 | History | 5px list gap; cards use an 8px vertical inset |
 | Metadata | Time/source left; words/duration flush right |
 | Copy | Absolutely positioned at card bottom-right; never participates in metadata layout |
 | Correct & Teach | Compact muted action on the newest entry only |
-| Footer | Inline statistics in a single 32px row |
+| Insights | Counts come from durable local stats; personalization uses explicit milestones and never an opaque score |
 
 ## Review and verification
 
-Every UI change should be checked at the canonical 880×720 main-window size in
-both appearance modes. Recording transitions must be checked in idle,
-recording, and processing states. Native title-bar work must be verified in a
-bundled Tauri app because a browser cannot reproduce the macOS traffic-light
-layout.
+Every main-dashboard change should be checked at 1180×760 and the compact
+720×560 target in both appearance modes. Recording transitions must be checked
+in idle, recording, and processing states. Native title-bar work must be
+verified in a bundled Tauri app because a browser cannot reproduce the macOS
+traffic-light layout.
 
 Component tests enforce the stable header contracts and confirm that Copy is
 outside the transcript counts row. Native smoke testing covers Settings
 navigation, transcript-card actions, and the history overflow menu.
 
-`npm run test:visual` runs Playwright goldens at the canonical 880×720 size for
-light and dark appearances across idle, recording, processing, and Settings.
-Update those baselines only after comparing the rendered fixture with the Open
-Design source and repeating the bundled native smoke test.
+`npm run test:visual` runs Playwright goldens at 1180×760 for light and dark
+appearances across idle, recording, processing, Insights, and Settings, plus a
+720×560 compact Home fixture. Update those baselines only after comparing the
+rendered fixture with the Open Design source and repeating the bundled native
+smoke test.
