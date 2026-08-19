@@ -175,8 +175,16 @@ describe('useRecordingState transition ordering', () => {
       mocks.listeners.get('transcription-complete')?.({
         payload: {
           text: 'one final transcript',
+          rawText: 'one final transcript',
           duration: 12,
           teachingContext: { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
+          recording: {
+            recordingId: 7,
+            modelId: 'parakeet-v3',
+            modeId: null,
+            profileId: 'Editor',
+            stages: [],
+          },
         },
       });
       return {
@@ -200,6 +208,16 @@ describe('useRecordingState transition ordering', () => {
       undefined,
       { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
       undefined,
+      {
+        rawText: 'one final transcript',
+        recording: {
+          recordingId: 7,
+          modelId: 'parakeet-v3',
+          modeId: null,
+          profileId: 'Editor',
+          stages: [],
+        },
+      },
     );
     expect(mocks.updateStats).toHaveBeenCalledTimes(1);
     expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);

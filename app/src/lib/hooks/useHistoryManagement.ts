@@ -4,6 +4,7 @@ import {
   HistoryEntry,
   HistorySource,
   HistoryInterruption,
+  HistoryRecordingContext,
   loadHistory,
   saveHistory,
   addHistoryEntry,
@@ -18,10 +19,10 @@ export function useHistoryManagement(retainHistory = true) {
     retainHistoryRef.current = retainHistory;
   }, [retainHistory]);
 
-  const addEntry = useCallback((text: string, duration: number, source: HistorySource = 'recording', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => {
+  const addEntry = useCallback((text: string, duration: number, source: HistorySource = 'recording', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => {
     if (!retainHistoryRef.current) return;
     setHistoryEntries(prev => {
-      const newHistory = addHistoryEntry(prev, text, duration, source, sourceName, teachingContext, interruption);
+      const newHistory = addHistoryEntry(prev, text, duration, source, sourceName, teachingContext, interruption, details);
       saveHistory(newHistory);
       return newHistory;
     });

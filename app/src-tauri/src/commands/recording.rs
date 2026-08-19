@@ -965,6 +965,21 @@ struct PipelineResult {
     text: String,
     timings: PipelineTimings,
     terminal: PipelineTerminal,
+    history: Option<PipelineHistory>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineHistory {
+    raw_text: String,
+    stages: Vec<HistoryStageResult>,
+}
+
+#[derive(serde::Serialize)]
+struct HistoryStageResult {
+    stage: &'static str,
+    outcome: &'static str,
+    changed: bool,
 }
 
 fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<RuntimeIdentityV1> {
@@ -1622,6 +1637,7 @@ async fn run_transcription_pipeline(
             text: String::new(),
             timings: PipelineTimings::default(),
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::Vad),
+            history: None,
         });
     }
 
@@ -1657,6 +1673,7 @@ async fn run_transcription_pipeline(
                                 ..PipelineTimings::default()
                             },
                             terminal: PipelineTerminal::NoSpeech(DictationErrorCode::VadNoSpeech),
+                            history: None,
                         });
                     }
                     Ok(vad::VadResult::Speech(trimmed)) => {
@@ -1695,6 +1712,7 @@ async fn run_transcription_pipeline(
                 ..PipelineTimings::default()
             },
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::InferenceDecode),
+            history: None,
         });
     }
 
@@ -1803,6 +1821,18 @@ async fn run_transcription_pipeline(
         .iter()
         .filter_map(transcript_stage_timing)
         .collect();
+    let history = PipelineHistory {
+        raw_text: transformed.original_text.clone(),
+        stages: transformed
+            .stages
+            .iter()
+            .map(|stage| HistoryStageResult {
+                stage: stage.stage,
+                outcome: stage.outcome.as_str(),
+                changed: stage.changed,
+            })
+            .collect(),
+    };
     let text = transformed.text;
 
     // Update last_transcription_at for idle timeout tracking
@@ -1817,6 +1847,7 @@ async fn run_transcription_pipeline(
             text: String::new(),
             timings,
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
+            history: None,
         });
     }
 
@@ -1955,6 +1986,7 @@ async fn run_transcription_pipeline(
                     text: String::new(),
                     timings,
                     terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
+                    history: None,
                 });
             }
             Ok(Err(_)) => {
@@ -2045,6 +2077,7 @@ async fn run_transcription_pipeline(
         text,
         timings,
         terminal,
+        history: Some(history),
     })
     // _guard drops here, setting status to Idle
 }
@@ -4310,6 +4343,7 @@ async fn stop_native_recording_for(
             return Err(error);
         }
     };
+    let history = pipeline.history;
     let text = pipeline.text;
     let timings = pipeline.timings;
 
@@ -4396,14 +4430,23 @@ async fn stop_native_recording_for(
                 .map(|profile| profile.label.as_str()),
             context.teaching_project_root.as_deref(),
         );
+        let history = history.expect("non-empty completed transcription has history metadata");
         let _ = app_handle.emit(
             "transcription-complete",
             serde_json::json!({
                 "recordingId": rid,
                 "text": text,
+                "rawText": history.raw_text,
                 "duration": recording_secs,
                 "teachingContext": teaching_context,
-                "interrupted": interruption
+                "interrupted": interruption,
+                "recording": {
+                    "recordingId": rid,
+                    "modelId": model_name,
+                    "modeId": null,
+                    "profileId": context.matched_profile.as_ref().map(|profile| profile.label.as_str()),
+                    "stages": history.stages,
+                }
             }),
         );
     }
