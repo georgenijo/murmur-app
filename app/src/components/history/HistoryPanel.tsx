@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_FILTER_OPTIONS,
@@ -37,6 +37,22 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
       ))}
     </>
   );
+}
+
+function historyDayKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function historyDayLabel(timestamp: number): string {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const key = historyDayKey(timestamp);
+  if (key === historyDayKey(today.getTime())) return 'Today';
+  if (key === historyDayKey(yesterday.getTime())) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function ClampedTranscript({ text, query }: { text: string; query: string }) {
@@ -369,16 +385,20 @@ export function HistoryPanel({
             <p className="text-sm">No matching transcripts</p>
             <button type="button" onClick={() => { setQuery(''); setFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
           </div>
-        ) : visible.map((entry) => {
+        ) : visible.map((entry, index) => {
           const wordCount = entry.text.trim() ? entry.text.trim().split(/\s+/).length : 0;
           const isNewest = entry.id === newestId;
+          const showDayLabel = index === 0 || historyDayKey(entry.timestamp) !== historyDayKey(visible[index - 1].timestamp);
+          const endsDay = index === visible.length - 1 || historyDayKey(entry.timestamp) !== historyDayKey(visible[index + 1].timestamp);
           return (
-            <article
-              key={entry.id}
-              data-testid="transcript-card"
-              data-copied={copiedId === entry.id}
-              className="transcript-card group"
-            >
+            <Fragment key={entry.id}>
+              {showDayLabel && <p className="history-date-label">{historyDayLabel(entry.timestamp)}</p>}
+              <article
+                data-testid="transcript-card"
+                data-copied={copiedId === entry.id}
+                data-day-end={endsDay}
+                className="transcript-card group"
+              >
               <div className="transcript-meta">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="shrink-0">{formatTimestamp(entry.timestamp)}</span>
@@ -428,7 +448,8 @@ export function HistoryPanel({
                   Correct &amp; Teach
                 </button>
               )}
-            </article>
+              </article>
+            </Fragment>
           );
         })}
       </div>

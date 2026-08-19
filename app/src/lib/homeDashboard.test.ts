@@ -24,6 +24,7 @@ describe('home dashboard derivations', () => {
     expect(result.totalRecordings).toBe(80);
     expect(result.averageWpm).toBe(150);
     expect(result.activeDaysThisMonth).toBe(2);
+    expect(result.wordsThisMonth).toBe(300);
     expect(result.recordingsThisMonth).toBe(5);
   });
 

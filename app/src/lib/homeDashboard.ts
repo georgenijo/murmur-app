@@ -14,6 +14,7 @@ export interface UsageOverview {
   averageWpm: number;
   currentStreak: number;
   activeDaysThisMonth: number;
+  wordsThisMonth: number;
   recordingsThisMonth: number;
 }
 
@@ -51,6 +52,7 @@ export function getUsageOverview(
     averageWpm: getWPM(stats),
     currentStreak: getCurrentStreak(stats),
     activeDaysThisMonth: monthBuckets.filter((bucket) => bucket.recordings > 0).length,
+    wordsThisMonth: monthBuckets.reduce((sum, bucket) => sum + bucket.words, 0),
     recordingsThisMonth: monthBuckets.reduce((sum, bucket) => sum + bucket.recordings, 0),
   };
 }

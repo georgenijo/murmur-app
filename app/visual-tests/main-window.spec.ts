@@ -5,7 +5,7 @@ const appearances = ['light', 'dark'] as const;
 
 for (const appearance of appearances) {
   for (const state of states) {
-    test(`${appearance} ${state} matches the dashboard at 1180x760`, async ({ page }) => {
+    test(`${appearance} ${state} matches the dashboard at native 880x720`, async ({ page }) => {
       const pageErrors: string[] = [];
       page.on('pageerror', (error) => pageErrors.push(error.message));
       await page.emulateMedia({ colorScheme: appearance });
@@ -70,7 +70,29 @@ test('the window header flows into the history toolbar without a divider', async
   await expect(page.locator('.ui-window-wordmark')).toHaveCount(0);
   await expect.poll(() => page.locator('.home-brand').evaluate((element) => (
     element.getBoundingClientRect().left
-  ))).toBe(10);
+  ))).toBe(8);
+});
+
+test('native default keeps the approved three-column dashboard geometry', async ({ page }) => {
+  await page.setViewportSize({ width: 880, height: 720 });
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+
+  const sidebar = page.locator('.home-sidebar');
+  const main = page.locator('.home-dashboard-main');
+  const rail = page.locator('.home-insights-rail');
+  const [sidebarBox, mainBox, railBox] = await Promise.all([
+    sidebar.boundingBox(),
+    main.boundingBox(),
+    rail.boundingBox(),
+  ]);
+
+  expect(sidebarBox?.width).toBe(160);
+  expect(mainBox?.width).toBeGreaterThan(450);
+  expect(railBox?.width).toBe(200);
+  expect(railBox?.y).toBe(mainBox?.y);
+  await expect(page.getByText('This month', { exact: true })).toBeVisible();
+  await expect(page.getByText('Voice profile', { exact: true })).toBeVisible();
+  await expect(page.locator('.home-history .history-date-label')).toHaveCount(1);
 });
 
 for (const state of ['recording', 'update-recovering', 'settings'] as const) {
@@ -125,7 +147,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
 
   expect(updateBox?.width).toBeLessThanOrEqual(26);
   expect(updateBox?.height).toBeLessThanOrEqual(26);
-  expect(recordBox?.height).toBe(40);
+  expect(recordBox?.height).toBe(36);
   expect(headerBox?.height).toBe(42);
 });
 
