@@ -35,6 +35,147 @@ const CORRECTION_TERMS: usize = 500;
 /// live-dictation request. Historical attempts without this marker remain
 /// visible to the legacy funnel but cannot be treated as SLO evidence.
 const DICTATION_SLO_CONTRACT: u64 = 1;
+const PARTIAL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
+const PARTIAL_MIN_SAMPLES: usize = 16_000 * 800 / 1_000;
+const PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 20;
+
+fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool {
+    app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && app_state.dictation.lock_or_recover().status == DictationStatus::Recording
+        && !app_state.is_cancelled(recording_id)
+}
+
+fn try_begin_dictation_partial(app_state: &AppState, recording_id: u64) -> bool {
+    dictation_partial_is_current(app_state, recording_id)
+        && app_state
+            .dictation_partial_in_flight_id
+            .compare_exchange(0, recording_id, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+}
+
+fn finish_dictation_partial(app_state: &AppState, recording_id: u64) {
+    let _ = app_state.dictation_partial_in_flight_id.compare_exchange(
+        recording_id,
+        0,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+}
+
+fn dictation_partial_window(samples: &[f32]) -> &[f32] {
+    if samples.len() > PARTIAL_WINDOW_SAMPLES {
+        &samples[samples.len() - PARTIAL_WINDOW_SAMPLES..]
+    } else {
+        samples
+    }
+}
+
+fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_count: usize) {
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.dictation_partial_tick",
+        recording_id,
+        outcome,
+        sample_count = sample_count.min(PARTIAL_WINDOW_SAMPLES) as u64,
+        "dictation live partial tick"
+    );
+}
+
+fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
+    let supported = app
+        .state::<State>()
+        .app_state
+        .active_context(recording_id)
+        .is_some_and(|context| {
+            crate::transcriber::is_coreml_model(&context.transcription.model_name)
+        });
+    if !supported {
+        emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
+        return;
+    }
+    drop(tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(PARTIAL_INTERVAL).await;
+            if !decode_one_dictation_partial(&app, recording_id).await {
+                break;
+            }
+        }
+    }));
+}
+
+async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64) -> bool {
+    let transcription = {
+        let state = app.state::<State>();
+        if !dictation_partial_is_current(&state.app_state, recording_id) {
+            return false;
+        }
+        if !try_begin_dictation_partial(&state.app_state, recording_id) {
+            emit_dictation_partial_tick(recording_id, "in_flight", 0);
+            return true;
+        }
+        let Some(context) = state.app_state.active_context(recording_id) else {
+            finish_dictation_partial(&state.app_state, recording_id);
+            emit_dictation_partial_tick(recording_id, "no_context", 0);
+            return false;
+        };
+        context.transcription.clone()
+    };
+    let samples = audio_lifecycle::peek_dictation_samples(recording_id, PARTIAL_WINDOW_SAMPLES)
+        .unwrap_or_default();
+    let sample_count = samples.len();
+    if sample_count < PARTIAL_MIN_SAMPLES {
+        finish_dictation_partial(&app.state::<State>().app_state, recording_id);
+        emit_dictation_partial_tick(recording_id, "too_short", sample_count);
+        return true;
+    }
+    let window = dictation_partial_window(&samples).to_vec();
+    let worker_app = app.clone();
+    let text = tokio::task::spawn_blocking(move || {
+        let state = worker_app.state::<State>();
+        if !dictation_partial_is_current(&state.app_state, recording_id) {
+            return None;
+        }
+        let (raw, _) = state
+            .app_state
+            .model_runtime
+            .with_ready_backend(
+                Some(&worker_app),
+                &transcription.model_name,
+                PreparationReason::Pipeline,
+                |backend| {
+                    backend.transcribe(
+                        &window,
+                        &transcription.language,
+                        transcription.prompt.as_deref(),
+                        transcription.smart_punctuation,
+                    )
+                },
+            )
+            .ok()?;
+        let cleaned = raw.trim().to_string();
+        (!cleaned.is_empty()).then_some(cleaned)
+    })
+    .await
+    .ok()
+    .flatten();
+    let state = app.state::<State>();
+    finish_dictation_partial(&state.app_state, recording_id);
+    if let Some(text) = text {
+        if dictation_partial_is_current(&state.app_state, recording_id) {
+            let _ = app.emit_to(
+                "overlay",
+                "dictation-partial",
+                serde_json::json!({ "recordingId": recording_id, "text": text }),
+            );
+            emit_dictation_partial_tick(recording_id, "emitted", sample_count);
+        } else {
+            emit_dictation_partial_tick(recording_id, "stale", sample_count);
+        }
+    } else {
+        emit_dictation_partial_tick(recording_id, "empty", sample_count);
+    }
+    dictation_partial_is_current(&state.app_state, recording_id)
+}
 
 fn dictation_status_code(status: DictationStatus) -> &'static str {
     match status {
@@ -3459,6 +3600,8 @@ pub(crate) fn handle_audio_lifecycle(
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
+    let became_ready = event == AudioLifecycleEvent::Ready;
+    let partial_app = app_handle.clone();
     handle_audio_lifecycle_with(
         app_handle,
         recording_id,
@@ -3479,6 +3622,11 @@ pub(crate) fn handle_audio_lifecycle(
             });
         },
     );
+    if became_ready
+        && dictation_partial_is_current(&partial_app.state::<State>().app_state, recording_id)
+    {
+        spawn_dictation_partial_ticker(partial_app, recording_id);
+    }
 }
 
 fn handle_audio_lifecycle_with<R: tauri::Runtime>(
@@ -3832,8 +3980,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     }
 }
 
-fn publish_recording_ready_if_audio_ready<R: tauri::Runtime>(
-    app_handle: &tauri::AppHandle<R>,
+fn publish_recording_ready_if_audio_ready(
+    app_handle: &tauri::AppHandle,
     recording_id: u64,
 ) -> bool {
     if !audio_lifecycle::is_dictation_recording(recording_id) {
@@ -3857,6 +4005,7 @@ fn publish_recording_ready_if_audio_ready<R: tauri::Runtime>(
         recording_id,
         "start_native_recording: context ready after audio"
     );
+    spawn_dictation_partial_ticker(app_handle.clone(), recording_id);
     true
 }
 
@@ -5090,6 +5239,35 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use tauri::Listener;
+
+    #[test]
+    fn dictation_partial_window_is_bounded_to_the_trailing_twenty_seconds() {
+        let samples: Vec<f32> = (0..PARTIAL_WINDOW_SAMPLES + 37)
+            .map(|index| index as f32)
+            .collect();
+        let window = dictation_partial_window(&samples);
+        assert_eq!(window.len(), PARTIAL_WINDOW_SAMPLES);
+        assert_eq!(window[0], 37.0);
+        let short = vec![0.0; PARTIAL_MIN_SAMPLES];
+        assert_eq!(dictation_partial_window(&short).len(), short.len());
+    }
+
+    #[test]
+    fn dictation_partial_ownership_is_single_flight_and_generation_gated() {
+        let app_state = AppState::default();
+        let recording_id = 41;
+        app_state.recording_id.store(recording_id, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(try_begin_dictation_partial(&app_state, recording_id));
+        assert!(!try_begin_dictation_partial(&app_state, recording_id));
+        finish_dictation_partial(&app_state, recording_id);
+        assert!(try_begin_dictation_partial(&app_state, recording_id));
+        app_state
+            .recording_id
+            .store(recording_id + 1, Ordering::SeqCst);
+        finish_dictation_partial(&app_state, recording_id);
+        assert!(!try_begin_dictation_partial(&app_state, recording_id));
+    }
 
     fn failed_capture_completion() -> DictationPerformanceCompletion {
         DictationPerformanceCompletion {
