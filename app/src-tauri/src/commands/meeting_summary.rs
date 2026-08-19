@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
+const SUMMARY_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeetingSummaryPhase {
@@ -153,7 +155,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
             .transform(
                 SUMMARY_INSTRUCTION,
                 &input,
-                Duration::from_secs(30),
+                SUMMARY_CHUNK_TIMEOUT,
                 cancel.clone(),
             )
             .await;
