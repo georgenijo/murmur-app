@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 167 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 169 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -94,11 +94,18 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
 | `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
+| `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
 | `start_transform_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent transform hold key. Rejects the active dictation key. |
 | `stop_transform_listener` | — | `()` | Disarms the transform key. |
 | `set_transform_key` | `hotkey: String` | `Result<(), String>` | Changes the transform key at runtime. |
 | `start_query_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent Voice Query double-tap key on the shared rdev thread. Rejects dictation and transform conflicts. |
 | `stop_query_listener` | — | `()` | Disarms the query key without stopping the shared listener thread. |
+
+## Delivery recovery (`delivery_recovery.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `retry_last_delivery` | — | `Result<RetryResult, String>` | Re-delivers the latest process-memory final text through the normal secure injector. Returns explicit `auto_pasted`, `clipboard_only`, `empty`, `busy`, or `failed` feedback without recording, retranscription, History, statistics, or learning changes. |
 
 ## Voice Query (`query_flow.rs`)
 
