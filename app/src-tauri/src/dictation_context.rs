@@ -174,6 +174,7 @@ fn builtin_mode(id: &str) -> Option<MurmurMode> {
     Some(MurmurMode {
         id: id.to_string(),
         name: name.to_string(),
+        enabled: true,
         writing_style,
         cleanup_enabled: None,
         smart_formatting_enabled: None,
@@ -193,7 +194,13 @@ fn selected_mode(
     let Some(id) = profile.and_then(|profile| profile.mode_id.as_deref()) else {
         return (None, false);
     };
-    let mode = builtin_mode(id).or_else(|| global.modes.iter().find(|mode| mode.id == id).cloned());
+    let mode = builtin_mode(id).or_else(|| {
+        global
+            .modes
+            .iter()
+            .find(|mode| mode.id == id && mode.enabled)
+            .cloned()
+    });
     let invalid = mode.is_none();
     (mode, invalid)
 }
@@ -719,6 +726,7 @@ mod tests {
         global.modes.push(MurmurMode {
             id: "mode.focus".to_string(),
             name: "Focus".to_string(),
+            enabled: true,
             writing_style: Some(WritingStyle::Notes),
             cleanup_enabled: Some(true),
             smart_formatting_enabled: Some(true),

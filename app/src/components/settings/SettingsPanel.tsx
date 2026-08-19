@@ -63,6 +63,7 @@ import { Select } from '../ui/Select';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { playSoundCue, type SoundCue } from '../../lib/soundCues';
 import { AppOverridesEditor } from './AppOverridesEditor';
+import { ModesManager } from './ModesManager';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
@@ -1959,6 +1960,11 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
               </summary>
               <p className="mt-1 mb-3 text-xs text-on-surface-variant">Override delivery and writing behavior for the frontmost macOS app.</p>
+              <ModesManager
+                modes={settings.modes}
+                profiles={settings.appProfiles}
+                onChange={({ modes, appProfiles }) => onUpdateSettings({ modes, appProfiles })}
+              />
               <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
             </details>
           </SettingsSection>

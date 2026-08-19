@@ -27,3 +27,15 @@ Project context still requires configured roots on the bound profile, and the
 resolved snapshot retains the existing deny-by-default screen/selection rules.
 Telemetry may carry only stable Mode identity or content-free outcome codes;
 Mode names and user content are not logged.
+
+## Manager and bindings
+
+Settings shows the seven built-ins as read-only templates and stores only
+custom Modes. Custom Modes can be created, duplicated, renamed, edited,
+enabled or disabled, and deleted. One Mode can be bound to any number of
+existing app profiles; deleting a Mode clears those references rather than
+leaving an unsafe dangling binding.
+
+Each Mode shows a compact effective-policy summary. Its before/after tester is
+a pure in-window preview: sample text remains in React memory and the tester
+does not invoke clipboard, paste, text injection, or target-app commands.

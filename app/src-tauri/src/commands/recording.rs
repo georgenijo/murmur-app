@@ -303,7 +303,8 @@ pub(crate) fn resolve_live_context(
                 .filter(|profile| {
                     profile.ide_context_enabled
                         || dictation.modes.iter().any(|mode| {
-                            profile.mode_id.as_deref() == Some(mode.id.as_str())
+                            mode.enabled
+                                && profile.mode_id.as_deref() == Some(mode.id.as_str())
                                 && mode.context_policy == crate::state::ModeContextPolicy::Project
                         })
                 })
@@ -2672,6 +2673,7 @@ pub async fn configure_dictation(
                     return None;
                 }
                 for field in [
+                    "enabled",
                     "cleanupEnabled",
                     "smartFormattingEnabled",
                     "cliFormattingEnabled",
@@ -2734,6 +2736,10 @@ pub async fn configure_dictation(
                 Some(crate::state::MurmurMode {
                     id: id.to_string(),
                     name: name.to_string(),
+                    enabled: value
+                        .get("enabled")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true),
                     writing_style,
                     cleanup_enabled: value
                         .get("cleanupEnabled")
@@ -2844,7 +2850,8 @@ pub async fn configure_dictation(
             .cloned()
             .map(|mut profile| {
                 if dictation.modes.iter().any(|mode| {
-                    profile.mode_id.as_deref() == Some(mode.id.as_str())
+                    mode.enabled
+                        && profile.mode_id.as_deref() == Some(mode.id.as_str())
                         && mode.context_policy == crate::state::ModeContextPolicy::Project
                 }) {
                     profile.ide_context_enabled = true;
