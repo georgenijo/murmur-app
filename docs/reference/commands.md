@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 169 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 170 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -24,6 +24,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `transform_status` | — | `TransformStatus` | Current selected-text transform state (used to arbitrate against dictation). |
 | `count_vocab_tokens` | `text: String` | `Result<Option<usize>, String>` | Token count for the loaded model's tokenizer; `None` if no model is loaded. Drives the Whisper prompt budget UI. |
 | `preview_vocabulary_aliases` | `entries`, `voice_commands`, `text`, `cli_formatting` | `Result<String, String>` | Runs alias + command resolution over sample text in memory. No persistence, no delivery. |
+| `reformat_history_text` | `raw_text`, `mode_id` | `Result<HistoryReformatResult, String>` | Runs bounded retained raw recognition through one explicit Mode. No audio, injection, statistics, history write, or learning side effects. |
 | `scan_code_vocab` | `folder: String`, `scan_id: String` | `Result<VocabScanSummary, String>` | Breadth-first identifier scan of a project folder with throttled progress events. Returns ranked terms, counts, cap state, and whether the result was adopted. |
 | `cancel_code_vocab_scan` | `scan_id: String` | `bool` | Cancels only the matching scan. |
 | `get_ide_context_status` | `bundle_id: String` | `IdeContextStatus` | Index state for one profile. |
