@@ -393,6 +393,7 @@ enum SupervisorMessage {
     },
     Peek {
         owner: AudioOwner,
+        max_output_samples: Option<usize>,
         response: Sender<Option<Vec<f32>>>,
     },
     Worker(AudioWorkerEvent),
@@ -638,17 +639,24 @@ fn handle_message(
             let cancelled = should_abandon;
             let _ = response.send(Ok(cancelled));
         }
-        SupervisorMessage::Peek { owner, response } => {
+        SupervisorMessage::Peek {
+            owner,
+            max_output_samples,
+            response,
+        } => {
             let samples = attempt.as_ref().and_then(|current| {
                 if current.owner != owner || current.phase != AttemptPhase::Recording {
                     return None;
                 }
-                let raw = current
+                let shared = current
                     .shared
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone();
-                Some(samples_for_asr(raw, current.sample_rate))
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                Some(snapshot_for_asr(
+                    &shared,
+                    current.sample_rate,
+                    max_output_samples,
+                ))
             });
             let _ = response.send(samples);
         }
@@ -1194,6 +1202,30 @@ fn samples_for_asr(raw: Vec<f32>, sample_rate: u32) -> Vec<f32> {
     }
 }
 
+fn snapshot_for_asr(
+    shared: &[f32],
+    sample_rate: u32,
+    max_output_samples: Option<usize>,
+) -> Vec<f32> {
+    let raw = match max_output_samples {
+        Some(max_output_samples) => {
+            let source_samples = max_output_samples
+                .saturating_mul(sample_rate as usize)
+                .div_ceil(WHISPER_SAMPLE_RATE as usize)
+                .saturating_add(2)
+                .min(shared.len());
+            shared[shared.len().saturating_sub(source_samples)..].to_vec()
+        }
+        None => shared.to_vec(),
+    };
+    let mut samples = samples_for_asr(raw, sample_rate);
+    if let Some(max_output_samples) = max_output_samples {
+        let start = samples.len().saturating_sub(max_output_samples);
+        samples.drain(..start);
+    }
+    samples
+}
+
 fn recording_duration_since_ready(ready_at: Option<Instant>, now: Instant) -> Duration {
     ready_at
         .map(|ready| now.saturating_duration_since(ready))
@@ -1521,6 +1553,27 @@ pub(crate) fn peek_query_samples(query_pass_id: u64) -> Option<Vec<f32>> {
         .sender
         .send(SupervisorMessage::Peek {
             owner: AudioOwner::Query(query_pass_id),
+            max_output_samples: None,
+            response: response_sender,
+        })
+        .ok()?;
+    response_receiver
+        .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
+        .ok()?
+}
+
+/// Clone the live dictation buffer without stopping capture. The authoritative
+/// final stop continues to own and consume the retained samples.
+pub(crate) fn peek_dictation_samples(
+    recording_id: u64,
+    max_output_samples: usize,
+) -> Option<Vec<f32>> {
+    let (response_sender, response_receiver) = mpsc::channel();
+    supervisor()
+        .sender
+        .send(SupervisorMessage::Peek {
+            owner: AudioOwner::Dictation(recording_id),
+            max_output_samples: Some(max_output_samples),
             response: response_sender,
         })
         .ok()?;
@@ -2411,6 +2464,7 @@ mod tests {
             .sender
             .send(SupervisorMessage::Peek {
                 owner,
+                max_output_samples: None,
                 response: peek_sender,
             })
             .unwrap();
@@ -2436,6 +2490,7 @@ mod tests {
             .sender
             .send(SupervisorMessage::Peek {
                 owner,
+                max_output_samples: None,
                 response: peek_sender,
             })
             .unwrap();
@@ -2452,6 +2507,7 @@ mod tests {
             .sender
             .send(SupervisorMessage::Peek {
                 owner: AudioOwner::Query(99),
+                max_output_samples: None,
                 response: stale_sender,
             })
             .unwrap();
@@ -2944,6 +3000,19 @@ mod tests {
         assert_ne!(
             recording_duration_since_ready(Some(ready_at), now),
             now.saturating_duration_since(accepted_at)
+        );
+    }
+
+    #[test]
+    fn bounded_snapshot_keeps_only_the_requested_asr_tail() {
+        let shared: Vec<f32> = (0..96_000).map(|value| value as f32).collect();
+        let snapshot = snapshot_for_asr(&shared, 48_000, Some(16_000));
+
+        assert_eq!(snapshot.len(), 16_000);
+        assert!(snapshot[0] > 47_000.0, "snapshot must come from the tail");
+        assert_eq!(
+            snapshot_for_asr(&shared, 48_000, Some(0)),
+            Vec::<f32>::new()
         );
     }
 

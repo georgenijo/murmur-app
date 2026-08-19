@@ -298,11 +298,19 @@ same manager.
 - Model search paths are documented in `docs/onboarding.md`
 - `single_segment` decoding is duration-conditional (`should_use_single_segment`, 12s threshold): short audio stays single-segment, but longer batch/file transcriptions use multi-segment decoding so an early end-of-text token from the model can't force-skip the rest of the audio and silently truncate the tail
 
-All supported backends follow the same final-after-stop interaction: recording only captures audio; stopping runs one authoritative full-buffer transcription; the transformed final result is then delivered exactly once. Murmur does not display or emit provisional transcript text while recording or processing.
+All supported backends follow the same final-after-stop interaction: stopping
+runs one authoritative full-buffer transcription; the transformed final result
+is then delivered exactly once.
 
-The catalog may describe partial-result support as a backend capability for a
-future product contract. There is currently no streaming worker, provisional
-transcript event, live-preview setting, or model-specific preview behavior.
+Core ML dictation also offers a display-only live preview while capture remains
+in `Recording`. A 700ms ticker snapshots at most the trailing 20 seconds of
+16kHz audio, waits for at least 800ms of speech, and permits only one decode in
+flight. Both the backend and overlay re-check the monotonic recording ID, and
+the overlay clears the provisional text on every transition out of recording.
+The targeted `dictation-partial` event is never copied, pasted, transformed,
+persisted, exported, logged, or counted; final stop-time delivery remains the
+only authoritative transcript. Whisper and CPU Parakeet do not run live
+previews so their slower decodes cannot compete with final delivery.
 
 ## Model Options
 

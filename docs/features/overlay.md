@@ -125,6 +125,7 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 | `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), typed `recording-initialization-failed`/generic `recording-interrupted` microphone cues, `dictation-generation-started` ownership floor, generation-ordered `dictation-delivery-outcome` (clipboard-only `⌘V` cue), and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
 | `useOverlayExpansion` (pre-existing, see [Expansion Controller](#expansion-controller)) | The hover-expand lifecycle. |
 | `useWaveform` | The `audio-level` listener and the rAF bar-height animation (see [Waveform Animation](#waveform-animation)). |
+| `useDictationPartial` | The generation-scoped, overlay-only live transcription preview. It rejects malformed or stale payloads and clears whenever recording ends. |
 | `useRecordingControls` | Click/double-click/mousedown disambiguation (250ms debounce) and "locked mode" (see [Click Interactions](#click-interactions)). Reads the microphone override via `loadSettings()` — no raw localStorage parsing. |
 
 Pure, React-free logic lives alongside the presentational components in `app/src/components/overlay/`:
@@ -164,7 +165,13 @@ While a selected-text transform is in **Thinking** (sidecar running), the overla
 Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally disabled). Compact width.
 
 ### Recording
-The red pulsing dot occupies the visible left wing and the animated 7-bar waveform occupies the right wing. The `m:ss` elapsed timer renders in the dropdown row (visible on hover-expand), not in a wing. No transcript text is displayed while recording. (Width is constant across all states.)
+The red pulsing dot occupies the visible left wing. Core ML dictation may replace
+the animated 7-bar waveform in the right wing with a short provisional text
+preview; the waveform remains the fallback until a partial is available. The
+preview is non-interactive, generation-scoped, and clears before processing, so
+it is never treated as delivered text. The `m:ss` elapsed timer renders in the
+dropdown row (visible on hover-expand), not in a wing. Width is constant across
+all states.
 
 ### Starting and Recovering
 
@@ -261,7 +268,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
 - Calls: `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
+- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-partial`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 

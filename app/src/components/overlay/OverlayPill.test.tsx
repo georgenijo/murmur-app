@@ -101,4 +101,22 @@ describe('OverlayPill transient cues', () => {
     expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
       .toBe('Microphone capture was interrupted. Waiting for the partial transcription.');
   });
+
+  it('shows provisional dictation only while recording and keeps it non-interactive', async () => {
+    function LivePill() {
+      const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+      return <OverlayPill
+        geometry={geometry}
+        visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
+        status="recording"
+        partialText="safe live words"
+        barRefs={barRefs}
+      />;
+    }
+    await act(async () => root.render(<LivePill />));
+    const preview = container.querySelector<HTMLElement>('[aria-label^="Live transcription preview:"]');
+    expect(preview?.textContent).toBe('safe live words');
+    expect(preview?.getAttribute('aria-live')).toBe('polite');
+    expect(container.querySelector('button')).toBeNull();
+  });
 });
