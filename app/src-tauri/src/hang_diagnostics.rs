@@ -11,9 +11,10 @@
 //! to diagnostic collection. Disarming happens server-side (no release
 //! needed) and takes effect on the next shipper tick.
 //!
-//! The bundle also carries the two `audio_graph_snapshot` sections: what the
-//! Core Audio HAL says has live IO at collection time, and what Murmur itself
-//! holds. Both are bounded and deadline-guarded there, not here.
+//! The bundle also carries three `audio_graph_snapshot` sections: what the
+//! Core Audio HAL had live IO on during the hang (observed before the kill and
+//! claimed here), the same view after the kill, and what Murmur itself holds.
+//! All are bounded and deadline-guarded there, not here.
 
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
