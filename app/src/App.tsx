@@ -191,7 +191,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, clearHistory } = useHistoryManagement(settings.retainHistory);
+  const { historyEntries, addEntry, addDerivedEntry, updateEntry, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
@@ -692,6 +692,7 @@ function App() {
                   historyEntries={historyEntries}
                   onClearHistory={clearHistory}
                   onUpdateHistoryEntry={updateEntry}
+                  onAddDerivedHistoryEntry={addDerivedEntry}
                   focusSearchToken={historySearchToken}
                   onTranscribeFile={pickAudioFiles}
                   status={status}

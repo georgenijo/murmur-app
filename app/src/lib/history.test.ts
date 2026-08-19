@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   addHistoryEntry,
+  addDerivedHistoryEntry,
   clearHistory,
   entrySource,
   filterHistory,
@@ -104,6 +105,21 @@ describe('addHistoryEntry', () => {
     for (let i = 0; i < 210; i++) entries = addHistoryEntry(entries, `text ${i}`, 1);
     expect(entries).toHaveLength(200);
     expect(entries[entries.length - 1].text).toBe('text 209');
+  });
+});
+
+describe('addDerivedHistoryEntry', () => {
+  it('keeps the source immutable and records Mode provenance without audio', () => {
+    const source = entry({ id: 'source', text: 'Delivered.', rawText: 'um delivered' });
+    const original = structuredClone(source);
+    const next = addDerivedHistoryEntry([source], source, 'Delivered', 'builtin.email', []);
+    expect(source).toEqual(original);
+    expect(next).toHaveLength(2);
+    expect(next[1]).toMatchObject({
+      text: 'Delivered', rawText: 'um delivered',
+      derived: { sourceEntryId: 'source', modeId: 'builtin.email', stages: [] },
+    });
+    expect(next[1]).not.toHaveProperty('audio');
   });
 });
 

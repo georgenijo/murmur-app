@@ -120,6 +120,20 @@ Cancelling the dialog is a no-op — no command call, no message.
 
 Correct-and-Teach still targets **the newest entry in the whole history**, not the first row on screen. Sorting and filtering reorder the list, so the button is anchored to `entries[entries.length - 1]` and travels with that entry wherever it is displayed.
 
+## Reformatting
+
+Entries that retain v2 raw recognition can be explicitly reformatted with any
+enabled compatible Mode. This runs text through the local deterministic Mode
+pipeline; it is never described as audio retranscription and does not access
+or recreate audio. The original entry remains immutable. A new entry stores
+the source entry ID, selected Mode ID, creation time, and content-free stage
+outcomes as provenance.
+
+Reformatting never injects text, increments dictation statistics, or invokes
+Correct-and-Teach learning. Raw and derived content stay behind the existing
+history-retention boundary and enter exports only through the user's explicit
+history export action.
+
 ## Files
 
 | File | Role |

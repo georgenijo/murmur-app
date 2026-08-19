@@ -11,7 +11,10 @@ import {
   type HistoryEntry,
   type HistoryExportFormat,
   type HistoryFilter,
+  type HistoryStageResult,
 } from '../../lib/history';
+import { reformatHistoryText } from '../../lib/historyReformat';
+import { BUILTIN_MODES, type MurmurMode } from '../../lib/settings';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { flog } from '../../lib/log';
 import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
@@ -24,6 +27,8 @@ interface HistoryPanelProps {
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
+  modes?: MurmurMode[];
+  onAddDerived?: (source: HistoryEntry, text: string, modeId: string, stages: HistoryStageResult[]) => void;
 }
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
@@ -103,6 +108,8 @@ export function HistoryPanel({
   onUpdateEntry,
   focusSearchToken,
   onTranscribeFile = () => {},
+  modes = [],
+  onAddDerived = () => {},
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
@@ -111,6 +118,9 @@ export function HistoryPanel({
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [reformatEntry, setReformatEntry] = useState<HistoryEntry | null>(null);
+  const [reformatModeId, setReformatModeId] = useState('builtin.everyday');
+  const [reformatBusy, setReformatBusy] = useState(false);
   const copyGroupId = useId();
   const saveGroupId = useId();
   const exportPanelId = useId();
@@ -172,6 +182,22 @@ export function HistoryPanel({
   // Correct-and-Teach only ever targets the newest entry in the whole history,
   // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
+  const availableModes = useMemo(() => [...BUILTIN_MODES, ...modes.filter((mode) => mode.enabled)], [modes]);
+
+  const handleReformat = async () => {
+    if (!reformatEntry?.rawText) return;
+    setReformatBusy(true);
+    try {
+      const result = await reformatHistoryText(reformatEntry.rawText, reformatModeId);
+      onAddDerived(reformatEntry, result.text, result.modeId, result.stages);
+      setReformatEntry(null);
+      showNotice('Created a new reformatted history entry.');
+    } catch {
+      showNotice('Could not reformat this history entry.');
+    } finally {
+      setReformatBusy(false);
+    }
+  };
 
   const handleCopy = async (entry: HistoryEntry) => {
     try {
@@ -448,6 +474,12 @@ export function HistoryPanel({
                   Correct &amp; Teach
                 </button>
               )}
+              {entry.rawText !== undefined && !entry.derived && (
+                <button type="button" onClick={() => setReformatEntry(entry)} className="mt-2 rounded-md bg-surface-container px-2 py-1 text-xs font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                  Reformat
+                </button>
+              )}
+              {entry.derived && <span className="text-[10px] text-on-surface-variant">Reformatted · {entry.derived.modeId}</span>}
               </article>
             </Fragment>
           );
@@ -460,6 +492,18 @@ export function HistoryPanel({
           onClose={() => setTeachingEntry(null)}
           onSaveCorrection={(text) => onUpdateEntry(teachingEntry.id, text)}
         />
+      )}
+      {reformatEntry && (
+        <div role="dialog" aria-modal="true" aria-label="Reformat history entry" className="absolute inset-0 z-30 grid place-items-center bg-scrim/35 p-6">
+          <div className="w-full max-w-sm rounded-xl bg-surface-container-lowest p-4 shadow-xl">
+            <h2 className="text-sm font-semibold text-on-surface">Reformat retained text</h2>
+            <p className="mt-1 text-xs text-on-surface-variant">Runs the preserved raw recognition through another Mode. This is not audio retranscription and the original entry stays unchanged.</p>
+            <select aria-label="Reformat Mode" value={reformatModeId} onChange={(event) => setReformatModeId(event.target.value)} className="mt-3 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm">
+              {availableModes.map((mode) => <option key={mode.id} value={mode.id}>{mode.name}</option>)}
+            </select>
+            <div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setReformatEntry(null)} className="rounded-lg px-3 py-2 text-xs">Cancel</button><button type="button" disabled={reformatBusy} onClick={() => void handleReformat()} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-50">{reformatBusy ? 'Reformatting…' : 'Create reformatted entry'}</button></div>
+          </div>
+        </div>
       )}
     </div>
   );
