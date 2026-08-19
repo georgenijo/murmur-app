@@ -54,7 +54,49 @@ export interface AppProfile {
   ideProjectRoots: string[];
   /** Privacy deny override; can never enable Voice Query context by itself. */
   queryContextExcluded: boolean;
+  /** Reusable Mode applied before this profile's fine-tuning overrides. */
+  modeId?: string | null;
 }
+
+export type ModeVocabularyPolicy = 'inherit' | 'general' | 'technical';
+export type ModeContextPolicy = 'none' | 'project';
+
+export interface MurmurMode {
+  id: string;
+  name: string;
+  builtIn: boolean;
+  writingStyle: WritingStyle | null;
+  cleanupEnabled: boolean | null;
+  smartFormattingEnabled: boolean | null;
+  cliFormattingEnabled: boolean | null;
+  vocabularyPolicy: ModeVocabularyPolicy;
+  contextPolicy: ModeContextPolicy;
+  modelId: ModelOption | null;
+  language: string | null;
+  autoPaste: boolean | null;
+}
+
+const builtinMode = (
+  id: string,
+  name: string,
+  writingStyle: WritingStyle | null,
+  overrides: Partial<MurmurMode> = {},
+): MurmurMode => ({
+  id, name, builtIn: true, writingStyle,
+  cleanupEnabled: null, smartFormattingEnabled: null, cliFormattingEnabled: null,
+  vocabularyPolicy: 'inherit', contextPolicy: 'none', modelId: null,
+  language: null, autoPaste: null, ...overrides,
+});
+
+export const BUILTIN_MODES: readonly MurmurMode[] = [
+  builtinMode('builtin.everyday', 'Everyday', null),
+  builtinMode('builtin.messages', 'Messages', 'conversational'),
+  builtinMode('builtin.email', 'Email', 'polished'),
+  builtinMode('builtin.notes', 'Notes', 'notes'),
+  builtinMode('builtin.technical', 'Technical', 'code_technical', { vocabularyPolicy: 'technical' }),
+  builtinMode('builtin.terminal', 'Terminal', 'code_technical', { vocabularyPolicy: 'technical', cliFormattingEnabled: true }),
+  builtinMode('builtin.verbatim', 'Verbatim', 'verbatim'),
+] as const;
 
 const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
 
@@ -273,6 +315,8 @@ export interface Settings {
    * completes, so reports survive the 10-slot localStorage cap. */
   benchmarkAutoSave: boolean;
   appProfiles: AppProfile[];
+  /** User-defined reusable Modes. Built-ins are code-owned and not duplicated here. */
+  modes: MurmurMode[];
   voiceCommandsEnabled: boolean;
   /** User-defined voice commands applied after the built-in set. */
   voiceCommands: VoiceCommand[];
@@ -444,6 +488,7 @@ export const DEFAULT_SETTINGS: Settings = {
   benchmarkOutputDir: '',
   benchmarkAutoSave: false,
   appProfiles: [],
+  modes: [],
   voiceCommandsEnabled: false,
   voiceCommands: [],
   cleanupEnabled: false,
@@ -600,6 +645,48 @@ function sanitizeVocabScan(raw: unknown): VocabScanSummary | null {
     // predate the field and are therefore treated as adopted.
     adopted: typeof r.adopted === 'boolean' ? r.adopted : true,
   };
+}
+
+function sanitizeModes(raw: unknown): MurmurMode[] {
+  if (!Array.isArray(raw)) return [];
+  const models = new Set(AVAILABLE_MODEL_OPTIONS.map((option) => option.value));
+  const languages = new Set(LANGUAGE_OPTIONS.map((option) => option.value));
+  const styles = new Set<WritingStyle>(['conversational', 'polished', 'code_technical', 'verbatim', 'notes']);
+  const seen = new Set(BUILTIN_MODES.map((mode) => mode.id));
+  const modes: MurmurMode[] = [];
+  for (const value of raw.slice(0, 100)) {
+    if (!value || typeof value !== 'object') continue;
+    const mode = value as Partial<MurmurMode>;
+    const id = typeof mode.id === 'string' ? mode.id.trim() : '';
+    const name = typeof mode.name === 'string' ? mode.name.trim() : '';
+    if (!id || !name || id.length > 128 || name.length > 128 || seen.has(id)) continue;
+    if (mode.builtIn === true) continue;
+    if (mode.modelId != null && (typeof mode.modelId !== 'string' || !models.has(mode.modelId))) continue;
+    if (mode.language != null && (typeof mode.language !== 'string' || !languages.has(mode.language))) continue;
+    if (mode.writingStyle != null && !styles.has(mode.writingStyle as WritingStyle)) continue;
+    if ([mode.cleanupEnabled, mode.smartFormattingEnabled, mode.cliFormattingEnabled, mode.autoPaste]
+      .some((field) => field != null && typeof field !== 'boolean')) continue;
+    if (mode.vocabularyPolicy != null && !['inherit', 'general', 'technical'].includes(mode.vocabularyPolicy)) continue;
+    if (mode.contextPolicy != null && !['none', 'project'].includes(mode.contextPolicy)) continue;
+    const writingStyle = mode.writingStyle === null || styles.has(mode.writingStyle as WritingStyle)
+      ? mode.writingStyle as WritingStyle | null
+      : null;
+    const nullableBoolean = (input: unknown) => typeof input === 'boolean' ? input : null;
+    modes.push({
+      id, name, builtIn: false, writingStyle,
+      cleanupEnabled: nullableBoolean(mode.cleanupEnabled),
+      smartFormattingEnabled: nullableBoolean(mode.smartFormattingEnabled),
+      cliFormattingEnabled: nullableBoolean(mode.cliFormattingEnabled),
+      vocabularyPolicy: mode.vocabularyPolicy === 'technical' || mode.vocabularyPolicy === 'general'
+        ? mode.vocabularyPolicy : 'inherit',
+      contextPolicy: mode.contextPolicy === 'project' ? 'project' : 'none',
+      modelId: typeof mode.modelId === 'string' && models.has(mode.modelId) ? mode.modelId as ModelOption : null,
+      language: typeof mode.language === 'string' && languages.has(mode.language) ? mode.language : null,
+      autoPaste: nullableBoolean(mode.autoPaste),
+    });
+    seen.add(id);
+  }
+  return modes;
 }
 
 export function loadSettings(): Settings {
@@ -775,6 +862,8 @@ export function loadSettings(): Settings {
       // independently editable source after migration.
       parsed.customVocabulary = vocabularyPrompt(parsed.vocabularyEntries);
 
+      parsed.modes = sanitizeModes(parsed.modes);
+
       // appProfiles drives per-app delivery and transformation overrides. Drop
       // malformed entries and coerce a non-array back to the empty default so
       // the Rust side and UI never see a bad shape.
@@ -811,6 +900,9 @@ export function loadSettings(): Settings {
               : [],
             queryContextExcluded:
               typeof p.queryContextExcluded === 'boolean' ? p.queryContextExcluded : false,
+            ...(typeof p.modeId === 'string' && p.modeId.trim()
+              ? { modeId: p.modeId.trim() }
+              : {}),
           }));
       }
 

@@ -8,7 +8,9 @@
 use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
 use crate::ide_context::IdeContextIndex;
-use crate::state::{AppProfile, DictationState, WritingStyle};
+use crate::state::{
+    AppProfile, DictationState, ModeContextPolicy, ModeVocabularyPolicy, MurmurMode, WritingStyle,
+};
 use crate::voice_commands::ResolvedVoiceCommand;
 use std::sync::Arc;
 
@@ -34,6 +36,7 @@ pub struct MatchedAppProfile {
     pub writing_style: Option<WritingStyle>,
     pub ide_context_enabled: bool,
     pub query_context_excluded: bool,
+    pub mode_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +127,75 @@ pub struct DictationContextSnapshot {
     pub enabled_command_groups: EnabledCommandGroups,
     pub context_capture: ContextCapturePermissions,
     pub writing_style: WritingStyle,
+    pub resolved_mode_id: Option<String>,
+}
+
+fn builtin_mode(id: &str) -> Option<MurmurMode> {
+    let (name, writing_style, vocabulary_policy, cli_formatting_enabled) = match id {
+        "builtin.everyday" => ("Everyday", None, ModeVocabularyPolicy::Inherit, None),
+        "builtin.messages" => (
+            "Messages",
+            Some(WritingStyle::Conversational),
+            ModeVocabularyPolicy::Inherit,
+            None,
+        ),
+        "builtin.email" => (
+            "Email",
+            Some(WritingStyle::Polished),
+            ModeVocabularyPolicy::Inherit,
+            None,
+        ),
+        "builtin.notes" => (
+            "Notes",
+            Some(WritingStyle::Notes),
+            ModeVocabularyPolicy::Inherit,
+            None,
+        ),
+        "builtin.technical" => (
+            "Technical",
+            Some(WritingStyle::CodeTechnical),
+            ModeVocabularyPolicy::Technical,
+            None,
+        ),
+        "builtin.terminal" => (
+            "Terminal",
+            Some(WritingStyle::CodeTechnical),
+            ModeVocabularyPolicy::Technical,
+            Some(true),
+        ),
+        "builtin.verbatim" => (
+            "Verbatim",
+            Some(WritingStyle::Verbatim),
+            ModeVocabularyPolicy::Inherit,
+            None,
+        ),
+        _ => return None,
+    };
+    Some(MurmurMode {
+        id: id.to_string(),
+        name: name.to_string(),
+        writing_style,
+        cleanup_enabled: None,
+        smart_formatting_enabled: None,
+        cli_formatting_enabled,
+        vocabulary_policy,
+        context_policy: ModeContextPolicy::None,
+        model_id: None,
+        language: None,
+        auto_paste: None,
+    })
+}
+
+fn selected_mode(
+    global: &DictationState,
+    profile: Option<&AppProfile>,
+) -> (Option<MurmurMode>, bool) {
+    let Some(id) = profile.and_then(|profile| profile.mode_id.as_deref()) else {
+        return (None, false);
+    };
+    let mode = builtin_mode(id).or_else(|| global.modes.iter().find(|mode| mode.id == id).cloned());
+    let invalid = mode.is_none();
+    (mode, invalid)
 }
 
 /// Ephemeral overrides supplied by the recording trigger. No caller supplies
@@ -163,55 +235,99 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             .iter()
             .find(|profile| profile.bundle_id == bundle_id)
     });
-    let ide_context_enabled = explicit_profile.is_some_and(|profile| profile.ide_context_enabled);
-    let writing_style =
+    let (mode, invalid_mode) = selected_mode(global, explicit_profile);
+    let ide_context_enabled = !invalid_mode
+        && explicit_profile.is_some_and(|profile| {
+            profile.ide_context_enabled
+                || (mode
+                    .as_ref()
+                    .is_some_and(|mode| mode.context_policy == ModeContextPolicy::Project)
+                    && !profile.ide_project_roots.is_empty())
+        });
+    let writing_style = if invalid_mode {
+        WritingStyle::Verbatim
+    } else {
         resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
             profile
                 .writing_style
                 .filter(|style| *style != WritingStyle::Inherit)
         })
-        .unwrap_or(WritingStyle::Inherit);
+        .or_else(|| mode.as_ref().and_then(|mode| mode.writing_style))
+        .unwrap_or(WritingStyle::Inherit)
+    };
     let style = StylePolicy::for_style(writing_style);
-    let auto_paste = inputs.session_overrides.auto_paste.unwrap_or_else(|| {
-        resolve_profile_override(
-            global.auto_paste,
-            inputs.bundle_id,
-            &global.app_profiles,
-            |profile| profile.auto_paste_override,
-        )
-    });
-    let cleanup_enabled = inputs.session_overrides.cleanup_enabled.unwrap_or_else(|| {
-        resolve_profile_override(
-            style.cleanup_enabled.unwrap_or(global.cleanup_enabled),
-            inputs.bundle_id,
-            &global.app_profiles,
-            |profile| profile.cleanup_override,
-        )
-    });
-    let cli_override = inputs.session_overrides.cli_formatting_enabled.or_else(|| {
-        resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
-            profile.cli_formatting_override
-        })
-    });
+    let auto_paste = !invalid_mode
+        && inputs.session_overrides.auto_paste.unwrap_or_else(|| {
+            resolve_profile_override(
+                if invalid_mode {
+                    false
+                } else {
+                    mode.as_ref()
+                        .and_then(|mode| mode.auto_paste)
+                        .unwrap_or(global.auto_paste)
+                },
+                inputs.bundle_id,
+                &global.app_profiles,
+                |profile| profile.auto_paste_override,
+            )
+        });
+    let cleanup_enabled = !invalid_mode
+        && inputs.session_overrides.cleanup_enabled.unwrap_or_else(|| {
+            resolve_profile_override(
+                if invalid_mode {
+                    false
+                } else {
+                    mode.as_ref()
+                        .and_then(|mode| mode.cleanup_enabled)
+                        .unwrap_or_else(|| style.cleanup_enabled.unwrap_or(global.cleanup_enabled))
+                },
+                inputs.bundle_id,
+                &global.app_profiles,
+                |profile| profile.cleanup_override,
+            )
+        });
+    let cli_override = if invalid_mode {
+        Some(false)
+    } else {
+        inputs
+            .session_overrides
+            .cli_formatting_enabled
+            .or_else(|| {
+                resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
+                    profile.cli_formatting_override
+                })
+            })
+            .or_else(|| mode.as_ref().and_then(|mode| mode.cli_formatting_enabled))
+    };
     let cli_formatting_mode = match cli_override {
         Some(true) => CliFormattingMode::Enabled,
         Some(false) => CliFormattingMode::Disabled,
         None => style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto),
     };
-    let cli_formatting_enabled = cli_override.is_some() || style.cli_formatting_enabled;
-    let resolved_smart_formatting = inputs
-        .session_overrides
-        .smart_formatting_enabled
-        .unwrap_or_else(|| {
-            resolve_profile_override(
-                style
-                    .smart_formatting_enabled
-                    .unwrap_or(global.smart_formatting_enabled),
-                inputs.bundle_id,
-                &global.app_profiles,
-                |profile| profile.smart_formatting_override,
-            )
-        });
+    let cli_formatting_enabled =
+        !invalid_mode && (cli_override.is_some() || style.cli_formatting_enabled);
+    let resolved_smart_formatting = !invalid_mode
+        && inputs
+            .session_overrides
+            .smart_formatting_enabled
+            .unwrap_or_else(|| {
+                resolve_profile_override(
+                    if invalid_mode {
+                        false
+                    } else {
+                        mode.as_ref()
+                            .and_then(|mode| mode.smart_formatting_enabled)
+                            .unwrap_or_else(|| {
+                                style
+                                    .smart_formatting_enabled
+                                    .unwrap_or(global.smart_formatting_enabled)
+                            })
+                    },
+                    inputs.bundle_id,
+                    &global.app_profiles,
+                    |profile| profile.smart_formatting_override,
+                )
+            });
     // The explicit local-project opt-in defines a code context. Deterministic
     // prose rewriting is always bypassed there, even if another style or
     // fine-tuning override would otherwise enable it.
@@ -226,17 +342,27 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         writing_style: profile.writing_style,
         ide_context_enabled: profile.ide_context_enabled,
         query_context_excluded: profile.query_context_excluded,
+        mode_id: profile.mode_id.clone(),
     });
     let teaching_project_root = explicit_profile
-        .filter(|profile| profile.ide_context_enabled && profile.ide_project_roots.len() == 1)
+        .filter(|profile| ide_context_enabled && profile.ide_project_roots.len() == 1)
         .and_then(|profile| profile.ide_project_roots.first())
         .cloned();
-    let custom_vocab = crate::vocabulary_alias::has_applicable_entries(
-        &global.vocabulary_entries,
-        inputs.bundle_id,
-        &global.app_profiles,
-    );
-    let code_vocab = global.code_vocabulary_enabled_for(inputs.bundle_id);
+    let custom_vocab = !invalid_mode
+        && crate::vocabulary_alias::has_applicable_entries(
+            &global.vocabulary_entries,
+            inputs.bundle_id,
+            &global.app_profiles,
+        );
+    let code_vocab = !invalid_mode
+        && global.code_vocab_enabled
+        && match mode.as_ref().map(|mode| mode.vocabulary_policy) {
+            Some(ModeVocabularyPolicy::Technical) => true,
+            Some(ModeVocabularyPolicy::General) => false,
+            _ => inputs.bundle_id.is_some_and(|bundle_id| {
+                crate::state::app_profiles_enable_code_vocabulary(&global.app_profiles, bundle_id)
+            }),
+        };
     let source = match (custom_vocab, code_vocab) {
         (false, false) => VocabularySource::None,
         (true, false) => VocabularySource::Custom,
@@ -280,8 +406,14 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         matched_profile,
         teaching_project_root,
         transcription: TranscriptionSettings {
-            model_name: global.model_name.clone(),
-            language: global.language.clone(),
+            model_name: mode
+                .as_ref()
+                .and_then(|mode| mode.model_id.clone())
+                .unwrap_or_else(|| global.model_name.clone()),
+            language: mode
+                .as_ref()
+                .and_then(|mode| mode.language.clone())
+                .unwrap_or_else(|| global.language.clone()),
             vad_sensitivity: global.vad_sensitivity,
             prompt: inputs.prompt,
             smart_punctuation: global.smart_punctuation,
@@ -337,6 +469,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             ..ContextCapturePermissions::default()
         },
         writing_style,
+        resolved_mode_id: mode.map(|mode| mode.id),
     }
 }
 
@@ -489,6 +622,7 @@ mod tests {
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
             query_context_excluded: false,
+            mode_id: None,
         }
     }
 
@@ -550,6 +684,92 @@ mod tests {
             assert!(!snapshot.transformations.cleanup_enabled);
             assert!(snapshot.matched_profile.is_none());
         }
+    }
+
+    #[test]
+    fn every_builtin_mode_resolves_to_its_stable_identity() {
+        for id in [
+            "builtin.everyday",
+            "builtin.messages",
+            "builtin.email",
+            "builtin.notes",
+            "builtin.technical",
+            "builtin.terminal",
+            "builtin.verbatim",
+        ] {
+            let mut global = DictationState::default();
+            let mut bound = profile("com.example.App", None, None);
+            bound.mode_id = Some(id.to_string());
+            global.app_profiles = vec![bound];
+            let snapshot = resolve_test(
+                &global,
+                Some("com.example.App"),
+                SessionOverrides::default(),
+            );
+            assert_eq!(snapshot.resolved_mode_id.as_deref(), Some(id));
+        }
+    }
+
+    #[test]
+    fn custom_mode_resolves_model_language_and_profile_fine_tuning() {
+        let mut global = DictationState {
+            auto_paste: false,
+            ..DictationState::default()
+        };
+        global.modes.push(MurmurMode {
+            id: "mode.focus".to_string(),
+            name: "Focus".to_string(),
+            writing_style: Some(WritingStyle::Notes),
+            cleanup_enabled: Some(true),
+            smart_formatting_enabled: Some(true),
+            cli_formatting_enabled: None,
+            vocabulary_policy: ModeVocabularyPolicy::General,
+            context_policy: ModeContextPolicy::None,
+            model_id: Some("small.en".to_string()),
+            language: Some("en".to_string()),
+            auto_paste: Some(true),
+        });
+        let mut bound = profile("com.example.App", Some(false), None);
+        bound.mode_id = Some("mode.focus".to_string());
+        global.app_profiles = vec![bound];
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.App"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(snapshot.resolved_mode_id.as_deref(), Some("mode.focus"));
+        assert_eq!(snapshot.transcription.model_name, "small.en");
+        assert_eq!(snapshot.transcription.language, "en");
+        assert!(
+            !snapshot.delivery.auto_paste,
+            "profile fine-tuning wins over Mode"
+        );
+    }
+
+    #[test]
+    fn unknown_mode_reference_fails_closed() {
+        let mut global = DictationState {
+            auto_paste: true,
+            cleanup_enabled: true,
+            smart_formatting_enabled: true,
+            code_vocab_enabled: true,
+            ..DictationState::default()
+        };
+        let mut bound = profile("com.example.App", None, None);
+        bound.mode_id = Some("missing.mode".to_string());
+        bound.ide_context_enabled = true;
+        bound.ide_project_roots = vec!["/private/project".to_string()];
+        global.app_profiles = vec![bound];
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.App"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(snapshot.resolved_mode_id, None);
+        assert_eq!(snapshot.writing_style, WritingStyle::Verbatim);
+        assert!(!snapshot.delivery.auto_paste);
+        assert!(!snapshot.transformations.ide_context_enabled);
+        assert_eq!(snapshot.vocabulary.source, VocabularySource::None);
     }
 
     #[test]

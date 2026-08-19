@@ -300,7 +300,13 @@ pub(crate) fn resolve_live_context(
                 .app_profiles
                 .iter()
                 .find(|profile| profile.bundle_id == bundle_id)
-                .filter(|profile| profile.ide_context_enabled)
+                .filter(|profile| {
+                    profile.ide_context_enabled
+                        || dictation.modes.iter().any(|mode| {
+                            profile.mode_id.as_deref() == Some(mode.id.as_str())
+                                && mode.context_policy == crate::state::ModeContextPolicy::Project
+                        })
+                })
                 .and_then(|profile| {
                     app_state
                         .ide_context
@@ -2640,6 +2646,127 @@ pub async fn configure_dictation(
         dictation.output_dir = output_dir.to_string();
     }
 
+    if let Some(modes) = options.get("modes").and_then(|value| value.as_array()) {
+        let mut seen = std::collections::HashSet::new();
+        dictation.modes = modes
+            .iter()
+            .take(100)
+            .filter_map(|value| {
+                let id = value.get("id")?.as_str()?.trim();
+                let name = value.get("name")?.as_str()?.trim();
+                if id.is_empty()
+                    || name.is_empty()
+                    || id.len() > 128
+                    || name.len() > 128
+                    || id.starts_with("builtin.")
+                    || !seen.insert(id.to_string())
+                {
+                    return None;
+                }
+                let writing_style = parse_writing_style(value.get("writingStyle"));
+                if value
+                    .get("writingStyle")
+                    .is_some_and(|field| !field.is_null())
+                    && writing_style.is_none()
+                {
+                    return None;
+                }
+                for field in [
+                    "cleanupEnabled",
+                    "smartFormattingEnabled",
+                    "cliFormattingEnabled",
+                    "autoPaste",
+                ] {
+                    if value
+                        .get(field)
+                        .is_some_and(|field| !field.is_null() && !field.is_boolean())
+                    {
+                        return None;
+                    }
+                }
+                if !matches!(
+                    value
+                        .get("vocabularyPolicy")
+                        .and_then(|value| value.as_str()),
+                    None | Some("inherit" | "general" | "technical")
+                ) || !matches!(
+                    value.get("contextPolicy").and_then(|value| value.as_str()),
+                    None | Some("none" | "project")
+                ) {
+                    return None;
+                }
+                let model_id = match value.get("modelId") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let model = value.as_str()?;
+                        model_runtime::model_definition(model).ok()?;
+                        Some(model.to_string())
+                    }
+                };
+                let language = match value.get("language") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let language = value.as_str()?;
+                        if !matches!(
+                            language,
+                            "auto"
+                                | "en"
+                                | "es"
+                                | "fr"
+                                | "de"
+                                | "it"
+                                | "pt"
+                                | "nl"
+                                | "ja"
+                                | "ko"
+                                | "zh"
+                                | "ru"
+                                | "pl"
+                                | "tr"
+                                | "hi"
+                                | "ar"
+                        ) {
+                            return None;
+                        }
+                        Some(language.to_string())
+                    }
+                };
+                Some(crate::state::MurmurMode {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    writing_style,
+                    cleanup_enabled: value
+                        .get("cleanupEnabled")
+                        .and_then(|value| value.as_bool()),
+                    smart_formatting_enabled: value
+                        .get("smartFormattingEnabled")
+                        .and_then(|value| value.as_bool()),
+                    cli_formatting_enabled: value
+                        .get("cliFormattingEnabled")
+                        .and_then(|value| value.as_bool()),
+                    vocabulary_policy: match value
+                        .get("vocabularyPolicy")
+                        .and_then(|value| value.as_str())
+                    {
+                        Some("technical") => crate::state::ModeVocabularyPolicy::Technical,
+                        Some("general") => crate::state::ModeVocabularyPolicy::General,
+                        _ => crate::state::ModeVocabularyPolicy::Inherit,
+                    },
+                    context_policy: match value
+                        .get("contextPolicy")
+                        .and_then(|value| value.as_str())
+                    {
+                        Some("project") => crate::state::ModeContextPolicy::Project,
+                        _ => crate::state::ModeContextPolicy::None,
+                    },
+                    model_id,
+                    language,
+                    auto_paste: value.get("autoPaste").and_then(|value| value.as_bool()),
+                })
+            })
+            .collect();
+    }
+
     // Per-app profiles carry nullable delivery/transformation overrides. A
     // missing/null value means "no override". Entries without a bundleId are
     // skipped. Replaces the whole list when the key is present.
@@ -2690,6 +2817,12 @@ pub async fn configure_dictation(
                     .get("queryContextExcluded")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false);
+                let mode_id = p
+                    .get("modeId")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
                 Some(crate::state::AppProfile {
                     bundle_id,
                     label,
@@ -2701,14 +2834,29 @@ pub async fn configure_dictation(
                     ide_context_enabled,
                     ide_project_roots,
                     query_context_excluded,
+                    mode_id,
                 })
             })
             .collect();
+        let effective_ide_profiles = dictation
+            .app_profiles
+            .iter()
+            .cloned()
+            .map(|mut profile| {
+                if dictation.modes.iter().any(|mode| {
+                    profile.mode_id.as_deref() == Some(mode.id.as_str())
+                        && mode.context_policy == crate::state::ModeContextPolicy::Project
+                }) {
+                    profile.ide_context_enabled = true;
+                }
+                profile
+            })
+            .collect::<Vec<_>>();
         let requests = state
             .app_state
             .ide_context
             .lock_or_recover()
-            .reconcile_profiles(&dictation.app_profiles);
+            .reconcile_profiles(&effective_ide_profiles);
         for request in requests {
             schedule_ide_scan(app_handle.clone(), request);
         }
@@ -4451,7 +4599,7 @@ async fn stop_native_recording_for(
                 "recording": {
                     "recordingId": rid,
                     "modelId": model_name,
-                    "modeId": null,
+                    "modeId": context.resolved_mode_id,
                     "profileId": context.matched_profile.as_ref().map(|profile| profile.label.as_str()),
                     "stages": history.stages,
                 }
@@ -5858,6 +6006,7 @@ mod tests {
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
             query_context_excluded: false,
+            mode_id: None,
         };
         let mut technical = ordinary.clone();
         technical.bundle_id = "com.example.Editor".to_string();

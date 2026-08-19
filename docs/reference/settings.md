@@ -115,6 +115,7 @@ interface Settings {
   codeVocabLastScan: VocabScanSummary | null;
 
   // Per-app
+  modes: MurmurMode[];                     // user Modes; built-ins are code-owned
   appProfiles: AppProfile[];
 
   // Performance Lab

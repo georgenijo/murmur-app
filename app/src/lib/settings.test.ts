@@ -16,6 +16,7 @@ import {
   saveSettings,
   AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
+  BUILTIN_MODES,
   DEFAULT_SETTINGS,
   LEGACY_OVERLAY_OFFSET_KEY,
   MODEL_OPTIONS,
@@ -309,6 +310,40 @@ describe('loadSettings', () => {
     expect(legacy.smartFormattingOverride).toBeNull();
     expect(legacy.cliFormattingOverride).toBeNull();
     expect(legacy.writingStyle).toBeNull();
+    expect(legacy.modeId).toBeUndefined();
+  });
+
+  it('exposes the seven immutable built-in Mode identities', () => {
+    expect(BUILTIN_MODES.map((mode) => [mode.id, mode.name])).toEqual([
+      ['builtin.everyday', 'Everyday'], ['builtin.messages', 'Messages'],
+      ['builtin.email', 'Email'], ['builtin.notes', 'Notes'],
+      ['builtin.technical', 'Technical'], ['builtin.terminal', 'Terminal'],
+      ['builtin.verbatim', 'Verbatim'],
+    ]);
+  });
+
+  it('sanitizes custom Modes and preserves unknown bindings for fail-closed resolution', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      modes: [
+        {
+          id: 'mode.focus', name: ' Focus ', builtIn: false, writingStyle: 'notes',
+          cleanupEnabled: true, smartFormattingEnabled: null, cliFormattingEnabled: null,
+          vocabularyPolicy: 'general', contextPolicy: 'project', modelId: 'small.en',
+          language: 'en', autoPaste: false,
+        },
+        { id: 'mode.invalid', name: 'Invalid', builtIn: false, modelId: 'missing-model' },
+        { id: 'builtin.email', name: 'Spoofed', builtIn: false },
+      ],
+      appProfiles: [{ bundleId: 'com.example.App', label: 'App', modeId: 'missing.mode' }],
+    }));
+    const settings = loadSettings();
+    expect(settings.modes).toEqual([expect.objectContaining({
+      id: 'mode.focus', name: 'Focus', builtIn: false, writingStyle: 'notes',
+      cleanupEnabled: true, smartFormattingEnabled: null,
+      vocabularyPolicy: 'general', contextPolicy: 'project', modelId: 'small.en', language: 'en',
+    })]);
+    expect(settings.appProfiles[0].modeId).toBe('missing.mode');
   });
 
   it('migrates IDE context as explicit opt-in with bounded persisted roots only', () => {
