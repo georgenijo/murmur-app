@@ -89,6 +89,9 @@ interface Settings {
   meetingRetainAudio: boolean;
   meetingRetentionDays: number;            // 0 = no age limit
   meetingMaxSessions: number;
+  soundCuesEnabled: boolean;
+  soundCueVolume: number;
+  meetingSoundCuesEnabled: boolean;
   saveTranscript: boolean;
   saveAudio: boolean;
   mirrorToNotchPill: boolean;
@@ -167,6 +170,9 @@ model-selection side effects.
 | `meetingRetainAudio` | `boolean` | `false` | `true` / `false` | Keeps each meeting chunk WAV after its transcript commits. Off deletes the WAV only after the corresponding SQLite transaction succeeds. |
 | `meetingRetentionDays` | `number` | `0` | `0` or 1–3650 days | Age cap applied before starting a meeting; `0` preserves completed sessions by age. |
 | `meetingMaxSessions` | `number` | `100` | 1–10,000 | Maximum completed/interrupted sessions retained when pruning before a new meeting. |
+| `soundCuesEnabled` | `boolean` | `true` | `true` / `false` | Plays output-only start, stop, delivery-success, and failure cues for dictation. |
+| `soundCueVolume` | `number` | `45` | Integer 0–100 | Volume used for runtime cues and Settings previews. |
+| `meetingSoundCuesEnabled` | `boolean` | `false` | `true` / `false` | Opts meeting capture into lifecycle cues; recurring meeting cues are suppressed by default. |
 
 ### Transform Settings
 
