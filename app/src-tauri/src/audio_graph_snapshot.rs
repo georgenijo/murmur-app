@@ -454,7 +454,13 @@ pub(crate) fn internal_owners_report() -> String {
         report.push_str("murmur subsystems: <app handle unavailable>\n");
         return report;
     };
-    let state = tauri::Manager::state::<crate::State>(&handle);
+    // `state()` panics when the type is unmanaged, and release builds are
+    // `panic = "abort"`: a diagnostic must never be able to take the process
+    // down, so resolve it fallibly.
+    let Some(state) = tauri::Manager::try_state::<crate::State>(&handle) else {
+        report.push_str("murmur subsystems: <app state unavailable>\n");
+        return report;
+    };
 
     let preview = state.app_state.microphone_preview.status();
     report.push_str(&format!(
