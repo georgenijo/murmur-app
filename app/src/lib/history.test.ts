@@ -80,6 +80,15 @@ describe('persistence', () => {
     localStorage.setItem('dictation-history', '{not json');
     expect(loadHistory()).toEqual([]);
   });
+
+  it('migrates legacy entries without inventing raw recognition', () => {
+    localStorage.setItem('dictation-history', JSON.stringify([{ id: 'old', text: 'delivered', timestamp: 1, duration: 2 }]));
+    const [migrated] = loadHistory();
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.text).toBe('delivered');
+    expect(migrated).not.toHaveProperty('rawText');
+    expect(migrated).not.toHaveProperty('recording');
+  });
 });
 
 describe('addHistoryEntry', () => {
@@ -295,11 +304,29 @@ describe('formatHistoryExport', () => {
 
   it('writes self-identifying JSON', () => {
     const parsed = JSON.parse(formatHistoryExport(entries, 'json', exportedAt));
-    expect(parsed.schema).toBe('murmur.history.v1');
+    expect(parsed.schema).toBe('murmur.history.v2');
     expect(parsed.count).toBe(2);
     expect(parsed.entries[0].id).toBe('b');
     expect(parsed.entries[0].sourceName).toBe('notes.m4a');
     expect(parsed.entries[1].source).toBe('recording');
+  });
+
+  it('exports v2 recognition metadata only in the explicit JSON export', () => {
+    const enriched = entry({
+      id: 'v2', schemaVersion: 2, text: 'Delivered text.', rawText: 'delivered text',
+      recording: {
+        recordingId: 42, modelId: 'parakeet-v3', modeId: null, profileId: 'Editor',
+        stages: [{ stage: 'cleanup', outcome: 'applied', changed: true }],
+      },
+    });
+    const json = JSON.parse(formatHistoryExport([enriched], 'json', exportedAt));
+    expect(json.entries[0]).toMatchObject({
+      schemaVersion: 2, text: 'Delivered text.', rawText: 'delivered text',
+      recording: { recordingId: 42, modelId: 'parakeet-v3' },
+    });
+    expect(json.entries[0]).not.toHaveProperty('audio');
+    expect(formatHistoryExport([enriched], 'markdown', exportedAt)).not.toContain('delivered text');
+    expect(formatHistoryExport([enriched], 'text', exportedAt)).not.toContain('delivered text');
   });
 
   it('never exports teaching context in any format', () => {

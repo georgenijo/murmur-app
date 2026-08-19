@@ -186,7 +186,7 @@ describe('HistoryPanel', () => {
     expect(save.mock.calls[0][0].defaultPath).toMatch(/^murmur-history-.*\.json$/);
     const [command, payload] = invoke.mock.calls[invoke.mock.calls.length - 1];
     expect(command).toBe('save_text_export');
-    expect(JSON.parse((payload as { contents: string }).contents).schema).toBe('murmur.history.v1');
+    expect(JSON.parse((payload as { contents: string }).contents).schema).toBe('murmur.history.v2');
     expect(container.textContent).toContain('Saved 3 entries');
   });
 

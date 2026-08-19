@@ -6,7 +6,7 @@ import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
 import { flog } from '../log';
 import type { TeachingContext } from '../correctAndTeach';
-import type { HistoryInterruption } from '../history';
+import type { HistoryInterruption, HistoryRecordingContext } from '../history';
 import {
   cleanupStalledPresentationFromPayload,
   initializationPresentationFromPayload,
@@ -14,7 +14,7 @@ import {
 } from '../dictationPresentation';
 
 interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
   microphone: string;
 }
 
@@ -213,17 +213,24 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<{ text: string; duration: number; teachingContext?: TeachingContext; interrupted?: HistoryInterruption }>('transcription-complete', (event) => {
+    listen<{ text: string; rawText?: string; duration: number; teachingContext?: TeachingContext; interrupted?: HistoryInterruption; recording?: HistoryRecordingContext }>('transcription-complete', (event) => {
       flog.info('recording', 'transcription-complete event', {
         textLen: event.payload.text?.length, duration: event.payload.duration,
         isStopping: isStoppingRef.current,
       });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
-      const { text, duration, teachingContext, interrupted } = event.payload;
+      const { text, rawText, duration, teachingContext, interrupted, recording } = event.payload;
       if (text) {
         setTranscription(text);
-        addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
+        const details = typeof rawText === 'string' && recording
+          ? { rawText, recording }
+          : undefined;
+        if (details) {
+          addEntry(text, duration, 'recording', undefined, teachingContext, interrupted, details);
+        } else {
+          addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
+        }
         updateStats(text, duration);
         setStatsVersion(v => v + 1);
       }

@@ -10,9 +10,32 @@ export interface HistoryInterruption {
   durationMs: number;
 }
 
+export type HistoryStageOutcome = 'applied' | 'skipped' | 'fallback' | 'failed';
+
+export interface HistoryStageResult {
+  stage: string;
+  outcome: HistoryStageOutcome;
+  changed: boolean;
+}
+
+export interface HistoryRecordingContext {
+  recordingId: number;
+  modelId: string;
+  /** Reserved for the reusable Mode model. Legacy/global dictation has no id. */
+  modeId: string | null;
+  /** The resolved profile label at recording start; absent for global settings. */
+  profileId: string | null;
+  stages: HistoryStageResult[];
+}
+
 export interface HistoryEntry {
+  /** Absent only on in-memory legacy fixtures before migration. */
+  schemaVersion?: 2;
   id: string;
+  /** Final text delivered to the clipboard and shown in History. */
   text: string;
+  /** Exact backend recognition before transforms. Absent on migrated entries. */
+  rawText?: string;
   timestamp: number;
   duration: number; // recording duration in seconds
   /** Origin of the entry. Absent on entries saved before this field existed
@@ -24,6 +47,8 @@ export interface HistoryEntry {
   teachingContext?: TeachingContext;
   /** Capture ended unexpectedly; the retained prefix was still transcribed. */
   interruption?: HistoryInterruption;
+  /** Present for live dictations recorded with the v2 completion contract. */
+  recording?: HistoryRecordingContext;
 }
 
 /** Rolling cap on stored entries. */
@@ -43,12 +68,19 @@ export function loadHistory(): HistoryEntry[] {
     const stored = localStorage.getItem(HISTORY_STORE.storageKey);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) return trimHistory(parsed as HistoryEntry[]);
+      if (Array.isArray(parsed)) return trimHistory(parsed.map(migrateHistoryEntry));
     }
   } catch (e) {
     console.error('Failed to load history:', e);
   }
   return [];
+}
+
+function migrateHistoryEntry(value: Record<string, unknown>): HistoryEntry {
+  if (value.schemaVersion === 2) return value as unknown as HistoryEntry;
+  // Deliberately do not copy legacy delivered `text` into `rawText`: that
+  // relationship cannot be reconstructed after the fact.
+  return { ...value, schemaVersion: 2 } as unknown as HistoryEntry;
 }
 
 export function saveHistory(entries: HistoryEntry[]): void {
@@ -68,8 +100,10 @@ export function addHistoryEntry(
   sourceName?: string,
   teachingContext?: TeachingContext,
   interruption?: HistoryInterruption,
+  details?: { rawText: string; recording: HistoryRecordingContext },
 ): HistoryEntry[] {
   const newEntry: HistoryEntry = {
+    schemaVersion: 2,
     id: nextEntryId(),
     text,
     timestamp: Date.now(),
@@ -78,6 +112,7 @@ export function addHistoryEntry(
     ...(sourceName ? { sourceName } : {}),
     ...(teachingContext ? { teachingContext } : {}),
     ...(interruption ? { interruption } : {}),
+    ...(details ? { rawText: details.rawText, recording: details.recording } : {}),
   };
   return trimHistory([...entries, newEntry]);
 }
@@ -285,16 +320,19 @@ export function formatHistoryExport(
 
   if (format === 'json') {
     return `${JSON.stringify({
-      schema: 'murmur.history.v1',
+      schema: 'murmur.history.v2',
       exportedAt: exportedAt.toISOString(),
       count: ordered.length,
       entries: ordered.map((entry) => ({
+        schemaVersion: entry.schemaVersion ?? 2,
         id: entry.id,
         timestamp: entry.timestamp,
         durationSeconds: entry.duration,
         source: entrySource(entry),
         ...(entry.sourceName ? { sourceName: entry.sourceName } : {}),
         text: entry.text,
+        ...(entry.rawText !== undefined ? { rawText: entry.rawText } : {}),
+        ...(entry.recording ? { recording: entry.recording } : {}),
       })),
     }, null, 2)}\n`;
   }

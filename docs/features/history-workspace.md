@@ -18,6 +18,13 @@ thing that leaves the app is an export the user explicitly asks for. An entry
 worth keeping past the cap belongs in an export or the knowledge store, not in
 a special history state.
 
+Stored transcript entries use schema version 2. New live-dictation entries keep
+the exact raw backend recognition separately from the delivered text, together
+with the local model ID, recording correlation, resolved Mode/profile identity,
+and content-free transform-stage outcomes. Legacy entries migrate to v2 without
+copying delivered text into the unknown raw-recognition field. Normal dictation
+audio is never part of history.
+
 Settings → Model & Output → Output includes **Save Transcription History**. Turning it off makes the single `addEntry` boundary discard new microphone and imported-file transcripts before they reach React state, localStorage, or `history.json`. Current transcription delivery and content-free usage statistics continue normally. Previously saved entries remain visible until the user explicitly clears them, so changing a preference never silently deletes data.
 
 Voice Query has a different, off-by-default boundary. Settings → Text → Voice
@@ -83,11 +90,17 @@ The **Export** menu acts on **exactly what is currently shown** — filters and 
 |--------|-------|
 | Markdown | `# Murmur transcript history`, an export stamp, then one `##` section per entry with source and duration |
 | Plain text | `[timestamp · source · duration]` header line per entry, blank-line separated |
-| JSON | `{ schema: "murmur.history.v1", exportedAt, count, entries: [...] }` |
+| JSON | `{ schema: "murmur.history.v2", exportedAt, count, entries: [...] }`; v2 entries include raw recognition and recording metadata |
 
 Each format can go to the clipboard or to a file. The two menu groups repeat the same format names, so each is a labelled `role="group"` and every item carries the verb in its accessible name ("Copy 5 shown as Markdown", "Save 5 shown as Markdown"). Entries are ordered exactly as displayed (newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
 
 **`teachingContext` is never exported.** The bundle id and project root captured at recording start are local scope metadata for Correct-and-Teach, not part of a transcript the user is sharing. All three formats are asserted against this in tests.
+
+Markdown and plain-text exports remain delivered-text views. Raw recognition,
+model/profile correlation, and stage outcomes leave history only through the
+user's explicit JSON export. No export contains audio. Telemetry continues to
+receive only content-free counts, stable codes, durations, and stage outcomes;
+neither raw nor delivered dictated text is logged or shipped.
 
 ### Saving to a file
 
