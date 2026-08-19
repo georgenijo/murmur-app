@@ -56,7 +56,7 @@ Use these before creating a feature-local control or surface.
 | Native chrome | Traffic lights, status, updates, and Settings share one row; recording actions live in the dashboard |
 | Status | Minimum 72px; state changes do not remove its container |
 | Record | Home owns one 64px row with a stable Start/Stop action, truthful status, shortcut, and file action |
-| Sidebar | 216px normally, 64px icon rail at compact width; every item routes to a real surface |
+| Sidebar | 160px normally, 56px icon rail below 760px; every item routes to a real surface |
 | Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
 | Toolbar | 28px controls; search is 180px and expands to 260px on focus |
 | History | 5px list gap; cards use an 8px vertical inset |
@@ -67,7 +67,7 @@ Use these before creating a feature-local control or surface.
 
 ## Review and verification
 
-Every main-dashboard change should be checked at 1180×760 and the compact
+Every main-dashboard change should be checked at the native 880×720 size and the compact
 720×560 target in both appearance modes. Recording transitions must be checked
 in idle, recording, and processing states. Native title-bar work must be
 verified in a bundled Tauri app because a browser cannot reproduce the macOS
@@ -79,6 +79,7 @@ navigation, transcript-card actions, and the history overflow menu.
 
 `npm run test:visual` runs Playwright goldens at 1180×760 for light and dark
 appearances across idle, recording, processing, Insights, and Settings, plus a
-720×560 compact Home fixture. Update those baselines only after comparing the
+720×560 compact Home fixture. The 880×720 fixture must retain a 200px Insights
+rail beside the history column. Update those baselines only after comparing the
 rendered fixture with the Open Design source and repeating the bundled native
 smoke test.
