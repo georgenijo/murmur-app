@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings, AppProfile, VoiceCommand, VocabularyEntry } from './settings';
+import { DEFAULT_SETTINGS, Settings, AppProfile, MurmurMode, VoiceCommand, VocabularyEntry } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -81,6 +81,7 @@ export interface ConfigureOptions {
   mirrorToNotchPill?: boolean;
   outputDir?: string;
   appProfiles?: AppProfile[];
+  modes?: MurmurMode[];
   voiceCommandsEnabled?: boolean;
   voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
@@ -118,6 +119,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     saveAudio: s.saveAudio,
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
+    modes: s.modes,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
     voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,

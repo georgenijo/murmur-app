@@ -129,6 +129,11 @@ Versioned local SQLite store for replacement rules, vocabulary terms, snippets, 
 ### Per-app dictation context — [features/per-app-profiles.md](features/per-app-profiles.md)
 Per-bundle-ID profiles override auto-paste, cleanup, smart formatting, and CLI formatting, and select an explicit **Writing Style** (Inherit / Conversational / Polished prose / Code-technical / Verbatim / Notes). Resolved once into an immutable recording-start snapshot; app type is never inferred and app content is never captured. A bounded memory-only running-app picker with manual bundle-ID fallback fills the profile list.
 
+### Murmur Modes — [features/modes.md](features/modes.md)
+Reusable local policies compose writing style, pipeline stages, vocabulary and
+project context, model/language, and delivery behavior. Seven stable built-ins
+ship with the app; legacy profiles remain unbound and behavior-compatible.
+
 ### IDE context — [features/ide-context.md](features/ide-context.md)
 Opt-in, per-profile, memory-only index of user-selected local roots. Corrects unique project symbols and canonicalizes explicitly triggered `@file` mentions to root-relative text. Never reads screen, selection, or clipboard. Ambiguous or stale references stay unchanged. Index contents are never persisted — only the chosen root strings are.
 

@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Per-app dictation can now resolve through reusable Murmur Modes, with seven
+  built-ins, bounded custom policy storage, immutable recording snapshots, and
+  fail-closed invalid references while legacy profiles retain their behavior
+  (#606).
 - The main window now uses a full-width local-first dashboard with compact
   sidebar navigation, a 64px recording row, recent dictations above the fold,
   real usage insights, and explicit personalization setup milestones instead

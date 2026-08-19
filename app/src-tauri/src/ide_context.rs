@@ -1078,6 +1078,7 @@ mod tests {
             ide_context_enabled: enabled,
             ide_project_roots: roots,
             query_context_excluded: false,
+            mode_id: None,
         }
     }
 

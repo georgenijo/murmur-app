@@ -141,6 +141,40 @@ pub struct AppProfile {
     /// the global/preset context level; it never enables context for an app.
     #[serde(default)]
     pub query_context_excluded: bool,
+    /// Reusable Mode resolved before the profile's legacy fine-tuning fields.
+    #[serde(default)]
+    pub mode_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeVocabularyPolicy {
+    Inherit,
+    General,
+    Technical,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeContextPolicy {
+    None,
+    Project,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MurmurMode {
+    pub id: String,
+    pub name: String,
+    pub writing_style: Option<WritingStyle>,
+    pub cleanup_enabled: Option<bool>,
+    pub smart_formatting_enabled: Option<bool>,
+    pub cli_formatting_enabled: Option<bool>,
+    pub vocabulary_policy: ModeVocabularyPolicy,
+    pub context_policy: ModeContextPolicy,
+    pub model_id: Option<String>,
+    pub language: Option<String>,
+    pub auto_paste: Option<bool>,
 }
 
 /// Resolve the effective technical-context signal for an app profile. A
@@ -232,6 +266,7 @@ pub struct DictationState {
     pub output_dir: String,
     /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
+    pub modes: Vec<MurmurMode>,
     pub voice_commands_enabled: bool,
     /// User-defined voice commands applied after the built-in set.
     #[serde(default)]
@@ -298,6 +333,7 @@ impl Default for DictationState {
             mirror_to_notchpill: false,
             output_dir: String::new(),
             app_profiles: Vec::new(),
+            modes: Vec::new(),
             voice_commands_enabled: false,
             voice_command_pairs: Vec::new(),
             cleanup_enabled: false,

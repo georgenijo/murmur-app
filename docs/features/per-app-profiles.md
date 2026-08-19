@@ -2,14 +2,18 @@
 
 Murmur resolves one immutable `DictationContextSnapshot` for every live recording. The snapshot is created when recording starts from the frontmost application's bundle identifier and the current backend configuration. Final transcription, transformations, file output, clipboard output, and auto-paste all use that same snapshot.
 
+Profiles may optionally bind a reusable [Murmur Mode](modes.md). Profiles saved
+before Modes have no `modeId` and preserve their delivered behavior exactly.
+
 ## Resolution and precedence
 
 `dictation_context::resolve` is the only profile resolver. It applies values in this order:
 
 1. Global dictation settings
-2. The matching profile's explicit writing style
-3. Matching per-app fine-tuning overrides
-4. One-session overrides
+2. The matching profile's selected Mode
+3. The matching profile's explicit writing style
+4. Matching per-app fine-tuning overrides
+5. One-session overrides
 
 One-session overrides are an explicit, typed resolver input but no trigger supplies them yet. This keeps the precedence contract ready for future commands without adding a second app-detection or settings path.
 
