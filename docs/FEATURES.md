@@ -167,12 +167,16 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 ## 7. Interface
 
 ### Main window
-A single-line header combines app status, the configured hotkey hint, recording
-control, updates, and Settings. Transcript history owns the remaining workspace.
-A compact footer reports words, WPM, recordings, and streak, with detailed usage
-behind an Insights popover. File transcription is available through whole-window
-drag-and-drop, the command palette, and the history overflow menu; queued jobs
-appear as cancelable bottom-right toasts.
+The native title row keeps app status, updates, and Settings aligned with the
+macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker,
+Queries, Insights, and existing customization/settings destinations. Home uses
+one 64px recording row for the real recording state, configured shortcut, and
+file transcription, then gives Recent Dictations the remaining workspace.
+The responsive insights rail and full Insights destination use only durable
+local statistics. Personalization is shown as inspectable vocabulary, app-style,
+and regular-use milestones—not a tuning percentage, acoustic-training claim,
+or fabricated unlock. File drag-and-drop, the command palette, history actions,
+and cancelable file-transcription toasts remain available.
 
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
 The Transcripts tab provides match highlighting and Mic/File filters over a
@@ -211,8 +215,8 @@ transparent utility windows remain unsynchronized always-dark glass.
 
 ### UI design system — [features/ui-design-system.md](features/ui-design-system.md)
 Shared native chrome, semantic appearance colors, constrained geometry/type
-tokens, compact control primitives, and transcript-card invariants keep the
-eight redesigned surfaces visually consistent as features evolve.
+tokens, dashboard/sidebar primitives, and transcript-card invariants keep the
+redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 First-launch wizard: Welcome → Microphone → Accessibility → optional System

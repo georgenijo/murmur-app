@@ -5,7 +5,7 @@ const appearances = ['light', 'dark'] as const;
 
 for (const appearance of appearances) {
   for (const state of states) {
-    test(`${appearance} ${state} matches the canonical 880x720 surface`, async ({ page }) => {
+    test(`${appearance} ${state} matches the dashboard at 1180x760`, async ({ page }) => {
       const pageErrors: string[] = [];
       page.on('pageerror', (error) => pageErrors.push(error.message));
       await page.emulateMedia({ colorScheme: appearance });
@@ -67,9 +67,10 @@ test('the window header flows into the history toolbar without a divider', async
   await expect.poll(() => header.evaluate((element) => (
     getComputedStyle(element).borderBottomWidth
   ))).toBe('0px');
-  await expect.poll(() => page.locator('.ui-window-wordmark').evaluate((element) => (
+  await expect(page.locator('.ui-window-wordmark')).toHaveCount(0);
+  await expect.poll(() => page.locator('.home-brand').evaluate((element) => (
     element.getBoundingClientRect().left
-  ))).toBe(80);
+  ))).toBe(10);
 });
 
 for (const state of ['recording', 'update-recovering', 'settings'] as const) {
@@ -78,15 +79,14 @@ for (const state of ['recording', 'update-recovering', 'settings'] as const) {
 
     const header = page.locator('.ui-window-header');
     const items = [
-      header.locator('.ui-window-wordmark'),
       header.getByTestId('main-status-chip'),
       ...(state === 'settings'
         ? [
+            header.locator('.ui-window-wordmark'),
             header.getByText('Settings', { exact: true }),
             header.getByRole('button', { name: 'Done' }),
           ]
         : [
-            header.getByTestId('record-pill'),
             header.getByRole('button', { name: 'Open settings' }),
           ]),
     ];
@@ -109,27 +109,23 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
 
   const header = page.locator('.ui-window-header');
   const update = page.getByTestId('update-indicator');
-  const hotkey = page.getByTestId('hotkey-hint');
-  const record = page.getByTestId('record-pill');
+  const record = page.getByTestId('home-record-button');
 
   await expect(header).toBeVisible();
   await expect(update).toHaveAccessibleName('Murmur v0.27.1 is available. View update');
-  await expect(record).toHaveAccessibleName('Recovering');
-  await expect(record).toContainText('Wait');
+  await expect(record).toHaveAccessibleName('Recovering microphone');
+  await expect(record).toBeDisabled();
 
   const geometry = await Promise.all([
     header.boundingBox(),
     update.boundingBox(),
-    hotkey.boundingBox(),
     record.boundingBox(),
   ]);
-  const [headerBox, updateBox, hotkeyBox, recordBox] = geometry;
+  const [headerBox, updateBox, recordBox] = geometry;
 
   expect(updateBox?.width).toBeLessThanOrEqual(26);
   expect(updateBox?.height).toBeLessThanOrEqual(26);
-  expect(hotkeyBox?.height).toBeLessThanOrEqual(18);
-  expect(recordBox?.width).toBe(72);
-  expect(recordBox?.height).toBeLessThanOrEqual(26);
+  expect(recordBox?.height).toBe(40);
   expect(headerBox?.height).toBe(42);
 });
 
@@ -230,7 +226,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
 
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=recording&appearance=dark');
-  const waveform = page.getByTestId('main-recording-waveform');
+  const waveform = page.locator('.home-record-waveform');
 
   await expect(waveform.locator('span')).toHaveCount(5);
   await expect(waveform.locator('.animate-pulse')).toHaveCount(0);
@@ -238,4 +234,22 @@ test('the main recording waveform reacts to audio without pulse animation', asyn
     bars.map((bar) => getComputedStyle(bar).height)
   ));
   expect(new Set(heights).size).toBeGreaterThan(1);
+});
+
+test('the sidebar opens a real expanded Insights view', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  await page.getByRole('button', { name: 'Insights', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Developing' })).toBeVisible();
+  await expect(page.getByText(/voice-training or confidence score/i)).toBeVisible();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights.png');
+});
+
+test('the compact 720x560 home keeps actions and history reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  await expect(page.getByRole('button', { name: 'Start recording' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Transcribe File' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Recent dictations' })).toBeVisible();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });

@@ -336,6 +336,32 @@ describe('SettingsPanel information architecture', () => {
     expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
   });
 
+  it('accepts precise sidebar destinations for an editor or setting target', async () => {
+    const renderRequest = (pageRequest: { page: string; token: number; editorTab?: 'commands'; target?: string }) => root.render(
+      <SettingsPanel
+        settings={DEFAULT_SETTINGS}
+        onUpdateSettings={onUpdateSettings}
+        initialized
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+        pageRequest={pageRequest}
+      />,
+    );
+
+    await act(async () => renderRequest({ page: 'text', editorTab: 'commands', token: 1 }));
+    expect(container.querySelector('h1')?.textContent).toBe('Voice Commands');
+    expect(container.textContent).toContain('Voice commands editor');
+
+    await act(async () => renderRequest({ page: 'delivery', target: 'app-overrides', token: 2 }));
+    expect(container.querySelector('h1')?.textContent).toBe('Delivery');
+    expect(container.textContent).toContain('App overrides editor');
+  });
+
   it('returns from an editor with Escape', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(

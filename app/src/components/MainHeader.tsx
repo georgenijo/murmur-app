@@ -20,6 +20,7 @@ interface MainHeaderProps {
   buildBadge?: string;
   meetingPhase?: MeetingRuntimePhase;
   meetingElapsedMs?: number;
+  showRecordControls?: boolean;
 }
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
@@ -65,6 +66,7 @@ export function MainHeader({
   buildBadge,
   meetingPhase = 'idle',
   meetingElapsedMs = 0,
+  showRecordControls = true,
 }: MainHeaderProps) {
   const isCapturing = status === 'recording' || status === 'starting';
   const busy = status === 'processing' || status === 'recovering';
@@ -85,6 +87,7 @@ export function MainHeader({
     <WindowHeader
       contextLabel={mode === 'settings' ? 'Settings' : undefined}
       className={mode === 'settings' ? 'settings-window-header' : ''}
+      showWordmark={mode === 'settings'}
     >
       <div
         data-testid="main-status-chip"
@@ -146,51 +149,55 @@ export function MainHeader({
         <>
           {updateIndicator}
 
-          <p
-            data-testid="hotkey-hint"
-            className={`hidden shrink-0 select-none whitespace-nowrap text-xs text-on-surface-variant transition-opacity sm:block ${
-              isCapturing || busy || meetingBusy ? 'pointer-events-none opacity-0' : 'opacity-100'
-            }`}
-          >
-            {hotkeyHint(recordingMode, triggerKey)}
-          </p>
+          {showRecordControls && (
+            <>
+              <p
+                data-testid="hotkey-hint"
+                className={`hidden shrink-0 select-none whitespace-nowrap text-xs text-on-surface-variant transition-opacity sm:block ${
+                  isCapturing || busy || meetingBusy ? 'pointer-events-none opacity-0' : 'opacity-100'
+                }`}
+              >
+                {hotkeyHint(recordingMode, triggerKey)}
+              </p>
 
-          <button
-            data-testid="record-pill"
-            type="button"
-            onClick={() => void (isCapturing ? onStop() : onRecord())}
-            disabled={!initialized || busy || meetingBusy}
-            aria-label={
-              status === 'recording'
-                ? `Stop recording, ${formatTimer(recordingDuration)}`
-                : status === 'starting'
-                  ? 'Cancel recording'
-                : busy || meetingBusy
-                    ? label
-                    : 'Record'
-            }
-            className={`ui-record-pill active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
-              isCapturing
-                ? 'border border-error/50 bg-error/10 text-error hover:bg-error/15'
-                : 'bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[0_2px_8px_color-mix(in_srgb,var(--murmur-primary)_18%,transparent)] hover:brightness-105'
-            }`}
-          >
-            <span
-              className={`h-1.5 w-1.5 shrink-0 bg-current ${
-                isCapturing ? 'rounded-[2px]' : 'rounded-full'
-              }`}
-              aria-hidden="true"
-            />
-            <span>
-              {status === 'starting'
-                ? 'Cancel'
-                : status === 'recording'
-                  ? 'Stop'
-                  : busy || meetingBusy
-                    ? 'Wait'
-                    : 'Record'}
-            </span>
-          </button>
+              <button
+                data-testid="record-pill"
+                type="button"
+                onClick={() => void (isCapturing ? onStop() : onRecord())}
+                disabled={!initialized || busy || meetingBusy}
+                aria-label={
+                  status === 'recording'
+                    ? `Stop recording, ${formatTimer(recordingDuration)}`
+                    : status === 'starting'
+                      ? 'Cancel recording'
+                      : busy || meetingBusy
+                        ? label
+                        : 'Record'
+                }
+                className={`ui-record-pill active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
+                  isCapturing
+                    ? 'border border-error/50 bg-error/10 text-error hover:bg-error/15'
+                    : 'bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[0_2px_8px_color-mix(in_srgb,var(--murmur-primary)_18%,transparent)] hover:brightness-105'
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 shrink-0 bg-current ${
+                    isCapturing ? 'rounded-[2px]' : 'rounded-full'
+                  }`}
+                  aria-hidden="true"
+                />
+                <span>
+                  {status === 'starting'
+                    ? 'Cancel'
+                    : status === 'recording'
+                      ? 'Stop'
+                      : busy || meetingBusy
+                        ? 'Wait'
+                        : 'Record'}
+                </span>
+              </button>
+            </>
+          )}
 
           <button
             type="button"

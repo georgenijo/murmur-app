@@ -68,13 +68,13 @@ function failureLabel(code: string): string {
 interface UsageDashboardProps {
   // Bumped by App when a recording finishes (or stats reset) — forces a re-read.
   statsVersion: number;
-  displayMode?: 'inline' | 'popover';
+  displayMode?: 'inline' | 'popover' | 'page';
 }
 
 export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDashboardProps) {
   const [isCollapsed, setIsCollapsed] = useState(loadCollapsed);
   const [version, setVersion] = useState(0);
-  const expanded = displayMode === 'popover' || !isCollapsed;
+  const expanded = displayMode !== 'inline' || !isCollapsed;
 
   // Re-read stats whenever localStorage changes from another window/tab, and
   // when the panel is expanded so it reflects recordings made while collapsed.
@@ -116,6 +116,9 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
 
   const heatW = HEATMAP_WEEKS * STEP - GAP;
   const heatH = 7 * STEP - GAP;
+  const chartAccent = displayMode === 'page'
+    ? 'var(--murmur-primary)'
+    : 'var(--murmur-warning)';
 
   return (
     // Semantic CSS vars keep SVG fills/strokes synchronized with custom themes.
@@ -123,15 +126,17 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
       className={`shrink-0 overflow-hidden ${
         displayMode === 'popover'
           ? 'bg-transparent'
+          : displayMode === 'page'
+            ? 'usage-dashboard-page'
           : 'rounded-lg border border-outline-variant/40 bg-surface-container-low'
       }`}
       style={{
         '--heat-0': 'var(--murmur-surface-container-high)',
-        '--heat-1': 'color-mix(in srgb, var(--murmur-warning) 25%, var(--murmur-background))',
-        '--heat-2': 'color-mix(in srgb, var(--murmur-warning) 45%, var(--murmur-background))',
-        '--heat-3': 'color-mix(in srgb, var(--murmur-warning) 70%, var(--murmur-background))',
-        '--heat-4': 'var(--murmur-warning)',
-        '--bar-fill': 'var(--murmur-warning)',
+        '--heat-1': `color-mix(in srgb, ${chartAccent} 25%, var(--murmur-background))`,
+        '--heat-2': `color-mix(in srgb, ${chartAccent} 45%, var(--murmur-background))`,
+        '--heat-3': `color-mix(in srgb, ${chartAccent} 70%, var(--murmur-background))`,
+        '--heat-4': chartAccent,
+        '--bar-fill': chartAccent,
         '--wpm-stroke': 'var(--murmur-on-surface-variant)',
       } as CSSProperties}
     >
@@ -162,7 +167,7 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
       )}
 
       {expanded && stats && (
-        <div className={`px-3 pb-3 flex flex-col gap-4 ${displayMode === 'popover' ? 'pt-3' : ''}`}>
+        <div className={`usage-dashboard-sections px-3 pb-3 flex flex-col gap-4 ${displayMode !== 'inline' ? 'pt-3' : ''}`}>
           <Section title="Voice Query · all time">
             <div className="grid grid-cols-3 gap-2">
               <QueryMetric label="Queries" value={stats.query.queriesRun.toLocaleString()} />

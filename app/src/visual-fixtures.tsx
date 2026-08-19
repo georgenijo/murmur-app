@@ -2,13 +2,17 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
-import { FooterStats } from './components/FooterStats';
-import { HistoryPanel } from './components/history/HistoryPanel';
+import { HomeDashboard } from './components/home/HomeDashboard';
+import { HomeSidebar } from './components/home/HomeSidebar';
+import { InsightsView } from './components/home/InsightsView';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { DEFAULT_SETTINGS } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
+import type { MainDestination } from './lib/homeDashboard';
+import { dayKey, loadStats } from './lib/stats';
+import { useMeetings } from './lib/hooks/useMeetings';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -25,6 +29,18 @@ const status: DictationStatus = requestedState === 'recording'
 document.documentElement.dataset.appearance = appearance;
 
 mockIPC((command) => {
+  if (command === 'get_meeting_status') {
+    return {
+      phase: 'idle',
+      sessionId: null,
+      elapsedMs: 0,
+      chunksCommitted: 0,
+      microphoneActive: false,
+      systemAudioActive: false,
+      errorCode: null,
+    };
+  }
+  if (command === 'get_system_audio_permission_status') return 'granted';
   if (command === 'get_microphone_preview_status') {
     return {
       previewId: null,
@@ -93,14 +109,47 @@ const entries = [
   },
 ];
 
+const fixtureSettings = {
+  ...DEFAULT_SETTINGS,
+  vocabularyEntries: [{
+    id: 'fixture-term',
+    written: 'Murmur',
+    aliases: ['murmur app'],
+    enabled: true,
+    scope: { kind: 'global' as const },
+  }],
+  appProfiles: [],
+};
+
+const fixtureBuckets = Object.fromEntries(Array.from({ length: 7 }, (_, index) => {
+  const date = new Date();
+  date.setDate(date.getDate() - (6 - index));
+  return [dayKey(date), {
+    words: [420, 680, 310, 900, 560, 180, 760][index],
+    recordings: [3, 5, 2, 7, 4, 1, 6][index],
+    recordingSeconds: [180, 240, 160, 300, 220, 90, 260][index],
+  }];
+}));
+
+localStorage.setItem('dictation-stats', JSON.stringify({
+  ...loadStats(),
+  totalWords: 5168,
+  totalRecordings: 220,
+  totalDurationSeconds: 1640,
+  wpmSamples: [184, 192, 189, 191],
+  dailyBuckets: fixtureBuckets,
+}));
+
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings' || requestedState === 'settings-appearance';
+  const meetings = useMeetings(fixtureSettings);
+  const [destination, setDestination] = React.useState<MainDestination>(requestedState === 'insights' ? 'insights' : 'home');
 
   return (
     <div
       data-appearance={appearance}
       data-visual-ready="true"
-      className="flex h-[720px] w-[880px] flex-col overflow-hidden bg-background text-on-surface"
+      className="flex h-screen w-screen flex-col overflow-hidden bg-background text-on-surface"
     >
       <MainHeader
         status={status}
@@ -114,6 +163,7 @@ function VisualFixture() {
         settingsOpen={settingsOpen}
         triggerKey="shift_l"
         mode={settingsOpen ? 'settings' : 'main'}
+        showRecordControls={false}
         updateIndicator={requestedState === 'update-recovering' ? (
           <UpdateIndicator
             status={{
@@ -129,7 +179,7 @@ function VisualFixture() {
       />
       {settingsOpen ? (
         <SettingsPanel
-          settings={DEFAULT_SETTINGS}
+          settings={fixtureSettings}
           onUpdateSettings={() => {}}
           initialized
           status="idle"
@@ -141,14 +191,37 @@ function VisualFixture() {
           configureError={null}
         />
       ) : (
-        <>
-          <HistoryPanel
-            entries={entries}
-            onClear={() => {}}
-            onUpdateEntry={() => {}}
-          />
-          <FooterStats statsVersion={0} />
-        </>
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <HomeSidebar active={destination} onNavigate={setDestination} onOpenSettings={() => {}} />
+          <div className="main-dashboard-workspace">
+            {destination === 'insights' ? (
+              <InsightsView
+                statsVersion={0}
+                settings={fixtureSettings}
+                onOpenVocabulary={() => {}}
+                onOpenStyles={() => {}}
+              />
+            ) : (
+              <HomeDashboard
+                historyEntries={entries}
+                onClearHistory={() => {}}
+                onUpdateHistoryEntry={() => {}}
+                onTranscribeFile={() => {}}
+                status={status}
+                initialized
+                recordingDuration={12}
+                audioLevel={status === 'recording' ? 0.045 : 0}
+                settings={fixtureSettings}
+                meetings={meetings}
+                statsVersion={0}
+                onRecord={() => {}}
+                onStop={() => {}}
+                onOpenInsights={() => setDestination('insights')}
+                onOpenSettings={() => {}}
+              />
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
