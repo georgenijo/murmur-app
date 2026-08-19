@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-19
+
 ### Changed
 
 - Meetings now have a portable local artifact foundation with bounded
