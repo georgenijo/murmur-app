@@ -186,7 +186,13 @@ fn four_cc(value: u32) -> String {
 fn bounded_text(value: &str) -> String {
     let cleaned: String = value
         .chars()
-        .map(|character| if character.is_control() { ' ' } else { character })
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
         .take(MAX_TEXT_CHARS)
         .collect();
     cleaned.trim().to_string()
@@ -332,7 +338,11 @@ pub(crate) fn snapshot() -> AudioGraphSnapshot {
 /// HAL deadline thread: `ps` never touches coreaudiod, so it cannot hang for
 /// the reason we are investigating.
 fn process_names(observation: &AudioGraphObservation) -> BTreeMap<i32, String> {
-    if !observation.processes.iter().any(|process| process.pid.is_some()) {
+    if !observation
+        .processes
+        .iter()
+        .any(|process| process.pid.is_some())
+    {
         return BTreeMap::new();
     }
     parse_process_names(&run_capped(
@@ -469,8 +479,14 @@ pub(crate) fn internal_owners_report() -> String {
     report.push_str(&format!(
         "meeting flags: active={} inference_active={} summary_active={}\n",
         state.app_state.meeting_active.load(Ordering::SeqCst),
-        state.app_state.meeting_inference_active.load(Ordering::SeqCst),
-        state.app_state.meeting_summary_active.load(Ordering::SeqCst),
+        state
+            .app_state
+            .meeting_inference_active
+            .load(Ordering::SeqCst),
+        state
+            .app_state
+            .meeting_summary_active
+            .load(Ordering::SeqCst),
     ));
 
     let query_status = state.query.status();
@@ -574,14 +590,15 @@ mod hal {
     use std::ptr::NonNull;
 
     use objc2_core_audio::{
-        kAudioAggregateDevicePropertyFullSubDeviceList, kAudioDevicePropertyDeviceIsRunningSomewhere,
-        kAudioDevicePropertyTransportType, kAudioDeviceTransportTypeAggregate,
-        kAudioHardwarePropertyDevices, kAudioHardwarePropertyProcessObjectList,
-        kAudioHardwarePropertyTapList, kAudioObjectPropertyElementMain,
-        kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-        kAudioProcessPropertyIsRunning, kAudioProcessPropertyIsRunningInput,
-        kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, AudioObjectGetPropertyData,
-        AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+        kAudioAggregateDevicePropertyFullSubDeviceList,
+        kAudioDevicePropertyDeviceIsRunningSomewhere, kAudioDevicePropertyTransportType,
+        kAudioDeviceTransportTypeAggregate, kAudioHardwarePropertyDevices,
+        kAudioHardwarePropertyProcessObjectList, kAudioHardwarePropertyTapList,
+        kAudioObjectPropertyElementMain, kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
+        kAudioObjectSystemObject, kAudioProcessPropertyIsRunning,
+        kAudioProcessPropertyIsRunningInput, kAudioProcessPropertyIsRunningOutput,
+        kAudioProcessPropertyPID, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize,
+        AudioObjectID, AudioObjectPropertyAddress,
     };
     use objc2_core_foundation::{CFRetained, CFString};
 
@@ -725,7 +742,11 @@ mod hal {
                 .push("process object list unavailable".to_string()),
         }
 
-        match read_object_list(system_object(), kAudioHardwarePropertyTapList, MAX_TAP_OBJECTS) {
+        match read_object_list(
+            system_object(),
+            kAudioHardwarePropertyTapList,
+            MAX_TAP_OBJECTS,
+        ) {
             Some((objects, truncated)) => {
                 observation.taps_truncated = truncated;
                 observation.taps = objects
@@ -974,7 +995,10 @@ mod tests {
         assert!(line.contains("audio_graph_query_timed_out: true"));
         assert!(line.contains("audio_graph_query_elapsed_ms: 2001"));
         assert!(line.contains("running_audio_process_count: 0"));
-        assert_eq!(QUERY_TIMED_OUT_BODY, "<audio graph query timed out after 2s>");
+        assert_eq!(
+            QUERY_TIMED_OUT_BODY,
+            "<audio graph query timed out after 2s>"
+        );
     }
 
     #[test]
@@ -982,7 +1006,9 @@ mod tests {
         let started = Instant::now();
         let snapshot = snapshot();
         // The deadline plus the bounded `ps` resolution; never unbounded.
-        assert!(started.elapsed() < QUERY_DEADLINE + PROCESS_NAME_DEADLINE + Duration::from_secs(2));
+        assert!(
+            started.elapsed() < QUERY_DEADLINE + PROCESS_NAME_DEADLINE + Duration::from_secs(2)
+        );
         assert!(snapshot.report.len() <= REPORT_CAP_BYTES);
         if snapshot.counts.query_timed_out {
             assert_eq!(snapshot.report, QUERY_TIMED_OUT_BODY);
@@ -997,7 +1023,10 @@ mod tests {
         let snapshot = snapshot();
         println!("counts: {:?}", snapshot.counts);
         println!("{}", snapshot.report);
-        assert!(!snapshot.counts.query_timed_out, "healthy hardware must answer");
+        assert!(
+            !snapshot.counts.query_timed_out,
+            "healthy hardware must answer"
+        );
         assert!(snapshot.counts.device_count > 0, "a Mac always has devices");
     }
 }

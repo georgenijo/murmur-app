@@ -401,7 +401,10 @@ fn is_safe_audio_graph_observation_field(key: &str, value: &serde_json::Value) -
 
 fn valid_audio_graph_observation_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
     let unsigned = |key: &str| data.get(key).and_then(serde_json::Value::as_u64);
-    let Some(timed_out) = data.get("query_timed_out").and_then(serde_json::Value::as_bool) else {
+    let Some(timed_out) = data
+        .get("query_timed_out")
+        .and_then(serde_json::Value::as_bool)
+    else {
         return false;
     };
     let (Some(processes), Some(taps), Some(devices), Some(devices_running)) = (
@@ -1943,23 +1946,24 @@ mod tests {
             "query_timed_out": false,
             "elapsed_ms": 9
         });
-        for (label, mutate) in [
-            ("more running devices than devices", |data: &mut serde_json::Value| {
+        let mutations: [(&str, fn(&mut serde_json::Value)); 5] = [
+            ("more running devices than devices", |data| {
                 data["devices_running_count"] = serde_json::json!(9);
             }),
-            ("a timed-out query that still counted objects", |data: &mut serde_json::Value| {
+            ("a timed-out query that still counted objects", |data| {
                 data["query_timed_out"] = serde_json::json!(true);
             }),
-            ("a zero capture id", |data: &mut serde_json::Value| {
+            ("a zero capture id", |data| {
                 data["capture_id"] = serde_json::json!(0);
             }),
-            ("a stringly-typed count", |data: &mut serde_json::Value| {
+            ("a stringly-typed count", |data| {
                 data["tap_count"] = serde_json::json!("1");
             }),
-            ("an out-of-range elapsed time", |data: &mut serde_json::Value| {
+            ("an out-of-range elapsed time", |data| {
                 data["elapsed_ms"] = serde_json::json!(60_001);
             }),
-        ] {
+        ];
+        for (label, mutate) in mutations {
             let mut data = base.clone();
             mutate(&mut data);
             sanitize_event_data("audio", &mut data, true);
