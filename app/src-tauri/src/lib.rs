@@ -31,6 +31,7 @@ mod knowledge_store;
 pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
+mod meeting_artifact;
 mod meeting_capture;
 mod meeting_store;
 mod microphone_preview;
@@ -139,6 +140,7 @@ pub(crate) struct State {
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) meeting_store: meeting_store::MeetingStore,
     pub(crate) meetings: meeting_capture::MeetingCoordinator,
+    pub(crate) meeting_summaries: commands::meeting_summary::MeetingSummaryCoordinator,
     pub(crate) delivery_recovery: delivery_recovery::DeliveryRecoveryState,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
@@ -245,6 +247,7 @@ pub fn run() {
             knowledge: knowledge_store::KnowledgeStore::default(),
             meeting_store: meeting_store::MeetingStore::default(),
             meetings: meeting_capture::MeetingCoordinator::default(),
+            meeting_summaries: commands::meeting_summary::MeetingSummaryCoordinator::default(),
             delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
@@ -366,6 +369,9 @@ pub fn run() {
             commands::meeting::delete_meeting,
             commands::meeting::delete_all_meetings,
             commands::meeting::prune_meetings,
+            commands::meeting_summary::start_meeting_summary,
+            commands::meeting_summary::get_meeting_summary_status,
+            commands::meeting_summary::cancel_meeting_summary,
             commands::export::save_text_export,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,

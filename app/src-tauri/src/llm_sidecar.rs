@@ -890,6 +890,10 @@ mod supported {
             }
         }
 
+        pub fn resident_rss_mb(&self) -> u64 {
+            self.resident_pid().and_then(child_rss_bytes).unwrap_or(0) / (1024 * 1024)
+        }
+
         fn take_child(&self, inner: &mut Inner) -> Option<Child> {
             let child = inner.child.take();
             if child.is_some() {
@@ -2116,6 +2120,10 @@ impl LlmSidecar {
 
     pub fn resident_pid(&self) -> Option<u32> {
         None
+    }
+
+    pub fn resident_rss_mb(&self) -> u64 {
+        0
     }
 
     pub async fn transform(

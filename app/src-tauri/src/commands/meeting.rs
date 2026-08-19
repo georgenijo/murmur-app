@@ -27,6 +27,13 @@ fn default_max_sessions() -> u32 {
 }
 
 fn meeting_conflict(state: &State) -> Option<&'static str> {
+    if state
+        .app_state
+        .meeting_summary_active
+        .load(Ordering::SeqCst)
+    {
+        return Some("Wait for the meeting summary to finish or cancel it first.");
+    }
     if state.app_state.meeting_active.load(Ordering::SeqCst) {
         return Some("A meeting is already active.");
     }
@@ -225,6 +232,16 @@ pub fn delete_meeting(id: String, state: tauri::State<'_, State>) -> Result<(), 
     if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
         return Err("Stop this meeting before deleting it.".to_string());
     }
+    let summary = state.meeting_summaries.status();
+    if summary.session_id.as_deref() == Some(id)
+        && matches!(
+            summary.phase,
+            crate::commands::meeting_summary::MeetingSummaryPhase::Running
+                | crate::commands::meeting_summary::MeetingSummaryPhase::Cancelling
+        )
+    {
+        return Err("Cancel this meeting summary before deleting it.".to_string());
+    }
     state.meeting_store.repository()?.delete_session(id)
 }
 
@@ -232,6 +249,13 @@ pub fn delete_meeting(id: String, state: tauri::State<'_, State>) -> Result<(), 
 pub fn delete_all_meetings(state: tauri::State<'_, State>) -> Result<(), String> {
     if state.meetings.is_active() {
         return Err("Stop the active meeting before deleting meeting history.".to_string());
+    }
+    if matches!(
+        state.meeting_summaries.status().phase,
+        crate::commands::meeting_summary::MeetingSummaryPhase::Running
+            | crate::commands::meeting_summary::MeetingSummaryPhase::Cancelling
+    ) {
+        return Err("Cancel the active meeting summary before deleting meeting history.".into());
     }
     state.meeting_store.repository()?.delete_all()
 }

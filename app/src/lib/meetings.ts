@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import type { MeetingArtifactV1 } from './meetingArtifacts';
 
 export type SystemAudioPermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported';
 export type MeetingRuntimePhase = 'idle' | 'starting' | 'recording' | 'stopping' | 'processing' | 'failed';
@@ -48,7 +49,25 @@ export interface MeetingSegment {
 export interface MeetingDetail {
   session: MeetingSession;
   segments: MeetingSegment[];
+  artifact: MeetingArtifactV1 | null;
 }
+
+export type MeetingSummaryPhase = 'idle' | 'running' | 'cancelling' | 'complete' | 'failed' | 'cancelled';
+export interface MeetingSummaryStatus {
+  generation: number;
+  sessionId: string | null;
+  phase: MeetingSummaryPhase;
+  completedChunks: number;
+  totalChunks: number;
+  elapsedMs: number;
+  peakRssMb: number;
+  errorCode: string | null;
+}
+
+export const IDLE_MEETING_SUMMARY_STATUS: MeetingSummaryStatus = {
+  generation: 0, sessionId: null, phase: 'idle', completedChunks: 0,
+  totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null,
+};
 
 export interface MeetingPage {
   sessions: MeetingSession[];
@@ -99,6 +118,18 @@ export async function listMeetings(query = '', offset = 0, limit = 50): Promise<
 
 export async function getMeeting(id: string): Promise<MeetingDetail> {
   return invoke('get_meeting', { id });
+}
+
+export async function getMeetingSummaryStatus(): Promise<MeetingSummaryStatus> {
+  return invoke('get_meeting_summary_status');
+}
+
+export async function startMeetingSummary(sessionId: string): Promise<MeetingSummaryStatus> {
+  return invoke('start_meeting_summary', { sessionId });
+}
+
+export async function cancelMeetingSummary(): Promise<boolean> {
+  return invoke('cancel_meeting_summary');
 }
 
 export async function deleteMeeting(id: string): Promise<void> {

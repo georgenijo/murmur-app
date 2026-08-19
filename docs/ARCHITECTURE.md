@@ -101,6 +101,10 @@ final segment + FTS transaction --> optional WAV deletion
 Meeting capture is mutually exclusive with dictation, transforms, imported-file
 transcription, corpus capture, and benchmarks. The worker owns tap teardown;
 normal stop waits for a teardown receipt and the host confirms termination.
+After capture finishes, the user can explicitly summarize the stored transcript.
+The signed local-LLM sidecar processes bounded chunks serially, validates every
+derived claim against stored segment IDs, and atomically replaces the session's
+schema-v1 artifact. Summary generation is cancellable and owns the heavy runtime.
 See [Meeting Capture](features/meeting-capture.md).
 
 ### Selected-text transform
@@ -194,7 +198,7 @@ retained audio, or an unavailable device after first PCM remain terminal.
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 173 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 176 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -406,7 +410,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-173 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+176 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
