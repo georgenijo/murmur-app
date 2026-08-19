@@ -195,9 +195,8 @@ fn collect_bundle(
     //   * "after kill" is taken now. The difference between the two is itself
     //     evidence about who was holding the engine queue.
     let during_hang = crate::audio_graph_snapshot::take_live_hang_report(capture_id);
-    let after_kill = crate::audio_graph_snapshot::snapshot(
-        crate::audio_graph_snapshot::Detail::Full,
-    );
+    let after_kill =
+        crate::audio_graph_snapshot::snapshot(crate::audio_graph_snapshot::Detail::Full);
     let mut bundle = String::new();
     let mut section = |title: &str, body: &str| {
         bundle.push_str(&format!("\n===== {title} =====\n"));

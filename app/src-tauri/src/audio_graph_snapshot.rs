@@ -551,9 +551,7 @@ pub(crate) fn take_live_hang_report(capture_id: u64) -> Option<String> {
             // In flight: wait for it rather than starting a second probe.
             Some(_) => {}
         }
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return None;
-        };
+        let remaining = deadline.checked_duration_since(Instant::now())?;
         let (next, timeout) = ready
             .wait_timeout(guard, remaining)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -904,11 +902,8 @@ mod hal {
         // Clamp the allocation to the cap BEFORE allocating: a pathological
         // HAL-reported size would otherwise OOM the probe thread, and release
         // builds abort on allocation failure.
-        let (count, truncated) = super::planned_object_read(
-            byte_size,
-            std::mem::size_of::<AudioObjectID>(),
-            limit,
-        );
+        let (count, truncated) =
+            super::planned_object_read(byte_size, std::mem::size_of::<AudioObjectID>(), limit);
         if count == 0 {
             return Some((Vec::new(), truncated));
         }
