@@ -92,6 +92,8 @@ MAX_TOTAL = 10 * 1024 * 1024 * 1024  # 10 GB across all installs
 # tick with no receiver restart.
 DIAG_INSTALLS_FILENAME = "diag-installs.txt"
 COLLECT_NOW_FILENAME = "collect-now.txt"
+# Serializes /bundle quota admission + filename allocation (threaded server).
+_BUNDLE_WRITE_LOCK = threading.Lock()
 EXPORT_LIMITS = (200, 500)
 MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
 MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
@@ -3371,6 +3373,11 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(204)
 
     def _do_bundle(self):
+        # Every early reject below returns before consuming the request body.
+        # On this HTTP/1.1 threading server a reused connection would then
+        # parse body bytes as the next request line, so bundle connections
+        # always close; uploads are rare one-shots and lose nothing.
+        self.close_connection = True
         auth = self.headers.get("Authorization", "")
         if auth != "Bearer " + TOKEN:
             return self._reply(401)
@@ -3392,31 +3399,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, b"incomplete body")
 
         dirpath = os.path.join(ROOT, install_id.lower())
-        usage = root_usage()
-        if usage["bytes"] > MAX_TOTAL:
-            return self._reply(507, b"global quota exceeded")
-        if not os.path.isdir(dirpath) and usage["dirs"] >= MAX_INSTALLS:
-            return self._reply(507, b"install limit reached")
-        if _install_dir_bytes(dirpath) + len(body) > MAX_FILE:
-            return self._reply(507, b"storage unavailable")
+        # Quota admission and filename allocation are check-then-write, and
+        # the server is threaded: serialize them so concurrent uploads cannot
+        # both pass the same headroom check or claim the same epoch filename.
+        # Bundles are rare one-shots, so one process-wide lock is fine.
+        with _BUNDLE_WRITE_LOCK:
+            usage = root_usage()
+            if usage["bytes"] > MAX_TOTAL:
+                return self._reply(507, b"global quota exceeded")
+            if not os.path.isdir(dirpath) and usage["dirs"] >= MAX_INSTALLS:
+                return self._reply(507, b"install limit reached")
+            if _install_dir_bytes(dirpath) + len(body) > MAX_FILE:
+                return self._reply(507, b"storage unavailable")
 
-        epoch_ms = int(time.time() * 1000)
-        path = os.path.join(dirpath, "hang-bundle-%d.txt" % epoch_ms)
-        tmp = path + ".tmp"
-        try:
-            os.makedirs(dirpath, exist_ok=True)
-            with open(tmp, "wb") as f:
-                f.write(body)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-            descriptor = os.open(dirpath, os.O_RDONLY)
+            epoch_ms = int(time.time() * 1000)
+            path = os.path.join(dirpath, "hang-bundle-%d.txt" % epoch_ms)
+            # Same-millisecond arrivals (or files from an earlier process)
+            # bump the stamp instead of silently replacing an earlier bundle.
+            while os.path.exists(path):
+                epoch_ms += 1
+                path = os.path.join(dirpath, "hang-bundle-%d.txt" % epoch_ms)
+            tmp = path + ".tmp"
             try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        except OSError:
-            return self._reply(503, b"storage commit failed")
+                os.makedirs(dirpath, exist_ok=True)
+                with open(tmp, "wb") as f:
+                    f.write(body)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+                descriptor = os.open(dirpath, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except OSError:
+                return self._reply(503, b"storage commit failed")
         _usage_cache["t"] = 0.0
         self._reply(204)
 

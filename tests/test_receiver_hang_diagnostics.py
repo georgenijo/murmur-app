@@ -271,6 +271,32 @@ class HangDiagnosticsHttpTests(unittest.TestCase):
         self.assertEqual(len(bundles), 1)
         self.assertEqual(bundles[0].read_bytes(), body)
         self.assertRegex(bundles[0].name, r"^hang-bundle-\d+\.txt$")
+
+    def test_same_millisecond_bundles_never_overwrite_each_other(self) -> None:
+        self._arm()
+        headers = {
+            "Authorization": "Bearer " + receiver.TOKEN,
+            "X-Install-Id": self.install_id,
+        }
+        # Freeze the clock so both uploads race for the same epoch filename;
+        # the allocator must bump the stamp instead of replacing the first.
+        frozen = receiver.time.time()
+        original_time = receiver.time.time
+        receiver.time.time = lambda: frozen
+        try:
+            first_status, _, _ = self.post("/bundle", b"first bundle", headers)
+            second_status, _, _ = self.post("/bundle", b"second bundle", headers)
+        finally:
+            receiver.time.time = original_time
+        self.assertTrue(200 <= first_status < 300)
+        self.assertTrue(200 <= second_status < 300)
+
+        install_dir = Path(receiver.ROOT) / self.install_id
+        contents = sorted(
+            bundle.read_bytes()
+            for bundle in install_dir.glob("hang-bundle-*.txt")
+        )
+        self.assertEqual(contents, [b"first bundle", b"second bundle"])
         self.assertFalse(list(install_dir.glob("*.tmp")))
 
     def test_bundle_never_touches_the_event_store(self) -> None:
