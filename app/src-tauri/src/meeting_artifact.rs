@@ -103,7 +103,15 @@ pub fn validate_artifact(artifact: &mut MeetingArtifactV1, allowed: &HashSet<i64
 }
 
 pub fn parse_artifact(output: &str, allowed: &HashSet<i64>) -> Option<MeetingArtifactV1> {
-    let mut artifact: MeetingArtifactV1 = serde_json::from_str(output.trim()).ok()?;
+    let output = output.trim();
+    let candidate = if output.starts_with('{') && output.ends_with('}') {
+        output
+    } else {
+        let start = output.find('{')?;
+        let end = output.rfind('}')?;
+        output.get(start..=end)?
+    };
+    let mut artifact: MeetingArtifactV1 = serde_json::from_str(candidate).ok()?;
     validate_artifact(&mut artifact, allowed).then_some(artifact)
 }
 
@@ -209,6 +217,7 @@ mod tests {
         let allowed = HashSet::from([1]);
         let json = r#"{"schema":"murmur.meeting-artifact.v1","summary":{"text":"Done","sourceSegmentIds":[1]},"decisions":[],"actionItems":[],"openQuestions":[]}"#;
         assert!(parse_artifact(json, &allowed).is_some());
+        assert!(parse_artifact(&format!("```json\n{json}\n```"), &allowed).is_some());
         assert!(parse_artifact(&json.replace("[1]", "[2]"), &allowed).is_none());
     }
 }
