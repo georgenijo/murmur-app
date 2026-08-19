@@ -19,6 +19,7 @@ const coreMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 const diagnosticsWorkspaceMock = vi.hoisted(() => vi.fn());
+const soundCueMock = vi.hoisted(() => vi.fn());
 const eventMocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
   listen: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: eventMocks.listen,
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+vi.mock('../../lib/soundCues', () => ({ playSoundCue: soundCueMock }));
 vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
 vi.mock('../../lib/hooks/useVocabScan', () => ({
   useVocabScan: () => ({ status: 'idle', walker: null, stats: null, scan: vi.fn(), cancel: vi.fn() }),
@@ -189,6 +191,32 @@ describe('SettingsPanel information architecture', () => {
     });
 
     expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 75 });
+  });
+
+  it('updates and previews recording sound cues', async () => {
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
+    const soundSwitch = container.querySelector('button[aria-label="Sound Cues"]') as HTMLButtonElement;
+    await act(async () => soundSwitch.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
+    const volumeLabel = Array.from(container.querySelectorAll('label')).find(
+      (label) => label.textContent?.includes('Volume'),
+    ) as HTMLLabelElement;
+    const slider = volumeLabel.querySelector('input[type="range"]') as HTMLInputElement;
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      valueSetter.call(slider, '70');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(onUpdateSettings).toHaveBeenCalledWith({ soundCueVolume: 70 });
+    const success = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'success') as HTMLButtonElement;
+    await act(async () => success.click());
+    expect(soundCueMock).toHaveBeenCalledWith('success', 45);
+    const meetingSwitch = container.querySelector('button[aria-label="Meeting Cues"]') as HTMLButtonElement;
+    await act(async () => meetingSwitch.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSoundCuesEnabled: true });
   });
 
   it('hides the NotchPill setting when the companion app is absent', () => {

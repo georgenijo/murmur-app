@@ -225,6 +225,12 @@ export interface Settings {
   autoPasteDelayMs: number;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
+  /** Play local output-only feedback for dictation lifecycle transitions. */
+  soundCuesEnabled: boolean;
+  /** Cue output volume as an integer percentage. */
+  soundCueVolume: number;
+  /** Opt-in because recurring meeting cues can be disruptive. */
+  meetingSoundCuesEnabled: boolean;
   /**
    * Trailing silence (ms) after which a hands-free double-tap recording stops
    * itself. `0` disables it. Only ever applied in Double-Tap mode — in
@@ -409,6 +415,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autoPasteDelayMs: 0,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
+  soundCuesEnabled: true,
+  soundCueVolume: 45,
+  meetingSoundCuesEnabled: false,
   // Opt-in: a recording that ends itself is a surprise until you ask for it.
   autoStopSilenceMs: 0,
   microphone: 'system_default',
@@ -841,6 +850,16 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
+      }
+      if (typeof parsed.soundCuesEnabled !== 'boolean') {
+        parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;
+      }
+      parsed.soundCueVolume = typeof parsed.soundCueVolume === 'number'
+        && Number.isFinite(parsed.soundCueVolume)
+        ? Math.max(0, Math.min(100, Math.round(parsed.soundCueVolume)))
+        : DEFAULT_SETTINGS.soundCueVolume;
+      if (typeof parsed.meetingSoundCuesEnabled !== 'boolean') {
+        parsed.meetingSoundCuesEnabled = DEFAULT_SETTINGS.meetingSoundCuesEnabled;
       }
 
       if (typeof parsed.retainHistory !== 'boolean') {

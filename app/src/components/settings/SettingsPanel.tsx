@@ -61,6 +61,7 @@ import { isNotchPillInstalled } from '../../lib/dictation';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
+import { playSoundCue, type SoundCue } from '../../lib/soundCues';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
@@ -1272,6 +1273,48 @@ export const SettingsPanel = memo(function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">{keyHelp}</p>
             </div>
             {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
+            <div data-setting-target="sound-cues" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <SettingToggle
+                title="Sound Cues"
+                description="Play local feedback when recording starts, stops, succeeds, or fails."
+                checked={settings.soundCuesEnabled}
+                onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
+              />
+              {settings.soundCuesEnabled && (
+                <div className="mt-2 space-y-3 pl-1">
+                  <label className="block text-xs font-medium text-on-surface-variant">
+                    Volume · {settings.soundCueVolume}%
+                    <input
+                      className="mt-2 block w-full accent-primary"
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={settings.soundCueVolume}
+                      onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
+                    {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
+                      <button
+                        key={cue}
+                        type="button"
+                        onClick={() => playSoundCue(cue, settings.soundCueVolume)}
+                        className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
+                      >
+                        {cue}
+                      </button>
+                    ))}
+                  </div>
+                  <SettingToggle
+                    title="Meeting Cues"
+                    description="Also play cues during meeting capture. Off by default."
+                    checked={settings.meetingSoundCuesEnabled}
+                    onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
+                  />
+                </div>
+              )}
+            </div>
             <div data-setting-target="stop-on-silence" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="mb-2 block text-sm font-medium text-on-surface">Stop on Silence</label>
               <div className="flex gap-2">

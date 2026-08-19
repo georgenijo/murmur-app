@@ -40,6 +40,7 @@ import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
 import { useOpenSettingsListener } from './lib/hooks/useOpenSettingsListener';
 import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
 import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
+import { useSoundCues } from './lib/hooks/useSoundCues';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
@@ -87,6 +88,7 @@ function App() {
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const meetings = useMeetings(settings);
+  useSoundCues(settings, meetings.status.phase);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
     if (downloadedModel !== settings.model) {
       updateSettings({ model: downloadedModel });
