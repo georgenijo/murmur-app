@@ -38,4 +38,12 @@ describe('sound cues', () => {
     expect(gain.connect).toHaveBeenCalledWith(expect.anything());
     vi.unstubAllGlobals();
   });
+
+  it('creates no audio context or output nodes at zero volume', () => {
+    const AudioContext = vi.fn();
+    vi.stubGlobal('AudioContext', AudioContext);
+    playSoundCue('failure', 0);
+    expect(AudioContext).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });

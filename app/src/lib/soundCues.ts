@@ -30,12 +30,13 @@ export function clampCueVolume(value: unknown): number {
  * supplied to this function.
  */
 export function playSoundCue(cue: SoundCue, volumePercent: number): void {
+  const volume = clampCueVolume(volumePercent) / 100;
+  if (volume === 0) return;
   const AudioContextType = window.AudioContext
     ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextType) return;
 
   const context = new AudioContextType();
-  const volume = clampCueVolume(volumePercent) / 100;
   const startedAt = context.currentTime;
   for (const tone of CUE_TONES[cue]) {
     const oscillator = context.createOscillator();

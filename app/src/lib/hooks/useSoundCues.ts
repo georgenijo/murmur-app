@@ -26,7 +26,7 @@ export function useSoundCues(settings: SoundCueSettings, meetingPhase: MeetingRu
   useEffect(() => {
     const play = (cue: SoundCue) => {
       const current = settingsRef.current;
-      if (!current.soundCuesEnabled || meetingPhaseRef.current !== 'idle') return;
+      if (!current.soundCuesEnabled || !['idle', 'failed'].includes(meetingPhaseRef.current)) return;
       playSoundCue(cue, current.soundCueVolume);
     };
     let cancelled = false;
@@ -35,7 +35,7 @@ export function useSoundCues(settings: SoundCueSettings, meetingPhase: MeetingRu
       listen<unknown>(event, ({ payload }) => {
         const resolved = typeof cue === 'function' ? cue(payload) : cue;
         if (resolved) play(resolved);
-      }).then((unlisten) => cancelled ? unlisten() : unlistens.push(unlisten));
+      }).then((unlisten) => cancelled ? unlisten() : unlistens.push(unlisten)).catch(() => {});
     };
     subscribe('dictation-generation-started', 'start');
     subscribe('recording-status-changed', (payload) => payload === 'processing' ? 'stop' : null);

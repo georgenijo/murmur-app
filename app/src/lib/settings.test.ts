@@ -154,6 +154,29 @@ describe('loadSettings', () => {
     }
   });
 
+  it('defaults and bounds persisted sound cue settings', () => {
+    for (const [stored, expected] of [
+      [undefined, DEFAULT_SETTINGS.soundCueVolume],
+      ['loud', DEFAULT_SETTINGS.soundCueVolume],
+      [42.6, 43],
+      [-5, 0],
+      [500, 100],
+    ] as const) {
+      const persisted: Record<string, unknown> = {
+        ...DEFAULT_SETTINGS,
+        soundCueVolume: stored,
+        soundCuesEnabled: 'yes',
+        meetingSoundCuesEnabled: 1,
+      };
+      if (stored === undefined) delete persisted.soundCueVolume;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      const loaded = loadSettings();
+      expect(loaded.soundCueVolume).toBe(expected);
+      expect(loaded.soundCuesEnabled).toBe(DEFAULT_SETTINGS.soundCuesEnabled);
+      expect(loaded.meetingSoundCuesEnabled).toBe(DEFAULT_SETTINGS.meetingSoundCuesEnabled);
+    }
+  });
+
   it('migrates the exact legacy 50 ms paste delay to zero once', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
