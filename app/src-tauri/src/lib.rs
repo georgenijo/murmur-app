@@ -2,6 +2,7 @@
 mod alloc;
 mod audio;
 mod audio_decode;
+mod audio_graph_snapshot;
 mod audio_inventory;
 mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
@@ -119,6 +120,13 @@ use tauri::{Emitter, Manager};
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
+
+    /// Non-blocking sibling of [`MutexExt::lock_or_recover`]: recovers from
+    /// poisoning exactly the same way, but returns `None` instead of waiting
+    /// when the lock is held. Diagnostics use this so a probe investigating a
+    /// stall can never join the queue behind it — contention is reported as a
+    /// fact rather than waited out.
+    fn try_lock_or_recover(&self) -> Option<MutexGuard<'_, T>>;
 }
 
 impl<T> MutexExt<T> for Mutex<T> {
@@ -127,6 +135,14 @@ impl<T> MutexExt<T> for Mutex<T> {
             tracing::warn!(target: "system", "Mutex was poisoned, recovering data");
             poisoned.into_inner()
         })
+    }
+
+    fn try_lock_or_recover(&self) -> Option<MutexGuard<'_, T>> {
+        match self.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 }
 
@@ -457,6 +473,7 @@ pub fn run() {
         .setup(|app| {
             telemetry::init(app.handle().clone());
             audio_inventory::initialize(app.handle().clone());
+            audio_graph_snapshot::set_app_handle(app.handle().clone());
             // Restore the durable per-device capture backend memo before any
             // capture can start, so a relaunch keeps the fast-fail tier a
             // known-bad machine already earned. Fail-open: an unavailable

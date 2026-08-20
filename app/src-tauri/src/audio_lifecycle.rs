@@ -171,6 +171,18 @@ enum PublicPhase {
     Stopping = 4,
 }
 
+impl PublicPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Starting => "starting",
+            Self::Recording => "recording",
+            Self::Recovering => "recovering",
+            Self::Stopping => "stopping",
+        }
+    }
+}
+
 struct PublicState {
     phase: AtomicU8,
     still_connecting: std::sync::atomic::AtomicBool,
@@ -196,7 +208,6 @@ impl PublicState {
         self.phase.load(Ordering::SeqCst) != PublicPhase::Idle as u8
     }
 
-    #[cfg(test)]
     fn phase(&self) -> PublicPhase {
         match self.phase.load(Ordering::SeqCst) {
             value if value == PublicPhase::Idle as u8 => PublicPhase::Idle,
@@ -1710,6 +1721,41 @@ fn cancel(
 
 pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
+}
+
+/// Read-only lifecycle view for hang diagnostics.
+pub(crate) struct AudioLifecycleSnapshot {
+    pub(crate) phase: &'static str,
+    /// Rendered owner: `none`, `<busy>` when the owner lock is contended, or
+    /// `kind#id`.
+    pub(crate) owner: String,
+    pub(crate) still_connecting: bool,
+}
+
+/// Current capture phase and owner, or `None` when the supervisor has never
+/// started (so no capture context exists at all).
+///
+/// Deliberately reads `SUPERVISOR.get()` rather than `supervisor()`: the
+/// latter is `get_or_init` and would spawn the supervisor thread from a
+/// diagnostic path. The owner is read with `try_lock` so a diagnostic never
+/// waits on the lock it is trying to describe.
+pub(crate) fn diagnostic_snapshot() -> Option<AudioLifecycleSnapshot> {
+    let supervisor = SUPERVISOR.get()?;
+    let owner = crate::MutexExt::try_lock_or_recover(&supervisor.public.owner)
+        .map(|guard| render_owner(*guard))
+        .unwrap_or_else(|| "<busy>".to_string());
+    Some(AudioLifecycleSnapshot {
+        phase: supervisor.public.phase().as_str(),
+        owner,
+        still_connecting: supervisor.public.still_connecting.load(Ordering::SeqCst),
+    })
+}
+
+fn render_owner(owner: Option<AudioOwner>) -> String {
+    match owner {
+        Some(owner) => format!("{}#{}", owner.kind(), owner.telemetry_id()),
+        None => "none".to_string(),
+    }
 }
 
 pub(crate) fn is_microphone_benchmark_owner(cycle_id: u64) -> bool {

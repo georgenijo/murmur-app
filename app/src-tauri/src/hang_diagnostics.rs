@@ -10,6 +10,11 @@
 //! software; it must only ever be armed for installs whose owner has agreed
 //! to diagnostic collection. Disarming happens server-side (no release
 //! needed) and takes effect on the next shipper tick.
+//!
+//! The bundle also carries three `audio_graph_snapshot` sections: what the
+//! Core Audio HAL had live IO on during the hang (observed before the kill and
+//! claimed here), the same view after the kill, and what Murmur itself holds.
+//! All are bounded and deadline-guarded there, not here.
 
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -85,7 +90,7 @@ pub(crate) fn armed() -> bool {
 
 /// Truncate at the nearest char boundary at or below `cap`: command output is
 /// lossy-decoded UTF-8, and `String::truncate` panics mid-character.
-fn truncate_at_boundary(text: &mut String, cap: usize) {
+pub(crate) fn truncate_at_boundary(text: &mut String, cap: usize) {
     if text.len() <= cap {
         return;
     }
@@ -99,7 +104,7 @@ fn truncate_at_boundary(text: &mut String, cap: usize) {
 /// Run a command, returning combined stdout+stderr truncated to the section
 /// cap. On deadline the child is left to finish on its own (diagnostic path
 /// only; the commands used here all terminate on their own).
-fn run_capped(program: &str, args: &[&str], deadline: Duration) -> String {
+pub(crate) fn run_capped(program: &str, args: &[&str], deadline: Duration) -> String {
     let program = program.to_string();
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let (sender, receiver) = mpsc::channel();
@@ -182,6 +187,17 @@ fn collect_bundle(
     error_kind: &'static str,
     worker_sample: &str,
 ) -> String {
+    // Two views, because the field evidence says the blocker often clears the
+    // moment the killed client's transport tears down:
+    //   * "during hang" is the observation taken before the kill and cached by
+    //     capture ID, so it sees the queue while it was actually blocked. It is
+    //     claimed rather than re-queried — a fresh probe here would be too late
+    //     and would race a second abandoned thread against the first.
+    //   * "after kill" is taken now. The difference between the two is itself
+    //     evidence about who was holding the engine queue.
+    let during_hang = crate::audio_graph_snapshot::take_live_hang_report(capture_id);
+    let after_kill =
+        crate::audio_graph_snapshot::snapshot(crate::audio_graph_snapshot::Detail::Full);
     let mut bundle = String::new();
     let mut section = |title: &str, body: &str| {
         bundle.push_str(&format!("\n===== {title} =====\n"));
@@ -191,15 +207,29 @@ fn collect_bundle(
     section(
         "hang context",
         &format!(
-            "app_version: {}\ncapture_id: {capture_id}\nbackend: {backend}\nerror_kind: {error_kind}\nepoch_ms: {}",
+            "app_version: {}\ncapture_id: {capture_id}\nbackend: {backend}\nerror_kind: {error_kind}\nepoch_ms: {}\nlive_hang_graph_captured: {}\n-- audio graph counts (after kill) --\n{}",
             env!("CARGO_PKG_VERSION"),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            during_hang.is_some(),
+            after_kill.counts.render_line(),
         ),
     );
     section("worker native stack sample", worker_sample);
+    section(
+        "system audio graph (during hang)",
+        during_hang.as_deref().unwrap_or(
+            "<no pre-kill observation for this capture attempt: the probe did not \
+             finish in time, or the attempt was never observed>",
+        ),
+    );
+    section("system audio graph (after kill)", &after_kill.report);
+    section(
+        "murmur internal audio owners",
+        &crate::audio_graph_snapshot::internal_owners_report(),
+    );
     section(
         "coreaudiod unified log (last 90s)",
         &run_capped(

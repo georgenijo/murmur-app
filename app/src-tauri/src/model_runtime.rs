@@ -450,6 +450,28 @@ impl ModelRuntimeManager {
             .collect()
     }
 
+    /// Lifecycle-only view for hang diagnostics: no filesystem probes (unlike
+    /// `snapshot`/`catalog`) and never touches `inner`, which is held across a
+    /// whole model load. `None` means the status map was contended.
+    pub fn lifecycle_states(&self) -> Option<Vec<(String, LifecycleState, bool)>> {
+        let statuses = self.statuses.try_lock_or_recover()?;
+        Some(
+            statuses
+                .iter()
+                .map(|(model, status)| (model.clone(), status.lifecycle, status.failure_present))
+                .collect(),
+        )
+    }
+
+    /// The loaded model, or `None` when `inner` is contended — an in-flight
+    /// load holds that lock for its whole duration, so a diagnostic must not
+    /// block on it.
+    pub fn active_model_if_uncontended(&self) -> Option<Option<String>> {
+        self.inner
+            .try_lock_or_recover()
+            .map(|inner| inner.active_model.clone())
+    }
+
     pub fn any_model_installed(&self) -> bool {
         self.definitions
             .iter()

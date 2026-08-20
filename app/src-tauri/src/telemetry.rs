@@ -212,6 +212,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
+        "audio.system_audio_graph_observed" => Some("audio.system_audio_graph_observed"),
         "audio.device_reresolution_started" => Some("audio.device_reresolution_started"),
         "audio.input_resolution_observed" => Some("audio.input_resolution_observed"),
         "audio.capture_started" => Some("audio.capture_started"),
@@ -374,6 +375,68 @@ fn sanitize_audio_input_resolution_event(data: &mut serde_json::Map<String, serd
     if !valid_audio_input_resolution_shape(data) {
         // Keep only the stable event identity rather than persisting a partial
         // or internally contradictory hardware observation.
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
+fn is_audio_graph_observation_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.system_audio_graph_observed")
+}
+
+fn is_safe_audio_graph_observation_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("audio.system_audio_graph_observed"),
+        "capture_id" => value.as_u64().is_some_and(|value| value > 0),
+        // Bounded by the module's own object-list caps; the same numbers ship
+        // from every install, so nothing here may become a string.
+        "running_audio_process_count" | "tap_count" | "device_count" | "devices_running_count" => {
+            value.as_u64().is_some_and(|value| value <= 4_096)
+        }
+        "elapsed_ms" => value.as_u64().is_some_and(|value| value <= 60_000),
+        "query_timed_out" | "probe_unavailable" => value.is_boolean(),
+        _ => false,
+    }
+}
+
+fn valid_audio_graph_observation_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let unsigned = |key: &str| data.get(key).and_then(serde_json::Value::as_u64);
+    let boolean = |key: &str| data.get(key).and_then(serde_json::Value::as_bool);
+    let (Some(timed_out), Some(probe_unavailable)) =
+        (boolean("query_timed_out"), boolean("probe_unavailable"))
+    else {
+        return false;
+    };
+    let (Some(processes), Some(taps), Some(devices), Some(devices_running)) = (
+        unsigned("running_audio_process_count"),
+        unsigned("tap_count"),
+        unsigned("device_count"),
+        unsigned("devices_running_count"),
+    ) else {
+        return false;
+    };
+    if unsigned("capture_id").is_none() || unsigned("elapsed_ms").is_none() {
+        return false;
+    }
+    // A probe that never started cannot also have observed a wedge.
+    if timed_out && probe_unavailable {
+        return false;
+    }
+    // Neither a timed-out nor an unstarted query observed anything.
+    if (timed_out || probe_unavailable)
+        && (processes != 0 || taps != 0 || devices != 0 || devices_running != 0)
+    {
+        return false;
+    }
+    devices_running <= devices
+}
+
+/// This event ships from every install, armed or not. Enforce an exact
+/// content-free schema in every build so a future call site cannot append a
+/// PID, a device or tap name, or a UID.
+fn sanitize_audio_graph_observation_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| is_safe_audio_graph_observation_field(key, value));
+    if !valid_audio_graph_observation_shape(data) {
         data.retain(|key, _| key == "event_code");
     }
 }
@@ -947,6 +1010,12 @@ fn sanitized_summary(
         == Some("audio.permission_prompt_changed")
     {
         "Microphone permission prompt state changed".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("audio.system_audio_graph_observed")
+    {
+        // Constant in every build: the interesting semantics are the numeric
+        // counts, and the surrounding graph names processes and devices.
+        "System audio graph observed".to_string()
     } else if matches!(
         data.get("event_code").and_then(serde_json::Value::as_str),
         Some(
@@ -1217,6 +1286,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_audio_device_reresolution_event(obj) {
         sanitize_audio_device_reresolution_event(obj);
+        return;
+    }
+    if is_audio_graph_observation_event(obj) {
+        sanitize_audio_graph_observation_event(obj);
         return;
     }
     if is_audio_permission_prompt_event(obj) {
@@ -1804,6 +1877,179 @@ mod tests {
                 .unwrap()
                 .contains("SENTINEL"));
         }
+    }
+
+    #[test]
+    fn audio_graph_observation_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "audio.system_audio_graph_observed",
+                "capture_id": 42,
+                "running_audio_process_count": 3,
+                "tap_count": 1,
+                "device_count": 5,
+                "devices_running_count": 2,
+                "query_timed_out": false,
+                "probe_unavailable": false,
+                "elapsed_ms": 18,
+                "pid": 311,
+                "process_name": "SENTINEL_PRIVATE_PROCESS",
+                "tap_uid": "SENTINEL_PRIVATE_TAP_UID",
+                "device_name": "SENTINEL_PRIVATE_MICROPHONE",
+                "device_id": "SENTINEL_PRIVATE_UID",
+                "report": "SENTINEL /Users/private audio graph"
+            });
+
+            sanitize_event_data("audio", &mut data, debug_build);
+
+            let mut keys: Vec<&str> = data
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                vec![
+                    "capture_id",
+                    "device_count",
+                    "devices_running_count",
+                    "elapsed_ms",
+                    "event_code",
+                    "probe_unavailable",
+                    "query_timed_out",
+                    "running_audio_process_count",
+                    "tap_count",
+                ]
+            );
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(!encoded.contains("Users"));
+            assert!(!encoded.contains("pid"));
+            assert!(!encoded.contains("process_name"));
+            assert!(!encoded.contains("tap_uid"));
+            assert!(!encoded.contains("device_name"));
+            assert!(!encoded.contains("device_id"));
+
+            let summary = sanitized_summary(
+                "audio",
+                Some("SENTINEL_PRIVATE_MICROPHONE /Users/private".to_string()),
+                &data,
+                debug_build,
+            );
+            assert_eq!(summary, "System audio graph observed");
+        }
+    }
+
+    #[test]
+    fn audio_graph_observation_schema_rejects_invalid_or_contradictory_counts() {
+        let base = serde_json::json!({
+            "event_code": "audio.system_audio_graph_observed",
+            "capture_id": 7,
+            "running_audio_process_count": 1,
+            "tap_count": 0,
+            "device_count": 4,
+            "devices_running_count": 1,
+            "query_timed_out": false,
+            "probe_unavailable": false,
+            "elapsed_ms": 9
+        });
+        let collapses = |label: &str, key: &str, value: serde_json::Value| {
+            let mut data = base.clone();
+            data[key] = value;
+            sanitize_event_data("audio", &mut data, true);
+            assert_eq!(
+                data.as_object().unwrap().len(),
+                1,
+                "{label} must collapse to the event code alone"
+            );
+            assert_eq!(data["event_code"], "audio.system_audio_graph_observed");
+        };
+        collapses(
+            "more running devices than devices",
+            "devices_running_count",
+            serde_json::json!(9),
+        );
+        collapses(
+            "a timed-out query that still counted objects",
+            "query_timed_out",
+            serde_json::json!(true),
+        );
+        collapses("a zero capture id", "capture_id", serde_json::json!(0));
+        collapses(
+            "a stringly-typed count",
+            "tap_count",
+            serde_json::json!("1"),
+        );
+        collapses(
+            "an out-of-range elapsed time",
+            "elapsed_ms",
+            serde_json::json!(60_001),
+        );
+        collapses(
+            "an unstarted probe that still counted objects",
+            "probe_unavailable",
+            serde_json::json!(true),
+        );
+        collapses(
+            "a missing probe_unavailable flag",
+            "probe_unavailable",
+            serde_json::Value::Null,
+        );
+    }
+
+    #[test]
+    fn audio_graph_observation_distinguishes_a_timeout_from_an_unstarted_probe() {
+        // A wedge we actually observed.
+        let mut timed_out = serde_json::json!({
+            "event_code": "audio.system_audio_graph_observed",
+            "capture_id": 7,
+            "running_audio_process_count": 0,
+            "tap_count": 0,
+            "device_count": 0,
+            "devices_running_count": 0,
+            "query_timed_out": true,
+            "probe_unavailable": false,
+            "elapsed_ms": 2_003
+        });
+        sanitize_event_data("audio", &mut timed_out, false);
+        assert_eq!(timed_out.as_object().unwrap().len(), 9);
+        assert_eq!(timed_out["query_timed_out"], true);
+        assert_eq!(timed_out["probe_unavailable"], false);
+        assert_eq!(timed_out["elapsed_ms"], 2_003);
+
+        // A probe that never ran must not be reported as an observed wedge.
+        let mut unavailable = serde_json::json!({
+            "event_code": "audio.system_audio_graph_observed",
+            "capture_id": 7,
+            "running_audio_process_count": 0,
+            "tap_count": 0,
+            "device_count": 0,
+            "devices_running_count": 0,
+            "query_timed_out": false,
+            "probe_unavailable": true,
+            "elapsed_ms": 0
+        });
+        sanitize_event_data("audio", &mut unavailable, false);
+        assert_eq!(unavailable.as_object().unwrap().len(), 9);
+        assert_eq!(unavailable["query_timed_out"], false);
+        assert_eq!(unavailable["probe_unavailable"], true);
+
+        // Claiming both at once is incoherent evidence.
+        let mut both = serde_json::json!({
+            "event_code": "audio.system_audio_graph_observed",
+            "capture_id": 7,
+            "running_audio_process_count": 0,
+            "tap_count": 0,
+            "device_count": 0,
+            "devices_running_count": 0,
+            "query_timed_out": true,
+            "probe_unavailable": true,
+            "elapsed_ms": 5
+        });
+        sanitize_event_data("audio", &mut both, false);
+        assert_eq!(both.as_object().unwrap().len(), 1);
     }
 
     #[test]

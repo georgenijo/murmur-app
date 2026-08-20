@@ -817,6 +817,13 @@ impl QueryCoordinator {
         *self.status.lock_or_recover()
     }
 
+    /// Non-blocking status read for hang diagnostics. `None` means the query
+    /// lock was contended, which is itself reportable: a probe must never wait
+    /// on the subsystem it is describing.
+    pub(crate) fn status_if_uncontended(&self) -> Option<QueryStatus> {
+        self.status.try_lock_or_recover().map(|status| *status)
+    }
+
     pub(crate) fn is_active(&self, pass_id: u64) -> bool {
         self.active_pass_id() == Some(pass_id)
             && self.cancelled_pass_id.load(Ordering::SeqCst) < pass_id
