@@ -180,7 +180,7 @@ export function OverlayDropdown({
         aria-label={`Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : ''}`}
         title={mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name}
         onClick={onCycleMode}
-        className="shrink-0 max-w-[72px] truncate rounded-[9px] px-2 text-[10px] font-medium text-sky-200 transition-colors"
+        className="min-w-0 shrink max-w-[112px] truncate rounded-[9px] px-2 text-[10px] font-medium text-sky-200 transition-colors"
         style={{ height: 26, background: mode.source === 'temporary' ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)' }}
       >
         {mode.name}
