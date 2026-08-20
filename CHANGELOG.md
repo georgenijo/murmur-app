@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-19
+
+### Fixed
+
+- The per-device capture backend fast-fail memo now persists across app
+  launches, so a machine that has already learned to shrink its startup
+  budget keeps that learning through an update or relaunch instead of paying
+  two full-budget hangs to relearn it (#627).
+- Server-armed hang diagnostics now work again: the receiver-side arming
+  reply, `collect_now` control, and bundle upload endpoint are restored and
+  hardened for the threaded receiver (#628).
+
+### Added
+
+- Server-armed hang-diagnostics bundles now include a live, pre-kill snapshot
+  of the system audio graph (processes, taps, and devices touching Core
+  Audio) alongside a post-kill snapshot and Murmur's own internal audio-owner
+  state, plus a content-free counts event on every capture timeout (#629).
+
 ## [0.37.0] - 2026-08-19
 
 ### Changed
