@@ -139,17 +139,26 @@ describe('useAutoUpdater presentation state', () => {
     mocks.check.mockResolvedValue({ available: false });
     await act(async () => root.render(<Harness />));
 
-    expect(mocks.invoke).toHaveBeenCalledWith('updater_canary', { action: 'read' });
+    expect(mocks.invoke).toHaveBeenCalledWith('updater_canary', {
+      request: { action: 'read' },
+    });
     expect(mocks.check).toHaveBeenCalledOnce();
     expect(mocks.relaunch).not.toHaveBeenCalled();
-    expect(mocks.invoke).not.toHaveBeenCalledWith('updater_canary', expect.objectContaining({ action: 'write' }));
+    expect(mocks.invoke).not.toHaveBeenCalledWith('updater_canary', {
+      request: expect.objectContaining({ action: 'write' }),
+    });
   });
 
   async function launchCanary(state: { path: string; result: unknown; dryRun: boolean }) {
     await act(async () => root.unmount());
     automaticChecksEnabled = true;
-    mocks.invoke.mockImplementation(async (_command: string, request: { action: string; result?: unknown }) => (
-      request.action === 'read' ? state : { ...state, result: request.result }
+    mocks.invoke.mockImplementation(async (
+      _command: string,
+      payload: { request: { action: string; result?: unknown } },
+    ) => (
+      payload.request.action === 'read'
+        ? state
+        : { ...state, result: payload.request.result }
     ));
     root = createRoot(container);
     await act(async () => root.render(<Harness />));
@@ -158,9 +167,31 @@ describe('useAutoUpdater presentation state', () => {
 
   function canaryWrites() {
     return mocks.invoke.mock.calls
-      .filter(([, request]) => request?.action === 'write')
-      .map(([, request]) => request.result);
+      .filter(([, payload]) => payload?.request?.action === 'write')
+      .map(([, payload]) => payload.request.result);
   }
+
+  it('uses the Rust command boundary schema for canary reads and writes', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.23.0',
+      body: '',
+      rawJson: {},
+      downloadAndInstall: vi.fn(),
+    });
+
+    await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: true });
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'updater_canary', {
+      request: { action: 'read' },
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('updater_canary', {
+      request: expect.objectContaining({
+        action: 'write',
+        result: expect.objectContaining({ status: 'dry-run' }),
+      }),
+    });
+  });
 
   it('canary bypasses a skipped matching version and uses the real install path', async () => {
     localStorage.setItem('skipped-update-version', '0.23.0');
