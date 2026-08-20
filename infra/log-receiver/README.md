@@ -20,7 +20,7 @@ of truth and redeploy from it.
 
 | File | Deploys to | Purpose |
 |---|---|---|
-| `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, dashboard |
+| `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, bundle, dashboard |
 | `event_store.py` | `/home/george/event_store.py` | stdlib-only SQLite migrations, transactional query projection, backfill/reconciliation, integrity, backup, and restore commands |
 | `murmur-logs.service` | `/etc/systemd/system/` | runs the receiver as `george`, restart-always |
 | `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
@@ -28,7 +28,7 @@ of truth and redeploy from it.
 | `reliability_slo.py` | `/home/george/reliability_slo.py` | aggregate-only complete-week evaluator for the versioned dictation SLO contract |
 | `murmur-capture-watch.service` | `/etc/systemd/system/` | one-shot capture regression analysis |
 | `murmur-capture-watch.timer` | `/etc/systemd/system/` | runs the watch hourly with a randomized delay |
-| `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/healthz` |
+| `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/bundle`, `/murmur/healthz` |
 | `cloudflared-config.yml` | `/etc/cloudflared/config.yml` | tunnel `opti-murmur`: routes `murmur.georgenijo.com` → `:8600` (dashboard) and `georgenijo.com` → `:8601` (nginx path rewrites) |
 
 ## Tunnel and DNS
@@ -161,9 +161,10 @@ failed state and replaces the report.
 ## Retention, failure handling, backup, restore, and rollback
 
 - History is retained indefinitely. Nothing automatically deletes database or
-  raw history. Limits are admission controls: 8 MiB/request, 200 MiB raw JSONL
-  per install, 10 GiB total raw install directories, 150 installs, and 10 GiB
-  for SQLite. Raising a limit is an explicit reviewed operator change.
+  raw history. Limits are admission controls: 8 MiB/request, 200 MiB raw
+  per-install storage (JSONL plus any hang-diagnostics bundles), 10 GiB total
+  raw install directories, 150 installs, and 10 GiB for SQLite. Raising a
+  limit is an explicit reviewed operator change.
 - The receiver parses a complete batch before mutation. New event hashes enter
   one `BEGIN IMMEDIATE` transaction, their raw lines are appended and fsynced,
   and SQLite commits last. An exact retry inserts and appends nothing. Archive
@@ -221,6 +222,30 @@ the current privacy-safe aggregate microphone contract. The root contains
 `events.sqlite3`, its transient WAL/SHM files, and the content-free
 `reconciliation.json`. Dev-tagged batches are acknowledged and discarded;
 historical `events.dev.jsonl` files are not backfilled.
+
+### Server-armed hang diagnostics control files
+
+Dormant by default (see
+[docs/features/log-shipping.md](../../docs/features/log-shipping.md)). Two
+plain-text files live directly under `/home/george/murmur-logs/` (not inside
+any install directory) and are re-read fresh on every `/ingest` and `/bundle`
+request — never cached, so an edit takes effect on the armed install's very
+next request, no restart needed:
+
+- `diag-installs.txt` — one install UUID per line. An install listed here
+  gets `{"diagnostics": true, ...}` in its `/ingest` success reply instead of
+  a bare `204`, and may then `POST /bundle`. Remove its line to disarm.
+- `collect-now.txt` — lines of `<uuid> <epoch>`. An epoch greater than any
+  epoch that install has already honored triggers exactly one immediate
+  probe-bundle collection on that armed install; malformed lines are
+  ignored. Clear an install's line once its bundle arrives to avoid a
+  repeat collection on the app's next launch.
+
+An armed install's uploaded bundles land at
+`/home/george/murmur-logs/<install-uuid>/hang-bundle-<epoch-ms>.txt` — an
+opaque text file written verbatim from the request body. It counts against
+that install's existing 200 MiB raw-storage cap, and it never enters SQLite,
+the dashboard, or search.
 
 Accepted production events are annotated with the bounded
 `ingest_app_version` already supplied in the request header. This adds no
@@ -316,6 +341,7 @@ bounds, HTML escaping, and dictation lifecycle correlation are covered by:
 ```bash
 python3 -m unittest tests/test_event_store.py
 python3 -m unittest tests/test_log_receiver.py
+python3 -m unittest tests/test_receiver_hang_diagnostics.py
 python3 -m unittest tests/test_capture_regression_watch.py
 python3 -m unittest tests/test_dictation_lifecycle.py
 python3 -m unittest tests/test_reliability_slo.py

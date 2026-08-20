@@ -9,10 +9,11 @@ use murmur_capture_helper_protocol::{
     CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
     ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -358,6 +359,10 @@ pub(crate) enum AudioStartupDiagnostic {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioBackendOrderSource {
     Default,
+    /// Wire-compatible name: it serializes as `session_first_pcm_memo` in the
+    /// microphone-startup report schema and the matching TypeScript union, so
+    /// it must not be renamed even though the memo it reflects is now durable
+    /// across launches rather than session-scoped.
     SessionFirstPcmMemo,
 }
 
@@ -1304,12 +1309,12 @@ fn preferred_backends() -> [CaptureBackend; 2] {
     }
 }
 
-// Session memo, keyed by the requested device (None = system default input).
+// Backend memo, keyed by the requested device (None = system default input).
 // It adapts the attempt sequence to two observed hang pathologies without
 // touching the safety contract (both backends always stay in the sequence,
 // per-attempt budgets only ever shrink, termination confirmation and
-// fallback-eligibility rules are unchanged, nothing is persisted, and device
-// keys never reach telemetry):
+// fallback-eligibility rules are unchanged, and device keys never reach
+// telemetry):
 //
 // - Backend-bound hang (one backend hangs, the other works): the backend
 //   that most recently delivered first PCM is ordered first.
@@ -1339,6 +1344,24 @@ fn preferred_backends() -> [CaptureBackend; 2] {
 // per-backend budgets. On an affected machine this takes the steady-state dead
 // time from about 2.45s per recording (2s sacrificial primary + ~250ms
 // confirmed termination + ~200ms rescue) to about 1.2s.
+//
+// The memo is durable across app launches. Without persistence an affected
+// machine paid two full ~8.5s recordings after every relaunch (auto-update
+// included) before the fast-fail tier re-armed. It is stored as a small,
+// bounded, versioned JSON file beside settings.json in the per-bundle app data
+// directory: loaded once during app setup before any capture can run, and
+// republished atomically on a detached writer thread after each mutation that
+// actually changes a value. Nothing on the capture path ever waits on the disk
+// — `note_first_pcm` runs on the frame loop just before capture-ready is
+// published, so an inline write on a stalled volume would delay the exact
+// latency this memo protects. It never runs on an audio callback either:
+// production PCM callbacks live in the isolated capture worker process and the
+// host observes them over a channel. Persistence is fail-open in both
+// directions: a
+// missing, oversized, corrupt, or wrong-version file simply starts from
+// defaults, and a failed save is logged without content and never blocks,
+// delays, or fails a capture start. Only the derived policy state is written —
+// no timestamps, no telemetry, and the file is never logged.
 const PROMOTED_PRIMARY_BUDGET_CAP: Duration = AUHAL_ATTEMPT_BUDGET;
 const FAST_FAIL_PRIMARY_BUDGET: Duration = Duration::from_secs(2);
 const FAST_RESCUE_THRESHOLD: Duration = Duration::from_secs(1);
@@ -1353,20 +1376,261 @@ struct BackendMemo {
     consecutive_fast_rescues: u32,
 }
 
-static CAPTURE_MEMO: Mutex<Vec<(Option<String>, BackendMemo)>> = Mutex::new(Vec::new());
+type CaptureMemoEntries = Vec<(Option<String>, BackendMemo)>;
+
+static CAPTURE_MEMO: Mutex<CaptureMemoEntries> = Mutex::new(Vec::new());
+
+/// Resolved once during app setup. Until it is set (and in unit tests) the
+/// memo stays in memory only, so persistence can never gate capture.
+static CAPTURE_MEMO_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Orders concurrent background writers: each snapshot takes a ticket, and a
+/// writer whose ticket is older than what already reached disk drops it rather
+/// than rewinding the file.
+static CAPTURE_MEMO_SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static CAPTURE_MEMO_PUBLISHED_SEQUENCE: Mutex<u64> = Mutex::new(0);
+
+const CAPTURE_MEMO_FILE_NAME: &str = "capture-memo.json";
+const CAPTURE_MEMO_SCHEMA_VERSION: u32 = 1;
+/// Bounds the file: only the most recently updated keys survive a save. A
+/// realistic machine sees a handful of inputs; 16 covers dock/headset churn.
+const CAPTURE_MEMO_MAX_ENTRIES: usize = 16;
+/// Cheap guard against reading a pathological file at startup.
+const CAPTURE_MEMO_MAX_BYTES: u64 = 64 * 1024;
+
+#[derive(Serialize, Deserialize)]
+struct PersistedCaptureMemo {
+    schema_version: u32,
+    entries: Vec<PersistedMemoEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedMemoEntry {
+    /// `None` is the system default input. Device keys are persisted locally
+    /// only; they are never logged or emitted in telemetry.
+    device_key: Option<String>,
+    last_ready: Option<String>,
+    promotion_disabled: bool,
+    consecutive_fast_rescues: u32,
+}
+
+fn backend_from_label(label: &str) -> Option<CaptureBackend> {
+    match label {
+        "cpal" => Some(CaptureBackend::Cpal),
+        "auhal" => Some(CaptureBackend::Auhal),
+        _ => None,
+    }
+}
+
+/// Keeps the newest `CAPTURE_MEMO_MAX_ENTRIES` (the in-memory list is ordered
+/// least- to most-recently updated) and drops the rest.
+fn encode_capture_memo(entries: &[(Option<String>, BackendMemo)]) -> PersistedCaptureMemo {
+    let start = entries.len().saturating_sub(CAPTURE_MEMO_MAX_ENTRIES);
+    PersistedCaptureMemo {
+        schema_version: CAPTURE_MEMO_SCHEMA_VERSION,
+        entries: entries[start..]
+            .iter()
+            .map(|(device_key, memo)| PersistedMemoEntry {
+                device_key: device_key.clone(),
+                last_ready: memo
+                    .last_ready
+                    .map(|backend| backend_label(backend).to_string()),
+                promotion_disabled: memo.promotion_disabled,
+                consecutive_fast_rescues: memo.consecutive_fast_rescues,
+            })
+            .collect(),
+    }
+}
+
+/// `None` means "no usable durable copy": start from defaults and overwrite on
+/// the next save. An unknown backend label degrades to no promotion rather
+/// than discarding the entry's fast-fail state.
+fn decode_capture_memo(contents: &str) -> Option<CaptureMemoEntries> {
+    let document = serde_json::from_str::<PersistedCaptureMemo>(contents).ok()?;
+    if document.schema_version != CAPTURE_MEMO_SCHEMA_VERSION {
+        return None;
+    }
+    let mut entries: CaptureMemoEntries = document
+        .entries
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.device_key,
+                BackendMemo {
+                    last_ready: entry.last_ready.as_deref().and_then(backend_from_label),
+                    promotion_disabled: entry.promotion_disabled,
+                    consecutive_fast_rescues: entry.consecutive_fast_rescues,
+                },
+            )
+        })
+        .collect();
+    // A hand-edited file could repeat a key; the first entry wins so lookups
+    // stay deterministic.
+    let mut seen: Vec<Option<String>> = Vec::with_capacity(entries.len());
+    entries.retain(|(device_key, _)| {
+        if seen.contains(device_key) {
+            false
+        } else {
+            seen.push(device_key.clone());
+            true
+        }
+    });
+    let start = entries.len().saturating_sub(CAPTURE_MEMO_MAX_ENTRIES);
+    Some(entries.split_off(start))
+}
+
+/// Atomic publish through a temp sibling in the same directory, mirroring the
+/// durable settings store.
+fn write_capture_memo_file(
+    path: &Path,
+    entries: &[(Option<String>, BackendMemo)],
+) -> std::io::Result<()> {
+    let document = serde_json::to_string(&encode_capture_memo(entries))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(CAPTURE_MEMO_FILE_NAME);
+    let temp = path.with_file_name(format!(".{name}.murmur-tmp"));
+    if let Err(e) = std::fs::write(&temp, document) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+    }
+    if let Err(e) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > CAPTURE_MEMO_MAX_BYTES {
+        return None;
+    }
+    let contents = std::fs::read_to_string(path).ok()?;
+    decode_capture_memo(&contents)
+}
+
+/// Loads the durable memo into `CAPTURE_MEMO` and arms saving. Called once
+/// during app setup, before any capture can start. Never returns an error:
+/// every failure mode leaves the in-memory defaults in place.
+pub(crate) fn initialize_capture_memo_persistence(data_dir: PathBuf) {
+    let path = data_dir.join(CAPTURE_MEMO_FILE_NAME);
+    let restored = read_capture_memo_file(&path);
+    let mut memo = CAPTURE_MEMO.lock_or_recover();
+    if CAPTURE_MEMO_PATH.set(path).is_err() {
+        return;
+    }
+    let restored_count = match restored {
+        Some(entries) => {
+            let count = entries.len();
+            install_restored_memo(&mut memo, entries);
+            count
+        }
+        None => 0,
+    };
+    // Content-free: a count only, never a device key or the file contents.
+    // A fresh install restores nothing, so that case stays out of the log.
+    if restored_count > 0 {
+        tracing::info!(
+            target: "audio",
+            restored_entries = restored_count,
+            "capture backend memo restored from durable storage"
+        );
+    }
+}
+
+/// Restores only keys that this session has not already observed, so a live
+/// observation always outranks the durable copy.
+fn install_restored_memo(memo: &mut CaptureMemoEntries, entries: CaptureMemoEntries) {
+    for (device_key, value) in entries {
+        if !memo.iter().any(|(existing, _)| *existing == device_key) {
+            memo.push((device_key, value));
+        }
+    }
+}
+
+/// Publishes on a detached thread so the durable write is fully off the
+/// capture-start path: `note_first_pcm` runs on the frame loop *before*
+/// `PhaseExited{FirstBufferWait}` is emitted, so an inline write on a stalled
+/// app-data volume would delay the very capture-ready latency this memo
+/// exists to protect. Saves happen at most a few times per recording, so one
+/// short-lived thread per save is cheap. A failure is logged without any
+/// content and the in-memory memo keeps working for this session.
+fn save_capture_memo(entries: CaptureMemoEntries) {
+    if CAPTURE_MEMO_PATH.get().is_none() {
+        // Persistence was never armed (unit tests, or an unavailable app-data
+        // directory): stay in memory and never spawn a writer.
+        return;
+    }
+    let sequence = CAPTURE_MEMO_SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+    std::thread::spawn(move || {
+        let Some(path) = CAPTURE_MEMO_PATH.get() else {
+            return;
+        };
+        let mut published = CAPTURE_MEMO_PUBLISHED_SEQUENCE.lock_or_recover();
+        if *published >= sequence {
+            // A newer snapshot already reached disk; writing this older one
+            // would move the file backwards.
+            return;
+        }
+        match write_capture_memo_file(path, &entries) {
+            Ok(()) => *published = sequence,
+            Err(error) => tracing::warn!(
+                target: "audio",
+                error_kind = error.kind().to_string(),
+                "failed to persist the capture backend memo"
+            ),
+        }
+    });
+}
 
 // Normal production owners update this memo from observed device behavior.
 // Diagnostic benchmark capture is explicitly excluded at each write site so
-// measuring startup cannot retrain later dictation; all policy reads remain
-// non-inserting as well.
+// measuring startup cannot retrain later dictation (and so it never writes the
+// durable file either); all policy reads remain non-inserting as well.
 fn with_memo<R>(device_id: Option<&str>, apply: impl FnOnce(&mut BackendMemo) -> R) -> R {
-    let mut memo = CAPTURE_MEMO.lock_or_recover();
-    if let Some(position) = memo.iter().position(|(key, _)| key.as_deref() == device_id) {
-        apply(&mut memo[position].1)
-    } else {
-        memo.push((device_id.map(str::to_string), BackendMemo::default()));
-        apply(&mut memo.last_mut().expect("entry just pushed").1)
+    let (result, snapshot) = {
+        let mut memo = CAPTURE_MEMO.lock_or_recover();
+        // The touched entry moves to the end so the list stays ordered least-
+        // to most-recently updated and the bounded file keeps the freshest keys.
+        let (position, previous) =
+            match memo.iter().position(|(key, _)| key.as_deref() == device_id) {
+                Some(position) => {
+                    let entry = memo.remove(position);
+                    let previous = entry.1.clone();
+                    memo.push(entry);
+                    (memo.len() - 1, Some(previous))
+                }
+                None => {
+                    memo.push((device_id.map(str::to_string), BackendMemo::default()));
+                    (memo.len() - 1, None)
+                }
+            };
+        let result = apply(&mut memo[position].1);
+        // Skip the publish when nothing about this key changed. A pure MRU
+        // reorder skips too: on-disk order can therefore go stale, which is
+        // harmless because order only decides which entries survive the cap.
+        let changed = previous.is_none_or(|previous| previous != memo[position].1);
+        (result, changed.then(|| memo.clone()))
+    };
+    // Saved outside the lock: capture policy reads never wait on the disk.
+    if let Some(snapshot) = snapshot {
+        save_capture_memo(snapshot);
     }
+    result
 }
 
 fn read_memo<R>(device_id: Option<&str>, apply: impl FnOnce(Option<&BackendMemo>) -> R) -> R {
@@ -3124,6 +3388,205 @@ mod tests {
         assert_eq!(
             primary_attempt_budget(CaptureBackend::Cpal, key, true),
             FAST_FAIL_DEEP_PRIMARY_BUDGET
+        );
+    }
+
+    // Persistence tests drive the file helpers directly against a temp
+    // directory: they never touch the real app-data directory and never arm
+    // the process-wide CAPTURE_MEMO_PATH.
+    fn memo_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "murmur_capture_memo_test_{}_{}",
+            std::process::id(),
+            tag
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_durable_capture_memo_round_trips_every_field() {
+        let path = memo_temp_dir("round_trip").join(CAPTURE_MEMO_FILE_NAME);
+        let entries: CaptureMemoEntries = vec![
+            (
+                None,
+                BackendMemo {
+                    last_ready: Some(CaptureBackend::Cpal),
+                    promotion_disabled: false,
+                    consecutive_fast_rescues: 3,
+                },
+            ),
+            (
+                Some("persisted-device".to_string()),
+                BackendMemo {
+                    last_ready: Some(CaptureBackend::Auhal),
+                    promotion_disabled: true,
+                    consecutive_fast_rescues: 0,
+                },
+            ),
+            (Some("defaulted-device".to_string()), BackendMemo::default()),
+        ];
+
+        write_capture_memo_file(&path, &entries).unwrap();
+        assert_eq!(read_capture_memo_file(&path).unwrap(), entries);
+
+        // The published file is the documented versioned shape and nothing else.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"schema_version\":1"));
+        assert!(raw.contains("\"device_key\":\"persisted-device\""));
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1,
+            "the atomic temp sibling must not survive a successful publish"
+        );
+    }
+
+    #[test]
+    fn an_unusable_durable_capture_memo_fails_open_to_defaults() {
+        let dir = memo_temp_dir("fail_open");
+
+        // Missing file.
+        assert!(read_capture_memo_file(&dir.join(CAPTURE_MEMO_FILE_NAME)).is_none());
+
+        // Not JSON, wrong shape, and a future schema version all fail open.
+        for contents in [
+            "}not json{",
+            r#"{"schema_version":1,"entries":"nope"}"#,
+            r#"{"entries":[]}"#,
+            r#"{"schema_version":2,"entries":[{"device_key":null,"last_ready":"auhal","promotion_disabled":false,"consecutive_fast_rescues":9}]}"#,
+        ] {
+            assert!(
+                decode_capture_memo(contents).is_none(),
+                "unusable durable memo must fail open: {contents}"
+            );
+        }
+
+        // Oversized files are refused without being read into memory.
+        let oversized = dir.join(CAPTURE_MEMO_FILE_NAME);
+        std::fs::write(&oversized, "x".repeat(CAPTURE_MEMO_MAX_BYTES as usize + 1)).unwrap();
+        assert!(read_capture_memo_file(&oversized).is_none());
+
+        // An unknown backend label degrades to no promotion, keeping the rest.
+        let restored = decode_capture_memo(
+            r#"{"schema_version":1,"entries":[{"device_key":"d","last_ready":"quantum","promotion_disabled":false,"consecutive_fast_rescues":4}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            restored,
+            vec![(
+                Some("d".to_string()),
+                BackendMemo {
+                    last_ready: None,
+                    promotion_disabled: false,
+                    consecutive_fast_rescues: 4,
+                },
+            )]
+        );
+
+        // Saving before setup armed a path is a silent no-op: no writer thread
+        // is spawned, which is what keeps these tests deterministic.
+        save_capture_memo(restored);
+    }
+
+    #[test]
+    fn the_durable_capture_memo_keeps_only_the_newest_entries() {
+        let path = memo_temp_dir("entry_cap").join(CAPTURE_MEMO_FILE_NAME);
+        let entries: CaptureMemoEntries = (0..CAPTURE_MEMO_MAX_ENTRIES + 4)
+            .map(|index| (Some(format!("device-{index}")), BackendMemo::default()))
+            .collect();
+
+        write_capture_memo_file(&path, &entries).unwrap();
+        let restored = read_capture_memo_file(&path).unwrap();
+
+        assert_eq!(restored.len(), CAPTURE_MEMO_MAX_ENTRIES);
+        // The list is ordered least- to most-recently updated, so the four
+        // oldest keys are the ones dropped.
+        assert_eq!(restored, entries[4..].to_vec());
+    }
+
+    #[test]
+    fn updating_a_key_moves_it_to_the_most_recently_updated_end() {
+        let older = Some("memo-device-mru-older");
+        let newer = Some("memo-device-mru-newer");
+        let default_order = preferred_backends();
+        let position_of = |key: Option<&str>| {
+            CAPTURE_MEMO
+                .lock_or_recover()
+                .iter()
+                .position(|(existing, _)| existing.as_deref() == key)
+                .unwrap()
+        };
+
+        note_first_pcm(older, default_order[1], false, FAST);
+        note_first_pcm(newer, default_order[1], false, FAST);
+        assert!(position_of(older) < position_of(newer));
+
+        // Touching the older key again promotes it past the newer one, so the
+        // entry cap drops genuinely stale keys rather than recently used ones.
+        note_first_pcm(older, default_order[1], false, FAST);
+        assert!(position_of(newer) < position_of(older));
+    }
+
+    #[test]
+    fn a_restored_memo_arms_the_short_primary_budget_without_an_in_session_rescue() {
+        let key = Some("memo-device-restored");
+        let default_order = preferred_backends();
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            backend_attempt_budget(default_order[0])
+        );
+
+        // Exactly what a previous launch would have written after two
+        // consecutive fast rescues, decoded and installed at setup.
+        let restored = decode_capture_memo(
+            r#"{"schema_version":1,"entries":[{"device_key":"memo-device-restored","last_ready":null,"promotion_disabled":true,"consecutive_fast_rescues":2}]}"#,
+        )
+        .unwrap();
+        install_restored_memo(&mut CAPTURE_MEMO.lock_or_recover(), restored);
+
+        // No recording has happened in this session, yet the earned tier is
+        // already armed and promotion stays disabled.
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            FAST_FAIL_PRIMARY_BUDGET
+        );
+        assert_eq!(preferred_backends_for(key), default_order);
+
+        // A primary success still heals the machine back to full budgets.
+        note_first_pcm(key, default_order[0], true, FAST);
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            backend_attempt_budget(default_order[0])
+        );
+    }
+
+    #[test]
+    fn a_live_observation_outranks_the_restored_copy_for_the_same_key() {
+        let key = Some("memo-device-restore-conflict");
+        let default_order = preferred_backends();
+        note_first_pcm(key, default_order[1], false, FAST);
+
+        install_restored_memo(
+            &mut CAPTURE_MEMO.lock_or_recover(),
+            vec![(
+                Some("memo-device-restore-conflict".to_string()),
+                BackendMemo {
+                    last_ready: None,
+                    promotion_disabled: true,
+                    consecutive_fast_rescues: 9,
+                },
+            )],
+        );
+
+        // The session's own observation survives: promotion is still live.
+        assert_eq!(
+            preferred_backends_for(key),
+            [default_order[1], default_order[0]]
+        );
+        assert_eq!(
+            primary_attempt_budget(default_order[0], key, false),
+            backend_attempt_budget(default_order[0])
         );
     }
 

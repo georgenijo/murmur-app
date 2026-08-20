@@ -11,6 +11,19 @@ Stdlib only.
       X-App-Version: <semver>   (optional)
       X-Dev: 1                  (optional, dev builds)
       body: NDJSON (one JSON object per line)
+      Success reply is a bare 204, unless this install is listed in
+      <root>/diag-installs.txt (server-armed hang diagnostics — see
+      docs/features/log-shipping.md), in which case it is 200
+      application/json {"diagnostics": true, "collect_now": <epoch>}. The
+      epoch comes from the last matching line for this install in
+      <root>/collect-now.txt.
+
+    POST /bundle     — armed-install-only hang-diagnostics text bundle upload
+      Authorization: Bearer <token>
+      X-Install-Id: <uuid4>
+      body: opaque text, max 8 MB, written verbatim to
+      <root>/<install-uuid>/hang-bundle-<epoch_ms>.txt. Never enters SQLite,
+      the dashboard, or search. 403 when the install is not currently armed.
 
     GET /dashboard   — HTML overview of every install (gate behind CF Access)
     GET /search      — indexed historical filters and keyset pages (CF Access)
@@ -73,6 +86,14 @@ MAX_FILE = 200 * 1024 * 1024  # per-install cap: stop appending past 200 MB
 INSTALL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 MAX_INSTALLS = 150
 MAX_TOTAL = 10 * 1024 * 1024 * 1024  # 10 GB across all installs
+# Server-armed hang diagnostics (docs/features/log-shipping.md). Both files
+# live directly under ROOT (not per-install) and are re-read on every request
+# — never cached — so a server-side disarm takes effect within one shipper
+# tick with no receiver restart.
+DIAG_INSTALLS_FILENAME = "diag-installs.txt"
+COLLECT_NOW_FILENAME = "collect-now.txt"
+# Serializes /bundle quota admission + filename allocation (threaded server).
+_BUNDLE_WRITE_LOCK = threading.Lock()
 EXPORT_LIMITS = (200, 500)
 MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
 MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
@@ -189,6 +210,68 @@ def root_usage():
                     pass
         _usage_cache.update(t=time.time(), bytes=total, dirs=dirs)
     return _usage_cache
+
+
+def _install_dir_bytes(dirpath):
+    """Total bytes of files directly under one install directory."""
+    total = 0
+    for name in os.listdir(dirpath) if os.path.isdir(dirpath) else []:
+        try:
+            total += os.path.getsize(os.path.join(dirpath, name))
+        except OSError:
+            pass
+    return total
+
+
+def _armed_installs():
+    """Install UUIDs currently armed for hang diagnostics.
+
+    Read fresh from disk on every call — no caching — so disarming
+    (removing a line from diag-installs.txt) takes effect on this install's
+    very next request, matching the documented one-tick disarm contract.
+    """
+    armed = set()
+    try:
+        with open(
+            os.path.join(ROOT, DIAG_INSTALLS_FILENAME), "r", encoding="utf-8"
+        ) as f:
+            lines = f.readlines()
+    except OSError:
+        return armed
+    for line in lines:
+        candidate = line.strip()
+        if candidate and INSTALL_ID_RE.match(candidate):
+            armed.add(candidate.lower())
+    return armed
+
+
+def _collect_now_epoch(install_id):
+    """Last well-formed collect-now.txt epoch for install_id, else 0.
+
+    Lines are "<uuid> <epoch>"; malformed lines (wrong field count or a
+    non-integer epoch) are skipped rather than clearing a prior valid match.
+    """
+    target = install_id.lower()
+    epoch = 0
+    try:
+        with open(
+            os.path.join(ROOT, COLLECT_NOW_FILENAME), "r", encoding="utf-8"
+        ) as f:
+            lines = f.readlines()
+    except OSError:
+        return 0
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        uuid_text, epoch_text = parts
+        if uuid_text.lower() != target:
+            continue
+        try:
+            epoch = int(epoch_text)
+        except ValueError:
+            continue
+    return epoch
 
 
 def event_store():
@@ -3184,6 +3267,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/state":
             return self._do_state()
+        if self.path == "/bundle":
+            return self._do_bundle()
         if self.path != "/ingest":
             return self._reply(404)
         auth = self.headers.get("Authorization", "")
@@ -3271,6 +3356,84 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, b"rejected event in batch")
         except (StoreCommitError, StoreCorrupt, StoreError, OSError):
             return self._reply(503, b"storage commit failed")
+        _usage_cache["t"] = 0.0
+
+        # Server-armed hang diagnostics (docs/features/log-shipping.md):
+        # diag-installs.txt is re-read fresh on every request (no caching),
+        # so a server-side disarm takes effect on this install's very next
+        # ingest — no restart or release needed.
+        if install_id.lower() in _armed_installs():
+            reply = json.dumps(
+                {
+                    "diagnostics": True,
+                    "collect_now": _collect_now_epoch(install_id),
+                }
+            ).encode("utf-8")
+            return self._reply(200, reply, ctype="application/json")
+        self._reply(204)
+
+    def _do_bundle(self):
+        # Every early reject below returns before consuming the request body.
+        # On this HTTP/1.1 threading server a reused connection would then
+        # parse body bytes as the next request line, so bundle connections
+        # always close; uploads are rare one-shots and lose nothing.
+        self.close_connection = True
+        auth = self.headers.get("Authorization", "")
+        if auth != "Bearer " + TOKEN:
+            return self._reply(401)
+        install_id = self.headers.get("X-Install-Id", "")
+        if not INSTALL_ID_RE.match(install_id):
+            return self._reply(400, b"bad install id")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return self._reply(400, b"bad length")
+        if length <= 0:
+            return self._reply(400, b"empty")
+        if length > MAX_BODY:
+            return self._reply(413)
+        if install_id.lower() not in _armed_installs():
+            return self._reply(403, b"install not armed")
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return self._reply(400, b"incomplete body")
+
+        dirpath = os.path.join(ROOT, install_id.lower())
+        # Quota admission and filename allocation are check-then-write, and
+        # the server is threaded: serialize them so concurrent uploads cannot
+        # both pass the same headroom check or claim the same epoch filename.
+        # Bundles are rare one-shots, so one process-wide lock is fine.
+        with _BUNDLE_WRITE_LOCK:
+            usage = root_usage()
+            if usage["bytes"] > MAX_TOTAL:
+                return self._reply(507, b"global quota exceeded")
+            if not os.path.isdir(dirpath) and usage["dirs"] >= MAX_INSTALLS:
+                return self._reply(507, b"install limit reached")
+            if _install_dir_bytes(dirpath) + len(body) > MAX_FILE:
+                return self._reply(507, b"storage unavailable")
+
+            epoch_ms = int(time.time() * 1000)
+            path = os.path.join(dirpath, "hang-bundle-%d.txt" % epoch_ms)
+            # Same-millisecond arrivals (or files from an earlier process)
+            # bump the stamp instead of silently replacing an earlier bundle.
+            while os.path.exists(path):
+                epoch_ms += 1
+                path = os.path.join(dirpath, "hang-bundle-%d.txt" % epoch_ms)
+            tmp = path + ".tmp"
+            try:
+                os.makedirs(dirpath, exist_ok=True)
+                with open(tmp, "wb") as f:
+                    f.write(body)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+                descriptor = os.open(dirpath, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except OSError:
+                return self._reply(503, b"storage commit failed")
         _usage_cache["t"] = 0.0
         self._reply(204)
 

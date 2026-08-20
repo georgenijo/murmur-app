@@ -189,10 +189,20 @@ remains available for packaging and callback-boundary validation. See the
 
 An explicit pinned input that resolves as unavailable in both AUHAL and CPAL
 may run at most two additional complete primary-to-fallback resolution passes
-using the session's immutable memo-resolved backend order. The
+using the recording's immutable memo-resolved backend order. The
 500 ms gaps are cancellable, every pass uses the same immutable raw device UID,
 and no pass substitutes the OS default. Mixed failures, system-default capture,
 retained audio, or an unavailable device after first PCM remain terminal.
+
+The per-device backend memo that resolves that order (last ready backend,
+promotion-disabled flag, consecutive fast-rescue count) is durable: a bounded,
+versioned `capture-memo.json` beside `settings.json` in the app data
+directory, loaded once during setup and republished atomically on a detached
+writer thread after each change, so a relaunch keeps the shrunken retry budgets
+an affected machine already earned. It is fail-open and never blocks capture
+start; device keys
+stay local and never reach logs or telemetry. See
+[transcription.md](features/transcription.md).
 
 ### Module map
 
@@ -200,7 +210,7 @@ retained audio, or an unavailable device after first PCM remain terminal.
 |--------|---------|
 | `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 176 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
-| `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
+| `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
