@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-08-20
+
 ### Fixed
 
 - The live dictation preview is readable again. It rendered inside the
@@ -16,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   click-through glass card mirroring the voice-query answer popover — showing
   the trailing words as they are recognized. The overlay wing keeps its
   waveform (#611).
+- Overlay quick settings no longer truncate longer mode names (#634).
+- OTA canary failures now propagate through the updater callback and Fleet
+  runner so a failed or missing post-release result correctly blocks release
+  follow-up (#630).
 
 ## [0.38.0] - 2026-08-19
 
