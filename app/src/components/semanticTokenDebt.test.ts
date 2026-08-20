@@ -16,6 +16,7 @@ const alwaysDarkPrefixes = [
   "components/overlay/",
   "components/transform-review/",
   "components/query-review/",
+  "components/dictation-preview/",
 ] as const;
 const alwaysDarkFiles = new Set(["components/OverlayWidget.tsx"]);
 const scrimAllowlist = new Set([
@@ -85,6 +86,10 @@ describe("semantic theme token debt gate", () => {
         if (scrimAllowlist.has(name) && /^bg-black\/(?:50|55)$/.test(color))
           continue;
         if (name.startsWith("lib/appearance/")) continue;
+        // Dev-only Playwright harness, deliberately excluded from packaged
+        // builds (see vite.config.ts). Its stand-in desktop backdrop is not
+        // themed product surface.
+        if (name === "visual-fixtures.tsx") continue;
         if (
           name === "components/settings/AppearanceSettings.tsx" &&
           color === "#036785"

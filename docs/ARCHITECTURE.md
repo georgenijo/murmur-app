@@ -146,6 +146,7 @@ Each window is a separate webview with its own Tauri capability set, following l
 | Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons, and transform traces |
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always-on-top, transparent, non-activating |
 | Transform Review | `transform-review` | popover entry | 320×76 (compact) | Transform proposal review. Non-focusable until `ready`/`failed` |
+| Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML transcript preview under the notch. Always-on-top, transparent, non-activating, click-through |
 
 Main and Diagnostics hide on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
 
@@ -259,7 +260,7 @@ stay local and never reach logs or telemetry. See
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `settings_store`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `microphone_startup_benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated UTF-8 file-transport boundary with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `settings_store`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `microphone_startup_benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `dictation_preview`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated UTF-8 file-transport boundary with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 

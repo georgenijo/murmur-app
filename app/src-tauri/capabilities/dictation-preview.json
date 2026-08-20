@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schemas.tauri.app/config/2/capability",
+  "identifier": "dictation-preview",
+  "description": "Capability for the live dictation preview popover window",
+  "windows": ["dictation-preview"],
+  "permissions": [
+    "core:event:default",
+    "core:default"
+  ]
+}
