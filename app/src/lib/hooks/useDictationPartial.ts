@@ -6,8 +6,9 @@ interface DictationPartialPayload {
   text: string;
 }
 
-/** Mirrors the Rust-side cap; a longer payload means something other than the
- *  partial ticker produced it, so it is dropped rather than rendered. */
+/** Defensive bound. The 20s decode window keeps real partials far below this;
+ *  a longer payload means something other than the partial ticker produced it,
+ *  so it is dropped rather than rendered. */
 const MAX_PARTIAL_CHARS = 4096;
 
 function validPayload(value: unknown): value is DictationPartialPayload {
@@ -31,6 +32,12 @@ function validRecordingId(value: unknown): value is number {
  * window is shown and hidden by Rust, so this hook never decides visibility —
  * it only makes sure a card that is on screen is never showing another
  * recording's words.
+ *
+ * It also drops the text the moment capture leaves `recording`. Rust hides the
+ * window when the partial ticker exits, but that can trail the actual stop by
+ * up to one tick (or a whole in-flight decode). Clearing here empties the card
+ * immediately, so a stopped recording never leaves provisional words on screen
+ * while the native hide catches up.
  */
 export function useDictationPartial(): string {
   const [partial, setPartial] = useState('');
@@ -50,6 +57,10 @@ export function useDictationPartial(): string {
       if (!validRecordingId(recordingId)) return;
       recordingIdRef.current = recordingId;
       setPartial('');
+    }));
+
+    track(listen<unknown>('recording-status-changed', ({ payload }) => {
+      if (payload !== 'recording') setPartial('');
     }));
 
     track(listen<unknown>('dictation-partial', ({ payload }) => {

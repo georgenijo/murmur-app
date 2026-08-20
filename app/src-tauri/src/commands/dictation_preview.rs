@@ -21,15 +21,19 @@ const HEIGHT: f64 = 104.0;
 const NOTCH_GAP: f64 = 6.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 
-/// Logical frame for the preview window: horizontally centered on the active
-/// monitor, tucked directly under the notch (or menu bar on displays without
-/// one).
+/// Logical frame for the preview window: horizontally centered on the
+/// menu-bar display, tucked directly under the notch (or menu bar on displays
+/// without one).
+///
+/// The anchor is deliberately the primary monitor, not the main window's
+/// monitor. `notch_info` is measured from `NSScreen::screens().firstObject()`
+/// — always the built-in/menu-bar display — and the recording overlay lives on
+/// that same notch. Anchoring to the main window instead would put the card on
+/// an external display while offsetting it by the *built-in* display's notch
+/// height, so it would sit neither under a notch nor next to the overlay.
 fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
     let top_inset = top_inset_for(notch_h);
-    let monitor = app
-        .get_webview_window("main")
-        .and_then(|window| window.current_monitor().ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten());
+    let monitor = app.primary_monitor().ok().flatten();
     match monitor {
         Some(monitor) => {
             let scale = monitor.scale_factor();

@@ -332,10 +332,15 @@ live previews so their slower decodes cannot compete with final delivery.
 
 The preview renders in its own `dictation-preview` window — a non-activating,
 click-through glass card centered under the notch, mirroring the voice-query
-answer popover. Rust owns its lifecycle end to end: `show_internal` opens it on
-the first recognized words (so a silent recording never flashes an empty card)
-and the ticker hides it when the recording stops being current, whatever ended
-it. The frontend never decides visibility.
+answer popover. It is anchored to the menu-bar display — the same screen the
+notch measurement and the overlay come from — not to whichever monitor the main
+window happens to sit on. Rust owns its lifecycle end to end: `show_internal`
+opens it on the first recognized words (so a silent recording never flashes an
+empty card) and the ticker hides it when the recording stops being current,
+whatever ended it. The frontend never decides visibility, but it does clear the
+text as soon as capture leaves `recording`, so a stopped recording leaves no
+words on screen while the native hide catches up (the ticker can trail the stop
+by a tick or an in-flight decode).
 
 It deliberately does **not** render inside the overlay. The overlay's wings are
 fixed 36pt slots sized for an icon and a waveform; text there fits roughly four
