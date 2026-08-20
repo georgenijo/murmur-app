@@ -123,6 +123,7 @@ Read these before working on a feature:
 | `commands/native_window.rs` | Shared non-activating window treatment (main-thread dispatched) |
 | `commands/transform_model.rs` | Transform LLM model download/status/remove/reset |
 | `commands/transform_popover.rs` | Transform review window geometry + show/hide/focusable |
+| `commands/dictation_preview.rs` | Live dictation preview popover geometry + show/hide (under-notch, click-through) |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors; shared rdev listener thread |
 | `audio.rs` / `audio_lifecycle.rs` | cpal capture plus the single-owner async initialization supervisor, cancellation/recovery, join ownership, preview level routing, mono conversion, and 16kHz resampling |
 | `audio_inventory.rs` | Shared versioned microphone inventory, passive topology invalidation, coalesced idle-only refresh, stale-cache policy, and privacy-safe aggregate |

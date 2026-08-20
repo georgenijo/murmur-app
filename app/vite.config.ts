@@ -52,6 +52,7 @@ export default defineConfig(async () => ({
         overlay: resolve(__dirname, "overlay.html"),
         "transform-review": resolve(__dirname, "transform-review.html"),
         "query-review": resolve(__dirname, "query-review.html"),
+        "dictation-preview": resolve(__dirname, "dictation-preview.html"),
       },
     },
   },

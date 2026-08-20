@@ -10,7 +10,6 @@ import { useOverlayRuntime } from '../lib/hooks/useOverlayRuntime';
 import { useOverlaySettingsMirror } from '../lib/hooks/useOverlaySettingsMirror';
 import { useRecordingControls } from '../lib/hooks/useRecordingControls';
 import { useWaveform } from '../lib/hooks/useWaveform';
-import { useDictationPartial } from '../lib/hooks/useDictationPartial';
 import { useModeRuntime } from '../lib/hooks/useModeRuntime';
 import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
@@ -53,7 +52,6 @@ export function OverlayWidget() {
     useOverlayExpansion();
 
   const waveform = useWaveform(status);
-  const dictationPartial = useDictationPartial(status);
   const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({
@@ -236,7 +234,6 @@ export function OverlayWidget() {
           geometry={geometry}
           visual={visual}
           status={status}
-          partialText={dictationPartial}
           barRefs={waveform.barRefs}
         />
         <OverlayDropdown

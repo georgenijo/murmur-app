@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
+import { DictationPreviewCard } from './components/dictation-preview/DictationPreviewApp';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
@@ -227,9 +228,25 @@ function VisualFixture() {
   );
 }
 
+/** Live dictation preview card over a stand-in desktop, at the real window
+ *  width (460pt) so the wrapping matches what ships. */
+function DictationPreviewFixture() {
+  const text = query.get('text')
+    ?? 'Okay, um, one thing I want to clear up is why is it showing me a snippet of my prompt';
+  return (
+    <div className="flex min-h-screen items-start justify-center bg-[#6b6fae] pt-6">
+      <div style={{ width: 460 }}>
+        <DictationPreviewCard text={text} />
+      </div>
+    </div>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'settings-appearance' ? (
+    {requestedState === 'dictation-preview' ? (
+      <DictationPreviewFixture />
+    ) : requestedState === 'settings-appearance' ? (
       <AppearanceProvider>
         <VisualFixture />
       </AppearanceProvider>

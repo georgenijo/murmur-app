@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import { OverlayPill } from './OverlayPill';
+import { BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayIndicator } from './deriveVisual';
 
 const geometry: OverlayGeometry = {
@@ -102,21 +103,21 @@ describe('OverlayPill transient cues', () => {
       .toBe('Microphone capture was interrupted. Waiting for the partial transcription.');
   });
 
-  it('shows provisional dictation only while recording and keeps it non-interactive', async () => {
+  it('keeps the wing on the waveform while recording — transcript text lives in the preview popover', async () => {
     function LivePill() {
       const barRefs = useRef<(HTMLDivElement | null)[]>([]);
       return <OverlayPill
         geometry={geometry}
         visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
         status="recording"
-        partialText="safe live words"
         barRefs={barRefs}
       />;
     }
     await act(async () => root.render(<LivePill />));
-    const preview = container.querySelector<HTMLElement>('[aria-label^="Live transcription preview:"]');
-    expect(preview?.textContent).toBe('safe live words');
-    expect(preview?.getAttribute('aria-live')).toBe('polite');
+    // A 36pt wing can only show ~4 head-truncated characters, so provisional
+    // text renders in the `dictation-preview` window instead.
+    expect(container.querySelector('[aria-label^="Live transcription preview:"]')).toBeNull();
+    expect(container.querySelectorAll('.rounded-full.bg-white\\/90').length).toBe(BAR_COUNT);
     expect(container.querySelector('button')).toBeNull();
   });
 });

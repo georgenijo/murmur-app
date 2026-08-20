@@ -318,15 +318,30 @@ All supported backends follow the same final-after-stop interaction: stopping
 runs one authoritative full-buffer transcription; the transformed final result
 is then delivered exactly once.
 
+### Live preview
+
 Core ML dictation also offers a display-only live preview while capture remains
 in `Recording`. A 700ms ticker snapshots at most the trailing 20 seconds of
 16kHz audio, waits for at least 800ms of speech, and permits only one decode in
-flight. Both the backend and overlay re-check the monotonic recording ID, and
-the overlay clears the provisional text on every transition out of recording.
-The targeted `dictation-partial` event is never copied, pasted, transformed,
-persisted, exported, logged, or counted; final stop-time delivery remains the
-only authoritative transcript. Whisper and CPU Parakeet do not run live
-previews so their slower decodes cannot compete with final delivery.
+flight. Both the backend and the preview window re-check the monotonic recording
+ID, and the window clears its provisional text whenever a newer generation
+starts. The targeted `dictation-partial` event is never copied, pasted,
+transformed, persisted, exported, logged, or counted; final stop-time delivery
+remains the only authoritative transcript. Whisper and CPU Parakeet do not run
+live previews so their slower decodes cannot compete with final delivery.
+
+The preview renders in its own `dictation-preview` window — a non-activating,
+click-through glass card centered under the notch, mirroring the voice-query
+answer popover. Rust owns its lifecycle end to end: `show_internal` opens it on
+the first recognized words (so a silent recording never flashes an empty card)
+and the ticker hides it when the recording stops being current, whatever ended
+it. The frontend never decides visibility.
+
+It deliberately does **not** render inside the overlay. The overlay's wings are
+fixed 36pt slots sized for an icon and a waveform; text there fits roughly four
+head-anchored characters, so a long utterance shows its first word forever
+("Oka…") and never follows the speaker. The popover shows the trailing ~320
+characters, broken on a word boundary and pinned to the newest words.
 
 ## Model Options
 

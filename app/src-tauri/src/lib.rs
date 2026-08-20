@@ -494,6 +494,7 @@ pub fn run() {
                 commands::native_window::hide_titlebar_separator(&diagnostics_window);
             }
             commands::query_popover::apply_initial_size(app.handle());
+            commands::dictation_preview::apply_initial_size(app.handle());
 
             let performance_root = app.path().app_data_dir()?.join("diagnostics");
             if let Err(error) = app

@@ -89,6 +89,22 @@
         "focus": false,
         "shadow": true,
         "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "dictation-preview",
+        "title": "",
+        "url": "dictation-preview.html",
+        "width": 460,
+        "height": 104,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "shadow": false,
+        "visibleOnAllWorkspaces": true
       }
     ],
     "macOSPrivateApi": true,

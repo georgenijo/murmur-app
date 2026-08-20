@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The live dictation preview is readable again. It rendered inside the
+  overlay's fixed 36pt wing, which fits roughly four characters and truncated
+  from the *head*, so a whole utterance showed as its own first word forever
+  ("Oka…") and never followed the speaker. Provisional text now renders in a
+  dedicated `dictation-preview` popover under the notch — a non-activating,
+  click-through glass card mirroring the voice-query answer popover — showing
+  the trailing words as they are recognized. The overlay wing keeps its
+  waveform (#611).
+
 ## [0.38.0] - 2026-08-19
 
 ### Fixed
