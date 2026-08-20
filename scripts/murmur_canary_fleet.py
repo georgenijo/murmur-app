@@ -199,6 +199,28 @@ def install_previous_bundle(
     return app_path, executable.as_posix()
 
 
+def terminate_and_collect_stderr(process: subprocess.Popen[bytes]) -> str:
+    """Stop the entire canary session before bounded stderr collection."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+
+    try:
+        stderr = process.communicate(timeout=1)[1]
+    except subprocess.TimeoutExpired as error:
+        raise CanaryError("canary stderr pipe did not close after process-group termination") from error
+    return stderr.decode(errors="replace") if stderr else ""
+
+
 def run_remote(args: argparse.Namespace) -> int:
     tag = args.tag
     expected_version = tag.removeprefix("v")
@@ -219,6 +241,7 @@ def run_remote(args: argparse.Namespace) -> int:
         environment["MURMUR_UPDATER_CANARY_DRY_RUN"] = "1"
     print(shlex.join([f"MURMUR_UPDATER_CANARY={result_path}", *(["MURMUR_UPDATER_CANARY_DRY_RUN=1"] if args.dry_run else []), *command]), flush=True)
     process = subprocess.Popen(command, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+    cleaned_up = False
     try:
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
@@ -237,21 +260,18 @@ def run_remote(args: argparse.Namespace) -> int:
             if process.poll() is not None and not result_path.exists():
                 break
             time.sleep(2)
-        stderr = process.communicate(timeout=5)[1].decode(errors="replace")
+        stderr = terminate_and_collect_stderr(process)
+        cleaned_up = True
         raise CanaryError(f"timed out waiting for {result_path}; {stderr[-1000:]}")
     finally:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=5)
+        if not cleaned_up:
+            terminate_and_collect_stderr(process)
+
+
+def run_fleet_canary(command: list[str]) -> int:
+    """Preserve the Fleet/remote failure as a failing local gate."""
+    returncode = subprocess.run(command, check=False).returncode
+    return 0 if returncode == 0 else 1
 
 
 def main() -> int:
@@ -278,7 +298,7 @@ def main() -> int:
     outer_timeout = args.timeout + 120
     command = ["fleet", "exec", "--timeout", str(outer_timeout), args.node, "--", shlex.join(remote)]
     print("Running OTA canary on Fleet node", args.node, flush=True)
-    return subprocess.run(command, check=False).returncode
+    return run_fleet_canary(command)
 
 
 if __name__ == "__main__":

@@ -390,7 +390,9 @@ export function useAutoUpdater(
   }, [updateStatus]);
 
   const writeCanary = useCallback(async (result: UpdaterCanaryResult) => {
-    await invoke<UpdaterCanaryState>('updater_canary', { action: 'write', result });
+    await invoke<UpdaterCanaryState>('updater_canary', {
+      request: { action: 'write', result },
+    });
   }, []);
 
   const runCanary = useCallback(async (previous: UpdaterCanaryResult | null, dryRun: boolean) => {
@@ -545,7 +547,9 @@ export function useAutoUpdater(
     let disposed = false;
     const start = async () => {
       try {
-        const canary = await invoke<UpdaterCanaryState>('updater_canary', { action: 'read' });
+        const canary = await invoke<UpdaterCanaryState>('updater_canary', {
+          request: { action: 'read' },
+        });
         if (disposed) return;
         if (canary.path) await runCanary(canary.result, canary.dryRun);
         else await performCheck({ isBackground: true });

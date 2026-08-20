@@ -72,7 +72,12 @@ python3 scripts/murmur_canary_fleet.py --tag vX.Y.Z
 
 The command must exit zero and report a complete result-file pass before the
 release is announced. A failed or timed-out canary blocks release follow-up;
-fix the updater and publish a patch release as needed.
+the runner terminates the canary process group before collecting bounded
+stderr, and both the remote runner and Fleet wrapper must return nonzero. Fix
+the updater and publish a patch release as needed. The app writes the documented
+result schema through the nested Tauri command payload
+`{ request: { action, result } }`; without `MURMUR_UPDATER_CANARY`, the command
+returns an inert state and an ordinary user launch cannot enter canary mode.
 
 Set that file before the version-bump commit:
 

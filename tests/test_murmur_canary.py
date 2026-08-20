@@ -1,5 +1,7 @@
 import importlib.util
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,3 +81,73 @@ def test_evaluate_accepts_identifiable_dry_run() -> None:
     for stage in canary.STAGES[2:]:
         result["stages"][stage] = "pending"
     canary.evaluate_dry_run_result(result, "0.31.3", "0.31.4")
+
+
+def test_terminate_process_group_before_collecting_stderr(monkeypatch) -> None:
+    events = []
+
+    class FakeProcess:
+        pid = 42
+
+        def wait(self, timeout):
+            events.append(("wait", timeout))
+            return 0
+
+        def communicate(self, timeout):
+            events.append(("communicate", timeout))
+            return (b"", b"bounded failure detail")
+
+    monkeypatch.setattr(canary.os, "killpg", lambda pid, sig: events.append(("killpg", pid, sig)))
+
+    stderr = canary.terminate_and_collect_stderr(FakeProcess())
+
+    assert stderr == "bounded failure detail"
+    assert events[0][0] == "killpg"
+    assert events[1] == ("wait", 5)
+    assert events[2] == ("communicate", 1)
+
+
+def test_terminate_process_group_escalates_before_collecting_stderr(monkeypatch) -> None:
+    events = []
+
+    class FakeProcess:
+        pid = 43
+        waits = 0
+
+        def wait(self, timeout):
+            self.waits += 1
+            events.append(("wait", timeout))
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired("canary", timeout)
+            return -9
+
+        def communicate(self, timeout):
+            events.append(("communicate", timeout))
+            return (b"", b"")
+
+    monkeypatch.setattr(canary.os, "killpg", lambda pid, sig: events.append(("killpg", pid, sig)))
+
+    canary.terminate_and_collect_stderr(FakeProcess())
+
+    assert [event[0] for event in events] == ["killpg", "wait", "killpg", "wait", "communicate"]
+    assert events[2][2] == canary.signal.SIGKILL
+
+
+def test_fleet_wrapper_normalizes_remote_failure_to_nonzero(monkeypatch) -> None:
+    monkeypatch.setattr(
+        canary.subprocess,
+        "run",
+        lambda command, check: SimpleNamespace(returncode=17),
+    )
+
+    assert canary.run_fleet_canary(["fleet", "exec"]) == 1
+
+
+def test_fleet_wrapper_preserves_success(monkeypatch) -> None:
+    monkeypatch.setattr(
+        canary.subprocess,
+        "run",
+        lambda command, check: SimpleNamespace(returncode=0),
+    )
+
+    assert canary.run_fleet_canary(["fleet", "exec"]) == 0
