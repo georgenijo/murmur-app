@@ -292,9 +292,9 @@ describe('HistoryPanel', () => {
       text: 'Delivered text', modeId: 'builtin.everyday', stages: [],
     });
     await render({ entries: [source], onAddDerived });
-    await act(async () => byText('Reformat')!.click());
-    expect(container.textContent).toContain('not audio retranscription');
-    await act(async () => byText('Create reformatted entry')!.click());
+    await act(async () => byText('Apply mode…')!.click());
+    expect(container.textContent).toContain('does not process the audio again');
+    await act(async () => byText('Create version')!.click());
     expect(invoke).toHaveBeenCalledWith('reformat_history_text', {
       rawText: 'um delivered text', modeId: 'builtin.everyday',
     });
