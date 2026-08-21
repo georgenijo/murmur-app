@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "aec-spike"))]
+mod aec_spike;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod production;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -94,7 +96,7 @@ mod supported {
         result.map_err(|_| FailureCode::StreamOpenFailed)
     }
 
-    fn disable_core_dumps() {
+    pub(super) fn disable_core_dumps() {
         unsafe {
             let limit = libc::rlimit {
                 rlim_cur: 0,
@@ -104,7 +106,7 @@ mod supported {
         }
     }
 
-    fn establish_process_group() -> Result<(), ()> {
+    pub(super) fn establish_process_group() -> Result<(), ()> {
         let pid = unsafe { libc::getpid() };
         if unsafe { libc::setpgid(0, 0) } != 0 && unsafe { libc::getpgrp() } != pid {
             return Err(());
@@ -387,6 +389,24 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        #[cfg(feature = "aec-spike")]
+        match arguments.first().map(String::as_str) {
+            Some("--aec-spike-analyze") => {
+                if let Err(error) = aec_spike::run(&arguments[1..]) {
+                    eprintln!("murmur-aec-spike: {error}");
+                    std::process::exit(64);
+                }
+                return;
+            }
+            Some("--aec-spike-capture") => {
+                if let Err(error) = aec_spike::run_capture(&arguments[1..]) {
+                    eprintln!("murmur-aec-spike: {error}");
+                    std::process::exit(64);
+                }
+                return;
+            }
+            _ => {}
+        }
         if arguments.first().map(String::as_str) == Some("--production-v6") {
             if production::run(&arguments[1..]).is_ok() {
                 return;

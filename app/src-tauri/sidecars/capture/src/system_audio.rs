@@ -5,7 +5,7 @@
 //! inverse of creation: stop IO, destroy the IO proc, destroy the private
 //! aggregate device, then destroy the process tap.
 
-use crate::production::SpscRing;
+use crate::production::{CallbackClock, SpscRing};
 use murmur_capture_helper_protocol::{CaptureSetupStep, FailureCode, SetupTransition};
 use objc2::AnyThread;
 use objc2_core_audio::{
@@ -220,6 +220,14 @@ pub(super) struct SystemAudioStream {
 impl SystemAudioStream {
     pub(super) fn start_observed(
         ring: Arc<SpscRing>,
+        observe: impl FnMut(CaptureSetupStep, SetupTransition),
+    ) -> Result<Self, FailureCode> {
+        Self::start_observed_with_clock(ring, None, observe)
+    }
+
+    pub(super) fn start_observed_with_clock(
+        ring: Arc<SpscRing>,
+        callback_clock: Option<Arc<CallbackClock>>,
         mut observe: impl FnMut(CaptureSetupStep, SetupTransition),
     ) -> Result<Self, FailureCode> {
         if !supported() {
@@ -281,12 +289,17 @@ impl SystemAudioStream {
         );
 
         let callback_ring = Arc::clone(&ring);
+        let callback_clock = callback_clock.clone();
         let io_block = block2::RcBlock::new(
-            move |_now: NonNull<AudioTimeStamp>,
+            move |now: NonNull<AudioTimeStamp>,
                   input_data: NonNull<AudioBufferList>,
                   _input_time: NonNull<AudioTimeStamp>,
                   _output_data: NonNull<AudioBufferList>,
                   _output_time: NonNull<AudioTimeStamp>| {
+                if let Some(clock) = &callback_clock {
+                    let timestamp = unsafe { now.as_ref() };
+                    clock.note(timestamp.mHostTime, timestamp.mSampleTime);
+                }
                 capture_input_data(&callback_ring, input_data);
             },
         );

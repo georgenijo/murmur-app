@@ -26,7 +26,9 @@ use murmur_capture_helper_protocol::{
 };
 use std::ffi::c_void;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool as ProcessAtomicBool, Ordering as ProcessOrdering};
+use std::sync::atomic::{
+    AtomicBool as ProcessAtomicBool, AtomicU64 as ProcessAtomicU64, Ordering as ProcessOrdering,
+};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -51,6 +53,39 @@ pub(super) struct SpscRing {
     head: AtomicUsize,
     tail: AtomicUsize,
     overflowed: AtomicBool,
+}
+
+/// The latest Core Audio callback clock observed for one channel.
+///
+/// Only the private Stage 0 AEC feasibility tool constructs this. It records
+/// callback anchors alongside drained samples so drift can be measured without
+/// changing the production capture protocol.
+#[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
+pub(super) struct CallbackClock {
+    host_time: ProcessAtomicU64,
+    sample_time_bits: ProcessAtomicU64,
+}
+
+#[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
+impl CallbackClock {
+    pub(super) fn new() -> Self {
+        Self {
+            host_time: ProcessAtomicU64::new(0),
+            sample_time_bits: ProcessAtomicU64::new(0),
+        }
+    }
+
+    pub(super) fn note(&self, host_time: u64, sample_time: f64) {
+        self.sample_time_bits
+            .store(sample_time.to_bits(), ProcessOrdering::Relaxed);
+        self.host_time.store(host_time, ProcessOrdering::Release);
+    }
+
+    pub(super) fn snapshot(&self) -> (u64, f64) {
+        let host_time = self.host_time.load(ProcessOrdering::Acquire);
+        let sample_time = f64::from_bits(self.sample_time_bits.load(ProcessOrdering::Relaxed));
+        (host_time, sample_time)
+    }
 }
 
 unsafe impl Send for SpscRing {}
@@ -116,15 +151,20 @@ impl SpscRing {
     pub(super) fn producer_position(&self) -> usize {
         self.head.load(Ordering::Acquire)
     }
+
+    #[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
+    pub(super) fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
+    }
 }
 
-enum CaptureStream {
+pub(super) enum CaptureStream {
     Cpal(Stream),
     Auhal(coreaudio::audio_unit::AudioUnit),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct InputResolutionEvidence {
+pub(super) struct InputResolutionEvidence {
     input_enumeration_ok: bool,
     requested_present: Option<bool>,
     input_device_count: u16,
@@ -158,13 +198,13 @@ impl InputResolutionEvidence {
     }
 }
 
-enum MicrophoneSetupObservation {
+pub(super) enum MicrophoneSetupObservation {
     Step(CaptureSetupStep, SetupTransition),
     InputResolution(InputResolutionEvidence),
 }
 
 impl CaptureStream {
-    fn stop(&mut self) {
+    pub(super) fn stop(&mut self) {
         match self {
             Self::Cpal(stream) => {
                 let _ = stream.pause();
@@ -592,9 +632,10 @@ fn start_cpal(
     Ok((CaptureStream::Cpal(stream), rate))
 }
 
-fn start_auhal(
+pub(super) fn start_auhal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
+    callback_clock: Option<Arc<CallbackClock>>,
     emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
     emit(MicrophoneSetupObservation::Step(
@@ -733,6 +774,9 @@ fn start_auhal(
         SetupTransition::Entered,
     ))?;
     unit.set_input_callback(move |args: Args| {
+        if let Some(clock) = &callback_clock {
+            clock.note(args.time_stamp.mHostTime, args.time_stamp.mSampleTime);
+        }
         if let Some(channel) = args.data.channels().next() {
             for sample in channel.iter().take(args.num_frames) {
                 ring.push(*sample);
@@ -993,6 +1037,7 @@ fn run_meeting(
             CaptureBackend::Auhal => start_auhal(
                 device_id.as_deref(),
                 Arc::clone(&microphone_ring),
+                None,
                 &mut emit_microphone_setup,
             ),
         }
@@ -1622,9 +1667,12 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                         Arc::clone(&failed),
                         &mut emit_setup,
                     ),
-                    CaptureBackend::Auhal => {
-                        start_auhal(device_id.as_deref(), Arc::clone(&ring), &mut emit_setup)
-                    }
+                    CaptureBackend::Auhal => start_auhal(
+                        device_id.as_deref(),
+                        Arc::clone(&ring),
+                        None,
+                        &mut emit_setup,
+                    ),
                 }
             };
             let (mut stream, sample_rate) = match started {
