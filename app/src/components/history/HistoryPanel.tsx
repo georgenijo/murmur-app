@@ -475,11 +475,16 @@ export function HistoryPanel({
                 </button>
               )}
               {entry.rawText !== undefined && !entry.derived && (
-                <button type="button" onClick={() => setReformatEntry(entry)} className="mt-2 rounded-md bg-surface-container px-2 py-1 text-xs font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                  Reformat
+                <button
+                  type="button"
+                  onClick={() => setReformatEntry(entry)}
+                  title="Create another version from the raw transcript using a different mode"
+                  className="transcript-reformat focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  Apply mode…
                 </button>
               )}
-              {entry.derived && <span className="text-[10px] text-on-surface-variant">Reformatted · {entry.derived.modeId}</span>}
+              {entry.derived && <span className="transcript-derived">Reformatted · {entry.derived.modeId}</span>}
               </article>
             </Fragment>
           );
@@ -494,14 +499,14 @@ export function HistoryPanel({
         />
       )}
       {reformatEntry && (
-        <div role="dialog" aria-modal="true" aria-label="Reformat history entry" className="absolute inset-0 z-30 grid place-items-center bg-scrim/35 p-6">
+        <div role="dialog" aria-modal="true" aria-label="Apply a mode to history entry" className="absolute inset-0 z-30 grid place-items-center bg-scrim/35 p-6">
           <div className="w-full max-w-sm rounded-xl bg-surface-container-lowest p-4 shadow-xl">
-            <h2 className="text-sm font-semibold text-on-surface">Reformat retained text</h2>
-            <p className="mt-1 text-xs text-on-surface-variant">Runs the preserved raw recognition through another Mode. This is not audio retranscription and the original entry stays unchanged.</p>
-            <select aria-label="Reformat Mode" value={reformatModeId} onChange={(event) => setReformatModeId(event.target.value)} className="mt-3 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm">
+            <h2 className="text-sm font-semibold text-on-surface">Apply a different mode</h2>
+            <p className="mt-1 text-xs text-on-surface-variant">Creates a new version from the raw transcript using the selected mode's cleanup and formatting rules. It does not process the audio again or change the original.</p>
+            <select aria-label="Mode" value={reformatModeId} onChange={(event) => setReformatModeId(event.target.value)} className="mt-3 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm">
               {availableModes.map((mode) => <option key={mode.id} value={mode.id}>{mode.name}</option>)}
             </select>
-            <div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setReformatEntry(null)} className="rounded-lg px-3 py-2 text-xs">Cancel</button><button type="button" disabled={reformatBusy} onClick={() => void handleReformat()} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-50">{reformatBusy ? 'Reformatting…' : 'Create reformatted entry'}</button></div>
+            <div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setReformatEntry(null)} className="rounded-lg px-3 py-2 text-xs">Cancel</button><button type="button" disabled={reformatBusy} onClick={() => void handleReformat()} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-50">{reformatBusy ? 'Applying…' : 'Create version'}</button></div>
           </div>
         </div>
       )}
