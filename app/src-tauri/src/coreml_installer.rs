@@ -4,7 +4,8 @@
 //! process therefore launches its own already-signed executable in this fixed
 //! worker mode, owns the exact child process group, and accepts only a small
 //! content-free line protocol. A hard deadline always ends with confirmed
-//! process-group termination before retry or fallback can begin.
+//! process-group termination or quarantined ownership before another Core ML
+//! worker can begin.
 
 use crate::managed_child::ManagedChild;
 use crate::transcriber::coreml::{
@@ -16,13 +17,18 @@ use std::path::Path;
 use std::sync::mpsc;
 #[cfg(debug_assertions)]
 use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 const WORKER_ARGUMENT: &str = "--coreml-install-worker-v1";
+const PROTOCOL_PREFIX: &str = "MRMR_COREML_INSTALL_V1 ";
 const MAX_PROTOCOL_LINE_BYTES: usize = 4 * 1024;
 const MAX_PROTOCOL_MESSAGES: usize = 32;
+const MAX_IGNORED_STDOUT_LINES: usize = 256;
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 pub(crate) const DEFAULT_INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+static UNCONFIRMED_INSTALLER: LazyLock<Mutex<Option<ManagedChild>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,7 +126,7 @@ impl InstallFailure {
             }
             "validation_failed" => "Core ML setup finished, but the installed cache did not validate.",
             "termination_unconfirmed" => {
-                "Core ML setup stopped, but Murmur could not confirm installer cleanup. Restart Murmur before retrying."
+                "Core ML setup stopped, but Murmur could not confirm installer cleanup. Murmur will recheck cleanup before another Core ML attempt."
             }
             "native_initialization_failed" => "Core ML model setup failed in the native installer.",
             "cache_unavailable" => "The Core ML model cache is unavailable.",
@@ -154,15 +160,79 @@ fn valid_phase_transition(previous: Option<InstallPhase>, next: InstallPhase) ->
     )
 }
 
+fn retain_unconfirmed_installer(child: ManagedChild) {
+    let mut slot = UNCONFIRMED_INSTALLER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.is_none() {
+        *slot = Some(child);
+    }
+}
+
+fn terminate_or_retain(mut child: ManagedChild) -> bool {
+    if child
+        .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
+        .is_some()
+    {
+        true
+    } else {
+        retain_unconfirmed_installer(child);
+        false
+    }
+}
+
+fn clear_quarantined_installer() -> bool {
+    let mut slot = UNCONFIRMED_INSTALLER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(child) = slot.as_mut() else {
+        return true;
+    };
+    if child
+        .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
+        .is_some()
+    {
+        slot.take();
+        true
+    } else {
+        false
+    }
+}
+
 fn emit_worker_message(message: &WorkerMessage) -> Result<(), ()> {
     let encoded = serde_json::to_string(message).map_err(|_| ())?;
-    if encoded.len() > MAX_PROTOCOL_LINE_BYTES {
+    if PROTOCOL_PREFIX.len() + encoded.len() + 1 > MAX_PROTOCOL_LINE_BYTES {
         return Err(());
     }
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    writeln!(output, "{encoded}").map_err(|_| ())?;
+    writeln!(output, "{PROTOCOL_PREFIX}{encoded}").map_err(|_| ())?;
     output.flush().map_err(|_| ())
+}
+
+fn read_bounded_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u8>>, ()> {
+    let mut line = Vec::new();
+    loop {
+        let buffer = reader.fill_buf().map_err(|_| ())?;
+        if buffer.is_empty() {
+            return if line.is_empty() { Ok(None) } else { Err(()) };
+        }
+        if let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
+            let consumed = newline + 1;
+            if line.len() + consumed > MAX_PROTOCOL_LINE_BYTES {
+                return Err(());
+            }
+            line.extend_from_slice(&buffer[..consumed]);
+            reader.consume(consumed);
+            return Ok(Some(line));
+        }
+        if line.len() + buffer.len() > MAX_PROTOCOL_LINE_BYTES {
+            return Err(());
+        }
+        let consumed = buffer.len();
+        line.extend_from_slice(buffer);
+        reader.consume(consumed);
+    }
 }
 
 fn start_parent_watchdog() {
@@ -171,7 +241,17 @@ fn start_parent_watchdog() {
         let mut byte = [0_u8; 1];
         loop {
             match input.read(&mut byte) {
-                Ok(0) | Err(_) => std::process::exit(74),
+                Ok(0) | Err(_) => {
+                    #[cfg(unix)]
+                    unsafe {
+                        // ManagedChild starts this worker as the leader of a
+                        // dedicated process group. If the host disappears
+                        // without running its owner drop, terminate the worker
+                        // and every native descendant that inherited the group.
+                        libc::kill(0, libc::SIGKILL);
+                    }
+                    std::process::exit(74);
+                }
                 Ok(_) => {}
             }
         }
@@ -213,7 +293,7 @@ fn run_debug_scenario(scenario: &str) -> Option<i32> {
         }
         "repeated_repair_failure" => {
             let _ = phase(InstallPhase::Repairing, true);
-            let _ = phase(InstallPhase::Initializing, true);
+            let _ = phase(InstallPhase::Initializing, false);
             let _ = terminal(WorkerOutcome::NativeInitializationFailed);
             Some(23)
         }
@@ -242,6 +322,9 @@ fn run_debug_scenario(scenario: &str) -> Option<i32> {
             }
         }
         "success" => success(),
+        // Exercises the real FluidAudio bridge while allowing the debug-only
+        // parent validation seam to force the onboarding gate open.
+        "actual" => return None,
         _ => None,
     }
 }
@@ -306,23 +389,29 @@ fn reader_thread(stdout: std::process::ChildStdout, sender: mpsc::Sender<ReaderE
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut messages = 0_usize;
+        let mut ignored_lines = 0_usize;
         loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => {
+            match read_bounded_protocol_line(&mut reader) {
+                Ok(None) => {
                     let _ = sender.send(ReaderEvent::End);
                     return;
                 }
-                Ok(_) => {
+                Ok(Some(line)) => {
+                    let body = &line[..line.len() - 1];
+                    let Some(protocol) = body.strip_prefix(PROTOCOL_PREFIX.as_bytes()) else {
+                        ignored_lines += 1;
+                        if ignored_lines > MAX_IGNORED_STDOUT_LINES {
+                            let _ = sender.send(ReaderEvent::Invalid);
+                            return;
+                        }
+                        continue;
+                    };
                     messages += 1;
-                    if messages > MAX_PROTOCOL_MESSAGES
-                        || line.len() > MAX_PROTOCOL_LINE_BYTES
-                        || !line.ends_with('\n')
-                    {
+                    if messages > MAX_PROTOCOL_MESSAGES {
                         let _ = sender.send(ReaderEvent::Invalid);
                         return;
                     }
-                    match serde_json::from_str::<WorkerMessage>(line.trim_end()) {
+                    match serde_json::from_slice::<WorkerMessage>(protocol) {
                         Ok(message) => {
                             if sender.send(ReaderEvent::Message(message)).is_err() {
                                 return;
@@ -334,7 +423,7 @@ fn reader_thread(stdout: std::process::ChildStdout, sender: mpsc::Sender<ReaderE
                         }
                     }
                 }
-                Err(_) => {
+                Err(()) => {
                     let _ = sender.send(ReaderEvent::Invalid);
                     return;
                 }
@@ -353,6 +442,14 @@ fn supervise_process<F>(
 where
     F: FnMut(InstallPhase, bool),
 {
+    if !clear_quarantined_installer() {
+        return Err(InstallFailure {
+            code: "termination_unconfirmed",
+            repaired_cache: false,
+            repeated_repair: false,
+            termination_confirmed: false,
+        });
+    }
     let (mut child, child_stdin, stdout) =
         ManagedChild::spawn_with_arguments(executable, arguments, environment).map_err(|_| {
             InstallFailure {
@@ -374,9 +471,7 @@ where
     loop {
         let now = Instant::now();
         if now >= deadline {
-            let confirmed = child
-                .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
-                .is_some();
+            let confirmed = terminate_or_retain(child);
             return Err(InstallFailure {
                 code: if confirmed {
                     "installer_timeout"
@@ -397,10 +492,10 @@ where
                 phase,
                 repeated_repair: repeated,
             })) if terminal.is_none() => {
-                if !valid_phase_transition(last_phase, phase) {
-                    let confirmed = child
-                        .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
-                        .is_some();
+                if (repeated && phase != InstallPhase::Repairing)
+                    || !valid_phase_transition(last_phase, phase)
+                {
+                    let confirmed = terminate_or_retain(child);
                     return Err(InstallFailure {
                         code: if confirmed {
                             "protocol_error"
@@ -420,9 +515,7 @@ where
             Ok(ReaderEvent::Message(WorkerMessage::Terminal { outcome })) if terminal.is_none() => {
                 if outcome == WorkerOutcome::Success && last_phase != Some(InstallPhase::Validating)
                 {
-                    let confirmed = child
-                        .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
-                        .is_some();
+                    let confirmed = terminate_or_retain(child);
                     return Err(InstallFailure {
                         code: if confirmed {
                             "protocol_error"
@@ -439,6 +532,7 @@ where
             Ok(ReaderEvent::End) => {
                 let termination = child.wait_for_exit(Instant::now() + TERMINATION_GRACE);
                 let Some(termination) = termination else {
+                    retain_unconfirmed_installer(child);
                     return Err(InstallFailure {
                         code: "termination_unconfirmed",
                         repaired_cache,
@@ -478,9 +572,7 @@ where
             Ok(ReaderEvent::Invalid)
             | Ok(ReaderEvent::Message(_))
             | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let confirmed = child
-                    .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
-                    .is_some();
+                let confirmed = terminate_or_retain(child);
                 return Err(InstallFailure {
                     code: if confirmed {
                         "protocol_error"
@@ -564,10 +656,27 @@ mod tests {
         (result, phases)
     }
 
+    fn protocol_script(messages: &[&str], suffix: &str) -> String {
+        let framed = messages
+            .iter()
+            .map(|message| format!("'{PROTOCOL_PREFIX}{message}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("printf '%s\\n' {framed}; {suffix}")
+    }
+
     #[test]
     fn successful_worker_requires_terminal_and_clean_exit() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"initializing","repeatedRepair":false}' '{"type":"phase","phase":"validating","repeatedRepair":false}' '{"type":"terminal","outcome":"success"}'"#;
-        let (result, phases) = run_shell(script, Duration::from_secs(1));
+        let script = protocol_script(
+            &[
+                r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"initializing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"validating","repeatedRepair":false}"#,
+                r#"{"type":"terminal","outcome":"success"}"#,
+            ],
+            "exit 0",
+        );
+        let (result, phases) = run_shell(&script, Duration::from_secs(1));
         assert_eq!(
             result,
             Ok(InstallReceipt {
@@ -587,8 +696,15 @@ mod tests {
 
     #[test]
     fn explicit_failure_preserves_repeated_repair_evidence() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"repairing","repeatedRepair":true}' '{"type":"terminal","outcome":"native_initialization_failed"}'; exit 20"#;
-        let (result, _) = run_shell(script, Duration::from_secs(1));
+        let script = protocol_script(
+            &[
+                r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"repairing","repeatedRepair":true}"#,
+                r#"{"type":"terminal","outcome":"native_initialization_failed"}"#,
+            ],
+            "exit 20",
+        );
+        let (result, _) = run_shell(&script, Duration::from_secs(1));
         assert_eq!(
             result,
             Err(InstallFailure {
@@ -602,9 +718,15 @@ mod tests {
 
     #[test]
     fn hanging_worker_and_descendant_are_killed_before_timeout_returns() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"initializing","repeatedRepair":false}'; sleep 30 & wait"#;
+        let script = protocol_script(
+            &[
+                r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"initializing","repeatedRepair":false}"#,
+            ],
+            "sleep 30 & wait",
+        );
         let started = Instant::now();
-        let (result, phases) = run_shell(script, Duration::from_millis(75));
+        let (result, phases) = run_shell(&script, Duration::from_millis(75));
         let failure = result.unwrap_err();
         assert_eq!(failure.code, "installer_timeout");
         assert!(failure.termination_confirmed);
@@ -620,7 +742,33 @@ mod tests {
 
     #[test]
     fn malformed_protocol_fails_closed_and_reaps_worker() {
-        let (result, _) = run_shell("printf 'not-json\\n'; sleep 30", Duration::from_secs(1));
+        let script = format!("printf '{PROTOCOL_PREFIX}not-json\\n'; sleep 30");
+        let (result, _) = run_shell(&script, Duration::from_secs(1));
+        let failure = result.unwrap_err();
+        assert_eq!(failure.code, "protocol_error");
+        assert!(failure.termination_confirmed);
+    }
+
+    #[test]
+    fn bounded_native_stdout_noise_is_ignored() {
+        let protocol = protocol_script(
+            &[
+                r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"initializing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"validating","repeatedRepair":false}"#,
+                r#"{"type":"terminal","outcome":"success"}"#,
+            ],
+            "exit 0",
+        );
+        let script = format!("printf 'ASR init notice\\n'; {protocol}");
+        let (result, _) = run_shell(&script, Duration::from_secs(1));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn oversized_protocol_line_is_rejected_before_unbounded_allocation() {
+        let script = "/usr/bin/yes x | /usr/bin/head -c 5000; printf '\\n'; /bin/sleep 30";
+        let (result, _) = run_shell(script, Duration::from_secs(1));
         let failure = result.unwrap_err();
         assert_eq!(failure.code, "protocol_error");
         assert!(failure.termination_confirmed);
@@ -628,8 +776,16 @@ mod tests {
 
     #[test]
     fn terminal_success_with_nonzero_exit_is_not_accepted() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"initializing","repeatedRepair":false}' '{"type":"phase","phase":"validating","repeatedRepair":false}' '{"type":"terminal","outcome":"success"}'; exit 9"#;
-        let (result, _) = run_shell(script, Duration::from_secs(1));
+        let script = protocol_script(
+            &[
+                r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"initializing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"validating","repeatedRepair":false}"#,
+                r#"{"type":"terminal","outcome":"success"}"#,
+            ],
+            "exit 9",
+        );
+        let (result, _) = run_shell(&script, Duration::from_secs(1));
         let failure = result.unwrap_err();
         assert_eq!(failure.code, "protocol_error");
         assert!(failure.termination_confirmed);
@@ -638,13 +794,50 @@ mod tests {
     #[test]
     fn out_of_order_or_duplicate_phases_fail_closed() {
         for script in [
-            r#"printf '%s\n' '{"type":"phase","phase":"validating","repeatedRepair":false}'; sleep 30"#,
-            r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"preparing","repeatedRepair":false}'; sleep 30"#,
+            protocol_script(
+                &[r#"{"type":"phase","phase":"validating","repeatedRepair":false}"#],
+                "sleep 30",
+            ),
+            protocol_script(
+                &[
+                    r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                    r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                ],
+                "sleep 30",
+            ),
+            protocol_script(
+                &[r#"{"type":"phase","phase":"preparing","repeatedRepair":true}"#],
+                "sleep 30",
+            ),
         ] {
-            let (result, _) = run_shell(script, Duration::from_secs(1));
+            let (result, _) = run_shell(&script, Duration::from_secs(1));
             let failure = result.unwrap_err();
             assert_eq!(failure.code, "protocol_error");
             assert!(failure.termination_confirmed);
         }
+    }
+
+    #[test]
+    fn quarantined_owner_is_confirmed_gone_before_a_new_worker_spawns() {
+        let (child, stdin, stdout) = ManagedChild::spawn(Path::new("/usr/bin/yes"), &[]).unwrap();
+        drop((stdin, stdout));
+        retain_unconfirmed_installer(child);
+
+        let script = protocol_script(
+            &[
+                r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"initializing","repeatedRepair":false}"#,
+                r#"{"type":"phase","phase":"validating","repeatedRepair":false}"#,
+                r#"{"type":"terminal","outcome":"success"}"#,
+            ],
+            "exit 0",
+        );
+        let (result, _) = run_shell(&script, Duration::from_secs(1));
+
+        assert!(result.is_ok());
+        assert!(UNCONFIRMED_INSTALLER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
     }
 }

@@ -86,7 +86,7 @@ fn log_install_terminal(
 fn debug_coreml_scenario_reports_success_without_cache() -> bool {
     matches!(
         std::env::var("MURMUR_COREML_INSTALL_SCENARIO").as_deref(),
-        Ok("success" | "hang_once_then_success")
+        Ok("actual" | "success" | "hang_once_then_success")
     )
 }
 

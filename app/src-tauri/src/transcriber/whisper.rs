@@ -31,8 +31,19 @@ fn app_models_dir(data_dir: &Path) -> PathBuf {
         .fold(data_dir.to_path_buf(), |p, s| p.join(s))
 }
 
+#[cfg(debug_assertions)]
+fn debug_models_dir_override() -> Option<PathBuf> {
+    std::env::var_os("MURMUR_MODEL_DIR_OVERRIDE")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 /// Get all potential model directories to search.
 fn get_model_search_paths() -> Vec<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = debug_models_dir_override() {
+        return vec![path];
+    }
     let mut paths = Vec::new();
 
     if let Ok(custom_path) = std::env::var("WHISPER_MODEL_DIR") {
@@ -255,6 +266,10 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {
+        #[cfg(debug_assertions)]
+        if let Some(path) = debug_models_dir_override() {
+            return Ok(path);
+        }
         let data_dir = dirs::data_dir()
             .ok_or_else(|| "Could not find application data directory".to_string())?;
         Ok(app_models_dir(&data_dir))
