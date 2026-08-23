@@ -40,6 +40,12 @@ import { useRecordingState } from './useRecordingState';
 
 type RecordingState = ReturnType<typeof useRecordingState>;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
 describe('useRecordingState transition ordering', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -271,5 +277,77 @@ describe('useRecordingState transition ordering', () => {
       });
     });
     expect(current.error).toBe('');
+  });
+
+  it('clears the matching cleanup notice when recovery returns to idle', async () => {
+    mocks.startRecording.mockResolvedValueOnce({
+      type: 'audio_recovering',
+      state: 'recovering',
+    });
+
+    await act(async () => current.handleStart());
+    expect(current.error).toBe('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+    });
+
+    expect(current.status).toBe('idle');
+    expect(current.error).toBe('');
+  });
+
+  it('dismisses the current notice while allowing a later distinct error', async () => {
+    mocks.startRecording.mockResolvedValueOnce({
+      type: 'busy_benchmarking',
+      state: 'idle',
+    });
+    await act(async () => current.handleStart());
+    expect(current.error).toBe('Wait for the benchmark to finish.');
+
+    await act(async () => current.dismissError());
+    expect(current.error).toBe('');
+
+    await act(async () => {
+      mocks.listeners.get('auto-paste-failed')?.({ payload: 'Murmur could not paste into this app.' });
+    });
+    expect(current.error).toBe('Murmur could not paste into this app.');
+  });
+
+  it('does not let a stale start response resurrect an error after dismissal', async () => {
+    const pending = deferred<{ type: string; state: string }>();
+    mocks.startRecording.mockReturnValueOnce(pending.promise);
+
+    let start!: Promise<void>;
+    await act(async () => {
+      start = current.handleStart();
+      await Promise.resolve();
+      current.dismissError();
+    });
+    await act(async () => {
+      pending.resolve({ type: 'audio_recovering', state: 'recovering' });
+      await start;
+    });
+
+    expect(current.error).toBe('');
+  });
+
+  it('keeps a newer distinct error when an older async response resolves', async () => {
+    const pending = deferred<{ type: string; state: string }>();
+    mocks.startRecording.mockReturnValueOnce(pending.promise);
+
+    let start!: Promise<void>;
+    await act(async () => {
+      start = current.handleStart();
+      await Promise.resolve();
+      mocks.listeners.get('file-output-failed')?.({ payload: 'Saving the transcript failed.' });
+    });
+    expect(current.error).toBe('Saving the transcript failed.');
+
+    await act(async () => {
+      pending.resolve({ type: 'busy_benchmarking', state: 'idle' });
+      await start;
+    });
+    expect(current.error).toBe('Saving the transcript failed.');
   });
 });

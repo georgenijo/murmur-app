@@ -526,7 +526,7 @@ textarea {
 .home-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-nav-badge { margin-left: auto; border-radius: 999px; background: color-mix(in srgb, var(--murmur-primary) 12%, transparent); padding: 0.0625rem 0.375rem; color: var(--murmur-primary); font-size: 0.625rem; }
 .home-sidebar-bottom { margin-top: auto; padding-top: var(--ui-space-4); }
-.home-privacy-note { display: flex; align-items: flex-start; gap: var(--ui-space-3); margin-bottom: var(--ui-space-3); border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 28%, transparent); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-4); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.35; }
+.home-privacy-note { display: flex; align-items: flex-start; gap: var(--ui-space-3); border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 28%, transparent); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-4); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.35; }
 .home-privacy-note .home-nav-label { overflow: visible; text-overflow: clip; white-space: normal; }
 .home-privacy-dot { width: 0.375rem; height: 0.375rem; flex-shrink: 0; margin-top: 0.3rem; border-radius: 999px; background: var(--murmur-success); }
 
@@ -536,6 +536,27 @@ textarea {
   flex: 1;
   overflow: hidden;
   background: var(--murmur-background);
+}
+
+.main-error-banner {
+  position: absolute;
+  bottom: var(--ui-dashboard-inset);
+  left: calc(var(--ui-sidebar-width) + var(--ui-dashboard-inset));
+  z-index: 20;
+  display: flex;
+  width: fit-content;
+  min-width: 0;
+  max-width: min(
+    30rem,
+    calc(100% - var(--ui-sidebar-width) - var(--ui-dashboard-inset) - var(--ui-dashboard-inset))
+  );
+  align-items: flex-start;
+  gap: var(--ui-space-3);
+  border: 1px solid color-mix(in srgb, var(--murmur-error) 30%, transparent);
+  border-radius: var(--ui-radius-popover);
+  background: var(--murmur-surface-container-lowest);
+  padding: var(--ui-space-3) var(--ui-space-3) var(--ui-space-3) var(--ui-space-4);
+  box-shadow: var(--ui-card-shadow);
 }
 
 .home-dashboard,
@@ -751,6 +772,10 @@ textarea {
   .home-nav { width: 100%; align-items: center; }
   .home-nav-item { width: 2.5rem; justify-content: center; padding-inline: 0; }
   .home-sidebar-bottom { width: 100%; }
+  .main-error-banner {
+    left: calc(var(--ui-sidebar-compact-width) + var(--ui-dashboard-compact-inset));
+    max-width: calc(100% - var(--ui-sidebar-compact-width) - var(--ui-dashboard-compact-inset) - var(--ui-dashboard-compact-inset));
+  }
   .home-dashboard,
   .insights-view,
   .main-secondary-view { padding: var(--ui-dashboard-compact-inset); }
