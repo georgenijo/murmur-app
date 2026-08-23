@@ -6,8 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-08-23
+
+### Added
+
+- Paste Last / Retry Delivery now supports an explicit, configurable global
+  shortcut: `⌘⇧V`, `⌘⌥V`, `⌘⌃V`, or Disabled. Existing enabled installations
+  keep `⌘⇧V`; invalid or conflicting values fail closed, and a failed native
+  registration leaves the last working shortcut in place (#639).
+
+### Changed
+
+- Appearance Settings now clearly names and marks the active theme and mode,
+  shows the currently resolved Light/Dark appearance when following the system,
+  and reports a modified built-in preset as Custom rather than misleadingly
+  calling it Sonic (#640).
+- Removed the duplicate Settings entry from the bottom of the Home sidebar;
+  the title-bar gear remains the general Settings entry point (#642).
+- History's derived-result action is now a compact "Apply mode" control with
+  clearer provenance styling (#636).
+
 ### Fixed
 
+- Main-window errors are compact, dismissible, and lifecycle-aware. Stale
+  responses cannot restore dismissed or superseded notices, and microphone
+  cleanup guidance clears once recovery reaches Idle (#637).
 - The System Audio permission check no longer fails on an authorized Mac. The
   check ran a full capture rehearsal and waited two seconds for audio, so with
   nothing playing it reported `CallbackStalled` and surfaced the catch-all
