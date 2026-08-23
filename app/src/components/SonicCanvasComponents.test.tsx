@@ -73,6 +73,39 @@ describe('Sonic Canvas component details', () => {
     expect(badge?.classList).toContain('text-success');
   });
 
+  it('omits operational status from Settings while preserving the Settings header controls', async () => {
+    const onDone = vi.fn();
+    await act(async () => {
+      root.render(
+        <MainHeader
+          status="recovering"
+          initialized
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+          onOpenSettings={onDone}
+          settingsOpen
+          triggerKey="shift_l"
+          mode="settings"
+        />,
+      );
+    });
+
+    const header = container.querySelector('header');
+    expect(header?.textContent).toContain('Murmur');
+    expect(header?.textContent).toContain('Settings');
+    expect(header?.textContent).not.toContain('Recovering');
+    expect(container.querySelector('[data-testid="main-status-chip"]')).toBeNull();
+    expect(header?.querySelector('[data-tauri-drag-region]')).not.toBeNull();
+
+    const done = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Done',
+    );
+    await act(async () => done?.click());
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
   it('keeps word counts and durations out of history cards', async () => {
     await act(async () => {
       root.render(

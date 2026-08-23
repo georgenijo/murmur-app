@@ -89,42 +89,44 @@ export function MainHeader({
       className={mode === 'settings' ? 'settings-window-header' : ''}
       showWordmark={mode === 'settings'}
     >
-      <div
-        data-testid="main-status-chip"
-        className={`ui-status-chip ${
-          status === 'recording' || meetingPhase === 'recording' ? 'text-error' : 'text-on-surface'
-        }`}
-        aria-live="polite"
-      >
-        {meetingPhase === 'starting' || meetingPhase === 'stopping' || meetingPhase === 'processing' || status === 'processing' || status === 'starting' ? (
-          <span className="h-2 w-2 animate-spin rounded-full border border-primary/25 border-t-primary" aria-hidden="true" />
-        ) : status === 'recording' || meetingPhase === 'recording' ? (
-          <span
-            data-testid="main-recording-waveform"
-            className="flex h-3 w-4 shrink-0 items-center justify-center gap-px"
-            aria-hidden="true"
-          >
-            {waveformEnvelope.map((envelope, index) => (
-              <span
-                key={index}
-                className="w-px rounded-full bg-error"
-                style={{
-                  height: `${Math.max(2, Math.round((0.12 + normalizedAudioLevel * envelope) * 12))}px`,
-                  transition: 'height 50ms ease-out',
-                }}
-              />
-            ))}
-          </span>
-        ) : (
-          <span
-            aria-hidden="true"
-            className={`h-2 w-2 rounded-full ${
-              status === 'recovering' ? 'animate-pulse bg-warning' : initialized ? 'bg-success' : 'bg-outline-variant'
-            }`}
-          />
-        )}
-        <span>{label}</span>
-      </div>
+      {mode === 'main' && (
+        <div
+          data-testid="main-status-chip"
+          className={`ui-status-chip ${
+            status === 'recording' || meetingPhase === 'recording' ? 'text-error' : 'text-on-surface'
+          }`}
+          aria-live="polite"
+        >
+          {meetingPhase === 'starting' || meetingPhase === 'stopping' || meetingPhase === 'processing' || status === 'processing' || status === 'starting' ? (
+            <span className="h-2 w-2 animate-spin rounded-full border border-primary/25 border-t-primary" aria-hidden="true" />
+          ) : status === 'recording' || meetingPhase === 'recording' ? (
+            <span
+              data-testid="main-recording-waveform"
+              className="flex h-3 w-4 shrink-0 items-center justify-center gap-px"
+              aria-hidden="true"
+            >
+              {waveformEnvelope.map((envelope, index) => (
+                <span
+                  key={index}
+                  className="w-px rounded-full bg-error"
+                  style={{
+                    height: `${Math.max(2, Math.round((0.12 + normalizedAudioLevel * envelope) * 12))}px`,
+                    transition: 'height 50ms ease-out',
+                  }}
+                />
+              ))}
+            </span>
+          ) : (
+            <span
+              aria-hidden="true"
+              className={`h-2 w-2 rounded-full ${
+                status === 'recovering' ? 'animate-pulse bg-warning' : initialized ? 'bg-success' : 'bg-outline-variant'
+              }`}
+            />
+          )}
+          <span>{label}</span>
+        </div>
+      )}
 
       {buildBadge && (
         <span
