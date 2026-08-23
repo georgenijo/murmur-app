@@ -24,7 +24,9 @@ active, because leaving the step cannot cancel the underlying download safely:
    Privacy & Security → Screen & System Audio Recording. Skippable.
 5. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
    `ModelDownloader` gate); reads every offered model's install state from the
-   shared runtime catalog and shows "already installed" on re-runs.
+   shared runtime catalog and shows "already installed" on re-runs. Core ML
+   setup reports bounded phases from a killable worker; terminal failure
+   restores Back, Retry, and one-click Whisper Base / CPU Parakeet fallbacks.
 6. **Hotkey** — chooses Hold / Double-tap / Both and the trigger key.
 7. **Done** — live summary of the checks plus a quick-start card derived from
    the selected recording mode and trigger key.

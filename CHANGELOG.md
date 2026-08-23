@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- First-run Core ML installation now runs behind a bounded, killable process
+  boundary. Native hangs reach a terminal error, incomplete-cache repairs are
+  tracked across relaunches, and setup immediately restores Retry plus Whisper
+  Base and CPU Parakeet fallback choices (#641).
+
 ## [0.38.2] - 2026-08-23
 
 ### Added

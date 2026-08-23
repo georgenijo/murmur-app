@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 import {
+  correlatedModelDownloadAttempt,
   modelDownloadLabel,
   modelDownloadPercent,
   type ModelDownloadProgress,
@@ -74,19 +75,26 @@ export function ModelDownloadPanel({
   );
   const [downloadState, setDownloadState] = useState<DownloadState>({ phase: 'idle' });
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
+  const activeAttemptRef = useRef<number | null>(null);
+  const activeModelRef = useRef<ModelOption | null>(null);
 
   useEffect(() => {
     return () => {
       downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
+      activeAttemptRef.current = null;
+      activeModelRef.current = null;
     };
   }, []);
 
   const handleDownload = async () => {
+    const requestedModel = selected;
+    activeModelRef.current = requestedModel;
+    activeAttemptRef.current = null;
     onDownloadingChange?.(true);
     setDownloadState({
       phase: 'downloading',
-      progress: { received: 0, total: 0, phase: 'downloading' },
+      progress: { modelName: requestedModel, received: 0, total: 0, phase: 'downloading' },
     });
 
     // Single try/catch covering listen() as well as the download itself, so a
@@ -96,22 +104,35 @@ export function ModelDownloadPanel({
       const unlisten = await listen<ModelDownloadProgress>(
         'download-progress',
         (event) => {
+          const progress = event.payload;
+          if (activeModelRef.current !== requestedModel) return;
+          const attemptId = correlatedModelDownloadAttempt(
+            progress,
+            requestedModel,
+            activeAttemptRef.current,
+          );
+          if (attemptId === undefined) return;
+          activeAttemptRef.current = attemptId;
           setDownloadState({
             phase: 'downloading',
-            progress: event.payload,
+            progress,
           });
         }
       );
       downloadUnlistenRef.current = unlisten;
 
-      await invoke('download_model', { modelName: selected });
+      await invoke('download_model', { modelName: requestedModel });
       unlisten();
       downloadUnlistenRef.current = null;
+      activeAttemptRef.current = null;
+      activeModelRef.current = null;
       onDownloadingChange?.(false);
-      onComplete(selected);
+      onComplete(requestedModel);
     } catch (err) {
       downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
+      activeAttemptRef.current = null;
+      activeModelRef.current = null;
       onDownloadingChange?.(false);
       setDownloadState({
         phase: 'error',
@@ -125,6 +146,17 @@ export function ModelDownloadPanel({
 
   const isDownloading = downloadState.phase === 'downloading';
   const selectedInstalled = installedModels?.[selected] === true;
+  const selectModel = (model: ModelOption) => {
+    if (isDownloading) return;
+    setSelected(model);
+    setDownloadState({ phase: 'idle' });
+  };
+  const chooseFallback = (model: ModelOption) => {
+    selectModel(model);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`download-model-${model}`)?.focus();
+    });
+  };
   const primaryLabel = isDownloading
     ? progress ? modelDownloadLabel(progress) : 'Starting...'
     : selectedInstalled
@@ -146,9 +178,10 @@ export function ModelDownloadPanel({
           {MODELS.map((model) => (
             <button
               key={model.name}
+              id={`download-model-${model.name}`}
               type="button"
               aria-pressed={selected === model.name}
-              onClick={() => !isDownloading && setSelected(model.name)}
+              onClick={() => selectModel(model.name)}
               disabled={isDownloading}
               className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
                 selected === model.name
@@ -178,7 +211,7 @@ export function ModelDownloadPanel({
         </div>
 
         {isDownloading && (
-          <div className="mb-4">
+          <div className="mb-4" aria-live="polite" aria-busy="true">
             <div className="flex justify-between text-xs text-on-surface-variant mb-1">
               <span>{progress ? modelDownloadLabel(progress) : 'Starting...'}</span>
               {progressPercent !== null ? (
@@ -212,8 +245,26 @@ export function ModelDownloadPanel({
         )}
 
         {downloadState.phase === 'error' && (
-          <div className="mb-4 rounded-lg border border-error/30 bg-error/10 px-4 py-3">
+          <div role="alert" className="mb-4 rounded-lg border border-error/30 bg-error/10 px-4 py-3">
             <p className="text-sm text-error">{downloadState.message}</p>
+            {selected === 'parakeet-tdt-0.6b-v3-coreml' && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => chooseFallback('base.en')}
+                  className="rounded-lg border border-error/30 px-2.5 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/10"
+                >
+                  Use Whisper Base
+                </button>
+                <button
+                  type="button"
+                  onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')}
+                  className="rounded-lg border border-error/30 px-2.5 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/10"
+                >
+                  Use CPU Parakeet
+                </button>
+              </div>
+            )}
           </div>
         )}
 

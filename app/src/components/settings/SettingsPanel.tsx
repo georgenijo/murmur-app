@@ -45,6 +45,7 @@ import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
+  correlatedModelDownloadAttempt,
   modelDownloadLabel,
   modelDownloadPercent,
   type ModelDownloadProgress,
@@ -512,10 +513,12 @@ export const SettingsPanel = memo(function SettingsPanel({
   >({ phase: 'idle' });
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
   const downloadModelRef = useRef<string | null>(null);
+  const downloadAttemptRef = useRef<number | null>(null);
 
   useEffect(() => {
     setModelDownload({ phase: 'idle' });
     downloadModelRef.current = null;
+    downloadAttemptRef.current = null;
   }, [settings.model]);
   useEffect(() => () => {
     downloadUnlistenRef.current?.();
@@ -525,11 +528,21 @@ export const SettingsPanel = memo(function SettingsPanel({
   const downloadModel = useCallback(async () => {
     const modelName = settings.model;
     downloadModelRef.current = modelName;
-    setModelDownload({ phase: 'downloading', progress: { received: 0, total: 0, phase: 'downloading' } });
+    downloadAttemptRef.current = null;
+    setModelDownload({ phase: 'downloading', progress: { modelName, received: 0, total: 0, phase: 'downloading' } });
     let unlisten: (() => void) | null = null;
     try {
       unlisten = await listen<ModelDownloadProgress>('download-progress', (event) => {
-        if (downloadModelRef.current === modelName) setModelDownload({ phase: 'downloading', progress: event.payload });
+        const progress = event.payload;
+        if (downloadModelRef.current !== modelName) return;
+        const attemptId = correlatedModelDownloadAttempt(
+          progress,
+          modelName,
+          downloadAttemptRef.current,
+        );
+        if (attemptId === undefined) return;
+        downloadAttemptRef.current = attemptId;
+        setModelDownload({ phase: 'downloading', progress });
       });
       downloadUnlistenRef.current = unlisten;
       await invoke('download_model', { modelName });
@@ -541,7 +554,10 @@ export const SettingsPanel = memo(function SettingsPanel({
       downloadUnlistenRef.current = null;
       if (downloadModelRef.current === modelName) setModelDownload({ phase: 'error', message: String(error) });
     } finally {
-      if (downloadModelRef.current === modelName) downloadModelRef.current = null;
+      if (downloadModelRef.current === modelName) {
+        downloadModelRef.current = null;
+        downloadAttemptRef.current = null;
+      }
     }
   }, [settings.model]);
 

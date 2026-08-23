@@ -188,7 +188,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `check_specific_model_exists` | `model_name: String` | `bool` | Whether a named model is on disk. Path-traversal protected. |
 | `get_model_runtime_catalog` | — | `Vec<ModelRuntimeSnapshot>` | Every catalog entry with backend, accelerator, capabilities, platform support, install state, and lifecycle state. |
 | `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
-| `download_model` | `model_name: String` | `Result<(), String>` | Streaming download with `download-progress` events, atomic publication, and Silero VAD co-download. Core ML installs show an indeterminate Installing state during extraction/compilation. |
+| `download_model` | `model_name: String` | `Result<(), String>` | Single-flight install with attempt-correlated `download-progress`, atomic publication, and Silero VAD co-download. Core ML setup runs behind a same-signed killable process boundary with a hard deadline, durable incomplete-repair detection, confirmed cleanup, validation, Retry, and fallback-ready terminal errors. |
 
 ## Personal knowledge (`commands/knowledge.rs`)
 

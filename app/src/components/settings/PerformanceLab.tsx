@@ -22,6 +22,7 @@ import {
 } from '../../lib/benchmark';
 import { downloadModel } from '../../lib/dictation';
 import {
+  correlatedModelDownloadAttempt,
   modelDownloadLabel,
   modelDownloadPercent,
   type ModelDownloadProgress,
@@ -299,9 +300,14 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
     setDownloading(modelName);
     setDownloadProgress(null);
     let unlisten: (() => void) | undefined;
+    let attemptId: number | null = null;
     try {
       unlisten = await listen<ModelDownloadProgress>('download-progress', (event) => {
-        setDownloadProgress(event.payload);
+        const progress = event.payload;
+        const correlatedAttempt = correlatedModelDownloadAttempt(progress, modelName, attemptId);
+        if (correlatedAttempt === undefined) return;
+        attemptId = correlatedAttempt;
+        setDownloadProgress(progress);
       });
       await downloadModel(modelName);
       await refreshModels();

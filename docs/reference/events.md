@@ -55,7 +55,7 @@ sanitized, and the fleet log shipper drops the entire `meeting` stream.
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `download-progress` | `{received, total}` (bytes) | `commands/models.rs` | Periodically during transcription-model and VAD downloads. `total` may be 0 when the server omits `Content-Length`. | Settings download UI, `ModelDownloader`, onboarding. |
+| `download-progress` | `{modelName, attemptId, received, total, phase, repeatedRepair}` | `commands/models.rs` | During the exact requested model attempt. Byte downloads use `downloading`; Core ML uses `preparing`, `repairing`, `initializing`, and `validating`; archive extraction uses `installing`. `total` may be 0. Consumers lock to the first positive attempt ID for their requested model and ignore unrelated/stale events. | Settings download UI, `ModelDownloader`, onboarding, Performance Lab. |
 | `model-runtime-status-changed` | `ModelRuntimeSnapshot` | `model_runtime.rs` | On every lifecycle transition (selecting, loading, warming, ready, unloading, failed). Generation-ordered, so a stale load can't overwrite a newer status. | Settings, onboarding, Performance Lab. |
 | `transform-model-download-progress` | `{received, total, phase}` — `phase` is `"downloading"` \| `"installed"` | `commands/transform_model.rs` | While streaming the pinned local-LLM GGUF, and once on successful publication. | Settings → Transform. |
 
