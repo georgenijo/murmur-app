@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
-import type { HistoryEntry, HistoryStageResult } from '../../lib/history';
+import type { HistoryEntry } from '../../lib/history';
 import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 import { loadStats } from '../../lib/stats';
@@ -21,7 +21,6 @@ interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
   onClearHistory: () => void;
   onUpdateHistoryEntry: (id: string, text: string) => void;
-  onAddDerivedHistoryEntry?: (source: HistoryEntry, text: string, modeId: string, stages: HistoryStageResult[]) => void;
   focusSearchToken?: number;
   onTranscribeFile: () => void;
   status: DictationStatus;
@@ -46,7 +45,6 @@ export function HomeDashboard({
   historyEntries,
   onClearHistory,
   onUpdateHistoryEntry,
-  onAddDerivedHistoryEntry = () => {},
   focusSearchToken,
   onTranscribeFile,
   status,
@@ -122,8 +120,6 @@ export function HomeDashboard({
               entries={historyEntries}
               onClear={onClearHistory}
               onUpdateEntry={onUpdateHistoryEntry}
-              modes={settings.modes}
-              onAddDerived={onAddDerivedHistoryEntry}
               focusSearchToken={focusSearchToken}
               onTranscribeFile={onTranscribeFile}
             />

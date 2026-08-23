@@ -78,6 +78,16 @@ Three chips: **All**, **Mic**, **File**. Entries saved before the `source` field
 
 The counter on the right reads `N of M` while anything is filtered, and just the total otherwise.
 
+## Transcript rows
+
+Rows keep the transcript itself primary: their compact metadata contains only
+the timestamp and source, without per-entry word counts, durations, or repeated
+mode controls. Clicking any non-interactive part of a row copies the entry's
+full stored text, including text hidden behind **Show more**. A focused row does
+the same with Enter or Space and briefly announces **Copied**. Nested actions
+such as **Show more** and **Correct & Teach** retain their own behavior and do
+not trigger a copy.
+
 ## Clearing
 
 `Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
