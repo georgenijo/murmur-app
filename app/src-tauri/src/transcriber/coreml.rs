@@ -156,6 +156,10 @@ where
 }
 
 pub fn specific_model_exists(model_name: &str) -> bool {
+    #[cfg(debug_assertions)]
+    if std::env::var("MURMUR_COREML_FORCE_NOT_INSTALLED").as_deref() == Ok("1") {
+        return false;
+    }
     is_coreml_model(model_name)
         && cfg!(target_arch = "aarch64")
         && model_dir().as_deref().is_some_and(model_exists_at)

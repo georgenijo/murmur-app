@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::mpsc;
+#[cfg(debug_assertions)]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const WORKER_ARGUMENT: &str = "--coreml-install-worker-v1";
@@ -174,6 +176,12 @@ fn run_debug_scenario(scenario: &str) -> Option<i32> {
         })
     };
     let terminal = |outcome| emit_worker_message(&WorkerMessage::Terminal { outcome });
+    let success = || {
+        let _ = phase(InstallPhase::Initializing, false);
+        let _ = phase(InstallPhase::Validating, false);
+        let _ = terminal(WorkerOutcome::Success);
+        Some(0)
+    };
     match scenario {
         "hang" => {
             let _ = phase(InstallPhase::Initializing, false);
@@ -198,12 +206,31 @@ fn run_debug_scenario(scenario: &str) -> Option<i32> {
             let _ = terminal(WorkerOutcome::NativeInitializationFailed);
             Some(23)
         }
-        "success" => {
-            let _ = phase(InstallPhase::Initializing, false);
-            let _ = phase(InstallPhase::Validating, false);
-            let _ = terminal(WorkerOutcome::Success);
-            Some(0)
+        "hang_once_then_success" => {
+            let token = std::env::var("MURMUR_COREML_INSTALL_SCENARIO_TOKEN").ok()?;
+            let marker = std::env::temp_dir().join(format!("murmur-coreml-scenario-{token}"));
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&marker)
+            {
+                Ok(_) => {
+                    let _ = phase(InstallPhase::Initializing, false);
+                    loop {
+                        std::thread::park_timeout(Duration::from_secs(60));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let _ = std::fs::remove_file(marker);
+                    success()
+                }
+                Err(_) => {
+                    let _ = terminal(WorkerOutcome::NativeInitializationFailed);
+                    Some(24)
+                }
+            }
         }
+        "success" => success(),
         _ => None,
     }
 }
@@ -455,6 +482,13 @@ where
     #[cfg(debug_assertions)]
     if let Ok(scenario) = std::env::var("MURMUR_COREML_INSTALL_SCENARIO") {
         environment.push(("MURMUR_COREML_INSTALL_SCENARIO".to_string(), scenario));
+        static SCENARIO_TOKEN: OnceLock<String> = OnceLock::new();
+        environment.push((
+            "MURMUR_COREML_INSTALL_SCENARIO_TOKEN".to_string(),
+            SCENARIO_TOKEN
+                .get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
+                .clone(),
+        ));
     }
     supervise_process(&executable, &arguments, &environment, timeout, on_progress)
 }

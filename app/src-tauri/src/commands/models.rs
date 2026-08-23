@@ -82,6 +82,19 @@ fn log_install_terminal(
     );
 }
 
+#[cfg(debug_assertions)]
+fn debug_coreml_scenario_reports_success_without_cache() -> bool {
+    matches!(
+        std::env::var("MURMUR_COREML_INSTALL_SCENARIO").as_deref(),
+        Ok("success" | "hang_once_then_success")
+    )
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_coreml_scenario_reports_success_without_cache() -> bool {
+    false
+}
+
 #[tauri::command]
 pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
     state.app_state.model_runtime.any_model_installed()
@@ -242,7 +255,10 @@ pub async fn download_model(
             &model_name,
             InstallState::Validating,
         )?;
-        if !model_runtime::model_installed(&model_name) {
+        if !model_runtime::model_installed(&model_name)
+            && !(definition.install_kind == InstallKind::Coreml
+                && debug_coreml_scenario_reports_success_without_cache())
+        {
             terminal_evidence.outcome_code = "validation_failed";
             return Err("Model installation completed but validation failed".to_string());
         }
