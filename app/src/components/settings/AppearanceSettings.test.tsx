@@ -6,6 +6,7 @@ import type {
   ThemeImportPreview,
   ThemeLibraryEntryV1,
 } from "../../lib/appearance";
+import { resolveTheme } from "../../lib/appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 
 const mocks = vi.hoisted(() => ({
@@ -46,13 +47,18 @@ const tokens = {
 } as const;
 
 function controller(): AppearanceController {
+  const sonicTheme = { version: 1 as const, presetId: "sonic" as const };
   return {
     document: {
       version: 1,
       revision: 1,
       mode: "system",
       theme: { version: 1, presetId: "sonic" },
-      cache: { version: 1, light: tokens, dark: tokens },
+      cache: {
+        version: 1,
+        light: resolveTheme(sonicTheme, "light").tokens,
+        dark: resolveTheme(sonicTheme, "dark").tokens,
+      },
     },
     resolvedAppearance: "light",
     adjustments: [],
@@ -105,13 +111,19 @@ describe("AppearanceSettings", () => {
     const radios = Array.from(
       container.querySelectorAll('[role="radio"]'),
     ) as HTMLButtonElement[];
-    expect(
-      radios.map(
-        (radio) =>
-          radio.textContent?.trim().split("Follow")[0].split("Keep")[0],
-      ),
-    ).toEqual(["System", "Light", "Dark"]);
+    expect(radios.map((radio) => radio.getAttribute("aria-label"))).toEqual([
+      "Follow the system appearance",
+      "Use light mode",
+      "Use dark mode",
+    ]);
     expect(radios[0].getAttribute("aria-checked")).toBe("true");
+    expect(radios[0].textContent).toContain("✓SystemActive");
+    expect(radios[1].textContent).not.toContain("Active");
+    expect(
+      container.querySelector('[aria-labelledby="active-theme-heading"]')?.getAttribute("aria-live"),
+    ).toBe("polite");
+    expect(container.textContent).toContain("Active themeSonic");
+    expect(container.textContent).toContain("System appearance · Light right now");
 
     await act(async () => radios[2].click());
     expect(mocks.controller!.setMode).toHaveBeenCalledWith("dark");
@@ -137,6 +149,59 @@ describe("AppearanceSettings", () => {
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Start from the colors currently on screen");
     expect(container.textContent).not.toContain("Save current");
     expect(container.textContent).not.toContain("Choose dark style");
+  });
+
+  it("keeps System distinct from its resolved appearance and follows external changes", async () => {
+    mocks.controller!.resolvedAppearance = "dark";
+    await act(async () => root.render(<AppearanceSettings />));
+    expect(container.textContent).toContain("System appearance · Dark right now");
+    expect(
+      container.querySelector('[role="radio"][aria-checked="true"]')?.textContent,
+    ).toContain("System");
+
+    mocks.controller!.document.mode = "dark";
+    await act(async () => root.render(<AppearanceSettings />));
+    expect(container.textContent).toContain("Dark appearance");
+    expect(container.textContent).not.toContain("System appearance · Dark right now");
+    expect(
+      container.querySelector('[role="radio"][aria-checked="true"]')?.textContent,
+    ).toContain("DarkActive");
+  });
+
+  it("shows Custom when stale Sonic ownership contains customized values and returns after reset", async () => {
+    const customTheme = {
+      version: 1 as const,
+      presetId: "custom" as const,
+      accent: "#123456",
+    };
+    mocks.controller!.document.theme = customTheme;
+    mocks.controller!.document.selection = { light: "sonic", dark: "sonic" };
+    mocks.controller!.document.cache = {
+      version: 1,
+      light: resolveTheme(customTheme, "light").tokens,
+      dark: resolveTheme(customTheme, "dark").tokens,
+    };
+    await act(async () => root.render(<AppearanceSettings />));
+
+    expect(container.textContent).toContain("Active themeCustom");
+    expect(
+      container.querySelector('button[aria-label="Use Custom theme"]')?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      container.querySelector('button[aria-label="Use Sonic theme"]')?.getAttribute("aria-pressed"),
+    ).toBe("false");
+
+    const sonicTheme = { version: 1 as const, presetId: "sonic" as const };
+    mocks.controller!.document.theme = sonicTheme;
+    mocks.controller!.document.selection = { light: "sonic", dark: "sonic" };
+    mocks.controller!.document.cache = {
+      version: 1,
+      light: resolveTheme(sonicTheme, "light").tokens,
+      dark: resolveTheme(sonicTheme, "dark").tokens,
+    };
+    await act(async () => root.render(<AppearanceSettings />));
+    expect(container.textContent).toContain("Active themeSonic");
+    expect(container.querySelector('button[aria-label="Use Custom theme"]')).toBeNull();
   });
 
   it("consumes mode and reset rejections while preserving hook error UI", async () => {
@@ -257,8 +322,20 @@ describe("AppearanceSettings", () => {
         light: { primary: "#112233" },
         dark: { primary: "#ddeeff", "primary-dim": "#ccddee" },
       },
-      light: tokens,
-      dark: tokens,
+      light: resolveTheme({
+        version: 1,
+        presetId: "custom",
+        accent: "#123456",
+        light: { primary: "#112233" },
+        dark: { primary: "#ddeeff", "primary-dim": "#ccddee" },
+      }, "light").tokens,
+      dark: resolveTheme({
+        version: 1,
+        presetId: "custom",
+        accent: "#123456",
+        light: { primary: "#112233" },
+        dark: { primary: "#ddeeff", "primary-dim": "#ccddee" },
+      }, "dark").tokens,
       adjustments: [],
     };
     mocks.open.mockResolvedValue("/tmp/in.json");
@@ -301,6 +378,29 @@ describe("AppearanceSettings", () => {
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
     expect(container.textContent).not.toContain("Import preview");
     expect(container.textContent).not.toContain("token override");
+
+    mocks.controller!.library.document = {
+      version: 1,
+      revision: 1,
+      themes: [savedEntry],
+    };
+    mocks.controller!.document.mode = preview.mode;
+    mocks.controller!.document.theme = preview.theme;
+    mocks.controller!.document.selection = {
+      light: savedEntry.id,
+      dark: savedEntry.id,
+    };
+    mocks.controller!.document.cache = {
+      version: 1,
+      light: preview.light,
+      dark: preview.dark,
+    };
+    mocks.controller!.resolvedAppearance = "dark";
+    await act(async () => root.render(<AppearanceSettings />));
+    expect(container.textContent).toContain("Active themeImported theme");
+    expect(
+      container.querySelector('button[aria-label="Use Imported theme theme"]')?.getAttribute("aria-pressed"),
+    ).toBe("true");
 
     const createTheme = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Create theme"),
@@ -369,6 +469,11 @@ describe("AppearanceSettings", () => {
       themes: [light, dark, midnight],
     };
     mocks.controller!.document.selection = { light: light.id, dark: midnight.id };
+    mocks.controller!.document.cache = {
+      version: 1,
+      light: resolveTheme(light.theme, "light").tokens,
+      dark: resolveTheme(midnight.theme, "dark").tokens,
+    };
     mocks.controller!.resolvedAppearance = "dark";
     await act(async () => root.render(<AppearanceSettings />));
 
@@ -383,7 +488,8 @@ describe("AppearanceSettings", () => {
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(claudeCard.querySelector('[role="img"][aria-label^="Light preview"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");
-    expect(container.textContent).not.toContain("Active theme");
+    expect(container.textContent).toContain("Active themeClaude Theme");
+    expect(claudeCard.textContent).toContain("Active");
     expect(container.textContent).not.toContain("Partly active");
     expect(container.textContent).not.toContain("Choose dark style");
     expect(container.textContent).not.toContain("Claude Midnight (OLED Black)");

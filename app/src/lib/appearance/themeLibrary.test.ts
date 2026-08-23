@@ -6,6 +6,7 @@ import {
   appearanceSelection,
   composeThemeSelection,
   createAppearanceDocument,
+  effectiveAppearanceSelection,
   installThemeLibraryEntries,
   loadThemeLibrary,
   makeLocalThemeEntry,
@@ -162,6 +163,39 @@ describe('theme library selection', () => {
       presetId: 'custom',
       accent: '#123456',
     }))).toEqual({ light: 'custom', dark: 'custom' });
+  });
+
+  it('labels source ownership as Custom when the stored theme no longer matches it', () => {
+    const custom = createAppearanceDocument('system', {
+      version: 1,
+      presetId: 'custom',
+      accent: '#123456',
+    }, 1, { light: 'sonic', dark: 'sonic' });
+
+    expect(effectiveAppearanceSelection(custom, {
+      version: 1,
+      revision: 0,
+      themes: [],
+    })).toEqual({ light: 'custom', dark: 'custom' });
+
+    const imported = localTheme('paper-light', 'Paper');
+    const library = { version: 1 as const, revision: 1, themes: [imported] };
+    const preview = previewThemeLibrarySelection(
+      createAppearanceDocument(),
+      library,
+      imported.id,
+      'light',
+    );
+    const applied = createAppearanceDocument(
+      preview.mode,
+      preview.theme,
+      2,
+      preview.selection,
+    );
+    expect(effectiveAppearanceSelection(applied, library)).toEqual({
+      light: imported.id,
+      dark: 'sonic',
+    });
   });
 
   it('composes independently selected light and dark variants into the active cache', () => {

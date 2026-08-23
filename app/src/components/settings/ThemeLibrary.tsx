@@ -1,7 +1,7 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
-  appearanceSelection,
+  effectiveAppearanceSelection,
   previewThemeLibraryPairSelection,
   resolveTheme,
   type MurmurTokens,
@@ -259,6 +259,7 @@ function CollectionCard({
   customizeAsCopy = false,
   onExport,
   onRemove,
+  resolvedAppearance,
 }: {
   label: string;
   entries: readonly ThemeLibraryEntryV1[];
@@ -269,6 +270,7 @@ function CollectionCard({
   customizeAsCopy?: boolean;
   onExport?: (entry: ThemeLibraryEntryV1) => void;
   onRemove?: () => void;
+  resolvedAppearance: ResolvedAppearance;
 }) {
   const [radialOpen, setRadialOpen] = useState<ResolvedAppearance | null>(null);
   const labels = shortVariantLabels(entries);
@@ -284,6 +286,7 @@ function CollectionCard({
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
   const ids = new Set(entries.map((entry) => entry.id));
   const fullyActive = ids.has(selection.light) && ids.has(selection.dark);
+  const activeNow = ids.has(selection[resolvedAppearance]);
   const showVariantLabels = new Set(entries.map((entry) => entry.id)).size > 1;
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
     ?? groups[0]?.selected.entry;
@@ -296,8 +299,13 @@ function CollectionCard({
   return (
     <article
       data-theme-collection={label}
+      data-active={activeNow ? "true" : undefined}
       onClick={handleCardClick}
-      className="h-[94px] w-52 max-w-full cursor-pointer overflow-hidden rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest transition-colors hover:bg-surface-container-low"
+      className={`h-[94px] w-52 max-w-full cursor-pointer overflow-hidden rounded-xl border bg-surface-container-lowest transition-colors hover:bg-surface-container-low ${
+        activeNow
+          ? 'border-primary ring-2 ring-primary/35'
+          : 'border-on-surface-variant/70'
+      }`}
     >
       <div
         role="group"
@@ -339,7 +347,7 @@ function CollectionCard({
         <button
           type="button"
           aria-label={`Use ${label} theme`}
-          aria-pressed={fullyActive}
+          aria-pressed={activeNow}
           onClick={(event) => {
             event.stopPropagation();
             applyPair();
@@ -348,7 +356,12 @@ function CollectionCard({
         >
           <span className="inline-flex items-center gap-1.5">
             <span className="truncate">{label}</span>
-            {fullyActive && <span aria-label="Active theme" title="Active theme" className="text-xs font-bold text-primary">✓</span>}
+            {activeNow && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-on-surface">
+                <span aria-hidden="true">✓</span>
+                {fullyActive ? 'Active' : 'Active now'}
+              </span>
+            )}
           </span>
         </button>
         {(onCustomize || onExport || onRemove) && (
@@ -369,7 +382,10 @@ function CollectionCard({
 
 export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
   const appearance = useAppearance();
-  const selection = appearanceSelection(appearance.document);
+  const selection = effectiveAppearanceSelection(
+    appearance.document,
+    appearance.library.document,
+  );
   const [removeTarget, setRemoveTarget] = useState<{ label: string; ids: string[] } | null>(null);
   const [importMenuOpen, setImportMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -509,6 +525,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
           }}
           onCustomize={onCustomize}
           customizeAsCopy
+          resolvedAppearance={appearance.resolvedAppearance}
         />
         {(selection.light === 'custom' || selection.dark === 'custom') && (
           <CollectionCard
@@ -518,6 +535,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
             onApplyPair={applyCustom}
             onApplyMode={applyCustom}
             onCustomize={onCustomize}
+            resolvedAppearance={appearance.resolvedAppearance}
           />
         )}
         {groups.map(([key, group]) => (
@@ -530,6 +548,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
             onApplyMode={applyMode}
             onExport={(entry) => void exportEntry(entry)}
             onRemove={() => setRemoveTarget({ label: group.label, ids: group.entries.map((entry) => entry.id) })}
+            resolvedAppearance={appearance.resolvedAppearance}
           />
         ))}
       </div>
