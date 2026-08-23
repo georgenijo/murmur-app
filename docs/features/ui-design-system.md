@@ -41,7 +41,7 @@ The reusable CSS contracts are:
 - `.ui-filter-chip`
 - `.history-toolbar` / `.history-search` / `.history-list`
 - `.transcript-card` / `.transcript-meta` / `.transcript-text`
-- `.transcript-copy` / `.transcript-teach`
+- `.transcript-copy-feedback` / `.transcript-teach`
 - `.home-sidebar` / `.home-nav-item`
 - `.home-dashboard` / `.home-dashboard-grid`
 - `.home-recording-bar` / `.home-record-button`
@@ -60,8 +60,8 @@ Use these before creating a feature-local control or surface.
 | Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
 | Toolbar | 28px controls; search is 180px and expands to 260px on focus |
 | History | 5px list gap; cards use an 8px vertical inset |
-| Metadata | Time/source left; words/duration flush right |
-| Copy | Absolutely positioned at card bottom-right; never participates in metadata layout |
+| Metadata | Time/source only; word count and duration stay out of transcript rows |
+| Copy | The non-interactive card surface copies its full transcript; Enter and Space do the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
 | Insights | Counts come from durable local stats; personalization uses explicit milestones and never an opaque score |
 
@@ -73,8 +73,8 @@ in idle, recording, and processing states. Native title-bar work must be
 verified in a bundled Tauri app because a browser cannot reproduce the macOS
 traffic-light layout.
 
-Component tests enforce the stable header contracts and confirm that Copy is
-outside the transcript counts row. Native smoke testing covers Settings
+Component tests enforce the stable header contracts and confirm click-anywhere
+copy, keyboard copy, and nested-action isolation. Native smoke testing covers Settings
 navigation, transcript-card actions, and the history overflow menu.
 
 `npm run test:visual` runs Playwright goldens at 1180×760 for light and dark

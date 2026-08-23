@@ -166,13 +166,44 @@ describe('HistoryPanel', () => {
     const newestCard = Array.from(container.querySelectorAll('article')).find((card) =>
       card.textContent?.includes('remember the invariant'),
     )!;
-    const copy = newestCard.querySelector('.transcript-copy') as HTMLButtonElement;
-    await act(async () => copy.click());
+    await act(async () => (newestCard as HTMLElement).click());
 
     expect(writeText).toHaveBeenCalledOnce();
     expect(writeText).toHaveBeenCalledWith('remember the invariant');
     expect(container.textContent).toContain('Could not copy to the clipboard.');
-    expect(copy.dataset.copied).toBe('false');
+    expect(newestCard.getAttribute('data-copied')).toBe('false');
+  });
+
+  it('copies the full transcript by clicking the row and reports success', async () => {
+    const fullText = 'a complete transcript that can be visually truncated';
+    await render({ entries: [entry({ id: 'full', text: fullText })] });
+    const card = container.querySelector('[data-testid="transcript-card"]') as HTMLElement;
+
+    await act(async () => card.querySelector('.transcript-text')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(writeText).toHaveBeenCalledWith(fullText);
+    expect(card.dataset.copied).toBe('true');
+    expect(card.textContent).toContain('Copied');
+    expect(card.getAttribute('aria-label')).toContain('Press Enter or Space to copy');
+  });
+
+  it.each(['Enter', ' '])('copies the focused row with %j', async (key) => {
+    await render({ entries: [entry({ id: 'keyboard', text: 'keyboard copy' })] });
+    const card = container.querySelector('[data-testid="transcript-card"]') as HTMLElement;
+    await act(async () => card.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
+    expect(writeText).toHaveBeenCalledWith('keyboard copy');
+  });
+
+  it('does not copy when nested transcript actions are used', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} });
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(20);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(80);
+    await render({ entries: [entry({ id: 'nested', text: 'long transcript for nested controls' })] });
+
+    await act(async () => byText('Show more')!.click());
+    expect(writeText).not.toHaveBeenCalled();
+    await act(async () => byText('Correct & Teach')!.click());
+    expect(writeText).not.toHaveBeenCalled();
   });
 
   it('saves an export through the native dialog and the validated command', async () => {
@@ -285,20 +316,10 @@ describe('HistoryPanel', () => {
     expect(onTranscribeFile).toHaveBeenCalledOnce();
   });
 
-  it('reformats retained raw text into a derived entry without mutating the source', async () => {
-    const source = entry({ id: 'raw', text: 'Delivered text.', rawText: 'um delivered text' });
-    const onAddDerived = vi.fn();
-    invoke.mockResolvedValueOnce({
-      text: 'Delivered text', modeId: 'builtin.everyday', stages: [],
-    });
-    await render({ entries: [source], onAddDerived });
-    await act(async () => byText('Apply mode…')!.click());
-    expect(container.textContent).toContain('does not process the audio again');
-    await act(async () => byText('Create version')!.click());
-    expect(invoke).toHaveBeenCalledWith('reformat_history_text', {
-      rawText: 'um delivered text', modeId: 'builtin.everyday',
-    });
-    expect(onAddDerived).toHaveBeenCalledWith(source, 'Delivered text', 'builtin.everyday', []);
-    expect(source.text).toBe('Delivered text.');
+  it('omits secondary row metadata and mode controls', async () => {
+    await render({ entries: [entry({ id: 'raw', text: 'Delivered text.', rawText: 'um delivered text' })] });
+    expect(container.querySelector('[data-testid="transcript-counts"]')).toBeNull();
+    expect(container.textContent).not.toContain('Apply mode');
+    expect(container.querySelector('.transcript-copy')).toBeNull();
   });
 });

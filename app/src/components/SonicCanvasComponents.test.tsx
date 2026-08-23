@@ -106,7 +106,7 @@ describe('Sonic Canvas component details', () => {
     expect(onDone).toHaveBeenCalledOnce();
   });
 
-  it('shows a word-count badge on each history card', async () => {
+  it('keeps word counts and durations out of history cards', async () => {
     await act(async () => {
       root.render(
         <HistoryPanel
@@ -122,8 +122,8 @@ describe('Sonic Canvas component details', () => {
       );
     });
 
-    expect(container.textContent).toContain('4 words');
-    expect(container.textContent).toContain('3s');
+    expect(container.textContent).not.toContain('4 words');
+    expect(container.textContent).not.toContain('3s');
     expect(container.textContent).not.toContain('3.1949375s');
   });
 
@@ -290,7 +290,7 @@ describe('Sonic Canvas component details', () => {
     expect(record.querySelector('.font-mono')).toBeNull();
   });
 
-  it('preserves history copy and confirmed clear actions', async () => {
+  it('preserves click-anywhere history copy and confirmed clear actions', async () => {
     const onClear = vi.fn();
 
     await act(async () => {
@@ -308,11 +308,10 @@ describe('Sonic Canvas component details', () => {
       );
     });
 
-    const copyButton = container.querySelector('[aria-label^="Copy transcription"]') as HTMLButtonElement;
-    const counts = container.querySelector('[data-testid="transcript-counts"]')!;
-    expect(counts.contains(copyButton)).toBe(false);
-    expect(copyButton.closest('[data-testid="transcript-card"]')).not.toBeNull();
-    await act(async () => copyButton.click());
+    const card = container.querySelector('[data-testid="transcript-card"]') as HTMLElement;
+    expect(card.getAttribute('aria-label')).toContain('Press Enter or Space to copy');
+    expect(container.querySelector('[data-testid="transcript-counts"]')).toBeNull();
+    await act(async () => card.click());
     expect(writeText).toHaveBeenCalledWith('Keep every interaction working');
 
     // Clearing is a two-step confirm — the first click only arms it.

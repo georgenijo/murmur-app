@@ -116,9 +116,9 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-history-card-y: 0.5rem;');
   });
 
-  it('keeps transcript copy actions out of metadata layout', () => {
+  it('positions transcript copy feedback without adding row controls', () => {
     expect(css).toMatch(
-      /\.transcript-copy\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
+      /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
     );
   });
 

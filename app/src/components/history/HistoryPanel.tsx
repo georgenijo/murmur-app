@@ -1,20 +1,16 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_FILTER_OPTIONS,
   entrySource,
   filterHistory,
-  formatDuration,
   formatTimestamp,
   matchSegments,
   sortForDisplay,
   type HistoryEntry,
   type HistoryExportFormat,
   type HistoryFilter,
-  type HistoryStageResult,
 } from '../../lib/history';
-import { reformatHistoryText } from '../../lib/historyReformat';
-import { BUILTIN_MODES, type MurmurMode } from '../../lib/settings';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { flog } from '../../lib/log';
 import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
@@ -27,8 +23,6 @@ interface HistoryPanelProps {
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
-  modes?: MurmurMode[];
-  onAddDerived?: (source: HistoryEntry, text: string, modeId: string, stages: HistoryStageResult[]) => void;
 }
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
@@ -92,7 +86,10 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
       {(overflows || expanded) && (
         <button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded((value) => !value);
+          }}
           className="mt-0.5 rounded px-0.5 py-0.5 text-xs font-semibold text-on-surface-variant hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           {expanded ? 'Show less' : 'Show more'}
@@ -108,8 +105,6 @@ export function HistoryPanel({
   onUpdateEntry,
   focusSearchToken,
   onTranscribeFile = () => {},
-  modes = [],
-  onAddDerived = () => {},
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
@@ -118,9 +113,6 @@ export function HistoryPanel({
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [reformatEntry, setReformatEntry] = useState<HistoryEntry | null>(null);
-  const [reformatModeId, setReformatModeId] = useState('builtin.everyday');
-  const [reformatBusy, setReformatBusy] = useState(false);
   const copyGroupId = useId();
   const saveGroupId = useId();
   const exportPanelId = useId();
@@ -182,23 +174,6 @@ export function HistoryPanel({
   // Correct-and-Teach only ever targets the newest entry in the whole history,
   // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
-  const availableModes = useMemo(() => [...BUILTIN_MODES, ...modes.filter((mode) => mode.enabled)], [modes]);
-
-  const handleReformat = async () => {
-    if (!reformatEntry?.rawText) return;
-    setReformatBusy(true);
-    try {
-      const result = await reformatHistoryText(reformatEntry.rawText, reformatModeId);
-      onAddDerived(reformatEntry, result.text, result.modeId, result.stages);
-      setReformatEntry(null);
-      showNotice('Created a new reformatted history entry.');
-    } catch {
-      showNotice('Could not reformat this history entry.');
-    } finally {
-      setReformatBusy(false);
-    }
-  };
-
   const handleCopy = async (entry: HistoryEntry) => {
     try {
       await navigator.clipboard.writeText(entry.text);
@@ -209,6 +184,11 @@ export function HistoryPanel({
       showNotice('Could not copy to the clipboard.');
       flog.warn('main', 'History copy failed', { error: String(err) });
     }
+  };
+
+  const handleCardClick = (event: ReactMouseEvent<HTMLElement>, entry: HistoryEntry) => {
+    if (event.target !== event.currentTarget && (event.target as HTMLElement).closest('button, a, input, select, textarea')) return;
+    void handleCopy(entry);
   };
 
   const handleCopyExport = async (format: HistoryExportFormat) => {
@@ -412,7 +392,6 @@ export function HistoryPanel({
             <button type="button" onClick={() => { setQuery(''); setFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
           </div>
         ) : visible.map((entry, index) => {
-          const wordCount = entry.text.trim() ? entry.text.trim().split(/\s+/).length : 0;
           const isNewest = entry.id === newestId;
           const showDayLabel = index === 0 || historyDayKey(entry.timestamp) !== historyDayKey(visible[index - 1].timestamp);
           const endsDay = index === visible.length - 1 || historyDayKey(entry.timestamp) !== historyDayKey(visible[index + 1].timestamp);
@@ -423,6 +402,15 @@ export function HistoryPanel({
                 data-testid="transcript-card"
                 data-copied={copiedId === entry.id}
                 data-day-end={endsDay}
+                role="group"
+                tabIndex={0}
+                aria-label={`Transcription from ${formatTimestamp(entry.timestamp)}. Press Enter or Space to copy.`}
+                onClick={(event) => handleCardClick(event, entry)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  event.preventDefault();
+                  void handleCopy(entry);
+                }}
                 className="transcript-card group"
               >
               <div className="transcript-meta">
@@ -448,40 +436,21 @@ export function HistoryPanel({
                     </span>
                   )}
                 </div>
-                <div data-testid="transcript-counts" className="ml-auto flex shrink-0 items-center gap-1.5">
-                  <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-                  <span className="font-mono text-xs">{formatDuration(entry.duration)}</span>
-                </div>
               </div>
               <ClampedTranscript text={entry.text} query={query} />
-              <button
-                type="button"
-                onClick={() => void handleCopy(entry)}
-                aria-label={`Copy transcription from ${formatTimestamp(entry.timestamp)}`}
-                data-copied={copiedId === entry.id}
-                className={`transcript-copy focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                  copiedId === entry.id ? 'text-success' : ''
-                }`}
-              >
-                {copiedId === entry.id ? 'Copied' : 'Copy'}
-              </button>
+              <span className="transcript-copy-feedback" role="status" aria-live="polite">
+                {copiedId === entry.id ? 'Copied' : ''}
+              </span>
               {isNewest && (
                 <button
                   type="button"
-                  onClick={() => setTeachingEntry(entry)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setTeachingEntry(entry);
+                  }}
                   className="transcript-teach focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   Correct &amp; Teach
-                </button>
-              )}
-              {entry.rawText !== undefined && !entry.derived && (
-                <button
-                  type="button"
-                  onClick={() => setReformatEntry(entry)}
-                  title="Create another version from the raw transcript using a different mode"
-                  className="transcript-reformat focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  Apply mode…
                 </button>
               )}
               {entry.derived && <span className="transcript-derived">Reformatted · {entry.derived.modeId}</span>}
@@ -497,18 +466,6 @@ export function HistoryPanel({
           onClose={() => setTeachingEntry(null)}
           onSaveCorrection={(text) => onUpdateEntry(teachingEntry.id, text)}
         />
-      )}
-      {reformatEntry && (
-        <div role="dialog" aria-modal="true" aria-label="Apply a mode to history entry" className="absolute inset-0 z-30 grid place-items-center bg-scrim/35 p-6">
-          <div className="w-full max-w-sm rounded-xl bg-surface-container-lowest p-4 shadow-xl">
-            <h2 className="text-sm font-semibold text-on-surface">Apply a different mode</h2>
-            <p className="mt-1 text-xs text-on-surface-variant">Creates a new version from the raw transcript using the selected mode's cleanup and formatting rules. It does not process the audio again or change the original.</p>
-            <select aria-label="Mode" value={reformatModeId} onChange={(event) => setReformatModeId(event.target.value)} className="mt-3 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm">
-              {availableModes.map((mode) => <option key={mode.id} value={mode.id}>{mode.name}</option>)}
-            </select>
-            <div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setReformatEntry(null)} className="rounded-lg px-3 py-2 text-xs">Cancel</button><button type="button" disabled={reformatBusy} onClick={() => void handleReformat()} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-50">{reformatBusy ? 'Applying…' : 'Create version'}</button></div>
-          </div>
-        </div>
       )}
     </div>
   );
