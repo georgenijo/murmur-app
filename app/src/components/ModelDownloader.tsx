@@ -146,6 +146,8 @@ export function ModelDownloadPanel({
           {MODELS.map((model) => (
             <button
               key={model.name}
+              type="button"
+              aria-pressed={selected === model.name}
               onClick={() => !isDownloading && setSelected(model.name)}
               disabled={isDownloading}
               className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${

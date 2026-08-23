@@ -252,37 +252,20 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">
-        {/* Persistent wizard navigation */}
-        <div className="relative mb-10 flex min-h-8 items-center justify-center">
-          {step !== 'welcome' && (
-            <button
-              type="button"
-              onClick={goBack}
-              disabled={modelDownloading}
-              aria-label="Go back to the previous setup step"
-              title={modelDownloading ? 'Please wait for the model download to finish' : undefined}
-              className="absolute left-0 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <svg
-                aria-hidden="true"
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="m15 18-6-6 6-6" />
-              </svg>
-              Back
-            </button>
-          )}
+        {/* Persistent wizard progress */}
+        <div className="mb-10 flex items-center justify-center">
           <div
             className="flex items-center justify-center gap-2"
+            role="progressbar"
             aria-label={`Step ${stepIndex + 1} of ${STEP_ORDER.length}`}
+            aria-valuemin={1}
+            aria-valuemax={STEP_ORDER.length}
+            aria-valuenow={stepIndex + 1}
           >
             {STEP_ORDER.map((s, i) => (
               <span
                 key={s}
+                aria-hidden="true"
                 className={`h-1.5 rounded-full transition-all duration-300 ${
                   i === stepIndex
                     ? 'w-6 bg-primary'
@@ -373,7 +356,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <p className="mb-4 text-xs text-error">{micError}</p>
             )}
 
-            <WizardFooter
+            <WizardNavigationRow
+              onBack={goBack}
               onNext={goNext}
               nextEnabled={micGranted}
               nextLabel="Continue"
@@ -426,7 +410,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <p className="mb-4 text-xs text-error">{axError}</p>
             )}
 
-            <WizardFooter
+            <WizardNavigationRow
+              onBack={goBack}
               onNext={goNext}
               nextEnabled={axGranted === true}
               nextLabel="Continue"
@@ -476,7 +461,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {systemAudioError && <p className="mb-4 text-xs text-error">{systemAudioError}</p>}
-            <WizardFooter
+            <WizardNavigationRow
+              onBack={goBack}
               onNext={goNext}
               nextEnabled={systemAudioStatus === 'granted'}
               nextLabel="Continue"
@@ -497,13 +483,30 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </p>
 
             {installedModels === null ? (
-              <div className="h-24" />
+              <>
+                <div className="h-24" />
+                <WizardNavigationRow
+                  onBack={goBack}
+                  onNext={() => {}}
+                  nextEnabled={false}
+                  nextLabel="Loading…"
+                />
+              </>
             ) : (
               <div>
                 <ModelDownloadPanel
                   initialModel={preferredModel}
                   installedModels={installedModels}
                   onDownloadingChange={setModelDownloading}
+                  renderPrimaryAction={({ label, disabled, onActivate }) => (
+                    <WizardNavigationRow
+                      onBack={goBack}
+                      backDisabled={modelDownloading || disabled}
+                      onNext={onActivate}
+                      nextEnabled={!disabled}
+                      nextLabel={label}
+                    />
+                  )}
                   onComplete={(model) => {
                     setInstalledModel(model);
                     setModelInstalled(true);
@@ -527,7 +530,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             <div className="mb-6 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
               <div className="border-b border-outline-variant/15 p-4">
                 <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
-                <div className="grid grid-cols-3 gap-2">
+                <div role="group" aria-label="Recording trigger" className="grid grid-cols-3 gap-2">
                   {([
                     ['hold_down', 'Hold Down'],
                     ['double_tap', 'Double-Tap'],
@@ -536,6 +539,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                     <button
                       key={value}
                       type="button"
+                      aria-pressed={selectedRecordingMode === value}
                       onClick={() => setSelectedRecordingMode(value)}
                       className={`rounded-full px-3 py-2 text-xs font-semibold transition-colors ${
                         selectedRecordingMode === value
@@ -549,8 +553,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 </div>
               </div>
               <div className="p-4">
-                <label className="mb-2 block text-sm font-medium text-on-surface">Trigger Key</label>
+                <label htmlFor="onboarding-trigger-key" className="mb-2 block text-sm font-medium text-on-surface">Trigger Key</label>
                 <select
+                  id="onboarding-trigger-key"
                   value={selectedTriggerKey}
                   onChange={(event) => setSelectedTriggerKey(event.target.value as DoubleTapKey)}
                   className="h-10 w-full rounded-xl border border-outline-variant bg-surface-container-high px-3 text-sm text-on-surface"
@@ -562,7 +567,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
             </div>
 
-            <WizardFooter onNext={goNext} nextEnabled nextLabel="Continue" />
+            <WizardNavigationRow
+              onBack={goBack}
+              onNext={goNext}
+              nextEnabled
+              nextLabel="Continue"
+            />
           </div>
         )}
 
@@ -600,12 +610,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </p>
             </div>
 
-            <button
-              onClick={() => onComplete(installedModel, selectedRecordingMode, selectedTriggerKey)}
-              className="w-full rounded-full bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-3 text-sm font-bold text-on-primary shadow-[0_8px_22px_color-mix(in_srgb,var(--murmur-primary)_20%,transparent)] transition-[filter,transform] hover:brightness-105 active:scale-[0.99]"
-            >
-              Start Using Murmur
-            </button>
+            <WizardNavigationRow
+              onBack={goBack}
+              onNext={() => onComplete(installedModel, selectedRecordingMode, selectedTriggerKey)}
+              nextEnabled
+              nextLabel="Start Using Murmur"
+            />
           </div>
         )}
       </div>
@@ -647,13 +657,17 @@ function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: st
   );
 }
 
-function WizardFooter({
+function WizardNavigationRow({
+  onBack,
+  backDisabled = false,
   onNext,
   nextEnabled,
   nextLabel,
   skippable = false,
   skipLabel = 'Skip',
 }: {
+  onBack: () => void;
+  backDisabled?: boolean;
   onNext: () => void;
   nextEnabled: boolean;
   nextLabel: string;
@@ -661,10 +675,31 @@ function WizardFooter({
   skipLabel?: string;
 }) {
   return (
-    <div className="flex items-center justify-end">
-      <div className="flex items-center gap-3">
+    <nav aria-label="Setup step actions" className="flex items-center justify-between gap-4">
+      <button
+        type="button"
+        onClick={onBack}
+        disabled={backDisabled}
+        aria-label="Go back to the previous setup step"
+        title={backDisabled ? 'Please wait for the model download to finish' : undefined}
+        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <svg
+          aria-hidden="true"
+          className="h-4 w-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="m15 18-6-6 6-6" />
+        </svg>
+        Back
+      </button>
+      <div role="group" aria-label="Step actions" className="ml-auto flex items-center gap-3">
         {skippable && (
           <button
+            type="button"
             onClick={onNext}
             className="text-xs text-on-surface-variant hover:text-on-surface-variant transition-colors"
           >
@@ -672,6 +707,7 @@ function WizardFooter({
           </button>
         )}
         <button
+          type="button"
           onClick={onNext}
           disabled={!nextEnabled}
           className="py-2 px-5 bg-primary hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed text-on-primary text-sm font-medium rounded-lg transition-colors"
@@ -679,7 +715,7 @@ function WizardFooter({
           {nextLabel}
         </button>
       </div>
-    </div>
+    </nav>
   );
 }
 
