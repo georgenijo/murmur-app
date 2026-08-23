@@ -522,18 +522,23 @@ where
         termination_confirmed: true,
     })?;
     let arguments = [WORKER_ARGUMENT, model_name];
-    let mut environment = Vec::new();
     #[cfg(debug_assertions)]
-    if let Ok(scenario) = std::env::var("MURMUR_COREML_INSTALL_SCENARIO") {
-        environment.push(("MURMUR_COREML_INSTALL_SCENARIO".to_string(), scenario));
-        static SCENARIO_TOKEN: OnceLock<String> = OnceLock::new();
-        environment.push((
-            "MURMUR_COREML_INSTALL_SCENARIO_TOKEN".to_string(),
-            SCENARIO_TOKEN
-                .get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
-                .clone(),
-        ));
-    }
+    let environment = {
+        let mut environment = Vec::new();
+        if let Ok(scenario) = std::env::var("MURMUR_COREML_INSTALL_SCENARIO") {
+            environment.push(("MURMUR_COREML_INSTALL_SCENARIO".to_string(), scenario));
+            static SCENARIO_TOKEN: OnceLock<String> = OnceLock::new();
+            environment.push((
+                "MURMUR_COREML_INSTALL_SCENARIO_TOKEN".to_string(),
+                SCENARIO_TOKEN
+                    .get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
+                    .clone(),
+            ));
+        }
+        environment
+    };
+    #[cfg(not(debug_assertions))]
+    let environment: Vec<(String, String)> = Vec::new();
     supervise_process(&executable, &arguments, &environment, timeout, on_progress)
 }
 
