@@ -100,18 +100,16 @@ for (const state of ['recording', 'update-recovering', 'settings'] as const) {
     await page.goto(`/visual-fixtures.html?state=${state}&appearance=light`);
 
     const header = page.locator('.ui-window-header');
-    const items = [
-      header.getByTestId('main-status-chip'),
-      ...(state === 'settings'
-        ? [
-            header.locator('.ui-window-wordmark'),
-            header.getByText('Settings', { exact: true }),
-            header.getByRole('button', { name: 'Done' }),
-          ]
-        : [
-            header.getByRole('button', { name: 'Open settings' }),
-          ]),
-    ];
+    const items = state === 'settings'
+      ? [
+          header.locator('.ui-window-wordmark'),
+          header.getByText('Settings', { exact: true }),
+          header.getByRole('button', { name: 'Done' }),
+        ]
+      : [
+          header.getByTestId('main-status-chip'),
+          header.getByRole('button', { name: 'Open settings' }),
+        ];
     const [headerBox, centers] = await Promise.all([
       header.boundingBox(),
       Promise.all(items.map((item) => item.evaluate((element) => {
