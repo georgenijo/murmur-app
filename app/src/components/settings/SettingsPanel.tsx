@@ -13,16 +13,21 @@ import {
   DOUBLE_TAP_KEY_OPTIONS,
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
+  PASTE_LAST_SHORTCUT_OPTIONS,
   RECORDING_MODE_OPTIONS,
   QUERY_CONTEXT_LEVEL_OPTIONS,
   QUERY_KEY_OPTIONS,
   TRANSFORM_KEY_OPTIONS,
+  pasteLastShortcutConflict,
+  pasteLastShortcutLabel,
+  type PasteLastShortcut,
   type QueryKey,
   type QueryProviderId,
   type RecordingMode,
   type Settings,
   type TransformKey,
 } from '../../lib/settings';
+import { setPasteLastShortcut } from '../../lib/deliveryRecovery';
 import {
   CUSTOM_QUERY_PRESET,
   launchQueryProviderSignIn,
@@ -588,6 +593,8 @@ export const SettingsPanel = memo(function SettingsPanel({
   // Shortcut-picker failures get their own error line, separate from the model
   // block's error slot (#312 D1 round-2 finding 8).
   const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
+  const [pasteLastShortcutError, setPasteLastShortcutError] = useState<string | null>(null);
+  const [pasteLastShortcutBusy, setPasteLastShortcutBusy] = useState(false);
   const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
   const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
   const [queryConfigNotice, setQueryConfigNotice] = useState<string | null>(null);
@@ -737,6 +744,27 @@ export const SettingsPanel = memo(function SettingsPanel({
       onUpdateSettings({ transformHoldKey: next });
     } catch (e) {
       setTransformKeyError(String(e));
+    }
+  };
+
+  const updatePasteLastShortcut = async (next: PasteLastShortcut | null) => {
+    setPasteLastShortcutError(null);
+    const conflict = pasteLastShortcutConflict(next, settings);
+    if (conflict) {
+      setPasteLastShortcutError(conflict);
+      return;
+    }
+    setPasteLastShortcutBusy(true);
+    try {
+      // The native command changes the active chord atomically. Persist only
+      // after it succeeds, so a registration/permission failure leaves both
+      // the listener and controlled picker on the last working value.
+      await setPasteLastShortcut(next);
+      onUpdateSettings({ pasteLastShortcut: next });
+    } catch (error) {
+      setPasteLastShortcutError(String(error));
+    } finally {
+      setPasteLastShortcutBusy(false);
     }
   };
 
@@ -1924,13 +1952,34 @@ export const SettingsPanel = memo(function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">Auto-paste and file output happen afterward, so the finished text remains recoverable.</p>
             </div>
             <SettingToggle targetId="auto-paste" title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
-            <SettingToggle
-              targetId="paste-last-shortcut"
-              title="Paste Last Shortcut"
-              description="Press ⌘⇧V anywhere to retry the latest completed delivery. Uses the same secure target checks."
-              checked={settings.pasteLastShortcutEnabled}
-              onChange={() => onUpdateSettings({ pasteLastShortcutEnabled: !settings.pasteLastShortcutEnabled })}
-            />
+            <div data-setting-target="paste-last-shortcut" className="space-y-2 rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <p className="block text-sm font-medium text-on-surface">
+                Paste Last Shortcut
+              </p>
+              <Select
+                aria-label="Paste Last Shortcut"
+                value={settings.pasteLastShortcut ?? 'disabled'}
+                disabled={pasteLastShortcutBusy}
+                onChange={(value) => {
+                  void updatePasteLastShortcut(
+                    value === 'disabled' ? null : value as PasteLastShortcut,
+                  );
+                }}
+                items={PASTE_LAST_SHORTCUT_OPTIONS}
+              />
+              <p className="text-xs leading-relaxed text-on-surface-variant">
+                {settings.pasteLastShortcut === null
+                  ? 'Disabled. Choose a shortcut to retry the latest completed delivery from anywhere.'
+                  : `Active: ${pasteLastShortcutLabel(settings.pasteLastShortcut)}. Retried text uses the same secure target checks.`}
+              </p>
+              {pasteLastShortcutError && <p role="alert" className="text-xs text-error">{pasteLastShortcutError}</p>}
+              {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
+                <div className="flex items-center gap-2 text-xs text-primary">
+                  <span>Accessibility permission is required for the global Paste Last shortcut.</span>
+                  <button type="button" onClick={requestAccessibility} className="underline">Grant</button>
+                </div>
+              )}
+            </div>
             {settings.autoPaste && saveToFile && <p role="status" className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
             {autoPasteOn && accessibilityGranted !== null && <div className={`flex items-center gap-2 text-xs ${accessibilityGranted ? 'text-success ' : 'text-primary '}`}><span>{accessibilityGranted ? 'Accessibility permission granted' : 'Accessibility permission required'}</span>{accessibilityGranted === false && <button type="button" onClick={requestAccessibility} className="underline">Grant</button>}</div>}
             {autoPasteOn && <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />}

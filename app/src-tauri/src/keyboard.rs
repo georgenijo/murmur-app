@@ -775,9 +775,42 @@ static QUERY_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static QUERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_LAST_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteLastShortcut {
+    CommandShiftV,
+    CommandOptionV,
+    CommandControlV,
+}
+
+impl PasteLastShortcut {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "command_shift_v" => Some(Self::CommandShiftV),
+            "command_option_v" => Some(Self::CommandOptionV),
+            "command_control_v" => Some(Self::CommandControlV),
+            _ => None,
+        }
+    }
+}
+
+pub fn is_paste_last_shortcut_id(id: &str) -> bool {
+    PasteLastShortcut::from_id(id).is_some()
+}
+
+static PASTE_LAST_SHORTCUT: Mutex<Option<PasteLastShortcut>> = Mutex::new(None);
 static PASTE_LAST_META_DOWN: AtomicBool = AtomicBool::new(false);
 static PASTE_LAST_SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
+static PASTE_LAST_OPTION_DOWN: AtomicBool = AtomicBool::new(false);
+static PASTE_LAST_CONTROL_DOWN: AtomicBool = AtomicBool::new(false);
 static PASTE_LAST_LATCHED: AtomicBool = AtomicBool::new(false);
+
+fn reset_paste_last_chord_state() {
+    PASTE_LAST_META_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_OPTION_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_CONTROL_DOWN.store(false, Ordering::SeqCst);
+    PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+}
 
 fn handle_paste_last_chord(event_type: &EventType) -> bool {
     match event_type {
@@ -795,9 +828,35 @@ fn handle_paste_last_chord(event_type: &EventType) -> bool {
             PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
             PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
         }
+        EventType::KeyPress(Key::Alt | Key::AltGr) => {
+            PASTE_LAST_OPTION_DOWN.store(true, Ordering::SeqCst);
+        }
+        EventType::KeyRelease(Key::Alt | Key::AltGr) => {
+            PASTE_LAST_OPTION_DOWN.store(false, Ordering::SeqCst);
+            PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+        }
+        EventType::KeyPress(Key::ControlLeft | Key::ControlRight) => {
+            PASTE_LAST_CONTROL_DOWN.store(true, Ordering::SeqCst);
+        }
+        EventType::KeyRelease(Key::ControlLeft | Key::ControlRight) => {
+            PASTE_LAST_CONTROL_DOWN.store(false, Ordering::SeqCst);
+            PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+        }
         EventType::KeyPress(Key::KeyV)
             if PASTE_LAST_META_DOWN.load(Ordering::SeqCst)
-                && PASTE_LAST_SHIFT_DOWN.load(Ordering::SeqCst)
+                && PASTE_LAST_SHORTCUT.lock_or_recover().is_some_and(
+                    |shortcut| match shortcut {
+                        PasteLastShortcut::CommandShiftV => {
+                            PASTE_LAST_SHIFT_DOWN.load(Ordering::SeqCst)
+                        }
+                        PasteLastShortcut::CommandOptionV => {
+                            PASTE_LAST_OPTION_DOWN.load(Ordering::SeqCst)
+                        }
+                        PasteLastShortcut::CommandControlV => {
+                            PASTE_LAST_CONTROL_DOWN.load(Ordering::SeqCst)
+                        }
+                    },
+                )
                 && !PASTE_LAST_LATCHED.swap(true, Ordering::SeqCst) =>
         {
             return true;
@@ -1482,19 +1541,32 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
     }
 }
 
-pub fn start_paste_last_listener(app_handle: tauri::AppHandle) {
-    PASTE_LAST_META_DOWN.store(false, Ordering::SeqCst);
-    PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
-    PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
-    PASTE_LAST_ACTIVE.store(true, Ordering::SeqCst);
+fn configure_paste_last_shortcut(shortcut: Option<&str>) -> Result<(), String> {
+    // Resolve first: a bad replacement must not tear down the working target.
+    let shortcut = shortcut
+        .map(|id| {
+            PasteLastShortcut::from_id(id).ok_or_else(|| {
+                "Unsupported Paste Last shortcut. Choose one from Settings.".to_string()
+            })
+        })
+        .transpose()?;
+    reset_paste_last_chord_state();
+    *PASTE_LAST_SHORTCUT.lock_or_recover() = shortcut;
+    PASTE_LAST_ACTIVE.store(shortcut.is_some(), Ordering::SeqCst);
+    Ok(())
+}
+
+pub fn start_paste_last_listener(
+    app_handle: tauri::AppHandle,
+    shortcut: &str,
+) -> Result<(), String> {
+    configure_paste_last_shortcut(Some(shortcut))?;
     ensure_listener_thread_spawned(app_handle);
+    Ok(())
 }
 
 pub fn stop_paste_last_listener() {
-    PASTE_LAST_ACTIVE.store(false, Ordering::SeqCst);
-    PASTE_LAST_META_DOWN.store(false, Ordering::SeqCst);
-    PASTE_LAST_SHIFT_DOWN.store(false, Ordering::SeqCst);
-    PASTE_LAST_LATCHED.store(false, Ordering::SeqCst);
+    configure_paste_last_shortcut(None).expect("disabling Paste Last is infallible");
 }
 
 /// Publish cancellation for the exact physical transform pass whose hold
@@ -1804,8 +1876,9 @@ mod tests {
     }
 
     #[test]
-    fn paste_last_chord_requires_command_shift_v_and_latches_key_repeat() {
+    fn paste_last_chord_uses_configured_binding_and_latches_key_repeat() {
         stop_paste_last_listener();
+        *PASTE_LAST_SHORTCUT.lock_or_recover() = Some(PasteLastShortcut::CommandShiftV);
         assert!(!handle_paste_last_chord(&press(Key::MetaLeft)));
         assert!(!handle_paste_last_chord(&press(Key::KeyV)));
         assert!(!handle_paste_last_chord(&release(Key::KeyV)));
@@ -1816,6 +1889,66 @@ mod tests {
         assert!(handle_paste_last_chord(&press(Key::KeyV)));
         assert!(!handle_paste_last_chord(&release(Key::MetaLeft)));
         assert!(!handle_paste_last_chord(&release(Key::ShiftLeft)));
+    }
+
+    #[test]
+    fn paste_last_reconfiguration_unregisters_the_previous_chord() {
+        stop_paste_last_listener();
+        *PASTE_LAST_SHORTCUT.lock_or_recover() = Some(PasteLastShortcut::CommandShiftV);
+        assert!(!handle_paste_last_chord(&press(Key::MetaLeft)));
+        assert!(!handle_paste_last_chord(&press(Key::ShiftLeft)));
+        assert!(handle_paste_last_chord(&press(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&release(Key::KeyV)));
+
+        reset_paste_last_chord_state();
+        *PASTE_LAST_SHORTCUT.lock_or_recover() = Some(PasteLastShortcut::CommandOptionV);
+        assert!(!handle_paste_last_chord(&press(Key::MetaLeft)));
+        assert!(!handle_paste_last_chord(&press(Key::ShiftLeft)));
+        assert!(!handle_paste_last_chord(&press(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&release(Key::KeyV)));
+        assert!(!handle_paste_last_chord(&press(Key::Alt)));
+        assert!(handle_paste_last_chord(&press(Key::KeyV)));
+
+        stop_paste_last_listener();
+        assert_eq!(*PASTE_LAST_SHORTCUT.lock_or_recover(), None);
+        assert!(!handle_paste_last_chord(&release(Key::KeyV)));
+    }
+
+    #[test]
+    fn paste_last_shortcut_ids_are_allow_listed() {
+        assert_eq!(
+            PasteLastShortcut::from_id("command_shift_v"),
+            Some(PasteLastShortcut::CommandShiftV)
+        );
+        assert_eq!(
+            PasteLastShortcut::from_id("command_control_v"),
+            Some(PasteLastShortcut::CommandControlV)
+        );
+        assert_eq!(PasteLastShortcut::from_id("shift_l"), None);
+        assert_eq!(PasteLastShortcut::from_id("command_shift_p"), None);
+        assert_eq!(PasteLastShortcut::from_id(""), None);
+    }
+
+    #[test]
+    fn paste_last_invalid_reconfiguration_preserves_the_working_binding() {
+        stop_paste_last_listener();
+        configure_paste_last_shortcut(Some("command_control_v")).unwrap();
+        assert!(PASTE_LAST_ACTIVE.load(Ordering::SeqCst));
+        assert_eq!(
+            *PASTE_LAST_SHORTCUT.lock_or_recover(),
+            Some(PasteLastShortcut::CommandControlV)
+        );
+
+        assert!(configure_paste_last_shortcut(Some("command_shift_p")).is_err());
+        assert!(PASTE_LAST_ACTIVE.load(Ordering::SeqCst));
+        assert_eq!(
+            *PASTE_LAST_SHORTCUT.lock_or_recover(),
+            Some(PasteLastShortcut::CommandControlV)
+        );
+
+        configure_paste_last_shortcut(None).unwrap();
+        assert!(!PASTE_LAST_ACTIVE.load(Ordering::SeqCst));
+        assert_eq!(*PASTE_LAST_SHORTCUT.lock_or_recover(), None);
     }
 
     #[test]

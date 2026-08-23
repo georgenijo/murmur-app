@@ -20,6 +20,7 @@ import {
   DEFAULT_SETTINGS,
   LEGACY_OVERLAY_OFFSET_KEY,
   MODEL_OPTIONS,
+  pasteLastShortcutConflict,
   STORAGE_KEY,
 } from './settings';
 
@@ -155,17 +156,60 @@ describe('loadSettings', () => {
     }
   });
 
-  it('keeps the Paste Last shortcut opt-in and rejects malformed persistence', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+  it('migrates the legacy enabled Paste Last shortcut to Command-Shift-V', () => {
+    const persisted: Record<string, unknown> = {
       ...DEFAULT_SETTINGS,
-      pasteLastShortcutEnabled: 'yes',
-    }));
-    expect(loadSettings().pasteLastShortcutEnabled).toBe(false);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
+      settingsVersion: 3,
       pasteLastShortcutEnabled: true,
+    };
+    delete persisted.pasteLastShortcut;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+    expect(loadSettings().pasteLastShortcut).toBe('command_shift_v');
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).not.toHaveProperty(
+      'pasteLastShortcutEnabled',
+    );
+  });
+
+  it('migrates legacy disabled and malformed Paste Last settings to Disabled', () => {
+    for (const pasteLastShortcutEnabled of [false, 'yes', undefined]) {
+      const persisted: Record<string, unknown> = {
+        ...DEFAULT_SETTINGS,
+        settingsVersion: 3,
+        pasteLastShortcutEnabled,
+      };
+      delete persisted.pasteLastShortcut;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      expect(loadSettings().pasteLastShortcut).toBeNull();
+    }
+  });
+
+  it('restores valid Paste Last chords and fails closed for unknown values', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      settingsVersion: 4,
+      pasteLastShortcut: 'command_option_v',
     }));
-    expect(loadSettings().pasteLastShortcutEnabled).toBe(true);
+    expect(loadSettings().pasteLastShortcut).toBe('command_option_v');
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      settingsVersion: 4,
+      pasteLastShortcut: 'command_shift_p',
+    }));
+    expect(loadSettings().pasteLastShortcut).toBeNull();
+  });
+
+  it('reports conflicts with every Murmur-owned shortcut using specific guidance', () => {
+    const owned = {
+      doubleTapKey: 'shift_l' as const,
+      transformHoldKey: 'alt_r' as const,
+      queryHotkey: 'ctrl_l' as const,
+    };
+    expect(pasteLastShortcutConflict('shift_l', owned)).toContain('Dictation');
+    expect(pasteLastShortcutConflict('alt_r', owned)).toContain('Selected-text Transform');
+    expect(pasteLastShortcutConflict('ctrl_l', owned)).toContain('Voice Query');
+    expect(pasteLastShortcutConflict('command_shift_p', owned)).toContain('command palette');
+    expect(pasteLastShortcutConflict('command_comma', owned)).toContain('Settings');
+    expect(pasteLastShortcutConflict('command_shift_v', owned)).toBeNull();
   });
 
   it('defaults and bounds persisted sound cue settings', () => {
@@ -200,7 +244,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 3,
+      settingsVersion: 4,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -211,7 +255,7 @@ describe('loadSettings', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
       autoPasteDelayMs: 50,
-      settingsVersion: 3,
+      settingsVersion: 4,
     }));
 
     expect(loadSettings().autoPasteDelayMs).toBe(50);
@@ -226,7 +270,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 3,
+      settingsVersion: 4,
     });
   });
 
@@ -242,7 +286,7 @@ describe('loadSettings', () => {
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       overlayVerticalOffset: 0,
-      settingsVersion: 3,
+      settingsVersion: 4,
     });
   });
 
@@ -966,7 +1010,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 3 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 4 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 

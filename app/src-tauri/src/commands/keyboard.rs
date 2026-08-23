@@ -79,18 +79,41 @@ pub fn get_app_disabled() -> bool {
 }
 
 #[tauri::command]
-pub fn set_paste_last_shortcut(app_handle: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    if enabled {
-        if !injector::is_accessibility_enabled() {
-            return Err(
-                "Accessibility permission is required for the Paste Last shortcut.".to_string(),
-            );
-        }
-        keyboard::start_paste_last_listener(app_handle);
-    } else {
+pub fn set_paste_last_shortcut(
+    app_handle: tauri::AppHandle,
+    shortcut: Option<String>,
+) -> Result<(), String> {
+    let Some(shortcut) = shortcut else {
         keyboard::stop_paste_last_listener();
+        return Ok(());
+    };
+
+    if keyboard::is_dictation_key_id(&shortcut) {
+        return Err("That shortcut is already assigned to Dictation.".to_string());
     }
-    Ok(())
+    if keyboard::query_key_conflicts_with_transform(&shortcut) {
+        return Err("That shortcut is already assigned to Selected-text Transform.".to_string());
+    }
+    if keyboard::transform_key_conflicts_with_query(&shortcut) {
+        return Err("That shortcut is already assigned to Voice Query.".to_string());
+    }
+    if shortcut == "command_shift_p" {
+        return Err("That shortcut opens Murmur's command palette.".to_string());
+    }
+    if shortcut == "command_comma" {
+        return Err("That shortcut opens Murmur Settings.".to_string());
+    }
+    if !keyboard::is_paste_last_shortcut_id(&shortcut) {
+        return Err("Unsupported Paste Last shortcut. Choose one from Settings.".to_string());
+    }
+    if !injector::is_accessibility_enabled() {
+        return Err(
+            "Accessibility permission is required for the Paste Last shortcut.".to_string(),
+        );
+    }
+    // `start_paste_last_listener` validates before mutating its active target,
+    // so an unsupported id or registration failure preserves the old binding.
+    keyboard::start_paste_last_listener(app_handle, &shortcut)
 }
 
 // -- Transform hotkey (issue #312, PR-B1) --

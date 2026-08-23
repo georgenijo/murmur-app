@@ -23,6 +23,7 @@ import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import type { MainDestination } from './lib/homeDashboard';
 import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
+import { MainErrorBanner } from './components/MainErrorBanner';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
@@ -56,6 +57,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
 import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
+import { pasteLastShortcutLabel } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -89,6 +91,8 @@ function App() {
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const [deliveryRecoveryMessage, setDeliveryRecoveryMessage] = useState('');
+  const pasteLastShortcutGenerationRef = useRef(0);
+  const lastWorkingPasteLastShortcutRef = useRef<typeof settings.pasteLastShortcut>(null);
   const meetings = useMeetings(settings);
   useSoundCues(settings, meetings.status.phase);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
@@ -162,11 +166,21 @@ function App() {
   useOverlaySettingsSync(applyExternalSettings);
 
   useEffect(() => {
-    void setPasteLastShortcut(settings.pasteLastShortcutEnabled).catch((error: unknown) => {
-      setDeliveryRecoveryMessage(String(error));
-      if (settings.pasteLastShortcutEnabled) updateSettings({ pasteLastShortcutEnabled: false });
-    });
-  }, [settings.pasteLastShortcutEnabled, updateSettings]);
+    const requested = settings.pasteLastShortcut;
+    const generation = ++pasteLastShortcutGenerationRef.current;
+    void setPasteLastShortcut(requested)
+      .then(() => {
+        if (pasteLastShortcutGenerationRef.current === generation) {
+          lastWorkingPasteLastShortcutRef.current = requested;
+        }
+      })
+      .catch((error: unknown) => {
+        if (pasteLastShortcutGenerationRef.current !== generation) return;
+        setDeliveryRecoveryMessage(String(error));
+        const fallback = lastWorkingPasteLastShortcutRef.current;
+        if (requested !== fallback) updateSettings({ pasteLastShortcut: fallback });
+      });
+  }, [settings.pasteLastShortcut, updateSettings]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -194,6 +208,7 @@ function App() {
   const { historyEntries, addEntry, addDerivedEntry, updateEntry, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
+    dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
   } = useRecordingState({ addEntry, microphone: settings.microphone });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
@@ -514,7 +529,7 @@ function App() {
         title: 'Paste Last / Retry Delivery',
         section: 'History',
         keywords: ['clipboard', 'again', 'recover', 'retry', 'delivery'],
-        hint: settings.pasteLastShortcutEnabled ? '⌘⇧V' : undefined,
+        hint: pasteLastShortcutLabel(settings.pasteLastShortcut),
         run: () => { void retryLastDelivery(); },
       },
       {
@@ -605,12 +620,30 @@ function App() {
     ];
     return items;
   }, [
-    status, historyEntries, settings.disabled, settings.pasteLastShortcutEnabled, updateSettings, handleStart, handleStop,
+    status, historyEntries, settings.disabled, settings.pasteLastShortcut, updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
     meetings,
   ]);
 
-  const error = initError || recordingError || deliveryRecoveryMessage;
+  const [dismissedExternalErrorKey, setDismissedExternalErrorKey] = useState('');
+  const errorPresentation = [
+    initError ? { key: `initialization:${initError}`, message: initError, source: 'initialization' as const } : null,
+    recordingError ? { key: `recording:${recordingError}`, message: recordingError, source: 'recording' as const } : null,
+    deliveryRecoveryMessage ? { key: `delivery:${deliveryRecoveryMessage}`, message: deliveryRecoveryMessage, source: 'delivery' as const } : null,
+  ].find((candidate) => candidate !== null && candidate.key !== dismissedExternalErrorKey) ?? null;
+
+  const dismissMainError = useCallback(() => {
+    if (!errorPresentation) return;
+    if (errorPresentation.source === 'recording') {
+      dismissRecordingError();
+      return;
+    }
+    if (errorPresentation.source === 'delivery') {
+      setDeliveryRecoveryMessage('');
+      return;
+    }
+    setDismissedExternalErrorKey(errorPresentation.key);
+  }, [dismissRecordingError, errorPresentation]);
 
   if (onboardingState === 'unknown' || modelReady === null) {
     return <div className="h-screen bg-background" />;
@@ -730,10 +763,11 @@ function App() {
             </div>
           </div>
 
-          {error && (
-            <div className="absolute bottom-4 left-4 right-4 z-20 rounded-xl border border-error/30 bg-surface-container-lowest px-4 py-3 shadow-xl">
-              <p className="text-sm text-error">{error}</p>
-            </div>
+          {errorPresentation && (
+            <MainErrorBanner
+              message={errorPresentation.message}
+              onDismiss={dismissMainError}
+            />
           )}
 
           {fileTranscription.isDragging && (

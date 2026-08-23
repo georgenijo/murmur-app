@@ -18,10 +18,25 @@ interface UseRecordingStateProps {
   microphone: string;
 }
 
+type RecordingErrorKind = 'cleanup' | 'other';
+
+interface RecordingErrorPresentation {
+  id: number;
+  message: string;
+  kind: RecordingErrorKind;
+  recordingId?: number;
+}
+
+interface PresentErrorOptions {
+  kind?: RecordingErrorKind;
+  recordingId?: number;
+  producerEpoch?: number;
+}
+
 export function useRecordingState({ addEntry, microphone }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
-  const [error, setError] = useState('');
+  const [errorPresentation, setErrorPresentation] = useState<RecordingErrorPresentation | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -33,11 +48,73 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   const microphoneRef = useRef(microphone);
   const recordingStartTimeRef = useRef(recordingStartTime);
   const latestRecordingGenerationRef = useRef(0);
+  const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
+  const nextErrorIdRef = useRef(0);
+  const errorProducerEpochRef = useRef(0);
+  const dismissedErrorRef = useRef<{ message: string; recordingId?: number } | null>(null);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);
+
+  const presentError = useCallback((message: string, options: PresentErrorOptions = {}) => {
+    if (!message) return null;
+    if (
+      options.producerEpoch !== undefined
+      && options.producerEpoch !== errorProducerEpochRef.current
+    ) {
+      return null;
+    }
+    if (
+      options.recordingId !== undefined
+      && options.recordingId < latestRecordingGenerationRef.current
+    ) {
+      return null;
+    }
+    const dismissed = dismissedErrorRef.current;
+    if (
+      dismissed?.message === message
+      && dismissed.recordingId === options.recordingId
+    ) {
+      return null;
+    }
+
+    errorProducerEpochRef.current += 1;
+    const presentation: RecordingErrorPresentation = {
+      id: ++nextErrorIdRef.current,
+      message,
+      kind: options.kind ?? 'other',
+      recordingId: options.recordingId,
+    };
+    currentErrorRef.current = presentation;
+    setErrorPresentation(presentation);
+    return presentation.id;
+  }, []);
+
+  const clearError = useCallback((expectedId?: number) => {
+    if (expectedId !== undefined && currentErrorRef.current?.id !== expectedId) return;
+    errorProducerEpochRef.current += 1;
+    currentErrorRef.current = null;
+    setErrorPresentation(null);
+  }, []);
+
+  const dismissError = useCallback(() => {
+    const current = currentErrorRef.current;
+    if (current) {
+      dismissedErrorRef.current = {
+        message: current.message,
+        recordingId: current.recordingId,
+      };
+    }
+    clearError();
+  }, [clearError]);
+
+  const beginErrorProducer = useCallback(() => {
+    dismissedErrorRef.current = null;
+    clearError();
+    return errorProducerEpochRef.current;
+  }, [clearError]);
 
   // Recording duration timer
   useEffect(() => {
@@ -58,8 +135,9 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     let unlisten: (() => void) | null = null;
     listen<string>('recording-status-changed', (event) => {
       if (isDictationStatus(event.payload)) {
+        const previousStatus = statusRef.current;
         flog.info('recording', 'status event: ' + event.payload, {
-          prevStatus: statusRef.current,
+          prevStatus: previousStatus,
           recordingStartTime: recordingStartTimeRef.current,
           isStopping: isStoppingRef.current,
         });
@@ -88,6 +166,17 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         // so the next recording cycle can stop normally.
         if (event.payload === 'idle') {
           isStoppingRef.current = false;
+          if (previousStatus === 'recovering') {
+            // Recovery reaching Idle is authoritative. Invalidate any invoke
+            // response that was produced before this transition and clear only
+            // the cleanup notice associated with that lifecycle. A distinct,
+            // newer error remains visible.
+            errorProducerEpochRef.current += 1;
+            if (currentErrorRef.current?.kind === 'cleanup') {
+              currentErrorRef.current = null;
+              setErrorPresentation(null);
+            }
+          }
         }
       }
     }).then((fn) => {
@@ -106,7 +195,8 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       if (recordingId < latestRecordingGenerationRef.current) return false;
       if (recordingId > latestRecordingGenerationRef.current) {
         latestRecordingGenerationRef.current = recordingId;
-        setError('');
+        dismissedErrorRef.current = null;
+        clearError();
       }
       return true;
     };
@@ -119,7 +209,8 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         && recordingId > latestRecordingGenerationRef.current
       ) {
         latestRecordingGenerationRef.current = recordingId;
-        setError('');
+        dismissedErrorRef.current = null;
+        clearError();
       }
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
@@ -131,16 +222,17 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       const message = typeof payload.error === 'string'
         ? payload.error
         : 'Microphone initialization failed.';
-      setError(message);
+      presentError(message, { recordingId: presentation.recordingId });
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
     listen<unknown>('recording-recovery-stalled', (event) => {
       const presentation = cleanupStalledPresentationFromPayload(event.payload);
       if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
-      setError(
+      presentError(
         'Murmur is still waiting for macOS audio to finish stopping the microphone. '
         + 'Restarting Murmur clears this stop, but macOS audio may still need time to recover.',
+        { kind: 'cleanup', recordingId: presentation.recordingId },
       );
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
@@ -149,9 +241,11 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       const presentation = interruptedPresentationFromPayload(event.payload);
       if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
       const payload = event.payload as Record<string, unknown>;
-      setError(payload.autoTranscribe === true
+      presentError(payload.autoTranscribe === true
         ? 'Microphone capture was interrupted. Murmur is transcribing the audio received so far.'
-        : 'Microphone capture was interrupted before enough audio was received.');
+        : 'Microphone capture was interrupted before enough audio was received.', {
+        recordingId: presentation.recordingId,
+      });
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
@@ -159,7 +253,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       cancelled = true;
       unlistens.forEach((fn) => fn());
     };
-  }, []);
+  }, [clearError, presentError]);
 
   // Subscribe to live audio level for waveform visualisation
   useEffect(() => {
@@ -179,9 +273,11 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<string>('auto-paste-failed', (event) => {
-      setError(event.payload);
+      const errorId = presentError(event.payload);
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
-      pasteErrorTimerRef.current = setTimeout(() => setError(''), 5000);
+      if (errorId !== null) {
+        pasteErrorTimerRef.current = setTimeout(() => clearError(errorId), 5000);
+      }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
@@ -190,7 +286,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
       unlisten?.();
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
     };
-  }, []);
+  }, [clearError, presentError]);
 
   // Listen for file-output (save transcript/audio) failures and surface a hint.
   // Reuses the same auto-clearing error banner as auto-paste failures.
@@ -198,14 +294,16 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<string>('file-output-failed', (event) => {
-      setError(event.payload);
+      const errorId = presentError(event.payload);
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
-      pasteErrorTimerRef.current = setTimeout(() => setError(''), 5000);
+      if (errorId !== null) {
+        pasteErrorTimerRef.current = setTimeout(() => clearError(errorId), 5000);
+      }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  }, [clearError, presentError]);
 
   // Sync transcription results from Rust — picks up text when recording was
   // initiated from the overlay (where handleStop doesn't run in this window).
@@ -250,8 +348,8 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     }
     isStartingRef.current = true;
     const operation = (async () => {
+      const producerEpoch = beginErrorProducer();
       try {
-        setError('');
         const res = await startRecording(microphoneRef.current, origin);
         // These two responses may describe a transform-owned supervisor
         // attempt while dictation itself is Idle. Lifecycle events remain the
@@ -271,23 +369,26 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
           }
         }
         if (res.type !== 'recording_starting') {
-          if (res.type === 'error') setError(res.error || 'Unknown error');
-          else if (res.type === 'busy_benchmarking') setError('Wait for the benchmark to finish.');
-          else if (res.type === 'busy_transcribing_file') setError('Wait for the file transcription to finish.');
-          else if (res.type === 'busy_meeting') setError('Stop the meeting capture before starting dictation.');
+          if (res.type === 'error') presentError(res.error || 'Unknown error', { producerEpoch });
+          else if (res.type === 'busy_benchmarking') presentError('Wait for the benchmark to finish.', { producerEpoch });
+          else if (res.type === 'busy_transcribing_file') presentError('Wait for the file transcription to finish.', { producerEpoch });
+          else if (res.type === 'busy_meeting') presentError('Stop the meeting capture before starting dictation.', { producerEpoch });
           // Without these three the press is a silent no-op: Rust refuses the
           // start but nothing tells the user why.
-          else if (res.type === 'busy_querying') setError('Finish speaking your voice query before starting dictation.');
-          else if (res.type === 'busy_transforming') setError('Wait for the transform to finish.');
-          else if (res.type === 'busy_recording_corpus') setError('Finish the corpus recording before starting dictation.');
+          else if (res.type === 'busy_querying') presentError('Finish speaking your voice query before starting dictation.', { producerEpoch });
+          else if (res.type === 'busy_transforming') presentError('Wait for the transform to finish.', { producerEpoch });
+          else if (res.type === 'busy_recording_corpus') presentError('Finish the corpus recording before starting dictation.', { producerEpoch });
           else if (res.type === 'audio_recovering') {
-            setError('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+            presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
+              kind: 'cleanup',
+              producerEpoch,
+            });
           }
         }
       } catch (err) {
         statusRef.current = 'idle';
         setStatus('idle');
-        setError(String(err));
+        presentError(String(err), { producerEpoch });
         setRecordingStartTime(null);
         recordingStartTimeRef.current = null;
       } finally {
@@ -302,7 +403,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         startOperationRef.current = null;
       }
     }
-  }, []);
+  }, [beginErrorProducer, presentError]);
 
   const handleStart = useCallback(() => beginRecording('toggle'), [beginRecording]);
   const handleHoldStart = useCallback(() => beginRecording('hold'), [beginRecording]);
@@ -314,6 +415,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     });
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
+    const producerEpoch = errorProducerEpochRef.current;
     try {
       if (statusRef.current === 'starting') {
         flog.info('recording', 'handleStop cancelling audio initialization');
@@ -321,7 +423,9 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         return;
       }
       if (statusRef.current === 'recovering') {
-        setError('Microphone cleanup is still in progress. Try again when Murmur is ready.');
+        presentError('Microphone cleanup is still in progress. Try again when Murmur is ready.', {
+          kind: 'cleanup',
+        });
         return;
       }
       if (statusRef.current !== 'recording') {
@@ -342,7 +446,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         // addEntry/updateStats handled by transcription-complete event listener
         // to avoid race-condition duplicates.
       }
-      if (res.type === 'error') setError(res.error || 'Unknown error');
+      if (res.type === 'error') presentError(res.error || 'Unknown error', { producerEpoch });
       // Only update status from the return value if we're still in
       // processing. If cancel already set us to idle (or a new recording
       // started), don't clobber the current state with a stale result.
@@ -354,13 +458,13 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
         setStatus(newStatus);
       }
     } catch (err) {
-      setError(String(err));
+      presentError(String(err), { producerEpoch });
       statusRef.current = 'idle';
       setStatus('idle');
     } finally {
       isStoppingRef.current = false;
     }
-  }, []);
+  }, [presentError]);
 
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async () => {
@@ -388,8 +492,8 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     status,
     transcription,
     recordingDuration,
-    error,
-    setError,
+    error: errorPresentation?.message ?? '',
+    dismissError,
     handleStart,
     handleHoldStart,
     handleStop,

@@ -362,6 +362,52 @@ export function appearanceSelection(document: AppearanceDocumentV1): AppearanceS
   return { light: owner, dark: owner };
 }
 
+/**
+ * Returns the source labels that are truthful for the currently configured
+ * theme. Persisted source ownership is useful for library operations, but an
+ * older or externally edited document can claim Sonic (or one library theme)
+ * while carrying a different theme configuration. Treat that configuration as
+ * Custom rather than showing a misleading active preset. Mixed light/dark
+ * selections compile complete token tables, so their per-mode ownership is
+ * validated by availability instead of comparing adjusted token caches.
+ */
+export function effectiveAppearanceSelection(
+  document: AppearanceDocumentV1,
+  library: ThemeLibraryDocumentV1,
+): AppearanceSelectionV1 {
+  const selection = appearanceSelection(document);
+  if (selection.light === selection.dark && selection.light !== 'custom') {
+    const entry = library.themes.find((theme) => theme.id === selection.light);
+    const expected = selection.light === 'sonic' ? DEFAULT_THEME : entry?.theme;
+    if (
+      !expected
+      || JSON.stringify(sanitizeTheme(document.theme))
+        !== JSON.stringify(sanitizeTheme(expected))
+    ) {
+      return { light: 'custom', dark: 'custom' };
+    }
+  }
+  const availableOwner = (owner: string, appearance: ResolvedAppearance) => {
+    if (owner === 'sonic' || owner === 'custom') return owner;
+    const entry = library.themes.find((theme) => theme.id === owner);
+    return entry?.modes.includes(appearance) ? owner : 'custom';
+  };
+  return {
+    light: availableOwner(selection.light, 'light'),
+    dark: availableOwner(selection.dark, 'dark'),
+  };
+}
+
+export function appearanceThemeLabel(
+  owner: string,
+  library: ThemeLibraryDocumentV1,
+): string {
+  if (owner === 'sonic') return 'Sonic';
+  if (owner === 'custom') return 'Custom';
+  const entry = library.themes.find((theme) => theme.id === owner);
+  return entry?.collection?.label ?? entry?.label ?? 'Custom';
+}
+
 function tokensForOwner(
   owner: string,
   appearance: ResolvedAppearance,

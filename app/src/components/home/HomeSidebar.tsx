@@ -13,7 +13,7 @@ interface HomeSidebarProps {
   onOpenSettings: (link: SettingsLink) => void;
 }
 
-type IconName = 'home' | 'meeting' | 'query' | 'insights' | 'text' | 'commands' | 'styles' | 'transforms' | 'settings';
+type IconName = 'home' | 'meeting' | 'query' | 'insights' | 'text' | 'commands' | 'styles' | 'transforms';
 
 function NavIcon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -25,7 +25,6 @@ function NavIcon({ name }: { name: IconName }) {
     commands: <><path d="M6 8h12M6 12h8M6 16h10" /><path d="m17 14 3 2-3 2" /></>,
     styles: <><path d="M4 18 15 7l3 3L7 21H4v-3Z" /><path d="m13 9 3 3M17 4l3 3" /></>,
     transforms: <><path d="m5 16 7-7 7 7M12 9v11" /><path d="M5 5h14" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></>,
   };
   return (
     <svg className="home-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -90,7 +89,6 @@ export function HomeSidebar({ active, onNavigate, onOpenSettings }: HomeSidebarP
           <span className="home-privacy-dot" aria-hidden="true" />
           <span className="home-nav-label">Everything stays on this Mac.</span>
         </div>
-        <NavigationButton label="Settings" icon="settings" onClick={() => onOpenSettings({ page: 'general' })} />
       </div>
     </aside>
   );

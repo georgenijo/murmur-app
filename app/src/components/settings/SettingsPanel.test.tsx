@@ -470,18 +470,81 @@ describe('SettingsPanel information architecture', () => {
     expect(selectedTool).toBeTruthy();
     expect(container.textContent).toContain('Diagnostics workspace');
   });
-  it('offers the opt-in Paste Last global shortcut in Delivery settings', async () => {
+  it('offers configurable and disabled Paste Last choices in Delivery settings', async () => {
     const delivery = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Delivery',
     ) as HTMLButtonElement;
     await act(async () => delivery.click());
-    const toggle = container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement;
-    expect(toggle).not.toBeNull();
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-    await act(async () => toggle.click());
-    expect(onUpdateSettings).toHaveBeenCalledWith({ pasteLastShortcutEnabled: true });
-    expect(container.textContent).toContain('⌘⇧V');
+    const picker = container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement;
+    expect(picker.textContent).toContain('Disabled');
+    await act(async () => picker.click());
+    expect(Array.from(container.querySelectorAll('[role="option"]')).map((option) => option.textContent)).toEqual([
+      expect.stringContaining('Disabled'),
+      expect.stringContaining('⌘⇧V'),
+      expect.stringContaining('⌘⌥V'),
+      expect.stringContaining('⌘⌃V'),
+    ]);
+    const option = Array.from(container.querySelectorAll('[role="option"]')).find(
+      (item) => item.textContent?.includes('⌘⌥V'),
+    ) as HTMLElement;
+    await act(async () => option.click());
+    expect(coreMocks.invoke).toHaveBeenCalledWith('set_paste_last_shortcut', {
+      shortcut: 'command_option_v',
+    });
+    expect(onUpdateSettings).toHaveBeenCalledWith({ pasteLastShortcut: 'command_option_v' });
+    await act(async () => root.render(
+      <SettingsPanel
+        settings={{ ...DEFAULT_SETTINGS, pasteLastShortcut: 'command_option_v' }}
+        onUpdateSettings={onUpdateSettings}
+        initialized
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+      />,
+    ));
+    expect(container.textContent).toContain('Active: ⌘⌥V');
     expect(container.textContent).toContain('secure target checks');
+  });
+
+  it('keeps the last working Paste Last value when native registration fails', async () => {
+    const current = { ...DEFAULT_SETTINGS, pasteLastShortcut: 'command_shift_v' as const };
+    await act(async () => root.render(
+      <SettingsPanel
+        settings={current}
+        onUpdateSettings={onUpdateSettings}
+        initialized
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+      />,
+    ));
+    const delivery = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Delivery',
+    ) as HTMLButtonElement;
+    await act(async () => delivery.click());
+    coreMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'set_paste_last_shortcut') throw new Error('Shortcut registration failed');
+      return undefined;
+    });
+    const picker = container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement;
+    expect(picker.textContent).toContain('⌘⇧V');
+    await act(async () => picker.click());
+    const option = Array.from(container.querySelectorAll('[role="option"]')).find(
+      (item) => item.textContent?.includes('⌘⌃V'),
+    ) as HTMLElement;
+    await act(async () => option.click());
+    expect(onUpdateSettings).not.toHaveBeenCalledWith({ pasteLastShortcut: 'command_control_v' });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Shortcut registration failed');
+    expect((container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement).textContent)
+      .toContain('⌘⇧V');
   });
 });
 
