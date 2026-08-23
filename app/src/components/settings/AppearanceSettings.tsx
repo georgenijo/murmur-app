@@ -5,10 +5,6 @@ import type {
   ThemeAdjustment,
   ThemeConfigV1,
 } from "../../lib/appearance";
-import {
-  appearanceThemeLabel,
-  effectiveAppearanceSelection,
-} from "../../lib/appearance";
 import { useAppearance } from "../../lib/hooks/useAppearance";
 import { CommunityThemeDialog } from "./CommunityThemeDialog";
 import { ThemeLibrary } from "./ThemeLibrary";
@@ -143,24 +139,6 @@ function ColorControl({
 
 export function AppearanceSettings() {
   const appearance = useAppearance();
-  const effectiveSelection = effectiveAppearanceSelection(
-    appearance.document,
-    appearance.library.document,
-  );
-  const activeThemeName = appearanceThemeLabel(
-    effectiveSelection[appearance.resolvedAppearance],
-    appearance.library.document,
-  );
-  const lightThemeName = appearanceThemeLabel(
-    effectiveSelection.light,
-    appearance.library.document,
-  );
-  const darkThemeName = appearanceThemeLabel(
-    effectiveSelection.dark,
-    appearance.library.document,
-  );
-  const resolvedAppearanceLabel =
-    appearance.resolvedAppearance === "light" ? "Light" : "Dark";
   const resolvedTokens =
     appearance.document.cache[appearance.resolvedAppearance];
   const [contrastDraft, setContrastDraft] = useState(
@@ -269,39 +247,6 @@ export function AppearanceSettings() {
 
   return (
     <div className="space-y-3">
-      <section
-        aria-labelledby="active-theme-heading"
-        aria-live="polite"
-        className="rounded-xl border border-primary/45 bg-surface-container-lowest px-3.5 py-3"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p
-              id="active-theme-heading"
-              className="text-xs font-medium uppercase tracking-wide text-on-surface-variant"
-            >
-              Active theme
-            </p>
-            <p className="mt-0.5 text-base font-semibold text-on-surface">
-              {activeThemeName}
-            </p>
-          </div>
-          <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary">
-            <span aria-hidden="true">✓</span> Active
-          </span>
-        </div>
-        <p className="mt-1 text-xs text-on-surface-variant">
-          {appearance.document.mode === "system"
-            ? `System appearance · ${resolvedAppearanceLabel} right now`
-            : `${resolvedAppearanceLabel} appearance`}
-        </p>
-        {lightThemeName !== darkThemeName && (
-          <p className="mt-1 text-xs text-on-surface-variant">
-            Light: {lightThemeName} · Dark: {darkThemeName}
-          </p>
-        )}
-      </section>
-
       <fieldset>
         <legend className="sr-only">Color scheme</legend>
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -352,11 +297,6 @@ export function AppearanceSettings() {
                 <span className="inline-flex items-center gap-1.5">
                   {selected && <span aria-hidden="true">✓</span>}
                   <span>{option.label}</span>
-                  {selected && (
-                    <span className="text-[10px] font-semibold uppercase tracking-wide">
-                      Active
-                    </span>
-                  )}
                 </span>
               </button>
             );

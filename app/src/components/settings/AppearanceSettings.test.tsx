@@ -117,13 +117,9 @@ describe("AppearanceSettings", () => {
       "Use dark mode",
     ]);
     expect(radios[0].getAttribute("aria-checked")).toBe("true");
-    expect(radios[0].textContent).toContain("✓SystemActive");
-    expect(radios[1].textContent).not.toContain("Active");
-    expect(
-      container.querySelector('[aria-labelledby="active-theme-heading"]')?.getAttribute("aria-live"),
-    ).toBe("polite");
-    expect(container.textContent).toContain("Active themeSonic");
-    expect(container.textContent).toContain("System appearance · Light right now");
+    expect(radios[0].textContent).toBe("✓System");
+    expect(container.textContent).not.toContain("Active");
+    expect(container.querySelector('[aria-labelledby="active-theme-heading"]')).toBeNull();
 
     await act(async () => radios[2].click());
     expect(mocks.controller!.setMode).toHaveBeenCalledWith("dark");
@@ -154,18 +150,16 @@ describe("AppearanceSettings", () => {
   it("keeps System distinct from its resolved appearance and follows external changes", async () => {
     mocks.controller!.resolvedAppearance = "dark";
     await act(async () => root.render(<AppearanceSettings />));
-    expect(container.textContent).toContain("System appearance · Dark right now");
     expect(
       container.querySelector('[role="radio"][aria-checked="true"]')?.textContent,
-    ).toContain("System");
+    ).toBe("✓System");
 
     mocks.controller!.document.mode = "dark";
     await act(async () => root.render(<AppearanceSettings />));
-    expect(container.textContent).toContain("Dark appearance");
-    expect(container.textContent).not.toContain("System appearance · Dark right now");
     expect(
       container.querySelector('[role="radio"][aria-checked="true"]')?.textContent,
-    ).toContain("DarkActive");
+    ).toBe("✓Dark");
+    expect(container.textContent).not.toContain("Active");
   });
 
   it("shows Custom when stale Sonic ownership contains customized values and returns after reset", async () => {
@@ -183,7 +177,7 @@ describe("AppearanceSettings", () => {
     };
     await act(async () => root.render(<AppearanceSettings />));
 
-    expect(container.textContent).toContain("Active themeCustom");
+    expect(container.textContent).not.toContain("Active theme");
     expect(
       container.querySelector('button[aria-label="Use Custom theme"]')?.getAttribute("aria-pressed"),
     ).toBe("true");
@@ -200,7 +194,7 @@ describe("AppearanceSettings", () => {
       dark: resolveTheme(sonicTheme, "dark").tokens,
     };
     await act(async () => root.render(<AppearanceSettings />));
-    expect(container.textContent).toContain("Active themeSonic");
+    expect(container.textContent).not.toContain("Active theme");
     expect(container.querySelector('button[aria-label="Use Custom theme"]')).toBeNull();
   });
 
@@ -397,7 +391,7 @@ describe("AppearanceSettings", () => {
     };
     mocks.controller!.resolvedAppearance = "dark";
     await act(async () => root.render(<AppearanceSettings />));
-    expect(container.textContent).toContain("Active themeImported theme");
+    expect(container.textContent).not.toContain("Active theme");
     expect(
       container.querySelector('button[aria-label="Use Imported theme theme"]')?.getAttribute("aria-pressed"),
     ).toBe("true");
@@ -488,8 +482,13 @@ describe("AppearanceSettings", () => {
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(claudeCard.querySelector('[role="img"][aria-label^="Light preview"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");
-    expect(container.textContent).toContain("Active themeClaude Theme");
-    expect(claudeCard.textContent).toContain("Active");
+    expect(container.textContent).not.toContain("Active theme");
+    expect(claudeCard.textContent).not.toContain("Active");
+    const claudeTitle = claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')!;
+    expect(claudeTitle.classList.contains("truncate")).toBe(true);
+    expect(claudeTitle.getAttribute("title")).toBe("Claude Theme");
+    expect(claudeCard.querySelector('button[aria-label="Export Claude Theme"]')).not.toBeNull();
+    expect(claudeCard.querySelector('button[aria-label="Remove Claude Theme"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Partly active");
     expect(container.textContent).not.toContain("Choose dark style");
     expect(container.textContent).not.toContain("Claude Midnight (OLED Black)");
