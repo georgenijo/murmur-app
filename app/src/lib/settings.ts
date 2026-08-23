@@ -13,6 +13,10 @@ export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type QueryKey = TransformKey;
+export type PasteLastShortcut =
+  | 'command_shift_v'
+  | 'command_option_v'
+  | 'command_control_v';
 export type QueryProviderId = 'claude' | 'codex' | 'grok' | 'cursor' | 'custom';
 export type QueryContextLevel = 'none' | 'application' | 'selection';
 
@@ -266,8 +270,8 @@ export interface Settings {
   language: string;
   autoPaste: boolean;
   autoPasteDelayMs: number;
-  /** Opt-in global Command-Shift-V shortcut for Paste Last. */
-  pasteLastShortcutEnabled: boolean;
+  /** Global Paste Last chord. `null` disables it. */
+  pasteLastShortcut: PasteLastShortcut | null;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -395,6 +399,44 @@ export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
 
 export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = TRANSFORM_KEY_OPTIONS;
 
+export const PASTE_LAST_SHORTCUT_OPTIONS: {
+  value: PasteLastShortcut | 'disabled';
+  label: string;
+}[] = [
+  { value: 'disabled', label: 'Disabled' },
+  { value: 'command_shift_v', label: '⌘⇧V' },
+  { value: 'command_option_v', label: '⌘⌥V' },
+  { value: 'command_control_v', label: '⌘⌃V' },
+];
+
+export function pasteLastShortcutLabel(shortcut: PasteLastShortcut | null): string | undefined {
+  if (shortcut === null) return undefined;
+  return PASTE_LAST_SHORTCUT_OPTIONS.find((option) => option.value === shortcut)?.label;
+}
+
+export function pasteLastShortcutConflict(
+  shortcut: string | null,
+  settings: Pick<Settings, 'doubleTapKey' | 'transformHoldKey' | 'queryHotkey'>,
+): string | null {
+  if (shortcut === null) return null;
+  if (shortcut === settings.doubleTapKey) {
+    return 'That shortcut is already assigned to Dictation. Choose another Paste Last shortcut.';
+  }
+  if (shortcut === settings.transformHoldKey) {
+    return 'That shortcut is already assigned to Selected-text Transform. Choose another Paste Last shortcut.';
+  }
+  if (shortcut === settings.queryHotkey) {
+    return 'That shortcut is already assigned to Voice Query. Choose another Paste Last shortcut.';
+  }
+  if (shortcut === 'command_shift_p') {
+    return 'That shortcut opens Murmur\'s command palette. Choose another Paste Last shortcut.';
+  }
+  if (shortcut === 'command_comma') {
+    return 'That shortcut opens Murmur Settings. Choose another Paste Last shortcut.';
+  }
+  return null;
+}
+
 export const QUERY_CONTEXT_LEVEL_OPTIONS: { value: QueryContextLevel; label: string }[] = [
   { value: 'none', label: 'None' },
   { value: 'application', label: 'App & window' },
@@ -462,7 +504,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Native CGEvents can paste immediately in the common case. Apps that move
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
-  pasteLastShortcutEnabled: false,
+  pasteLastShortcut: null,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -512,7 +554,7 @@ export const STORAGE_KEY = 'dictation-settings';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
 const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
 
@@ -531,6 +573,8 @@ type PersistedSettings = Partial<Settings> & {
   hotkey?: string;
   liveTranscriptPreview?: unknown;
   recordingMode?: string;
+  /** @deprecated v3 and earlier. Migrated to `pasteLastShortcut`. */
+  pasteLastShortcutEnabled?: unknown;
 };
 
 /**
@@ -766,8 +810,35 @@ export function loadSettings(): Settings {
       } else {
         parsed.autoPasteDelayMs = Math.max(0, Math.min(500, Math.trunc(parsed.autoPasteDelayMs)));
       }
-      if (typeof parsed.pasteLastShortcutEnabled !== 'boolean') {
-        parsed.pasteLastShortcutEnabled = DEFAULT_SETTINGS.pasteLastShortcutEnabled;
+      // v4 replaces the opt-in boolean with an explicit, allow-listed chord.
+      // Preserve the old working ⌘⇧V binding for enabled upgrades. Any
+      // malformed new value fails closed instead of arming an unexpected key.
+      if (!Object.prototype.hasOwnProperty.call(parsed, 'pasteLastShortcut')) {
+        parsed.pasteLastShortcut = parsed.pasteLastShortcutEnabled === true
+          ? 'command_shift_v'
+          : null;
+      }
+      delete parsed.pasteLastShortcutEnabled;
+      {
+        const validPasteLastShortcuts = new Set<string>(
+          PASTE_LAST_SHORTCUT_OPTIONS
+            .map((option) => option.value)
+            .filter((value) => value !== 'disabled'),
+        );
+        if (
+          parsed.pasteLastShortcut !== null
+          && (
+            typeof parsed.pasteLastShortcut !== 'string'
+            || !validPasteLastShortcuts.has(parsed.pasteLastShortcut)
+            || pasteLastShortcutConflict(parsed.pasteLastShortcut, {
+              doubleTapKey: parsed.doubleTapKey ?? DEFAULT_SETTINGS.doubleTapKey,
+              transformHoldKey: parsed.transformHoldKey ?? DEFAULT_SETTINGS.transformHoldKey,
+              queryHotkey: parsed.queryHotkey ?? DEFAULT_SETTINGS.queryHotkey,
+            }) !== null
+          )
+        ) {
+          parsed.pasteLastShortcut = null;
+        }
       }
 
       // transformHoldKey: `null` (disabled) or one of TRANSFORM_KEY_OPTIONS.

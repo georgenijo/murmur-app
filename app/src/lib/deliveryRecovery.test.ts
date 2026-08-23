@@ -17,9 +17,15 @@ describe('delivery recovery commands', () => {
     expect(invoke).toHaveBeenCalledWith('retry_last_delivery');
   });
 
-  it('configures the fixed global shortcut explicitly', async () => {
+  it('configures or disables the selected global shortcut explicitly', async () => {
     invoke.mockResolvedValue(undefined);
-    await setPasteLastShortcut(true);
-    expect(invoke).toHaveBeenCalledWith('set_paste_last_shortcut', { enabled: true });
+    await setPasteLastShortcut('command_option_v');
+    await setPasteLastShortcut(null);
+    expect(invoke).toHaveBeenNthCalledWith(1, 'set_paste_last_shortcut', {
+      shortcut: 'command_option_v',
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'set_paste_last_shortcut', {
+      shortcut: null,
+    });
   });
 });
