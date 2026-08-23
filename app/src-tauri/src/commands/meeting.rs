@@ -1,5 +1,6 @@
 use crate::meeting_capture::{
-    render_meeting_text, MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioPermissionState,
+    render_meeting_text, MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioAccess,
+    SystemAudioPermissionState,
 };
 use crate::meeting_store::{MeetingDetail, MeetingPage, MeetingSession, MeetingStoreStatus};
 use crate::state::DictationStatus;
@@ -170,7 +171,7 @@ pub fn get_system_audio_permission_status(
 pub async fn request_system_audio_permission(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
-) -> Result<SystemAudioPermissionState, String> {
+) -> Result<SystemAudioAccess, String> {
     {
         let _transition = state.app_state.recording_transition.lock().await;
         if let Some(error) = meeting_conflict(&state) {
@@ -187,8 +188,8 @@ pub async fn request_system_audio_permission(
         .meeting_active
         .store(false, Ordering::SeqCst);
     let result = joined?;
-    if let Ok(status) = result.as_ref() {
-        let _ = app.emit("system-audio-permission-changed", status);
+    if let Ok(access) = result.as_ref() {
+        let _ = app.emit("system-audio-permission-changed", access);
     }
     result
 }

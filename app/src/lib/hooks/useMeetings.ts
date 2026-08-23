@@ -26,6 +26,7 @@ import {
   type MeetingRuntimeStatus,
   type MeetingSummaryStatus,
   type MeetingSegment,
+  type SystemAudioAccess,
   type SystemAudioPermissionState,
 } from '../meetings';
 
@@ -35,6 +36,7 @@ const MAX_LIVE_SEGMENTS = 200;
 export function useMeetings(settings: Settings) {
   const [status, setStatus] = useState<MeetingRuntimeStatus>(IDLE_MEETING_STATUS);
   const [permission, setPermission] = useState<SystemAudioPermissionState>('unknown');
+  const [access, setAccess] = useState<SystemAudioAccess | null>(null);
   const [page, setPage] = useState<MeetingPage>(EMPTY_PAGE);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [liveSegments, setLiveSegments] = useState<MeetingSegment[]>([]);
@@ -173,8 +175,12 @@ export function useMeetings(settings: Settings) {
     setError(null);
     try {
       const next = await requestSystemAudioPermission();
-      setPermission(next);
-      return next;
+      setAccess(next);
+      setPermission(next.permission);
+      if (next.needsRelaunch) {
+        setError('macOS lists Murmur as allowed, but the permission has not reached this session yet. Quit and reopen Murmur.');
+      }
+      return next.permission;
     } catch (cause) {
       setError(String(cause));
       return 'unknown' as const;
@@ -255,6 +261,7 @@ export function useMeetings(settings: Settings) {
   return {
     status,
     permission,
+    access,
     page,
     detail,
     liveSegments,

@@ -233,7 +233,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     setSystemAudioError(null);
     setSystemAudioBusy(true);
     try {
-      setSystemAudioStatus(await requestSystemAudioPermission());
+      const access = await requestSystemAudioPermission();
+      setSystemAudioStatus(access.permission);
+      if (access.needsRelaunch) {
+        setSystemAudioError(
+          'macOS lists Murmur as allowed, but the permission has not reached this session yet. Quit and reopen Murmur, then check again.',
+        );
+      }
     } catch (error) {
       setSystemAudioError(typeof error === 'string' ? error : 'Could not check System Audio access.');
     } finally {

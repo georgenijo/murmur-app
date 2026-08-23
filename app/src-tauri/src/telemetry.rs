@@ -242,6 +242,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "meeting.channel_active" => Some("meeting.channel_active"),
         "meeting.tap_active" => Some("meeting.tap_active"),
         "meeting.tap_destroyed" => Some("meeting.tap_destroyed"),
+        "meeting.permission_probe_started" => Some("meeting.permission_probe_started"),
+        "meeting.permission_probe_finished" => Some("meeting.permission_probe_finished"),
+        "meeting.permission_probe_failed" => Some("meeting.permission_probe_failed"),
         "query.pass_state" => Some("query.pass_state"),
         "query.partial_tick" => Some("query.partial_tick"),
         "updater.check_current" => Some("updater.check_current"),
@@ -1354,6 +1357,9 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
                     "idle" | "starting" | "recording" | "stopping" | "processing" | "failed"
                 ),
                 "channel" => matches!(value, "microphone" | "system" | "both" | "none"),
+                "permission" => {
+                    matches!(value, "unknown" | "granted" | "denied" | "unsupported")
+                }
                 "error_code" => matches!(
                     value,
                     "unsupported_os"
@@ -3132,6 +3138,49 @@ mod tests {
             assert_eq!(data["event_code"], "pipeline.delivery_target_verified");
             assert_eq!(data.as_object().unwrap().len(), 1);
         }
+    }
+
+    #[test]
+    fn permission_probe_result_survives_sanitizing_and_stays_content_free() {
+        // #638: the probe was invisible in app.log. Its terminal result must
+        // survive the meeting sanitizer while carrying no device or user text.
+        let mut data = serde_json::json!({
+            "event_code": "meeting.permission_probe_finished",
+            "tcc_authorized": true,
+            "permission": "granted",
+            "capture_ready": true,
+            "audio_flowing": false,
+            "needs_relaunch": false,
+            "device_name": "SENTINEL_PRIVATE_DEVICE",
+            "session_id": "private-session-id"
+        });
+        sanitize_event_data("meeting", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(data["event_code"], "meeting.permission_probe_finished");
+        assert_eq!(data["permission"], "granted");
+        assert_eq!(data["tcc_authorized"], true);
+        assert_eq!(data["capture_ready"], true);
+        assert_eq!(data["audio_flowing"], false);
+        assert_eq!(data["needs_relaunch"], false);
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("private-session"));
+
+        for code in [
+            "meeting.permission_probe_started",
+            "meeting.permission_probe_failed",
+        ] {
+            let mut data = serde_json::json!({ "event_code": code });
+            sanitize_event_data("meeting", &mut data, true);
+            assert_eq!(data["event_code"], code);
+        }
+
+        // An unlisted permission value must not ride through.
+        let mut spoofed = serde_json::json!({
+            "event_code": "meeting.permission_probe_finished",
+            "permission": "SENTINEL_PRIVATE_STATE"
+        });
+        sanitize_event_data("meeting", &mut spoofed, true);
+        assert!(spoofed.get("permission").is_none());
     }
 
     #[test]

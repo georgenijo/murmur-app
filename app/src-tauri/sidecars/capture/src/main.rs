@@ -387,7 +387,7 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        if arguments.first().map(String::as_str) == Some("--production-v6") {
+        if arguments.first().map(String::as_str) == Some("--production-v7") {
             if production::run(&arguments[1..]).is_ok() {
                 return;
             }
