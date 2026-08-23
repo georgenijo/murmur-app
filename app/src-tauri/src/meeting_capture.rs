@@ -1973,10 +1973,8 @@ mod tests {
 
     #[test]
     fn stalled_capture_has_its_own_message_and_code_per_channel() {
-        let system = user_message_for_failure(
-            FailureCode::CallbackStalled,
-            Some(CaptureChannel::System),
-        );
+        let system =
+            user_message_for_failure(FailureCode::CallbackStalled, Some(CaptureChannel::System));
         let microphone = user_message_for_failure(
             FailureCode::CallbackStalled,
             Some(CaptureChannel::Microphone),
