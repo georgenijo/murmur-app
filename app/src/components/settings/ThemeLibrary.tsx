@@ -285,7 +285,6 @@ function CollectionCard({
   const light = groups.find((group) => group.mode === 'light')?.selected.entry ?? null;
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
   const ids = new Set(entries.map((entry) => entry.id));
-  const fullyActive = ids.has(selection.light) && ids.has(selection.dark);
   const activeNow = ids.has(selection[resolvedAppearance]);
   const showVariantLabels = new Set(entries.map((entry) => entry.id)).size > 1;
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
@@ -352,17 +351,10 @@ function CollectionCard({
             event.stopPropagation();
             applyPair();
           }}
-          className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="block min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          title={label}
         >
-          <span className="inline-flex items-center gap-1.5">
-            <span className="truncate">{label}</span>
-            {activeNow && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-on-surface">
-                <span aria-hidden="true">✓</span>
-                {fullyActive ? 'Active' : 'Active now'}
-              </span>
-            )}
-          </span>
+          {label}
         </button>
         {(onCustomize || onExport || onRemove) && (
           <div className="flex shrink-0 items-center gap-0.5">
