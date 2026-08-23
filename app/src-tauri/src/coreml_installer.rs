@@ -143,6 +143,17 @@ enum ReaderEvent {
     End,
 }
 
+fn valid_phase_transition(previous: Option<InstallPhase>, next: InstallPhase) -> bool {
+    matches!(
+        (previous, next),
+        (None, InstallPhase::Preparing)
+            | (Some(InstallPhase::Preparing), InstallPhase::Repairing)
+            | (Some(InstallPhase::Preparing), InstallPhase::Initializing)
+            | (Some(InstallPhase::Repairing), InstallPhase::Initializing)
+            | (Some(InstallPhase::Initializing), InstallPhase::Validating)
+    )
+}
+
 fn emit_worker_message(message: &WorkerMessage) -> Result<(), ()> {
     let encoded = serde_json::to_string(message).map_err(|_| ())?;
     if encoded.len() > MAX_PROTOCOL_LINE_BYTES {
@@ -359,6 +370,7 @@ where
     let mut terminal = None;
     let mut repaired_cache = false;
     let mut repeated_repair = false;
+    let mut last_phase = None;
     loop {
         let now = Instant::now();
         if now >= deadline {
@@ -385,11 +397,43 @@ where
                 phase,
                 repeated_repair: repeated,
             })) if terminal.is_none() => {
+                if !valid_phase_transition(last_phase, phase) {
+                    let confirmed = child
+                        .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
+                        .is_some();
+                    return Err(InstallFailure {
+                        code: if confirmed {
+                            "protocol_error"
+                        } else {
+                            "termination_unconfirmed"
+                        },
+                        repaired_cache,
+                        repeated_repair,
+                        termination_confirmed: confirmed,
+                    });
+                }
+                last_phase = Some(phase);
                 repaired_cache |= phase == InstallPhase::Repairing;
                 repeated_repair |= repeated;
                 on_progress(phase, repeated);
             }
             Ok(ReaderEvent::Message(WorkerMessage::Terminal { outcome })) if terminal.is_none() => {
+                if outcome == WorkerOutcome::Success && last_phase != Some(InstallPhase::Validating)
+                {
+                    let confirmed = child
+                        .hard_kill_confirmed(Instant::now() + TERMINATION_GRACE)
+                        .is_some();
+                    return Err(InstallFailure {
+                        code: if confirmed {
+                            "protocol_error"
+                        } else {
+                            "termination_unconfirmed"
+                        },
+                        repaired_cache,
+                        repeated_repair,
+                        termination_confirmed: confirmed,
+                    });
+                }
                 terminal = Some(outcome);
             }
             Ok(ReaderEvent::End) => {
@@ -517,7 +561,7 @@ mod tests {
 
     #[test]
     fn successful_worker_requires_terminal_and_clean_exit() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"initializing","repeatedRepair":false}' '{"type":"phase","phase":"validating","repeatedRepair":false}' '{"type":"terminal","outcome":"success"}'"#;
+        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"initializing","repeatedRepair":false}' '{"type":"phase","phase":"validating","repeatedRepair":false}' '{"type":"terminal","outcome":"success"}'"#;
         let (result, phases) = run_shell(script, Duration::from_secs(1));
         assert_eq!(
             result,
@@ -529,6 +573,7 @@ mod tests {
         assert_eq!(
             phases,
             vec![
+                (InstallPhase::Preparing, false),
                 (InstallPhase::Initializing, false),
                 (InstallPhase::Validating, false),
             ]
@@ -537,7 +582,7 @@ mod tests {
 
     #[test]
     fn explicit_failure_preserves_repeated_repair_evidence() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"repairing","repeatedRepair":true}' '{"type":"terminal","outcome":"native_initialization_failed"}'; exit 20"#;
+        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"repairing","repeatedRepair":true}' '{"type":"terminal","outcome":"native_initialization_failed"}'; exit 20"#;
         let (result, _) = run_shell(script, Duration::from_secs(1));
         assert_eq!(
             result,
@@ -552,14 +597,20 @@ mod tests {
 
     #[test]
     fn hanging_worker_and_descendant_are_killed_before_timeout_returns() {
-        let script = r#"printf '%s\n' '{"type":"phase","phase":"initializing","repeatedRepair":false}'; sleep 30 & wait"#;
+        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"initializing","repeatedRepair":false}'; sleep 30 & wait"#;
         let started = Instant::now();
         let (result, phases) = run_shell(script, Duration::from_millis(75));
         let failure = result.unwrap_err();
         assert_eq!(failure.code, "installer_timeout");
         assert!(failure.termination_confirmed);
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert_eq!(phases, vec![(InstallPhase::Initializing, false)]);
+        assert_eq!(
+            phases,
+            vec![
+                (InstallPhase::Preparing, false),
+                (InstallPhase::Initializing, false),
+            ]
+        );
     }
 
     #[test]
@@ -572,10 +623,23 @@ mod tests {
 
     #[test]
     fn terminal_success_with_nonzero_exit_is_not_accepted() {
-        let script = r#"printf '%s\n' '{"type":"terminal","outcome":"success"}'; exit 9"#;
+        let script = r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"initializing","repeatedRepair":false}' '{"type":"phase","phase":"validating","repeatedRepair":false}' '{"type":"terminal","outcome":"success"}'; exit 9"#;
         let (result, _) = run_shell(script, Duration::from_secs(1));
         let failure = result.unwrap_err();
         assert_eq!(failure.code, "protocol_error");
         assert!(failure.termination_confirmed);
+    }
+
+    #[test]
+    fn out_of_order_or_duplicate_phases_fail_closed() {
+        for script in [
+            r#"printf '%s\n' '{"type":"phase","phase":"validating","repeatedRepair":false}'; sleep 30"#,
+            r#"printf '%s\n' '{"type":"phase","phase":"preparing","repeatedRepair":false}' '{"type":"phase","phase":"preparing","repeatedRepair":false}'; sleep 30"#,
+        ] {
+            let (result, _) = run_shell(script, Duration::from_secs(1));
+            let failure = result.unwrap_err();
+            assert_eq!(failure.code, "protocol_error");
+            assert!(failure.termination_confirmed);
+        }
     }
 }
