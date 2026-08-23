@@ -7,6 +7,7 @@
 
 use super::TranscriptionBackend;
 use fluidaudio_rs::FluidAudio;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub use super::{is_coreml_model, COREML_MODEL_NAME};
@@ -18,6 +19,38 @@ const REQUIRED_MODELS: &[&str] = &[
     "JointDecisionv3.mlmodelc",
 ];
 const VOCAB_FILE: &str = "parakeet_vocab.json";
+const REPAIR_MARKER: &str = ".murmur-coreml-repair-pending-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelPreparationPhase {
+    Repairing { repeated: bool },
+    Initializing,
+    Validating,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelPreparationError {
+    UnknownModel,
+    CacheUnavailable,
+    RepairStateUnavailable,
+    RepairFailed,
+    NativeInitializationFailed,
+    ValidationFailed,
+}
+
+impl std::fmt::Display for ModelPreparationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::UnknownModel => "Unknown Core ML model",
+            Self::CacheUnavailable => "Could not locate the Core ML model cache",
+            Self::RepairStateUnavailable => "Could not record Core ML repair state",
+            Self::RepairFailed => "Could not safely repair the incomplete Core ML cache",
+            Self::NativeInitializationFailed => "Core ML model initialization failed",
+            Self::ValidationFailed => "Core ML setup completed with an incomplete cache",
+        };
+        formatter.write_str(message)
+    }
+}
 
 fn cache_root() -> Option<PathBuf> {
     dirs::data_dir().map(|path| path.join("FluidAudio").join("Models"))
@@ -55,6 +88,73 @@ fn remove_incomplete_cache(path: &Path) -> Result<(), String> {
     result.map_err(|error| format!("Could not remove incomplete Core ML cache: {error}"))
 }
 
+fn marker_is_pending(path: &Path) -> Result<bool, ModelPreparationError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(ModelPreparationError::RepairStateUnavailable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(ModelPreparationError::RepairStateUnavailable),
+    }
+}
+
+fn write_repair_marker(path: &Path) -> Result<(), ModelPreparationError> {
+    let parent = path
+        .parent()
+        .ok_or(ModelPreparationError::RepairStateUnavailable)?;
+    std::fs::create_dir_all(parent).map_err(|_| ModelPreparationError::RepairStateUnavailable)?;
+    let temporary = parent.join(format!("{REPAIR_MARKER}.{}.tmp", std::process::id()));
+    let write_result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|_| ModelPreparationError::RepairStateUnavailable)?;
+        file.write_all(b"1\n")
+            .map_err(|_| ModelPreparationError::RepairStateUnavailable)?;
+        file.sync_all()
+            .map_err(|_| ModelPreparationError::RepairStateUnavailable)?;
+        std::fs::rename(&temporary, path).map_err(|_| ModelPreparationError::RepairStateUnavailable)
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    write_result
+}
+
+fn prepare_model_at<F, I>(
+    model_name: &str,
+    model_path: &Path,
+    repair_marker: &Path,
+    mut observe: F,
+    initialize: I,
+) -> Result<(), ModelPreparationError>
+where
+    F: FnMut(ModelPreparationPhase),
+    I: FnOnce() -> Result<(), ModelPreparationError>,
+{
+    if !is_coreml_model(model_name) {
+        return Err(ModelPreparationError::UnknownModel);
+    }
+
+    if cache_requires_repair(model_path) {
+        let repeated = marker_is_pending(repair_marker)?;
+        write_repair_marker(repair_marker)?;
+        observe(ModelPreparationPhase::Repairing { repeated });
+        remove_incomplete_cache(model_path).map_err(|_| ModelPreparationError::RepairFailed)?;
+    }
+
+    observe(ModelPreparationPhase::Initializing);
+    initialize()?;
+    observe(ModelPreparationPhase::Validating);
+    if !model_exists_at(model_path) {
+        return Err(ModelPreparationError::ValidationFailed);
+    }
+
+    let _ = std::fs::remove_file(repair_marker);
+    Ok(())
+}
+
 pub fn specific_model_exists(model_name: &str) -> bool {
     is_coreml_model(model_name)
         && cfg!(target_arch = "aarch64")
@@ -74,26 +174,39 @@ fn new_engine() -> Result<FluidAudio, String> {
 /// This is synchronous because the upstream Rust bridge exposes a synchronous
 /// initializer. Callers must run it on a blocking worker.
 pub fn prepare_model(model_name: &str) -> Result<(), String> {
-    if !is_coreml_model(model_name) {
-        return Err(format!("Unknown Core ML model '{model_name}'"));
-    }
+    prepare_model_with_observer(model_name, |_| {}).map_err(|error| error.to_string())
+}
 
-    let model_path =
-        model_dir().ok_or_else(|| "Could not find FluidAudio model directory".to_string())?;
-    if cache_requires_repair(&model_path) {
-        tracing::warn!(target: "pipeline", "coreml_repairing_incomplete_cache");
-        remove_incomplete_cache(&model_path)?;
-    }
-
-    let engine = new_engine()?;
-    engine
-        .init_asr()
-        .map_err(|error| format!("Core ML model setup failed: {error}"))?;
-
-    if !specific_model_exists(model_name) {
-        return Err("Core ML setup completed but the model cache is incomplete".to_string());
-    }
-    Ok(())
+pub(crate) fn prepare_model_with_observer<F>(
+    model_name: &str,
+    mut observe: F,
+) -> Result<(), ModelPreparationError>
+where
+    F: FnMut(ModelPreparationPhase),
+{
+    let model_path = model_dir().ok_or(ModelPreparationError::CacheUnavailable)?;
+    let repair_marker = model_path
+        .parent()
+        .ok_or(ModelPreparationError::CacheUnavailable)?
+        .join(REPAIR_MARKER);
+    prepare_model_at(
+        model_name,
+        &model_path,
+        &repair_marker,
+        |phase| {
+            if matches!(phase, ModelPreparationPhase::Repairing { .. }) {
+                tracing::warn!(target: "pipeline", "coreml_repairing_incomplete_cache");
+            }
+            observe(phase);
+        },
+        || {
+            let engine =
+                new_engine().map_err(|_| ModelPreparationError::NativeInitializationFailed)?;
+            engine
+                .init_asr()
+                .map_err(|_| ModelPreparationError::NativeInitializationFailed)
+        },
+    )
 }
 
 #[derive(Default)]
@@ -307,6 +420,99 @@ mod tests {
             fs::write(compiled.join("weights/weight.bin"), b"weights").unwrap();
         }
         fs::write(path.join(VOCAB_FILE), b"{}").unwrap();
+    }
+
+    #[test]
+    fn partial_cache_is_repaired_and_marker_is_cleared_after_success() {
+        let root = test_dir();
+        let model = root.join(CACHE_DIR_NAME);
+        let marker = root.join(REPAIR_MARKER);
+        fs::create_dir_all(&model).unwrap();
+        fs::write(model.join(VOCAB_FILE), b"partial").unwrap();
+        let mut phases = Vec::new();
+
+        prepare_model_at(
+            COREML_MODEL_NAME,
+            &model,
+            &marker,
+            |phase| phases.push(phase),
+            || {
+                write_complete_model(&model);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            phases,
+            vec![
+                ModelPreparationPhase::Repairing { repeated: false },
+                ModelPreparationPhase::Initializing,
+                ModelPreparationPhase::Validating,
+            ]
+        );
+        assert!(model_exists_at(&model));
+        assert!(!marker.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repeated_incomplete_cache_repair_is_detected_across_attempts() {
+        let root = test_dir();
+        let model = root.join(CACHE_DIR_NAME);
+        let marker = root.join(REPAIR_MARKER);
+        fs::create_dir_all(&model).unwrap();
+        fs::write(model.join(VOCAB_FILE), b"partial").unwrap();
+        fs::write(&marker, b"1\n").unwrap();
+        let mut phases = Vec::new();
+
+        let result = prepare_model_at(
+            COREML_MODEL_NAME,
+            &model,
+            &marker,
+            |phase| phases.push(phase),
+            || Err(ModelPreparationError::NativeInitializationFailed),
+        );
+
+        assert_eq!(
+            result,
+            Err(ModelPreparationError::NativeInitializationFailed)
+        );
+        assert_eq!(
+            phases,
+            vec![
+                ModelPreparationPhase::Repairing { repeated: true },
+                ModelPreparationPhase::Initializing,
+            ]
+        );
+        assert!(marker.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initializer_success_without_complete_artifacts_fails_validation() {
+        let root = test_dir();
+        let model = root.join(CACHE_DIR_NAME);
+        let marker = root.join(REPAIR_MARKER);
+        let mut phases = Vec::new();
+
+        let result = prepare_model_at(
+            COREML_MODEL_NAME,
+            &model,
+            &marker,
+            |phase| phases.push(phase),
+            || Ok(()),
+        );
+
+        assert_eq!(result, Err(ModelPreparationError::ValidationFailed));
+        assert_eq!(
+            phases,
+            vec![
+                ModelPreparationPhase::Initializing,
+                ModelPreparationPhase::Validating,
+            ]
+        );
+        assert!(!model.exists());
     }
 
     #[test]

@@ -2,11 +2,85 @@ use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
 use crate::vad;
 use crate::State;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use tauri::Emitter;
 
 static VAD_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
+static MODEL_INSTALL_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+struct DownloadProgressContext<'a> {
+    model_name: &'a str,
+    attempt_id: u64,
+}
+
+#[derive(Clone, Copy)]
+struct InstallTerminalEvidence {
+    outcome_code: &'static str,
+    repaired_cache: bool,
+    repeated_repair: bool,
+    termination_confirmed: bool,
+}
+
+impl Default for InstallTerminalEvidence {
+    fn default() -> Self {
+        Self {
+            outcome_code: "install_failed",
+            repaired_cache: false,
+            repeated_repair: false,
+            termination_confirmed: true,
+        }
+    }
+}
+
+fn install_kind_code(kind: InstallKind) -> &'static str {
+    match kind {
+        InstallKind::Coreml => "coreml",
+        InstallKind::Parakeet => "parakeet",
+        InstallKind::Whisper => "whisper",
+    }
+}
+
+fn emit_download_progress(
+    app_handle: &tauri::AppHandle,
+    context: DownloadProgressContext<'_>,
+    received: u64,
+    total: u64,
+    phase: &str,
+    repeated_repair: bool,
+) {
+    let _ = app_handle.emit(
+        "download-progress",
+        serde_json::json!({
+            "modelName": context.model_name,
+            "attemptId": context.attempt_id,
+            "received": received,
+            "total": total,
+            "phase": phase,
+            "repeatedRepair": repeated_repair,
+        }),
+    );
+}
+
+fn log_install_terminal(
+    attempt_id: u64,
+    install_kind: &'static str,
+    evidence: InstallTerminalEvidence,
+) {
+    tracing::info!(
+        target: "system",
+        event_code = "system.model_install_terminal",
+        attempt_id,
+        install_kind,
+        outcome_code = evidence.outcome_code,
+        repaired_cache = evidence.repaired_cache,
+        repeated_repair = evidence.repeated_repair,
+        termination_confirmed = evidence.termination_confirmed,
+        "model install terminal"
+    );
+}
 
 #[tauri::command]
 pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
@@ -68,6 +142,21 @@ pub async fn download_model(
         return Ok(());
     }
 
+    let attempt_id = MODEL_INSTALL_ATTEMPT.fetch_add(1, Ordering::SeqCst) + 1;
+    let install_kind = install_kind_code(definition.install_kind);
+    let progress_context = DownloadProgressContext {
+        model_name: &model_name,
+        attempt_id,
+    };
+    tracing::info!(
+        target: "system",
+        event_code = "system.model_install_started",
+        attempt_id,
+        install_kind,
+        "model install started"
+    );
+    let mut terminal_evidence = InstallTerminalEvidence::default();
+
     let install_result: Result<(), String> = async {
         // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
         // separate Application Support cache, but VAD must still land here.
@@ -80,35 +169,72 @@ pub async fn download_model(
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
         if definition.install_kind == InstallKind::Coreml {
-            let _ = app_handle.emit(
-                "download-progress",
-                serde_json::json!({
-                    "received": 0,
-                    "total": 0,
-                    "phase": "installing"
-                }),
-            );
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                let model_name = model_name.clone();
-                tokio::task::spawn_blocking(move || {
-                    transcriber::coreml::prepare_model(&model_name)
+                let worker_model = model_name.clone();
+                let progress_app = app_handle.clone();
+                let worker_result = tokio::task::spawn_blocking(move || {
+                    crate::coreml_installer::install(
+                        &worker_model,
+                        crate::coreml_installer::configured_install_timeout(),
+                        |phase, repeated_repair| {
+                            emit_download_progress(
+                                &progress_app,
+                                DownloadProgressContext {
+                                    model_name: &worker_model,
+                                    attempt_id,
+                                },
+                                0,
+                                0,
+                                phase.code(),
+                                repeated_repair,
+                            );
+                            tracing::info!(
+                                target: "system",
+                                event_code = "system.model_install_phase",
+                                attempt_id,
+                                install_kind = "coreml",
+                                phase = phase.code(),
+                                repeated_repair,
+                                "model install phase"
+                            );
+                        },
+                    )
                 })
-                .await
-                .map_err(|error| format!("Core ML setup task failed: {error}"))??;
+                .await;
+                match worker_result {
+                    Ok(Ok(receipt)) => {
+                        terminal_evidence.repaired_cache = receipt.repaired_cache;
+                        terminal_evidence.repeated_repair = receipt.repeated_repair;
+                    }
+                    Ok(Err(failure)) => {
+                        terminal_evidence = InstallTerminalEvidence {
+                            outcome_code: failure.code,
+                            repaired_cache: failure.repaired_cache,
+                            repeated_repair: failure.repeated_repair,
+                            termination_confirmed: failure.termination_confirmed,
+                        };
+                        return Err(failure.user_message());
+                    }
+                    Err(_) => {
+                        terminal_evidence.outcome_code = "worker_task_failed";
+                        return Err(
+                            "Core ML installer supervision failed. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback."
+                                .to_string(),
+                        );
+                    }
+                }
             }
-            let _ = app_handle.emit(
-                "download-progress",
-                serde_json::json!({
-                    "received": 1,
-                    "total": 1,
-                    "phase": "installing"
-                }),
-            );
         } else if definition.install_kind == InstallKind::Parakeet {
-            download_parakeet_model(&app_handle, &model_name, &models_dir).await?;
+            download_parakeet_model(
+                &app_handle,
+                &model_name,
+                &models_dir,
+                progress_context,
+            )
+            .await?;
         } else {
-            download_whisper_model(&app_handle, &model_name, &models_dir).await?;
+            download_whisper_model(&app_handle, &model_name, &models_dir, progress_context).await?;
         }
 
         state.app_state.model_runtime.set_install_state(
@@ -117,12 +243,14 @@ pub async fn download_model(
             InstallState::Validating,
         )?;
         if !model_runtime::model_installed(&model_name) {
+            terminal_evidence.outcome_code = "validation_failed";
             return Err("Model installation completed but validation failed".to_string());
         }
 
         // Co-download VAD model alongside the transcription model (~1.8MB).
         // Its own lock prevents different model installs from sharing a temp file.
-        if let Err(error) = ensure_vad_model(&app_handle).await {
+        if let Err(error) = ensure_vad_model_with_progress(&app_handle, Some(progress_context)).await
+        {
             tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
         }
 
@@ -131,17 +259,26 @@ pub async fn download_model(
     .await;
 
     match install_result {
-        Ok(()) => state.app_state.model_runtime.set_install_state(
-            Some(&app_handle),
-            &model_name,
-            InstallState::Installed,
-        ),
+        Ok(()) => {
+            terminal_evidence.outcome_code = "success";
+            let result = state.app_state.model_runtime.set_install_state(
+                Some(&app_handle),
+                &model_name,
+                InstallState::Installed,
+            );
+            if result.is_err() {
+                terminal_evidence.outcome_code = "state_publish_failed";
+            }
+            log_install_terminal(attempt_id, install_kind, terminal_evidence);
+            result
+        }
         Err(error) => {
             let _ = state.app_state.model_runtime.set_install_state(
                 Some(&app_handle),
                 &model_name,
                 InstallState::Invalid,
             );
+            log_install_terminal(attempt_id, install_kind, terminal_evidence);
             Err(error)
         }
     }
@@ -316,6 +453,7 @@ async fn download_whisper_model(
     app_handle: &tauri::AppHandle,
     model_name: &str,
     models_dir: &std::path::Path,
+    progress_context: DownloadProgressContext<'_>,
 ) -> Result<(), String> {
     let filename = format!("ggml-{}.bin", model_name);
     let url = format!(
@@ -325,7 +463,7 @@ async fn download_whisper_model(
     let dest_path = models_dir.join(&filename);
     let temp_path = models_dir.join(format!("{}.tmp", filename));
 
-    let received = stream_download(app_handle, &url, &temp_path).await?;
+    let received = stream_download(app_handle, &url, &temp_path, Some(progress_context)).await?;
     if let Err(error) = crate::model_artifact::validate_binary_model(
         &temp_path,
         crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
@@ -352,6 +490,7 @@ async fn download_parakeet_model(
     app_handle: &tauri::AppHandle,
     model_name: &str,
     models_dir: &std::path::Path,
+    progress_context: DownloadProgressContext<'_>,
 ) -> Result<(), String> {
     let (url, dir_name) = transcriber::parakeet::download_spec(model_name)
         .ok_or_else(|| format!("Unknown Parakeet model '{}'", model_name))?;
@@ -365,7 +504,7 @@ async fn download_parakeet_model(
     // v0.16.0 could leave a complete `.tmp` archive when Murmur exited during
     // extraction. Try that expensive local data before downloading it again.
     if legacy_temp_path.is_file() {
-        emit_installing(app_handle);
+        emit_installing(app_handle, progress_context);
         let archive = legacy_temp_path.clone();
         let root = models_dir.to_path_buf();
         let model = model_name.to_string();
@@ -392,7 +531,8 @@ async fn download_parakeet_model(
         // downloaded once more in the same attempt.
         if !archive_path.is_file() {
             let download_path = models_dir.join(format!("{}.tar.bz2.download", dir_name));
-            let received = stream_download(app_handle, &url, &download_path).await?;
+            let received =
+                stream_download(app_handle, &url, &download_path, Some(progress_context)).await?;
             tokio::fs::rename(&download_path, &archive_path)
                 .await
                 .map_err(|e| {
@@ -403,7 +543,7 @@ async fn download_parakeet_model(
             tracing::info!(target: "system", "Parakeet archive downloaded: {} ({} bytes)", dir_name, received);
         }
 
-        emit_installing(app_handle);
+        emit_installing(app_handle, progress_context);
         let result = extract_parakeet_archive_on_worker(
             archive_path.clone(),
             models_dir.to_path_buf(),
@@ -465,15 +605,8 @@ async fn extract_parakeet_archive_on_worker(
     })?
 }
 
-fn emit_installing(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.emit(
-        "download-progress",
-        serde_json::json!({
-            "received": 0,
-            "total": 0,
-            "phase": "installing"
-        }),
-    );
+fn emit_installing(app_handle: &tauri::AppHandle, progress_context: DownloadProgressContext<'_>) {
+    emit_download_progress(app_handle, progress_context, 0, 0, "installing", false);
 }
 
 fn extract_parakeet_archive(
@@ -551,6 +684,13 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
 /// This is the fallback for users who have a transcription model but not the
 /// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
 pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    ensure_vad_model_with_progress(app_handle, None).await
+}
+
+async fn ensure_vad_model_with_progress(
+    app_handle: &tauri::AppHandle,
+    progress_context: Option<DownloadProgressContext<'_>>,
+) -> Result<(), String> {
     let _install_guard = VAD_INSTALL_LOCK.lock().await;
     if vad::vad_model_exists() {
         return Ok(());
@@ -569,7 +709,8 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
     tracing::info!(target: "system", "VAD model not found, downloading...");
 
     let temp_path = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
-    let received = stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path).await?;
+    let received =
+        stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path, progress_context).await?;
     if let Err(error) = crate::model_artifact::validate_binary_model(
         &temp_path,
         crate::model_artifact::MIN_VAD_MODEL_BYTES,
@@ -591,10 +732,11 @@ pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<()
 }
 
 /// Stream a file download with progress events. Returns total bytes received.
-pub(crate) async fn stream_download(
+async fn stream_download(
     app_handle: &tauri::AppHandle,
     url: &str,
     dest: &std::path::Path,
+    progress_context: Option<DownloadProgressContext<'_>>,
 ) -> Result<u64, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -632,14 +774,9 @@ pub(crate) async fn stream_download(
                 .await
                 .map_err(|e| format!("Failed to write to file: {}", e))?;
             received += chunk.len() as u64;
-            let _ = app_handle.emit(
-                "download-progress",
-                serde_json::json!({
-                    "received": received,
-                    "total": total,
-                    "phase": "downloading"
-                }),
-            );
+            if let Some(context) = progress_context {
+                emit_download_progress(app_handle, context, received, total, "downloading", false);
+            }
         }
         file.flush()
             .await
