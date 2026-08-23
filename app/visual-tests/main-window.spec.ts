@@ -226,7 +226,10 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(claudeCard).toHaveCSS('height', '94px');
   await expect(claudeCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
-  await expect(page.getByText('Active theme', { exact: false })).toHaveCount(0);
+  const activeThemeSummary = page.locator('section[aria-labelledby="active-theme-heading"]');
+  await expect(activeThemeSummary).toContainText('Active theme');
+  await expect(activeThemeSummary).toContainText('Claude Theme');
+  await expect(activeThemeSummary).toContainText('System appearance · Light right now');
   await expect(page.getByText('Partly active')).toHaveCount(0);
   await expect(page.getByText('Choose dark style')).toHaveCount(0);
   await expect(page.getByText('Import a file or browse Open VSX')).toHaveCount(0);
