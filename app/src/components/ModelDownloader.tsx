@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
@@ -44,6 +44,12 @@ interface Props {
    * every row behaves as before.
    */
   installedModels?: Partial<Record<ModelOption, boolean>>;
+  /** Lets an embedder place the live primary action in its own navigation row. */
+  renderPrimaryAction?: (action: {
+    label: string;
+    disabled: boolean;
+    onActivate: () => void;
+  }) => ReactNode;
 }
 
 type DownloadState =
@@ -56,7 +62,13 @@ type DownloadState =
  * Used by the standalone first-launch gate (ModelDownloader) and embedded in
  * the onboarding wizard's model step (OnboardingFlow).
  */
-export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChange, installedModels }: Props) {
+export function ModelDownloadPanel({
+  initialModel,
+  onComplete,
+  onDownloadingChange,
+  installedModels,
+  renderPrimaryAction,
+}: Props) {
   const [selected, setSelected] = useState<ModelOption>(
     MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
   );
@@ -113,6 +125,20 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
 
   const isDownloading = downloadState.phase === 'downloading';
   const selectedInstalled = installedModels?.[selected] === true;
+  const primaryLabel = isDownloading
+    ? progress ? modelDownloadLabel(progress) : 'Starting...'
+    : selectedInstalled
+    ? 'Continue'
+    : downloadState.phase === 'error'
+    ? 'Retry Download'
+    : 'Download';
+  const activatePrimary = () => {
+    if (selectedInstalled) {
+      onComplete(selected);
+      return;
+    }
+    void handleDownload();
+  };
 
   return (
     <div>
@@ -120,6 +146,8 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
           {MODELS.map((model) => (
             <button
               key={model.name}
+              type="button"
+              aria-pressed={selected === model.name}
               onClick={() => !isDownloading && setSelected(model.name)}
               disabled={isDownloading}
               className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
@@ -191,19 +219,20 @@ export function ModelDownloadPanel({ initialModel, onComplete, onDownloadingChan
 
         {/* An installed selection completes immediately — same path a finished
             download takes — so nothing on disk is ever re-downloaded. */}
-        <button
-          onClick={selectedInstalled ? () => onComplete(selected) : handleDownload}
-          disabled={isDownloading}
-          className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {isDownloading
-            ? progress ? modelDownloadLabel(progress) : 'Starting...'
-            : selectedInstalled
-            ? 'Continue'
-            : downloadState.phase === 'error'
-            ? 'Retry Download'
-            : 'Download'}
-        </button>
+        {renderPrimaryAction ? renderPrimaryAction({
+          label: primaryLabel,
+          disabled: isDownloading,
+          onActivate: activatePrimary,
+        }) : (
+          <button
+            type="button"
+            onClick={activatePrimary}
+            disabled={isDownloading}
+            className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {primaryLabel}
+          </button>
+        )}
     </div>
   );
 }
