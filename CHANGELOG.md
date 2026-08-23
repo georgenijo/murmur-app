@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-08-23
+
+### Changed
+
+- Setup assistant steps now share a consistent bottom navigation row, with
+  clearer progress, keyboard focus, and safe navigation locking during model
+  downloads (#643).
+- Transcript history rows now copy their full text when clicked or activated
+  from the keyboard, while Show More and Correct & Teach remain independent
+  actions (#647).
+- Settings hides the live microphone/application status while open, keeping
+  the header focused on navigation (#648).
+- Appearance settings now use the selected card border and checkmark instead
+  of redundant active-theme summaries and badges, and long theme names
+  truncate without displacing actions (#646).
+
 ### Fixed
 
 - First-run Core ML installation now runs behind a bounded, killable process
