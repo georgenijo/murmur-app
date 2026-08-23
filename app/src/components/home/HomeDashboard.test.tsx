@@ -55,7 +55,7 @@ describe('home dashboard interactions', () => {
     expect(container.querySelectorAll('.home-record-waveform span')).toHaveLength(5);
   });
 
-  it('routes main and customization destinations without dead links', async () => {
+  it('routes main and customization destinations without a duplicate Settings entry', async () => {
     const onNavigate = vi.fn();
     const onOpenSettings = vi.fn();
     await act(async () => root.render(
@@ -65,12 +65,18 @@ describe('home dashboard interactions', () => {
     const button = (label: string) => Array.from(container.querySelectorAll('button'))
       .find((candidate) => candidate.getAttribute('aria-label') === label) as HTMLButtonElement;
     await act(async () => button('Insights').click());
+    await act(async () => button('Text & Vocabulary').click());
     await act(async () => button('Voice Commands').click());
     await act(async () => button('Styles').click());
+    await act(async () => button('Transforms').click());
 
     expect(onNavigate).toHaveBeenCalledWith('insights');
-    expect(onOpenSettings).toHaveBeenNthCalledWith(1, { page: 'text', editorTab: 'commands' });
-    expect(onOpenSettings).toHaveBeenNthCalledWith(2, { page: 'delivery', target: 'app-overrides' });
+    expect(onOpenSettings).toHaveBeenNthCalledWith(1, { page: 'text' });
+    expect(onOpenSettings).toHaveBeenNthCalledWith(2, { page: 'text', editorTab: 'commands' });
+    expect(onOpenSettings).toHaveBeenNthCalledWith(3, { page: 'delivery', target: 'app-overrides' });
+    expect(onOpenSettings).toHaveBeenNthCalledWith(4, { page: 'ai-transform' });
+    expect(button('Settings')).toBeUndefined();
+    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Everything stays on this Mac.');
   });
 
   it('describes auditable milestones rather than an opaque score', async () => {
