@@ -232,6 +232,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
         "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
+        "system.model_install_started" => Some("system.model_install_started"),
+        "system.model_install_phase" => Some("system.model_install_phase"),
+        "system.model_install_terminal" => Some("system.model_install_terminal"),
         "overlay.position_default" => Some("overlay.position_default"),
         "overlay.position_offset_applied" => Some("overlay.position_offset_applied"),
         "overlay.position_read_failed" => Some("overlay.position_read_failed"),
@@ -253,6 +256,139 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "updater.install_ready" => Some("updater.install_ready"),
         "updater.install_failed" => Some("updater.install_failed"),
         _ => None,
+    }
+}
+
+fn is_model_install_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some(
+            "system.model_install_started"
+                | "system.model_install_phase"
+                | "system.model_install_terminal"
+        )
+    )
+}
+
+fn is_safe_model_install_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "system.model_install_started"
+                    | "system.model_install_phase"
+                    | "system.model_install_terminal"
+            )
+        }),
+        "attempt_id" => value.as_u64().is_some_and(|value| value > 0),
+        "install_kind" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "coreml" | "parakeet" | "whisper")),
+        "phase" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "preparing" | "repairing" | "initializing" | "validating"
+            )
+        }),
+        "outcome_code" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "success"
+                    | "install_failed"
+                    | "installer_timeout"
+                    | "cache_repair_failed"
+                    | "repair_state_unavailable"
+                    | "validation_failed"
+                    | "termination_unconfirmed"
+                    | "native_initialization_failed"
+                    | "cache_unavailable"
+                    | "unknown_model"
+                    | "spawn_failed"
+                    | "protocol_error"
+                    | "worker_exited_early"
+                    | "worker_task_failed"
+                    | "state_publish_failed"
+            )
+        }),
+        "repaired_cache" | "repeated_repair" | "termination_confirmed" => value.is_boolean(),
+        _ => false,
+    }
+}
+
+fn valid_model_install_shape(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let event_code = data.get("event_code").and_then(serde_json::Value::as_str);
+    let base_valid = data
+        .get("attempt_id")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|value| value > 0)
+        && data
+            .get("install_kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some();
+    if !base_valid {
+        return false;
+    }
+    match event_code {
+        Some("system.model_install_started") => data.len() == 3,
+        Some("system.model_install_phase") => {
+            data.len() == 5
+                && data
+                    .get("phase")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                && data
+                    .get("repeated_repair")
+                    .and_then(serde_json::Value::as_bool)
+                    .is_some_and(|repeated| {
+                        !repeated
+                            || data.get("phase").and_then(serde_json::Value::as_str)
+                                == Some("repairing")
+                    })
+        }
+        Some("system.model_install_terminal") => {
+            let repaired = data
+                .get("repaired_cache")
+                .and_then(serde_json::Value::as_bool);
+            let repeated = data
+                .get("repeated_repair")
+                .and_then(serde_json::Value::as_bool);
+            let termination = data
+                .get("termination_confirmed")
+                .and_then(serde_json::Value::as_bool);
+            data.len() == 7
+                && data
+                    .get("outcome_code")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                && repaired.is_some()
+                && repeated.is_some()
+                && termination.is_some()
+                && !(repeated == Some(true) && repaired != Some(true))
+                && (termination != Some(false)
+                    || data.get("outcome_code").and_then(serde_json::Value::as_str)
+                        == Some("termination_unconfirmed"))
+        }
+        _ => false,
+    }
+}
+
+fn sanitize_model_install_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_invalid_known_field = data.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "event_code"
+                | "attempt_id"
+                | "install_kind"
+                | "phase"
+                | "outcome_code"
+                | "repaired_cache"
+                | "repeated_repair"
+                | "termination_confirmed"
+        ) && !is_safe_model_install_field(key, value)
+    });
+    data.retain(|key, value| is_safe_model_install_field(key, value));
+    if has_invalid_known_field || !valid_model_install_shape(data) {
+        data.retain(|key, _| key == "event_code");
     }
 }
 
@@ -1032,6 +1168,15 @@ fn sanitized_summary(
         == Some("pipeline.delivery_target_verified")
     {
         "Dictation delivery target verification".to_string()
+    } else if matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some(
+            "system.model_install_started"
+                | "system.model_install_phase"
+                | "system.model_install_terminal"
+        )
+    ) {
+        "Model installation event".to_string()
     } else if stream == "meeting" {
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
@@ -1280,6 +1425,13 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if is_model_install_event(obj) {
+        // Model installation failures may originate in native libraries and
+        // contain local paths or raw error text. Keep only the exact stable
+        // lifecycle schema before the same JSONL is eligible for Fleet upload.
+        sanitize_model_install_event(obj);
+        return;
+    }
     if is_audio_input_resolution_event(obj) {
         // This attempt-scoped hardware observation is shipped from the same
         // JSONL as ordinary audio logs. Enforce an exact schema in every build
@@ -3239,5 +3391,64 @@ mod tests {
         assert_eq!(unsafe_summary, "Structured event");
         assert!(!unsafe_summary.contains("SENTINEL"));
         assert!(!unsafe_summary.contains("/Users/private"));
+    }
+
+    #[test]
+    fn model_install_terminal_schema_is_content_free_in_every_build() {
+        let mut data = serde_json::json!({
+            "event_code": "system.model_install_terminal",
+            "attempt_id": 17,
+            "install_kind": "coreml",
+            "outcome_code": "installer_timeout",
+            "repaired_cache": true,
+            "repeated_repair": true,
+            "termination_confirmed": true,
+            "raw_error": "SENTINEL /Users/private/FluidAudio"
+        });
+
+        sanitize_event_data("system", &mut data, true);
+
+        assert_eq!(data["attempt_id"], 17);
+        assert_eq!(data["outcome_code"], "installer_timeout");
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert_eq!(
+            sanitized_summary(
+                "system",
+                Some("SENTINEL native error".to_string()),
+                &data,
+                true,
+            ),
+            "Model installation event"
+        );
+    }
+
+    #[test]
+    fn model_install_schema_rejects_contradictory_repair_or_termination_evidence() {
+        for mut data in [
+            serde_json::json!({
+                "event_code": "system.model_install_phase",
+                "attempt_id": 2,
+                "install_kind": "coreml",
+                "phase": "initializing",
+                "repeated_repair": true,
+            }),
+            serde_json::json!({
+                "event_code": "system.model_install_terminal",
+                "attempt_id": 3,
+                "install_kind": "coreml",
+                "outcome_code": "success",
+                "repaired_cache": false,
+                "repeated_repair": true,
+                "termination_confirmed": false,
+            }),
+        ] {
+            sanitize_event_data("system", &mut data, false);
+            assert_eq!(
+                data,
+                serde_json::json!({ "event_code": data["event_code"].clone() })
+            );
+        }
     }
 }

@@ -109,7 +109,7 @@ On first launch (the selected model is not present), a full-screen download view
 | `large-v3-turbo` | "Highest accuracy, slower (1-2 seconds)" |
 | `base.en` | "Good balance of speed and accuracy" |
 
-Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled during setup. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose progress. On error, a "Retry Download" button appears.
+Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled only while an exact correlated attempt is live. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose byte progress, but it reports Preparing, Repairing, Initializing, and Validating phases. On terminal Core ML failure, Retry and explicit Whisper Base / CPU Parakeet fallbacks become immediately available.
 
 The main app controls are gated on `initialized` (which requires a model to exist), so the download screen blocks all other interaction.
 
@@ -121,7 +121,7 @@ The main app controls are gated on `initialized` (which requires a model to exis
 
 - Uses `reqwest` with 30s connect timeout and 15-minute overall timeout
 - Writes chunks to a temp file (`.tmp` suffix)
-- Emits `download-progress` events with `{ received, total, phase }` payload
+- Emits attempt-correlated `download-progress` events with `{ modelName, attemptId, received, total, phase, repeatedRepair }`; consumers ignore other models and stale attempt IDs
 - Rejects undersized artifacts and HTML, JSON, Git LFS pointer, or access-error payloads before publication
 - On success: atomic rename from `.tmp` to final path
 - On failure: temp file cleaned up
@@ -136,7 +136,9 @@ The model bundle ships as a `.tar.bz2` from the sherpa-onnx `asr-models` GitHub 
 
 ### FluidAudio Core ML Setup
 
-`download_model` dispatches from the catalog's explicit install strategy. It calls FluidAudio's synchronous setup through `spawn_blocking`; an existing cache that fails Murmur's completeness check is first removed at the exact v3 cache path, then FluidAudio downloads, compiles, and caches the model. Murmur validates the completed external cache again. The first setup can take tens of seconds; later initialization is normally around a tenth of a second. A newly linked app can also trigger one-time ANE specialization, so an installed model warms on a blocking worker immediately after startup configuration instead of deferring that cost to the first dictation.
+`download_model` dispatches from the catalog's explicit install strategy. Core ML setup runs in a fixed internal mode of Murmur's same signed executable, never in the Tauri process. The host owns that exact child process group, reads only magic-prefixed messages from a bounded content-free protocol while ignoring bounded native stdout noise, keeps a parent-death pipe open, and enforces a ten-minute hard deadline. Timeout, malformed output, early exit, and native failure either confirm that the process group is gone or retain its exact owner in quarantine. Murmur rechecks that quarantine before another Core ML worker can start; the explicit Whisper and CPU fallbacks remain available because they do not launch a Core ML initializer.
+
+An existing cache that fails Murmur's completeness check is removed only at the exact v3 cache path. Before removal, the worker atomically writes a content-free pending-repair marker beside that cache; a second incomplete repair after relaunch is therefore surfaced specifically. Successful validation clears the marker. Every attempt publishes a strict `system.model_install_started` → phase(s) → `system.model_install_terminal` telemetry contract. The all-build sanitizer admits only attempt IDs, install kind, stable phase/outcome codes, repair booleans, and termination confirmation—never paths or raw FluidAudio errors. The first setup can take tens of seconds; later initialization is normally around a tenth of a second. Installed-model warmup and inference remain in the existing runtime and are unchanged.
 
 ### VAD Co-Download
 
@@ -174,9 +176,11 @@ The settings panel supports downloading models without leaving the settings view
 5. Stale-request protection prevents progress updates from a previously selected model
 
 Core ML setup has no byte-progress callback in FluidAudio, so onboarding,
-Settings, and Performance Lab show an animated indeterminate **Installing**
-state instead of a misleading frozen 0%. Whisper and sherpa downloads continue
-to show measured byte percentages.
+Settings, and Performance Lab show an animated indeterminate phase label
+instead of a misleading frozen 0%. Whisper and sherpa downloads continue to
+show measured byte percentages. A Core ML timeout or failure marks the runtime
+install state Invalid, unlocks setup navigation and model choices, and offers
+Retry plus immediate Whisper Base and CPU Parakeet fallbacks.
 
 Parakeet archives are retained until installation succeeds. Extraction happens
 under a staging directory, the four required files are validated there, and the

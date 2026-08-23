@@ -16,6 +16,7 @@ mod cleanup;
 mod cli_command;
 mod code_signing;
 mod commands;
+pub mod coreml_installer;
 mod correct_and_teach;
 mod correction;
 mod delivery_recovery;
