@@ -255,8 +255,8 @@ pub async fn download_model(
             &model_name,
             InstallState::Validating,
         )?;
-        if !model_runtime::model_installed(&model_name)
-            && !(definition.install_kind == InstallKind::Coreml
+        if !(model_runtime::model_installed(&model_name)
+            || definition.install_kind == InstallKind::Coreml
                 && debug_coreml_scenario_reports_success_without_cache())
         {
             terminal_evidence.outcome_code = "validation_failed";

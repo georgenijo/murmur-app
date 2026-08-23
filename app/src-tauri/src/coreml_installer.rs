@@ -324,7 +324,7 @@ fn run_debug_scenario(scenario: &str) -> Option<i32> {
         "success" => success(),
         // Exercises the real FluidAudio bridge while allowing the debug-only
         // parent validation seam to force the onboarding gate open.
-        "actual" => return None,
+        "actual" => None,
         _ => None,
     }
 }
