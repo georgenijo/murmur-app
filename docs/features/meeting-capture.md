@@ -56,7 +56,7 @@ status evidence.
 
 ## Capture boundary
 
-`murmur-capture-worker --production-v6` owns both native streams:
+`murmur-capture-worker --production-v7` owns both native streams:
 
 1. A private, unmuted stereo `CATap` captures global system output and the
    realtime callback downmixes it to mono without allocation.

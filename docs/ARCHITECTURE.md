@@ -83,7 +83,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 explicit Start Meeting
     |
-signed murmur-capture-worker --production-v6
+signed murmur-capture-worker --production-v7
     |-- microphone AUHAL callback --> preallocated SPSC ring --> Me frames
     +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
     |
