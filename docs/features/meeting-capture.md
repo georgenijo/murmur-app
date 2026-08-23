@@ -67,10 +67,10 @@ status evidence.
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
-rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v6
+rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v7
 frames. It never mixes the streams.
 
-Protocol v6 also carries bounded `InputResolution` evidence before the live
+Protocol v7 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
 presence, a count capped at 256, and default-input availability. It contains no
 device ID, display name, raw error, path, or audio content.
@@ -138,6 +138,29 @@ feature gate, not a new app-wide minimum. Onboarding includes a skippable,
 explicit System Audio step; denial produces an actionable banner and link to
 Screen & System Audio Recording settings.
 
+Authorization and capture health are separate facts, and the probe reports both:
+
+- **Permission** comes from the tap attempt, which is authoritative. Core Audio
+  refuses an unauthorized tap at creation with `kAudioDevicePermissionsError`,
+  so a tap that creates its aggregate device and starts its IO proc proves
+  access. The host also queries `CGPreflightScreenCaptureAccess` first and calls
+  `CGRequestScreenCaptureAccess` only when the app is not yet determined, so an
+  already-authorized user is never re-prompted.
+- **Capture readiness** (`captureReady`) means the tap started. **Audio flow**
+  (`audioFlowing`) means a callback delivered samples inside a bounded 500 ms
+  observation window. A granted tap on a silent Mac is healthy — `granted`,
+  `captureReady: true`, `audioFlowing: false` — and is never reported as a
+  permission failure.
+- **`needsRelaunch`** covers the one contradiction: macOS reports the app as
+  authorized but Core Audio still refuses the tap, meaning the grant has not
+  reached this process image. The UI asks the user to quit and reopen Murmur
+  rather than retrying silently.
+
+Every probe writes a content-free terminal result to the `meeting` stream:
+`meeting.permission_probe_started`, `meeting.permission_probe_finished` (TCC
+state, permission, capture readiness, audio flow, relaunch), and
+`meeting.permission_probe_failed`.
+
 Meeting traces contain only allowlisted lifecycle phase, channel, generation,
 and stable error code. The sanitizer removes every other string in all builds.
 The fleet log shipper additionally drops the entire `meeting` stream and
@@ -148,7 +171,7 @@ Mac.
 
 - `cargo test meeting -- --test-threads=1` covers the store, recovery,
   rendering, privacy sanitizer, and accelerated bounded-memory chunking.
-- Protocol/helper tests cover v6 framing, channel identity, overflow, two
+- Protocol/helper tests cover v7 framing, channel identity, overflow, two
   independent rings under Loom, macOS gating, and typed permission failures.
 - The native gate exercises signed-app permission attribution, start → first
   PCM on both channels → stop, and confirmed tap destruction.

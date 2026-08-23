@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 6;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 7;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -169,6 +169,12 @@ pub enum ProductionHelperMessage {
     },
     SystemAudioPermission {
         status: SystemAudioPermissionStatus,
+        /// Whether the tap delivered at least one callback inside the probe's
+        /// observation window. Capture readiness is independent of
+        /// authorization: a granted tap on a silent Mac reports
+        /// `Granted` with `audio_flowing: false`, which is a healthy state and
+        /// never a permission failure.
+        audio_flowing: bool,
     },
     MeetingFailure {
         code: FailureCode,
@@ -827,6 +833,41 @@ mod tests {
         assert!(!serialized.contains("deviceName"));
         assert!(!serialized.contains("uid"));
         assert!(!serialized.contains("error"));
+    }
+
+    #[test]
+    fn system_audio_permission_carries_capture_flow_separately() {
+        let nonce = [9_u8; 16];
+        for (status, audio_flowing, expected_json) in [
+            (
+                SystemAudioPermissionStatus::Granted,
+                false,
+                r#"{"type":"systemAudioPermission","status":"granted","audioFlowing":false}"#,
+            ),
+            (
+                SystemAudioPermissionStatus::Granted,
+                true,
+                r#"{"type":"systemAudioPermission","status":"granted","audioFlowing":true}"#,
+            ),
+            (
+                SystemAudioPermissionStatus::Denied,
+                false,
+                r#"{"type":"systemAudioPermission","status":"denied","audioFlowing":false}"#,
+            ),
+        ] {
+            let message = ProductionHelperMessage::SystemAudioPermission {
+                status,
+                audio_flowing,
+            };
+            let mut bytes = Vec::new();
+            write_production_control(&mut bytes, 21, nonce, &message).unwrap();
+            assert_eq!(
+                read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 21, nonce)
+                    .unwrap(),
+                ProductionFrame::Control(message.clone())
+            );
+            assert_eq!(serde_json::to_string(&message).unwrap(), expected_json);
+        }
     }
 
     #[test]

@@ -51,6 +51,34 @@ pub enum SystemAudioPermissionState {
     Unsupported,
 }
 
+/// Authorization and capture health are independent facts. A granted tap on a
+/// silent Mac is healthy (`permission: Granted`, `audio_flowing: false`) and is
+/// never reported as a permission problem.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemAudioAccess {
+    pub permission: SystemAudioPermissionState,
+    /// The tap, its private aggregate device, and its IO proc all started.
+    pub capture_ready: bool,
+    /// A callback delivered samples inside the probe's observation window.
+    pub audio_flowing: bool,
+    /// macOS reports the app as authorized but Core Audio still refuses the
+    /// tap, which a relaunch clears.
+    pub needs_relaunch: bool,
+}
+
+impl SystemAudioPermissionState {
+    /// Stable, content-free token for the `meeting` telemetry allowlist.
+    pub(crate) fn as_event_value(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Granted => "granted",
+            Self::Denied => "denied",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum MeetingRuntimePhase {
@@ -325,13 +353,13 @@ impl MeetingCoordinator {
             .store(false, Ordering::SeqCst);
     }
 
-    pub fn request_permission(&self) -> Result<SystemAudioPermissionState, String> {
+    pub fn request_permission(&self) -> Result<SystemAudioAccess, String> {
         if self.is_active() {
             return Err("Stop the active meeting before checking System Audio access.".to_string());
         }
         let result = probe_permission();
-        if let Ok(status) = result {
-            self.inner.lock_or_recover().permission = status;
+        if let Ok(access) = result {
+            self.inner.lock_or_recover().permission = access.permission;
         }
         result
     }
@@ -498,7 +526,7 @@ fn spawn_worker(
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v6", capture_id_text.as_str(), nonce_hex],
+        &["--production-v7", capture_id_text.as_str(), nonce_hex],
         &[],
     )
     .map_err(|_| {
@@ -565,7 +593,78 @@ fn terminate_worker(
     }
 }
 
-fn probe_permission() -> Result<SystemAudioPermissionState, String> {
+/// Query the macOS Screen & System Audio Recording authorization without
+/// touching Core Audio. This never prompts and returns immediately.
+#[cfg(target_os = "macos")]
+fn tcc_preflight() -> bool {
+    core_graphics::access::ScreenCaptureAccess.preflight()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tcc_preflight() -> bool {
+    false
+}
+
+/// Surface the macOS authorization prompt when the app is not yet determined.
+/// Returns immediately; the user's answer arrives via a later preflight.
+#[cfg(target_os = "macos")]
+fn tcc_request() -> bool {
+    core_graphics::access::ScreenCaptureAccess.request()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tcc_request() -> bool {
+    false
+}
+
+fn probe_permission() -> Result<SystemAudioAccess, String> {
+    let authorized_before = tcc_preflight();
+    tracing::info!(
+        target: "meeting",
+        event_code = "meeting.permission_probe_started",
+        tcc_authorized = authorized_before,
+        "system audio permission probe started"
+    );
+    // Not-yet-determined apps need the system prompt before the tap can
+    // succeed. Already-authorized apps must never be prompted again.
+    if !authorized_before {
+        tcc_request();
+    }
+    let outcome = probe_permission_tap();
+    match &outcome {
+        Ok(access) => tracing::info!(
+            target: "meeting",
+            event_code = "meeting.permission_probe_finished",
+            tcc_authorized = authorized_before,
+            permission = access.permission.as_event_value(),
+            capture_ready = access.capture_ready,
+            audio_flowing = access.audio_flowing,
+            needs_relaunch = access.needs_relaunch,
+            "system audio permission probe finished"
+        ),
+        Err(_) => tracing::warn!(
+            target: "meeting",
+            event_code = "meeting.permission_probe_failed",
+            tcc_authorized = authorized_before,
+            "system audio permission probe did not complete"
+        ),
+    }
+    outcome.map(|access| resolve_access(authorized_before, access))
+}
+
+/// Combine the TCC answer with the tap result. The tap is authoritative for
+/// permission; TCC only explains a contradiction. macOS reporting the app as
+/// authorized while Core Audio refuses the tap means the grant has not reached
+/// this process image, which a relaunch clears.
+fn resolve_access(authorized_before: bool, probed: SystemAudioAccess) -> SystemAudioAccess {
+    SystemAudioAccess {
+        needs_relaunch: authorized_before
+            && probed.permission == SystemAudioPermissionState::Denied,
+        ..probed
+    }
+}
+
+fn probe_permission_tap() -> Result<SystemAudioAccess, String> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) =
         spawn_worker(capture_id, &nonce_hex).map_err(|error| error.message.to_string())?;
@@ -607,15 +706,24 @@ fn probe_permission() -> Result<SystemAudioPermissionState, String> {
                 },
             ))) => setup_watchdog.observe(channel, step, transition),
             Ok(WorkerRead::Frame(ProductionFrame::Control(
-                ProductionHelperMessage::SystemAudioPermission { status },
+                ProductionHelperMessage::SystemAudioPermission {
+                    status,
+                    audio_flowing,
+                },
             ))) => {
-                break Ok(match status {
+                let permission = match status {
                     SystemAudioPermissionStatus::Granted => SystemAudioPermissionState::Granted,
                     SystemAudioPermissionStatus::Denied => SystemAudioPermissionState::Denied,
                     SystemAudioPermissionStatus::Unsupported => {
                         SystemAudioPermissionState::Unsupported
                     }
-                })
+                };
+                break Ok(SystemAudioAccess {
+                    permission,
+                    capture_ready: permission == SystemAudioPermissionState::Granted,
+                    audio_flowing,
+                    needs_relaunch: false,
+                });
             }
             Ok(WorkerRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::MeetingFailure { code, .. },
@@ -1241,6 +1349,12 @@ fn user_message_for_failure(code: FailureCode, channel: Option<CaptureChannel>) 
         (FailureCode::SystemAudioUnavailable, _) => {
             "System Audio capture is unavailable. Try again after checking your output device."
         }
+        (FailureCode::CallbackStalled, Some(CaptureChannel::System)) => {
+            "System Audio started but delivered no audio. Quit other audio capture apps and try again."
+        }
+        (FailureCode::CallbackStalled, _) => {
+            "The microphone started but delivered no audio. Quit other audio capture apps and try again."
+        }
         _ => "Meeting audio capture failed. Try again.",
     }
 }
@@ -1782,6 +1896,101 @@ pub fn render_meeting_text(segments: &[MeetingSegment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn granted(audio_flowing: bool) -> SystemAudioAccess {
+        SystemAudioAccess {
+            permission: SystemAudioPermissionState::Granted,
+            capture_ready: true,
+            audio_flowing,
+            needs_relaunch: false,
+        }
+    }
+
+    #[test]
+    fn granted_tap_without_audio_is_healthy_not_a_permission_failure() {
+        // The #638 case: authorized, tap healthy, nothing playing.
+        let access = resolve_access(true, granted(false));
+        assert_eq!(access.permission, SystemAudioPermissionState::Granted);
+        assert!(access.capture_ready);
+        assert!(!access.audio_flowing);
+        assert!(!access.needs_relaunch);
+    }
+
+    #[test]
+    fn granted_tap_with_audio_reports_flow() {
+        let access = resolve_access(true, granted(true));
+        assert_eq!(access.permission, SystemAudioPermissionState::Granted);
+        assert!(access.capture_ready);
+        assert!(access.audio_flowing);
+    }
+
+    #[test]
+    fn first_grant_is_granted_without_requiring_a_relaunch() {
+        // Not authorized at preflight, prompt accepted, tap then succeeds.
+        let access = resolve_access(false, granted(false));
+        assert_eq!(access.permission, SystemAudioPermissionState::Granted);
+        assert!(!access.needs_relaunch);
+    }
+
+    #[test]
+    fn denial_is_not_capture_ready() {
+        let probed = SystemAudioAccess {
+            permission: SystemAudioPermissionState::Denied,
+            capture_ready: false,
+            audio_flowing: false,
+            needs_relaunch: false,
+        };
+        let access = resolve_access(false, probed);
+        assert_eq!(access.permission, SystemAudioPermissionState::Denied);
+        assert!(!access.capture_ready);
+        assert!(!access.needs_relaunch);
+    }
+
+    #[test]
+    fn authorized_but_refused_tap_asks_for_a_relaunch() {
+        let probed = SystemAudioAccess {
+            permission: SystemAudioPermissionState::Denied,
+            capture_ready: false,
+            audio_flowing: false,
+            needs_relaunch: false,
+        };
+        let access = resolve_access(true, probed);
+        assert!(access.needs_relaunch);
+    }
+
+    #[test]
+    fn unsupported_os_is_preserved_and_never_asks_for_a_relaunch() {
+        let probed = SystemAudioAccess {
+            permission: SystemAudioPermissionState::Unsupported,
+            capture_ready: false,
+            audio_flowing: false,
+            needs_relaunch: false,
+        };
+        let access = resolve_access(true, probed);
+        assert_eq!(access.permission, SystemAudioPermissionState::Unsupported);
+        assert!(!access.needs_relaunch);
+    }
+
+    #[test]
+    fn stalled_capture_has_its_own_message_and_code_per_channel() {
+        let system = user_message_for_failure(
+            FailureCode::CallbackStalled,
+            Some(CaptureChannel::System),
+        );
+        let microphone = user_message_for_failure(
+            FailureCode::CallbackStalled,
+            Some(CaptureChannel::Microphone),
+        );
+        let generic = user_message_for_failure(FailureCode::Internal, None);
+        assert_ne!(system, generic);
+        assert_ne!(microphone, generic);
+        assert_ne!(system, microphone);
+        assert_eq!(
+            meeting_error_for_failure(FailureCode::CallbackStalled, Some(CaptureChannel::System))
+                .code,
+            "system_audio_callback_stalled"
+        );
+    }
 
     #[test]
     fn streaming_resampler_preserves_ratio_across_frame_boundaries() {

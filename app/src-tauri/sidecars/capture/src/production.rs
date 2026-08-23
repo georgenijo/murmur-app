@@ -41,6 +41,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const RING_CAPACITY: usize = 48_000 * 8;
 const STOP_DEADLINE: Duration = Duration::from_secs(2);
+/// How long the permission probe watches for a first callback. This bounds an
+/// evidence window only; an expired window never fails the probe.
+const SYSTEM_AUDIO_FLOW_OBSERVATION: Duration = Duration::from_millis(500);
 // The passive watcher is the worker's only production session. Keep callback
 // state alive until process exit because Core Audio does not promise that a
 // failed/best-effort listener removal has drained every racing callback.
@@ -791,6 +794,38 @@ fn write_meeting_failure(
     .map_err(|_| ())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    Permission {
+        status: SystemAudioPermissionStatus,
+        audio_flowing: bool,
+    },
+    Failure(FailureCode),
+}
+
+/// Decide the probe result from the tap attempt. A tap that creates,
+/// aggregates, and starts its IO proc is proof of authorization: Core Audio
+/// rejects an unauthorized tap at creation with `kAudioDevicePermissionsError`.
+/// Whether samples then arrive depends on whether anything is playing, so
+/// silence is reported as `audio_flowing: false` and never as a failure.
+fn probe_outcome(started: Result<bool, FailureCode>) -> ProbeOutcome {
+    match started {
+        Ok(audio_flowing) => ProbeOutcome::Permission {
+            status: SystemAudioPermissionStatus::Granted,
+            audio_flowing,
+        },
+        Err(FailureCode::PermissionDenied) => ProbeOutcome::Permission {
+            status: SystemAudioPermissionStatus::Denied,
+            audio_flowing: false,
+        },
+        Err(FailureCode::UnsupportedOs) => ProbeOutcome::Permission {
+            status: SystemAudioPermissionStatus::Unsupported,
+            audio_flowing: false,
+        },
+        Err(code) => ProbeOutcome::Failure(code),
+    }
+}
+
 fn probe_system_audio(
     stdout: &mut impl Write,
     capture_id: u64,
@@ -812,30 +847,25 @@ fn probe_system_audio(
         };
         crate::system_audio::SystemAudioStream::start_observed(Arc::clone(&ring), &mut emit_setup)
     };
-    let status = match started {
+    let outcome = match started {
         Ok(mut stream) => {
-            let deadline = Instant::now() + STOP_DEADLINE;
+            let deadline = Instant::now() + SYSTEM_AUDIO_FLOW_OBSERVATION;
             while ring.producer_position() == 0 && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
+            let observed = ring.producer_position() > 0;
             stream.stop();
             drop(stream);
-            if ring.producer_position() == 0 {
-                return write_meeting_failure(
-                    stdout,
-                    capture_id,
-                    nonce,
-                    FailureCode::CallbackStalled,
-                    Some(CaptureChannel::System),
-                    0,
-                    0,
-                );
-            }
-            SystemAudioPermissionStatus::Granted
+            probe_outcome(Ok(observed))
         }
-        Err(FailureCode::PermissionDenied) => SystemAudioPermissionStatus::Denied,
-        Err(FailureCode::UnsupportedOs) => SystemAudioPermissionStatus::Unsupported,
-        Err(code) => {
+        Err(code) => probe_outcome(Err(code)),
+    };
+    let (status, audio_flowing) = match outcome {
+        ProbeOutcome::Permission {
+            status,
+            audio_flowing,
+        } => (status, audio_flowing),
+        ProbeOutcome::Failure(code) => {
             return write_meeting_failure(
                 stdout,
                 capture_id,
@@ -851,7 +881,10 @@ fn probe_system_audio(
         stdout,
         capture_id,
         nonce,
-        &ProductionHelperMessage::SystemAudioPermission { status },
+        &ProductionHelperMessage::SystemAudioPermission {
+            status,
+            audio_flowing,
+        },
     )
     .map_err(|_| ())
 }
@@ -1230,6 +1263,61 @@ fn run_meeting(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
+
+    #[test]
+    fn a_started_tap_with_no_audio_is_granted_not_a_stall() {
+        // Regression for #638: an authorized tap on a silent Mac must report
+        // Granted, never CallbackStalled.
+        assert_eq!(
+            probe_outcome(Ok(false)),
+            ProbeOutcome::Permission {
+                status: SystemAudioPermissionStatus::Granted,
+                audio_flowing: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_started_tap_with_audio_reports_flow() {
+        assert_eq!(
+            probe_outcome(Ok(true)),
+            ProbeOutcome::Permission {
+                status: SystemAudioPermissionStatus::Granted,
+                audio_flowing: true,
+            }
+        );
+    }
+
+    #[test]
+    fn tap_refusal_maps_to_typed_permission_states() {
+        assert_eq!(
+            probe_outcome(Err(FailureCode::PermissionDenied)),
+            ProbeOutcome::Permission {
+                status: SystemAudioPermissionStatus::Denied,
+                audio_flowing: false,
+            }
+        );
+        assert_eq!(
+            probe_outcome(Err(FailureCode::UnsupportedOs)),
+            ProbeOutcome::Permission {
+                status: SystemAudioPermissionStatus::Unsupported,
+                audio_flowing: false,
+            }
+        );
+    }
+
+    #[test]
+    fn tap_start_failure_stays_a_failure() {
+        assert_eq!(
+            probe_outcome(Err(FailureCode::SystemAudioUnavailable)),
+            ProbeOutcome::Failure(FailureCode::SystemAudioUnavailable)
+        );
+        assert_eq!(
+            probe_outcome(Err(FailureCode::StreamStartFailed)),
+            ProbeOutcome::Failure(FailureCode::StreamStartFailed)
+        );
+    }
+
     use super::*;
     use std::io::Cursor;
 

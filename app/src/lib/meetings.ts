@@ -3,6 +3,18 @@ import { save } from '@tauri-apps/plugin-dialog';
 import type { MeetingArtifactV1 } from './meetingArtifacts';
 
 export type SystemAudioPermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported';
+
+/**
+ * Authorization and capture health are independent. A granted tap on a silent
+ * Mac reports `permission: 'granted'` with `audioFlowing: false`, which is a
+ * healthy result and not a permission problem.
+ */
+export interface SystemAudioAccess {
+  permission: SystemAudioPermissionState;
+  captureReady: boolean;
+  audioFlowing: boolean;
+  needsRelaunch: boolean;
+}
 export type MeetingRuntimePhase = 'idle' | 'starting' | 'recording' | 'stopping' | 'processing' | 'failed';
 export type MeetingSessionStatus = 'active' | 'complete' | 'interrupted' | 'failed';
 export type MeetingSegmentStatus = 'pending' | 'final' | 'failed';
@@ -144,7 +156,7 @@ export async function getSystemAudioPermissionStatus(): Promise<SystemAudioPermi
   return invoke('get_system_audio_permission_status');
 }
 
-export async function requestSystemAudioPermission(): Promise<SystemAudioPermissionState> {
+export async function requestSystemAudioPermission(): Promise<SystemAudioAccess> {
   return invoke('request_system_audio_permission');
 }
 

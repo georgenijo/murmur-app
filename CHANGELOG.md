@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The System Audio permission check no longer fails on an authorized Mac. The
+  check ran a full capture rehearsal and waited two seconds for audio, so with
+  nothing playing it reported `CallbackStalled` and surfaced the catch-all
+  "Meeting audio capture failed" — even though the tap, aggregate device, and
+  IO proc had all started and access was granted. Permission now comes from the
+  tap attempt, which Core Audio refuses at creation when unauthorized, and
+  capture readiness and audio flow are reported as separate fields. A granted
+  tap on a silent Mac is a healthy `granted` result. The host also preflights
+  the Screen & System Audio Recording authorization and prompts only when the
+  app is not yet determined, distinguishes a stale grant that needs a relaunch,
+  gives the stalled cases their own messages, and writes a content-free
+  terminal result for every probe so failures stop being invisible in
+  `app.log` (#638).
+
 ## [0.38.1] - 2026-08-20
 
 ### Fixed

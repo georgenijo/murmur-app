@@ -5,6 +5,7 @@ import { OnboardingFlow } from './OnboardingFlow';
 
 const mocks = vi.hoisted(() => ({
   getModelRuntimeCatalog: vi.fn(),
+  requestSystemAudioPermission: vi.fn(),
 }));
 
 vi.mock('../../lib/dictation', () => ({
@@ -24,7 +25,7 @@ vi.mock('../../lib/modelRuntime', () => ({
 vi.mock('../../lib/meetings', () => ({
   getSystemAudioPermissionStatus: vi.fn().mockResolvedValue('unknown'),
   openSystemAudioPreferences: vi.fn().mockResolvedValue(undefined),
-  requestSystemAudioPermission: vi.fn().mockResolvedValue('granted'),
+  requestSystemAudioPermission: () => mocks.requestSystemAudioPermission(),
 }));
 
 vi.mock('../ModelDownloader', () => ({
@@ -77,6 +78,12 @@ describe('OnboardingFlow', () => {
     mocks.getModelRuntimeCatalog.mockResolvedValue([
       { modelName: 'base.en', installState: 'installed' },
     ]);
+    mocks.requestSystemAudioPermission.mockResolvedValue({
+      permission: 'granted',
+      captureReady: true,
+      audioFlowing: true,
+      needsRelaunch: false,
+    });
   });
 
   afterEach(async () => {
@@ -126,5 +133,50 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Back');
     expect(container.textContent).toContain('Recording Shortcut');
+  });
+
+  const goToSystemAudioStep = async () => {
+    await act(async () => root.render(
+      <OnboardingFlow
+        initialModel="base.en"
+        recordingMode="hold_down"
+        triggerKey="shift_l"
+        onComplete={vi.fn()}
+      />,
+    ));
+    await settle();
+    await clickButton('Get Started');
+    await clickButton('Continue');
+    await clickButton('Continue');
+    expect(container.textContent).toContain('System Audio Access');
+  };
+
+  it('treats an authorized tap with no audio playing as granted (#638)', async () => {
+    mocks.requestSystemAudioPermission.mockResolvedValue({
+      permission: 'granted',
+      captureReady: true,
+      audioFlowing: false,
+      needsRelaunch: false,
+    });
+    await goToSystemAudioStep();
+
+    await clickButton('Allow System Audio Access');
+
+    expect(container.textContent).not.toContain('Meeting audio capture failed');
+    expect(container.textContent).toContain('System Audio access granted');
+  });
+
+  it('asks for a relaunch when macOS reports access but the tap is refused', async () => {
+    mocks.requestSystemAudioPermission.mockResolvedValue({
+      permission: 'denied',
+      captureReady: false,
+      audioFlowing: false,
+      needsRelaunch: true,
+    });
+    await goToSystemAudioStep();
+
+    await clickButton('Allow System Audio Access');
+
+    expect(container.textContent).toContain('Quit and reopen Murmur');
   });
 });
