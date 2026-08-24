@@ -88,6 +88,12 @@ the same with Enter or Space and briefly announces **Copied**. Nested actions
 such as **Show more** and **Correct & Teach** retain their own behavior and do
 not trigger a copy.
 
+The newest 30 matching transcript rows are mounted initially. **Show older**
+adds the next batch of at most 30 without changing sort order. Search and source
+filters still evaluate the complete retained history before this presentation
+window is applied, and exports include the complete filtered result set rather
+than only the currently mounted batch.
+
 ## Clearing
 
 `Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
@@ -161,7 +167,8 @@ history export action.
 ## Tests
 
 - `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the teaching-context exclusion.
-- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, export scope, dialog cancellation, and the two-step clear.
+- `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, and the two-step clear.
+- `app/src/lib/hooks/useFileTranscription.test.tsx` — newly enqueued files publish synchronously and enter the sequential drain exactly once.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.
 - `app/src-tauri/src/commands/settings_store.rs` — history/stats/settings shape
   bounds, atomic overwrite, quarantine, and idempotent clear.

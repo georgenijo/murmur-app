@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_FILTER_OPTIONS,
@@ -24,6 +24,8 @@ interface HistoryPanelProps {
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
 }
+
+const HISTORY_RENDER_BATCH = 30;
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
   const segments = useMemo(() => matchSegments(text, query), [text, query]);
@@ -99,7 +101,7 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
   );
 }
 
-export function HistoryPanel({
+function HistoryPanelComponent({
   entries,
   onClear,
   onUpdateEntry,
@@ -113,6 +115,7 @@ export function HistoryPanel({
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [renderLimit, setRenderLimit] = useState(HISTORY_RENDER_BATCH);
   const copyGroupId = useId();
   const saveGroupId = useId();
   const exportPanelId = useId();
@@ -171,6 +174,13 @@ export function HistoryPanel({
     () => sortForDisplay(filterHistory(entries, { query, filter })),
     [entries, query, filter],
   );
+  const rendered = useMemo(
+    () => visible.slice(0, renderLimit),
+    [visible, renderLimit],
+  );
+  useEffect(() => {
+    setRenderLimit(HISTORY_RENDER_BATCH);
+  }, [query, filter]);
   // Correct-and-Teach only ever targets the newest entry in the whole history,
   // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
@@ -391,9 +401,9 @@ export function HistoryPanel({
             <p className="text-sm">No matching transcripts</p>
             <button type="button" onClick={() => { setQuery(''); setFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
           </div>
-        ) : visible.map((entry, index) => {
+        ) : rendered.map((entry, index) => {
           const isNewest = entry.id === newestId;
-          const showDayLabel = index === 0 || historyDayKey(entry.timestamp) !== historyDayKey(visible[index - 1].timestamp);
+          const showDayLabel = index === 0 || historyDayKey(entry.timestamp) !== historyDayKey(rendered[index - 1].timestamp);
           const endsDay = index === visible.length - 1 || historyDayKey(entry.timestamp) !== historyDayKey(visible[index + 1].timestamp);
           return (
             <Fragment key={entry.id}>
@@ -458,6 +468,15 @@ export function HistoryPanel({
             </Fragment>
           );
         })}
+        {rendered.length < visible.length && (
+          <button
+            type="button"
+            onClick={() => setRenderLimit((limit) => limit + HISTORY_RENDER_BATCH)}
+            className="mx-auto my-3 rounded-lg bg-surface-container px-3 py-2 text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            Show {Math.min(HISTORY_RENDER_BATCH, visible.length - rendered.length)} older
+          </button>
+        )}
       </div>
 
       {teachingEntry && (
@@ -470,3 +489,5 @@ export function HistoryPanel({
     </div>
   );
 }
+
+export const HistoryPanel = memo(HistoryPanelComponent);
