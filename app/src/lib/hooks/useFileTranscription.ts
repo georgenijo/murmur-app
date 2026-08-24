@@ -46,6 +46,11 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
   addEntryRef.current = addEntry;
   const cancelledIdsRef = useRef(new Set<string>());
 
+  const publishQueue = useCallback((next: QueueItem[]) => {
+    queueRef.current = next;
+    setQueue(next);
+  }, []);
+
   // Sequentially process every still-`queued` item. Re-entrancy is guarded by
   // `runningRef`; the loop re-reads `queueRef` each pass so items enqueued mid-run
   // are picked up. Per-file errors are captured on the item, never thrown.
@@ -60,7 +65,7 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
         const item = nextQueued(queueRef.current);
         if (!item) break;
 
-        setQueue((q) => updateItem(q, item.id, { status: 'transcribing' }));
+        publishQueue(updateItem(queueRef.current, item.id, { status: 'transcribing' }));
         flog.info('file-transcribe', 'start', { name: item.name });
 
         const res = await transcribeFile(item.path);
@@ -72,13 +77,13 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
 
         if (res.type === 'error') {
           const message = res.error || 'Transcription failed';
-          setQueue((q) => updateItem(q, item.id, { status: 'error', error: message }));
+          publishQueue(updateItem(queueRef.current, item.id, { status: 'error', error: message }));
           flog.warn('file-transcribe', 'error', { error: message });
           continue;
         }
 
         const text = res.text || '';
-        setQueue((q) => updateItem(q, item.id, { status: 'done', text }));
+        publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
         if (text.trim()) {
           addEntryRef.current(text, res.duration ?? 0, 'file', item.name);
         }
@@ -88,7 +93,7 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
       runningRef.current = false;
       setIsRunning(false);
     }
-  }, []);
+  }, [publishQueue]);
 
   // Add audio paths to the queue (deduped) and kick off the drain loop. Reports
   // an unsupported-type error only when *none* of the dropped/picked files are
@@ -100,14 +105,17 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
       return;
     }
     setError('');
-    setQueue((prev) => {
-      const added = buildQueueItems(paths, prev);
-      const next = added.length > 0 ? [...prev, ...added] : prev;
-      queueRef.current = next;
-      return next;
-    });
+    // Publish the queue ref synchronously before starting the drain. A React
+    // state updater may run after this callback returns; starting the drain
+    // from outside that updater used to observe the old empty ref and leave a
+    // freshly selected file stuck in `queued` forever.
+    const current = queueRef.current;
+    const added = buildQueueItems(paths, current);
+    if (added.length === 0) return;
+    const next = [...current, ...added];
+    publishQueue(next);
     void drain();
-  }, [drain]);
+  }, [drain, publishQueue]);
 
   /** Backwards-compatible single-path entry point (wraps `enqueue`). */
   const transcribe = useCallback((path: string) => {
@@ -116,28 +124,22 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
 
   const reset = useCallback(() => {
     if (runningRef.current) return;
-    setQueue([]);
+    publishQueue([]);
     setError('');
-  }, []);
+  }, [publishQueue]);
 
   const cancel = useCallback((id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || (item.status !== 'queued' && item.status !== 'transcribing')) return;
     if (item.status === 'transcribing') cancelledIdsRef.current.add(id);
-    setQueue((current) => {
-      const next = updateItem(current, id, { status: 'error', error: 'Canceled' });
-      queueRef.current = next;
-      return next;
-    });
-  }, []);
+    publishQueue(updateItem(queueRef.current, id, { status: 'error', error: 'Canceled' }));
+  }, [publishQueue]);
 
   const dismiss = useCallback((id: string) => {
-    setQueue((current) => {
-      const next = current.filter((item) => item.id !== id || (item.status !== 'done' && item.status !== 'error'));
-      queueRef.current = next;
-      return next;
-    });
-  }, []);
+    publishQueue(queueRef.current.filter(
+      (item) => item.id !== id || (item.status !== 'done' && item.status !== 'error'),
+    ));
+  }, [publishQueue]);
 
   // Drag-and-drop via the Tauri webview — provides absolute file paths. Drag-drop
   // is an optional convenience; if the listener can't be registered the picker

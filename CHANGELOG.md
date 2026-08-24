@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Transcript history now mounts the newest 30 matching rows first and reveals
+  older rows in bounded batches, while search, filters, and exports still cover
+  the complete retained history.
+
+### Fixed
+
+- Newly selected audio files now enter the sequential transcription queue
+  immediately instead of remaining stuck at `queued` until another render.
+
 ## [0.39.0] - 2026-08-23
 
 ### Changed

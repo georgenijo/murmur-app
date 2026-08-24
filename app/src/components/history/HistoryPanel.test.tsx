@@ -90,6 +90,31 @@ describe('HistoryPanel', () => {
     expect(cardText()[0]).toContain('remember the invariant');
   });
 
+  it('renders long history in bounded batches without hiding older entries', async () => {
+    const entries = Array.from({ length: 35 }, (_, index) => entry({
+      id: `entry-${index}`,
+      text: `transcript ${index}`,
+      timestamp: Date.UTC(2026, 6, 18, 12, index),
+    }));
+    await render({ entries });
+
+    expect(cardText()).toHaveLength(30);
+    expect(byText('Show 5 older')).toBeTruthy();
+
+    await act(async () => moreActions().click());
+    const copyJson = container.querySelector(
+      'button[aria-label="Copy 35 shown as JSON"]',
+    ) as HTMLButtonElement;
+    await act(async () => copyJson.click());
+    const lastCall = writeText.mock.calls[writeText.mock.calls.length - 1];
+    const exported = JSON.parse(lastCall[0] as string) as { count: number };
+    expect(exported.count).toBe(35);
+
+    await act(async () => byText('Show 5 older')!.click());
+    expect(cardText()).toHaveLength(35);
+    expect(byText('Show 5 older')).toBeUndefined();
+  });
+
   it('expands and collapses only overflowing transcripts', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
