@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-08-23
+
 ### Changed
 
 - Transcript history now mounts the newest 30 matching rows first and reveals
