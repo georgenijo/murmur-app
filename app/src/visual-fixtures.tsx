@@ -131,6 +131,19 @@ mockIPC((command) => {
       errorCode: null,
     };
   }
+  if (command === 'get_knowledge_store_status') {
+    return {
+      availability: 'ready',
+      schemaVersion: 1,
+      recordCount: 0,
+      storeRevision: 0,
+      recoveryAtMs: null,
+      message: null,
+    };
+  }
+  if (command === 'list_knowledge') {
+    return { entries: [], total: 0, nextOffset: null, storeRevision: 0 };
+  }
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
   if (command.includes('version')) return '0.27.0';
   return null;
@@ -292,7 +305,6 @@ function VisualFixture() {
             active={destination}
             homeButtonRef={homeNavigationRef}
             onNavigate={setDestination}
-            onOpenSettings={() => {}}
           />
           <div className="main-dashboard-workspace">
             {destination === 'insights' ? (

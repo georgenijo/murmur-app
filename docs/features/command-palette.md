@@ -2,7 +2,7 @@
 
 ## Overview
 
-Murmur's main window has nine settings pages, two tabs, an updater, and a setup assistant behind them. The palette makes all of it one keystroke away: press **⌘K**, type three letters, press Enter.
+Murmur's main window has direct Settings destinations, local workspaces, an updater, and a setup assistant behind it. The palette makes all of it one keystroke away: press **⌘K**, type three letters, press Enter.
 
 It is a navigation surface only. Every row carries its own `run` callback supplied by `App.tsx`, so the palette never learns what a command *means* and there is exactly one definition of each action.
 
@@ -12,7 +12,7 @@ It is a navigation surface only. Every row carries its own `run` callback suppli
 |------|--------|
 | `⌘K` | Toggle the palette |
 | `⌘F` | Focus the transcript search box |
-| `⌘,` | Open Settings |
+| `⌘,` | Open the Customize and Settings workspace |
 | `⌘L` | Open Settings → Performance |
 
 Control is accepted in place of Command for keyboard-only setups. Adding Option or Shift always passes the event through — those combinations belong to the focused control, and Murmur must not shadow text-editing shortcuts.
@@ -34,7 +34,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
-Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to the first page instead of rendering an empty pane.
+Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, and Transforms requests retain a route back to that hub.
 
 ## Matching and ranking
 

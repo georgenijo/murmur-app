@@ -37,6 +37,7 @@ interface SettingsEditorsWindowProps {
   onScan: () => void;
   onCancelScan: () => void;
   onBack: () => void;
+  backLabel?: string;
 }
 
 function ScannedVocabulary({ settings }: { settings: Settings }) {
@@ -117,6 +118,7 @@ export function SettingsEditorsWindow({
   onScan,
   onCancelScan,
   onBack,
+  backLabel = 'Back to Text settings',
 }: SettingsEditorsWindowProps) {
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -138,7 +140,7 @@ export function SettingsEditorsWindow({
           className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-semibold text-on-surface transition-colors hover:border-primary/40 hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <span aria-hidden="true">‹</span>
-          Back to Text settings
+          {backLabel}
         </button>
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">Text editor</p>

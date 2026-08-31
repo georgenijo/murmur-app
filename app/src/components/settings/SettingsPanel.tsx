@@ -76,6 +76,7 @@ import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
+import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import {
   DiagnosticsWorkspace,
@@ -205,8 +206,8 @@ interface SettingsPanelProps {
   onCheckForUpdate: () => Promise<void>;
   updateStatus: UpdateStatus;
   configureError: string | null;
-  /** Page to show, from the command palette. The token makes a repeat request
-   *  for the page you are already on still register. */
+  /** External navigation request. The token makes a repeat request for the
+   *  page you are already on still register. */
   pageRequest?: SettingsPageRequest | null;
   onLatencyViewChange?: (view: string) => void;
   /** Stable ref avoids re-rendering the warm Settings tree when its surface is hidden. */
@@ -214,6 +215,7 @@ interface SettingsPanelProps {
 }
 
 export const SETTINGS_CATEGORIES = [
+  { id: 'customize', label: 'Customize', icon: 'customize' },
   { id: 'general', label: 'General', icon: 'general' },
   { id: 'recording', label: 'Recording', icon: 'recording' },
   { id: 'delivery', label: 'Delivery', icon: 'delivery' },
@@ -230,11 +232,37 @@ export const SETTINGS_TOOLS = [
 
 const AI_DETAIL_PAGES = ['ai-query', 'ai-transform', 'ai-transcription'] as const;
 
+function customizationDestinationForRequest(
+  request: Pick<SettingsPageRequest, 'page' | 'editorTab' | 'target'> | null | undefined,
+): CustomizationDestination | null {
+  if (!request) return null;
+  if (request.page === 'text' && request.editorTab === 'commands') return 'commands';
+  if (request.page === 'text' && request.editorTab === 'aliases') return 'text';
+  if (request.page === 'text' && !request.editorTab) return 'text';
+  if (request.page === 'delivery' && request.target === 'app-overrides') return 'styles';
+  if (resolvePage(request.page) === 'ai-transform') return 'transforms';
+  return null;
+}
+
+function customizationRoute(destination: CustomizationDestination): {
+  page: string;
+  editorTab?: SettingsEditorTab;
+  target?: string;
+} {
+  switch (destination) {
+    case 'text': return { page: 'text' };
+    case 'commands': return { page: 'text', editorTab: 'commands' };
+    case 'styles': return { page: 'delivery', target: 'app-overrides' };
+    case 'transforms': return { page: 'ai-transform' };
+  }
+}
+
 /** Coerce a requested page id back to a real page — an unknown id opens the
  *  first page rather than rendering an empty pane. */
 export function resolvePage(page: string | undefined): string {
   if (SETTINGS_CATEGORIES.some((category) => category.id === page)) return page as string;
   if (SETTINGS_TOOLS.some((tool) => tool.id === page)) return page as string;
+  if ((AI_DETAIL_PAGES as readonly string[]).includes(page ?? '')) return page as string;
   if (page === 'dictation') return 'recording';
   if (page === 'model' || page === 'transcription') return 'ai-transcription';
   if (page === 'benchmark') return 'performance';
@@ -278,6 +306,7 @@ const SETTINGS_SEARCH_ITEMS = [
 
 function SettingsNavIcon({ icon }: { icon: string }) {
   const paths: Record<string, React.ReactNode> = {
+    customize: <><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></>,
     general: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></>,
     recording: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" /></>,
     delivery: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="m9 12 2 2 4-5" /></>,
@@ -405,6 +434,13 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
   const [targetRequest, setTargetRequest] = useState<string | null>(null);
+  const [customizationDetail, setCustomizationDetail] = useState<CustomizationDestination | null>(() => (
+    customizationDestinationForRequest(pageRequest)
+  ));
+  const [editorBackToCustomization, setEditorBackToCustomization] = useState(() => (
+    Boolean(pageRequest?.editorTab && customizationDestinationForRequest(pageRequest))
+  ));
+  const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
   const latencyView = editorTab
     ? `settings.text.editor.${editorTab}`
     : `settings.${activeCat}`;
@@ -427,6 +463,10 @@ export const SettingsPanel = memo(function SettingsPanel({
     setEditorTab(pageRequest.editorTab ?? null);
     setSearchQuery('');
     setTargetRequest(pageRequest.target ?? null);
+    const destination = customizationDestinationForRequest(pageRequest);
+    setCustomizationDetail(destination);
+    setCustomizationReturnFocus(destination);
+    setEditorBackToCustomization(Boolean(destination && pageRequest.editorTab));
   }, [pageRequest]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
@@ -443,6 +483,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
     const target = content.querySelector<HTMLElement>(`[data-setting-target="${targetRequest}"]`);
     if (!target) return;
+    if (target instanceof HTMLDetailsElement) target.open = true;
     target.scrollIntoView({ block: 'center' });
     target.classList.add('settings-target-flash');
     const timeout = window.setTimeout(() => target.classList.remove('settings-target-flash'), 1800);
@@ -490,11 +531,38 @@ export const SettingsPanel = memo(function SettingsPanel({
     setActiveCat('text');
     setSearchQuery('');
     setEditorTab(tab);
+    setEditorBackToCustomization(false);
   }, []);
   const closeEditor = useCallback(() => {
     beginCurrentUiTransition('settings.text', 'programmatic');
     setEditorTab(null);
+    setEditorBackToCustomization(false);
   }, []);
+
+  const openCustomizationDestination = useCallback((destination: CustomizationDestination) => {
+    const route = customizationRoute(destination);
+    beginCurrentUiTransition(route.editorTab
+      ? `settings.text.editor.${route.editorTab}`
+      : `settings.${route.page}`, 'pointer');
+    setActiveCat(route.page);
+    setEditorTab(route.editorTab ?? null);
+    setTargetRequest(route.target ?? null);
+    setSearchQuery('');
+    setCustomizationDetail(destination);
+    setCustomizationReturnFocus(destination);
+    setEditorBackToCustomization(Boolean(route.editorTab));
+  }, []);
+
+  const returnToCustomization = useCallback(() => {
+    beginCurrentUiTransition('settings.customize', 'programmatic');
+    setCustomizationReturnFocus(customizationDetail);
+    setCustomizationDetail(null);
+    setActiveCat('customize');
+    setEditorTab(null);
+    setEditorBackToCustomization(false);
+    setTargetRequest(null);
+    setSearchQuery('');
+  }, [customizationDetail]);
   const popOutDiagnostics = useCallback(async (tab: DiagnosticsTab) => {
     setDiagnosticsWindowError(null);
     try {
@@ -1127,6 +1195,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     setEditorTab(null);
     setSearchQuery('');
     setTargetRequest(null);
+    setCustomizationDetail(null);
+    setCustomizationReturnFocus(null);
+    setEditorBackToCustomization(false);
   };
 
   const navPageIsActive = (page: string) => (
@@ -1219,7 +1290,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               onClearCodeFolder={clearCodeFolder}
               onScan={() => void runVocabScan(settings.codeVocabFolder)}
               onCancelScan={vocabScan.cancel}
-              onBack={closeEditor}
+              onBack={editorBackToCustomization ? returnToCustomization : closeEditor}
+              backLabel={editorBackToCustomization ? 'Back to Customize' : undefined}
             />
           ) : searchQuery ? (
             <section aria-label="Settings search results">
@@ -1244,6 +1316,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                         setEditorTab(null);
                         setTargetRequest(result.target);
                         setSearchQuery('');
+                        setCustomizationDetail(null);
+                        setCustomizationReturnFocus(null);
+                        setEditorBackToCustomization(false);
                       }}
                       className="flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
                     >
@@ -1262,7 +1337,16 @@ export const SettingsPanel = memo(function SettingsPanel({
             </section>
           ) : (
           <div className="settings-page">
-          {(AI_DETAIL_PAGES as readonly string[]).includes(activeCat) && (
+          {customizationDetail && !editorTab && (
+            <button
+              type="button"
+              onClick={returnToCustomization}
+              className="mb-4 inline-flex h-8 items-center gap-1.5 rounded-lg border border-outline-variant/30 px-3 text-xs font-semibold text-on-surface-variant hover:bg-surface-container hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <span aria-hidden="true">‹</span> Back to Customize
+            </button>
+          )}
+          {(AI_DETAIL_PAGES as readonly string[]).includes(activeCat) && !customizationDetail && (
             <button
               type="button"
               onClick={() => openPage('ai', 'programmatic')}
@@ -1270,6 +1354,12 @@ export const SettingsPanel = memo(function SettingsPanel({
             >
               <span aria-hidden="true">‹</span> AI &amp; Models
             </button>
+          )}
+          {activeCat === 'customize' && (
+            <CustomizationHub
+              focusDestination={customizationReturnFocus}
+              onOpen={openCustomizationDestination}
+            />
           )}
           <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, shortcuts, and automatic stopping">
             <div data-setting-target="microphone" className="rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
