@@ -1884,6 +1884,7 @@ pub(crate) async fn start_query_capture(
         &state.knowledge,
         &identity,
         &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+        None,
     );
     if !state
         .query
@@ -3137,6 +3138,7 @@ mod tests {
         Arc::new(crate::dictation_context::resolve(
             crate::dictation_context::ResolverInputs {
                 bundle_id: None,
+                site_mode_id: None,
                 global: &crate::state::DictationState::default(),
                 prompt: None,
                 correction_matcher: None,
@@ -4132,6 +4134,7 @@ mod tests {
         let context = Arc::new(crate::dictation_context::resolve(
             crate::dictation_context::ResolverInputs {
                 bundle_id: None,
+                site_mode_id: None,
                 global: &crate::state::DictationState::default(),
                 prompt: None,
                 correction_matcher: None,

@@ -2119,7 +2119,9 @@ export const SettingsPanel = memo(function SettingsPanel({
               <ModesManager
                 modes={settings.modes}
                 profiles={settings.appProfiles}
-                onChange={({ modes, appProfiles }) => onUpdateSettings({ modes, appProfiles })}
+                siteLookupEnabled={settings.siteModeLookupEnabled}
+                siteRules={settings.browserSiteRules}
+                onChange={onUpdateSettings}
               />
               <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
             </details>

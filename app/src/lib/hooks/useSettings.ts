@@ -136,14 +136,14 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates) {
+    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
       emit('settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
     }
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
       configure(buildConfigureOptions(newSettings))
         .catch(() => {
@@ -167,6 +167,8 @@ export function useSettings() {
               appProfiles: previousSettings.appProfiles,
               modes: previousSettings.modes,
               activeModeId: previousSettings.activeModeId,
+              siteModeLookupEnabled: previousSettings.siteModeLookupEnabled,
+              browserSiteRules: previousSettings.browserSiteRules,
               voiceCommandsEnabled: previousSettings.voiceCommandsEnabled,
               voiceCommands: previousSettings.voiceCommands,
               cleanupEnabled: previousSettings.cleanupEnabled,

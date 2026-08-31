@@ -886,6 +886,7 @@ fn default_delivery_context() -> TranscriptContext {
     let global = crate::state::DictationState::default();
     let snapshot = crate::dictation_context::resolve(crate::dictation_context::ResolverInputs {
         bundle_id: None,
+        site_mode_id: None,
         global: &global,
         prompt: None,
         correction_matcher: None,

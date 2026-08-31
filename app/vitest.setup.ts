@@ -31,3 +31,10 @@ if (typeof window !== 'undefined') {
 }
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+// jsdom does not implement layout scrolling. Keep browser-only scroll calls
+// deterministic so animation-frame callbacks cannot fail after a test ends.
+Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+  value: () => {},
+  configurable: true,
+});

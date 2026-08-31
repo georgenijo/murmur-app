@@ -9,6 +9,7 @@ mod audio_lifecycle;
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
 pub mod benchmark;
+mod browser_site;
 pub mod capture_agent_probe;
 mod capture_health;
 pub mod capture_helper_probe;
@@ -288,6 +289,7 @@ pub fn run() {
             commands::mode_runtime::get_mode_runtime_status,
             commands::mode_runtime::cycle_mode,
             commands::mode_runtime::clear_temporary_mode_override,
+            browser_site::probe_browser_site,
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,

@@ -306,6 +306,29 @@ test('recording settings make the live automatic microphone choice explicit', as
   await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
 });
 
+test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
+  await page.getByRole('button', { name: 'Delivery', exact: true }).click();
+  await page.locator('details[data-setting-target="app-overrides"] > summary').click();
+  await page.getByRole('button', { name: /Technical Built-in/ }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  const browserSites = page.getByText('Browser sites', { exact: true });
+  await expect(page.getByRole('switch', { name: 'Use browser site Mode rules' })).toBeChecked();
+  await expect(page.getByText(/never reads page text or history/)).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
+  await browserSites.scrollIntoViewIfNeeded();
+  await page.mouse.move(0, 0);
+  await expect(fixture).toHaveScreenshot('light-settings-site-modes.png');
+
+  await page.setViewportSize({ width: 720, height: 560 });
+  const testCurrentSite = page.getByRole('button', { name: 'Test current site' });
+  await expect(testCurrentSite).toBeVisible();
+  await testCurrentSite.scrollIntoViewIfNeeded();
+  await page.mouse.move(0, 0);
+  await expect(fixture).toHaveScreenshot('light-settings-site-modes-narrow.png');
+});
+
 test('appearance matches the compact collection-card layout', async ({ page }) => {
   const source = {
     kind: 'open-vsx',

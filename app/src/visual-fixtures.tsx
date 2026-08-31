@@ -207,6 +207,14 @@ const entries = [
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
+  siteModeLookupEnabled: requestedState === 'settings-site-modes',
+  browserSiteRules: requestedState === 'settings-site-modes' ? [{
+    id: 'fixture-github',
+    browserBundleId: 'com.apple.Safari',
+    host: 'github.com',
+    modeId: 'builtin.technical',
+    enabled: true,
+  }] : [],
   vocabularyEntries: [{
     id: 'fixture-term',
     written: 'Murmur',
@@ -267,7 +275,9 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 }));
 
 function VisualFixture() {
-  const settingsOpen = requestedState === 'settings' || requestedState === 'settings-appearance';
+  const settingsOpen = requestedState === 'settings'
+    || requestedState === 'settings-appearance'
+    || requestedState === 'settings-site-modes';
   const meetings = useMeetings(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',

@@ -177,8 +177,8 @@ export function OverlayDropdown({
           keyboard focus in the user's target app. */}
       <button
         type="button"
-        aria-label={`Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : ''}`}
-        title={mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name}
+        aria-label={`Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : mode.source === 'site_binding' ? '; site binding' : ''}`}
+        title={mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'site_binding' ? `${mode.name} · Site` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name}
         onClick={onCycleMode}
         className="min-w-0 shrink max-w-[112px] truncate rounded-[9px] px-2 text-[10px] font-medium text-sky-200 transition-colors"
         style={{ height: 26, background: mode.source === 'temporary' ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)' }}

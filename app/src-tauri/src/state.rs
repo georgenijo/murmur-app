@@ -178,6 +178,16 @@ pub struct MurmurMode {
     pub auto_paste: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserSiteRule {
+    pub id: String,
+    pub browser_bundle_id: String,
+    pub host: String,
+    pub mode_id: String,
+    pub enabled: bool,
+}
+
 /// Resolve the effective technical-context signal for an app profile. A
 /// technical writing style or local IDE context is an explicit user signal;
 /// bundle IDs and app labels are never guessed.
@@ -268,6 +278,10 @@ pub struct DictationState {
     /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
     pub modes: Vec<MurmurMode>,
+    /// Explicit opt-in to read only the frontmost allowed browser's document
+    /// URL and reduce it immediately to an exact host for Mode activation.
+    pub site_mode_lookup_enabled: bool,
+    pub browser_site_rules: Vec<BrowserSiteRule>,
     /// Last explicit Mode selected from a native quick surface or Settings.
     pub manual_mode_id: String,
     /// App-scoped native override. Cleared as soon as focus leaves its bundle.
@@ -342,6 +356,8 @@ impl Default for DictationState {
             output_dir: String::new(),
             app_profiles: Vec::new(),
             modes: Vec::new(),
+            site_mode_lookup_enabled: false,
+            browser_site_rules: Vec::new(),
             manual_mode_id: "builtin.everyday".to_string(),
             temporary_mode_id: None,
             temporary_mode_bundle_id: None,
@@ -740,6 +756,7 @@ mod tests {
         };
         Arc::new(resolve(ResolverInputs {
             bundle_id: None,
+            site_mode_id: None,
             global: &settings,
             prompt: None,
             correction_matcher: None,

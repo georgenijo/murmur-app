@@ -13,6 +13,7 @@ pub(crate) fn set_mode_menu_status(status: &super::mode_runtime::ModeRuntimeStat
         let suffix = match status.source {
             super::mode_runtime::ModeSource::Manual => "",
             super::mode_runtime::ModeSource::AppBinding => " · App",
+            super::mode_runtime::ModeSource::SiteBinding => " · Site",
             super::mode_runtime::ModeSource::Temporary => " · Temporary",
         };
         let _ = item.set_text(format!("Mode: {}{}", status.name, suffix));
