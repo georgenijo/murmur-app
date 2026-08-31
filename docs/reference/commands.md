@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 176 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 177 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -310,6 +310,12 @@ without logging their content.
 |---------|-----------|---------|-------------|
 | `list_running_applications` | — | `Vec<RunningApplication>` | Bounded memory-only list of running apps (bundle ID + name) for the per-app profile picker. Empty on non-macOS. |
 
+## Browser sites (`browser_site.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `probe_browser_site` | — | `Result<BrowserSiteProbe, String>` | After explicit opt-in, waits up to five seconds for an allowlisted browser, reads only its frontmost `AXDocument` URL, and returns only the exact host and browser bundle ID. URL paths and other page content are discarded. |
+
 ## Tray (`commands/tray.rs`)
 
 | Command | Parameters | Returns | Description |
@@ -321,9 +327,9 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `get_mode_runtime_status` | — | `ModeRuntimeStatus` | Resolves the current frontmost bundle to the temporary override, app binding, or last manual Mode. |
-| `cycle_mode` | — | `ModeRuntimeStatus` | Cycles enabled Modes without focusing Murmur; persists a manual selection outside bindings or creates a memory-only bundle override inside one. |
-| `clear_temporary_mode_override` | — | `ModeRuntimeStatus` | Clears the app-scoped override and returns to its binding or the last manual Mode. |
+| `get_mode_runtime_status` | — | `ModeRuntimeStatus` | Resolves the current context using temporary override → exact site binding → app binding → last manual Mode precedence. |
+| `cycle_mode` | — | `ModeRuntimeStatus` | Cycles enabled Modes without focusing Murmur; persists a manual selection outside bindings or creates a memory-only bundle override inside a site or app binding. |
+| `clear_temporary_mode_override` | — | `ModeRuntimeStatus` | Clears the app-scoped override and returns to its site binding, app binding, or last manual Mode. |
 
 ## Updater (`commands/updater.rs`)
 
