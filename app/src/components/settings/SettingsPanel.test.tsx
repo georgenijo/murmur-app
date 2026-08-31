@@ -10,6 +10,7 @@ import {
   autoPasteDeliveryDescription,
   effectiveAutoPaste,
   fileOutputDeliveryDescription,
+  resolvePage,
 } from './SettingsPanel';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn(async () => '0.18.0') }));
@@ -164,15 +165,45 @@ describe('SettingsPanel information architecture', () => {
     container.remove();
   });
 
-  it('renders direct settings destinations with General selected first', () => {
+  it('opens on a single customization hub before the direct settings destinations', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
+      'Customize', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
-    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('General');
-    expect(container.querySelector('h1')?.textContent).toBe('General');
-    expect(container.textContent).toContain('Launch at Login');
+    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Customize');
+    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(Array.from(container.querySelectorAll('[aria-label="Customization destinations"] button')).map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Text & Vocabulary'),
+      expect.stringContaining('Voice Commands'),
+      expect.stringContaining('Styles'),
+      expect.stringContaining('Transforms'),
+    ]);
+    expect(resolvePage(undefined)).toBe('customize');
+    expect(resolvePage('not-a-page')).toBe('customize');
+  });
+
+  it('returns from every customization destination and restores focus to its row', async () => {
+    const hubButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
+      .find((button) => button.textContent?.includes(label)) as HTMLButtonElement;
+
+    for (const [label, heading] of [
+      ['Text & Vocabulary', 'Text & Vocabulary'],
+      ['Voice Commands', 'Voice Commands'],
+      ['Styles', 'Delivery'],
+      ['Transforms', 'Selected-Text Rewrite'],
+    ] as const) {
+      const row = hubButton(label);
+      await act(async () => row.click());
+      expect(container.querySelector('h1')?.textContent).toBe(heading);
+      const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.includes('Back to Customize'),
+      ) as HTMLButtonElement;
+      expect(back).toBeDefined();
+      await act(async () => back.click());
+      expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+      expect(document.activeElement).toBe(hubButton(label));
+    }
   });
 
   it('commits keyboard changes to voice-detection sensitivity', async () => {
@@ -365,7 +396,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('accepts precise sidebar destinations for an editor or setting target', async () => {
-    const renderRequest = (pageRequest: { page: string; token: number; editorTab?: 'commands'; target?: string }) => root.render(
+    const renderRequest = (pageRequest: { page: string; token: number; editorTab?: 'aliases' | 'commands'; target?: string }) => root.render(
       <SettingsPanel
         settings={DEFAULT_SETTINGS}
         onUpdateSettings={onUpdateSettings}
@@ -381,13 +412,32 @@ describe('SettingsPanel information architecture', () => {
       />,
     );
 
-    await act(async () => renderRequest({ page: 'text', editorTab: 'commands', token: 1 }));
+    await act(async () => renderRequest({ page: 'text', editorTab: 'aliases', token: 1 }));
+    expect(container.querySelector('h1')?.textContent).toBe('Aliases');
+    expect(container.textContent).toContain('Back to Customize');
+
+    await act(async () => renderRequest({ page: 'text', editorTab: 'commands', token: 2 }));
     expect(container.querySelector('h1')?.textContent).toBe('Voice Commands');
     expect(container.textContent).toContain('Voice commands editor');
+    expect(container.textContent).toContain('Back to Customize');
 
-    await act(async () => renderRequest({ page: 'delivery', target: 'app-overrides', token: 2 }));
+    await act(async () => renderRequest({ page: 'delivery', target: 'app-overrides', token: 3 }));
     expect(container.querySelector('h1')?.textContent).toBe('Delivery');
     expect(container.textContent).toContain('App overrides editor');
+    expect(container.textContent).toContain('Back to Customize');
+    expect((container.querySelector('details[data-setting-target="app-overrides"]') as HTMLDetailsElement).open).toBe(true);
+
+    await act(async () => {
+      renderRequest({ page: 'ai-transform', token: 4 });
+      await Promise.resolve();
+    });
+    expect(container.querySelector('h1')?.textContent).toBe('Selected-Text Rewrite');
+    const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Back to Customize'),
+    ) as HTMLButtonElement;
+    await act(async () => back.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(document.activeElement?.textContent).toContain('Transforms');
   });
 
   it('returns from an editor with Escape', async () => {

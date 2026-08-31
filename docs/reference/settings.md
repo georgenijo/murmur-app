@@ -14,18 +14,19 @@ independent versioned active document under `murmur-appearance`, with saved
 themes in `murmur-theme-library`; neither is merged into this interface or
 emitted through `dictation-settings`.
 
-The native Settings workspace has four horizontal tabs in this order
-(`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`). The search field above them
-matches rows across every tab and routes a selected result to its owner:
+The native Settings workspace opens on **Customize**, an ordered hub with four
+rows: **Text & Vocabulary**, **Voice Commands**, **Styles**, and **Transforms**.
+The gear button, `⌘,`, and overlay Settings action all open this same overview.
+Each row opens the existing owning page or editor, shows **Back to Customize**,
+and restores focus to its source row on return. Contextual links from Home use
+the same routes, so they cannot leave the user trapped in a detail page.
 
-1. **Dictation** — microphone selection and live input test, voice detection, recording trigger, shortcut feedback, clipboard-first delivery, auto-paste, file output, and app overrides
-2. **Model** — model selector, language, lifecycle/download state, idle release, Performance Lab, and the advanced diagnostics workspace
-3. **Text** — punctuation, cleanup, names and terms, corrections, structured writing, spoken commands, personal knowledge, and selected-text transforms
-4. **App** — appearance, launch at login, setup, overlay calibration, statistics, updates, and version
-
-Power-user controls are collapsed under **Advanced** disclosures. Vocabulary,
-aliases, knowledge, transforms, voice commands, and project scan are
-consolidated in the six-tab `SettingsEditorsWindow`.
+The persistent navigation (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`) keeps
+the complete workspace available: Customize, General, Recording, Delivery,
+Meetings, Text & Vocabulary, AI & Models, and Appearance. Performance Lab and
+Diagnostics remain in the Tools group. The search field routes matching rows
+to their owning page. Power-user controls are collapsed under **Advanced**
+disclosures.
 
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and
@@ -35,7 +36,7 @@ IDE roots.
 **Source file:** `app/src/lib/settings.ts`
 
 The live microphone monitor is operational state, not a setting. It starts
-automatically on Dictation Settings, uses the persisted `microphone` ID, keeps
+automatically on Recording Settings, uses the persisted `microphone` ID, keeps
 no audio, yields to real dictation, resumes afterward, and stops when Dictation
 Settings is left or hidden. See
 [Microphone Input Test](../features/microphone-input-test.md).

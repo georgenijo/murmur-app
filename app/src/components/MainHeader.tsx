@@ -204,7 +204,7 @@ export function MainHeader({
           <button
             type="button"
             onClick={onOpenSettings}
-            aria-label={settingsOpen ? 'Close settings' : 'Open settings'}
+            aria-label={settingsOpen ? 'Close settings' : 'Open customization and settings'}
             aria-expanded={settingsOpen}
             className={`ui-icon-button focus:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
               settingsOpen

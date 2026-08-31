@@ -384,7 +384,7 @@ function App() {
   }, [updateStatus]);
 
   const [settingsPageRequest, setSettingsPageRequest] = useState<SettingsPageRequest | null>(null);
-  const settingsViewRef = useRef('settings.dictation');
+  const settingsViewRef = useRef('settings.customize');
   const settingsActiveRef = useRef(isSettingsOpen);
   settingsActiveRef.current = isSettingsOpen;
   useEffect(() => {
@@ -415,7 +415,11 @@ function App() {
 
   const openSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     if (isSettingsOpen) return;
-    beginCurrentUiTransition(settingsViewRef.current, trigger);
+    beginCurrentUiTransition('settings.customize', trigger);
+    setSettingsPageRequest((previous) => ({
+      page: 'customize',
+      token: (previous?.token ?? 0) + 1,
+    }));
     setIsSettingsOpen(true);
   }, [isSettingsOpen]);
 
@@ -735,7 +739,6 @@ function App() {
               active={mainDestination}
               homeButtonRef={homeNavigationRef}
               onNavigate={(destination) => navigateMain(destination, 'pointer')}
-              onOpenSettings={openSettingsTarget}
             />
             <div className="main-dashboard-workspace">
               {mainDestination === 'home' ? (

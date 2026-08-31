@@ -216,7 +216,7 @@ for (const state of ['recording', 'update-recovering', 'settings'] as const) {
         ]
       : [
           header.getByTestId('main-status-chip'),
-          header.getByRole('button', { name: 'Open settings' }),
+          header.getByRole('button', { name: 'Open customization and settings' }),
         ];
     const [headerBox, centers] = await Promise.all([
       header.boundingBox(),
@@ -257,9 +257,29 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   expect(headerBox?.height).toBe(42);
 });
 
+test('customization hub stays legible and restores focus at native and narrow widths', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  const customizationList = page.getByRole('list', { name: 'Customization destinations' });
+  const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice Commands' });
+  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(customizationList.getByRole('button')).toHaveCount(4);
+  await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
+
+  await voiceCommands.click();
+  await expect(page.getByRole('heading', { name: 'Voice Commands', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to Customize' }).click();
+  await expect(voiceCommands).toBeFocused();
+
+  await page.setViewportSize({ width: 720, height: 560 });
+  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
+});
+
 test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
-  await page.getByRole('button', { name: 'Text' }).click();
+  await page.getByRole('button', { name: 'Text & Vocabulary', exact: true }).click();
   await page.getByRole('button', { name: /^Aliases\b/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');

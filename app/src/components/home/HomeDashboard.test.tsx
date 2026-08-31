@@ -55,27 +55,21 @@ describe('home dashboard interactions', () => {
     expect(container.querySelectorAll('.home-record-waveform span')).toHaveLength(5);
   });
 
-  it('routes main and customization destinations without a duplicate Settings entry', async () => {
+  it('keeps the sidebar focused on the four primary destinations', async () => {
     const onNavigate = vi.fn();
-    const onOpenSettings = vi.fn();
     await act(async () => root.render(
-      <HomeSidebar active="home" onNavigate={onNavigate} onOpenSettings={onOpenSettings} />,
+      <HomeSidebar active="home" onNavigate={onNavigate} />,
     ));
 
     const button = (label: string) => Array.from(container.querySelectorAll('button'))
       .find((candidate) => candidate.getAttribute('aria-label') === label) as HTMLButtonElement;
     await act(async () => button('Insights').click());
-    await act(async () => button('Text & Vocabulary').click());
-    await act(async () => button('Voice Commands').click());
-    await act(async () => button('Styles').click());
-    await act(async () => button('Transforms').click());
 
     expect(onNavigate).toHaveBeenCalledWith('insights');
-    expect(onOpenSettings).toHaveBeenNthCalledWith(1, { page: 'text' });
-    expect(onOpenSettings).toHaveBeenNthCalledWith(2, { page: 'text', editorTab: 'commands' });
-    expect(onOpenSettings).toHaveBeenNthCalledWith(3, { page: 'delivery', target: 'app-overrides' });
-    expect(onOpenSettings).toHaveBeenNthCalledWith(4, { page: 'ai-transform' });
-    expect(button('Settings')).toBeUndefined();
+    expect(Array.from(container.querySelectorAll('nav button')).map((item) => item.getAttribute('aria-label'))).toEqual([
+      'Home', 'Notetaker', 'Queries', 'Insights',
+    ]);
+    expect(container.textContent).not.toContain('Customize');
     expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Everything stays on this Mac.');
   });
 

@@ -174,7 +174,9 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 ### Main window
 The native title row keeps app status, updates, and Settings aligned with the
 macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker,
-Queries, Insights, and existing customization/settings destinations. Home uses
+Queries, and Insights. A single gear/keyboard entry opens the Customize hub and
+the complete Settings workspace; customization no longer competes with the four
+primary destinations in the Home sidebar. Home uses
 one 64px recording row for the real recording state, configured shortcut, and
 file transcription, then gives Recent Dictations the remaining workspace.
 The responsive Home insights rail and full Insights destination use only
@@ -194,18 +196,19 @@ and can purge it directly. Query context and teaching context are never
 exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
-`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings, `⌘L` opens Settings → Performance.
+`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens the Customize hub, and `⌘L` opens Settings → Performance.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. Settings provides a native live calibration preview with one-point controls, explicit Save/Cancel, Reset, and a bounded ±12pt durable offset.
 
 ### Settings — [reference/settings.md](reference/settings.md)
-Four horizontal, cross-searchable tabs: **Dictation** (recording and delivery),
-**Model** (transcription, benchmark, and diagnostics), **Text** (cleanup,
-vocabulary, knowledge, commands, and selected-text transforms), and **App**
-(appearance and general behavior). Power-user controls live in Advanced
-disclosures. Vocabulary, aliases, knowledge, transforms, voice commands, and
-project scan share one six-tab editor window.
+The default **Customize** page is a compact, ordered hub for **Text &
+Vocabulary**, **Voice Commands**, **Styles**, and **Transforms**. Every hub
+destination has a visible route back, and returning restores keyboard focus to
+the row that opened it. The persistent Settings navigation also exposes
+General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
+Appearance, Performance Lab, and Diagnostics directly. Search spans those
+pages. Power-user controls live in Advanced disclosures.
 
 Dictation Settings also includes a local-only
 [live microphone input test](features/microphone-input-test.md) with RMS/peak
