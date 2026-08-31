@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties, type FocusEvent, type MouseEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from 'react';
 import type { DaySummary } from '../../lib/stats';
 
 type DayMetric = 'words' | 'recordings' | 'wpm';
@@ -58,17 +58,26 @@ function markLabel(day: DaySummary, metric: DayMetric): string {
 }
 
 function useActiveDay() {
-  const [active, setActive] = useState<ActiveDay | null>(null);
-  const activate = (day: DaySummary, metric: DayMetric) => setActive({ key: day.key, day, metric });
-  const clear = (key: string) => setActive((current) => current?.key === key ? null : current);
+  const [hovered, setHovered] = useState<ActiveDay | null>(null);
+  const [focused, setFocused] = useState<ActiveDay | null>(null);
+  const [selected, setSelected] = useState<ActiveDay | null>(null);
+  const value = (day: DaySummary, metric: DayMetric): ActiveDay => ({ key: day.key, day, metric });
+  const dismiss = useCallback(() => {
+    setHovered(null);
+    setFocused(null);
+    setSelected(null);
+  }, []);
   const markEvents = (day: DaySummary, metric: DayMetric) => ({
-    onMouseEnter: (_event: MouseEvent) => activate(day, metric),
-    onMouseLeave: () => clear(day.key),
-    onFocus: (_event: FocusEvent) => activate(day, metric),
-    onBlur: () => clear(day.key),
-    onClick: () => activate(day, metric),
+    onMouseEnter: (_event: MouseEvent) => setHovered(value(day, metric)),
+    onMouseLeave: () => setHovered((current) => current?.key === day.key ? null : current),
+    onFocus: (_event: FocusEvent) => setFocused(value(day, metric)),
+    onBlur: () => {
+      setFocused((current) => current?.key === day.key ? null : current);
+      setSelected((current) => current?.key === day.key ? null : current);
+    },
+    onClick: () => setSelected(value(day, metric)),
   });
-  return { active, markEvents };
+  return { active: hovered ?? focused ?? selected, dismiss, markEvents };
 }
 
 function ChartTooltip({ active, id }: { active: ActiveDay | null; id: string }) {
@@ -198,12 +207,31 @@ function intensity(value: number, maximum: number): 0 | 1 | 2 | 3 | 4 {
 
 export function DayChart(props: DayChartProps) {
   const tooltipId = useId();
-  const { active, markEvents } = useActiveDay();
+  const chartRef = useRef<HTMLElement>(null);
+  const { active, dismiss, markEvents } = useActiveDay();
   const flatDays = props.kind === 'heatmap' ? props.weeks.flat() : props.days;
   const peak = Math.max(1, ...flatDays.map((day) => day.words));
 
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      const mark = target instanceof Element ? target.closest('button') : null;
+      if (mark && chartRef.current?.contains(mark)) return;
+      dismiss();
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') dismiss();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [dismiss]);
+
   return (
-    <figure className="ui-day-chart" data-density={props.density ?? 'standard'} aria-label={props.ariaLabel}>
+    <figure ref={chartRef} className="ui-day-chart" data-density={props.density ?? 'standard'} aria-label={props.ariaLabel}>
       <ChartTooltip active={active} id={tooltipId} />
       {props.kind === 'bars' ? (
         <BarsChart

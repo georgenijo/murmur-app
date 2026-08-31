@@ -177,11 +177,13 @@ macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker,
 Queries, Insights, and existing customization/settings destinations. Home uses
 one 64px recording row for the real recording state, configured shortcut, and
 file transcription, then gives Recent Dictations the remaining workspace.
-The responsive insights rail and full Insights destination use only durable
-local statistics. Personalization is shown as inspectable vocabulary, app-style,
-and regular-use milestones—not a tuning percentage, acoustic-training claim,
-or fabricated unlock. File drag-and-drop, the command palette, history actions,
-and cancelable file-transcription toasts remain available.
+The responsive Home insights rail and full Insights destination use only
+durable local statistics. Home keeps inspectable vocabulary, app-style, and
+regular-use milestones—not a tuning percentage, acoustic-training claim, or
+fabricated unlock. The full Insights page reserves its width for aligned Voice
+Query totals and interactive activity, words-per-day, and WPM charts. File
+drag-and-drop, the command palette, history actions, and cancelable
+file-transcription toasts remain available.
 
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
 The Transcripts tab provides match highlighting and Mic/File filters over a

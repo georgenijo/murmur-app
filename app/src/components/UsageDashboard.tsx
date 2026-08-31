@@ -45,8 +45,6 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   const [version, setVersion] = useState(0);
   const expanded = displayMode !== 'inline' || !isCollapsed;
 
-  // Re-read stats whenever localStorage changes from another window/tab, and
-  // when the panel is expanded so it reflects recordings made while collapsed.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === 'dictation-stats') setVersion(v => v + 1);
@@ -74,7 +72,7 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   const toggle = () => {
     const next = !isCollapsed;
     setIsCollapsed(next);
-    try { localStorage.setItem(STORAGE_KEY, String(next)); } catch { /* ignore */ }
+    try { localStorage.setItem(STORAGE_KEY, String(next)); } catch {}
   };
 
   return (
@@ -107,52 +105,65 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
       )}
 
       {expanded && stats && (
-        <div className={`usage-dashboard-sections px-3 pb-3 flex flex-col gap-4 ${displayMode !== 'inline' ? 'pt-3' : ''}`}>
-          <Section title="Voice Query · all time">
-            <div className="grid grid-cols-3 gap-2">
-              <QueryMetric label="Queries" value={stats.query.queriesRun.toLocaleString()} />
-              <QueryMetric label="Tokens in" value={stats.query.inputTokens.toLocaleString()} />
-              <QueryMetric label="Tokens out" value={stats.query.outputTokens.toLocaleString()} />
-            </div>
+        <div className="usage-dashboard-sections">
+          <Section title="Voice Query · all time" kind="query">
+            <dl className="usage-query-metrics" aria-label="Voice Query totals">
+              {[
+                ['Queries', stats.query.queriesRun.toLocaleString()],
+                ['Tokens in', stats.query.inputTokens.toLocaleString()],
+                ['Tokens out', stats.query.outputTokens.toLocaleString()],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
             {stats.query.reportedCostUsd > 0 && (
-              <p className="mt-1.5 text-[10px] text-on-surface-variant">
+              <p className="usage-query-note" data-query-note="cost">
                 Provider-reported cost · {formatQueryCost(stats.query.reportedCostUsd)}
               </p>
             )}
             {activeQueryProviders.length > 0 && (
-              <div className="mt-2 space-y-1 border-t border-outline-variant/20 pt-2">
+              <div className="usage-query-providers" role="table" aria-label="Voice Query providers">
+                <div className="usage-query-provider-header" role="row">
+                  <span role="columnheader">Provider</span>
+                  <span role="columnheader">Queries</span>
+                  <span role="columnheader">In</span>
+                  <span role="columnheader">Out</span>
+                </div>
                 {activeQueryProviders.map(provider => {
                   const providerStats = stats.query.byProvider[provider];
                   return (
-                    <div key={provider} className="flex items-center justify-between gap-3 text-[10px] text-on-surface-variant">
-                      <span className="font-medium text-on-surface">{PROVIDER_LABELS[provider]}</span>
-                      <span className="tabular-nums">
-                        {providerStats.queriesRun.toLocaleString()} queries · {providerStats.inputTokens.toLocaleString()} in · {providerStats.outputTokens.toLocaleString()} out
-                      </span>
+                    <div key={provider} role="row" data-provider={provider}>
+                      <span role="cell">{PROVIDER_LABELS[provider]}</span>
+                      <span role="cell">{providerStats.queriesRun.toLocaleString()}</span>
+                      <span role="cell">{providerStats.inputTokens.toLocaleString()}</span>
+                      <span role="cell">{providerStats.outputTokens.toLocaleString()}</span>
                     </div>
                   );
                 })}
               </div>
             )}
             {queryFailures.length > 0 && (
-              <p className="mt-2 text-[10px] leading-relaxed text-on-surface-variant">
+              <p className="usage-query-note" data-query-note="failures">
                 Failures · {queryFailures.map(([code, count]) => `${failureLabel(code)} ${count}`).join(' · ')}
               </p>
             )}
-            <p className="mt-1.5 text-[9px] leading-relaxed text-on-surface-variant/75">
+            <p className="usage-query-note" data-query-note="privacy">
               Content-free counters only; questions and answers are never stored here.
             </p>
           </Section>
 
-          <Section title={`Activity · last ${HEATMAP_WEEKS} weeks`}>
+          <Section title={`Activity · last ${HEATMAP_WEEKS} weeks`} kind="activity">
             <DayChart kind="heatmap" metric="words" weeks={weeks} ariaLabel="Words per day heatmap" />
           </Section>
 
-          <Section title="Words per day · last 7 days">
+          <Section title="Words per day · last 7 days" kind="words">
             <DayChart kind="bars" metric="words" days={recent} ariaLabel="Words per day bar chart" />
           </Section>
 
-          <Section title="WPM trend · last 7 days">
+          <Section title="WPM trend · last 7 days" kind="wpm">
             <DayChart kind="line" metric="wpm" days={recent} ariaLabel="Words-per-minute trend line" />
           </Section>
         </div>
@@ -162,20 +173,15 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   );
 }
 
-function QueryMetric({ label, value }: { label: string; value: string }) {
+function Section({ title, kind, children }: {
+  title: string;
+  kind: 'query' | 'activity' | 'words' | 'wpm';
+  children: React.ReactNode;
+}) {
   return (
-    <div className="rounded-md bg-surface-container px-2 py-1.5">
-      <div className="text-[9px] uppercase tracking-wider text-on-surface-variant">{label}</div>
-      <div className="mt-0.5 text-xs font-semibold tabular-nums text-on-surface">{value}</div>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
+    <section className="usage-analytics-section" data-analytics={kind}>
       <DashboardSectionHeader eyebrow={title} />
       {children}
-    </div>
+    </section>
   );
 }

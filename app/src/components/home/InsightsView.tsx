@@ -1,26 +1,17 @@
 import { useMemo } from 'react';
-import type { Settings } from '../../lib/settings';
 import { loadStats } from '../../lib/stats';
-import { derivePersonalization, getUsageOverview } from '../../lib/homeDashboard';
+import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
 import { DashboardStatGroup, WorkspacePageHeader } from '../ui/DashboardPrimitives';
-import { PersonalizationCard } from './PersonalizationCard';
 
 interface InsightsViewProps {
   statsVersion: number;
-  settings: Settings;
   onBackToHome: () => void;
-  onOpenVocabulary: () => void;
-  onOpenStyles: () => void;
 }
 
-export function InsightsView({ statsVersion, settings, onBackToHome, onOpenVocabulary, onOpenStyles }: InsightsViewProps) {
+export function InsightsView({ statsVersion, onBackToHome }: InsightsViewProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
   const usage = useMemo(() => getUsageOverview(stats), [stats]);
-  const personalization = useMemo(
-    () => derivePersonalization(settings, stats),
-    [settings.vocabularyEntries, settings.appProfiles, stats],
-  );
 
   return (
     <div className="insights-view">
@@ -42,15 +33,7 @@ export function InsightsView({ statsVersion, settings, onBackToHome, onOpenVocab
         ]}
       />
 
-      <div className="insights-content-grid">
-        <UsageDashboard statsVersion={statsVersion} displayMode="page" />
-        <PersonalizationCard
-          summary={personalization}
-          expanded
-          onOpenVocabulary={onOpenVocabulary}
-          onOpenStyles={onOpenStyles}
-        />
-      </div>
+      <UsageDashboard statsVersion={statsVersion} displayMode="page" />
     </div>
   );
 }

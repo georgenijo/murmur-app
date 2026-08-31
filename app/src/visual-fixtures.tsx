@@ -183,13 +183,43 @@ const fixtureBuckets = Object.fromEntries(Array.from({ length: 7 }, (_, index) =
   }];
 }));
 
+const fixtureStats = loadStats();
 localStorage.setItem('dictation-stats', JSON.stringify({
-  ...loadStats(),
+  ...fixtureStats,
   totalWords: 5168,
   totalRecordings: 220,
   totalDurationSeconds: 1640,
   wpmSamples: [184, 192, 189, 191],
   dailyBuckets: fixtureBuckets,
+  query: {
+    ...fixtureStats.query,
+    queriesRun: 11,
+    successfulQueries: 9,
+    failedQueries: 2,
+    inputTokens: 4_280,
+    outputTokens: 1_360,
+    reportedCostUsd: 0.084,
+    byProvider: {
+      ...fixtureStats.query.byProvider,
+      claude: {
+        queriesRun: 7,
+        successfulQueries: 6,
+        failedQueries: 1,
+        inputTokens: 2_960,
+        outputTokens: 940,
+        reportedCostUsd: 0.057,
+      },
+      codex: {
+        queriesRun: 4,
+        successfulQueries: 3,
+        failedQueries: 1,
+        inputTokens: 1_320,
+        outputTokens: 420,
+        reportedCostUsd: 0.027,
+      },
+    },
+    failuresByErrorCode: { timed_out: 1, auth_failed: 1 },
+  },
 }));
 
 function VisualFixture() {
@@ -268,10 +298,7 @@ function VisualFixture() {
             {destination === 'insights' ? (
               <InsightsView
                 statsVersion={0}
-                settings={fixtureSettings}
                 onBackToHome={backToHome}
-                onOpenVocabulary={() => {}}
-                onOpenStyles={() => {}}
               />
             ) : destination === 'meetings' ? (
               <section className="main-secondary-view" aria-labelledby="meetings-view-title">

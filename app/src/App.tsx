@@ -782,10 +782,7 @@ function App() {
               ) : (
                 <InsightsView
                   statsVersion={combinedStatsVersion}
-                  settings={settings}
                   onBackToHome={backToHome}
-                  onOpenVocabulary={() => openSettingsTarget({ page: 'text', editorTab: 'aliases' })}
-                  onOpenStyles={() => openSettingsTarget({ page: 'delivery', target: 'app-overrides' })}
                 />
               )}
             </div>
