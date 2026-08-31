@@ -390,6 +390,30 @@ describe('loadSettings', () => {
     expect(settings.appProfiles[0].modeId).toBe('missing.mode');
   });
 
+  it('sanitizes exact browser-host Mode rules and defaults lookup off', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      siteModeLookupEnabled: true,
+      browserSiteRules: [
+        { id: 'github', browserBundleId: 'com.apple.Safari', host: 'GitHub.com.', modeId: 'builtin.technical', enabled: true },
+        { id: 'duplicate-site', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'builtin.email', enabled: true },
+        { id: 'evil', browserBundleId: 'com.example.Untrusted', host: 'github.com', modeId: 'builtin.email', enabled: true },
+        { id: 'path', browserBundleId: 'com.apple.Safari', host: 'github.com/org', modeId: 'builtin.email', enabled: true },
+      ],
+    }));
+    const settings = loadSettings();
+    expect(settings.siteModeLookupEnabled).toBe(true);
+    expect(settings.browserSiteRules).toEqual([
+      { id: 'github', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'builtin.technical', enabled: true },
+    ]);
+
+    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+    delete legacy.siteModeLookupEnabled;
+    delete legacy.browserSiteRules;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
+    expect(loadSettings()).toMatchObject({ siteModeLookupEnabled: false, browserSiteRules: [] });
+  });
+
   it('migrates IDE context as explicit opt-in with bounded persisted roots only', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

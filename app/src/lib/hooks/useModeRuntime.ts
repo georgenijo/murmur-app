@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-export type ModeSource = 'manual' | 'app_binding' | 'temporary';
+export type ModeSource = 'manual' | 'app_binding' | 'site_binding' | 'temporary';
 
 export interface ModeRuntimeStatus {
   id: string;
@@ -16,7 +16,8 @@ function validStatus(value: unknown): value is ModeRuntimeStatus {
   const status = value as Partial<ModeRuntimeStatus> | null;
   return typeof status?.id === 'string' && status.id.length > 0 && status.id.length <= 128
     && typeof status.name === 'string' && status.name.length > 0 && status.name.length <= 128
-    && (status.source === 'manual' || status.source === 'app_binding' || status.source === 'temporary');
+    && (status.source === 'manual' || status.source === 'app_binding'
+      || status.source === 'site_binding' || status.source === 'temporary');
 }
 
 export function useModeRuntime() {

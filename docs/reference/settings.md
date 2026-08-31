@@ -28,6 +28,13 @@ Diagnostics remain in the Tools group. The search field routes matching rows
 to their owning page. Power-user controls are collapsed under **Advanced**
 disclosures.
 
+Modes may optionally activate from exact browser hosts under Delivery →
+Advanced → Modes. The global switch is off by default. Each rule stores only a
+rule ID, allowed browser bundle ID, exact host, Mode ID, and enabled flag. Live
+URL identity is memory-only and reduced to the host before it crosses the
+native boundary; paths, page text, selections, clipboard content, and browsing
+history are never part of Settings.
+
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and
 reloads every current `Settings` field, including tri-state app overrides and

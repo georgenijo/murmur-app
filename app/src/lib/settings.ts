@@ -81,6 +81,33 @@ export interface MurmurMode {
   autoPaste: boolean | null;
 }
 
+export const SITE_MODE_BROWSERS = [
+  { bundleId: 'com.apple.Safari', label: 'Safari' },
+  { bundleId: 'com.google.Chrome', label: 'Google Chrome' },
+  { bundleId: 'com.microsoft.edgemac', label: 'Microsoft Edge' },
+  { bundleId: 'com.brave.Browser', label: 'Brave' },
+  { bundleId: 'company.thebrowser.Browser', label: 'Arc' },
+  { bundleId: 'org.chromium.Chromium', label: 'Chromium' },
+] as const;
+
+export interface BrowserSiteRule {
+  id: string;
+  browserBundleId: string;
+  host: string;
+  modeId: string;
+  enabled: boolean;
+}
+
+export function normalizeSiteHost(value: string): string | null {
+  const host = value.trim().toLowerCase().replace(/\.$/, '');
+  if (!host || host.length > 253 || host.includes(':')) return null;
+  if (host === 'localhost') return host;
+  const labels = host.split('.');
+  if (labels.some((label) => !label || label.length > 63
+    || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) return null;
+  return labels.length > 1 ? host : null;
+}
+
 const builtinMode = (
   id: string,
   name: string,
@@ -324,6 +351,10 @@ export interface Settings {
   modes: MurmurMode[];
   /** Last Mode explicitly selected outside an automatic app binding. */
   activeModeId: string;
+  /** Explicit opt-in to frontmost-browser exact-host Mode activation. */
+  siteModeLookupEnabled: boolean;
+  /** Exact browser + host rules. URL paths and live site identity are never persisted. */
+  browserSiteRules: BrowserSiteRule[];
   voiceCommandsEnabled: boolean;
   /** User-defined voice commands applied after the built-in set. */
   voiceCommands: VoiceCommand[];
@@ -535,6 +566,8 @@ export const DEFAULT_SETTINGS: Settings = {
   appProfiles: [],
   modes: [],
   activeModeId: 'builtin.everyday',
+  siteModeLookupEnabled: false,
+  browserSiteRules: [],
   voiceCommandsEnabled: false,
   voiceCommands: [],
   cleanupEnabled: false,
@@ -735,6 +768,34 @@ function sanitizeModes(raw: unknown): MurmurMode[] {
     seen.add(id);
   }
   return modes;
+}
+
+function sanitizeBrowserSiteRules(raw: unknown, availableModeIds: ReadonlySet<string>): BrowserSiteRule[] {
+  if (!Array.isArray(raw)) return [];
+  const browsers = new Set<string>(SITE_MODE_BROWSERS.map((browser) => browser.bundleId));
+  const seenIds = new Set<string>();
+  const seenSites = new Set<string>();
+  const rules: BrowserSiteRule[] = [];
+  for (const value of raw.slice(0, 128)) {
+    if (!value || typeof value !== 'object') continue;
+    const rule = value as Partial<BrowserSiteRule>;
+    const id = typeof rule.id === 'string' ? rule.id.trim() : '';
+    const host = typeof rule.host === 'string' ? normalizeSiteHost(rule.host) : null;
+    const siteKey = `${rule.browserBundleId}\u0000${host}`;
+    if (!id || id.length > 128 || seenIds.has(id) || seenSites.has(siteKey) || !host
+      || !browsers.has(rule.browserBundleId ?? '')
+      || typeof rule.modeId !== 'string' || !availableModeIds.has(rule.modeId)) continue;
+    rules.push({
+      id,
+      browserBundleId: rule.browserBundleId!,
+      host,
+      modeId: rule.modeId,
+      enabled: rule.enabled !== false,
+    });
+    seenIds.add(id);
+    seenSites.add(siteKey);
+  }
+  return rules;
 }
 
 export function loadSettings(): Settings {
@@ -938,6 +999,10 @@ export function loadSettings(): Settings {
       parsed.customVocabulary = vocabularyPrompt(parsed.vocabularyEntries);
 
       parsed.modes = sanitizeModes(parsed.modes);
+      const knownModeIds = new Set([
+        ...BUILTIN_MODES.map((mode) => mode.id),
+        ...parsed.modes.map((mode) => mode.id),
+      ]);
       const availableModeIds = new Set([
         ...BUILTIN_MODES.map((mode) => mode.id),
         ...parsed.modes.filter((mode) => mode.enabled).map((mode) => mode.id),
@@ -945,6 +1010,10 @@ export function loadSettings(): Settings {
       if (typeof parsed.activeModeId !== 'string' || !availableModeIds.has(parsed.activeModeId)) {
         parsed.activeModeId = DEFAULT_SETTINGS.activeModeId;
       }
+      parsed.siteModeLookupEnabled = typeof parsed.siteModeLookupEnabled === 'boolean'
+        ? parsed.siteModeLookupEnabled
+        : DEFAULT_SETTINGS.siteModeLookupEnabled;
+      parsed.browserSiteRules = sanitizeBrowserSiteRules(parsed.browserSiteRules, knownModeIds);
 
       // appProfiles drives per-app delivery and transformation overrides. Drop
       // malformed entries and coerce a non-array back to the empty default so

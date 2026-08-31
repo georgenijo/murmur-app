@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings, AppProfile, MurmurMode, VoiceCommand, VocabularyEntry } from './settings';
+import { DEFAULT_SETTINGS, Settings, AppProfile, BrowserSiteRule, MurmurMode, VoiceCommand, VocabularyEntry } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -83,6 +83,8 @@ export interface ConfigureOptions {
   appProfiles?: AppProfile[];
   modes?: MurmurMode[];
   activeModeId?: string;
+  siteModeLookupEnabled?: boolean;
+  browserSiteRules?: BrowserSiteRule[];
   voiceCommandsEnabled?: boolean;
   voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
@@ -122,6 +124,8 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     appProfiles: s.appProfiles,
     modes: s.modes,
     activeModeId: s.activeModeId,
+    siteModeLookupEnabled: s.siteModeLookupEnabled,
+    browserSiteRules: s.browserSiteRules,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
     voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,

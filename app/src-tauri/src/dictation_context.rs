@@ -187,25 +187,43 @@ pub(crate) fn builtin_mode(id: &str) -> Option<MurmurMode> {
     })
 }
 
-fn selected_mode(
-    global: &DictationState,
-    profile: Option<&AppProfile>,
-) -> (Option<MurmurMode>, bool) {
-    let temporary = profile.and_then(|profile| {
-        (global.temporary_mode_bundle_id.as_deref() == Some(profile.bundle_id.as_str()))
-            .then_some(global.temporary_mode_id.as_deref())
-            .flatten()
-    });
-    let id = temporary
-        .or_else(|| profile.and_then(|profile| profile.mode_id.as_deref()))
-        .unwrap_or(global.manual_mode_id.as_str());
-    let mode = builtin_mode(id).or_else(|| {
+pub(crate) fn enabled_mode(global: &DictationState, id: &str) -> Option<MurmurMode> {
+    builtin_mode(id).or_else(|| {
         global
             .modes
             .iter()
             .find(|mode| mode.id == id && mode.enabled)
             .cloned()
-    });
+    })
+}
+
+pub(crate) fn enabled_site_mode_id<'a>(
+    global: &'a DictationState,
+    site: Option<&crate::browser_site::BrowserSiteIdentity>,
+) -> Option<&'a str> {
+    if !global.site_mode_lookup_enabled {
+        return None;
+    }
+    let id = crate::browser_site::matching_rule(&global.browser_site_rules, site?)?
+        .mode_id
+        .as_str();
+    enabled_mode(global, id).is_some().then_some(id)
+}
+
+fn selected_mode(
+    global: &DictationState,
+    profile: Option<&AppProfile>,
+    bundle_id: Option<&str>,
+    site_mode_id: Option<&str>,
+) -> (Option<MurmurMode>, bool) {
+    let temporary = (global.temporary_mode_bundle_id.as_deref() == bundle_id)
+        .then_some(global.temporary_mode_id.as_deref())
+        .flatten();
+    let id = temporary
+        .or(site_mode_id)
+        .or_else(|| profile.and_then(|profile| profile.mode_id.as_deref()))
+        .unwrap_or(global.manual_mode_id.as_str());
+    let mode = enabled_mode(global, id);
     let invalid = mode.is_none();
     (mode, invalid)
 }
@@ -223,6 +241,7 @@ pub struct SessionOverrides {
 
 pub struct ResolverInputs<'a> {
     pub bundle_id: Option<&'a str>,
+    pub site_mode_id: Option<&'a str>,
     pub global: &'a DictationState,
     pub prompt: Option<String>,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
@@ -247,7 +266,12 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             .iter()
             .find(|profile| profile.bundle_id == bundle_id)
     });
-    let (mode, invalid_mode) = selected_mode(global, explicit_profile);
+    let (mode, invalid_mode) = selected_mode(
+        global,
+        explicit_profile,
+        inputs.bundle_id,
+        inputs.site_mode_id,
+    );
     let ide_context_enabled = !invalid_mode
         && explicit_profile.is_some_and(|profile| {
             profile.ide_context_enabled
@@ -645,6 +669,7 @@ mod tests {
     ) -> DictationContextSnapshot {
         resolve(ResolverInputs {
             bundle_id,
+            site_mode_id: None,
             global,
             prompt: None,
             correction_matcher: None,
@@ -720,6 +745,30 @@ mod tests {
             );
             assert_eq!(snapshot.resolved_mode_id.as_deref(), Some(id));
         }
+    }
+
+    #[test]
+    fn site_mode_precedes_the_matching_app_mode_in_the_immutable_snapshot() {
+        let mut global = DictationState::default();
+        let mut bound = profile("com.apple.Safari", None, None);
+        bound.mode_id = Some("builtin.email".into());
+        global.app_profiles = vec![bound];
+        let snapshot = resolve(ResolverInputs {
+            bundle_id: Some("com.apple.Safari"),
+            site_mode_id: Some("builtin.technical"),
+            global: &global,
+            prompt: None,
+            correction_matcher: None,
+            ide_context_index: None,
+            vocabulary_version: 1,
+            voice_commands: None,
+            session_overrides: SessionOverrides::default(),
+        });
+        assert_eq!(
+            snapshot.resolved_mode_id.as_deref(),
+            Some("builtin.technical")
+        );
+        assert_eq!(snapshot.writing_style, WritingStyle::CodeTechnical);
     }
 
     #[test]

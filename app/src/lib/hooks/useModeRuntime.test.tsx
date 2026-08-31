@@ -48,6 +48,10 @@ describe('useModeRuntime', () => {
       payload: { id: 'builtin.email', name: 'Email', source: 'app_binding' },
     }));
     expect(container.textContent).toBe('Email:app_binding');
+    await act(async () => mocks.listener?.({
+      payload: { id: 'builtin.technical', name: 'Technical', source: 'site_binding' },
+    }));
+    expect(container.textContent).toBe('Technical:site_binding');
     mocks.invoke.mockResolvedValueOnce({ id: 'builtin.verbatim', name: 'Verbatim', source: 'temporary' });
     await act(async () => { await api?.cycle(); });
     expect(mocks.invoke).toHaveBeenLastCalledWith('cycle_mode');

@@ -48,7 +48,30 @@ Modes. Outside an app binding this updates the durable last-manual Mode; inside
 a bound app it creates a memory-only override tied to that exact bundle ID.
 Leaving the app clears the override and restores the last manual Mode.
 
-At recording acceptance, the existing frontmost bundle-ID snapshot resolves
-temporary override → app binding → last manual Mode. The result is immutable
-for that recording. Focus polling exposes only Mode status; it never captures
-site identity, window contents, selected text, or screen content.
+At recording acceptance, the existing frontmost process snapshot resolves
+temporary override → exact browser-site binding → app binding → last manual
+Mode. The result is immutable for that recording. The runtime indicator exposes
+only `temporary`, `site_binding`, `app_binding`, or `manual`; it never includes a
+host or URL.
+
+## Browser-site activation
+
+Browser-site lookup is globally off by default. When the user enables it,
+Murmur accepts rules only for an allow-listed browser bundle ID and a validated
+exact host such as `github.com`. Subdomains do not inherit a parent rule. Rules
+are evaluated in saved order; disabled, malformed, duplicate, unsupported, or
+unavailable rules cannot activate a Mode.
+
+The native boundary re-verifies the exact frontmost browser process, reads only
+its Accessibility `AXDocument` URL, accepts only HTTP or HTTPS, and immediately
+reduces the value to a lowercase host. The full URL, path, query, fragment,
+window title, page text, selection, clipboard, and browsing history are never
+stored, returned in runtime status, or logged. The Settings test waits up to
+five seconds after the click so the user can switch from Murmur to the browser
+being tested; it returns only the allowed browser bundle ID and exact host.
+Turning the global switch off prevents both polling and recording-start lookup.
+
+Site rules can bind built-in or enabled custom Modes. Deleting a custom Mode
+also removes its site rules. A site change inside the same browser restores the
+app binding or manual Mode on the next observation; a temporary override keeps
+its existing bundle-scoped semantics and remains highest precedence.

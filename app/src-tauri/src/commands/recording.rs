@@ -408,6 +408,7 @@ pub(crate) fn resolve_live_context(
     knowledge: &crate::knowledge_store::KnowledgeStore,
     app_identity: &crate::frontmost::FrontmostAppIdentity,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
+    site_identity: Option<&crate::browser_site::BrowserSiteIdentity>,
 ) -> Arc<DictationContextSnapshot> {
     let bundle_id = app_identity.bundle_id.as_deref();
     let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
@@ -463,8 +464,11 @@ pub(crate) fn resolve_live_context(
                 })
         });
         let vocabulary_version = app_state.settings_revision.load(Ordering::SeqCst);
+        let site_mode_id =
+            crate::dictation_context::enabled_site_mode_id(&dictation, site_identity);
         let mut context = dictation_context::resolve(ResolverInputs {
             bundle_id,
+            site_mode_id,
             global: &dictation,
             prompt,
             correction_matcher,
@@ -2282,7 +2286,7 @@ pub async fn process_audio(
     // helper before recording. Fail-fast no-op while a transform is in flight —
     // the is_transform_busy guard below then refuses this recording.
     state.transform_runtime.shutdown();
-    let (rid, delivery_target) = {
+    let (rid, delivery_target, site_identity) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
         // path also runs the shared Whisper backend, so refuse while a file
@@ -2317,7 +2321,13 @@ pub async fn process_audio(
         let recording_id = state.app_state.next_recording_id();
         transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
         let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
-        (recording_id, delivery_target)
+        let app_identity =
+            crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
+        let site_identity = dictation
+            .site_mode_lookup_enabled
+            .then(|| crate::browser_site::query_for_identity(&app_identity))
+            .flatten();
+        (recording_id, delivery_target, site_identity)
     };
     drop(transition);
     keyboard::set_processing(true);
@@ -2332,6 +2342,7 @@ pub async fn process_audio(
         &state.knowledge,
         &app_identity,
         &delivery_target,
+        site_identity.as_ref(),
     );
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
@@ -2626,6 +2637,44 @@ fn stage_vocabulary_configuration(
         voice_commands,
         entries,
     })
+}
+
+fn sanitize_browser_site_rules(
+    values: &[serde_json::Value],
+    modes: &[crate::state::MurmurMode],
+) -> Vec<crate::state::BrowserSiteRule> {
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_sites = std::collections::HashSet::new();
+    values
+        .iter()
+        .take(128)
+        .filter_map(|value| {
+            let id = value.get("id")?.as_str()?.trim();
+            let browser_bundle_id = value.get("browserBundleId")?.as_str()?.trim();
+            let host = crate::browser_site::normalize_host(value.get("host")?.as_str()?)?;
+            let mode_id = value.get("modeId")?.as_str()?.trim();
+            if id.is_empty()
+                || id.len() > 128
+                || !seen_ids.insert(id.to_string())
+                || !seen_sites.insert((browser_bundle_id.to_string(), host.clone()))
+                || !crate::browser_site::allowed_browser(browser_bundle_id)
+                || (crate::dictation_context::builtin_mode(mode_id).is_none()
+                    && !modes.iter().any(|mode| mode.id == mode_id))
+            {
+                return None;
+            }
+            Some(crate::state::BrowserSiteRule {
+                id: id.to_string(),
+                browser_bundle_id: browser_bundle_id.to_string(),
+                host,
+                mode_id: mode_id.to_string(),
+                enabled: value
+                    .get("enabled")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true),
+            })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -2941,6 +2990,19 @@ pub async fn configure_dictation(
     }) {
         dictation.temporary_mode_id = None;
         dictation.temporary_mode_bundle_id = None;
+    }
+
+    if let Some(enabled) = options
+        .get("siteModeLookupEnabled")
+        .and_then(|value| value.as_bool())
+    {
+        dictation.site_mode_lookup_enabled = enabled;
+    }
+    if let Some(rules) = options
+        .get("browserSiteRules")
+        .and_then(|value| value.as_array())
+    {
+        dictation.browser_site_rules = sanitize_browser_site_rules(rules, &dictation.modes);
     }
 
     // Per-app profiles carry nullable delivery/transformation overrides. A
@@ -4100,7 +4162,7 @@ pub async fn start_native_recording(
     };
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let (rid, performance_started_at_ms, delivery_target) = {
+    let (rid, performance_started_at_ms, delivery_target, site_identity) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.meeting_blocks_asr() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
@@ -4218,7 +4280,18 @@ pub async fn start_native_recording(
                 // ownership lock. This startup work is therefore included in
                 // request-to-first-PCM SLO timing.
                 let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
-                (rid, performance_started_at_ms, delivery_target)
+                let app_identity =
+                    crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
+                let site_identity = dictation
+                    .site_mode_lookup_enabled
+                    .then(|| crate::browser_site::query_for_identity(&app_identity))
+                    .flatten();
+                (
+                    rid,
+                    performance_started_at_ms,
+                    delivery_target,
+                    site_identity,
+                )
             }
         }
     };
@@ -4273,6 +4346,7 @@ pub async fn start_native_recording(
         &state.knowledge,
         &app_identity,
         &delivery_target,
+        site_identity.as_ref(),
     );
     let context_action = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -4967,6 +5041,7 @@ pub async fn reformat_history_text(
     }];
     let snapshot = crate::dictation_context::resolve(crate::dictation_context::ResolverInputs {
         bundle_id: Some(BUNDLE),
+        site_mode_id: None,
         global: &global,
         prompt: None,
         correction_matcher: None,
@@ -6622,5 +6697,29 @@ mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
+    }
+
+    #[test]
+    fn browser_site_rule_boundary_deduplicates_normalized_browser_hosts() {
+        let rules = vec![
+            serde_json::json!({
+                "id": "first",
+                "browserBundleId": "com.apple.Safari",
+                "host": "GitHub.com.",
+                "modeId": "builtin.technical"
+            }),
+            serde_json::json!({
+                "id": "second",
+                "browserBundleId": "com.apple.Safari",
+                "host": "github.com",
+                "modeId": "builtin.email"
+            }),
+        ];
+
+        let sanitized = sanitize_browser_site_rules(&rules, &[]);
+
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].id, "first");
+        assert_eq!(sanitized[0].host, "github.com");
     }
 }
