@@ -1,4 +1,5 @@
 import type { PersonalizationSummary } from '../../lib/homeDashboard';
+import { DashboardAction, DashboardSurface } from '../ui/DashboardPrimitives';
 
 interface PersonalizationCardProps {
   summary: PersonalizationSummary;
@@ -13,12 +14,13 @@ export function PersonalizationCard({
   onOpenVocabulary,
   onOpenStyles,
 }: PersonalizationCardProps) {
+  const titleId = expanded ? 'personalization-title-expanded' : 'personalization-title';
   return (
-    <section className={`personalization-card ${expanded ? 'is-expanded' : ''}`} aria-labelledby={expanded ? 'personalization-title-expanded' : 'personalization-title'}>
+    <DashboardSurface as="section" variant="outlined" padding="standard" labelledBy={titleId}>
       <div className="personalization-heading">
         <div>
           <p className="dashboard-eyebrow">{expanded ? 'Personalization' : 'Voice profile'}</p>
-          <h2 id={expanded ? 'personalization-title-expanded' : 'personalization-title'}>{summary.stage}</h2>
+          <h2 id={titleId}>{summary.stage}</h2>
         </div>
         <span className="personalization-stage">{summary.completed} of {summary.total} set up</span>
       </div>
@@ -42,10 +44,10 @@ export function PersonalizationCard({
               <small>{milestone.detail}</small>
             </span>
             {expanded && milestone.id === 'vocabulary' && !milestone.complete && (
-              <button type="button" onClick={onOpenVocabulary}>Add term</button>
+              <DashboardAction variant="secondary" onActivate={onOpenVocabulary}>Add term</DashboardAction>
             )}
             {expanded && milestone.id === 'styles' && !milestone.complete && (
-              <button type="button" onClick={onOpenStyles}>Set style</button>
+              <DashboardAction variant="secondary" onActivate={onOpenStyles}>Set style</DashboardAction>
             )}
           </li>
         ))}
@@ -55,6 +57,6 @@ export function PersonalizationCard({
       {expanded && (
         <p className="personalization-privacy">These are explicit setup milestones from data stored on this Mac—not a voice-training or confidence score.</p>
       )}
-    </section>
+    </DashboardSurface>
   );
 }

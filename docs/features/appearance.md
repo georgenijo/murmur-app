@@ -164,6 +164,29 @@ The runtime applier sets only:
 
 It never sets `html`/`body` backgrounds or mutates overlay/popover glass.
 
+## Dashboard component derivation
+
+Home and Insights keep the persisted appearance schema at the exact supported
+`--murmur-*` token set. `styles.css` derives a private dashboard layer from the
+already repaired semantic palette:
+
+- outlined and subtle borders derive from `on-surface-variant`
+- hover, pressed, selected, and disabled states use distinct surface steps
+- focus and meaningful selection indicators use `primary`
+- chart intensity uses five bounded mixes between surface and primary
+- elevation uses one neutral black shadow and never an imported foreground
+
+These `--ui-dashboard-*` and `--ui-chart-*` values are runtime CSS aliases, not
+new saved theme fields. Imported themes therefore pass through the normal
+contrast repair before any dashboard component consumes them. Components use
+the shared surface, action, navigation, statistic, heading, page-header, and
+day-chart contracts instead of composing local color or shadow recipes.
+
+The visual gate covers Home and Insights with Sonic light and dark plus
+deliberately low-contrast and high-saturation Open VSX-like inputs. This matrix
+guards hierarchy, action affordances, chart separation, and readable text after
+theme repair without treating arbitrary extension colors as trusted CSS.
+
 ## File exchange
 
 The dialog plugin selects a `.json` path. It does not read or write the file.

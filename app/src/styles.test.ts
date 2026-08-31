@@ -116,6 +116,16 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-history-card-y: 0.5rem;');
   });
 
+  it('derives dashboard states from semantic tokens while keeping selection separate from elevation', () => {
+    expect(css).toContain('--ui-dashboard-border: color-mix(in srgb, var(--murmur-on-surface-variant) 42%, transparent);');
+    expect(css).toContain('--ui-dashboard-hover: var(--murmur-surface-container);');
+    expect(css).toContain('--ui-dashboard-selected: var(--murmur-surface-container-lowest);');
+    expect(css).toContain('--ui-dashboard-shadow: 0 2px 8px rgb(0 0 0 / 0.14);');
+    expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*background:\s*var\(--ui-dashboard-selected\);[^}]*\}/s);
+    expect(css).not.toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*box-shadow:/s);
+    expect(css).toMatch(/\.ui-dashboard-action:disabled\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
+  });
+
   it('reserves home-history text space for copy feedback and draws a complete inset outline', () => {
     expect(css).toMatch(
       /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,

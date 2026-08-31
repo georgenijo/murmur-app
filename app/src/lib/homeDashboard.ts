@@ -1,7 +1,6 @@
 import type { Settings } from './settings';
 import {
   getCurrentStreak,
-  getRecentDays,
   getWPM,
   type DictationStats,
 } from './stats';
@@ -112,8 +111,4 @@ export function derivePersonalization(
           ? `Use Murmur on ${Math.max(0, 5 - activeDays)} more ${5 - activeDays === 1 ? 'day' : 'days'} this month to complete setup.`
           : 'Your configured terms, app styles, and usage setup are all active.',
   };
-}
-
-export function recentWeekPeak(stats: DictationStats): number {
-  return Math.max(1, ...getRecentDays(stats, 7).map((day) => day.words));
 }
