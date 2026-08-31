@@ -116,9 +116,18 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-history-card-y: 0.5rem;');
   });
 
-  it('positions transcript copy feedback without adding row controls', () => {
+  it('reserves home-history text space for copy feedback and draws a complete inset outline', () => {
     expect(css).toMatch(
       /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
+    );
+    expect(css).toMatch(
+      /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*2;[^}]*padding-right:\s*3\.75rem;/s,
+    );
+    expect(css).toMatch(
+      /\.home-history \.transcript-card\[data-copied="true"\]:not\(\[data-day-end="true"\]\)\s*\{[^}]*box-shadow:\s*inset 0 -1px 0 var\(--murmur-success\);/s,
+    );
+    expect(css).toMatch(
+      /\.home-history \.transcript-copy-feedback\s*\{[^}]*right:\s*var\(--ui-space-5\);[^}]*bottom:\s*auto;[^}]*top:\s*var\(--ui-space-3\);/s,
     );
   });
 
