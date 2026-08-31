@@ -1,8 +1,11 @@
 use crate::meeting_capture::{
-    render_meeting_text, MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioAccess,
-    SystemAudioPermissionState,
+    MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioAccess, SystemAudioPermissionState,
 };
-use crate::meeting_store::{MeetingDetail, MeetingPage, MeetingSession, MeetingStoreStatus};
+use crate::meeting_review::{
+    MeetingReviewExportFormat, MeetingWorkspace, RestoreMeetingReviewRequest,
+    SaveMeetingReviewRequest,
+};
+use crate::meeting_store::{MeetingPage, MeetingSession, MeetingStoreStatus};
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use serde::Deserialize;
@@ -214,17 +217,69 @@ pub fn list_meetings(
 }
 
 #[tauri::command]
-pub fn get_meeting(id: String, state: tauri::State<'_, State>) -> Result<MeetingDetail, String> {
-    state.meeting_store.repository()?.detail(id.trim())
+pub fn get_meeting(id: String, state: tauri::State<'_, State>) -> Result<MeetingWorkspace, String> {
+    state.meeting_store.repository()?.workspace(id.trim())
 }
 
 #[tauri::command]
-pub fn get_meeting_export_text(
+pub fn save_meeting_review(
+    request: SaveMeetingReviewRequest,
+    state: tauri::State<'_, State>,
+) -> Result<MeetingWorkspace, String> {
+    let id = request.session_id.trim();
+    if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
+        return Err("Stop this meeting before editing its review.".into());
+    }
+    state.meeting_store.repository()?.save_review(request)
+}
+
+#[tauri::command]
+pub fn restore_meeting_review_from_generated(
+    request: RestoreMeetingReviewRequest,
+    state: tauri::State<'_, State>,
+) -> Result<MeetingWorkspace, String> {
+    let id = request.session_id.trim();
+    if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
+        return Err("Stop this meeting before editing its review.".into());
+    }
+    state
+        .meeting_store
+        .repository()?
+        .restore_review_from_generated(request)
+}
+
+#[tauri::command]
+pub fn get_meeting_review_export(
     id: String,
+    format: MeetingReviewExportFormat,
     state: tauri::State<'_, State>,
 ) -> Result<String, String> {
-    let detail = state.meeting_store.repository()?.detail(id.trim())?;
-    Ok(render_meeting_text(&detail.segments))
+    let workspace = state.meeting_store.repository()?.workspace(id.trim())?;
+    crate::meeting_review::render_export(&workspace, format)
+}
+
+#[tauri::command]
+pub fn save_meeting_review_export(
+    id: String,
+    format: MeetingReviewExportFormat,
+    path: String,
+    state: tauri::State<'_, State>,
+) -> Result<u64, String> {
+    let expected = match format {
+        MeetingReviewExportFormat::Markdown => "md",
+        MeetingReviewExportFormat::Text => "txt",
+        MeetingReviewExportFormat::Json => "json",
+    };
+    if std::path::Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case(expected))
+    {
+        return Err(format!("Choose a .{expected} file for this export format."));
+    }
+    let workspace = state.meeting_store.repository()?.workspace(id.trim())?;
+    let contents = crate::meeting_review::render_export(&workspace, format)?;
+    crate::commands::export::write_text_export(std::path::Path::new(&path), &contents)
 }
 
 #[tauri::command]

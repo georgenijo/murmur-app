@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const MEETING_STORE_SCHEMA_VERSION: u32 = 2;
+pub const MEETING_STORE_SCHEMA_VERSION: u32 = 3;
 pub const MAX_MEETING_PAGE_SIZE: u32 = 100;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

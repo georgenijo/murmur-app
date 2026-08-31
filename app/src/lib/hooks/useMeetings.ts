@@ -17,7 +17,9 @@ import {
   openSystemAudioPreferences,
   orderedMeetingSegments,
   requestSystemAudioPermission,
+  restoreMeetingReviewFromGenerated,
   saveMeetingExport,
+  saveMeetingReview,
   startMeeting,
   startMeetingSummary,
   stopMeeting,
@@ -26,6 +28,8 @@ import {
   type MeetingRuntimeStatus,
   type MeetingSummaryStatus,
   type MeetingSegment,
+  type MeetingReviewExportFormat,
+  type SaveMeetingReviewRequest,
   type SystemAudioAccess,
   type SystemAudioPermissionState,
 } from '../meetings';
@@ -45,6 +49,7 @@ export function useMeetings(settings: Settings) {
   const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
   const selectedIdRef = useRef<string | null>(null);
+  const selectionTicketRef = useRef(0);
 
   const refresh = useCallback(async (query = queryRef.current) => {
     queryRef.current = query;
@@ -59,15 +64,19 @@ export function useMeetings(settings: Settings) {
   }, []);
 
   const select = useCallback(async (id: string | null) => {
+    const ticket = ++selectionTicketRef.current;
     selectedIdRef.current = id;
     if (!id) {
       setDetail(null);
       return;
     }
     try {
-      setDetail(await getMeeting(id));
+      const next = await getMeeting(id);
+      if (ticket !== selectionTicketRef.current || selectedIdRef.current !== id) return;
+      setDetail(next);
       setError(null);
     } catch (cause) {
+      if (ticket !== selectionTicketRef.current || selectedIdRef.current !== id) return;
       setError(String(cause));
     }
   }, []);
@@ -213,10 +222,10 @@ export function useMeetings(settings: Settings) {
     }
   }, [refresh, select]);
 
-  const copy = useCallback(async (id: string) => {
+  const copy = useCallback(async (id: string, format: MeetingReviewExportFormat) => {
     setError(null);
     try {
-      await copyMeeting(id);
+      await copyMeeting(id, format);
       return true;
     } catch (cause) {
       setError(String(cause));
@@ -224,13 +233,49 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
-  const exportText = useCallback(async (id: string, startedAtMs: number) => {
+  const exportReview = useCallback(async (
+    id: string,
+    startedAtMs: number,
+    format: MeetingReviewExportFormat,
+  ) => {
     setError(null);
     try {
-      return await saveMeetingExport(id, startedAtMs);
+      return await saveMeetingExport(id, startedAtMs, format);
     } catch (cause) {
       setError(String(cause));
       return null;
+    }
+  }, []);
+
+  const saveReview = useCallback(async (request: SaveMeetingReviewRequest) => {
+    setError(null);
+    try {
+      const next = await saveMeetingReview(request);
+      if (selectedIdRef.current === request.sessionId) setDetail(next);
+      return true;
+    } catch (cause) {
+      setError(String(cause));
+      return false;
+    }
+  }, []);
+
+  const restoreReview = useCallback(async (
+    sessionId: string,
+    generatedRevision: number,
+    expectedReviewRevision: number | null,
+  ) => {
+    setError(null);
+    try {
+      const next = await restoreMeetingReviewFromGenerated(
+        sessionId,
+        generatedRevision,
+        expectedReviewRevision,
+      );
+      if (selectedIdRef.current === sessionId) setDetail(next);
+      return true;
+    } catch (cause) {
+      setError(String(cause));
+      return false;
     }
   }, []);
 
@@ -253,8 +298,12 @@ export function useMeetings(settings: Settings) {
   }, []);
 
   const cancelSummary = useCallback(async () => {
-    if (await cancelMeetingSummary()) {
-      setSummaryStatus((current) => ({ ...current, phase: 'cancelling' }));
+    try {
+      if (await cancelMeetingSummary()) {
+        setSummaryStatus((current) => ({ ...current, phase: 'cancelling' }));
+      }
+    } catch (cause) {
+      setError(String(cause));
     }
   }, []);
 
@@ -275,7 +324,9 @@ export function useMeetings(settings: Settings) {
     requestPermission,
     openSystemAudioPreferences: openPreferences,
     copy,
-    exportText,
+    exportReview,
+    saveReview,
+    restoreReview,
     remove,
     clear,
     summarize,
