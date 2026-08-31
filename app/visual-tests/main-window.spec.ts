@@ -453,6 +453,23 @@ test('secondary destinations share Back behavior and restore focus to Home navig
   }
 });
 
+test('meeting review keeps provenance, actions, and transcript evidence usable at normal and narrow widths', async ({ page }) => {
+  await page.setViewportSize({ width: 880, height: 720 });
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
+  const fixture = page.locator('[data-visual-ready="true"]');
+  await expect(page.getByRole('heading', { name: 'Meeting review' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Summary source 1/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Transcript evidence' })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(fixture).toHaveScreenshot('light-meeting-review.png');
+
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Copy review' })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
+});
+
 test('dashboard charts keep tooltip, plot, and seven weekday labels in stable regions', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
   const chart = page.locator('figure[aria-label="Words per day bar chart"]');

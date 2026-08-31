@@ -6,6 +6,10 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, MAIN_DB};
 
 use super::migrations;
 use super::types::*;
+use crate::meeting_review::{
+    self, ActiveReviewOrigin, GeneratedMeetingReview, MeetingSpeakerLabels, MeetingWorkspace,
+    ReviewEditBase, SaveMeetingReviewRequest, SavedMeetingReview,
+};
 
 const DATABASE_NAME: &str = "meetings.sqlite3";
 const MAX_BACKUPS: usize = 3;
@@ -397,6 +401,106 @@ impl MeetingRepository {
         })
     }
 
+    pub fn workspace(&self, id: &str) -> Result<MeetingWorkspace, String> {
+        let detail = self.detail(id)?;
+        let allowed = detail
+            .segments
+            .iter()
+            .filter(|segment| {
+                segment.status == MeetingSegmentStatus::Final && !segment.text.trim().is_empty()
+            })
+            .map(|segment| segment.id)
+            .collect::<std::collections::HashSet<_>>();
+        let connection = self.open_checked()?;
+        let generated = connection
+            .query_row(
+                "SELECT artifact_json, revision FROM meeting_artifacts WHERE session_id=?",
+                [id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(db_error)?
+            .map(|(json, revision)| {
+                let mut artifact: crate::meeting_artifact::MeetingArtifactV1 =
+                    serde_json::from_str(&json)
+                        .map_err(|_| "The stored meeting draft is invalid.".to_string())?;
+                if !crate::meeting_artifact::validate_artifact(&mut artifact, &allowed) {
+                    return Err("The stored meeting draft is invalid.".to_string());
+                }
+                Ok(GeneratedMeetingReview {
+                    revision: to_u64(revision).map_err(db_error)?,
+                    document: meeting_review::document_from_artifact(&artifact),
+                })
+            })
+            .transpose()?;
+        let stored_review = connection
+            .query_row(
+                "SELECT revision, based_on_artifact_revision, me_label, them_label, review_json
+                 FROM meeting_reviews WHERE session_id=?",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_error)?;
+        let (labels, review) = match stored_review {
+            Some((revision, based_on, me, them, json)) => {
+                let labels = meeting_review::validate_labels(MeetingSpeakerLabels { me, them })?;
+                let mut document = json
+                    .map(|json| {
+                        serde_json::from_str(&json)
+                            .map_err(|_| "The stored meeting review is invalid.".to_string())
+                    })
+                    .transpose()?;
+                if document
+                    .as_mut()
+                    .is_some_and(|document| !meeting_review::validate_document(document, &allowed))
+                {
+                    return Err("The stored meeting review is invalid.".into());
+                }
+                let review = SavedMeetingReview {
+                    revision: to_u64(revision).map_err(db_error)?,
+                    based_on_generated_revision: based_on
+                        .map(to_u64)
+                        .transpose()
+                        .map_err(db_error)?,
+                    document,
+                };
+                (labels, Some(review))
+            }
+            None => (MeetingSpeakerLabels::default(), None),
+        };
+        let (active_document, active_origin) = review
+            .as_ref()
+            .and_then(|review| review.document.clone())
+            .map(|document| (Some(document), Some(ActiveReviewOrigin::Reviewed)))
+            .or_else(|| {
+                generated.as_ref().map(|generated| {
+                    (
+                        Some(generated.document.clone()),
+                        Some(ActiveReviewOrigin::Generated),
+                    )
+                })
+            })
+            .unwrap_or((None, None));
+        Ok(MeetingWorkspace {
+            session: detail.session,
+            segments: detail.segments,
+            labels,
+            generated,
+            review,
+            active_document,
+            active_origin,
+        })
+    }
+
     pub fn save_artifact(
         &self,
         session_id: &str,
@@ -411,13 +515,183 @@ impl MeetingRepository {
         let connection = self.open_checked()?;
         connection
             .execute(
-                "INSERT INTO meeting_artifacts(session_id, artifact_json, created_at_ms, runtime_ms, peak_rss_mb)
-                 VALUES(?,?,?,?,?)
-                 ON CONFLICT(session_id) DO UPDATE SET artifact_json=excluded.artifact_json, created_at_ms=excluded.created_at_ms, runtime_ms=excluded.runtime_ms, peak_rss_mb=excluded.peak_rss_mb",
+                "INSERT INTO meeting_artifacts(session_id, artifact_json, created_at_ms, runtime_ms, peak_rss_mb, revision)
+                 VALUES(?,?,?,?,?,1)
+                 ON CONFLICT(session_id) DO UPDATE SET artifact_json=excluded.artifact_json, created_at_ms=excluded.created_at_ms, runtime_ms=excluded.runtime_ms, peak_rss_mb=excluded.peak_rss_mb, revision=meeting_artifacts.revision+1",
                 params![session_id, json, to_i64(now_ms())?, to_i64(runtime_ms)?, to_i64(peak_rss_mb)?],
             )
             .map_err(db_error)?;
         Ok(())
+    }
+
+    pub fn save_review(
+        &self,
+        request: SaveMeetingReviewRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        let session_id = request.session_id.trim().to_string();
+        if !valid_session_id(&session_id) {
+            return Err("The meeting review request is invalid.".into());
+        }
+        let labels = meeting_review::validate_labels(request.labels)?;
+        let workspace = self.workspace(&session_id)?;
+        let allowed = workspace
+            .segments
+            .iter()
+            .filter(|segment| {
+                segment.status == MeetingSegmentStatus::Final && !segment.text.trim().is_empty()
+            })
+            .map(|segment| segment.id)
+            .collect::<std::collections::HashSet<_>>();
+        let base = match request.base {
+            ReviewEditBase::LabelsOnly => None,
+            ReviewEditBase::Generated { generated_revision } => {
+                let generated = workspace
+                    .generated
+                    .as_ref()
+                    .filter(|item| item.revision == generated_revision)
+                    .ok_or_else(|| {
+                        "The generated draft changed. Reload it and try again.".to_string()
+                    })?;
+                Some(&generated.document)
+            }
+            ReviewEditBase::Review { review_revision } => {
+                let review = workspace
+                    .review
+                    .as_ref()
+                    .filter(|item| item.revision == review_revision)
+                    .and_then(|item| item.document.as_ref())
+                    .ok_or_else(|| "The review changed. Reload it and try again.".to_string())?;
+                Some(review)
+            }
+        };
+        let document = match (base, request.document) {
+            (Some(base), Some(edit)) => Some(meeting_review::apply_edit(base, edit, &allowed)?),
+            (None, None) => workspace
+                .review
+                .as_ref()
+                .and_then(|review| review.document.clone()),
+            _ => return Err("The meeting review request is incomplete.".into()),
+        };
+        let mut connection = self.open_checked()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let current_revision = transaction
+            .query_row(
+                "SELECT revision FROM meeting_reviews WHERE session_id=?",
+                [&session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .map(to_u64)
+            .transpose()
+            .map_err(db_error)?;
+        if current_revision != request.expected_review_revision {
+            return Err("The review changed. Reload it and try again.".into());
+        }
+        if let ReviewEditBase::Generated { generated_revision } = &request.base {
+            let current_generated = transaction
+                .query_row(
+                    "SELECT revision FROM meeting_artifacts WHERE session_id=?",
+                    [&session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(db_error)?
+                .map(to_u64)
+                .transpose()
+                .map_err(db_error)?;
+            if current_generated != Some(*generated_revision) {
+                return Err("The generated draft changed. Reload it and try again.".into());
+            }
+        }
+        let next_revision = current_revision.unwrap_or(0).saturating_add(1);
+        let based_on = match &request.base {
+            ReviewEditBase::Generated { generated_revision } => Some(*generated_revision),
+            ReviewEditBase::Review { .. } => workspace
+                .review
+                .as_ref()
+                .and_then(|review| review.based_on_generated_revision),
+            ReviewEditBase::LabelsOnly => workspace
+                .review
+                .as_ref()
+                .and_then(|review| review.based_on_generated_revision),
+        };
+        let json = document
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| storage_error())?;
+        transaction
+            .execute(
+                "INSERT INTO meeting_reviews(session_id, revision, based_on_artifact_revision, me_label, them_label, review_json, updated_at_ms)
+                 VALUES(?,?,?,?,?,?,?)
+                 ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision, based_on_artifact_revision=excluded.based_on_artifact_revision, me_label=excluded.me_label, them_label=excluded.them_label, review_json=excluded.review_json, updated_at_ms=excluded.updated_at_ms",
+                params![session_id, to_i64(next_revision)?, based_on.map(to_i64).transpose()?, labels.me, labels.them, json, to_i64(now_ms())?],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        self.workspace(&session_id)
+    }
+
+    pub fn restore_review_from_generated(
+        &self,
+        request: crate::meeting_review::RestoreMeetingReviewRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        let workspace = self.workspace(request.session_id.trim())?;
+        let generated = workspace
+            .generated
+            .as_ref()
+            .filter(|item| item.revision == request.generated_revision)
+            .ok_or_else(|| "The generated draft changed. Reload it and try again.".to_string())?;
+        if workspace.review.as_ref().map(|review| review.revision)
+            != request.expected_review_revision
+        {
+            return Err("The review changed. Reload it and try again.".into());
+        }
+        let edit = crate::meeting_review::EditableReviewDocument {
+            summary: crate::meeting_review::EditableReviewText {
+                key: generated.document.summary.key.clone(),
+                text: generated.document.summary.text.clone(),
+            },
+            decisions: generated
+                .document
+                .decisions
+                .iter()
+                .map(|item| crate::meeting_review::EditableReviewText {
+                    key: item.key.clone(),
+                    text: item.text.clone(),
+                })
+                .collect(),
+            action_items: generated
+                .document
+                .action_items
+                .iter()
+                .map(|item| crate::meeting_review::EditableReviewAction {
+                    key: item.key.clone(),
+                    text: item.text.clone(),
+                    owner: item.owner.clone(),
+                    due_date: item.due_date.clone(),
+                })
+                .collect(),
+            open_questions: generated
+                .document
+                .open_questions
+                .iter()
+                .map(|item| crate::meeting_review::EditableReviewText {
+                    key: item.key.clone(),
+                    text: item.text.clone(),
+                })
+                .collect(),
+        };
+        self.save_review(SaveMeetingReviewRequest {
+            session_id: request.session_id,
+            expected_review_revision: request.expected_review_revision,
+            base: ReviewEditBase::Generated {
+                generated_revision: request.generated_revision,
+            },
+            labels: workspace.labels,
+            document: Some(edit),
+        })
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
@@ -834,5 +1108,109 @@ mod tests {
                 "audio/session-a/../../outside.wav",
             )
             .is_err());
+    }
+
+    #[test]
+    fn regeneration_preserves_review_and_restore_is_explicit() {
+        let (_temp, repository) = repository();
+        repository
+            .create_session("review-session", "base.en", "en", true, false)
+            .unwrap();
+        let audio = repository.root().join("audio/review-session/me-0.wav");
+        fs::create_dir_all(audio.parent().unwrap()).unwrap();
+        fs::write(&audio, b"wav").unwrap();
+        let segment = repository
+            .insert_pending_segment(
+                "review-session",
+                MeetingSpeaker::Me,
+                0,
+                0,
+                1_000,
+                "audio/review-session/me-0.wav",
+            )
+            .unwrap();
+        repository
+            .finalize_segment(segment, "Evidence", false)
+            .unwrap();
+        fs::remove_file(audio).unwrap();
+        let artifact = crate::meeting_artifact::MeetingArtifactV1 {
+            schema: crate::meeting_artifact::MEETING_ARTIFACT_SCHEMA.into(),
+            summary: crate::meeting_artifact::SourcedMeetingText {
+                text: "Generated one".into(),
+                source_segment_ids: vec![segment],
+            },
+            decisions: Vec::new(),
+            action_items: Vec::new(),
+            open_questions: Vec::new(),
+        };
+        repository
+            .save_artifact("review-session", &artifact, 1, 2)
+            .unwrap();
+        let workspace = repository.workspace("review-session").unwrap();
+        let generated_revision = workspace.generated.as_ref().unwrap().revision;
+        let saved_review = repository
+            .save_review(SaveMeetingReviewRequest {
+                session_id: "review-session".into(),
+                expected_review_revision: None,
+                base: ReviewEditBase::Generated { generated_revision },
+                labels: MeetingSpeakerLabels {
+                    me: "George".into(),
+                    them: "Team".into(),
+                },
+                document: Some(crate::meeting_review::EditableReviewDocument {
+                    summary: crate::meeting_review::EditableReviewText {
+                        key: "summary".into(),
+                        text: "Reviewed wording".into(),
+                    },
+                    decisions: Vec::new(),
+                    action_items: Vec::new(),
+                    open_questions: Vec::new(),
+                }),
+            })
+            .unwrap();
+        let saved_revision = saved_review.review.as_ref().unwrap().revision;
+        let labels_only = repository
+            .save_review(SaveMeetingReviewRequest {
+                session_id: "review-session".into(),
+                expected_review_revision: Some(saved_revision),
+                base: ReviewEditBase::LabelsOnly,
+                labels: MeetingSpeakerLabels {
+                    me: "George N.".into(),
+                    them: "Team".into(),
+                },
+                document: None,
+            })
+            .unwrap();
+        assert_eq!(
+            labels_only.active_document.as_ref().unwrap().summary.text,
+            "Reviewed wording"
+        );
+        assert_eq!(labels_only.labels.me, "George N.");
+
+        let mut replacement = artifact.clone();
+        replacement.summary.text = "Generated two".into();
+        repository
+            .save_artifact("review-session", &replacement, 3, 4)
+            .unwrap();
+        let after_regeneration = repository.workspace("review-session").unwrap();
+        assert_eq!(
+            after_regeneration.active_document.unwrap().summary.text,
+            "Reviewed wording"
+        );
+        assert_eq!(after_regeneration.labels.me, "George N.");
+
+        let generated_revision = after_regeneration.generated.as_ref().unwrap().revision;
+        let review_revision = after_regeneration.review.as_ref().unwrap().revision;
+        let restored = repository
+            .restore_review_from_generated(crate::meeting_review::RestoreMeetingReviewRequest {
+                session_id: "review-session".into(),
+                generated_revision,
+                expected_review_revision: Some(review_revision),
+            })
+            .unwrap();
+        assert_eq!(
+            restored.active_document.unwrap().summary.text,
+            "Generated two"
+        );
     }
 }

@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import type { MeetingArtifactV1 } from './meetingArtifacts';
 
 export type SystemAudioPermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported';
 
@@ -61,7 +60,49 @@ export interface MeetingSegment {
 export interface MeetingDetail {
   session: MeetingSession;
   segments: MeetingSegment[];
-  artifact: MeetingArtifactV1 | null;
+  labels: MeetingSpeakerLabels;
+  generated: GeneratedMeetingReview | null;
+  review: SavedMeetingReview | null;
+  activeDocument: MeetingReviewDocumentV1 | null;
+  activeOrigin: ActiveReviewOrigin | null;
+}
+
+export interface MeetingSpeakerLabels { me: string; them: string }
+export interface ReviewText { key: string; text: string; sourceSegmentIds: number[] }
+export interface ReviewAction extends ReviewText { owner: string | null; dueDate: string | null }
+export interface MeetingReviewDocumentV1 {
+  schema: 'murmur.meeting-review.v1';
+  summary: ReviewText;
+  decisions: ReviewText[];
+  actionItems: ReviewAction[];
+  openQuestions: ReviewText[];
+}
+export interface GeneratedMeetingReview { revision: number; document: MeetingReviewDocumentV1 }
+export interface SavedMeetingReview {
+  revision: number;
+  basedOnGeneratedRevision: number | null;
+  document: MeetingReviewDocumentV1 | null;
+}
+export type ActiveReviewOrigin = 'generated' | 'reviewed';
+export type MeetingReviewExportFormat = 'markdown' | 'text' | 'json';
+export interface EditableReviewText { key: string; text: string }
+export interface EditableReviewAction extends EditableReviewText { owner: string | null; dueDate: string | null }
+export interface EditableReviewDocument {
+  summary: EditableReviewText;
+  decisions: EditableReviewText[];
+  actionItems: EditableReviewAction[];
+  openQuestions: EditableReviewText[];
+}
+export type ReviewEditBase =
+  | { kind: 'labels_only' }
+  | { kind: 'generated'; generatedRevision: number }
+  | { kind: 'review'; reviewRevision: number };
+export interface SaveMeetingReviewRequest {
+  sessionId: string;
+  expectedReviewRevision: number | null;
+  base: ReviewEditBase;
+  labels: MeetingSpeakerLabels;
+  document: EditableReviewDocument | null;
 }
 
 export type MeetingSummaryPhase = 'idle' | 'running' | 'cancelling' | 'complete' | 'failed' | 'cancelled';
@@ -132,6 +173,20 @@ export async function getMeeting(id: string): Promise<MeetingDetail> {
   return invoke('get_meeting', { id });
 }
 
+export async function saveMeetingReview(request: SaveMeetingReviewRequest): Promise<MeetingDetail> {
+  return invoke('save_meeting_review', { request });
+}
+
+export async function restoreMeetingReviewFromGenerated(
+  sessionId: string,
+  generatedRevision: number,
+  expectedReviewRevision: number | null,
+): Promise<MeetingDetail> {
+  return invoke('restore_meeting_review_from_generated', {
+    request: { sessionId, generatedRevision, expectedReviewRevision },
+  });
+}
+
 export async function getMeetingSummaryStatus(): Promise<MeetingSummaryStatus> {
   return invoke('get_meeting_summary_status');
 }
@@ -164,20 +219,24 @@ export async function openSystemAudioPreferences(): Promise<void> {
   await invoke('open_system_audio_preferences');
 }
 
-export async function copyMeeting(id: string): Promise<void> {
-  const text = await invoke<string>('get_meeting_export_text', { id });
+export async function copyMeeting(id: string, format: MeetingReviewExportFormat): Promise<void> {
+  const text = await invoke<string>('get_meeting_review_export', { id, format });
   await navigator.clipboard.writeText(text);
 }
 
-export async function saveMeetingExport(id: string, startedAtMs: number): Promise<string | null> {
-  const text = await invoke<string>('get_meeting_export_text', { id });
+export async function saveMeetingExport(
+  id: string,
+  startedAtMs: number,
+  format: MeetingReviewExportFormat,
+): Promise<string | null> {
+  const extension = format === 'markdown' ? 'md' : format === 'json' ? 'json' : 'txt';
   const stamp = new Date(startedAtMs).toISOString().slice(0, 10);
   const path = await save({
-    defaultPath: `Murmur Meeting ${stamp}.txt`,
-    filters: [{ name: 'Murmur meeting transcript', extensions: ['txt'] }],
+    defaultPath: `Murmur Meeting ${stamp}.${extension}`,
+    filters: [{ name: `Murmur meeting ${format}`, extensions: [extension] }],
   });
   if (typeof path !== 'string' || path.length === 0) return null;
-  await invoke('save_text_export', { path, contents: text });
+  await invoke('save_meeting_review_export', { id, format, path });
   return path;
 }
 

@@ -1872,7 +1872,8 @@ fn normalize_transcript(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub fn render_meeting_text(segments: &[MeetingSegment]) -> String {
+#[cfg(test)]
+fn render_meeting_text(segments: &[MeetingSegment]) -> String {
     let mut output = String::new();
     for segment in segments
         .iter()

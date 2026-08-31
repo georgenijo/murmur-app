@@ -4,7 +4,8 @@ Production audio capture is isolated in a signed, killable helper. Strict
 capture-scoped framing, bounded callback rings, and interrupted-prefix
 transcription keep the app responsive without discarding already-delivered
 speech. See [Transcription](features/transcription.md) and
-[Meeting Capture](features/meeting-capture.md).
+[Meeting Capture](features/meeting-capture.md) and its
+[Meeting Review Workspace](features/meeting-review-workspace.md).
 
 Current as of **v0.30.1**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
