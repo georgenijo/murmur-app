@@ -36,6 +36,7 @@ mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
 mod meeting_capture;
+mod meeting_review;
 mod meeting_store;
 mod microphone_preview;
 mod model_artifact;
@@ -384,7 +385,10 @@ pub fn run() {
             commands::meeting::get_meeting_store_status,
             commands::meeting::list_meetings,
             commands::meeting::get_meeting,
-            commands::meeting::get_meeting_export_text,
+            commands::meeting::save_meeting_review,
+            commands::meeting::restore_meeting_review_from_generated,
+            commands::meeting::get_meeting_review_export,
+            commands::meeting::save_meeting_review_export,
             commands::meeting::delete_meeting,
             commands::meeting::delete_all_meetings,
             commands::meeting::prune_meetings,

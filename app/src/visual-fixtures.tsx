@@ -6,6 +6,7 @@ import { DictationPreviewCard } from './components/dictation-preview/DictationPr
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
+import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
@@ -77,6 +78,24 @@ const importedTheme = importedThemeFixture
 if (importedTheme) applyResolvedTheme(resolveTheme(importedTheme, appearance));
 else document.documentElement.dataset.appearance = appearance;
 
+const meetingFixture = {
+  session: {
+    id: 'meeting-fixture', startedAtMs: Date.UTC(2026, 7, 31, 14, 30), endedAtMs: Date.UTC(2026, 7, 31, 14, 48),
+    status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true,
+    retainAudio: false, durationMs: 1_080_000, segmentCount: 2,
+    preview: 'We agreed to ship the local review workspace.', errorCode: null,
+  },
+  segments: [
+    { id: 101, sessionId: 'meeting-fixture', speaker: 'me', sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'We agreed to ship the local review workspace.', audioAvailable: false, errorCode: null },
+    { id: 102, sessionId: 'meeting-fixture', speaker: 'them', sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'I will verify the export formats and source links.', audioAvailable: false, errorCode: null },
+  ],
+  labels: { me: 'George', them: 'Alex' },
+  generated: { revision: 2, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The team agreed to ship and verify the local review workspace.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Ship the review workspace locally.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify export formats and source links.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
+  review: { revision: 1, basedOnGeneratedRevision: 1, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
+  activeDocument: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] },
+  activeOrigin: 'reviewed',
+};
+
 mockIPC((command) => {
   if (command === 'get_meeting_status') {
     return {
@@ -90,6 +109,18 @@ mockIPC((command) => {
     };
   }
   if (command === 'get_system_audio_permission_status') return 'granted';
+  if (command === 'get_meeting_summary_status') {
+    return { generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null };
+  }
+  if (command === 'list_meetings') {
+    return requestedState === 'meetings-empty'
+      ? { sessions: [], total: 0, offset: 0, limit: 50 }
+      : { sessions: [meetingFixture.session], total: 1, offset: 0, limit: 50 };
+  }
+  if (command === 'get_meeting') return meetingFixture;
+  if (command === 'get_meeting_review_export') return '# Meeting review\n';
+  if (command === 'save_meeting_review' || command === 'restore_meeting_review_from_generated') return meetingFixture;
+  if (command === 'save_meeting_review_export') return 20;
   if (command === 'get_microphone_preview_status') {
     return {
       previewId: null,
@@ -248,7 +279,9 @@ function VisualFixture() {
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-site-modes';
   const meetings = useMeetings(fixtureSettings);
-  const [destination, setDestination] = React.useState<MainDestination>(requestedState === 'insights' ? 'insights' : 'home');
+  const [destination, setDestination] = React.useState<MainDestination>(
+    requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
+  );
   const homeNavigationRef = React.useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = React.useRef(false);
 
@@ -262,6 +295,10 @@ function VisualFixture() {
     restoreHomeNavigationFocusRef.current = false;
     homeNavigationRef.current?.focus();
   }, [destination]);
+
+  React.useEffect(() => {
+    if (requestedState === 'meetings-review') void meetings.select('meeting-fixture');
+  }, [meetings.select]);
 
   return (
     <div
@@ -330,6 +367,7 @@ function VisualFixture() {
                   description="Local meeting transcripts and summaries."
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
+                <MeetingsPanel meetings={meetings} />
               </section>
             ) : destination === 'queries' ? (
               <section className="main-secondary-view" aria-labelledby="queries-view-title">

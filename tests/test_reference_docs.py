@@ -28,7 +28,7 @@ def copy_reference_fixture(root: Path) -> None:
 
 class ReferenceDocsTests(unittest.TestCase):
     def test_repository_reference_docs_match_registered_commands(self) -> None:
-        self.assertEqual(validate_reference_docs(), 177)
+        self.assertEqual(validate_reference_docs(), 180)
 
     def test_missing_command_row_fails_even_when_prose_count_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -54,7 +54,7 @@ class ReferenceDocsTests(unittest.TestCase):
             architecture = root / "docs/ARCHITECTURE.md"
             architecture.write_text(
                 architecture.read_text().replace(
-                    "177 registered commands", "176 registered commands", 1
+                    "180 registered commands", "179 registered commands", 1
                 )
             )
 

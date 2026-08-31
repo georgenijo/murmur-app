@@ -40,6 +40,22 @@ keeps any prior artifact. Summary ownership blocks competing capture and model
 work until the sidecar exits. Runtime and peak helper RSS remain content-free
 status evidence.
 
+## Review workspace
+
+Notetaker presents the generated result as a separate draft over immutable
+transcript evidence. A user can set per-session display labels for the canonical
+`Me` and `Them` channels, edit existing sourced claims, reorder or remove list
+items, and save a revisioned reviewed snapshot. The edit request never carries
+source IDs; Rust restores them from the exact generated or reviewed base before
+committing. New claims require a future source-selection workflow.
+
+Regeneration replaces only the generated draft. A saved review remains active
+until the user separately confirms replacement from an exact generated revision.
+Source buttons move focus to the cited transcript segment. Markdown, plain-text,
+and JSON exports share one bounded reviewed-meeting snapshot containing display
+labels, canonical channels, the active document, provenance, and transcript.
+See [Meeting Review Workspace](meeting-review-workspace.md).
+
 ## User contract
 
 - Start or stop from **History → Meetings**, or with the command palette.
@@ -113,13 +129,16 @@ live or recovery inference owns the meeting flag.
 
 The store lives under the app data directory in `meetings/`:
 
-- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v2.
+- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v3.
 - `meeting_sessions` stores start/end, status, selected model/language, frozen
   punctuation/audio policy, and a stable content-free failure code.
 - `meeting_segments` stores speaker, per-channel sequence, relative timing,
   pending/final/failed status, text, and an optional relative spool path.
 - `meeting_artifacts` stores one validated schema-v1 derived result plus its
-  content-free runtime and peak helper RSS; deleting the session cascades it.
+  content-free runtime, peak helper RSS, and monotonic revision; deleting the
+  session cascades it.
+- `meeting_reviews` stores one revisioned reviewed snapshot and its bounded
+  channel display labels. It never stores or mutates raw transcript evidence.
 - FTS5 indexes finalized segment text for bounded session search.
 - Checked SQLite backups are retained before migrations; corrupt databases are
   quarantined and restored from the newest valid backup when possible.
