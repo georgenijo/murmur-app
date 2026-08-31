@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-31
+
+### Added
+
+- Modes can activate for an exact host in Safari, Chrome, Edge, Brave, Arc,
+  and Chromium. Murmur stores only the browser ID and normalized host, and
+  discards URL paths, queries, fragments, page text, and browsing history
+  (#631).
+- Meetings now include a local review workspace with editable speaker labels,
+  sourced summaries, decisions, action items, open questions, explicit draft
+  restoration, and bounded Markdown, text, and JSON exports (#632).
+
+### Changed
+
+- The automatic microphone choice is now named Follow macOS Default and shows
+  the physical input that macOS currently resolves (#660).
+- Home and Insights now use shared theme-safe components for navigation,
+  actions, statistics, and charts (#657).
+- Insights gives analytics the full workspace width, aligns Voice Query
+  provider data, and exposes exact chart values through mouse, keyboard, and
+  touch interaction (#658).
+- Home routes Text & Vocabulary, Voice Commands, Styles, and Transforms through
+  one customization hub with explicit return navigation (#656).
+
+### Fixed
+
+- Copied transcript rows reserve room for their success label and keep a
+  complete border without covering text or changing row height (#655).
+
 ## [0.39.1] - 2026-08-23
 
 ### Changed
