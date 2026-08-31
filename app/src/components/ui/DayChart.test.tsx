@@ -57,6 +57,8 @@ describe('DayChart', () => {
     expect(targets[0].getAttribute('aria-label')).toContain('No WPM data');
     await act(async () => (targets[1] as HTMLButtonElement).focus());
     expect(container.querySelector('.ui-day-chart-tooltip')?.textContent).toContain('161 WPM');
+    await act(async () => targets[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.querySelector('.ui-day-chart-tooltip')?.textContent).toContain('Focus a day');
   });
 
   it('makes every heatmap cell focusable with bounded intensity and exact values', async () => {
@@ -74,6 +76,11 @@ describe('DayChart', () => {
     expect(cells).toHaveLength(56);
     expect(Array.from(cells).every((cell) => /^[0-4]$/.test((cell as HTMLElement).dataset.intensity ?? ''))).toBe(true);
     await act(async () => (cells[10] as HTMLButtonElement).click());
-    expect(container.querySelector('.ui-day-chart-tooltip')?.textContent).toContain('recordings');
+    const tooltip = container.querySelector('.ui-day-chart-tooltip')?.textContent ?? '';
+    expect(tooltip).toContain('Jul 15, 2026');
+    expect(tooltip).toContain('1,000 words');
+    expect(tooltip).toContain('10 recordings');
+    await act(async () => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
+    expect(container.querySelector('.ui-day-chart-tooltip')?.textContent).toContain('Focus a day');
   });
 });

@@ -77,9 +77,9 @@ Use these before creating a feature-local control or surface.
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Enter and Space do the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
-| Insights | Counts come from durable local stats; personalization uses explicit milestones and never an opaque score |
+| Insights | Durable local analytics use the full content width; Voice Query totals/providers use fixed label/value columns and notes occupy separate rows |
 | Secondary pages | Insights, Notetaker, and Queries use one page header with a visible Back action that returns focus to Home navigation |
-| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable and tooltips never move the plot |
+| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, and tooltips never move the plot |
 
 ## Review and verification
 
@@ -95,8 +95,8 @@ copy, keyboard copy, and nested-action isolation. Native smoke testing covers Se
 navigation, transcript-card actions, and the history overflow menu.
 
 `npm run test:visual` runs Playwright goldens at 880×720 for light and dark
-appearances across idle, recording, processing, Insights, and Settings, plus a
-720×560 compact Home fixture. Its dashboard theme matrix renders Home and
+appearances across idle, recording, processing, Insights, and Settings, plus
+720×560 compact Home and Insights fixtures. Its dashboard theme matrix renders Home and
 Insights with Sonic light/dark and repaired low-contrast/high-saturation
 Open VSX-like inputs. The 880×720 fixture must retain a 200px Insights rail
 beside the history column. Update those baselines only after comparing the

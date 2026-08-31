@@ -382,9 +382,42 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   await page.getByRole('button', { name: 'Insights', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Developing' })).toBeVisible();
-  await expect(page.getByText(/voice-training or confidence score/i)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Developing' })).toHaveCount(0);
+  await expect(page.locator('.usage-analytics-section')).toHaveCount(4);
+  const [workspaceBox, analyticsBox] = await Promise.all([
+    page.locator('.main-dashboard-workspace').boundingBox(),
+    page.locator('.usage-dashboard-content').boundingBox(),
+  ]);
+  expect(analyticsBox!.width).toBeGreaterThan(workspaceBox!.width * 0.9);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights.png');
+});
+
+test('Voice Query provider columns stay aligned at normal and narrow widths', async ({ page }) => {
+  const assertAlignedColumns = async () => {
+    const table = page.locator('[role="table"][aria-label="Voice Query providers"]');
+    const rows = table.locator('[role="row"]');
+    await expect(rows).toHaveCount(3);
+    const geometry = await rows.evaluateAll((elements) => elements.map((row) => (
+      Array.from(row.children).map((cell) => {
+        const box = cell.getBoundingClientRect();
+        return { left: box.left, right: box.right };
+      })
+    )));
+    for (let column = 0; column < 4; column += 1) {
+      const lefts = geometry.map((row) => row[column].left);
+      expect(Math.max(...lefts) - Math.min(...lefts)).toBeLessThanOrEqual(0.5);
+      if (column > 0) {
+        const rights = geometry.map((row) => row[column].right);
+        expect(Math.max(...rights) - Math.min(...rights)).toBeLessThanOrEqual(0.5);
+      }
+    }
+  };
+
+  await page.goto('/visual-fixtures.html?state=insights&appearance=light');
+  await assertAlignedColumns();
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.reload();
+  await assertAlignedColumns();
 });
 
 test('secondary destinations share Back behavior and restore focus to Home navigation', async ({ page }) => {
@@ -444,6 +477,35 @@ test('dashboard charts keep tooltip, plot, and seven weekday labels in stable re
   });
 });
 
+test('all Insights chart marks share exact hover, keyboard, click, and dismissal behavior', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=insights&appearance=light');
+
+  const heatmap = page.locator('figure[aria-label="Words per day heatmap"]');
+  const heatmapMark = heatmap.getByRole('button', { name: /760 words, 6 recordings/ });
+  await heatmapMark.hover();
+  await expect(heatmap.locator('.ui-day-chart-tooltip')).toContainText('760 words · 6 recordings');
+  await page.getByRole('heading', { name: 'Insights' }).hover();
+  await expect(heatmap.locator('.ui-day-chart-tooltip')).toContainText('Focus a day');
+
+  const bars = page.locator('figure[aria-label="Words per day bar chart"]');
+  const barMarks = bars.locator('.ui-day-chart-bar');
+  await barMarks.first().focus();
+  await page.keyboard.press('Tab');
+  await expect(barMarks.nth(1)).toBeFocused();
+  await expect(bars.locator('.ui-day-chart-tooltip')).toContainText('words');
+  await page.getByRole('heading', { name: 'Insights' }).hover();
+  await expect(bars.locator('.ui-day-chart-tooltip')).toContainText('words');
+  await page.keyboard.press('Escape');
+  await expect(bars.locator('.ui-day-chart-tooltip')).toContainText('Focus a day');
+
+  const line = page.locator('figure[aria-label="Words-per-minute trend line"]');
+  const finalPoint = line.locator('.ui-day-chart-line-targets button').last();
+  await finalPoint.click();
+  await expect(line.locator('.ui-day-chart-tooltip')).toContainText('WPM');
+  await page.getByRole('heading', { name: 'Insights' }).click();
+  await expect(line.locator('.ui-day-chart-tooltip')).toContainText('Focus a day');
+});
+
 test('dashboard actions keep hover, focus, active, and disabled states in an imported theme', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=dark&theme=open-vsx-high-saturation');
   const action = page.getByRole('button', { name: 'View insights', exact: true });
@@ -477,4 +539,19 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await expect(page.getByRole('button', { name: 'Transcribe File' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Recent dictations' })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
+});
+
+test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.goto('/visual-fixtures.html?state=insights&appearance=light');
+  const sections = page.locator('.usage-analytics-section');
+  await expect(sections).toHaveCount(4);
+  expect(await sections.evaluateAll((elements) => elements.map((element) => element.dataset.analytics)))
+    .toEqual(['query', 'activity', 'words', 'wpm']);
+  const overflow = await page.locator('.insights-view').evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(overflow.scrollWidth).toBe(overflow.clientWidth);
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights-compact-720x560.png');
 });
