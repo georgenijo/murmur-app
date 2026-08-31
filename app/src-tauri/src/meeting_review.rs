@@ -391,7 +391,7 @@ pub fn apply_edit(
         .ok_or_else(|| "The reviewed meeting is invalid.".to_string())
 }
 
-fn speaker_label<'a>(labels: &'a MeetingSpeakerLabels, speaker: MeetingSpeaker) -> &'a str {
+fn speaker_label(labels: &MeetingSpeakerLabels, speaker: MeetingSpeaker) -> &str {
     match speaker {
         MeetingSpeaker::Me => &labels.me,
         MeetingSpeaker::Them => &labels.them,
