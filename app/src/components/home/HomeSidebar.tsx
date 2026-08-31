@@ -1,5 +1,7 @@
+import type { Ref } from 'react';
 import type { MainDestination } from '../../lib/homeDashboard';
 import type { SettingsEditorTab } from '../settings/SettingsEditorsWindow';
+import { MainNavItem } from '../ui/DashboardPrimitives';
 
 interface SettingsLink {
   page: string;
@@ -9,6 +11,7 @@ interface SettingsLink {
 
 interface HomeSidebarProps {
   active: MainDestination;
+  homeButtonRef?: Ref<HTMLButtonElement>;
   onNavigate: (destination: MainDestination) => void;
   onOpenSettings: (link: SettingsLink) => void;
 }
@@ -33,35 +36,7 @@ function NavIcon({ name }: { name: IconName }) {
   );
 }
 
-function NavigationButton({
-  label,
-  icon,
-  selected = false,
-  badge,
-  onClick,
-}: {
-  label: string;
-  icon: IconName;
-  selected?: boolean;
-  badge?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-current={selected ? 'page' : undefined}
-      aria-label={label}
-      className="home-nav-item"
-    >
-      <NavIcon name={icon} />
-      <span className="home-nav-label">{label}</span>
-      {badge && <span className="home-nav-badge">{badge}</span>}
-    </button>
-  );
-}
-
-export function HomeSidebar({ active, onNavigate, onOpenSettings }: HomeSidebarProps) {
+export function HomeSidebar({ active, homeButtonRef, onNavigate, onOpenSettings }: HomeSidebarProps) {
   return (
     <aside className="home-sidebar" aria-label="Murmur navigation">
       <div className="home-brand" aria-label="Murmur">
@@ -72,16 +47,16 @@ export function HomeSidebar({ active, onNavigate, onOpenSettings }: HomeSidebarP
       </div>
 
       <nav className="home-nav" aria-label="Main destinations">
-        <NavigationButton label="Home" icon="home" selected={active === 'home'} onClick={() => onNavigate('home')} />
-        <NavigationButton label="Notetaker" icon="meeting" selected={active === 'meetings'} onClick={() => onNavigate('meetings')} />
-        <NavigationButton label="Queries" icon="query" selected={active === 'queries'} onClick={() => onNavigate('queries')} />
-        <NavigationButton label="Insights" icon="insights" selected={active === 'insights'} onClick={() => onNavigate('insights')} />
+        <MainNavItem ref={homeButtonRef} label="Home" icon={<NavIcon name="home" />} selected={active === 'home'} onActivate={() => onNavigate('home')} />
+        <MainNavItem label="Notetaker" icon={<NavIcon name="meeting" />} selected={active === 'meetings'} onActivate={() => onNavigate('meetings')} />
+        <MainNavItem label="Queries" icon={<NavIcon name="query" />} selected={active === 'queries'} onActivate={() => onNavigate('queries')} />
+        <MainNavItem label="Insights" icon={<NavIcon name="insights" />} selected={active === 'insights'} onActivate={() => onNavigate('insights')} />
 
         <p className="home-nav-section">Customize</p>
-        <NavigationButton label="Text & Vocabulary" icon="text" onClick={() => onOpenSettings({ page: 'text' })} />
-        <NavigationButton label="Voice Commands" icon="commands" onClick={() => onOpenSettings({ page: 'text', editorTab: 'commands' })} />
-        <NavigationButton label="Styles" icon="styles" onClick={() => onOpenSettings({ page: 'delivery', target: 'app-overrides' })} />
-        <NavigationButton label="Transforms" icon="transforms" onClick={() => onOpenSettings({ page: 'ai-transform' })} />
+        <MainNavItem label="Text & Vocabulary" icon={<NavIcon name="text" />} selected={false} onActivate={() => onOpenSettings({ page: 'text' })} />
+        <MainNavItem label="Voice Commands" icon={<NavIcon name="commands" />} selected={false} onActivate={() => onOpenSettings({ page: 'text', editorTab: 'commands' })} />
+        <MainNavItem label="Styles" icon={<NavIcon name="styles" />} selected={false} onActivate={() => onOpenSettings({ page: 'delivery', target: 'app-overrides' })} />
+        <MainNavItem label="Transforms" icon={<NavIcon name="transforms" />} selected={false} onActivate={() => onOpenSettings({ page: 'ai-transform' })} />
       </nav>
 
       <div className="home-sidebar-bottom">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
@@ -21,6 +21,7 @@ import { MeetingsPanel, QueryHistoryPanel } from './components/history';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
+import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import type { MainDestination } from './lib/homeDashboard';
 import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
 import { MainErrorBanner } from './components/MainErrorBanner';
@@ -103,6 +104,8 @@ function App() {
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
   const [mainDestination, setMainDestination] = useState<MainDestination>('home');
+  const homeNavigationRef = useRef<HTMLButtonElement>(null);
+  const restoreHomeNavigationFocusRef = useRef(false);
   const queryHistorySurfaceActive = isQueryHistorySurfaceActive({
     queriesSelected: mainDestination === 'queries',
     settingsOpen: isSettingsOpen,
@@ -416,6 +419,23 @@ function App() {
     setIsSettingsOpen(true);
   }, [isSettingsOpen]);
 
+  const navigateMain = useCallback((destination: MainDestination, trigger: UiLatencyTrigger = 'programmatic') => {
+    closeSettings(trigger);
+    beginCurrentUiTransition(`main.${destination}`, trigger);
+    setMainDestination(destination);
+  }, [closeSettings]);
+
+  const backToHome = useCallback(() => {
+    restoreHomeNavigationFocusRef.current = true;
+    navigateMain('home', 'programmatic');
+  }, [navigateMain]);
+
+  useLayoutEffect(() => {
+    if (mainDestination !== 'home' || !restoreHomeNavigationFocusRef.current) return;
+    restoreHomeNavigationFocusRef.current = false;
+    homeNavigationRef.current?.focus();
+  }, [mainDestination]);
+
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
@@ -713,10 +733,8 @@ function App() {
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <HomeSidebar
               active={mainDestination}
-              onNavigate={(destination) => {
-                closeSettings('pointer');
-                setMainDestination(destination);
-              }}
+              homeButtonRef={homeNavigationRef}
+              onNavigate={(destination) => navigateMain(destination, 'pointer')}
               onOpenSettings={openSettingsTarget}
             />
             <div className="main-dashboard-workspace">
@@ -736,17 +754,27 @@ function App() {
                   statsVersion={combinedStatsVersion}
                   onRecord={handleStart}
                   onStop={handleStop}
-                  onOpenInsights={() => setMainDestination('insights')}
+                  onOpenInsights={() => navigateMain('insights', 'pointer')}
                   onOpenSettings={openSettingsTarget}
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
-                  <div className="main-secondary-heading"><h1 id="meetings-view-title">Notetaker</h1><p>Local meeting transcripts and summaries.</p></div>
+                  <WorkspacePageHeader
+                    title="Notetaker"
+                    titleId="meetings-view-title"
+                    description="Local meeting transcripts and summaries."
+                    back={{ label: 'Back to Home', onActivate: backToHome }}
+                  />
                   <MeetingsPanel meetings={meetings} />
                 </section>
               ) : mainDestination === 'queries' ? (
                 <section className="main-secondary-view" aria-labelledby="queries-view-title">
-                  <div className="main-secondary-heading"><h1 id="queries-view-title">Queries</h1><p>Questions and answers retained explicitly on this Mac.</p></div>
+                  <WorkspacePageHeader
+                    title="Queries"
+                    titleId="queries-view-title"
+                    description="Questions and answers retained explicitly on this Mac."
+                    back={{ label: 'Back to Home', onActivate: backToHome }}
+                  />
                   {queryHistorySurfaceActive && (
                     <QueryHistoryPanel history={queryHistory} retentionEnabled={settings.retainQueryHistory} />
                   )}
@@ -755,6 +783,7 @@ function App() {
                 <InsightsView
                   statsVersion={combinedStatsVersion}
                   settings={settings}
+                  onBackToHome={backToHome}
                   onOpenVocabulary={() => openSettingsTarget({ page: 'text', editorTab: 'aliases' })}
                   onOpenStyles={() => openSettingsTarget({ page: 'delivery', target: 'app-overrides' })}
                 />

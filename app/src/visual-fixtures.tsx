@@ -8,17 +8,20 @@ import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
+import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import { DEFAULT_SETTINGS } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
+import { applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
 const appearance = query.get('appearance') === 'dark' ? 'dark' : 'light';
+const importedThemeFixture = query.get('theme');
 const status: DictationStatus = requestedState === 'recording'
   ? 'recording'
   : requestedState === 'processing'
@@ -27,7 +30,52 @@ const status: DictationStatus = requestedState === 'recording'
       ? 'recovering'
       : 'idle';
 
-document.documentElement.dataset.appearance = appearance;
+const importedThemeFixtures: Record<string, ThemeConfigV1> = {
+  'open-vsx-low-contrast': {
+    version: 1,
+    presetId: 'custom',
+    accent: '#b8b8b8',
+    light: {
+      background: '#ededed',
+      surface: '#ebebeb',
+      'on-surface': '#dedede',
+      'on-surface-variant': '#d7d7d7',
+      'outline-variant': '#e3e3e3',
+    },
+    dark: {
+      background: '#25282b',
+      surface: '#272a2d',
+      'on-surface': '#303438',
+      'on-surface-variant': '#34383c',
+      'outline-variant': '#2d3135',
+    },
+  },
+  'open-vsx-high-saturation': {
+    version: 1,
+    presetId: 'custom',
+    accent: '#ff00d4',
+    light: {
+      background: '#fff500',
+      surface: '#00f5ff',
+      'on-surface': '#ff00d4',
+      'on-surface-variant': '#002bff',
+      'outline-variant': '#ff3b00',
+    },
+    dark: {
+      background: '#19002f',
+      surface: '#001b51',
+      'on-surface': '#ff2bd6',
+      'on-surface-variant': '#00f5ff',
+      'outline-variant': '#ff4d00',
+    },
+  },
+};
+
+const importedTheme = importedThemeFixture
+  ? importedThemeFixtures[importedThemeFixture]
+  : undefined;
+if (importedTheme) applyResolvedTheme(resolveTheme(importedTheme, appearance));
+else document.documentElement.dataset.appearance = appearance;
 
 mockIPC((command) => {
   if (command === 'get_meeting_status') {
@@ -148,10 +196,24 @@ function VisualFixture() {
   const settingsOpen = requestedState === 'settings' || requestedState === 'settings-appearance';
   const meetings = useMeetings(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(requestedState === 'insights' ? 'insights' : 'home');
+  const homeNavigationRef = React.useRef<HTMLButtonElement>(null);
+  const restoreHomeNavigationFocusRef = React.useRef(false);
+
+  const backToHome = () => {
+    restoreHomeNavigationFocusRef.current = true;
+    setDestination('home');
+  };
+
+  React.useLayoutEffect(() => {
+    if (destination !== 'home' || !restoreHomeNavigationFocusRef.current) return;
+    restoreHomeNavigationFocusRef.current = false;
+    homeNavigationRef.current?.focus();
+  }, [destination]);
 
   return (
     <div
       data-appearance={appearance}
+      data-theme-fixture={importedThemeFixture ?? 'sonic'}
       data-visual-ready="true"
       className="flex h-screen w-screen flex-col overflow-hidden bg-background text-on-surface"
     >
@@ -196,15 +258,39 @@ function VisualFixture() {
         />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <HomeSidebar active={destination} onNavigate={setDestination} onOpenSettings={() => {}} />
+          <HomeSidebar
+            active={destination}
+            homeButtonRef={homeNavigationRef}
+            onNavigate={setDestination}
+            onOpenSettings={() => {}}
+          />
           <div className="main-dashboard-workspace">
             {destination === 'insights' ? (
               <InsightsView
                 statsVersion={0}
                 settings={fixtureSettings}
+                onBackToHome={backToHome}
                 onOpenVocabulary={() => {}}
                 onOpenStyles={() => {}}
               />
+            ) : destination === 'meetings' ? (
+              <section className="main-secondary-view" aria-labelledby="meetings-view-title">
+                <WorkspacePageHeader
+                  title="Notetaker"
+                  titleId="meetings-view-title"
+                  description="Local meeting transcripts and summaries."
+                  back={{ label: 'Back to Home', onActivate: backToHome }}
+                />
+              </section>
+            ) : destination === 'queries' ? (
+              <section className="main-secondary-view" aria-labelledby="queries-view-title">
+                <WorkspacePageHeader
+                  title="Queries"
+                  titleId="queries-view-title"
+                  description="Questions and answers retained explicitly on this Mac."
+                  back={{ label: 'Back to Home', onActivate: backToHome }}
+                />
+              </section>
             ) : (
               <HomeDashboard
                 historyEntries={entries}

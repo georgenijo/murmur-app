@@ -1,6 +1,7 @@
 import type { DoubleTapKey, RecordingMode } from '../../lib/settings';
 import type { MeetingRuntimePhase } from '../../lib/meetings';
 import type { DictationStatus } from '../../lib/types';
+import { DashboardAction, DashboardSurface } from '../ui/DashboardPrimitives';
 
 interface HomeRecordingBarProps {
   status: DictationStatus;
@@ -71,18 +72,19 @@ export function HomeRecordingBar({
           : 'Start Recording';
 
   return (
-    <section className="home-recording-bar" aria-label="Dictation controls">
-      <button
-        data-testid="home-record-button"
-        type="button"
-        onClick={() => void (isCapturing ? onStop() : onRecord())}
+    <DashboardSurface as="section" variant="outlined" padding="compact" ariaLabel="Dictation controls">
+      <div className="home-recording-bar">
+      <DashboardAction
+        testId="home-record-button"
+        variant="primary"
+        tone={isCapturing ? 'danger' : 'default'}
+        onActivate={() => void (isCapturing ? onStop() : onRecord())}
         disabled={!initialized || busy || meetingBusy}
-        aria-label={status === 'recording' ? `Stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Cancel recording' : busy ? statusTitle : 'Start recording'}
-        className={`home-record-button ${isCapturing ? 'is-recording' : ''}`}
+        ariaLabel={status === 'recording' ? `Stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Cancel recording' : busy ? statusTitle : 'Start recording'}
       >
         <span className="home-record-dot" aria-hidden="true" />
         <span>{actionLabel}</span>
-      </button>
+      </DashboardAction>
 
       <div className="home-record-state" aria-live="polite">
         <div className="home-record-state-line">
@@ -98,18 +100,18 @@ export function HomeRecordingBar({
         <span className="home-record-hint">{hotkeyHint(recordingMode, triggerKey)}</span>
       </div>
 
-      <button
-        type="button"
-        onClick={onTranscribeFile}
+      <DashboardAction
+        variant="secondary"
+        onActivate={onTranscribeFile}
         disabled={isCapturing || busy || meetingBusy}
-        className="home-file-button"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" d="M7 3h7l4 4v14H7V3Z" />
           <path strokeLinecap="round" strokeLinejoin="round" d="M14 3v5h5M12 17V11m0 0-3 3m3-3 3 3" />
         </svg>
         Transcribe File
-      </button>
-    </section>
+      </DashboardAction>
+      </div>
+    </DashboardSurface>
   );
 }

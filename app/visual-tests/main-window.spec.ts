@@ -2,6 +2,12 @@ import { expect, test } from '@playwright/test';
 
 const states = ['idle', 'recording', 'processing', 'update-recovering', 'settings'] as const;
 const appearances = ['light', 'dark'] as const;
+const dashboardThemeMatrix = [
+  { id: 'sonic-light', appearance: 'light', theme: null },
+  { id: 'sonic-dark', appearance: 'dark', theme: null },
+  { id: 'open-vsx-low-contrast', appearance: 'light', theme: 'open-vsx-low-contrast' },
+  { id: 'open-vsx-high-saturation', appearance: 'dark', theme: 'open-vsx-high-saturation' },
+] as const;
 
 for (const appearance of appearances) {
   for (const state of states) {
@@ -14,6 +20,21 @@ for (const appearance of appearances) {
       const fixture = page.locator('[data-visual-ready="true"]');
       await expect(fixture).toBeVisible();
       await expect(fixture).toHaveScreenshot(`${appearance}-${state}.png`);
+    });
+  }
+}
+
+for (const themeCase of dashboardThemeMatrix) {
+  for (const destination of ['home', 'insights'] as const) {
+    test(`${themeCase.id} keeps ${destination} hierarchy discernible`, async ({ page }) => {
+      const state = destination === 'home' ? 'idle' : 'insights';
+      const theme = themeCase.theme ? `&theme=${themeCase.theme}` : '';
+      await page.emulateMedia({ colorScheme: themeCase.appearance });
+      await page.goto(`/visual-fixtures.html?state=${state}&appearance=${themeCase.appearance}${theme}`);
+
+      const fixture = page.locator('[data-visual-ready="true"]');
+      await expect(fixture).toHaveAttribute('data-theme-fixture', themeCase.theme ?? 'sonic');
+      await expect(fixture).toHaveScreenshot(`theme-${themeCase.id}-${destination}.png`);
     });
   }
 }
@@ -364,6 +385,89 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Developing' })).toBeVisible();
   await expect(page.getByText(/voice-training or confidence score/i)).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights.png');
+});
+
+test('secondary destinations share Back behavior and restore focus to Home navigation', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  const home = page.getByRole('button', { name: 'Home', exact: true });
+
+  for (const destination of ['Notetaker', 'Queries', 'Insights'] as const) {
+    await page.getByRole('button', { name: destination, exact: true }).click();
+    await expect(page.getByRole('heading', { name: destination, exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
+    await expect(home).toHaveAttribute('aria-current', 'page');
+    await expect(home).toBeFocused();
+  }
+});
+
+test('dashboard charts keep tooltip, plot, and seven weekday labels in stable regions', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=insights&appearance=light');
+  const chart = page.locator('figure[aria-label="Words per day bar chart"]');
+  const tooltip = chart.locator('.ui-day-chart-tooltip');
+  const plot = chart.locator('.ui-day-chart-plot');
+  const labels = chart.locator('.ui-day-chart-axis span');
+  const marks = chart.locator('.ui-day-chart-bar');
+  await expect(labels).toHaveCount(7);
+  await expect(marks).toHaveCount(7);
+
+  const before = await Promise.all([tooltip.boundingBox(), plot.boundingBox(), chart.boundingBox()]);
+  await marks.nth(2).focus();
+  await expect(tooltip).toContainText('words');
+  const after = await Promise.all([tooltip.boundingBox(), plot.boundingBox(), chart.boundingBox()]);
+  expect(after).toEqual(before);
+
+  const [plotBox, labelBoxes] = await Promise.all([
+    plot.boundingBox(),
+    labels.evaluateAll((elements) => elements.map((element) => {
+      const box = element.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top };
+    })),
+  ]);
+  expect(labelBoxes.every((box) => box.top >= plotBox!.y + plotBox!.height)).toBe(true);
+  expect(labelBoxes.every((box, index) => index === 0 || box.left >= labelBoxes[index - 1].right)).toBe(true);
+
+  const lineChart = page.locator('figure[aria-label="Words-per-minute trend line"]');
+  const [svgBox, pointCoordinates, targetBoxes] = await Promise.all([
+    lineChart.locator('svg').boundingBox(),
+    lineChart.locator('polyline').getAttribute('points'),
+    lineChart.locator('.ui-day-chart-line-targets button').evaluateAll((elements) => (
+      elements.map((element) => {
+        const box = element.getBoundingClientRect();
+        return { centerX: box.left + box.width / 2 };
+      })
+    )),
+  ]);
+  const lineXs = pointCoordinates!.split(' ').map((point) => Number(point.split(',')[0]));
+  expect(lineXs).toHaveLength(7);
+  lineXs.forEach((x, index) => {
+    expect(svgBox!.x + (x / 100) * svgBox!.width).toBeCloseTo(targetBoxes[index].centerX, 1);
+  });
+});
+
+test('dashboard actions keep hover, focus, active, and disabled states in an imported theme', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=dark&theme=open-vsx-high-saturation');
+  const action = page.getByRole('button', { name: 'View insights', exact: true });
+  const initialBackground = await action.evaluate((element) => getComputedStyle(element).backgroundColor);
+  await action.hover();
+  await expect.poll(() => action.evaluate((element) => getComputedStyle(element).backgroundColor))
+    .not.toBe(initialBackground);
+  await action.focus();
+  expect(await action.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe('solid');
+  const box = await action.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  expect(await action.evaluate((element) => getComputedStyle(element).transform)).not.toBe('none');
+  await page.mouse.up();
+
+  await page.goto('/visual-fixtures.html?state=processing&appearance=dark&theme=open-vsx-high-saturation');
+  for (const disabled of [
+    page.getByTestId('home-record-button'),
+    page.getByRole('button', { name: 'Transcribe File', exact: true }),
+  ]) {
+    await expect(disabled).toBeDisabled();
+    await expect(disabled).toHaveCSS('cursor', 'not-allowed');
+    await expect(disabled).toHaveCSS('opacity', '1');
+  }
 });
 
 test('the compact 720x560 home keeps actions and history reachable', async ({ page }) => {
