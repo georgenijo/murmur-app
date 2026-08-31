@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   audioDeviceSelectOptions,
+  followSystemDefaultOptionLabel,
   migrateLegacyMicrophoneId,
   parseAudioInputInventory,
   selectedDeviceExists,
@@ -35,6 +36,21 @@ describe('audio device persistence', () => {
       { value: 'USB-A', label: 'Studio Mic (USB-A)' },
       { value: 'USB-B', label: 'Studio Mic (USB-B)' },
     ]);
+  });
+
+  it('makes automatic selection explicit and identifies the live macOS default', () => {
+    expect(followSystemDefaultOptionLabel(devices, 'USB-A')).toBe(
+      'Follow macOS Default — Studio Mic',
+    );
+    expect(followSystemDefaultOptionLabel(devices, null)).toBe('Follow macOS Default');
+    expect(followSystemDefaultOptionLabel(devices, 'missing')).toBe('Follow macOS Default');
+  });
+
+  it('disambiguates duplicate names in the resolved default label', () => {
+    const duplicates = [...devices, { id: 'USB-B', name: 'Studio Mic' }];
+    expect(followSystemDefaultOptionLabel(duplicates, 'USB-B')).toBe(
+      'Follow macOS Default — Studio Mic (USB-B)',
+    );
   });
 });
 

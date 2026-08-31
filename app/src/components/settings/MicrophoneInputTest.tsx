@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDeviceDescriptor } from '../../lib/audioDevices';
-import { audioDeviceSelectOptions } from '../../lib/audioDevices';
+import {
+  audioDeviceSelectOptions,
+  followSystemDefaultOptionLabel,
+} from '../../lib/audioDevices';
 import {
   cancelMicrophonePreview,
   getMicrophonePreviewStatus,
@@ -25,6 +28,7 @@ import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 interface MicrophoneInputTestProps {
   microphone: string;
   devices: AudioDeviceDescriptor[];
+  defaultInputId: string | null;
   active: boolean;
   ready: boolean;
   vadSensitivity: number;
@@ -45,6 +49,7 @@ function levelColor(classification: MicrophoneSignalClassification): string {
 export function MicrophoneInputTest({
   microphone,
   devices,
+  defaultInputId,
   active,
   ready,
   vadSensitivity,
@@ -355,8 +360,15 @@ export function MicrophoneInputTest({
       ? 'Loading available microphones…'
       : 'Microphone choices are temporarily unavailable.'
     : missingDevice
-      ? 'Selected device not found — choose an available microphone or System Default.'
+      ? 'Selected device not found — choose an available microphone or Follow macOS Default.'
       : null;
+  const defaultDevice = devices.find((device) => device.id === defaultInputId) ?? null;
+  const automaticHelperText = microphone === 'system_default' && inventoryAvailable
+    ? defaultDevice
+      ? `Following macOS: ${defaultDevice.name}. Docking, undocking, or changing the system input applies automatically to the next recording.`
+      : 'macOS does not currently report a default microphone. Murmur will follow one when it becomes available.'
+    : null;
+  const describedBy = selectorHelperText || automaticHelperText ? selectorHelperId : undefined;
 
   return (
     <div>
@@ -366,8 +378,14 @@ export function MicrophoneInputTest({
         onChange={switchDevice}
         disabled={busy || !inventoryAvailable}
         aria-label="Microphone input"
-        aria-describedby={selectorHelperText ? selectorHelperId : undefined}
-        items={[{ value: 'system_default', label: 'System Default' }, ...audioDeviceSelectOptions(devices)]}
+        aria-describedby={describedBy}
+        items={[
+          {
+            value: 'system_default',
+            label: followSystemDefaultOptionLabel(devices, defaultInputId),
+          },
+          ...audioDeviceSelectOptions(devices),
+        ]}
       />
       {selectorHelperText && missingDevice && inventoryAvailable ? (
         <p
@@ -376,9 +394,9 @@ export function MicrophoneInputTest({
         >
           {selectorHelperText}
         </p>
-      ) : selectorHelperText ? (
+      ) : selectorHelperText || automaticHelperText ? (
         <p id={selectorHelperId} className="mt-2 text-xs text-on-surface-variant">
-          {selectorHelperText}
+          {selectorHelperText ?? automaticHelperText}
         </p>
       ) : (
         null
