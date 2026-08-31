@@ -1276,6 +1276,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <MicrophoneInputTest
                 microphone={settings.microphone}
                 devices={audioDevices}
+                defaultInputId={audioInventory?.defaultInputId ?? null}
                 active={activeCat === 'recording'}
                 ready={initialized}
                 vadSensitivity={previewVadSensitivity}

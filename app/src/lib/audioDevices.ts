@@ -92,6 +92,8 @@ export interface AudioDeviceSelectOption {
   label: string;
 }
 
+export const FOLLOW_SYSTEM_DEFAULT_LABEL = 'Follow macOS Default';
+
 /** Preserve concise unique labels; append the stable ID only for collisions. */
 export function audioDeviceSelectOptions(
   devices: AudioDeviceDescriptor[],
@@ -106,6 +108,18 @@ export function audioDeviceSelectOptions(
       ? device.name
       : `${device.name} (${device.id})`,
   }));
+}
+
+/** Make automatic selection explicit and show the device macOS resolves now. */
+export function followSystemDefaultOptionLabel(
+  devices: AudioDeviceDescriptor[],
+  defaultInputId: string | null,
+): string {
+  const resolved = audioDeviceSelectOptions(devices)
+    .find((device) => device.value === defaultInputId);
+  return resolved
+    ? `${FOLLOW_SYSTEM_DEFAULT_LABEL} — ${resolved.label}`
+    : FOLLOW_SYSTEM_DEFAULT_LABEL;
 }
 
 /**

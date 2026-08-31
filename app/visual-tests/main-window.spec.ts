@@ -166,6 +166,18 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
 });
 
+test('recording settings make the live automatic microphone choice explicit', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.getByRole('button', { name: 'Recording', exact: true }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  await expect(page.getByRole('combobox', { name: 'Microphone input' })).toContainText(
+    'Follow macOS Default — MacBook Pro Microphone',
+  );
+  await expect(page.getByText(/Docking, undocking, or changing the system input/)).toBeVisible();
+  await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
+});
+
 test('appearance matches the compact collection-card layout', async ({ page }) => {
   const source = {
     kind: 'open-vsx',

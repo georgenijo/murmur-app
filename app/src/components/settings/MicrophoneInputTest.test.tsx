@@ -55,6 +55,7 @@ describe('MicrophoneInputTest', () => {
   let container: HTMLDivElement;
   let root: Root;
   let selected = 'system_default';
+  let defaultInputId = 'usb';
   let activePage = true;
   let surfaceActive = true;
   let appReady = true;
@@ -77,6 +78,7 @@ describe('MicrophoneInputTest', () => {
           <MemoizedMicrophoneInputTest
             microphone={selected}
             devices={devices}
+            defaultInputId={defaultInputId}
             active={activePage}
             ready={appReady}
             vadSensitivity={vadSensitivity}
@@ -103,6 +105,7 @@ describe('MicrophoneInputTest', () => {
     vi.clearAllMocks();
     mocks.listeners.clear();
     selected = 'system_default';
+    defaultInputId = 'usb';
     activePage = true;
     surfaceActive = true;
     appReady = true;
@@ -165,6 +168,20 @@ describe('MicrophoneInputTest', () => {
     expect(container.textContent).toContain('Signal detected');
   });
 
+  it('shows that automatic mode follows the currently resolved macOS input', async () => {
+    await render();
+    const selector = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    expect(selector.textContent).toContain('Follow macOS Default — USB Microphone');
+    const helper = document.getElementById(selector.getAttribute('aria-describedby') ?? '');
+    expect(helper?.textContent).toContain('Following macOS: USB Microphone');
+    expect(helper?.textContent).toContain('next recording');
+
+    defaultInputId = 'built-in';
+    await render();
+    expect(selector.textContent).toContain('Follow macOS Default — Built-in Microphone');
+    expect(selected).toBe('system_default');
+  });
+
   it('does not preview or allow selection from stale inventory', async () => {
     inventoryAvailable = false;
     await render();
@@ -225,7 +242,7 @@ describe('MicrophoneInputTest', () => {
     const combobox = container.querySelector('[role="combobox"]') as HTMLButtonElement;
     await act(async () => combobox.click());
     const option = Array.from(container.querySelectorAll('[role="option"]'))
-      .find((item) => item.textContent?.includes('USB Microphone')) as HTMLElement;
+      .find((item) => item.textContent?.trim() === 'USB Microphone') as HTMLElement;
     await act(async () => {
       option.click();
       await Promise.resolve();

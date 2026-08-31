@@ -75,8 +75,11 @@ mockIPC((command) => {
       schemaVersion: 1,
       revision: 1,
       status: 'available',
-      devices: [],
-      defaultInputId: null,
+      devices: [
+        { id: 'fixture-built-in', name: 'MacBook Pro Microphone' },
+        { id: 'fixture-desk', name: 'Desk Microphone' },
+      ],
+      defaultInputId: 'fixture-built-in',
       errorCode: null,
     };
   }

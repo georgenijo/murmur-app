@@ -11,6 +11,10 @@ the input is too quiet or clipping.
   device ID (or the live system default), then shows RMS level, peak level, and
   a stabilized `No signal` / `Too quiet` / `Signal detected` / `Clipping`
   classification.
+- The automatic picker choice is labeled **Follow macOS Default** and names the
+  device macOS currently resolves. Docking, undocking, connecting a microphone,
+  or changing the system input updates that resolution for the next recording;
+  an in-progress recording keeps its immutable input snapshot.
 - Changing devices during a test first stops the exact preview generation and
   waits for its worker to exit and join. Murmur persists the new selection,
   then opens it only after teardown is confirmed. A teardown timeout preserves
@@ -20,7 +24,7 @@ the input is too quiet or clipping.
   leaves Dictation Settings, closes or hides Settings, or the Mac sleeps.
   Startup, permission, missing-device, runtime-unplug, and slow-teardown
   failures stay actionable in the row.
-- An explicit device ID is never replaced by System Default. If the saved ID
+- An explicit device ID is never replaced by Follow macOS Default. If the saved ID
   disappears, the existing missing-device warning remains and monitoring stays
   idle until the user chooses an available input.
 
