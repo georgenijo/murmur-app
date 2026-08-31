@@ -42,6 +42,93 @@ test('selected history filters remain selected while hovered', async ({ page }) 
   })).toEqual({ backgroundMatches: true, foregroundMatches: true });
 });
 
+test('copied middle transcript keeps its geometry and reserves feedback space', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-write'], { origin: 'http://127.0.0.1:1420' });
+  await page.setViewportSize({ width: 880, height: 720 });
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  });
+  const middleCard = page.locator('.home-history .transcript-card').nth(1);
+  const transcript = middleCard.locator('.transcript-text');
+  const feedback = middleCard.locator('.transcript-copy-feedback');
+  const before = await middleCard.boundingBox();
+
+  await expect(middleCard).toHaveAttribute('data-day-end', 'false');
+  await middleCard.click();
+  await expect(middleCard).toHaveAttribute('data-copied', 'true');
+  await expect(feedback).toHaveText('Copied');
+
+  const [after, transcriptBox, feedbackBox, transcriptPaddingRight, successColor] = await Promise.all([
+    middleCard.boundingBox(),
+    transcript.boundingBox(),
+    feedback.boundingBox(),
+    transcript.evaluate((element) => parseFloat(getComputedStyle(element).paddingRight)),
+    middleCard.evaluate(() => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--murmur-success)';
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    }),
+  ]);
+  expect(after).toEqual(before);
+  expect(feedbackBox!.x).toBeGreaterThanOrEqual(
+    transcriptBox!.x + transcriptBox!.width - transcriptPaddingRight,
+  );
+  await expect.poll(() => middleCard.evaluate((element) => getComputedStyle(element).borderColor))
+    .toBe(successColor);
+  expect(await middleCard.evaluate((element) => getComputedStyle(element).boxShadow))
+    .toContain(successColor);
+  await expect(middleCard).toHaveScreenshot('light-history-copy-middle.png');
+
+  const newestCard = page.locator('.home-history .transcript-card').first();
+  const teach = newestCard.getByRole('button', { name: 'Correct & Teach' });
+  await newestCard.click();
+  const [newestFeedbackBox, teachBox] = await Promise.all([
+    newestCard.locator('.transcript-copy-feedback').boundingBox(),
+    teach.boundingBox(),
+  ]);
+  expect(newestFeedbackBox!.y + newestFeedbackBox!.height).toBeLessThanOrEqual(teachBox!.y);
+
+  await page.setViewportSize({ width: 680, height: 720 });
+  await page.reload();
+  const narrowCard = page.locator('.home-history .transcript-card').nth(1);
+  const narrowTranscript = narrowCard.locator('.transcript-text');
+  const narrowFeedback = narrowCard.locator('.transcript-copy-feedback');
+  await narrowCard.click();
+  await expect(narrowFeedback).toHaveText('Copied');
+  const [narrowTextBox, narrowFeedbackBox, narrowPaddingRight] = await Promise.all([
+    narrowTranscript.boundingBox(),
+    narrowFeedback.boundingBox(),
+    narrowTranscript.evaluate((element) => parseFloat(getComputedStyle(element).paddingRight)),
+  ]);
+  expect(narrowFeedbackBox!.x).toBeGreaterThanOrEqual(
+    narrowTextBox!.x + narrowTextBox!.width - narrowPaddingRight,
+  );
+  await expect(narrowCard).toHaveScreenshot('light-history-copy-middle-narrow.png');
+
+  await page.setViewportSize({ width: 520, height: 720 });
+  await page.reload();
+  const overflowCard = page.locator('.home-history .transcript-card').nth(1);
+  await overflowCard.locator('.transcript-text').click({ position: { x: 4, y: 4 } });
+  await overflowCard.locator('.transcript-text').evaluate((element) => {
+    element.textContent = 'A long copied transcript keeps expanding across the row without hiding its controls. '.repeat(8);
+  });
+  await page.setViewportSize({ width: 519, height: 720 });
+  const expand = overflowCard.getByRole('button', { name: 'Show more' });
+  await expect(expand).toBeVisible();
+  const [overflowFeedbackBox, expandBox] = await Promise.all([
+    overflowCard.locator('.transcript-copy-feedback').boundingBox(),
+    expand.boundingBox(),
+  ]);
+  expect(overflowFeedbackBox!.y + overflowFeedbackBox!.height).toBeLessThanOrEqual(expandBox!.y);
+});
+
 test('the transcript search placeholder fits beside its shortcut badge', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=dark');
   const search = page.getByRole('searchbox', { name: 'Search transcripts' });

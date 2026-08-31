@@ -212,6 +212,25 @@ describe('HistoryPanel', () => {
     expect(card.getAttribute('aria-label')).toContain('Press Enter or Space to copy');
   });
 
+  it('reports copy success on a middle row without changing its group position', async () => {
+    await render({
+      entries: [
+        entry({ id: 'oldest', text: 'oldest row', timestamp: Date.UTC(2026, 6, 18, 10) }),
+        entry({ id: 'middle', text: 'middle row', timestamp: Date.UTC(2026, 6, 18, 11) }),
+        entry({ id: 'newest', text: 'newest row', timestamp: Date.UTC(2026, 6, 18, 12) }),
+      ],
+    });
+    const middleCard = Array.from(container.querySelectorAll('[data-testid="transcript-card"]'))
+      .find((card) => card.textContent?.includes('middle row')) as HTMLElement;
+
+    expect(middleCard.dataset.dayEnd).toBe('false');
+    await act(async () => middleCard.click());
+
+    expect(middleCard.dataset.copied).toBe('true');
+    expect(middleCard.dataset.dayEnd).toBe('false');
+    expect(middleCard.querySelector('.transcript-copy-feedback')?.textContent).toBe('Copied');
+  });
+
   it.each(['Enter', ' '])('copies the focused row with %j', async (key) => {
     await render({ entries: [entry({ id: 'keyboard', text: 'keyboard copy' })] });
     const card = container.querySelector('[data-testid="transcript-card"]') as HTMLElement;
