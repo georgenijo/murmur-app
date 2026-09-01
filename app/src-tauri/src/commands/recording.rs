@@ -93,6 +93,7 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
         return;
     }
+
     drop(tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(PARTIAL_INTERVAL).await;
@@ -102,7 +103,7 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
         }
         // The preview is scoped to exactly this recording: whatever ended the
         // loop (stop, cancel, a newer generation), the card goes away with it.
-        let _ = crate::commands::dictation_preview::hide_internal(&app);
+        crate::commands::dictation_preview::hide_for_recording(&app, recording_id);
     }));
 }
 
@@ -165,15 +166,15 @@ async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64)
     finish_dictation_partial(&state.app_state, recording_id);
     if let Some(text) = text {
         if dictation_partial_is_current(&state.app_state, recording_id) {
-            // Shown on the first recognized words rather than at capture start,
-            // so a silent or aborted recording never flashes an empty card.
-            let _ = crate::commands::dictation_preview::show_internal(app);
-            let _ = app.emit_to(
+            let outcome = match app.emit_to(
                 "dictation-preview",
                 "dictation-partial",
                 serde_json::json!({ "recordingId": recording_id, "text": text }),
-            );
-            emit_dictation_partial_tick(recording_id, "emitted", sample_count);
+            ) {
+                Ok(()) => "emitted",
+                Err(_) => "emit_failed",
+            };
+            emit_dictation_partial_tick(recording_id, outcome, sample_count);
         } else {
             emit_dictation_partial_tick(recording_id, "stale", sample_count);
         }

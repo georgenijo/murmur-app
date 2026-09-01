@@ -307,6 +307,12 @@ without logging their content.
 | `set_overlay_vertical_offset` | `offset: f64` | `Result<(), String>` | Clamps calibration to ±12 logical points, moves the actual native overlay window relative to the active monitor's top-center default, and logs target plus applied physical coordinates. The command is non-persistent; the frontend persists only Save and inactive Reset actions. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
 
+## Dictation preview (`commands/dictation_preview.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `show_dictation_preview` | `recording_id: u64` | `Result<(), String>` | Accepts calls only from the `dictation-preview` webview after it renders non-empty text. Refuses zero, stale, cancelled, or non-recording generations before Rust shows the non-activating native window. |
+
 ## Frontmost apps (`frontmost.rs`)
 
 | Command | Parameters | Returns | Description |

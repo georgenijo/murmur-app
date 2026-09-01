@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
   listen: vi.fn(),
+  invoke: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import { useDictationPartial } from './useDictationPartial';
 
@@ -21,6 +23,8 @@ describe('useDictationPartial', () => {
   beforeEach(async () => {
     mocks.listeners.clear();
     mocks.listen.mockReset();
+    mocks.invoke.mockReset();
+    mocks.invoke.mockResolvedValue(undefined);
     mocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
       mocks.listeners.set(name, handler);
       return () => mocks.listeners.delete(name);
@@ -43,6 +47,16 @@ describe('useDictationPartial', () => {
       mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 7, text: ' provisional words ' } });
     });
     expect(container.textContent).toBe('provisional words');
+  });
+
+  it('shows the native window only after the current partial renders', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 7 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 7, text: 'rendered first' } });
+    });
+
+    expect(container.textContent).toBe('rendered first');
+    expect(mocks.invoke).toHaveBeenCalledWith('show_dictation_preview', { recordingId: 7 });
   });
 
   it('clears the card when a new recording starts', async () => {

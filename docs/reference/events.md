@@ -143,6 +143,14 @@ vocabularies while dropping arbitrary string values. See
 [Transcription Pipeline](../features/transcription.md#per-recording-lifecycle-telemetry)
 for stage denominators and terminal semantics.
 
+`pipeline.dictation_preview_presentation` records the native live-preview
+window lifecycle. It carries a positive `recording_id` and an `outcome` of
+`shown`, `show_failed`, `hidden`, or `hide_failed`. The related
+`pipeline.dictation_partial_tick` event uses `emit_failed` when Tauri rejects a
+targeted partial event. The preview webview requests `shown` only after React
+commits non-empty text for the current recording. Both schemas strip transcript
+text, paths, and raw errors in debug and release builds.
+
 The weekly reliability contract is opt-in per request through numeric
 `slo_contract: 1` on `pipeline.dictation_requested`; older requests never enter
 an SLO denominator. Its supporting records are exact-schema sanitized in every
