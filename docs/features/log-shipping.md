@@ -234,6 +234,8 @@ the retained production JSONL. Its versioned report groups only privacy-safe
 capture metrics by install and receiver-observed app version:
 
 - dictation readiness `startup_ms` p50/p95;
+- post-stop latency: the `pipeline.dictation_completed` `total_ms` p50/p95,
+  covering the interval from stop handoff to delivered output;
 - active initialization timeouts split by stable backend and
   `last_setup_step`;
 - fallback and both-backends-failed counts;
@@ -262,16 +264,34 @@ changing dictation health denominators. Closed sessions are reduced into
 aggregate counters, leaving only the currently open session's per-attempt
 correlation state in memory.
 
+Post-stop latency samples apply the same trusted install, app-session, and
+version cohort boundaries as the lifecycle report. The watch retains a
+`total_ms` value only while a `startup_baseline` session is open and the
+event's receiver-observed version matches that session's version. Both
+`recording_id` and `char_count` must be positive, so empty completions do not
+skew the cohort. A completion observed before any baseline (pre-baseline), one
+whose version disagrees with the open session (a late-arriving batch stamped
+for an already-closed session, i.e. cross-session), or a malformed, negative,
+non-finite, or out-of-range (`> 300000` ms) `total_ms` is dropped rather than
+guessed. No transcript text is read or retained. Samples are bounded to the
+newest 500 per cohort, matching the startup-sample retention window; the
+report also carries the total observed count so silent truncation stays
+visible.
+
 Reports contain no raw event summaries, device fields, content, paths, or free
 form errors. Backend/setup-step values are allowlisted (including the explicit
 pre-native-call `none` setup step) and unknown values collapse to `unknown`.
-Memory is bounded to the newest 500 startup samples and five attempted-session
-outcomes per cohort, with ready counts at or above 20 combined into one capped
-tail bucket. Each install has at most 64 explicit versions; excess versions
-collapse into a non-comparable `overflow` cohort. The report is atomically
-replaced at `~/murmur-logs/capture-watch.json`; an alert also makes the one-shot
-exit nonzero for systemd/journal visibility and appears on the protected
-dashboard.
+Memory is bounded to the newest 500 startup samples, 500 post-stop-latency
+samples, and five attempted-session outcomes per cohort, with ready counts at
+or above 20 combined into one capped tail bucket. Each install has at most 64
+explicit versions; excess versions collapse into a non-comparable `overflow`
+cohort. The report is atomically replaced at `~/murmur-logs/capture-watch.json`;
+an alert also makes the one-shot exit nonzero for systemd/journal visibility
+and appears on the protected dashboard, which also lists each cohort's
+post-stop-latency sample count and p50/p95 alongside the existing capture
+regression watch banner. Post-stop latency does not participate in the
+existing startup p50 regression alert or its threshold — this task only adds
+visibility, not a new alert.
 
 The same line-by-line pass also evaluates the versioned
 `murmur-reliability-slo/v1` contract. Only native dictation requests with exact

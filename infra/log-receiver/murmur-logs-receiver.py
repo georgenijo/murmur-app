@@ -453,6 +453,45 @@ def render_capture_watch(report):
     )
 
 
+def render_post_stop_latency(report):
+    if report is None:
+        return ""
+    cohorts = report.get("cohorts")
+    if not isinstance(cohorts, list):
+        return ""
+    rows = []
+    for cohort in cohorts:
+        if not isinstance(cohort, dict):
+            continue
+        count = cohort.get("post_stop_latency_sample_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            continue
+        rows.append(cohort)
+    if not rows:
+        return (
+            "<div class='watch-banner diagnostic'><strong>Post-stop latency</strong>"
+            "<span>No post-stop latency samples yet.</span></div>"
+        )
+    rows.sort(key=lambda row: str(row.get("last_event_at", "")), reverse=True)
+    items = "".join(
+        "<li><code>%s</code> v%s: %s sample%s, p50 %s, p95 %s</li>"
+        % (
+            html.escape(str(row.get("install_id", ""))[:8]),
+            html.escape(str(row.get("app_version", ""))[:40]),
+            html.escape(str(row.get("post_stop_latency_sample_count", ""))[:20]),
+            "" if row.get("post_stop_latency_sample_count") == 1 else "s",
+            _slo_milliseconds(row.get("post_stop_latency_p50_ms")),
+            _slo_milliseconds(row.get("post_stop_latency_p95_ms")),
+        )
+        for row in rows[:20]
+    )
+    return (
+        "<div class='watch-banner diagnostic'><strong>Post-stop latency · "
+        "%d cohort%s</strong><ul>%s</ul></div>"
+        % (len(rows), "" if len(rows) == 1 else "s", items)
+    )
+
+
 def _slo_count(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return "—"
@@ -2729,6 +2768,7 @@ def render_dashboard():
     installs = collect_installs()
     capture_report = load_capture_watch_report()
     capture_watch = render_capture_watch(capture_report)
+    post_stop_latency = render_post_stop_latency(capture_report)
     reliability_slo = render_reliability_slo(capture_report)
     now = time.time()
     rows = []
@@ -2788,7 +2828,7 @@ def render_dashboard():
     body = (
         "<h1>murmur fleet logs</h1>"
         "<p class='sub'>%d install stream%s · refreshes every 30s · %s</p>"
-        "%s%s%s"
+        "%s%s%s%s"
         "<table><thead><tr><th>device</th><th>version</th>"
         "<th>last event</th></tr></thead>"
         "<tbody>%s</tbody></table>"
@@ -2797,6 +2837,7 @@ def render_dashboard():
             "" if len(installs) == 1 else "s",
             datetime.now(EASTERN).strftime("%Y-%m-%d %-I:%M %p ET"),
             capture_watch,
+            post_stop_latency,
             reliability_slo,
             search_panel,
             "".join(rows) or '<tr><td colspan="3">no installs yet</td></tr>',

@@ -107,6 +107,69 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("v1.0.0 → v1.1.0", page)
         self.assertIn("p50 200 ms → 520 ms (2.6x)", page)
 
+    def test_dashboard_surfaces_bounded_post_stop_latency_cohorts(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "healthy",
+            "alerts": [],
+            "cohorts": [
+                {
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.3",
+                    "last_event_at": "2026-08-05T00:00:03Z",
+                    "post_stop_latency_sample_count": 5,
+                    "post_stop_latency_p50_ms": 300,
+                    "post_stop_latency_p95_ms": 500,
+                },
+                {
+                    "install_id": "87654321-dcba",
+                    "app_version": "1.2.3",
+                    "last_event_at": "2026-08-05T00:00:00Z",
+                    "post_stop_latency_sample_count": 0,
+                    "post_stop_latency_p50_ms": None,
+                    "post_stop_latency_p95_ms": None,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Post-stop latency · 1 cohort", page)
+        self.assertIn("12345678</code> v1.2.3: 5 samples, p50 300 ms, p95 500 ms", page)
+        self.assertNotIn("87654321", page)
+
+    def test_dashboard_reports_no_post_stop_latency_samples_yet(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "insufficient_data",
+            "alerts": [],
+            "cohorts": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("No post-stop latency samples yet.", page)
+
     def test_dashboard_surfaces_performance_store_failure_watch(self) -> None:
         report = {
             "schema_version": 1,
