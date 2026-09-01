@@ -452,6 +452,7 @@ pub fn run() {
             commands::overlay::set_overlay_vertical_offset,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
+            commands::dictation_preview::show_dictation_preview,
             commands::transform_popover::get_transform_popover_geometry,
             commands::transform_popover::show_transform_popover,
             commands::transform_popover::hide_transform_popover,

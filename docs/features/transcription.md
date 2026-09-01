@@ -330,17 +330,20 @@ transformed, persisted, exported, logged, or counted; final stop-time delivery
 remains the only authoritative transcript. Whisper and CPU Parakeet do not run
 live previews so their slower decodes cannot compete with final delivery.
 
-The preview renders in its own `dictation-preview` window — a non-activating,
-click-through glass card centered under the notch, mirroring the voice-query
-answer popover. It is anchored to the menu-bar display — the same screen the
-notch measurement and the overlay come from — not to whichever monitor the main
-window happens to sit on. Rust owns its lifecycle end to end: `show_internal`
-opens it on the first recognized words (so a silent recording never flashes an
-empty card) and the ticker hides it when the recording stops being current,
-whatever ended it. The frontend never decides visibility, but it does clear the
-text as soon as capture leaves `recording`, so a stopped recording leaves no
-words on screen while the native hide catches up (the ticker can trail the stop
-by a tick or an in-flight decode).
+The preview renders in its own `dictation-preview` window. The non-activating,
+click-through glass card is centered under the notch and mirrors the Voice
+Query answer popover. The preview uses the menu-bar display, which also owns
+the notch measurement and overlay. It does not follow the main window to
+another monitor.
+
+Rust sends each partial to the hidden webview. React commits the non-empty card,
+then calls `show_dictation_preview` with the recording ID. Rust rejects another
+window or a stale recording before it shows the native window. This ordering
+prevents AppKit from committing an empty transparent frame and removing the
+window before the text renders. Silent recordings show nothing. The ticker
+hides the window when the recording stops being current. The frontend also
+clears the text as soon as capture leaves `recording`, because an in-flight
+decode can delay the native hide.
 
 It deliberately does **not** render inside the overlay. The overlay's wings are
 fixed 36pt slots sized for an icon and a waveform; text there fits roughly four
