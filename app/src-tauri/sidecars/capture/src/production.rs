@@ -134,6 +134,8 @@ impl CallbackClock {
 
     pub(super) fn snapshot(&self) -> (u64, f64) {
         self.anchor()
+            .ok()
+            .flatten()
             .map(|anchor| (anchor.host_time, anchor.sample_time))
             .unwrap_or((0, 0.0))
     }
@@ -177,8 +179,8 @@ struct HostTimebase {
 
 impl HostTimebase {
     fn system() -> Option<Self> {
-        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
-        let status = unsafe { libc::mach_timebase_info(&mut info) };
+        let mut info = mach2::mach_time::mach_timebase_info_data_t::default();
+        let status = unsafe { mach2::mach_time::mach_timebase_info(&mut info) };
         (status == 0 && info.numer > 0 && info.denom > 0).then_some(Self {
             numer: info.numer,
             denom: info.denom,
@@ -1038,7 +1040,7 @@ pub(super) fn start_auhal(
             }
         }
         if let Some(clock) = &callback_clock {
-            let timing_valid = args.time_stamp.mFlags.0 & 0b11 == 0b11
+            let timing_valid = args.time_stamp.mFlags & 0b11 == 0b11
                 && frame_count > 0
                 && frame_count == args.num_frames;
             clock.note(
