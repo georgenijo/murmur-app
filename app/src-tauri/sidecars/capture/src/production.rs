@@ -146,7 +146,7 @@ impl CallbackClock {
             if before == 0 {
                 return Ok(None);
             }
-            if before % 2 != 0 {
+            if !before.is_multiple_of(2) {
                 std::hint::spin_loop();
                 continue;
             }
