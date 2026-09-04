@@ -9,6 +9,12 @@ const dashboardThemeMatrix = [
   { id: 'open-vsx-high-saturation', appearance: 'dark', theme: 'open-vsx-high-saturation' },
 ] as const;
 
+const VISUAL_FIXTURE_TIME = Date.UTC(2026, 7, 31, 12);
+
+test.beforeEach(async ({ page }) => {
+  await page.clock.setFixedTime(VISUAL_FIXTURE_TIME);
+});
+
 for (const appearance of appearances) {
   for (const state of states) {
     test(`${appearance} ${state} matches the dashboard at native 880x720`, async ({ page }) => {
