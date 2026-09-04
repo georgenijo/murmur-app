@@ -155,6 +155,8 @@ describe('OnboardingFlow', () => {
     );
     expect(actionButtons[actionButtons.length - 1]?.textContent?.trim()).toBe(primaryLabel);
     expect([back, ...actionButtons].every((button) => button?.type === 'button')).toBe(true);
+    expect(actionButtons[actionButtons.length - 1]?.className).not.toContain('brightness');
+    expect(actionButtons[actionButtons.length - 1]?.className).not.toContain('filter');
 
     const progress = container.querySelector<HTMLElement>('[role="progressbar"]');
     expect(row!.contains(progress)).toBe(false);

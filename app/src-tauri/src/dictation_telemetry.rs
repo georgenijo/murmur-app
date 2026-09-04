@@ -230,6 +230,7 @@ impl DictationTelemetry {
             .and_then(|attempt| attempt.terminal)
     }
 
+    #[cfg(test)]
     pub(crate) fn emit_terminal(
         &self,
         recording_id: u64,

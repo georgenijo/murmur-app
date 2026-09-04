@@ -1275,6 +1275,173 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         connection.close()
         return status, response_headers, payload
 
+    def private_capture_payload(self, *, sentinel: str = "private transcript") -> bytes:
+        return json.dumps(
+            {
+                "schemaVersion": 1,
+                "captureId": "d2719b62-23db-4ea5-8845-f1f55db37d4f",
+                "recordingId": 41,
+                "capturedAtMs": 1_788_000_000_000,
+                "expiresAtMs": 1_788_604_800_000,
+                "result": {
+                    "kind": "success",
+                    "rawText": {"text": sentinel + " raw", "truncated": False},
+                    "finalText": {"text": sentinel + " final", "truncated": False},
+                    "modelId": "parakeet-tdt-0.6b-v3-coreml",
+                    "totalMs": 220,
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def private_capture_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": "Bearer " + receiver.TOKEN,
+            "X-Install-Id": self.install_id,
+            "X-App-Version": "1.2.4",
+            "X-Dev": "0",
+            "Content-Type": "application/json",
+        }
+
+    def test_private_capture_is_separate_reviewed_and_deletable(self) -> None:
+        sentinel = "PRIVATE <script>alert(1)</script>"
+        before = (Path(receiver.ROOT) / self.install_id / "events.jsonl").read_bytes()
+
+        status, body = self.post(
+            "/private-capture",
+            self.private_capture_payload(sentinel=sentinel),
+            self.private_capture_headers(),
+        )
+        capture_path = (
+            Path(receiver.ROOT)
+            / self.install_id
+            / "private-captures"
+            / "d2719b62-23db-4ea5-8845-f1f55db37d4f.json"
+        )
+        page_status, headers, page_body = self.get(f"/install/{self.install_id}")
+        page = page_body.decode("utf-8")
+        review_status, review_headers, review_body = self.get(
+            f"/install/{self.install_id}/private-captures/"
+            "d2719b62-23db-4ea5-8845-f1f55db37d4f"
+        )
+        review = review_body.decode("utf-8")
+        csrf = re.search(r"name='csrf' value='([0-9a-f]+)'", review)
+        raw_status, _, raw_body = self.get(f"/install/{self.install_id}/raw")
+        llm_status, _, llm_body = self.get(f"/install/{self.install_id}/llm")
+
+        self.assertEqual((status, body), (204, b""))
+        self.assertTrue(capture_path.is_file())
+        self.assertEqual(capture_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(capture_path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(
+            (Path(receiver.ROOT) / self.install_id / "events.jsonl").read_bytes(),
+            before,
+        )
+        self.assertEqual(receiver.event_store().event_count(self.install_id), 0)
+        self.assertEqual(page_status, 200)
+        self.assertEqual(headers["Cache-Control"], "private, no-store")
+        self.assertIn("Private diagnostic captures", page)
+        self.assertIn("Review private capture", page)
+        self.assertNotIn(sentinel, page)
+        self.assertNotIn("PRIVATE &lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertEqual(review_status, 200)
+        self.assertEqual(review_headers["Cache-Control"], "private, no-store")
+        self.assertIn("PRIVATE &lt;script&gt;alert(1)&lt;/script&gt; raw", review)
+        self.assertNotIn("<script>alert(1)</script>", review)
+        self.assertIsNotNone(csrf)
+        self.assertEqual((raw_status, llm_status), (200, 200))
+        self.assertNotIn(sentinel.encode(), raw_body)
+        self.assertNotIn(sentinel.encode(), llm_body)
+        self.assertNotIn("<script>alert(1)</script>", page)
+
+        denied_status, _ = self.post(
+            f"/install/{self.install_id}/private-captures/"
+            "d2719b62-23db-4ea5-8845-f1f55db37d4f/delete",
+            b"csrf=wrong",
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(denied_status, 403)
+        self.assertTrue(capture_path.exists())
+
+        delete_body = ("csrf=" + csrf.group(1)).encode("ascii")
+        delete_status, _ = self.post(
+            f"/install/{self.install_id}/private-captures/"
+            "d2719b62-23db-4ea5-8845-f1f55db37d4f/delete",
+            delete_body,
+            {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": str(len(delete_body)),
+            },
+        )
+        self.assertEqual(delete_status, 303)
+        self.assertFalse(capture_path.exists())
+
+    def test_private_capture_rejects_dev_malformed_and_oversized_content(self) -> None:
+        headers = self.private_capture_headers()
+        dev_headers = {**headers, "X-Dev": "1"}
+        dev_status, _ = self.post(
+            "/private-capture", self.private_capture_payload(), dev_headers
+        )
+        malformed_status, _ = self.post(
+            "/private-capture", b'{"schemaVersion":1}', headers
+        )
+        oversized_status, _ = self.post(
+            "/private-capture",
+            self.private_capture_payload(sentinel="x" * (8 * 1024 + 1)),
+            headers,
+        )
+
+        self.assertEqual(dev_status, 403)
+        self.assertEqual(malformed_status, 400)
+        self.assertEqual(oversized_status, 400)
+        self.assertFalse(
+            (Path(receiver.ROOT) / self.install_id / "private-captures").exists()
+        )
+
+    def test_private_capture_retention_removes_corrupt_and_stale_files(self) -> None:
+        capture = json.loads(self.private_capture_payload())
+        receiver.store_private_capture(self.install_id, "1.2.4", capture)
+        root = Path(receiver.ROOT) / self.install_id / "private-captures"
+        (root / ".crash-left.tmp").write_text("PRIVATE TEMP", encoding="utf-8")
+        (root / "not-a-capture.json").write_text("PRIVATE CORRUPT", encoding="utf-8")
+        stale_id = "995b09af-5411-462a-9b4a-bfb8b04216b0"
+        received_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000) - (
+            receiver.PRIVATE_CAPTURE_RETENTION_MS + 1
+        )
+        stale = {
+            "capture": {**capture, "captureId": stale_id},
+            "receivedAtMs": received_at_ms,
+            "serverExpiresAtMs": received_at_ms + receiver.PRIVATE_CAPTURE_RETENTION_MS,
+            "appVersion": "1.2.4",
+        }
+        stale_path = root / f"{stale_id}.json"
+        stale_path.write_text(json.dumps(stale), encoding="utf-8")
+        for path in root.iterdir():
+            path.chmod(0o600)
+
+        receiver.prune_all_private_captures()
+
+        self.assertEqual(
+            [path.name for path in root.iterdir()],
+            [capture["captureId"] + ".json"],
+        )
+
+    def test_private_capture_refuses_install_directory_symlink(self) -> None:
+        linked_install = "9c9ca1da-8cc1-40cf-b906-cd842d858928"
+        target = Path(self.directory.name) / "outside-private-target"
+        target.mkdir()
+        (Path(receiver.ROOT) / linked_install).symlink_to(target, target_is_directory=True)
+
+        with self.assertRaises(OSError):
+            receiver.store_private_capture(
+                linked_install,
+                "1.2.4",
+                json.loads(self.private_capture_payload()),
+            )
+        with self.assertRaises(OSError):
+            receiver._private_capture_documents(linked_install)
+        self.assertEqual(list(target.iterdir()), [])
+
     def test_ingest_stamps_receiver_observed_app_version_on_each_event(self) -> None:
         item = event(
             "audio readiness accepted",

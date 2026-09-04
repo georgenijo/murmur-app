@@ -22,6 +22,9 @@ mod correct_and_teach;
 mod correction;
 mod delivery_recovery;
 mod dictation_context;
+mod dictation_diagnostics;
+#[cfg(test)]
+mod dictation_diagnostics_contract;
 mod dictation_telemetry;
 pub mod evaluation;
 mod file_output;
@@ -165,6 +168,7 @@ pub(crate) struct State {
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) query_history: query_history::QueryHistoryStore,
+    pub(crate) dictation_diagnostics: dictation_diagnostics::DictationDiagnostics,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
@@ -272,6 +276,7 @@ pub fn run() {
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
             query_history: query_history::QueryHistoryStore::default(),
+            dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
             display_snapshot: Mutex::new(None),
@@ -420,6 +425,13 @@ pub fn run() {
             commands::performance::recover_performance_store,
             commands::performance::clear_performance_diagnostics,
             commands::performance::show_diagnostics_window,
+            commands::dictation_diagnostics::arm_next_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::disarm_next_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::get_dictation_diagnostic_capture_status,
+            commands::dictation_diagnostics::list_dictation_diagnostic_captures,
+            commands::dictation_diagnostics::get_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::delete_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::upload_dictation_diagnostic_capture,
             commands::transform_diagnostics::arm_next_transform_diagnostic_capture,
             commands::transform_diagnostics::get_transform_diagnostic_capture_status,
             commands::transform_diagnostics::list_transform_attempts,
@@ -552,6 +564,18 @@ pub fn run() {
                     diagnostics_available = false,
                     "transform diagnostics store unavailable: {}",
                     error
+                );
+            }
+            if app
+                .state::<State>()
+                .dictation_diagnostics
+                .initialize(performance_root.join("dictation-captures"))
+                .is_err()
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "dictation diagnostic capture store unavailable"
                 );
             }
 
