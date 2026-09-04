@@ -481,6 +481,15 @@ def _read_private_capture(path):
 
 
 def _private_capture_documents(install_id, *, prune=True):
+    install_dir = os.path.join(ROOT, install_id)
+    try:
+        install_metadata = os.lstat(install_dir)
+    except FileNotFoundError:
+        return []
+    if stat.S_ISLNK(install_metadata.st_mode) or not stat.S_ISDIR(
+        install_metadata.st_mode
+    ):
+        raise OSError("private capture install root refused")
     root = _private_capture_root(install_id)
     if not os.path.isdir(root) or os.path.islink(root):
         return []
@@ -592,10 +601,16 @@ def delete_private_capture(install_id, capture_id):
 
 
 def prune_all_private_captures():
+    failures = 0
     for install_id in os.listdir(ROOT) if os.path.isdir(ROOT) else []:
         if not INSTALL_ID_RE.fullmatch(install_id):
             continue
-        _private_capture_documents(install_id.lower(), prune=True)
+        try:
+            _private_capture_documents(install_id.lower(), prune=True)
+        except OSError:
+            failures += 1
+    if failures:
+        raise OSError("one or more private capture stores could not be pruned")
 
 
 def _maintain_private_captures():

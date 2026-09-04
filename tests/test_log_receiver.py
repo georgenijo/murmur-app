@@ -1426,6 +1426,22 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             [capture["captureId"] + ".json"],
         )
 
+    def test_private_capture_refuses_install_directory_symlink(self) -> None:
+        linked_install = "9c9ca1da-8cc1-40cf-b906-cd842d858928"
+        target = Path(self.directory.name) / "outside-private-target"
+        target.mkdir()
+        (Path(receiver.ROOT) / linked_install).symlink_to(target, target_is_directory=True)
+
+        with self.assertRaises(OSError):
+            receiver.store_private_capture(
+                linked_install,
+                "1.2.4",
+                json.loads(self.private_capture_payload()),
+            )
+        with self.assertRaises(OSError):
+            receiver._private_capture_documents(linked_install)
+        self.assertEqual(list(target.iterdir()), [])
+
     def test_ingest_stamps_receiver_observed_app_version_on_each_event(self) -> None:
         item = event(
             "audio readiness accepted",
