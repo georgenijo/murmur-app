@@ -129,7 +129,7 @@ enum PathState {
     Active(Box<ActiveAec>),
     Bypassed {
         reason: EchoCancellationBypassReason,
-        pending: RawTail,
+        pending: Box<RawTail>,
     },
 }
 
@@ -166,7 +166,7 @@ impl MeetingMicrophonePath {
         Self {
             state: PathState::Bypassed {
                 reason,
-                pending: RawTail::default(),
+                pending: Box::new(RawTail::default()),
             },
         }
     }
@@ -204,7 +204,7 @@ impl MeetingMicrophonePath {
                     let ActiveAec { capture, .. } = *active;
                     self.state = PathState::Bypassed {
                         reason: EchoCancellationBypassReason::ProcessorFailed,
-                        pending: capture,
+                        pending: Box::new(capture),
                     };
                     Some(self.status())
                 } else {
@@ -235,7 +235,7 @@ impl MeetingMicrophonePath {
                 let ActiveAec { capture, .. } = *active;
                 self.state = PathState::Bypassed {
                     reason: EchoCancellationBypassReason::ProcessingBacklog,
-                    pending: capture,
+                    pending: Box::new(capture),
                 };
                 Some(self.status())
             }
@@ -290,7 +290,7 @@ impl MeetingMicrophonePath {
                         }
                         self.state = PathState::Bypassed {
                             reason: EchoCancellationBypassReason::ProcessorFailed,
-                            pending: RawTail::default(),
+                            pending: Box::new(RawTail::default()),
                         };
                         return Ok(Some(self.status()));
                     }
