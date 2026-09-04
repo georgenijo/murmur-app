@@ -21,10 +21,7 @@ fn one_arm_is_claimed_by_exactly_one_live_recording() {
     store.initialize(root.path().to_path_buf()).unwrap();
 
     let armed = store.arm_next().unwrap();
-    assert!(matches!(
-        armed,
-        DictationCaptureArmStatusV1::Armed { .. }
-    ));
+    assert!(matches!(armed, DictationCaptureArmStatusV1::Armed { .. }));
     assert!(store.claim(41));
     assert!(!store.claim(42));
     assert_eq!(
@@ -58,7 +55,10 @@ fn one_arm_is_claimed_by_exactly_one_live_recording() {
     assert_eq!(captures.len(), 1);
     let capture = store.get_capture(&captures[0].capture_id).unwrap().unwrap();
     assert_eq!(capture.recording_id, 41);
-    let content = capture.result.content().expect("successful capture has content");
+    let content = capture
+        .result
+        .content()
+        .expect("successful capture has content");
     assert_eq!(content.raw_text.text, "raw recognition");
     assert_eq!(content.final_text.text, "final delivery");
     assert!(!content.raw_text.truncated);
@@ -135,6 +135,12 @@ fn private_text_is_utf8_safe_bounded_and_marked_when_truncated() {
     assert!(content.final_text.truncated);
     assert!(content.raw_text.text.len() <= 8 * 1024);
     assert!(content.final_text.text.len() <= 8 * 1024);
-    assert!(content.raw_text.text.is_char_boundary(content.raw_text.text.len()));
-    assert!(content.final_text.text.is_char_boundary(content.final_text.text.len()));
+    assert!(content
+        .raw_text
+        .text
+        .is_char_boundary(content.raw_text.text.len()));
+    assert!(content
+        .final_text
+        .text
+        .is_char_boundary(content.final_text.text.len()));
 }

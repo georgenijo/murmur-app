@@ -22,6 +22,7 @@ mod correct_and_teach;
 mod correction;
 mod delivery_recovery;
 mod dictation_context;
+mod dictation_diagnostics;
 #[cfg(test)]
 mod dictation_diagnostics_contract;
 mod dictation_telemetry;
