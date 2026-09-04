@@ -42,28 +42,24 @@ for (const themeCase of dashboardThemeMatrix) {
 test('selected history filters remain selected while hovered', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto('/visual-fixtures.html?state=idle&appearance=dark');
-  const mic = page.getByRole('button', { name: 'Mic' });
-  await mic.hover();
+  const mic = page.getByRole('tab', { name: 'Mic' });
   await mic.click();
-  await expect(mic).toHaveAttribute('aria-pressed', 'true');
+  await mic.hover();
+  await expect(mic).toHaveAttribute('aria-selected', 'true');
 
-  await expect.poll(() => mic.evaluate((element) => {
-    const selected = getComputedStyle(element);
+  const indicator = mic.locator('.history-filter-tab-indicator');
+  await expect(indicator).toHaveCount(1);
+  await expect.poll(() => indicator.evaluate((element) => {
     const probe = document.createElement('span');
     probe.style.color = 'var(--murmur-surface-container-lowest)';
     document.body.appendChild(probe);
     const expectedBackground = getComputedStyle(probe).color;
-    probe.style.color = 'var(--murmur-on-surface)';
-    const expectedForeground = getComputedStyle(probe).color;
     probe.remove();
-    return {
-      backgroundMatches: selected.backgroundColor === expectedBackground,
-      foregroundMatches: selected.color === expectedForeground,
-    };
-  })).toEqual({ backgroundMatches: true, foregroundMatches: true });
+    return getComputedStyle(element).backgroundColor === expectedBackground;
+  })).toBe(true);
 });
 
-test('copied middle transcript keeps its geometry and reserves feedback space', async ({ page, context }) => {
+test('copied transcripts keep their geometry and actions reachable', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-write'], { origin: 'http://127.0.0.1:1420' });
   await page.setViewportSize({ width: 880, height: 720 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
@@ -74,63 +70,29 @@ test('copied middle transcript keeps its geometry and reserves feedback space', 
     });
   });
   const middleCard = page.locator('.home-history .transcript-card').nth(1);
-  const transcript = middleCard.locator('.transcript-text');
   const feedback = middleCard.locator('.transcript-copy-feedback');
+  const copyAction = middleCard.locator('[data-action-id="copy"]');
   const before = await middleCard.boundingBox();
 
   await expect(middleCard).toHaveAttribute('data-day-end', 'false');
   await middleCard.click();
   await expect(middleCard).toHaveAttribute('data-copied', 'true');
   await expect(feedback).toHaveText('Copied');
-
-  const [after, transcriptBox, feedbackBox, transcriptPaddingRight, successColor] = await Promise.all([
-    middleCard.boundingBox(),
-    transcript.boundingBox(),
-    feedback.boundingBox(),
-    transcript.evaluate((element) => parseFloat(getComputedStyle(element).paddingRight)),
-    middleCard.evaluate(() => {
-      const probe = document.createElement('span');
-      probe.style.color = 'var(--murmur-success)';
-      document.body.appendChild(probe);
-      const color = getComputedStyle(probe).color;
-      probe.remove();
-      return color;
-    }),
-  ]);
-  expect(after).toEqual(before);
-  expect(feedbackBox!.x).toBeGreaterThanOrEqual(
-    transcriptBox!.x + transcriptBox!.width - transcriptPaddingRight,
-  );
-  await expect.poll(() => middleCard.evaluate((element) => getComputedStyle(element).borderColor))
-    .toBe(successColor);
-  expect(await middleCard.evaluate((element) => getComputedStyle(element).boxShadow))
-    .toContain(successColor);
+  await expect(copyAction).toHaveText('Copied');
+  expect(await middleCard.boundingBox()).toEqual(before);
+  expect(await middleCard.evaluate((element) => getComputedStyle(element).boxShadow)).toBe('none');
   await expect(middleCard).toHaveScreenshot('light-history-copy-middle.png');
 
   const newestCard = page.locator('.home-history .transcript-card').first();
-  const teach = newestCard.getByRole('button', { name: 'Correct & Teach' });
-  await newestCard.click();
-  const [newestFeedbackBox, teachBox] = await Promise.all([
-    newestCard.locator('.transcript-copy-feedback').boundingBox(),
-    teach.boundingBox(),
-  ]);
-  expect(newestFeedbackBox!.y + newestFeedbackBox!.height).toBeLessThanOrEqual(teachBox!.y);
+  await newestCard.getByRole('button', { name: 'More transcript actions' }).click();
+  await expect(page.getByText('Correct & Teach', { exact: true }).last()).toBeVisible();
+  await page.keyboard.press('Escape');
 
   await page.setViewportSize({ width: 680, height: 720 });
   await page.reload();
   const narrowCard = page.locator('.home-history .transcript-card').nth(1);
-  const narrowTranscript = narrowCard.locator('.transcript-text');
-  const narrowFeedback = narrowCard.locator('.transcript-copy-feedback');
   await narrowCard.click();
-  await expect(narrowFeedback).toHaveText('Copied');
-  const [narrowTextBox, narrowFeedbackBox, narrowPaddingRight] = await Promise.all([
-    narrowTranscript.boundingBox(),
-    narrowFeedback.boundingBox(),
-    narrowTranscript.evaluate((element) => parseFloat(getComputedStyle(element).paddingRight)),
-  ]);
-  expect(narrowFeedbackBox!.x).toBeGreaterThanOrEqual(
-    narrowTextBox!.x + narrowTextBox!.width - narrowPaddingRight,
-  );
+  await expect(narrowCard.locator('[data-action-id="copy"]')).toHaveText('Copied');
   await expect(narrowCard).toHaveScreenshot('light-history-copy-middle-narrow.png');
 
   await page.setViewportSize({ width: 520, height: 720 });
@@ -141,13 +103,13 @@ test('copied middle transcript keeps its geometry and reserves feedback space', 
     element.textContent = 'A long copied transcript keeps expanding across the row without hiding its controls. '.repeat(8);
   });
   await page.setViewportSize({ width: 519, height: 720 });
-  const expand = overflowCard.getByRole('button', { name: 'Show more' });
-  await expect(expand).toBeVisible();
-  const [overflowFeedbackBox, expandBox] = await Promise.all([
-    overflowCard.locator('.transcript-copy-feedback').boundingBox(),
-    expand.boundingBox(),
-  ]);
-  expect(overflowFeedbackBox!.y + overflowFeedbackBox!.height).toBeLessThanOrEqual(expandBox!.y);
+  await expect(overflowCard.getByRole('button', { name: 'Show more' })).toBeVisible();
+  await expect(overflowCard.locator('[data-action-id="copy"]')).toHaveText('Copied');
+  const overflow = await overflowCard.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(overflow.scrollWidth).toBe(overflow.clientWidth);
 });
 
 test('the transcript search placeholder fits beside its shortcut badge', async ({ page }) => {
@@ -196,11 +158,11 @@ test('native default keeps the approved three-column dashboard geometry', async 
 
   expect(sidebarBox?.width).toBe(160);
   expect(mainBox?.width).toBeGreaterThan(450);
-  expect(railBox?.width).toBe(200);
+  expect(railBox?.width).toBe(212);
   expect(railBox?.y).toBe(mainBox?.y);
   await expect(page.getByText('This month', { exact: true })).toBeVisible();
   await expect(page.getByText('Voice profile', { exact: true })).toBeVisible();
-  await expect(page.locator('.home-history .history-date-label')).toHaveCount(1);
+  await expect(page.locator('.home-history .history-date-label')).toHaveCount(14);
 });
 
 for (const state of ['recording', 'update-recovering', 'settings'] as const) {
@@ -253,7 +215,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
 
   expect(updateBox?.width).toBeLessThanOrEqual(28);
   expect(updateBox?.height).toBeLessThanOrEqual(28);
-  expect(recordBox?.height).toBe(36);
+  expect(recordBox?.height).toBe(30);
   expect(headerBox?.height).toBe(42);
 });
 
@@ -584,7 +546,7 @@ test('dashboard actions keep hover, focus, active, and disabled states in an imp
   await page.goto('/visual-fixtures.html?state=processing&appearance=dark&theme=open-vsx-high-saturation');
   for (const disabled of [
     page.getByTestId('home-record-button'),
-    page.getByRole('button', { name: 'Transcribe File', exact: true }),
+    page.getByRole('button', { name: 'Transcribe file…', exact: true }),
   ]) {
     await expect(disabled).toBeDisabled();
     await expect(disabled).toHaveCSS('cursor', 'not-allowed');
@@ -596,7 +558,7 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   await expect(page.getByRole('button', { name: 'Start recording' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Transcribe File' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Transcribe file…' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Recent dictations' })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });

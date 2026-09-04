@@ -126,21 +126,21 @@ describe('Murmur layout contracts', () => {
     expect(css).toMatch(/\.ui-dashboard-action:disabled\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
   });
 
-  it('reserves home-history text space for copy feedback and draws a complete inset outline', () => {
+  it('keeps copy feedback and uses flat, full-width home history rows', () => {
     expect(css).toMatch(
       /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*2;[^}]*padding-right:\s*3\.75rem;/s,
+      /\.home-history \.transcript-card\s*\{[^}]*border-bottom-color:\s*var\(--ui-dashboard-border-subtle\);[^}]*border-radius:\s*0;[^}]*padding:\s*var\(--ui-space-5\) var\(--ui-space-4\);[^}]*box-shadow:\s*none;/s,
     );
     expect(css).toMatch(
-      /\.transcript-card\[data-copied="true"\]\s*\{[^}]*border-color:\s*var\(--murmur-success\);[^}]*box-shadow:\s*inset 0 0 0 1px var\(--murmur-success\), var\(--ui-shadow-2\);[^}]*\}/s,
+      /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*padding-right:\s*0;/s,
     );
     expect(css).toMatch(
-      /.transcript-card\[data-newest="true"\]:not\(\[data-copied="true"\]\)\s*\{[^}]*border-color:\s*color-mix\(in srgb, var\(--murmur-primary\) 32%, transparent\);[^}]*box-shadow:\s*var\(--ui-shadow-2\);/s,
+      /\.home-history \.transcript-card\[data-copied="true"\]\s*\{[^}]*border-bottom-color:\s*color-mix\(in srgb, var\(--murmur-success\) 50%, transparent\);[^}]*box-shadow:\s*none;/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-copy-feedback\s*\{[^}]*right:\s*var\(--ui-space-5\);[^}]*bottom:\s*auto;[^}]*top:\s*var\(--ui-space-3\);/s,
+      /\.home-insights-rail\s*\{[^}]*width:\s*var\(--ui-dashboard-rail\);/s,
     );
   });
 
