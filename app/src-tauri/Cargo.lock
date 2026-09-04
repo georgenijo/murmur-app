@@ -2850,6 +2850,7 @@ dependencies = [
  "hound",
  "libc",
  "loom",
+ "mach2",
  "murmur-capture-helper-protocol",
  "objc2",
  "objc2-core-audio",
