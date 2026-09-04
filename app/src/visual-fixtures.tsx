@@ -8,9 +8,6 @@ import { DictationPreviewCard } from './components/dictation-preview/DictationPr
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
-import { VariantA } from './components/home/redesign/VariantA';
-import { VariantB } from './components/home/redesign/VariantB';
-import { VariantC } from './components/home/redesign/VariantC';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
@@ -19,6 +16,7 @@ import { DEFAULT_SETTINGS } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
+import type { HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
@@ -186,28 +184,50 @@ mockIPC((command) => {
   return null;
 }, { shouldMockEvents: true });
 
-const entries = [
+const fixtureToday = new Date();
+
+function fixtureTimestamp(dayOffset: number, hour: number, minute: number): number {
+  return new Date(
+    fixtureToday.getFullYear(),
+    fixtureToday.getMonth(),
+    fixtureToday.getDate() + dayOffset,
+    hour,
+    minute,
+  ).getTime();
+}
+
+const entries: HistoryEntry[] = [
+  ...Array.from({ length: 14 }, (_, index): HistoryEntry => {
+    const dayOffset = index - 13;
+    const source = index % 5 === 0 ? 'file' : 'recording';
+    return {
+      schemaVersion: 2,
+      id: `activity-${index}`,
+      text: dayOffset === 0
+        ? 'History owns the window, with the newest work close at hand and older notes one scroll away.'
+        : `Local fixture dictation from ${Math.abs(dayOffset)} days ago keeps the activity view tied to real transcript timestamps.`,
+      timestamp: fixtureTimestamp(dayOffset, 9 + (index % 4), 5 + index),
+      duration: 6 + index,
+      source,
+      ...(source === 'file' ? { sourceName: `local-note-${index + 1}.wav` } : {}),
+    };
+  }),
   {
-    id: 'older',
-    text: 'History owns the window.',
-    timestamp: Date.UTC(2026, 7, 6, 14, 37),
-    duration: 2,
-    source: 'recording' as const,
-  },
-  {
+    schemaVersion: 2,
     id: 'file',
     text: 'Imported audio uses the same spacing rhythm without taking over the workspace.',
-    timestamp: Date.UTC(2026, 7, 6, 14, 47),
+    timestamp: fixtureTimestamp(0, 14, 47),
     duration: 38,
-    source: 'file' as const,
+    source: 'file',
     sourceName: 'design-review.wav',
   },
   {
+    schemaVersion: 2,
     id: 'newest',
     text: 'The compact transcript keeps its metadata aligned and its actions quiet.',
-    timestamp: Date.UTC(2026, 7, 6, 15, 26),
+    timestamp: fixtureTimestamp(0, 15, 26),
     duration: 8,
-    source: 'recording' as const,
+    source: 'recording',
   },
 ];
 
@@ -384,29 +404,6 @@ function VisualFixture() {
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
               </section>
-            ) : requestedState.startsWith('redesign-') ? (
-              (() => {
-                const Variant = requestedState === 'redesign-a' ? VariantA : requestedState === 'redesign-b' ? VariantB : VariantC;
-                return (
-                  <Variant
-                    historyEntries={entries}
-                    onClearHistory={() => {}}
-                    onUpdateHistoryEntry={() => {}}
-                    onTranscribeFile={() => {}}
-                    status={status}
-                    initialized
-                    recordingDuration={12}
-                    audioLevel={0}
-                    settings={fixtureSettings}
-                    meetings={meetings}
-                    statsVersion={0}
-                    onRecord={() => {}}
-                    onStop={() => {}}
-                    onOpenInsights={() => setDestination('insights')}
-                    onOpenSettings={() => {}}
-                  />
-                );
-              })()
             ) : (
               <HomeDashboard
                 historyEntries={entries}
