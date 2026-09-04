@@ -232,6 +232,7 @@ describe('HistoryPanel', () => {
     expect(middleCard.dataset.copied).toBe('true');
     expect(middleCard.dataset.dayEnd).toBe('false');
     expect(middleCard.querySelector('.transcript-copy-feedback')?.textContent).toBe('Copied');
+    expect(middleCard.querySelector('[data-action-id="copy"]')?.textContent).toBe('Copied');
   });
 
   it.each(['Enter', ' '])('copies the focused row with %j', async (key) => {

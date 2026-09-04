@@ -397,7 +397,7 @@ function HistoryPanelComponent({
                 </div>
               </div>
               <ClampedTranscript text={entry.text} query={query} />
-              <span className="transcript-copy-feedback" role="status" aria-live="polite">
+              <span className="transcript-copy-feedback ui-visually-hidden" role="status" aria-live="polite">
                 {copiedId === entry.id ? 'Copied' : ''}
               </span>
               <div className="transcript-actions" onClick={(event) => event.stopPropagation()}>
@@ -414,7 +414,7 @@ function HistoryPanelComponent({
                     icon={<Copy />}
                     onSelect={() => void handleCopy(entry)}
                   >
-                    Copy
+                    {copiedId === entry.id ? 'Copied' : 'Copy'}
                   </SmartOverflowAction>
                   {isNewest && (
                     <SmartOverflowAction

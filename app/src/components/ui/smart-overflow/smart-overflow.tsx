@@ -220,7 +220,7 @@ export default function SmartOverflow({
       >
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -z-10 flex gap-1 opacity-0"
+          className="pointer-events-none absolute -z-10 flex h-0 w-0 gap-1 overflow-hidden opacity-0"
         >
           {actions.map((action) => (
             <span
@@ -230,7 +230,7 @@ export default function SmartOverflow({
                 else measureRefs.current.delete(action.id);
               }}
               className={cn(
-                "inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium",
+                "inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-3 text-sm font-medium",
                 actionClassName,
               )}
             >
@@ -240,7 +240,7 @@ export default function SmartOverflow({
           <span
             ref={moreMeasureRef}
             className={cn(
-              "grid size-9 place-items-center rounded-lg",
+              "grid size-9 shrink-0 place-items-center rounded-lg",
               moreButtonClassName,
             )}
           >
