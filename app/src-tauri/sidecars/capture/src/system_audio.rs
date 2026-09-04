@@ -160,7 +160,7 @@ fn aggregate_properties(tap_uid: &NSString, aggregate_uid: &str) -> CFRetained<C
     }
 }
 
-fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
+fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) -> usize {
     let list = unsafe { input_data.as_ref() };
     let buffers =
         unsafe { std::slice::from_raw_parts(list.mBuffers.as_ptr(), list.mNumberBuffers as usize) };
@@ -178,7 +178,7 @@ fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
         channel_count += channels;
     }
     if frame_count == usize::MAX || frame_count == 0 || channel_count == 0 {
-        return;
+        return 0;
     }
     for frame in 0..frame_count {
         let mut sum = 0_f32;
@@ -199,6 +199,7 @@ fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
         }
         ring.push(sum / channel_count as f32);
     }
+    frame_count
 }
 
 fn failure_for_status(status: i32) -> FailureCode {
@@ -296,11 +297,17 @@ impl SystemAudioStream {
                   _input_time: NonNull<AudioTimeStamp>,
                   _output_data: NonNull<AudioBufferList>,
                   _output_time: NonNull<AudioTimeStamp>| {
+                let timestamp = unsafe { now.as_ref() };
+                let frame_count = capture_input_data(&callback_ring, input_data);
                 if let Some(clock) = &callback_clock {
-                    let timestamp = unsafe { now.as_ref() };
-                    clock.note(timestamp.mHostTime, timestamp.mSampleTime);
+                    let timing_valid = timestamp.mFlags.0 & 0b11 == 0b11 && frame_count > 0;
+                    clock.note(
+                        timestamp.mHostTime,
+                        timestamp.mSampleTime,
+                        frame_count,
+                        timing_valid,
+                    );
                 }
-                capture_input_data(&callback_ring, input_data);
             },
         );
         let mut io_proc_id: AudioDeviceIOProcID = None;

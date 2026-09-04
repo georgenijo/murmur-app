@@ -246,6 +246,27 @@ impl MeetingMicrophonePath {
         }
     }
 
+    pub(super) fn bypass(
+        &mut self,
+        reason: EchoCancellationBypassReason,
+    ) -> Option<EchoCancellationStatus> {
+        let state = std::mem::replace(&mut self.state, PathState::Disabled);
+        match state {
+            PathState::Active(active) => {
+                let ActiveAec { capture, .. } = *active;
+                self.state = PathState::Bypassed {
+                    reason,
+                    pending: Box::new(capture),
+                };
+                Some(self.status())
+            }
+            other => {
+                self.state = other;
+                None
+            }
+        }
+    }
+
     pub(super) fn push_capture<E>(
         &mut self,
         samples: &[f32],
@@ -419,6 +440,29 @@ mod tests {
             path.bypass_for_backlog(BACKLOG_HIGH_WATER_SAMPLES, 0),
             Some(EchoCancellationStatus::Bypassed {
                 reason: EchoCancellationBypassReason::ProcessingBacklog,
+            })
+        );
+        path.push_capture(&[0.25; 3], |samples| {
+            output.extend_from_slice(samples);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(output, [vec![0.5; 17], vec![0.25; 3]].concat());
+    }
+
+    #[test]
+    fn render_discontinuity_bypass_keeps_partial_capture_tail() {
+        let mut path = MeetingMicrophonePath::with_processor(Box::new(PassThrough), SAMPLE_RATE);
+        let mut output = Vec::new();
+        path.push_capture(&[0.5; 17], |samples| {
+            output.extend_from_slice(samples);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(
+            path.bypass(EchoCancellationBypassReason::RenderDiscontinuity),
+            Some(EchoCancellationStatus::Bypassed {
+                reason: EchoCancellationBypassReason::RenderDiscontinuity,
             })
         );
         path.push_capture(&[0.25; 3], |samples| {

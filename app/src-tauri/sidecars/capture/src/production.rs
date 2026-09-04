@@ -20,10 +20,10 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
-    CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationMode, FailureCode,
-    ProductionDevice, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
-    ProductionPcmMetadata, SessionNonce, SetupTransition, SystemAudioPermissionStatus,
-    MAX_INPUT_DEVICE_COUNT,
+    CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationBypassReason,
+    EchoCancellationMode, FailureCode, ProductionDevice, ProductionFrame, ProductionHelperMessage,
+    ProductionHostMessage, ProductionPcmMetadata, SessionNonce, SetupTransition,
+    SystemAudioPermissionStatus, MAX_INPUT_DEVICE_COUNT,
 };
 use std::ffi::c_void;
 use std::io::{Read, Write};
@@ -44,6 +44,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const RING_CAPACITY: usize = 48_000 * 8;
 const STOP_DEADLINE: Duration = Duration::from_secs(2);
+const AEC_MAX_RENDER_LEAD_MS: u64 = 250;
+const AEC_MAX_RENDER_LAG_MS: u64 = 20;
+const AEC_MAX_CLOCK_DRIFT_MS: u64 = 40;
 /// How long the permission probe watches for a first callback. This bounds an
 /// evidence window only; an expired window never fails the probe.
 const SYSTEM_AUDIO_FLOW_OBSERVATION: Duration = Duration::from_millis(500);
@@ -66,29 +69,268 @@ pub(super) struct SpscRing {
 /// changing the production capture protocol.
 #[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
 pub(super) struct CallbackClock {
+    revision: ProcessAtomicU64,
+    first_host_time: ProcessAtomicU64,
+    first_sample_offset: ProcessAtomicU64,
     host_time: ProcessAtomicU64,
     sample_time_bits: ProcessAtomicU64,
+    frame_count: ProcessAtomicU64,
+    total_samples: ProcessAtomicU64,
+    invalid_timing_seen: ProcessAtomicBool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CallbackAnchor {
+    first_host_time: u64,
+    first_sample_offset: u64,
+    host_time: u64,
+    sample_time: f64,
+    frame_count: u64,
+    total_samples: u64,
 }
 
 #[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
 impl CallbackClock {
     pub(super) fn new() -> Self {
         Self {
+            revision: ProcessAtomicU64::new(0),
+            first_host_time: ProcessAtomicU64::new(0),
+            first_sample_offset: ProcessAtomicU64::new(0),
             host_time: ProcessAtomicU64::new(0),
             sample_time_bits: ProcessAtomicU64::new(0),
+            frame_count: ProcessAtomicU64::new(0),
+            total_samples: ProcessAtomicU64::new(0),
+            invalid_timing_seen: ProcessAtomicBool::new(false),
         }
     }
 
-    pub(super) fn note(&self, host_time: u64, sample_time: f64) {
+    pub(super) fn note(
+        &self,
+        host_time: u64,
+        sample_time: f64,
+        frame_count: usize,
+        timing_valid: bool,
+    ) {
+        self.revision.fetch_add(1, ProcessOrdering::AcqRel);
+        let sample_offset = self
+            .total_samples
+            .fetch_add(frame_count as u64, ProcessOrdering::Relaxed);
+        if !timing_valid || host_time == 0 || !sample_time.is_finite() {
+            self.invalid_timing_seen
+                .store(true, ProcessOrdering::Relaxed);
+        } else if self.first_host_time.load(ProcessOrdering::Relaxed) == 0 {
+            self.first_sample_offset
+                .store(sample_offset, ProcessOrdering::Relaxed);
+            self.first_host_time
+                .store(host_time, ProcessOrdering::Relaxed);
+        }
         self.sample_time_bits
             .store(sample_time.to_bits(), ProcessOrdering::Relaxed);
-        self.host_time.store(host_time, ProcessOrdering::Release);
+        self.frame_count
+            .store(frame_count as u64, ProcessOrdering::Relaxed);
+        self.host_time.store(host_time, ProcessOrdering::Relaxed);
+        self.revision.fetch_add(1, ProcessOrdering::Release);
     }
 
     pub(super) fn snapshot(&self) -> (u64, f64) {
-        let host_time = self.host_time.load(ProcessOrdering::Acquire);
-        let sample_time = f64::from_bits(self.sample_time_bits.load(ProcessOrdering::Relaxed));
-        (host_time, sample_time)
+        self.anchor()
+            .map(|anchor| (anchor.host_time, anchor.sample_time))
+            .unwrap_or((0, 0.0))
+    }
+
+    fn anchor(&self) -> Result<Option<CallbackAnchor>, ()> {
+        loop {
+            let before = self.revision.load(ProcessOrdering::Acquire);
+            if before == 0 {
+                return Ok(None);
+            }
+            if before % 2 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let anchor = CallbackAnchor {
+                first_host_time: self.first_host_time.load(ProcessOrdering::Relaxed),
+                first_sample_offset: self.first_sample_offset.load(ProcessOrdering::Relaxed),
+                host_time: self.host_time.load(ProcessOrdering::Relaxed),
+                sample_time: f64::from_bits(self.sample_time_bits.load(ProcessOrdering::Relaxed)),
+                frame_count: self.frame_count.load(ProcessOrdering::Relaxed),
+                total_samples: self.total_samples.load(ProcessOrdering::Relaxed),
+            };
+            let invalid = self.invalid_timing_seen.load(ProcessOrdering::Relaxed);
+            let after = self.revision.load(ProcessOrdering::Acquire);
+            if before == after {
+                return if invalid || anchor.first_host_time == 0 {
+                    Err(())
+                } else {
+                    Ok(Some(anchor))
+                };
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HostTimebase {
+    numer: u32,
+    denom: u32,
+}
+
+impl HostTimebase {
+    fn system() -> Option<Self> {
+        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+        let status = unsafe { libc::mach_timebase_info(&mut info) };
+        (status == 0 && info.numer > 0 && info.denom > 0).then_some(Self {
+            numer: info.numer,
+            denom: info.denom,
+        })
+    }
+
+    fn ticks_to_samples(self, ticks: u64, sample_rate: u32) -> Option<u64> {
+        let numerator = u128::from(ticks)
+            .checked_mul(u128::from(self.numer))?
+            .checked_mul(u128::from(sample_rate))?;
+        let denominator = u128::from(self.denom).checked_mul(1_000_000_000)?;
+        u64::try_from(numerator / denominator).ok()
+    }
+}
+
+#[derive(Default)]
+struct StreamTimeline {
+    origin: Option<CallbackAnchor>,
+}
+
+impl StreamTimeline {
+    fn observe(
+        &mut self,
+        anchor: CallbackAnchor,
+        sample_rate: u32,
+        timebase: HostTimebase,
+    ) -> Result<(), ()> {
+        let start_offset = anchor
+            .total_samples
+            .checked_sub(anchor.frame_count)
+            .ok_or(())?;
+        let origin = *self.origin.get_or_insert(anchor);
+        let origin_start = origin
+            .total_samples
+            .checked_sub(origin.frame_count)
+            .ok_or(())?;
+        let samples_elapsed = start_offset.checked_sub(origin_start).ok_or(())?;
+        let host_ticks = anchor.host_time.checked_sub(origin.host_time).ok_or(())?;
+        let host_samples = timebase
+            .ticks_to_samples(host_ticks, sample_rate)
+            .ok_or(())?;
+        let tolerance = u64::from(sample_rate) * AEC_MAX_CLOCK_DRIFT_MS / 1_000;
+        if host_samples.abs_diff(samples_elapsed) > tolerance {
+            return Err(());
+        }
+        let sample_time_elapsed = anchor.sample_time - origin.sample_time;
+        if !sample_time_elapsed.is_finite()
+            || (sample_time_elapsed - samples_elapsed as f64).abs() > tolerance as f64
+        {
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
+enum AecTimelineState {
+    Waiting,
+    Ready,
+    Discontinuous,
+}
+
+struct AecTimeline {
+    timebase: HostTimebase,
+    microphone_rate: u32,
+    system_rate: u32,
+    microphone: StreamTimeline,
+    system: StreamTimeline,
+    aligned: bool,
+    render_skip_remaining: u64,
+}
+
+impl AecTimeline {
+    fn new(microphone_rate: u32, system_rate: u32) -> Option<Self> {
+        Some(Self {
+            timebase: HostTimebase::system()?,
+            microphone_rate,
+            system_rate,
+            microphone: StreamTimeline::default(),
+            system: StreamTimeline::default(),
+            aligned: false,
+            render_skip_remaining: 0,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_timebase(microphone_rate: u32, system_rate: u32, timebase: HostTimebase) -> Self {
+        Self {
+            timebase,
+            microphone_rate,
+            system_rate,
+            microphone: StreamTimeline::default(),
+            system: StreamTimeline::default(),
+            aligned: false,
+            render_skip_remaining: 0,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        microphone: Result<Option<CallbackAnchor>, ()>,
+        system: Result<Option<CallbackAnchor>, ()>,
+    ) -> AecTimelineState {
+        let (microphone, system) = match (microphone, system) {
+            (Ok(Some(microphone)), Ok(Some(system))) => (microphone, system),
+            (Ok(_), Ok(_)) => return AecTimelineState::Waiting,
+            _ => return AecTimelineState::Discontinuous,
+        };
+        if self
+            .microphone
+            .observe(microphone, self.microphone_rate, self.timebase)
+            .is_err()
+            || self
+                .system
+                .observe(system, self.system_rate, self.timebase)
+                .is_err()
+        {
+            return AecTimelineState::Discontinuous;
+        }
+        if !self.aligned {
+            if microphone.first_host_time >= system.first_host_time {
+                let lead_ticks = microphone.first_host_time - system.first_host_time;
+                let Some(lead_samples) =
+                    self.timebase.ticks_to_samples(lead_ticks, self.system_rate)
+                else {
+                    return AecTimelineState::Discontinuous;
+                };
+                let retained_lead = u64::from(self.system_rate) * AEC_MAX_RENDER_LEAD_MS / 1_000;
+                self.render_skip_remaining = system
+                    .first_sample_offset
+                    .saturating_add(lead_samples.saturating_sub(retained_lead));
+            } else {
+                let lag_ticks = system.first_host_time - microphone.first_host_time;
+                let Some(lag_samples) = self
+                    .timebase
+                    .ticks_to_samples(lag_ticks, self.microphone_rate)
+                else {
+                    return AecTimelineState::Discontinuous;
+                };
+                let maximum_lag = u64::from(self.microphone_rate) * AEC_MAX_RENDER_LAG_MS / 1_000;
+                if lag_samples > maximum_lag {
+                    return AecTimelineState::Discontinuous;
+                }
+            }
+            self.aligned = true;
+        }
+        AecTimelineState::Ready
+    }
+
+    fn aligned_render<'a>(&mut self, samples: &'a [f32]) -> &'a [f32] {
+        let skip = self.render_skip_remaining.min(samples.len() as u64) as usize;
+        self.render_skip_remaining -= skip as u64;
+        &samples[skip..]
     }
 }
 
@@ -788,13 +1030,23 @@ pub(super) fn start_auhal(
         SetupTransition::Entered,
     ))?;
     unit.set_input_callback(move |args: Args| {
-        if let Some(clock) = &callback_clock {
-            clock.note(args.time_stamp.mHostTime, args.time_stamp.mSampleTime);
-        }
+        let mut frame_count = 0;
         if let Some(channel) = args.data.channels().next() {
             for sample in channel.iter().take(args.num_frames) {
                 ring.push(*sample);
+                frame_count += 1;
             }
+        }
+        if let Some(clock) = &callback_clock {
+            let timing_valid = args.time_stamp.mFlags.0 & 0b11 == 0b11
+                && frame_count > 0
+                && frame_count == args.num_frames;
+            clock.note(
+                args.time_stamp.mHostTime,
+                args.time_stamp.mSampleTime,
+                frame_count,
+                timing_valid,
+            );
         }
         Ok(())
     })
@@ -994,6 +1246,8 @@ fn run_meeting(
 
     let meeting_started_at = Instant::now();
     let system_ring = Arc::new(SpscRing::new());
+    let system_clock = (echo_cancellation == EchoCancellationMode::Enabled)
+        .then(|| Arc::new(CallbackClock::new()));
     write_production_control(
         stdout,
         capture_id,
@@ -1017,8 +1271,9 @@ fn run_meeting(
                 },
             );
         };
-        crate::system_audio::SystemAudioStream::start_observed(
+        crate::system_audio::SystemAudioStream::start_observed_with_clock(
             Arc::clone(&system_ring),
+            system_clock.as_ref().map(Arc::clone),
             &mut emit_system_setup,
         )
     };
@@ -1038,6 +1293,9 @@ fn run_meeting(
     };
     let microphone_ring = Arc::new(SpscRing::new());
     let microphone_failed = Arc::new(AtomicBool::new(false));
+    let microphone_clock = (echo_cancellation == EchoCancellationMode::Enabled
+        && backend == CaptureBackend::Auhal)
+        .then(|| Arc::new(CallbackClock::new()));
     write_production_control(
         stdout,
         capture_id,
@@ -1082,7 +1340,7 @@ fn run_meeting(
             CaptureBackend::Auhal => start_auhal(
                 device_id.as_deref(),
                 Arc::clone(&microphone_ring),
-                None,
+                microphone_clock.as_ref().map(Arc::clone),
                 &mut emit_microphone_setup,
             ),
         }
@@ -1106,6 +1364,13 @@ fn run_meeting(
     let system_rate = system_stream.sample_rate();
     let mut microphone_path =
         crate::aec::MeetingMicrophonePath::new(echo_cancellation, microphone_rate, system_rate);
+    let mut aec_timeline = match (&microphone_clock, &system_clock) {
+        (Some(_), Some(_)) => AecTimeline::new(microphone_rate, system_rate),
+        _ => None,
+    };
+    if echo_cancellation == EchoCancellationMode::Enabled && aec_timeline.is_none() {
+        let _ = microphone_path.bypass(EchoCancellationBypassReason::RenderDiscontinuity);
+    }
     write_production_control(
         stdout,
         capture_id,
@@ -1181,6 +1446,7 @@ fn run_meeting(
         if let Some(status) =
             microphone_path.bypass_for_backlog(microphone_ring.len(), system_ring.len())
         {
+            aec_timeline = None;
             write_production_control(
                 stdout,
                 capture_id,
@@ -1189,6 +1455,37 @@ fn run_meeting(
             )
             .map_err(|_| ())?;
         }
+
+        let timeline_state = match (
+            aec_timeline.as_mut(),
+            microphone_clock.as_ref(),
+            system_clock.as_ref(),
+        ) {
+            (Some(timeline), Some(microphone_clock), Some(system_clock)) => {
+                Some(timeline.observe(microphone_clock.anchor(), system_clock.anchor()))
+            }
+            (Some(_), _, _) => Some(AecTimelineState::Discontinuous),
+            (None, _, _) => None,
+        };
+        let aec_ready = match timeline_state {
+            Some(AecTimelineState::Waiting) => false,
+            Some(AecTimelineState::Discontinuous) => {
+                aec_timeline = None;
+                if let Some(status) =
+                    microphone_path.bypass(EchoCancellationBypassReason::RenderDiscontinuity)
+                {
+                    write_production_control(
+                        stdout,
+                        capture_id,
+                        nonce,
+                        &ProductionHelperMessage::MeetingEchoCancellation { status },
+                    )
+                    .map_err(|_| ())?;
+                }
+                true
+            }
+            Some(AecTimelineState::Ready) | None => true,
+        };
 
         let now = Instant::now();
         let microphone_position = microphone_ring.producer_position();
@@ -1228,7 +1525,11 @@ fn run_meeting(
             }
         }
 
-        let system_count = system_ring.drain(&mut system_scratch);
+        let system_count = if aec_ready {
+            system_ring.drain(&mut system_scratch)
+        } else {
+            0
+        };
         if system_count > 0 {
             if !system_active {
                 system_active = true;
@@ -1262,7 +1563,13 @@ fn run_meeting(
             .map_err(|_| ())?;
             system_sequence += 1;
             system_samples += system_count as u64;
-            if let Some(status) = microphone_path.push_render(&system_scratch[..system_count]) {
+            let render = aec_timeline
+                .as_mut()
+                .map_or(&system_scratch[..system_count], |timeline| {
+                    timeline.aligned_render(&system_scratch[..system_count])
+                });
+            if let Some(status) = microphone_path.push_render(render) {
+                aec_timeline = None;
                 write_production_control(
                     stdout,
                     capture_id,
@@ -1273,7 +1580,11 @@ fn run_meeting(
             }
         }
 
-        let microphone_count = microphone_ring.drain(&mut microphone_scratch);
+        let microphone_count = if aec_ready {
+            microphone_ring.drain(&mut microphone_scratch)
+        } else {
+            0
+        };
         if microphone_count > 0 {
             if !microphone_active {
                 microphone_active = true;
@@ -1315,6 +1626,7 @@ fn run_meeting(
                 },
             )?;
             if let Some(status) = status {
+                aec_timeline = None;
                 write_production_control(
                     stdout,
                     capture_id,
@@ -1448,6 +1760,76 @@ mod tests {
 
     use super::*;
     use std::io::Cursor;
+
+    fn anchor(
+        first_host_time: u64,
+        host_time: u64,
+        sample_time: f64,
+        total: u64,
+    ) -> CallbackAnchor {
+        CallbackAnchor {
+            first_host_time,
+            first_sample_offset: 0,
+            host_time,
+            sample_time,
+            frame_count: 480,
+            total_samples: total,
+        }
+    }
+
+    #[test]
+    fn aec_timeline_caps_setup_era_render_lead() {
+        let timebase = HostTimebase { numer: 1, denom: 1 };
+        let mut timeline = AecTimeline::with_timebase(48_000, 48_000, timebase);
+        let system = anchor(1_000_000_000, 1_000_000_000, 0.0, 480);
+        let microphone = anchor(2_000_000_000, 2_000_000_000, 0.0, 480);
+
+        assert!(matches!(
+            timeline.observe(Ok(Some(microphone)), Ok(Some(system))),
+            AecTimelineState::Ready
+        ));
+        assert_eq!(timeline.render_skip_remaining, 36_000);
+        assert!(timeline.aligned_render(&[0.0; 4096]).is_empty());
+        assert_eq!(timeline.render_skip_remaining, 31_904);
+    }
+
+    #[test]
+    fn aec_timeline_rejects_render_that_starts_after_capture() {
+        let timebase = HostTimebase { numer: 1, denom: 1 };
+        let mut timeline = AecTimeline::with_timebase(48_000, 48_000, timebase);
+        let microphone = anchor(1_000_000_000, 1_000_000_000, 0.0, 480);
+        let system = anchor(1_100_000_000, 1_100_000_000, 0.0, 480);
+
+        assert!(matches!(
+            timeline.observe(Ok(Some(microphone)), Ok(Some(system))),
+            AecTimelineState::Discontinuous
+        ));
+    }
+
+    #[test]
+    fn aec_timeline_rejects_sample_clock_jump() {
+        let timebase = HostTimebase { numer: 1, denom: 1 };
+        let mut timeline = AecTimeline::with_timebase(48_000, 48_000, timebase);
+        let first = anchor(1_000_000_000, 1_000_000_000, 0.0, 480);
+        assert!(matches!(
+            timeline.observe(Ok(Some(first)), Ok(Some(first))),
+            AecTimelineState::Ready
+        ));
+
+        let microphone = anchor(1_000_000_000, 1_010_000_000, 480.0, 960);
+        let system = anchor(1_000_000_000, 1_010_000_000, 9_600.0, 960);
+        assert!(matches!(
+            timeline.observe(Ok(Some(microphone)), Ok(Some(system))),
+            AecTimelineState::Discontinuous
+        ));
+    }
+
+    #[test]
+    fn callback_clock_rejects_invalid_core_audio_timing() {
+        let clock = CallbackClock::new();
+        clock.note(10, 0.0, 480, false);
+        assert_eq!(clock.anchor(), Err(()));
+    }
 
     #[test]
     fn spsc_ring_push_drain_wrap_and_overflow_are_bounded() {
