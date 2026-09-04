@@ -8,6 +8,9 @@ import { DictationPreviewCard } from './components/dictation-preview/DictationPr
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
+import { VariantA } from './components/home/redesign/VariantA';
+import { VariantB } from './components/home/redesign/VariantB';
+import { VariantC } from './components/home/redesign/VariantC';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
@@ -380,6 +383,29 @@ function VisualFixture() {
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
               </section>
+            ) : requestedState.startsWith('redesign-') ? (
+              (() => {
+                const Variant = requestedState === 'redesign-a' ? VariantA : requestedState === 'redesign-b' ? VariantB : VariantC;
+                return (
+                  <Variant
+                    historyEntries={entries}
+                    onClearHistory={() => {}}
+                    onUpdateHistoryEntry={() => {}}
+                    onTranscribeFile={() => {}}
+                    status={status}
+                    initialized
+                    recordingDuration={12}
+                    audioLevel={0}
+                    settings={fixtureSettings}
+                    meetings={meetings}
+                    statsVersion={0}
+                    onRecord={() => {}}
+                    onStop={() => {}}
+                    onOpenInsights={() => setDestination('insights')}
+                    onOpenSettings={() => {}}
+                  />
+                );
+              })()
             ) : (
               <HomeDashboard
                 historyEntries={entries}
