@@ -28,6 +28,7 @@ from reliability_slo import ReliabilitySloEvaluator
 SCHEMA_VERSION = 1
 REPORT_NAME = "capture-watch.json"
 MAX_STARTUP_SAMPLES = 500
+MAX_POST_STOP_LATENCY_SAMPLES = 500
 MAX_VERSIONS_PER_INSTALL = 64
 MIN_COMPARISON_SAMPLES = 5
 STARTUP_REGRESSION_RATIO = 2.0
@@ -136,6 +137,21 @@ def numeric_startup(event):
     return float(value)
 
 
+def numeric_post_stop_latency(event):
+    value = event_data(event).get("total_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0 or value > 300_000:
+        return None
+    return float(value)
+
+
+def valid_recording_id(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return 0 < value < 2**64
+
+
 def percentile(values, percentile_value):
     """Nearest-rank percentile, stable for small bounded operational cohorts."""
     if not values:
@@ -151,6 +167,8 @@ def new_cohort(install_id, version):
         "app_version": version,
         "startup_samples": deque(maxlen=MAX_STARTUP_SAMPLES),
         "startup_sample_total": 0,
+        "post_stop_latency_samples": deque(maxlen=MAX_POST_STOP_LATENCY_SAMPLES),
+        "post_stop_latency_sample_total": 0,
         "timeouts": Counter(),
         "fallback_count": 0,
         "both_backends_failed_count": 0,
@@ -263,6 +281,24 @@ def scan_install(path, install_id, cohorts, reliability_slo):
                 # split one recording across version cohorts.
                 if session is not None and session["version"] == version:
                     cohort["dictation_lifecycle"].observe(event, session_id)
+            if code == "pipeline.dictation_completed":
+                # Same trusted install/app-session/version cohort boundaries as
+                # the lifecycle report: a completion with no open session is
+                # pre-baseline, and a version mismatch means the batch arrived
+                # late for a session that has already closed. Both are
+                # indistinguishable from a cross-session value and are
+                # dropped rather than guessed.
+                if (
+                    session is not None
+                    and session["version"] == version
+                    and valid_recording_id(data.get("recording_id"))
+                    and valid_recording_id(data.get("char_count"))
+                ):
+                    latency_ms = numeric_post_stop_latency(event)
+                    if latency_ms is not None:
+                        cohort["post_stop_latency_samples"].append(latency_ms)
+                        cohort["post_stop_latency_sample_total"] += 1
+                continue
             if code == "audio.capture_started":
                 if (
                     data.get("owner_kind") == CAPTURE_HEALTH_OWNER_KIND
@@ -318,6 +354,7 @@ def scan_install(path, install_id, cohorts, reliability_slo):
 
 def serialize_cohort(cohort):
     samples = list(cohort["startup_samples"])
+    post_stop_latency_samples = list(cohort["post_stop_latency_samples"])
     recent_session_ready_counts = list(cohort["recent_session_ready_counts"])
     session_ready_histogram = Counter(recent_session_ready_counts)
     timeout_rows = [
@@ -352,6 +389,13 @@ def serialize_cohort(cohort):
         "startup_samples_truncated": cohort["startup_sample_total"] > len(samples),
         "startup_p50_ms": percentile(samples, 50),
         "startup_p95_ms": percentile(samples, 95),
+        "post_stop_latency_sample_count": len(post_stop_latency_samples),
+        "post_stop_latency_sample_total": cohort["post_stop_latency_sample_total"],
+        "post_stop_latency_samples_truncated": (
+            cohort["post_stop_latency_sample_total"] > len(post_stop_latency_samples)
+        ),
+        "post_stop_latency_p50_ms": percentile(post_stop_latency_samples, 50),
+        "post_stop_latency_p95_ms": percentile(post_stop_latency_samples, 95),
         "capture_backend_timeouts": timeout_rows,
         "fallback_count": cohort["fallback_count"],
         "both_backends_failed_count": cohort["both_backends_failed_count"],
@@ -582,6 +626,9 @@ def build_report(root, now=None):
             ),
             "capture_health_owner_kind": CAPTURE_HEALTH_OWNER_KIND,
             "maximum_startup_samples_per_cohort": MAX_STARTUP_SAMPLES,
+            "maximum_post_stop_latency_samples_per_cohort": (
+                MAX_POST_STOP_LATENCY_SAMPLES
+            ),
             "maximum_versions_per_install": MAX_VERSIONS_PER_INSTALL,
         },
         "alerts": alerts,

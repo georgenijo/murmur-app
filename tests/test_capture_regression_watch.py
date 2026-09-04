@@ -1098,6 +1098,217 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             saved["reliability_slo"]["two_consecutive_complete_weeks_pass"]
         )
 
+    def test_post_stop_latency_aggregates_percentiles_within_a_session(self) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        for index, value in enumerate([100, 200, 300, 400, 500]):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:00:{index + 1:02d}Z",
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": value,
+                    },
+                )
+            )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["post_stop_latency_sample_count"], 5)
+        self.assertEqual(cohort["post_stop_latency_sample_total"], 5)
+        self.assertFalse(cohort["post_stop_latency_samples_truncated"])
+        self.assertEqual(cohort["post_stop_latency_p50_ms"], 300)
+        self.assertEqual(cohort["post_stop_latency_p95_ms"], 500)
+
+    def test_post_stop_latency_ignores_malformed_negative_and_out_of_range_values(
+        self,
+    ) -> None:
+        bad_totals = [None, "420", True, -1, float("nan"), float("inf"), 300_001]
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        for index, total in enumerate(bad_totals):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:00:{index + 1:02d}Z",
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": total,
+                    },
+                )
+            )
+        # A missing/invalid recording_id must also be ignored even with a
+        # well-formed total_ms.
+        events.append(
+            event(
+                "dictation completed",
+                "2026-08-01T00:00:09Z",
+                version="1.2.3",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": -1,
+                    "char_count": 10,
+                    "total_ms": 250,
+                },
+            )
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["post_stop_latency_sample_count"], 0)
+        self.assertEqual(cohort["post_stop_latency_sample_total"], 0)
+        self.assertIsNone(cohort["post_stop_latency_p50_ms"])
+        self.assertIsNone(cohort["post_stop_latency_p95_ms"])
+
+    def test_post_stop_latency_ignores_pre_baseline_and_cross_session_values(
+        self,
+    ) -> None:
+        events = [
+            # No startup_baseline has been observed yet: pre-baseline.
+            event(
+                "dictation completed",
+                "2026-08-01T00:00:00Z",
+                version="1.0.0",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": 1,
+                    "char_count": 10,
+                    "total_ms": 111,
+                },
+            ),
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:01Z",
+                version="1.0.0",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            # A batch that arrives late, stamped with the version from a
+            # different (closed) session: cross-session.
+            event(
+                "dictation completed",
+                "2026-08-01T00:00:02Z",
+                version="1.1.0",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": 2,
+                    "char_count": 10,
+                    "total_ms": 222,
+                },
+            ),
+            # In-session, correct version: retained.
+            event(
+                "dictation completed",
+                "2026-08-01T00:00:03Z",
+                version="1.0.0",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": 3,
+                    "char_count": 10,
+                    "total_ms": 333,
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohorts = {row["app_version"]: row for row in report["cohorts"]}
+        self.assertEqual(cohorts["1.0.0"]["post_stop_latency_sample_count"], 1)
+        self.assertEqual(cohorts["1.0.0"]["post_stop_latency_p50_ms"], 333)
+        self.assertEqual(cohorts["1.1.0"]["post_stop_latency_sample_count"], 0)
+
+    def test_post_stop_latency_ignores_empty_completions(self) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            event(
+                "dictation completed",
+                "2026-08-01T00:00:01Z",
+                version="1.2.3",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": 1,
+                    "char_count": 0,
+                    "total_ms": 80,
+                },
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        self.assertEqual(report["cohorts"][0]["post_stop_latency_sample_count"], 0)
+
+    def test_post_stop_latency_samples_are_bounded_and_report_truncation(
+        self,
+    ) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        total_events = watch.MAX_POST_STOP_LATENCY_SAMPLES + 10
+        for index in range(total_events):
+            hour = index // 3600
+            minute = (index // 60) % 60
+            second = index % 60
+            events.append(
+                event(
+                    "dictation completed",
+                    "2026-08-01T%02d:%02d:%02dZ" % (hour, minute, second),
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": index,
+                    },
+                )
+            )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(
+            cohort["post_stop_latency_sample_count"],
+            watch.MAX_POST_STOP_LATENCY_SAMPLES,
+        )
+        self.assertEqual(
+            cohort["post_stop_latency_sample_total"], total_events
+        )
+        self.assertTrue(cohort["post_stop_latency_samples_truncated"])
+
 
 if __name__ == "__main__":
     unittest.main()
