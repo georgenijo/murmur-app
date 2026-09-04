@@ -74,7 +74,7 @@ function ScannedVocabulary({ settings }: { settings: Settings }) {
           {summary ? `${summary.whisperCount} feed the model · ${summary.terms} total` : 'No project scan yet'}
         </span>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
+      <div className="settings-card min-h-0 flex-1 overflow-hidden">
         {!summary ? (
           <div className="grid h-full min-h-48 place-items-center px-6 text-center text-sm text-on-surface-variant">
             Run a Project Scan to populate local developer vocabulary.
@@ -137,13 +137,13 @@ export function SettingsEditorsWindow({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-semibold text-on-surface transition-colors hover:border-primary/40 hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="settings-back-btn focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <span aria-hidden="true">‹</span>
           {backLabel}
         </button>
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">Text editor</p>
+          <p className="settings-eyebrow">Text editor</p>
           <h1 id="settings-editor-title" className="text-base font-semibold text-on-surface">
             {EDITOR_LABELS[initialTab]}
           </h1>
@@ -175,12 +175,12 @@ export function SettingsEditorsWindow({
           <section>
             <h2 className="text-base font-semibold text-on-surface">Project Scan</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
-            <div className="mt-4 rounded-xl border border-outline-variant/25 bg-surface-container-lowest p-4">
+            <div className="settings-card mt-4 p-4">
               <p className="break-all rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface">
                 {settings.codeVocabFolder || 'No project folder selected'}
               </p>
               <div className="mt-3 flex gap-2">
-                <button type="button" onClick={onChooseCodeFolder} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary">Choose Folder</button>
+                <button type="button" onClick={onChooseCodeFolder} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Choose Folder</button>
                 {settings.codeVocabFolder && <button type="button" onClick={onClearCodeFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant">Clear</button>}
               </div>
               <VocabScanStrip

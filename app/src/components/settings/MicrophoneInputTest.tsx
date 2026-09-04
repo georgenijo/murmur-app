@@ -401,7 +401,7 @@ export function MicrophoneInputTest({
       ) : (
         null
       )}
-      <div className="mt-3 rounded-lg bg-surface-container-low p-3">
+      <div className="settings-meter-card">
         <div className="flex items-center gap-3">
           <div
             ref={meterRef}
@@ -411,7 +411,7 @@ export function MicrophoneInputTest({
             aria-valuemax={100}
             aria-valuenow={0}
             aria-valuetext="Microphone test inactive"
-            className="relative h-2.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-container-highest"
+            className="settings-meter-track relative h-2.5 min-w-0 flex-1 overflow-hidden rounded-full"
           >
             <div ref={fillRef} className="h-full w-0 rounded-full bg-on-surface-variant/35 transition-colors" />
             <div ref={peakRef} className="absolute inset-y-0 left-0 w-0.5 bg-on-surface" aria-hidden="true" />

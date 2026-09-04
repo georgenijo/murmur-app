@@ -229,7 +229,7 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent === 'Recording',
     ) as HTMLButtonElement;
     await act(async () => recording.click());
-    const soundSwitch = container.querySelector('button[aria-label="Sound Cues"]') as HTMLButtonElement;
+    const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound Cues"]') as HTMLElement;
     await act(async () => soundSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
     const volumeLabel = Array.from(container.querySelectorAll('label')).find(
@@ -245,9 +245,21 @@ describe('SettingsPanel information architecture', () => {
     const success = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'success') as HTMLButtonElement;
     await act(async () => success.click());
     expect(soundCueMock).toHaveBeenCalledWith('success', 45);
-    const meetingSwitch = container.querySelector('button[aria-label="Meeting Cues"]') as HTMLButtonElement;
+    const meetingSwitch = container.querySelector('[role="switch"][aria-label="Meeting Cues"]') as HTMLElement;
     await act(async () => meetingSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSoundCuesEnabled: true });
+  });
+
+  it('renders a setting toggle as an accessible switch that reflects checked state and reports clicks', async () => {
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
+    const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound Cues"]') as HTMLElement;
+    expect(soundSwitch).toBeTruthy();
+    expect(soundSwitch.getAttribute('aria-checked')).toBe('true');
+    await act(async () => soundSwitch.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
   });
 
   it('hides the NotchPill setting when the companion app is absent', () => {
@@ -595,6 +607,37 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Shortcut registration failed');
     expect((container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement).textContent)
       .toContain('⌘⇧V');
+  });
+
+  it('marks the Auto-Paste switch data-disabled and ignores clicks while file output is on', async () => {
+    // Base UI's Switch.Root renders a non-native <span role="switch">, which
+    // never gets the native `disabled` attribute — only `data-disabled`. A
+    // disabled-looking switch that still responds to clicks would silently
+    // flip a setting the UI claims is unavailable.
+    await act(async () => root.render(
+      <SettingsPanel
+        settings={{ ...DEFAULT_SETTINGS, saveTranscript: true }}
+        onUpdateSettings={onUpdateSettings}
+        initialized
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+      />,
+    ));
+    const delivery = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Delivery',
+    ) as HTMLButtonElement;
+    await act(async () => delivery.click());
+    const autoPasteSwitch = container.querySelector('[role="switch"][aria-label="Auto paste"]') as HTMLElement;
+    expect(autoPasteSwitch).toBeTruthy();
+    expect(autoPasteSwitch.hasAttribute('data-disabled')).toBe(true);
+    onUpdateSettings.mockClear();
+    await act(async () => autoPasteSwitch.click());
+    expect(onUpdateSettings).not.toHaveBeenCalled();
   });
 });
 

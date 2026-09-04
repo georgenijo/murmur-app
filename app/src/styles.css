@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "./styles/settings.css";
+@import "./styles/dialogs.css";
 
 @custom-variant dark (&:where([data-appearance="dark"], [data-appearance="dark"] *));
 
@@ -35,6 +37,23 @@
   --success: var(--murmur-success);
   --warning: var(--murmur-warning);
 
+  /* --- shadcn/Sona UI bridge ---------------------------------------------
+     Sona registry components (installed under src/components/ui/<name>/)
+     reference the standard shadcn token contract through Tailwind's
+     generated `bg-muted`/`text-muted-foreground`/`bg-danger`/... utilities,
+     which the `@theme inline` block below serves from --color-* aliases
+     onto the existing --murmur-* semantic tokens. Only --background and
+     --foreground are also read directly via bare `var(--foo)` (fluid-tooltip),
+     so those are the only shadcn-named bridge vars aliased here in :root.
+     --muted and --accent above keep their original Murmur meanings
+     (on-surface-variant / primary); they are unrelated to the shadcn
+     `--color-muted` / `--color-accent` utility tokens below. */
+  --background: var(--murmur-background);
+  --foreground: var(--murmur-on-surface);
+  --muted-foreground: var(--murmur-on-surface-variant);
+  --ring: var(--murmur-primary);
+  --danger-border: color-mix(in srgb, var(--murmur-error) 45%, transparent);
+
   /* Murmur UI geometry. Feature components consume these contracts instead of
      inventing local measurements, keeping every workspace on the same rhythm. */
   /* One three-step type ramp across the app: captions, controls, and body. */
@@ -49,11 +68,39 @@
   --ui-space-5: 0.625rem;
   --ui-space-6: 0.75rem;
   --ui-space-7: 0.875rem;
-  --ui-radius-control: 0.4375rem;
-  --ui-radius-card: 0.625rem;
-  --ui-radius-popover: 0.75rem;
-  --ui-control-compact: 1.625rem;
-  --ui-control-standard: 1.75rem;
+  --ui-radius-control: 0.625rem;   /* 10px, was 0.4375rem */
+  --ui-radius-card: 0.875rem;      /* 14px, was 0.625rem */
+  --ui-radius-popover: 1rem;       /* 16px, was 0.75rem */
+  --ui-radius-pill: 999px;
+  --ui-radius-inset: 0.5rem;
+  --ui-control-compact: 1.75rem;   /* 28px, was 26px */
+  --ui-control-standard: 2rem;     /* 32px, was 28px */
+
+  /* Sona-modern surface ramp: soft hairlines, layered low-alpha shadows,
+     tinted surfaces, and the caps/tight/title tracking scale. Every value
+     is computed from --murmur-* so light/dark flip automatically. */
+  --ui-hairline: color-mix(in srgb, var(--murmur-outline-variant) 55%, transparent);
+  --ui-hairline-strong: color-mix(in srgb, var(--murmur-outline-variant) 78%, transparent);
+  --ui-shadow-1: 0 1px 2px color-mix(in srgb, var(--murmur-on-surface) 7%, transparent);
+  --ui-shadow-2:
+    0 1px 2px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent),
+    0 8px 20px -10px color-mix(in srgb, var(--murmur-on-surface) 22%, transparent);
+  --ui-shadow-3:
+    0 2px 4px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent),
+    0 16px 40px -16px color-mix(in srgb, var(--murmur-on-surface) 34%, transparent);
+  --ui-shadow-accent: 0 6px 16px -8px color-mix(in srgb, var(--murmur-primary) 55%, transparent);
+  --ui-tint-raised: var(--murmur-surface-container-lowest);
+  --ui-tint-sunken: color-mix(in srgb, var(--murmur-surface-container-low) 70%, var(--murmur-background));
+  --ui-tint-accent-subtle: color-mix(in srgb, var(--murmur-primary) 7%, var(--murmur-surface-container-lowest));
+  --ui-tint-accent-strong: color-mix(in srgb, var(--murmur-primary) 13%, var(--murmur-surface-container-lowest));
+  /* Dialog/popover backdrop scrim. In light, a translucent on-surface haze
+     reads as a dim; the same formula in dark inverts into a bright haze, so
+     the dark token blocks below override this to a translucent read of
+     --murmur-background instead (see appearance.dark override rule). */
+  --ui-scrim: color-mix(in oklab, var(--murmur-on-surface) 40%, transparent);
+  --ui-track-caps: 0.07em;
+  --ui-track-tight: -0.012em;
+  --ui-track-title: -0.022em;
   /* Tauri's overlay title bar starts the webview at y=0. The shared row must
      therefore own the full mockup height and center itself on the native
      traffic lights instead of assuming AppKit contributes a top inset. */
@@ -64,7 +111,7 @@
   --ui-window-controls-inset: 5rem;
   --ui-record-width: 4.5rem;
   --ui-status-min-width: 4.5rem;
-  --ui-history-gap: 0.3125rem;
+  --ui-history-gap: 0.375rem;
   --ui-history-card-y: 0.5rem;
   --ui-history-card-x: 0.6875rem;
   --ui-motion-fast: 120ms;
@@ -77,19 +124,19 @@
   --ui-dashboard-rail: 12.5rem;
   --ui-recording-row: 3.25rem;
   --ui-dashboard-gap: 0.75rem;
-  --ui-card-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
-  --ui-dashboard-border: color-mix(in srgb, var(--murmur-on-surface-variant) 42%, transparent);
-  --ui-dashboard-border-subtle: color-mix(in srgb, var(--murmur-on-surface-variant) 24%, transparent);
+  --ui-card-shadow: var(--ui-shadow-2);
+  --ui-dashboard-border: var(--ui-hairline);
+  --ui-dashboard-border-subtle: color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
   --ui-dashboard-hover: var(--murmur-surface-container);
   --ui-dashboard-pressed: var(--murmur-surface-container-high);
   --ui-dashboard-selected: var(--murmur-surface-container-lowest);
   --ui-dashboard-disabled: color-mix(in srgb, var(--murmur-on-surface-variant) 48%, var(--murmur-surface));
-  --ui-dashboard-accent-subtle: color-mix(in srgb, var(--murmur-primary) 8%, var(--murmur-surface-container-lowest));
-  --ui-dashboard-accent-strong: color-mix(in srgb, var(--murmur-primary) 14%, var(--murmur-surface-container-lowest));
+  --ui-dashboard-accent-subtle: var(--ui-tint-accent-subtle);
+  --ui-dashboard-accent-strong: var(--ui-tint-accent-strong);
   --ui-dashboard-error-border: color-mix(in srgb, var(--murmur-error) 45%, transparent);
   --ui-dashboard-error-subtle: color-mix(in srgb, var(--murmur-error) 10%, var(--murmur-surface-container-lowest));
   --ui-dashboard-error-hover: color-mix(in srgb, var(--murmur-error) 16%, var(--murmur-surface-container-lowest));
-  --ui-dashboard-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
+  --ui-dashboard-shadow: var(--ui-shadow-2);
   --ui-chart-0: var(--murmur-surface-container-high);
   --ui-chart-1: color-mix(in srgb, var(--murmur-primary) 24%, var(--murmur-background));
   --ui-chart-2: color-mix(in srgb, var(--murmur-primary) 42%, var(--murmur-background));
@@ -119,6 +166,17 @@
   }
 }
 
+/* The in-app appearance switch (Settings → Appearance) writes
+   data-appearance on <html> and sets --murmur-* tokens inline, independent
+   of the OS-level prefers-color-scheme media query above (e.g. dark-in-app
+   on a light-OS system, or vice versa). Re-declare the same dark-only token
+   overrides here so they track the attribute Murmur actually controls at
+   runtime, not just the OS preference. */
+[data-appearance="dark"] {
+  --ui-scrim: color-mix(in oklab, var(--murmur-background) 72%, transparent);
+  --ui-tint-sunken: color-mix(in srgb, var(--murmur-background) 70%, var(--murmur-surface-container-lowest));
+}
+
 /* Tailwind v4 generates semantic utilities from the runtime theme variables. */
 @theme inline {
   --color-background: var(--murmur-background);
@@ -137,6 +195,33 @@
   --color-error: var(--murmur-error);
   --color-success: var(--murmur-success);
   --color-warning: var(--murmur-warning);
+
+  /* shadcn/Sona UI bridge: standard token names mapped onto the closest
+     existing --murmur-* semantic var. See the :root bridge comment above
+     for the full rationale; this half feeds Tailwind's generated bg-,
+     text-, and border- utilities (bg-muted, text-muted-foreground,
+     bg-popover, border-border, ring-ring, and so on). */
+  --color-foreground: var(--murmur-on-surface);
+  --color-card: var(--murmur-surface-container-low);
+  --color-card-foreground: var(--murmur-on-surface);
+  --color-popover: var(--murmur-surface-container-lowest);
+  --color-popover-foreground: var(--murmur-on-surface);
+  --color-primary-foreground: var(--murmur-on-primary);
+  --color-secondary: var(--murmur-surface-container);
+  --color-secondary-foreground: var(--murmur-on-surface);
+  --color-muted: var(--murmur-surface-container-high);
+  --color-muted-foreground: var(--murmur-on-surface-variant);
+  --color-accent: var(--murmur-surface-container-high);
+  --color-accent-foreground: var(--murmur-on-surface);
+  --color-destructive: var(--murmur-error);
+  --color-destructive-foreground: var(--murmur-on-primary);
+  --color-danger: var(--murmur-error);
+  --color-danger-foreground: var(--murmur-on-primary);
+  --color-border: var(--murmur-outline-variant);
+  --color-input: var(--murmur-outline-variant);
+  --color-ring: var(--murmur-primary);
+  --radius-sona: 0.75rem;
+  --color-danger-border: var(--danger-border);
 }
 
 body {
@@ -156,9 +241,17 @@ textarea {
   font: inherit;
 }
 
-*:focus-visible {
-  outline: 2px solid var(--murmur-primary);
-  outline-offset: 1px;
+/* Layered so element-scoped `focus:outline-none` / `focus-visible:outline-none`
+   Tailwind utilities (declared in `@layer utilities`, which comes after
+   `base`) can opt an element out of this default ring in favor of a
+   component-specific focus treatment — e.g. the command palette's
+   focus-within pill glow. An unlayered rule here would beat those utilities
+   regardless of specificity, per Tailwind's cascade-layer ordering. */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--murmur-primary);
+    outline-offset: 1px;
+  }
 }
 
 /* Native macOS overlay chrome. The real traffic lights occupy the leading
@@ -194,15 +287,18 @@ textarea {
 .ui-status-chip {
   display: inline-flex;
   min-width: var(--ui-status-min-width);
-  min-height: 1.375rem;
+  min-height: 1.625rem;
   align-items: center;
   gap: var(--ui-space-3);
-  border-radius: 999px;
-  padding: 0.1875rem 0.625rem 0.1875rem 0.5rem;
-  background: var(--murmur-surface-container-low);
+  border-radius: var(--ui-radius-pill);
+  border: 1px solid var(--ui-hairline);
+  padding: 0.1875rem 0.75rem 0.1875rem 0.625rem;
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-1);
   color: var(--murmur-on-surface);
   font-size: var(--ui-font-label);
   font-weight: 600;
+  letter-spacing: var(--ui-track-tight);
   line-height: 1rem;
   white-space: nowrap;
 }
@@ -217,10 +313,11 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 0.3125rem;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-pill);
   padding-inline: var(--ui-space-5);
   font-size: var(--ui-font-label);
   font-weight: 650;
+  letter-spacing: var(--ui-track-tight);
   line-height: 1;
   transition:
     filter var(--ui-motion-fast),
@@ -263,27 +360,44 @@ textarea {
 }
 
 .ui-icon-button:hover {
-  background: var(--murmur-surface-container-high);
+  background: color-mix(in srgb, var(--murmur-on-surface) 6%, transparent);
   color: var(--murmur-on-surface);
+}
+
+/* Sunken pill track for a segmented filter group (All/Mic/File, …); the
+   chips inside are transparent until pressed, matching the raised-tint
+   "selected chip" language used across the ramp. */
+.history-filter-track {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tint-sunken);
 }
 
 .ui-filter-chip {
   display: inline-flex;
-  height: var(--ui-control-standard);
+  height: 1.625rem;
   align-items: center;
-  border-radius: 999px;
+  border: 0;
+  border-radius: var(--ui-radius-pill);
   padding-inline: var(--ui-space-5);
-  background: var(--murmur-surface-container-lowest);
+  background: transparent;
   color: var(--murmur-on-surface-variant);
   font-size: var(--ui-font-label);
   font-weight: 550;
+  letter-spacing: var(--ui-track-tight);
   transition:
     background-color var(--ui-motion-fast),
-    color var(--ui-motion-fast);
+    color var(--ui-motion-fast),
+    box-shadow var(--ui-motion-fast);
 }
 
 .ui-filter-chip:hover:not([aria-pressed="true"]):not([aria-current="page"]) {
-  background: var(--murmur-surface-container);
+  background: color-mix(in srgb, var(--murmur-on-surface) 5%, transparent);
   color: var(--murmur-on-surface);
 }
 
@@ -291,13 +405,15 @@ textarea {
 .ui-filter-chip[aria-current="page"],
 .ui-filter-chip[aria-pressed="true"]:hover,
 .ui-filter-chip[aria-current="page"]:hover {
-  background: var(--murmur-on-surface);
-  color: var(--murmur-background);
+  background: var(--ui-tint-raised);
+  color: var(--murmur-on-surface);
+  font-weight: 650;
+  box-shadow: var(--ui-shadow-1);
 }
 
 .ui-dashboard-surface {
   min-width: 0;
-  border-radius: var(--ui-radius-popover);
+  border-radius: var(--ui-radius-card);
   color: var(--murmur-on-surface);
 }
 
@@ -306,14 +422,15 @@ textarea {
 }
 
 .ui-dashboard-surface[data-surface="outlined"] {
-  border: 1px solid var(--ui-dashboard-border);
-  background: var(--murmur-surface-container-lowest);
+  border: 1px solid var(--ui-hairline);
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-1);
 }
 
 .ui-dashboard-surface[data-surface="elevated"] {
-  border: 1px solid var(--ui-dashboard-border-subtle);
-  background: var(--murmur-surface-container-lowest);
-  box-shadow: var(--ui-dashboard-shadow);
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 30%, transparent);
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-2);
 }
 .ui-dashboard-surface[data-padding="compact"] { padding: var(--ui-space-3) var(--ui-space-5); }
 .ui-dashboard-surface[data-padding="standard"] { padding: var(--ui-space-5); }
@@ -325,30 +442,36 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: var(--ui-space-2);
-  border-radius: var(--ui-radius-control);
+  border-radius: var(--ui-radius-pill);
   padding: 0 var(--ui-space-4);
   font-size: var(--ui-font-caption);
   font-weight: 650;
+  letter-spacing: var(--ui-track-tight);
   line-height: 1;
   transition:
     background-color var(--ui-motion-fast),
     color var(--ui-motion-fast),
+    box-shadow var(--ui-motion-fast),
     transform var(--ui-motion-fast);
 }
 
 .ui-dashboard-action svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
-.ui-dashboard-action[data-action="primary"] { background: var(--murmur-primary-dim); color: var(--murmur-on-primary); }
-.ui-dashboard-action[data-action="secondary"] { border: 1px solid var(--ui-dashboard-border); background: var(--murmur-surface-container-lowest); color: var(--murmur-on-surface); }
+.ui-dashboard-action[data-action="primary"] {
+  background: linear-gradient(140deg, var(--murmur-primary), var(--murmur-primary-dim));
+  color: var(--murmur-on-primary);
+  box-shadow: var(--ui-shadow-accent);
+}
+.ui-dashboard-action[data-action="secondary"] { border: 1px solid var(--ui-hairline); background: var(--ui-tint-raised); color: var(--murmur-on-surface); box-shadow: var(--ui-shadow-1); }
 .ui-dashboard-action[data-action="quiet"] { color: var(--murmur-on-surface); }
 .ui-dashboard-action[data-action="secondary"]:hover,
 .ui-dashboard-action[data-action="quiet"]:hover { background: var(--ui-dashboard-hover); }
-.ui-dashboard-action[data-action="primary"]:hover { background: var(--murmur-primary); }
-.ui-dashboard-action[data-action="primary"][data-tone="danger"] { border: 1px solid var(--ui-dashboard-error-border); background: var(--ui-dashboard-error-subtle); color: var(--murmur-error); }
+.ui-dashboard-action[data-action="primary"]:hover { filter: brightness(1.05); }
+.ui-dashboard-action[data-action="primary"][data-tone="danger"] { border: 1px solid var(--ui-dashboard-error-border); background: var(--ui-dashboard-error-subtle); color: var(--murmur-error); box-shadow: var(--ui-shadow-1); }
 .ui-dashboard-action[data-action="primary"][data-tone="danger"]:hover { background: var(--ui-dashboard-error-hover); }
 .ui-dashboard-action[data-action="secondary"]:active,
 .ui-dashboard-action[data-action="quiet"]:active { background: var(--ui-dashboard-pressed); }
 .ui-dashboard-action:active { transform: scale(0.98); }
-.ui-dashboard-action:disabled { cursor: not-allowed; background: var(--murmur-surface-container); color: var(--ui-dashboard-disabled); transform: none; }
+.ui-dashboard-action:disabled { cursor: not-allowed; background: var(--murmur-surface-container); color: var(--ui-dashboard-disabled); box-shadow: none; transform: none; }
 
 .ui-workspace-page-header {
   display: flex;
@@ -359,14 +482,14 @@ textarea {
 }
 
 .ui-workspace-page-copy { min-width: 0; flex: 1; }
-.ui-workspace-page-copy h1 { color: var(--murmur-on-surface); font-size: 1.125rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
-.ui-workspace-page-copy p { margin-top: var(--ui-space-1); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-label); }
+.ui-workspace-page-copy h1 { color: var(--murmur-on-surface); font-size: 1.3125rem; font-weight: 700; letter-spacing: var(--ui-track-title); line-height: 1.15; }
+.ui-workspace-page-copy p { margin-top: var(--ui-space-1); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-label); letter-spacing: var(--ui-track-tight); }
 .ui-workspace-page-trailing { margin-left: auto; }
 
 .ui-main-nav-item {
   position: relative;
   display: flex;
-  min-height: 1.875rem;
+  min-height: 2rem;
   width: 100%;
   align-items: center;
   gap: var(--ui-space-3);
@@ -375,28 +498,29 @@ textarea {
   color: var(--murmur-on-surface-variant);
   font-size: var(--ui-font-caption);
   font-weight: 550;
+  letter-spacing: var(--ui-track-tight);
   text-align: left;
-  transition: background-color var(--ui-motion-fast), color var(--ui-motion-fast);
+  transition: background-color var(--ui-motion-fast), color var(--ui-motion-fast), box-shadow var(--ui-motion-fast);
 }
 
-.ui-main-nav-item:hover { background: var(--ui-dashboard-hover); color: var(--murmur-on-surface); }
-.ui-main-nav-item[aria-current="page"] { background: var(--ui-dashboard-selected); color: var(--murmur-on-surface); font-weight: 650; }
-.ui-main-nav-item[aria-current="page"]::before { position: absolute; left: 0; width: 2px; height: 1rem; border-radius: 999px; background: var(--murmur-primary); content: ''; }
+.ui-main-nav-item:hover { background: color-mix(in srgb, var(--murmur-on-surface) 5%, transparent); color: var(--murmur-on-surface); }
+.ui-main-nav-item[aria-current="page"] { background: var(--ui-tint-raised); color: var(--murmur-on-surface); font-weight: 650; box-shadow: var(--ui-shadow-1); }
+.ui-main-nav-item[aria-current="page"]::before { position: absolute; left: 0; width: 3px; height: 1rem; border-radius: 999px; background: var(--murmur-primary); content: ''; }
 .ui-main-nav-item[aria-current="page"] .home-nav-icon { color: var(--murmur-primary); }
 
 .ui-dashboard-section-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-4); }
-.ui-dashboard-section-header h2 { margin-top: var(--ui-space-1); font-size: 1rem; font-weight: 700; }
-.ui-dashboard-eyebrow { color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.ui-dashboard-section-header h2 { margin-top: var(--ui-space-1); font-size: 0.9375rem; font-weight: 700; letter-spacing: var(--ui-track-title); }
+.ui-dashboard-eyebrow { color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: var(--ui-track-caps); text-transform: uppercase; }
 
 .ui-dashboard-stats[data-stats="rows"] { margin-top: var(--ui-space-3); }
-.ui-dashboard-stats[data-stats="rows"] .ui-dashboard-stat { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: var(--ui-space-3); border-top: 1px solid var(--ui-dashboard-border-subtle); padding: var(--ui-space-3) 0; }
+.ui-dashboard-stats[data-stats="rows"] .ui-dashboard-stat { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: var(--ui-space-3); border-top: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent); padding: var(--ui-space-3) 0; }
 .ui-dashboard-stats[data-stats="rows"] .ui-dashboard-stat:first-child { border-top: 0; }
 .ui-dashboard-stats[data-stats="tiles"] { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--ui-space-5); }
-.ui-dashboard-stats[data-stats="tiles"] .ui-dashboard-stat { border: 1px solid var(--ui-dashboard-border); border-radius: var(--ui-radius-popover); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-7); }
+.ui-dashboard-stats[data-stats="tiles"] .ui-dashboard-stat { border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-card); background: var(--ui-tint-raised); box-shadow: var(--ui-shadow-1); padding: var(--ui-space-7); }
 .ui-dashboard-stat dt { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); }
 .ui-dashboard-stat dd { color: var(--murmur-on-surface); font-variant-numeric: tabular-nums; }
-.ui-dashboard-stat-value { font-weight: 700; }
-.ui-dashboard-stats[data-stats="rows"] .ui-dashboard-stat-value { font-size: 1rem; }
+.ui-dashboard-stat-value { font-weight: 700; letter-spacing: var(--ui-track-title); }
+.ui-dashboard-stats[data-stats="rows"] .ui-dashboard-stat-value { font-size: 1.0625rem; }
 .ui-dashboard-stats[data-stats="tiles"] dd { margin: var(--ui-space-3) 0 var(--ui-space-1); }
 .ui-dashboard-stats[data-stats="tiles"] .ui-dashboard-stat-value { font-size: 1.5rem; }
 .ui-dashboard-stat small { display: block; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); font-weight: 400; }
@@ -412,9 +536,9 @@ textarea {
 .ui-day-chart-bar:hover,
 .ui-day-chart-bar:focus-visible,
 .ui-day-chart-bar[data-active="true"] { background: var(--ui-dashboard-hover); }
-.ui-day-chart-bar > span { width: min(100%, 1.25rem); height: var(--day-chart-value); min-height: 4px; border-radius: 0.25rem 0.25rem 0.125rem 0.125rem; background: var(--ui-chart-2); }
+.ui-day-chart-bar > span { width: min(100%, 1.25rem); height: var(--day-chart-value); min-height: 4px; border-radius: 0.3125rem 0.3125rem 0.125rem 0.125rem; background: color-mix(in srgb, var(--murmur-primary) 32%, var(--murmur-background)); }
 .ui-day-chart-bar[data-highlighted="true"] > span,
-.ui-day-chart-bar[data-active="true"] > span { background: var(--ui-chart-4); }
+.ui-day-chart-bar[data-active="true"] > span { background: linear-gradient(to top, var(--murmur-primary-dim), var(--murmur-primary)); }
 .ui-day-chart-axis { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); margin-top: var(--ui-space-2); color: var(--murmur-on-surface-variant); font-size: 0.625rem; text-align: center; }
 .ui-day-chart-plot[data-plot="line"] svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .ui-day-chart-plot[data-plot="line"] line { stroke: var(--ui-dashboard-border-subtle); stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
@@ -451,9 +575,10 @@ textarea {
   height: var(--ui-control-standard);
   flex-shrink: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--murmur-on-surface-variant) 70%, transparent);
-  border-radius: 0.5rem;
-  background: var(--murmur-surface-container-lowest);
+  border: 1px solid var(--ui-hairline);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-1);
   transition:
     width 250ms var(--ui-ease-out),
     border-color var(--ui-motion-standard),
@@ -463,7 +588,7 @@ textarea {
 .history-search:focus-within {
   width: 18rem;
   border-color: color-mix(in srgb, var(--murmur-primary) 70%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 10%, transparent);
+  box-shadow: var(--ui-shadow-1), 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 10%, transparent);
 }
 
 .history-list {
@@ -481,19 +606,22 @@ textarea {
 .transcript-card {
   position: relative;
   width: 100%;
-  border: 1px solid color-mix(in srgb, var(--murmur-on-surface-variant) 65%, transparent);
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 30%, transparent);
   border-radius: var(--ui-radius-card);
   padding: var(--ui-history-card-y) var(--ui-history-card-x);
-  background: var(--murmur-surface-container-lowest);
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-1);
   text-align: left;
   transition:
     border-color var(--ui-motion-fast),
-    background-color var(--ui-motion-fast);
+    background-color var(--ui-motion-fast),
+    box-shadow var(--ui-motion-fast);
 }
 
 .transcript-card:hover {
-  border-color: var(--murmur-primary);
+  border-color: color-mix(in srgb, var(--murmur-primary) 45%, transparent);
   background: var(--murmur-surface-container-low);
+  box-shadow: var(--ui-shadow-2);
 }
 
 .transcript-card:focus-visible {
@@ -503,6 +631,12 @@ textarea {
 
 .transcript-card[data-copied="true"] {
   border-color: var(--murmur-success);
+  box-shadow: inset 0 0 0 1px var(--murmur-success), var(--ui-shadow-2);
+}
+
+.transcript-card[data-newest="true"]:not([data-copied="true"]) {
+  border-color: color-mix(in srgb, var(--murmur-primary) 32%, transparent);
+  box-shadow: var(--ui-shadow-2);
 }
 
 .transcript-meta {
@@ -537,9 +671,9 @@ textarea {
 
 .transcript-teach {
   margin-top: 0.1875rem;
-  border-radius: 0.3125rem;
+  border-radius: var(--ui-radius-pill);
   padding: 0.0625rem 0.375rem;
-  background: var(--murmur-surface-container);
+  background: color-mix(in srgb, var(--murmur-on-surface) 6%, transparent);
   color: var(--murmur-on-surface-variant);
   font-size: var(--ui-font-caption);
   font-weight: 600;
@@ -566,8 +700,12 @@ textarea {
   min-height: 0;
   flex-shrink: 0;
   flex-direction: column;
-  border-right: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
-  background: var(--murmur-surface-container-low);
+  border-right: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--murmur-surface-container-low) 88%, var(--murmur-background)),
+    var(--murmur-surface-container-low)
+  );
   padding: var(--ui-space-4);
 }
 
@@ -579,17 +717,19 @@ textarea {
   color: var(--murmur-on-surface);
   font-size: var(--ui-font-body);
   font-weight: 700;
+  letter-spacing: var(--ui-track-tight);
 }
 
 .home-brand-mark {
   display: flex;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 1.625rem;
+  height: 1.625rem;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  border-radius: var(--ui-radius-control);
-  background: var(--murmur-primary);
+  border-radius: 0.5625rem;
+  background: linear-gradient(140deg, var(--murmur-primary), var(--murmur-primary-dim));
+  box-shadow: var(--ui-shadow-accent);
 }
 
 .home-brand-mark span {
@@ -618,15 +758,15 @@ textarea {
   color: var(--murmur-on-surface-variant);
   font-size: 0.625rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: var(--ui-track-caps);
   text-transform: uppercase;
 }
 
 .home-nav-icon { width: 1rem; height: 1rem; flex-shrink: 0; }
 .home-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-nav-badge { margin-left: auto; border-radius: 999px; background: color-mix(in srgb, var(--murmur-primary) 12%, transparent); padding: 0.0625rem 0.375rem; color: var(--murmur-primary); font-size: 0.625rem; }
+.home-nav-badge { margin-left: auto; border-radius: var(--ui-radius-pill); background: color-mix(in srgb, var(--murmur-primary) 12%, transparent); padding: 0.0625rem 0.375rem; color: var(--murmur-primary); font-size: 0.625rem; }
 .home-sidebar-bottom { margin-top: auto; padding-top: var(--ui-space-4); }
-.home-privacy-note { display: flex; align-items: flex-start; gap: var(--ui-space-3); border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 28%, transparent); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-4); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.35; }
+.home-privacy-note { display: flex; align-items: flex-start; gap: var(--ui-space-3); border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent); border-radius: var(--ui-radius-card); background: var(--ui-tint-raised); padding: var(--ui-space-4); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.4; }
 .home-privacy-note .home-nav-label { overflow: visible; text-overflow: clip; white-space: normal; }
 .home-privacy-dot { width: 0.375rem; height: 0.375rem; flex-shrink: 0; margin-top: 0.3rem; border-radius: 999px; background: var(--murmur-success); }
 
@@ -680,9 +820,9 @@ textarea {
 
 .home-dashboard-heading h1 {
   color: var(--murmur-on-surface);
-  font-size: 1.125rem;
+  font-size: 1.3125rem;
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--ui-track-title);
   line-height: 1.2;
 }
 
@@ -690,6 +830,7 @@ textarea {
   margin-top: var(--ui-space-1);
   color: var(--murmur-on-surface-variant);
   font-size: var(--ui-font-label);
+  line-height: 1.45;
 }
 
 .home-dashboard-grid {
@@ -723,10 +864,10 @@ textarea {
   min-height: 2.25rem;
   flex-shrink: 0;
   gap: var(--ui-space-4);
-  border-radius: 999px;
+  border-radius: var(--ui-radius-pill);
   padding: 0 var(--ui-space-5);
   font-size: var(--ui-font-body);
-  font-weight: 700;
+  font-weight: 650;
 }
 
 .home-record-dot { width: 0.625rem; height: 0.625rem; border-radius: 999px; background: currentColor; }
@@ -737,7 +878,7 @@ textarea {
 .home-record-hint { display: block; overflow: hidden; margin-top: 0.0625rem; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); text-overflow: ellipsis; white-space: nowrap; }
 .home-record-waveform { display: flex; height: 1.125rem; align-items: center; gap: 2px; }
 .home-record-waveform span { width: 2px; border-radius: 999px; background: var(--murmur-error); transition: height 50ms ease-out; }
-.home-recording-bar > .ui-dashboard-action:last-child { min-height: 2rem; flex-shrink: 0; gap: var(--ui-space-3); margin-left: auto; }
+.home-recording-bar > .ui-dashboard-action:last-child { min-height: 1.9375rem; flex-shrink: 0; gap: var(--ui-space-3); margin-left: auto; }
 
 .home-styles-tip {
   display: flex;
@@ -746,8 +887,8 @@ textarea {
   align-items: center;
   gap: var(--ui-space-4);
   margin-top: var(--ui-space-3);
-  border: 1px solid var(--ui-dashboard-border);
-  border-radius: var(--ui-radius-control);
+  border: 1px solid color-mix(in srgb, var(--murmur-primary) 20%, transparent);
+  border-radius: var(--ui-radius-card);
   background: var(--ui-dashboard-accent-subtle);
   padding: var(--ui-space-2) var(--ui-space-4);
   color: var(--murmur-on-surface-variant);
@@ -758,20 +899,17 @@ textarea {
 .home-styles-tip strong { color: var(--murmur-on-surface); }
 .home-styles-tip button { flex-shrink: 0; border-radius: var(--ui-radius-control); padding: var(--ui-space-2) var(--ui-space-4); color: var(--murmur-primary); font-weight: 650; }
 .home-styles-tip button:hover { background: var(--murmur-surface-container-lowest); }
-.home-tip-icon { display: grid; width: 1.5rem; height: 1.5rem; flex-shrink: 0; place-items: center; border-radius: 0.375rem; background: var(--murmur-primary); color: var(--murmur-on-primary); font-size: var(--ui-font-label); }
+.home-tip-icon { display: grid; width: 1.5rem; height: 1.5rem; flex-shrink: 0; place-items: center; border-radius: var(--ui-radius-inset); background: linear-gradient(140deg, var(--murmur-primary), var(--murmur-primary-dim)); color: var(--murmur-on-primary); font-size: var(--ui-font-label); box-shadow: var(--ui-shadow-accent); }
 .home-styles-tip .home-tip-dismiss { padding-inline: var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: 1rem; }
 
 .home-history { display: flex; min-height: 0; flex: 1; flex-direction: column; margin-top: var(--ui-space-4); }
 .home-history-heading { display: flex; flex-shrink: 0; align-items: baseline; gap: var(--ui-space-4); margin-bottom: var(--ui-space-3); }
-.home-history-heading h2 { color: var(--murmur-on-surface); font-size: 1rem; font-weight: 700; letter-spacing: -0.01em; }
+.home-history-heading h2 { color: var(--murmur-on-surface); font-size: 0.9375rem; font-weight: 700; letter-spacing: var(--ui-track-tight); }
 .home-history-heading span { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); }
 .home-history .history-toolbar { padding-inline: 0; }
-.home-history .history-list { gap: 0; padding-inline: 0; padding-bottom: 0; }
-.home-history .history-date-label { display: block; padding: var(--ui-space-5) var(--ui-space-2) var(--ui-space-2); color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
-.home-history .transcript-card { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); column-gap: var(--ui-space-4); border-width: 1px 1px 0; border-radius: 0; padding: var(--ui-space-4) var(--ui-space-5); box-shadow: none; }
-.home-history .transcript-card[data-copied="true"]:not([data-day-end="true"]) { box-shadow: inset 0 -1px 0 var(--murmur-success); }
-.home-history .history-date-label + .transcript-card { border-top-left-radius: var(--ui-radius-card); border-top-right-radius: var(--ui-radius-card); }
-.home-history .transcript-card[data-day-end="true"] { border-bottom-width: 1px; border-bottom-left-radius: var(--ui-radius-card); border-bottom-right-radius: var(--ui-radius-card); }
+.home-history .history-list { gap: var(--ui-history-gap); padding-inline: 0; padding-bottom: 0; }
+.home-history .history-date-label { display: block; padding: var(--ui-space-2) var(--ui-space-2) var(--ui-space-4); color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: var(--ui-track-caps); text-transform: uppercase; }
+.home-history .transcript-card { display: grid; grid-template-columns: 4.875rem minmax(0, 1fr); column-gap: var(--ui-space-6); padding: var(--ui-space-4) var(--ui-space-5); }
 .home-history .transcript-meta { grid-column: 1; grid-row: 1 / span 3; align-items: flex-start; margin: 0; }
 .home-history .transcript-meta > div:first-child { width: 100%; flex-direction: column; align-items: flex-start; gap: var(--ui-space-2); }
 .home-history .transcript-meta > div:first-child > span { max-width: 100%; }
@@ -782,21 +920,21 @@ textarea {
 
 .home-insights-rail { display: flex; min-height: 0; flex-direction: column; gap: var(--ui-space-5); overflow-y: auto; }
 .personalization-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-5); }
-.dashboard-eyebrow { color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.dashboard-eyebrow { color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: var(--ui-track-caps); text-transform: uppercase; }
 
-.personalization-heading h2 { margin-top: var(--ui-space-1); color: var(--murmur-on-surface); font-size: 1rem; font-weight: 700; }
-.personalization-stage { border-radius: 999px; background: var(--ui-dashboard-accent-subtle); padding: var(--ui-space-2) var(--ui-space-4); color: var(--murmur-primary); font-size: 0.625rem; font-weight: 700; white-space: nowrap; }
+.personalization-heading h2 { margin-top: var(--ui-space-1); color: var(--murmur-on-surface); font-size: 0.9375rem; font-weight: 700; }
+.personalization-stage { border-radius: var(--ui-radius-pill); background: var(--ui-dashboard-accent-strong); padding: var(--ui-space-2) var(--ui-space-4); color: var(--murmur-primary); font-size: 0.625rem; font-weight: 700; white-space: nowrap; }
 .home-insights-rail .personalization-heading { display: block; }
-.home-insights-rail .personalization-heading h2 { display: inline-block; border-radius: 999px; background: var(--ui-dashboard-accent-strong); padding: var(--ui-space-1) var(--ui-space-3); color: var(--murmur-primary); font-size: var(--ui-font-caption); }
+.home-insights-rail .personalization-heading h2 { display: inline-block; border-radius: var(--ui-radius-pill); background: var(--ui-dashboard-accent-strong); padding: var(--ui-space-1) var(--ui-space-3); color: var(--murmur-primary); font-size: var(--ui-font-caption); }
 .home-insights-rail .personalization-stage { display: none; }
 .personalization-milestones { display: flex; flex-direction: column; gap: var(--ui-space-3); margin-top: var(--ui-space-4); }
 .personalization-milestones li { display: flex; align-items: center; gap: var(--ui-space-4); }
-.personalization-check { display: grid; width: 1rem; height: 1rem; flex-shrink: 0; place-items: center; border: 1px solid var(--ui-dashboard-border); border-radius: 999px; color: var(--murmur-on-primary); font-size: 0.625rem; }
+.personalization-check { display: grid; width: 1rem; height: 1rem; flex-shrink: 0; place-items: center; border: 1.5px solid var(--ui-hairline); border-radius: var(--ui-radius-pill); color: var(--murmur-on-primary); font-size: 0.625rem; }
 .personalization-check[data-complete="true"] { border-color: var(--murmur-success); background: var(--murmur-success); }
 .personalization-milestones li > span:nth-child(2) { min-width: 0; flex: 1; }
 .personalization-milestones strong { display: block; color: var(--murmur-on-surface); font-size: var(--ui-font-caption); font-weight: 650; }
 .personalization-milestones small { display: block; color: var(--murmur-on-surface-variant); font-size: 0.6875rem; }
-.personalization-next { margin-top: var(--ui-space-4); border-radius: var(--ui-radius-control); background: var(--ui-dashboard-accent-subtle); padding: var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.4; }
+.personalization-next { margin-top: var(--ui-space-4); border-radius: var(--ui-radius-inset); background: var(--ui-tint-accent-subtle); padding: var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.4; }
 .personalization-next strong { color: var(--murmur-primary); }
 .personalization-ladder { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--ui-space-2); margin-top: var(--ui-space-6); }
 .personalization-ladder span { border-bottom: 2px solid var(--ui-dashboard-border-subtle); padding-bottom: var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); text-align: center; }
@@ -961,3 +1099,4 @@ body.overlay-window {
     transition-delay: 0ms !important;
   }
 }
+

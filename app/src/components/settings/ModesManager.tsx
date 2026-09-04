@@ -154,10 +154,10 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
 
   if (!selected) return null;
   return (
-    <section aria-labelledby="modes-title" className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-4">
+    <section aria-labelledby="modes-title" className="settings-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h2 id="modes-title" className="text-sm font-semibold text-on-surface">Modes</h2><p className="mt-1 text-xs text-on-surface-variant">Reusable local behavior for any number of apps.</p></div>
-        <button type="button" onClick={() => create()} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary">Create Mode</button>
+        <button type="button" onClick={() => create()} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Create Mode</button>
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
         <div className="space-y-1" role="list" aria-label="Modes">
@@ -188,7 +188,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
               <div className="grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
                 <select aria-label="Site rule browser" value={siteBrowser} onChange={(event) => setSiteBrowser(event.target.value)} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-2 text-xs">{SITE_MODE_BROWSERS.map((browser) => <option key={browser.bundleId} value={browser.bundleId}>{browser.label}</option>)}</select>
                 <input aria-label="Site rule host" value={siteHost} onChange={(event) => setSiteHost(event.target.value)} placeholder="github.com" className="rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-xs" />
-                <button type="button" onClick={addSiteRule} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary">Add</button>
+                <button type="button" onClick={addSiteRule} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Add</button>
               </div>
               {siteError && <p role="alert" className="text-xs text-error">{siteError}</p>}
               <div className="space-y-2">{siteRules.filter((rule) => rule.modeId === selected.id).map((rule) => <div key={rule.id} className="grid items-center gap-2 rounded-lg bg-surface-container-low p-2 sm:grid-cols-[auto_150px_minmax(0,1fr)_auto]">

@@ -38,3 +38,18 @@ Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
   value: () => {},
   configurable: true,
 });
+
+// jsdom does not implement the Pointer Capture API. Several components rely
+// on it unguarded (Sona's hold-to-delete control calls
+// setPointerCapture/releasePointerCapture on pointerdown/pointerup/
+// pointercancel so a small drift off the row doesn't fire pointerleave and
+// cancel the hold, and animated-switch calls setPointerCapture on
+// pointerdown), so stub all three methods once here as a no-op rather than
+// patching them per test file.
+if (!('setPointerCapture' in HTMLElement.prototype)) {
+  Object.assign(HTMLElement.prototype, {
+    setPointerCapture: () => {},
+    releasePointerCapture: () => {},
+    hasPointerCapture: () => false,
+  });
+}

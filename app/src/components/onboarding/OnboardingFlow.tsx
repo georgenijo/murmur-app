@@ -266,12 +266,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <span
                 key={s}
                 aria-hidden="true"
-                className={`h-1.5 rounded-full transition-all duration-300 ${
+                className={`h-1.5 rounded-[var(--ui-radius-pill)] transition-all duration-300 ${
                   i === stepIndex
                     ? 'w-6 bg-primary'
                     : i < stepIndex
                     ? 'w-1.5 bg-primary/60'
-                    : 'w-1.5 bg-surface-container-highest '
+                    : 'w-1.5 bg-[var(--ui-tint-sunken)]'
                 }`}
               />
             ))}
@@ -280,7 +280,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="mb-3 text-2xl font-semibold text-on-surface">
+            <h1 className="mb-3 text-2xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
@@ -293,7 +293,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </p>
             <button
               onClick={goNext}
-              className="w-full rounded-full bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-3 text-sm font-bold text-on-primary shadow-[0_8px_22px_color-mix(in_srgb,var(--murmur-primary)_20%,transparent)] transition-[filter,transform] hover:brightness-105 active:scale-[0.99]"
+              className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-3 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter,transform] hover:brightness-105 active:scale-[0.98]"
             >
               Get Started
             </button>
@@ -311,7 +311,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             {micGranted ? (
               <GrantedCard label="Microphone access granted" />
             ) : micDenied ? (
-              <div className="mb-6 px-4 py-3 bg-error/10 border border-error/30 rounded-lg space-y-3">
+              <div className="dialog-card mb-6 space-y-3 border-error/30 bg-error/10 px-4 py-3">
                 <p className="text-sm text-error">
                   Microphone access is denied. Enable Murmur under Privacy &amp;
                   Security → Microphone, then come back — this screen updates
@@ -319,7 +319,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 </p>
                 <button
                   onClick={handleOpenMicSettings}
-                  className="w-full rounded-lg border border-error/30 bg-error/10 px-4 py-2 text-sm font-medium text-error transition-colors"
+                  className="dialog-pill-btn w-full border-error/30 bg-error/10 px-4 py-2 text-sm font-semibold text-error"
                 >
                   Open System Settings
                 </button>
@@ -340,7 +340,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <div className="mb-6">
                 <button
                   onClick={handleAllowMic}
-                  className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
+                  className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105"
                 >
                   Allow Microphone Access
                 </button>
@@ -381,7 +381,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <div className="mb-6 space-y-3">
                 <button
                   onClick={handleGrantAx}
-                  className="w-full py-2.5 px-4 bg-primary hover:bg-primary text-on-primary text-sm font-medium rounded-lg transition-colors"
+                  className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105"
                 >
                   Grant Accessibility Access
                 </button>
@@ -432,7 +432,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             {systemAudioStatus === 'granted' ? (
               <GrantedCard label="System Audio access granted" />
             ) : systemAudioStatus === 'unsupported' ? (
-              <div className="mb-6 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+              <div className="dialog-card mb-6 border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
                 Meeting capture requires macOS 14.2 or newer. Dictation is still available.
               </div>
             ) : (
@@ -441,7 +441,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   type="button"
                   disabled={systemAudioBusy}
                   onClick={() => void handleRequestSystemAudio()}
-                  className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors disabled:cursor-wait disabled:opacity-60"
+                  className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105 disabled:cursor-wait disabled:opacity-60"
                 >
                   {systemAudioBusy ? 'Waiting for macOS…' : systemAudioStatus === 'denied' ? 'Re-check System Audio Access' : 'Allow System Audio Access'}
                 </button>
@@ -452,7 +452,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   <button
                     type="button"
                     onClick={() => void openSystemAudioPreferences()}
-                    className="w-full rounded-lg border border-error/30 bg-error/10 px-4 py-2 text-sm font-medium text-error"
+                    className="dialog-pill-btn w-full border-error/30 bg-error/10 px-4 py-2 text-sm font-semibold text-error"
                   >
                     Open System Settings
                   </button>
@@ -474,7 +474,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'model' && (
           <div>
-            <h1 className="text-xl font-semibold text-on-surface mb-1">
+            <h1 className="mb-1 text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
               Transcription Model
             </h1>
             <p className="text-sm text-on-surface-variant mb-6">
@@ -527,10 +527,10 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               subtitle="Choose how Murmur listens. You can change both options later in Dictation settings."
             />
 
-            <div className="mb-6 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest">
-              <div className="border-b border-outline-variant/15 p-4">
+            <div className="dialog-card mb-6 overflow-hidden p-0">
+              <div className="border-b border-[var(--ui-hairline)] p-4">
                 <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
-                <div role="group" aria-label="Recording trigger" className="grid grid-cols-3 gap-2">
+                <div role="group" aria-label="Recording trigger" className="history-filter-track w-full">
                   {([
                     ['hold_down', 'Hold Down'],
                     ['double_tap', 'Double-Tap'],
@@ -541,11 +541,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                       type="button"
                       aria-pressed={selectedRecordingMode === value}
                       onClick={() => setSelectedRecordingMode(value)}
-                      className={`rounded-full px-3 py-2 text-xs font-semibold transition-colors ${
-                        selectedRecordingMode === value
-                          ? 'bg-on-surface text-background'
-                          : 'bg-surface-container-high text-on-surface-variant hover:text-on-surface'
-                      }`}
+                      className="ui-filter-chip flex-1 justify-center"
                     >
                       {label}
                     </button>
@@ -558,7 +554,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   id="onboarding-trigger-key"
                   value={selectedTriggerKey}
                   onChange={(event) => setSelectedTriggerKey(event.target.value as DoubleTapKey)}
-                  className="h-10 w-full rounded-xl border border-outline-variant bg-surface-container-high px-3 text-sm text-on-surface"
+                  className="h-10 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-high px-3 text-sm text-on-surface"
                 >
                   <option value="shift_l">⇧ Left Shift</option>
                   <option value="alt_l">⌥ Left Option</option>
@@ -578,7 +574,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'done' && (
           <div>
-            <h1 className="text-xl font-semibold text-on-surface mb-1 text-center">
+            <h1 className="mb-1 text-center text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
               You're all set
             </h1>
             <p className="text-sm text-on-surface-variant mb-6 text-center">
@@ -592,13 +588,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <SummaryRow ok={modelInstalled === true} label="Model" okText="Installed" missingText="Not verified — the app will ask again if it's missing" />
             </div>
 
-            <div className="mb-6 px-4 py-3 bg-surface-container rounded-lg">
+            <div className="dialog-card mb-6 px-4 py-3">
               <p className="text-sm text-on-surface font-medium mb-1">
                 Try it out
               </p>
               <p className="text-xs text-on-surface-variant">
                 {selectedRecordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}
-                <kbd className="px-1 py-0.5 rounded bg-surface-container-lowest border border-outline-variant/40 font-mono text-[10px]">{KEY_LABELS[selectedTriggerKey]}</kbd>
+                <kbd className="dialog-kbd font-mono text-[10px]">{KEY_LABELS[selectedTriggerKey]}</kbd>
                 {selectedRecordingMode === 'double_tap'
                   ? ' to start recording and tap it once to stop'
                   : selectedRecordingMode === 'both'
@@ -638,7 +634,7 @@ function StepHeading({ title, subtitle, granted }: { title: string; subtitle: st
 
 function GrantedCard({ label }: { label: string }) {
   return (
-    <div className="mb-6 px-4 py-3 bg-success/10 border border-success/30 rounded-lg flex items-center gap-2">
+    <div className="dialog-card mb-6 flex items-center gap-2 border-success/30 bg-success/10 px-4 py-3">
       <CheckIcon />
       <span className="text-sm text-success">{label}</span>
     </div>
@@ -647,7 +643,7 @@ function GrantedCard({ label }: { label: string }) {
 
 function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: string; okText: string; missingText: string }) {
   return (
-    <div className="flex items-start gap-2 px-4 py-2.5 bg-surface-container-lowest border border-outline-variant/40 rounded-lg">
+    <div className="dialog-card flex items-start gap-2 px-4 py-2.5">
       <span className={`mt-1 w-2 h-2 shrink-0 rounded-full ${ok ? 'bg-success' : 'bg-primary'}`} />
       <div className="min-w-0">
         <span className="text-sm font-medium text-on-surface">{label}</span>
@@ -682,7 +678,7 @@ function WizardNavigationRow({
         disabled={backDisabled}
         aria-label="Go back to the previous setup step"
         title={backDisabled ? 'Please wait for the model download to finish' : undefined}
-        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex items-center gap-1.5 rounded-[var(--ui-radius-control)] px-2 py-1.5 text-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface disabled:cursor-not-allowed disabled:opacity-40"
       >
         <svg
           aria-hidden="true"
@@ -710,7 +706,7 @@ function WizardNavigationRow({
           type="button"
           onClick={onNext}
           disabled={!nextEnabled}
-          className="py-2 px-5 bg-primary hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed text-on-primary text-sm font-medium rounded-lg transition-colors"
+          className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-5 py-2 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
         >
           {nextLabel}
         </button>

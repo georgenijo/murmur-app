@@ -11,9 +11,12 @@ interface SettingsSectionProps {
   pageId?: string;
   activePage?: string;
   plain?: boolean;
+  /** Wrap the page body in a `.settings-card`. Defaults to on; embedded
+   *  full-bleed workspaces (Performance Lab, Diagnostics) opt out. */
+  card?: boolean;
 }
 
-export function SettingsSection({ title, subtitle, defaultExpanded = true, children, pageId, activePage, plain = false }: SettingsSectionProps) {
+export function SettingsSection({ title, subtitle, defaultExpanded = true, children, pageId, activePage, plain = false, card = true }: SettingsSectionProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [overflowVisible, setOverflowVisible] = useState(defaultExpanded);
   const contentId = useId();
@@ -35,12 +38,19 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   if (pageId !== undefined) {
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
-      <section className={plain ? "mb-7 last:mb-0" : "mb-8 last:mb-0"}>
-        <h1 className={plain ? "text-base font-semibold text-on-surface" : "text-2xl font-semibold tracking-tight text-on-surface"}>{title}</h1>
-        {subtitle && (
-          <p className={plain ? "mt-2 text-[13px] leading-[1.45] text-on-surface-variant" : "mt-1 text-sm text-on-surface-variant"}>{subtitle}</p>
-        )}
-        <div className={plain ? "mt-3" : "mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20"}>{children}</div>
+      <section className={plain ? "mb-7 last:mb-0" : "mb-9 last:mb-0"}>
+        <div className={plain ? undefined : "settings-page-head"}>
+          <h1 className={plain ? "text-base font-semibold text-on-surface" : "settings-page-title"}>{title}</h1>
+          {subtitle && (
+            <p className={plain ? "mt-2 text-[13px] leading-[1.45] text-on-surface-variant" : "settings-page-subtitle"}>{subtitle}</p>
+          )}
+        </div>
+        <div className={plain
+          ? "mt-3"
+          : card
+            ? "settings-card settings-card-body [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/15"
+            : "mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20"}
+        >{children}</div>
       </section>
     );
   }

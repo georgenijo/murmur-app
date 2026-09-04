@@ -290,8 +290,10 @@ describe('Sonic Canvas component details', () => {
     expect(record.querySelector('.font-mono')).toBeNull();
   });
 
-  it('preserves click-anywhere history copy and confirmed clear actions', async () => {
+  it('preserves click-anywhere history copy and a hold-to-clear action', async () => {
     const onClear = vi.fn();
+    // The Pointer Capture API stub used by the hold-to-delete control's
+    // synthetic PointerEvents lives in vitest.setup.ts.
 
     await act(async () => {
       root.render(
@@ -314,15 +316,22 @@ describe('Sonic Canvas component details', () => {
     await act(async () => card.click());
     expect(writeText).toHaveBeenCalledWith('Keep every interaction working');
 
-    // Clearing is a two-step confirm — the first click only arms it.
+    // Clearing requires holding the control for its full duration rather
+    // than a single click.
     const more = container.querySelector('[aria-label="More history actions"]') as HTMLButtonElement;
     await act(async () => more.click());
-    const clearButton = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Clear history')!;
-    await act(async () => clearButton.click());
+    const clearButton = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Hold to clear history'))!;
+
+    vi.useFakeTimers();
+    await act(async () => {
+      clearButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
     expect(onClear).not.toHaveBeenCalled();
-    expect(clearButton.textContent).toBe('Clear all history?');
-    await act(async () => clearButton.click());
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
     expect(onClear).toHaveBeenCalledOnce();
+    vi.useRealTimers();
   });
 
   it('offers Correct and Teach only on the newest history entry', async () => {

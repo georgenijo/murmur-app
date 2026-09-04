@@ -164,7 +164,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-5 backdrop-blur-[2px]"
+      className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && installingId === null) onClose();
       }}
@@ -174,7 +174,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="community-theme-title"
-        className="flex max-h-[86vh] w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-on-surface-variant bg-surface shadow-2xl"
+        className="dialog-popover flex max-h-[86vh] w-full max-w-[760px] flex-col overflow-hidden"
       >
         <div className="flex items-start justify-between gap-4 border-b border-outline-variant px-5 py-4">
           <div>
@@ -205,7 +205,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               placeholder="Try Dracula, Nord, Catppuccin…"
-              className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary focus:ring-1 focus:ring-primary"
+              className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary focus:ring-1 focus:ring-primary"
             />
             <select
               aria-label="Sort community themes"
@@ -216,7 +216,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
                 setSortBy(next);
                 if (query.trim()) void runSearch(query, next);
               }}
-              className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 text-xs text-on-surface"
+              className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 text-xs text-on-surface"
             >
               {SORT_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
@@ -225,7 +225,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
             <button
               type="submit"
               disabled={!query.trim() || searching || installingId !== null}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary-dim disabled:opacity-50"
+              className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary-dim disabled:opacity-50"
             >
               {searching ? 'Searching…' : 'Search'}
             </button>
@@ -261,7 +261,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
                     setPendingUpdate(null);
                     void install(extension, true);
                   }}
-                  className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary"
+                  className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary"
                 >
                   Update collection
                 </button>
@@ -295,7 +295,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
             </div>
           )}
           {results && results.length === 0 && (
-            <div className="mt-4 flex min-h-40 items-center justify-center rounded-xl border border-dashed border-on-surface-variant text-center">
+            <div className="mt-4 flex min-h-40 items-center justify-center rounded-(--ui-radius-card) border border-dashed border-(--ui-hairline-strong) text-center">
               <div>
                 <p className="text-sm font-medium text-on-surface">No supported themes found</p>
                 <p className="mt-1 text-xs text-on-surface-variant">Try a broader search.</p>
@@ -310,7 +310,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
                 return (
                   <article
                     key={extension.id}
-                    className="flex min-w-0 flex-col gap-2 rounded-xl border border-on-surface-variant/70 bg-surface-container-lowest p-3 shadow-sm"
+                    className="flex min-w-0 flex-col gap-2 rounded-(--ui-radius-card) border border-(--ui-hairline) bg-(--ui-tint-raised) p-3 shadow-(--ui-shadow-1)"
                   >
                     <div className="flex items-start gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-on-surface" aria-hidden>
@@ -343,7 +343,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
                         type="button"
                         disabled={installingId !== null}
                         onClick={() => void install(extension, false)}
-                        className="rounded-lg border border-on-surface-variant px-2.5 py-1.5 text-xs font-medium text-on-surface hover:border-primary hover:bg-surface-container disabled:opacity-50"
+                        className="rounded-(--ui-radius-pill) border border-(--ui-hairline) px-2.5 py-1.5 text-xs font-medium text-on-surface hover:border-primary hover:bg-surface-container disabled:opacity-50"
                       >
                         {installing ? (installed ? 'Updating…' : 'Adding…') : installed ? 'Update' : 'Add'}
                       </button>

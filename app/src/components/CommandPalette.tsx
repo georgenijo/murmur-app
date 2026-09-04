@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { filterCommands, moveSelection, type PaletteCommand } from '../lib/commandPalette';
+import { cn } from '../lib/sona-utils';
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -94,35 +95,37 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
   return (
     <div
       ref={paletteRef}
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 pt-[16vh] backdrop-blur-[4px]"
+      className="dialog-backdrop fixed inset-0 z-50 flex items-start justify-center pt-[16vh] backdrop-blur-[4px]"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="w-[min(38rem,92vw)] overflow-hidden rounded-2xl bg-surface-container-lowest shadow-2xl ring-1 ring-outline-variant/35"
+        className="dialog-popover w-[min(38rem,92vw)] overflow-hidden"
         onKeyDown={onKeyDown}
       >
-        <div className="flex items-center gap-3 border-b border-outline-variant/20 px-4 py-3">
-          <svg className="h-4 w-4 shrink-0 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
-          </svg>
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Type a command…"
-            aria-label="Command"
-            role="combobox"
-            aria-expanded="true"
-            aria-autocomplete="list"
-            aria-controls="command-palette-results"
-            aria-activedescendant={results[selected] ? `command-${results[selected].id}` : undefined}
-            className="w-full bg-transparent text-base text-on-surface placeholder:text-on-surface-variant focus:outline-none"
-          />
-          <kbd className="shrink-0 rounded border border-outline-variant/40 px-1.5 py-0.5 text-[10px] text-on-surface-variant">esc</kbd>
+        <div className="p-3">
+          <div className="dialog-search-pill flex items-center gap-3 px-4 py-2.5 focus-within:shadow-[var(--ui-shadow-1),0_0_0_2px_color-mix(in_srgb,var(--murmur-primary)_35%,transparent)]">
+            <svg className="h-4 w-4 shrink-0 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+            </svg>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Type a command…"
+              aria-label="Command"
+              role="combobox"
+              aria-expanded="true"
+              aria-autocomplete="list"
+              aria-controls="command-palette-results"
+              aria-activedescendant={results[selected] ? `command-${results[selected].id}` : undefined}
+              className="w-full bg-transparent text-base text-on-surface placeholder:text-on-surface-variant focus:outline-none"
+            />
+            <kbd className="dialog-kbd shrink-0 px-1.5 py-0.5 text-[10px] font-medium text-on-surface-variant">esc</kbd>
+          </div>
         </div>
 
         <ul
@@ -130,7 +133,7 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
           id="command-palette-results"
           role="listbox"
           aria-label="Commands"
-          className="max-h-[min(28rem,60vh)] overflow-y-auto px-1.5 py-1.5"
+          className="max-h-[min(28rem,60vh)] overflow-y-auto px-3 pb-2"
         >
           {results.length === 0 && (
             <li className="px-3.5 py-6 text-center text-sm text-on-surface-variant">No matching command</li>
@@ -138,7 +141,7 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
           {results.map((command, index) => (
             <li key={command.id} role="none">
               {(index === 0 || results[index - 1]?.section !== command.section) && (
-                <p className="px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.14em] text-on-surface-variant">
+                <p className="dialog-eyebrow px-2.5 pb-1 pt-2 text-on-surface-variant">
                   {command.section}
                 </p>
               )}
@@ -154,13 +157,18 @@ export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProp
                   onClose();
                   void command.run();
                 }}
-                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${index === selected ? 'bg-surface-container-high text-on-surface' : 'text-on-surface hover:bg-surface-container'}`}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-[var(--ui-radius-control)] px-3 py-2.5 text-left text-sm font-medium transition-colors',
+                  index === selected
+                    ? 'bg-surface-container-high text-on-surface shadow-[var(--ui-shadow-1)]'
+                    : 'text-on-surface hover:bg-surface-container',
+                )}
               >
                 <span className="min-w-0 flex-1 truncate">{command.title}</span>
                 {command.hint && (
                   <span className="shrink-0 text-[11px] text-on-surface">{command.hint}</span>
                 )}
-                <span className="shrink-0 rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-medium text-on-surface-variant">
+                <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--murmur-on-surface)_6%,transparent)] px-2 py-0.5 text-[10px] font-semibold text-on-surface-variant">
                   {command.section}
                 </span>
               </button>

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
+import { motion, useReducedMotion } from 'motion/react';
 import type { CompletedUpdate } from '../lib/updater';
 
 interface WhatsNewModalProps {
@@ -13,6 +14,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
   const doneRef = useRef<HTMLButtonElement>(null);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
+  const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (!update) return;
@@ -53,24 +55,27 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-5 backdrop-blur-[2px]"
+      className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
       onClick={(event) => {
         if (event.target === event.currentTarget) onDismiss();
       }}
     >
-      <div
+      <motion.div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="whats-new-title"
         aria-describedby="whats-new-description"
-        className="flex max-h-[82vh] w-full max-w-[520px] flex-col overflow-hidden rounded-3xl border border-outline-variant/25 bg-surface-container-lowest shadow-2xl"
+        initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: shouldReduceMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}
+        className="dialog-popover flex max-h-[82vh] w-full max-w-[520px] flex-col overflow-hidden"
       >
-        <div className="relative shrink-0 overflow-hidden border-b border-outline-variant/20 px-6 pb-5 pt-6">
+        <div className="relative shrink-0 overflow-hidden border-b border-[var(--ui-hairline)] px-6 pb-5 pt-6">
           <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-primary/10 blur-3xl" />
           <div className="relative">
             <div className="mb-4 flex items-start justify-between gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-on-primary shadow-sm">
+              <div className="flex h-12 w-12 items-center justify-center rounded-[var(--ui-radius-card)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[var(--ui-shadow-accent)]">
                 <svg
                   className="h-6 w-6"
                   fill="none"
@@ -91,7 +96,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
               </span>
             </div>
 
-            <h2 id="whats-new-title" className="text-2xl font-semibold tracking-tight text-on-surface">
+            <h2 id="whats-new-title" className="text-2xl font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
               What&apos;s new in Murmur {update.version}
             </h2>
             <p id="whats-new-description" className="mt-1.5 text-sm text-on-surface-variant">
@@ -106,23 +111,23 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
               <Markdown rehypePlugins={[rehypeSanitize]}>{update.notes}</Markdown>
             </div>
           ) : (
-            <p className="rounded-xl bg-surface-container px-4 py-3 text-sm text-on-surface-variant">
+            <p className="dialog-card px-4 py-3 text-sm text-on-surface-variant">
               Murmur is up to date with the latest features and fixes.
             </p>
           )}
         </div>
 
-        <div className="shrink-0 border-t border-outline-variant/20 bg-surface-container-low/45 px-6 py-4">
+        <div className="shrink-0 border-t border-[var(--ui-hairline)] bg-[var(--ui-tint-sunken)] px-6 py-4">
           <button
             ref={doneRef}
             type="button"
             onClick={onDismiss}
-            className="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary shadow-sm transition-colors hover:bg-primary-dim focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-colors hover:brightness-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
           >
             Start using Murmur
           </button>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }
