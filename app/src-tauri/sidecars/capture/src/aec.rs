@@ -126,7 +126,7 @@ struct ActiveAec {
 
 enum PathState {
     Disabled,
-    Active(ActiveAec),
+    Active(Box<ActiveAec>),
     Bypassed {
         reason: EchoCancellationBypassReason,
         pending: RawTail,
@@ -154,11 +154,11 @@ impl MeetingMicrophonePath {
             return Self::bypassed(EchoCancellationBypassReason::InitializationFailed);
         };
         Self {
-            state: PathState::Active(ActiveAec {
+            state: PathState::Active(Box::new(ActiveAec {
                 processor: Box::new(processor),
                 render,
                 capture: RawTail::default(),
-            }),
+            })),
         }
     }
 
@@ -174,11 +174,11 @@ impl MeetingMicrophonePath {
     #[cfg(test)]
     fn with_processor(processor: Box<dyn EchoProcessor>, system_rate: u32) -> Self {
         Self {
-            state: PathState::Active(ActiveAec {
+            state: PathState::Active(Box::new(ActiveAec {
                 processor,
                 render: RenderFramer::new(system_rate).unwrap(),
                 capture: RawTail::default(),
-            }),
+            })),
         }
     }
 
@@ -201,9 +201,10 @@ impl MeetingMicrophonePath {
                     .push(samples, active.processor.as_mut())
                     .is_err()
                 {
+                    let ActiveAec { capture, .. } = *active;
                     self.state = PathState::Bypassed {
                         reason: EchoCancellationBypassReason::ProcessorFailed,
-                        pending: active.capture,
+                        pending: capture,
                     };
                     Some(self.status())
                 } else {
@@ -231,9 +232,10 @@ impl MeetingMicrophonePath {
         let state = std::mem::replace(&mut self.state, PathState::Disabled);
         match state {
             PathState::Active(active) => {
+                let ActiveAec { capture, .. } = *active;
                 self.state = PathState::Bypassed {
                     reason: EchoCancellationBypassReason::ProcessingBacklog,
-                    pending: active.capture,
+                    pending: capture,
                 };
                 Some(self.status())
             }

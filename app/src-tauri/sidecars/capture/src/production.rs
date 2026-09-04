@@ -20,8 +20,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
-    CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationMode, EchoCancellationStatus,
-    FailureCode, ProductionDevice, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
+    CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationMode, FailureCode,
+    ProductionDevice, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
     ProductionPcmMetadata, SessionNonce, SetupTransition, SystemAudioPermissionStatus,
     MAX_INPUT_DEVICE_COUNT,
 };
