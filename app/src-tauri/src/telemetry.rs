@@ -2589,6 +2589,38 @@ mod tests {
     }
 
     #[test]
+    fn dictation_terminal_never_retains_private_capture_content() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "pipeline.dictation_terminal",
+                "recording_id": 9,
+                "outcome": "success",
+                "error_code": "none",
+                "char_count": 24,
+                "raw_text": "SENTINEL PRIVATE RAW",
+                "final_text": "SENTINEL PRIVATE FINAL",
+                "capture": {
+                    "rawText": "SENTINEL PRIVATE NESTED RAW",
+                    "finalText": "SENTINEL PRIVATE NESTED FINAL"
+                }
+            });
+
+            sanitize_event_data("pipeline", &mut data, debug_build);
+
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert_eq!(data["event_code"], "pipeline.dictation_terminal");
+            assert_eq!(data["recording_id"], 9);
+            assert_eq!(data["outcome"], "success");
+            assert_eq!(data["error_code"], "none");
+            assert_eq!(data["char_count"], 24);
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(data.get("raw_text").is_none());
+            assert!(data.get("final_text").is_none());
+            assert!(data.get("capture").is_none());
+        }
+    }
+
+    #[test]
     fn dictation_partial_tick_schema_is_exact_and_content_free_in_every_build() {
         for debug_build in [true, false] {
             for outcome in ["emitted", "emit_failed"] {

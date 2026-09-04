@@ -22,6 +22,8 @@ mod correct_and_teach;
 mod correction;
 mod delivery_recovery;
 mod dictation_context;
+#[cfg(test)]
+mod dictation_diagnostics_contract;
 mod dictation_telemetry;
 pub mod evaluation;
 mod file_output;
