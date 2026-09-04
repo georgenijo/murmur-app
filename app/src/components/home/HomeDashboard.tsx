@@ -128,6 +128,7 @@ export function HomeDashboard({
 
         <HomeInsightsRail
           stats={stats}
+          historyEntries={historyEntries}
           personalization={personalization}
           onOpenInsights={onOpenInsights}
           onOpenVocabulary={() => onOpenSettings({ page: 'text', editorTab: 'aliases' })}

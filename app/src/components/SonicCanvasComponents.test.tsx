@@ -320,7 +320,7 @@ describe('Sonic Canvas component details', () => {
     // than a single click.
     const more = container.querySelector('[aria-label="More history actions"]') as HTMLButtonElement;
     await act(async () => more.click());
-    const clearButton = Array.from(container.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Hold to clear history'))!;
+    const clearButton = Array.from(document.querySelectorAll('button')).find((candidate) => candidate.textContent?.includes('Hold to clear history'))!;
 
     vi.useFakeTimers();
     await act(async () => {
@@ -341,7 +341,9 @@ describe('Sonic Canvas component details', () => {
         { id: 'newer', text: 'newest transcript', timestamp: 2, duration: 1 },
       ]} onClear={vi.fn()} onUpdateEntry={vi.fn()} />);
     });
-    const actions = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent === 'Correct & Teach');
+    const more = container.querySelector('[aria-label="More transcript actions"]') as HTMLButtonElement;
+    await act(async () => more.click());
+    const actions = Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')).filter((candidate) => candidate.textContent === 'Correct & Teach');
     expect(actions).toHaveLength(1);
     await act(async () => actions[0].click());
     expect((container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement).value).toBe('newest transcript');
