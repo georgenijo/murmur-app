@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const ENDPOINT: &str = "https://georgenijo.com/murmur/ingest";
 pub(crate) const TOKEN: &str = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0";
@@ -21,6 +22,7 @@ const STARTUP_DELAY_SECS: u64 = 15;
 const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// Defensive bound for the aggregate input-device count shipped in `/state`.
 const MAX_AUDIO_INPUT_COUNT: usize = 256;
+static SHIPPER_STATE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 struct ShipperState {
@@ -54,10 +56,51 @@ fn load_state(path: &Path) -> ShipperState {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
+        .filter(|state: &ShipperState| {
+            uuid::Uuid::parse_str(&state.install_id)
+                .is_ok_and(|install_id| install_id.to_string() == state.install_id)
+        })
         .unwrap_or_else(|| ShipperState {
             install_id: uuid::Uuid::new_v4().to_string(),
             offset: 0,
         })
+}
+
+fn load_or_create_state(path: &Path) -> Result<ShipperState, String> {
+    let _guard = SHIPPER_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(state) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|value| serde_json::from_str::<ShipperState>(&value).ok())
+        .filter(|state| {
+            uuid::Uuid::parse_str(&state.install_id)
+                .is_ok_and(|install_id| install_id.to_string() == state.install_id)
+        })
+    {
+        return Ok(state);
+    }
+    let state = ShipperState {
+        install_id: uuid::Uuid::new_v4().to_string(),
+        offset: 0,
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| "diagnostic identity path unavailable".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|_| "diagnostic identity could not be created".to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    let payload = serde_json::to_vec(&state)
+        .map_err(|_| "diagnostic identity could not be encoded".to_string())?;
+    std::fs::write(&temporary, payload)
+        .and_then(|_| std::fs::rename(&temporary, path))
+        .map_err(|_| "diagnostic identity could not be saved".to_string())?;
+    Ok(state)
+}
+
+pub(crate) fn install_id_for_private_capture() -> Result<String, String> {
+    let path = state_path().ok_or_else(|| "diagnostic identity path unavailable".to_string())?;
+    Ok(load_or_create_state(&path)?.install_id)
 }
 
 fn save_state(path: &Path, state: &ShipperState) {
@@ -331,7 +374,9 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
         return;
     };
     let rotated = log.with_extension("jsonl.1");
-    let mut state = load_state(&state_file);
+    let Ok(mut state) = load_or_create_state(&state_file) else {
+        return;
+    };
 
     // Bounded loop: drain at most a handful of batches per tick so a huge
     // backlog trickles out instead of hammering the endpoint.
@@ -523,6 +568,18 @@ mod tests {
         // A second fresh load (different path) gets a different UUID.
         let other = load_state(&dir.join("nope.json"));
         assert_ne!(other.install_id, fresh.install_id);
+    }
+
+    #[test]
+    fn private_upload_and_first_tick_share_one_persisted_install_id() {
+        let dir = tmp_dir("private_identity");
+        let path = dir.join("shipper_state.json");
+
+        let private_upload = load_or_create_state(&path).unwrap();
+        let first_tick = load_or_create_state(&path).unwrap();
+
+        assert_eq!(private_upload.install_id, first_tick.install_id);
+        assert_eq!(load_state(&path).install_id, private_upload.install_id);
     }
 
     #[test]

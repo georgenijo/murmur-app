@@ -144,3 +144,49 @@ fn private_text_is_utf8_safe_bounded_and_marked_when_truncated() {
         .text
         .is_char_boundary(content.final_text.text.len()));
 }
+
+#[test]
+fn consent_can_be_revoked_and_corrupt_retention_is_removed() {
+    let root = tempfile::tempdir().unwrap();
+    let store = DictationDiagnostics::default();
+    store.initialize(root.path().to_path_buf()).unwrap();
+
+    store.arm_next().unwrap();
+    assert_eq!(store.disarm(), DictationCaptureArmStatusV1::Unarmed);
+    assert!(!store.claim(1));
+
+    store.arm_next().unwrap();
+    assert!(store.claim(2));
+    store
+        .finish(
+            2,
+            DictationCaptureCompletion::Success {
+                raw_text: "private",
+                final_text: "private",
+                model_id: "test-model",
+                total_ms: 42,
+            },
+        )
+        .unwrap();
+    let capture = store.list_captures().unwrap().pop().unwrap();
+    let path = root
+        .path()
+        .join("captures")
+        .join(format!("{}.json", capture.capture_id));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["expiresAtMs"] = serde_json::json!(capture.expires_at_ms + 1);
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    assert!(store.list_captures().unwrap().is_empty());
+    assert!(!path.exists());
+}

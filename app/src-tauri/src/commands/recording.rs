@@ -1,5 +1,6 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, AudioStartError};
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
+use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::model_runtime::{self, PreparationReason};
 use crate::performance_metrics::{
@@ -38,6 +39,63 @@ const DICTATION_SLO_CONTRACT: u64 = 1;
 const PARTIAL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
 const PARTIAL_MIN_SAMPLES: usize = 16_000 * 800 / 1_000;
 const PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 20;
+
+struct SuccessfulPrivateCapture<'a> {
+    raw_text: &'a str,
+    final_text: &'a str,
+    model_id: &'a str,
+    total_ms: u64,
+}
+
+fn emit_dictation_terminal(
+    state: &State,
+    recording_id: u64,
+    outcome: DictationTerminalOutcome,
+    error_code: DictationErrorCode,
+) -> bool {
+    emit_dictation_terminal_with_capture(state, recording_id, outcome, error_code, 0, None)
+}
+
+fn emit_dictation_terminal_with_capture(
+    state: &State,
+    recording_id: u64,
+    outcome: DictationTerminalOutcome,
+    error_code: DictationErrorCode,
+    char_count: u64,
+    success: Option<SuccessfulPrivateCapture<'_>>,
+) -> bool {
+    let telemetry_emitted = state
+        .app_state
+        .dictation_telemetry
+        .emit_terminal_with_output(recording_id, outcome, error_code, char_count);
+    let completion = match (outcome, success) {
+        (DictationTerminalOutcome::Success, Some(success)) => DictationCaptureCompletion::Success {
+            raw_text: success.raw_text,
+            final_text: success.final_text,
+            model_id: success.model_id,
+            total_ms: success.total_ms,
+        },
+        _ => DictationCaptureCompletion::Terminal {
+            outcome,
+            error_code,
+        },
+    };
+    if let Some(capture) = state
+        .dictation_diagnostics
+        .complete(recording_id, completion)
+    {
+        let diagnostics = state.dictation_diagnostics.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if diagnostics.persist_capture(capture).is_err() {
+                tracing::warn!(
+                    target: "system",
+                    "dictation diagnostic capture could not be saved"
+                );
+            }
+        });
+    }
+    telemetry_emitted
+}
 
 fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool {
     app_state.recording_id.load(Ordering::SeqCst) == recording_id
@@ -3734,8 +3792,10 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
         AudioLifecycleEvent::StartupDiagnostic(_) => {}
         AudioLifecycleEvent::Accepted => {
             state.app_state.dictation_telemetry.accepted(recording_id);
+            state.dictation_diagnostics.claim(recording_id);
             if !is_current() {
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
                     DictationErrorCode::StaleOwner,
@@ -3751,7 +3811,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     status = ?dictation.status,
                     "stale audio readiness ignored by dictation lifecycle"
                 );
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
                     DictationErrorCode::StaleOwner,
@@ -3798,7 +3859,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                         DictationStatus::Starting | DictationStatus::Recording
                     )
                 {
-                    state.app_state.dictation_telemetry.emit_terminal(
+                    emit_dictation_terminal(
+                        &state,
                         recording_id,
                         DictationTerminalOutcome::Superseded,
                         DictationErrorCode::StaleOwner,
@@ -3854,11 +3916,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     ),
                     _ => unreachable!("recovery only begins from starting or recording"),
                 };
-                state.app_state.dictation_telemetry.emit_terminal(
-                    recording_id,
-                    outcome,
-                    error_code,
-                );
+                emit_dictation_terminal(&state, recording_id, outcome, error_code);
                 let _ = app_handle.emit(
                     "recording-cancelled",
                     serde_json::json!({ "recordingId": recording_id }),
@@ -3872,7 +3930,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     AudioCancelReason::SystemWake => DictationErrorCode::SystemWake,
                     _ => DictationErrorCode::RuntimeFailure,
                 };
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::RuntimeInterruption,
                     error_code,
@@ -3885,7 +3944,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             recovery_reason,
         } => {
             if !is_current() {
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
                     DictationErrorCode::StaleOwner,
@@ -3897,7 +3957,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             } else {
                 DictationTerminalOutcome::CaptureInitFailure
             };
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 recording_id,
                 outcome,
                 DictationErrorCode::from_audio_failure(kind),
@@ -3958,7 +4019,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
         } => {
             if !is_current() {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
                     DictationErrorCode::StaleOwner,
@@ -4006,7 +4068,8 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 transcribe_interruption(app_handle.clone(), recording_id);
             } else {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::RuntimeInterruption,
                     DictationErrorCode::RuntimeFailure,
@@ -4041,14 +4104,16 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                         | DictationStatus::Recovering
                 )
             {
-                state.app_state.dictation_telemetry.emit_terminal(
+                emit_dictation_terminal(
+                    &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
                     DictationErrorCode::StaleOwner,
                 );
                 return;
             }
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 recording_id,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::RuntimeFailure,
@@ -4319,6 +4384,12 @@ pub async fn start_native_recording(
             transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
         }
         let _ = app_handle.emit("recording-status-changed", "idle");
+        emit_dictation_terminal(
+            &state,
+            rid,
+            DictationTerminalOutcome::CaptureInitFailure,
+            DictationErrorCode::RuntimeFailure,
+        );
         return match error {
             AudioStartError::AlreadyStarting => Ok(serde_json::json!({
                 "type": "already_starting",
@@ -4397,7 +4468,8 @@ pub async fn start_native_recording(
         }
         (NativeStartContextAction::Superseded, status) => {
             dictation_performance_begins().abort(rid);
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 rid,
                 DictationTerminalOutcome::Superseded,
                 DictationErrorCode::StaleOwner,
@@ -4482,7 +4554,8 @@ async fn stop_native_recording_for(
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
         let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");
         let _ = audio_lifecycle::take_interrupted_dictation(stale_recording_id);
-        state.app_state.dictation_telemetry.emit_terminal(
+        emit_dictation_terminal(
+            &state,
             stale_recording_id,
             DictationTerminalOutcome::Superseded,
             DictationErrorCode::StaleOwner,
@@ -4551,7 +4624,16 @@ async fn stop_native_recording_for(
         // after the status snapshot. A starting-only cancellation could
         // otherwise no-op while the command falsely reports cancellation and
         // leaves a newly live stream running.
-        audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)?;
+        if let Err(error) = audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)
+        {
+            emit_dictation_terminal(
+                &state,
+                rid,
+                DictationTerminalOutcome::PipelineFailure,
+                DictationErrorCode::RuntimeFailure,
+            );
+            return Err(error.to_string());
+        }
         return Ok(serde_json::json!({
             "type": "recording_cancelled",
             "state": "recovering"
@@ -4560,7 +4642,8 @@ async fn stop_native_recording_for(
     let context = match state.app_state.active_context(rid) {
         Some(context) => context,
         None => {
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::MissingContext,
@@ -4613,7 +4696,8 @@ async fn stop_native_recording_for(
         capture.samples
     } else {
         audio_lifecycle::stop_dictation_recording(rid).map_err(|e| {
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 rid,
                 DictationTerminalOutcome::StopFailure,
                 DictationErrorCode::StopFinalizationFailed,
@@ -4656,7 +4740,8 @@ async fn stop_native_recording_for(
     ));
 
     if samples.is_empty() {
-        state.app_state.dictation_telemetry.emit_terminal(
+        emit_dictation_terminal(
+            &state,
             rid,
             interruption_error
                 .map(|_| DictationTerminalOutcome::RuntimeInterruption)
@@ -4689,7 +4774,8 @@ async fn stop_native_recording_for(
     const MIN_RECORDING_SAMPLES: usize = 4_800; // 0.3s at 16kHz
 
     if samples.len() < MIN_RECORDING_SAMPLES {
-        state.app_state.dictation_telemetry.emit_terminal(
+        emit_dictation_terminal(
+            &state,
             rid,
             interruption_error
                 .map(|_| DictationTerminalOutcome::RuntimeInterruption)
@@ -4744,7 +4830,8 @@ async fn stop_native_recording_for(
     let pipeline = match pipeline_result {
         Ok(result) => result,
         Err(error) => {
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 rid,
                 interruption_error
                     .map(|_| DictationTerminalOutcome::RuntimeInterruption)
@@ -4772,9 +4859,9 @@ async fn stop_native_recording_for(
     };
     let char_count = text.len();
     let model_name = context.transcription.model_name.clone();
-    let backend_name = model_runtime::model_definition(&model_name)?
-        .backend
-        .as_str()
+    let backend_name = model_runtime::model_definition(&model_name)
+        .map(|model| model.backend.as_str())
+        .unwrap_or("unknown")
         .to_string();
 
     let (terminal_outcome, terminal_error) = if let Some(error_code) = interruption_error {
@@ -4793,10 +4880,20 @@ async fn stop_native_recording_for(
             ),
         }
     };
-    state
-        .app_state
-        .dictation_telemetry
-        .emit_terminal_with_output(rid, terminal_outcome, terminal_error, char_count as u64);
+    let successful_capture = history.as_ref().map(|history| SuccessfulPrivateCapture {
+        raw_text: &history.raw_text,
+        final_text: &text,
+        model_id: &model_name,
+        total_ms,
+    });
+    emit_dictation_terminal_with_capture(
+        &state,
+        rid,
+        terminal_outcome,
+        terminal_error,
+        char_count as u64,
+        successful_capture,
+    );
 
     tracing::info!(
         target: "pipeline",
@@ -4909,7 +5006,16 @@ pub async fn cancel_native_recording(
         DictationStatus::Starting | DictationStatus::Recording
     ) {
         drop(transition);
-        audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)?;
+        if let Err(error) = audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)
+        {
+            emit_dictation_terminal(
+                &state,
+                rid,
+                DictationTerminalOutcome::PipelineFailure,
+                DictationErrorCode::RuntimeFailure,
+            );
+            return Err(error.to_string());
+        }
         return Ok(());
     }
     state.app_state.clear_active_context(rid);
@@ -4918,7 +5024,8 @@ pub async fn cancel_native_recording(
         DictationStatus::Processing => {
             // Mark current recording as cancelled — pipeline will check at next checkpoint.
             state.app_state.cancel_recording(rid);
-            state.app_state.dictation_telemetry.emit_terminal(
+            emit_dictation_terminal(
+                &state,
                 rid,
                 DictationTerminalOutcome::UserCancelledProcessing,
                 DictationErrorCode::CancelledProcessing,
@@ -5888,6 +5995,8 @@ mod tests {
                 query_history: crate::query_history::QueryHistoryStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
+                dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
+                ),
                 notch_info: std::sync::Mutex::new(None),
                 display_snapshot: std::sync::Mutex::new(None),
                 transform_popover_anchor: std::sync::Mutex::new(None),
@@ -6012,6 +6121,8 @@ mod tests {
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
+                ),
+                dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
                 display_snapshot: std::sync::Mutex::new(None),

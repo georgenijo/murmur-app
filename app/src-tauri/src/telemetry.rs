@@ -2596,7 +2596,7 @@ mod tests {
     fn release_pipeline_keeps_only_allowlisted_dictation_lifecycle_strings() {
         let mut data = serde_json::json!({
             "recording_id": 9,
-            "total_ms": 420,
+            "char_count": 42,
             "event_code": "pipeline.dictation_terminal",
             "outcome": "runtime_interruption",
             "error_code": "stream_invalidated",
@@ -2607,7 +2607,7 @@ mod tests {
         sanitize_event_data("pipeline", &mut data, false);
 
         assert_eq!(data["recording_id"], 9);
-        assert_eq!(data["total_ms"], 420);
+        assert_eq!(data["char_count"], 42);
         assert_eq!(data["event_code"], "pipeline.dictation_terminal");
         assert_eq!(data["outcome"], "runtime_interruption");
         assert_eq!(data["error_code"], "stream_invalidated");
@@ -2653,6 +2653,22 @@ mod tests {
             assert!(data.get("final_text").is_none());
             assert!(data.get("capture").is_none());
         }
+    }
+
+    #[test]
+    fn content_free_dictation_terminal_bytes_are_unchanged() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_terminal",
+            "recording_id": 41,
+            "outcome": "success",
+            "error_code": "none",
+            "char_count": 12
+        });
+        let expected = serde_json::to_vec(&data).unwrap();
+
+        sanitize_event_data("pipeline", &mut data, false);
+
+        assert_eq!(serde_json::to_vec(&data).unwrap(), expected);
     }
 
     #[test]
