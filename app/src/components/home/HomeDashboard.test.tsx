@@ -44,7 +44,7 @@ describe('home dashboard interactions', () => {
 
     await renderBar('idle');
     await act(async () => (container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement).click());
-    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Transcribe File'))?.click());
+    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Transcribe file'))?.click());
     expect(onRecord).toHaveBeenCalledOnce();
     expect(onTranscribeFile).toHaveBeenCalledOnce();
 
