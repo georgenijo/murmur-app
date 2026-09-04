@@ -93,6 +93,16 @@ vi.mock('../../lib/transformDiagnostics', () => ({
   deleteTransformCapture: vi.fn(),
 }));
 
+vi.mock('../../lib/dictationDiagnostics', () => ({
+  getDictationCaptureStatus: vi.fn(async () => ({ state: 'unarmed' })),
+  listDictationCaptures: vi.fn(async () => []),
+  armNextDictationCapture: vi.fn(),
+  disarmNextDictationCapture: vi.fn(),
+  getDictationCapture: vi.fn(),
+  deleteDictationCapture: vi.fn(),
+  uploadDictationCapture: vi.fn(),
+}));
+
 import { DiagnosticsWorkspace, type DiagnosticsTab } from './DiagnosticsWorkspace';
 
 describe('DiagnosticsWorkspace shared diagnostics shell', () => {
@@ -119,7 +129,7 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     container.remove();
   });
 
-  it('renders the six diagnostics tabs in their intended order', async () => {
+  it('renders the diagnostics tabs in their intended order', async () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(tabs.map(tab => tab.textContent)).toEqual([
       'Events',
@@ -128,6 +138,7 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
       'Latency',
       'Compare',
       'Transform',
+      'Dictation',
     ]);
     expect(container.textContent).not.toContain('Metrics');
 
