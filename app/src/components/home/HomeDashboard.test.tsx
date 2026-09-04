@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomeRecordingBar } from './HomeRecordingBar';
 import { HomeSidebar } from './HomeSidebar';
+import { buildHistoryActivity } from './HomeInsightsRail';
 import { PersonalizationCard } from './PersonalizationCard';
 
 describe('home dashboard interactions', () => {
@@ -97,5 +98,23 @@ describe('home dashboard interactions', () => {
     expect(container.textContent).toContain('1 of 3 set up');
     expect(container.textContent).toContain('not a voice-training or confidence score');
     expect(container.textContent).not.toContain('%');
+  });
+
+  it('builds activity from 14 local history days and hides thinner data', () => {
+    const entries = Array.from({ length: 14 }, (_, index) => ({
+      id: `entry-${index}`,
+      text: `dictation ${index}`,
+      timestamp: new Date(2026, 7, 15 + index, 23, 30).getTime(),
+      duration: 1,
+      source: 'recording' as const,
+    }));
+    const referenceDate = new Date(2026, 8, 4, 12);
+
+    expect(buildHistoryActivity(entries.slice(0, 13), referenceDate)).toBeNull();
+    const activity = buildHistoryActivity(entries, referenceDate);
+    expect(activity?.data).toHaveLength(14);
+    expect(activity?.data[0]).toMatchObject({ date: '2026-08-15', value: 1 });
+    expect(activity?.startDate).toBe('2026-07-11');
+    expect(activity?.endDate).toBe('2026-09-04');
   });
 });
