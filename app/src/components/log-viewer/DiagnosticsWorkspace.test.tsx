@@ -13,6 +13,7 @@ const hookMocks = vi.hoisted(() => ({
   useEventStore: vi.fn(),
   usePerformanceDiagnostics: vi.fn(),
   usePerformanceStoreHealth: vi.fn(),
+  getDictationCaptureStatus: vi.fn(),
 }));
 
 vi.mock('../../lib/hooks/useEventStore', () => ({
@@ -94,7 +95,7 @@ vi.mock('../../lib/transformDiagnostics', () => ({
 }));
 
 vi.mock('../../lib/dictationDiagnostics', () => ({
-  getDictationCaptureStatus: vi.fn(async () => ({ state: 'unarmed' })),
+  getDictationCaptureStatus: () => hookMocks.getDictationCaptureStatus(),
   listDictationCaptures: vi.fn(async () => []),
   armNextDictationCapture: vi.fn(),
   disarmNextDictationCapture: vi.fn(),
@@ -116,6 +117,8 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     hookMocks.useEventStore.mockClear();
     hookMocks.usePerformanceDiagnostics.mockClear();
     hookMocks.usePerformanceStoreHealth.mockClear();
+    hookMocks.getDictationCaptureStatus.mockReset();
+    hookMocks.getDictationCaptureStatus.mockResolvedValue({ state: 'unarmed' });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -184,6 +187,25 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     ));
     expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
     expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps the private capture badge visible while switching diagnostics tabs', async () => {
+    hookMocks.getDictationCaptureStatus.mockResolvedValue({
+      state: 'armed',
+      expiresAtMs: Date.now() + 60_000,
+    });
+    await act(async () => root.render(
+      <DiagnosticsWorkspace key="armed" onPopOut={onPopOut} />,
+    ));
+    expect(container.textContent).toContain('Private capture armed');
+
+    const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
+    await act(async () => {
+      const performanceTab = tabs.find(tab => tab.textContent === 'Performance');
+      if (!(performanceTab instanceof HTMLButtonElement)) throw new Error('Missing Performance tab');
+      performanceTab.click();
+    });
+    expect(container.textContent).toContain('Private capture armed');
   });
 
   it('enables store health only when an authorized host opts in', async () => {

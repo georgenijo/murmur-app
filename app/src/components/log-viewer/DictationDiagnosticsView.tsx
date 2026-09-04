@@ -35,6 +35,52 @@ interface DictationDiagnosticsViewProps {
   canArm?: boolean;
 }
 
+interface DictationCaptureStatusBadgeProps {
+  active?: boolean;
+  onOpen: () => void;
+}
+
+export function DictationCaptureStatusBadge({
+  active = true,
+  onOpen,
+}: DictationCaptureStatusBadgeProps) {
+  const [status, setStatus] = useState<DictationCaptureArmStatusV1>({ state: 'unarmed' });
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!active) return undefined;
+    let disposed = false;
+    const refresh = () => {
+      void getDictationCaptureStatus().then(nextStatus => {
+        if (!disposed) setStatus(nextStatus);
+      }).catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      refresh();
+    }, 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [active]);
+
+  if (status.state === 'unarmed') return null;
+  const label = status.state === 'armed'
+    ? `Private capture armed · ${Math.max(0, Math.ceil((status.expiresAtMs - now) / 1_000))}s`
+    : `Private capture active · recording ${status.recordingId}`;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="rounded-full bg-error/10 px-2.5 py-1 text-[11px] font-semibold text-error"
+    >
+      {label}
+    </button>
+  );
+}
+
 export function DictationDiagnosticsView({
   active = true,
   canArm = true,

@@ -10,7 +10,10 @@ import { PerformanceView } from './PerformanceView';
 import { RunsView } from './RunsView';
 import { ReportCompareView } from './ReportCompareView';
 import { TransformDiagnosticsView } from './TransformDiagnosticsView';
-import { DictationDiagnosticsView } from './DictationDiagnosticsView';
+import {
+  DictationCaptureStatusBadge,
+  DictationDiagnosticsView,
+} from './DictationDiagnosticsView';
 import { LatencyMapView } from './LatencyMapView';
 import { LEVELS, STREAMS, type StreamName, type LevelName } from '../../lib/events';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
@@ -167,6 +170,10 @@ export function DiagnosticsWorkspace({
               </button>
             ))}
           </div>
+          <DictationCaptureStatusBadge
+            active={active}
+            onOpen={() => setTab('dictation')}
+          />
           {/* Actions */}
           {(onPopOut || tab === 'events') && (
             <div className="flex flex-wrap gap-2">
