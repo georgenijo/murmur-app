@@ -199,13 +199,14 @@ function fixtureTimestamp(dayOffset: number, hour: number, minute: number): numb
 const entries: HistoryEntry[] = [
   ...Array.from({ length: 14 }, (_, index): HistoryEntry => {
     const dayOffset = index - 13;
+    const daysAgo = Math.abs(dayOffset);
     const source = index % 5 === 0 ? 'file' : 'recording';
     return {
       schemaVersion: 2,
       id: `activity-${index}`,
       text: dayOffset === 0
         ? 'History owns the window, with the newest work close at hand and older notes one scroll away.'
-        : `Local fixture dictation from ${Math.abs(dayOffset)} days ago keeps the activity view tied to real transcript timestamps.`,
+        : `Local fixture dictation from ${daysAgo} ${daysAgo === 1 ? 'day' : 'days'} ago keeps the activity view tied to real transcript timestamps.`,
       timestamp: fixtureTimestamp(dayOffset, 9 + (index % 4), 5 + index),
       duration: 6 + index,
       source,

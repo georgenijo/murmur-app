@@ -277,7 +277,7 @@ export function AnimatedDropdownItem({
         "rounded-lg px-2.5 py-2 text-sm outline-none",
         "transition-colors duration-75",
         variant === "danger"
-          ? "text-danger-foreground focus:text-white"
+          ? "text-danger-foreground focus:text-on-primary"
           : "text-popover-foreground",
         disabled && "cursor-not-allowed opacity-50",
         className,
@@ -314,7 +314,7 @@ export function AnimatedDropdownItem({
           className={cn(
             "relative z-10 shrink-0 [&_svg]:size-4 text-muted-foreground",
             variant === "danger"
-              ? "text-danger-foreground group-focus:text-white"
+              ? "text-danger-foreground group-focus:text-on-primary"
               : "text-popover-foreground",
           )}
         >

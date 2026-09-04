@@ -345,7 +345,7 @@ export default function SmartOverflow({
                                   "flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm outline-none",
                                   "data-[highlighted]:bg-accent disabled:cursor-not-allowed disabled:opacity-45",
                                   action.destructive
-                                    ? "text-danger-foreground data-[highlighted]:bg-danger data-[highlighted]:text-white"
+                                    ? "text-danger-foreground data-[highlighted]:bg-danger data-[highlighted]:text-on-primary"
                                     : "text-popover-foreground",
                                 )}
                               >
