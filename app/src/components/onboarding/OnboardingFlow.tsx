@@ -706,7 +706,7 @@ function WizardNavigationRow({
           type="button"
           onClick={onNext}
           disabled={!nextEnabled}
-          className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-5 py-2 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+          className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-5 py-2 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[background-image] hover:bg-[linear-gradient(140deg,var(--murmur-primary-dim),var(--murmur-primary))] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
         >
           {nextLabel}
         </button>
