@@ -274,3 +274,105 @@ Copyright 2017 The Abseil Authors.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+## RNNoise
+
+The bundled WebRTC Audio Processing build statically links RNNoise.
+
+Copyright (c) 2017, Mozilla
+Copyright (c) 2007-2017, Jean-Marc Valin
+Copyright (c) 2005-2017, Xiph.Org Foundation
+Copyright (c) 2003-2004, Mark Borgerding
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+- Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+- Neither the name of the Xiph.Org Foundation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION
+OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## PFFFT and FFTPACK
+
+The bundled WebRTC Audio Processing build statically links PFFFT. PFFFT is
+based on FFTPACKv4 by Dr. Paul Swarztrauber of NCAR.
+
+Copyright (c) 2013 Julien Pommier (pommier@modartt.com)
+
+Copyright (c) 2004 the University Corporation for Atmospheric Research
+("UCAR"). All rights reserved. Developed by NCAR's Computational and
+Information Systems Laboratory, UCAR, www.cisl.ucar.edu.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+- Neither the names of NCAR's Computational and Information Systems
+Laboratory, the University Corporation for Atmospheric Research,
+nor the names of its sponsors or contributors may be used to
+endorse or promote products derived from this Software without
+specific prior written permission.
+
+- Redistributions of source code must retain the above copyright
+notices, this list of conditions, and the disclaimer below.
+
+- Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions, and the disclaimer below in the
+documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE CONTRIBUTORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE
+SOFTWARE.
+
+## WebRTC third-party FFT
+
+Copyright (c) 1995, 1997 Mark Olesen, Queen's University at Kingston, Canada.
+
+Permission to use, copy, modify, and distribute this software for
+any purpose without fee is hereby granted, provided that this
+entire notice is included in all copies of any software which is
+or includes a copy or modification of this software and in all
+copies of the supporting documentation for such software.
+
+THIS SOFTWARE IS BEING PROVIDED "AS IS", WITHOUT ANY EXPRESS OR
+IMPLIED WARRANTY. IN PARTICULAR, NEITHER THE AUTHOR NOR QUEEN'S
+UNIVERSITY AT KINGSTON MAKES ANY REPRESENTATION OR WARRANTY OF ANY
+KIND CONCERNING THE MERCHANTABILITY OF THIS SOFTWARE OR ITS
+FITNESS FOR ANY PARTICULAR PURPOSE.
+
+## WebRTC square-root routine
+
+The `spl_sqrt_floor` routine was written by Wilco Dijkstra in 1996. The author
+confirmed in 2011 that the routines are in the public domain and may be used
+for any purpose.
+
+## Ooura FFT
+
+Copyright Takuya OOURA, 1996-2001.
+
+You may use, copy, modify, and distribute this code for any purpose, including
+commercial use, without a fee. Refer to the package when you modify the code.
