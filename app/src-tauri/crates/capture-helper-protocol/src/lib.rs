@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 7;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 8;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -40,6 +40,38 @@ pub enum CaptureBackend {
 pub enum CaptureChannel {
     Microphone,
     System,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EchoCancellationMode {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum EchoCancellationBypassReason {
+    InitializationFailed,
+    UnsupportedFormat,
+    RenderDiscontinuity,
+    ProcessorFailed,
+    ProcessingBacklog,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EchoCancellationStatus {
+    Disabled,
+    Active,
+    Bypassed {
+        reason: EchoCancellationBypassReason,
+    },
 }
 
 impl CaptureChannel {
@@ -95,6 +127,7 @@ pub enum ProductionHostMessage {
     StartMeeting {
         device_id: Option<String>,
         backend: CaptureBackend,
+        echo_cancellation: EchoCancellationMode,
     },
     /// Explicit, user-initiated CATap probe. The host never sends this from a
     /// focus listener or permission polling loop because creating a tap is the
@@ -166,6 +199,9 @@ pub enum ProductionHelperMessage {
         channel: CaptureChannel,
         step: CaptureSetupStep,
         transition: SetupTransition,
+    },
+    MeetingEchoCancellation {
+        status: EchoCancellationStatus,
     },
     SystemAudioPermission {
         status: SystemAudioPermissionStatus,
@@ -763,6 +799,34 @@ mod tests {
             read_production_frame::<ProductionHelperMessage>(&mut bytes.as_slice(), 43, nonce),
             Err(FrameError::StaleCapture)
         ));
+    }
+
+    #[test]
+    fn meeting_echo_cancellation_contract_is_typed_and_default_off() {
+        assert_eq!(
+            EchoCancellationMode::default(),
+            EchoCancellationMode::Disabled
+        );
+        let request = ProductionHostMessage::StartMeeting {
+            device_id: None,
+            backend: CaptureBackend::Auhal,
+            echo_cancellation: EchoCancellationMode::Enabled,
+        };
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ProductionHostMessage>(&encoded).unwrap(),
+            request
+        );
+        let status = ProductionHelperMessage::MeetingEchoCancellation {
+            status: EchoCancellationStatus::Bypassed {
+                reason: EchoCancellationBypassReason::ProcessorFailed,
+            },
+        };
+        let encoded = serde_json::to_vec(&status).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ProductionHelperMessage>(&encoded).unwrap(),
+            status
+        );
     }
 
     #[test]

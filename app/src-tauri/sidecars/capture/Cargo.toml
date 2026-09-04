@@ -12,7 +12,6 @@ aec-spike = [
     "dep:serde",
     "dep:serde_json",
     "dep:sha2",
-    "dep:webrtc-audio-processing",
 ]
 
 [dependencies]
@@ -22,11 +21,10 @@ hound = { version = "3.5", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
-# Pin the young 2.x API exactly; it compiles a bundled, static AEC3 build only
-# when the private aec-spike feature is requested.
-webrtc-audio-processing = { version = "=2.1.0", features = ["bundled"], optional = true }
+# Pin the young 2.x API exactly. The signed Apple Silicon capture worker bundles
+# AEC3 for the default-off Meeting Capture option; the app crate never links it.
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 block2 = "0.6"
 libc = "0.2"
 coreaudio-rs = "0.11.3"
@@ -36,6 +34,7 @@ objc2-core-audio = "0.3"
 objc2-core-audio-types = { version = "0.3", features = ["CoreAudioBaseTypes"] }
 objc2-core-foundation = { version = "0.3", features = ["CFArray", "CFDictionary", "CFString"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSUUID", "NSValue"] }
+webrtc-audio-processing = { version = "=2.1.0", features = ["bundled"] }
 
 [dev-dependencies]
 loom = "0.7.2"

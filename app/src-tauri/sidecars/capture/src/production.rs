@@ -20,9 +20,10 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
-    CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionDevice, ProductionFrame,
-    ProductionHelperMessage, ProductionHostMessage, ProductionPcmMetadata, SessionNonce,
-    SetupTransition, SystemAudioPermissionStatus, MAX_INPUT_DEVICE_COUNT,
+    CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationMode, EchoCancellationStatus,
+    FailureCode, ProductionDevice, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
+    ProductionPcmMetadata, SessionNonce, SetupTransition, SystemAudioPermissionStatus,
+    MAX_INPUT_DEVICE_COUNT,
 };
 use std::ffi::c_void;
 use std::io::{Read, Write};
@@ -153,6 +154,16 @@ impl SpscRing {
 
     pub(super) fn producer_position(&self) -> usize {
         self.head.load(Ordering::Acquire)
+    }
+
+    pub(super) fn len(&self) -> usize {
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head >= tail {
+            head - tail
+        } else {
+            self.slots.len() - tail + head
+        }
     }
 
     #[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
@@ -966,6 +977,7 @@ fn run_meeting(
     nonce: SessionNonce,
     device_id: Option<String>,
     backend: CaptureBackend,
+    echo_cancellation: EchoCancellationMode,
     fault: Option<&str>,
 ) -> Result<(), ()> {
     if !crate::system_audio::supported() {
@@ -1092,6 +1104,17 @@ fn run_meeting(
         }
     };
     let system_rate = system_stream.sample_rate();
+    let mut microphone_path =
+        crate::aec::MeetingMicrophonePath::new(echo_cancellation, microphone_rate, system_rate);
+    write_production_control(
+        stdout,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::MeetingEchoCancellation {
+            status: microphone_path.status(),
+        },
+    )
+    .map_err(|_| ())?;
     for channel in [CaptureChannel::System, CaptureChannel::Microphone] {
         write_production_control(
             stdout,
@@ -1155,6 +1178,18 @@ fn run_meeting(
             }
         }
 
+        if let Some(status) =
+            microphone_path.bypass_for_backlog(microphone_ring.len(), system_ring.len())
+        {
+            write_production_control(
+                stdout,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::MeetingEchoCancellation { status },
+            )
+            .map_err(|_| ())?;
+        }
+
         let now = Instant::now();
         let microphone_position = microphone_ring.producer_position();
         if microphone_position != last_microphone_position {
@@ -1193,42 +1228,6 @@ fn run_meeting(
             }
         }
 
-        let microphone_count = microphone_ring.drain(&mut microphone_scratch);
-        if microphone_count > 0 {
-            if !microphone_active {
-                microphone_active = true;
-                write_production_control(
-                    stdout,
-                    capture_id,
-                    nonce,
-                    &ProductionHelperMessage::MeetingPhase {
-                        phase: CapturePhase::Active,
-                        channel: CaptureChannel::Microphone,
-                    },
-                )
-                .map_err(|_| ())?;
-            }
-            write_production_pcm(
-                stdout,
-                capture_id,
-                nonce,
-                ProductionPcmMetadata {
-                    channel: CaptureChannel::Microphone,
-                    sequence: microphone_sequence,
-                    sample_rate: microphone_rate,
-                    captured_at_ns: meeting_started_at
-                        .elapsed()
-                        .as_nanos()
-                        .min(u64::MAX as u128) as u64,
-                    sample_offset: microphone_samples,
-                },
-                &microphone_scratch[..microphone_count],
-            )
-            .map_err(|_| ())?;
-            microphone_sequence += 1;
-            microphone_samples += microphone_count as u64;
-        }
-
         let system_count = system_ring.drain(&mut system_scratch);
         if system_count > 0 {
             if !system_active {
@@ -1263,6 +1262,67 @@ fn run_meeting(
             .map_err(|_| ())?;
             system_sequence += 1;
             system_samples += system_count as u64;
+            if let Some(status) = microphone_path.push_render(&system_scratch[..system_count]) {
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingEchoCancellation { status },
+                )
+                .map_err(|_| ())?;
+            }
+        }
+
+        let microphone_count = microphone_ring.drain(&mut microphone_scratch);
+        if microphone_count > 0 {
+            if !microphone_active {
+                microphone_active = true;
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingPhase {
+                        phase: CapturePhase::Active,
+                        channel: CaptureChannel::Microphone,
+                    },
+                )
+                .map_err(|_| ())?;
+            }
+            let captured_at_ns = meeting_started_at
+                .elapsed()
+                .as_nanos()
+                .min(u64::MAX as u128) as u64;
+            let status = microphone_path.push_capture(
+                &microphone_scratch[..microphone_count],
+                |samples| {
+                    write_production_pcm(
+                        stdout,
+                        capture_id,
+                        nonce,
+                        ProductionPcmMetadata {
+                            channel: CaptureChannel::Microphone,
+                            sequence: microphone_sequence,
+                            sample_rate: microphone_rate,
+                            captured_at_ns,
+                            sample_offset: microphone_samples,
+                        },
+                        samples,
+                    )
+                    .map_err(|_| ())?;
+                    microphone_sequence += 1;
+                    microphone_samples += samples.len() as u64;
+                    Ok(())
+                },
+            )?;
+            if let Some(status) = status {
+                write_production_control(
+                    stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::MeetingEchoCancellation { status },
+                )
+                .map_err(|_| ())?;
+            }
         }
 
         match control_rx.try_recv() {
@@ -1281,6 +1341,29 @@ fn run_meeting(
                 system_stream.stop();
                 drop(microphone_stream);
                 drop(system_stream);
+                let captured_at_ns = meeting_started_at
+                    .elapsed()
+                    .as_nanos()
+                    .min(u64::MAX as u128) as u64;
+                microphone_path.finish(|samples| {
+                    write_production_pcm(
+                        stdout,
+                        capture_id,
+                        nonce,
+                        ProductionPcmMetadata {
+                            channel: CaptureChannel::Microphone,
+                            sequence: microphone_sequence,
+                            sample_rate: microphone_rate,
+                            captured_at_ns,
+                            sample_offset: microphone_samples,
+                        },
+                        samples,
+                    )
+                    .map_err(|_| ())?;
+                    microphone_sequence += 1;
+                    microphone_samples += samples.len() as u64;
+                    Ok(())
+                })?;
                 write_production_control(
                     stdout,
                     capture_id,
@@ -1701,9 +1784,21 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             drop(stdin);
             probe_system_audio(&mut stdout, capture_id, nonce)
         }
-        ProductionHostMessage::StartMeeting { device_id, backend } => {
+        ProductionHostMessage::StartMeeting {
+            device_id,
+            backend,
+            echo_cancellation,
+        } => {
             drop(stdin);
-            run_meeting(&mut stdout, capture_id, nonce, device_id, backend, fault)
+            run_meeting(
+                &mut stdout,
+                capture_id,
+                nonce,
+                device_id,
+                backend,
+                echo_cancellation,
+                fault,
+            )
         }
         ProductionHostMessage::Start { device_id, backend } => {
             drop(stdin);

@@ -24,6 +24,8 @@ pub struct StartMeetingRequest {
     pub retention_days: Option<u32>,
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
+    #[serde(default)]
+    pub echo_cancellation: bool,
 }
 
 fn default_max_sessions() -> u32 {
@@ -129,6 +131,11 @@ pub async fn start_meeting(
         device_id: request
             .device_name
             .filter(|device| device != "system_default"),
+        echo_cancellation: if request.echo_cancellation {
+            murmur_capture_helper_protocol::EchoCancellationMode::Enabled
+        } else {
+            murmur_capture_helper_protocol::EchoCancellationMode::Disabled
+        },
     };
     if let Err(error) = state.meetings.start(app, repository.clone(), config) {
         state

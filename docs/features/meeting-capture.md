@@ -60,8 +60,9 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 - Start or stop from **History → Meetings**, or with the command palette.
 - **Me** is microphone audio. **Them** is system playback. No diarization or
-  speaker inference occurs. If the user's voice is played through speakers, it
-  can also appear as Them; phase 1 does not perform echo cancellation.
+  speaker inference occurs. Experimental speaker-echo reduction is off by
+  default. When enabled, it removes the System reference only from Me and
+  bypasses to the original microphone stream if processing fails.
 - The overlay shows a persistent two-dot meeting state from accepted start
   through capture stop. A spinner remains while final durable chunks transcribe.
 - Dictation, file transcription, benchmarks, corpus capture, selected-text
@@ -72,7 +73,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 ## Capture boundary
 
-`murmur-capture-worker --production-v7` owns both native streams:
+`murmur-capture-worker --production-v8` owns both native streams:
 
 1. A private, unmuted stereo `CATap` captures global system output and the
    realtime callback downmixes it to mono without allocation.
@@ -80,13 +81,21 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 3. The existing AUHAL microphone path captures the selected input.
 4. Each callback writes only to its own preallocated eight-second SPSC ring.
 5. The worker drains those rings into channel-tagged, capture-scoped PCM frames.
+6. When the user opts in, WebRTC AEC3 consumes 10 ms System reference frames
+   and emits processed Microphone frames. System PCM remains unchanged.
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
 rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v7
 frames. It never mixes the streams.
 
-Protocol v7 also carries bounded `InputResolution` evidence before the live
+Protocol v8 also freezes echo cancellation at meeting start. The worker reports
+`disabled`, `active`, or a typed `bypassed` reason before microphone PCM. AEC
+initialization, processing, or backlog failure does not fail the meeting. The
+worker retains each raw 10 ms microphone frame until processing succeeds, so a
+failure can switch to raw PCM without dropping or duplicating samples.
+
+Protocol v8 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
 presence, a count capped at 256, and default-input availability. It contains no
 device ID, display name, raw error, path, or audio content.

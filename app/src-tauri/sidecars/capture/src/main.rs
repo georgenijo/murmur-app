@@ -1,3 +1,5 @@
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod aec;
 #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "aec-spike"))]
 mod aec_spike;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -407,7 +409,7 @@ fn main() {
             }
             _ => {}
         }
-        if arguments.first().map(String::as_str) == Some("--production-v7") {
+        if arguments.first().map(String::as_str) == Some("--production-v8") {
             if production::run(&arguments[1..]).is_ok() {
                 return;
             }

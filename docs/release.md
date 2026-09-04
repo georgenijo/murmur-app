@@ -32,7 +32,7 @@ Each successful build uploads these 30-day artifacts:
 Release binaries retain the Tauri bundle-type marker (Cargo release stripping
 is disabled) so the updater can identify the packaged macOS application.
 After final signing and notarization, the release job launches the exact packaged
-capture worker, completes its production-v7 hello handshake, sends a bounded
+capture worker, completes its production-v8 hello handshake, sends a bounded
 AUHAL start request, and requires the worker's stream-open phase. This catches
 sandbox or entitlement failures that static plist and signature checks cannot.
 

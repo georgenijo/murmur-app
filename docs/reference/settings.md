@@ -96,6 +96,7 @@ interface Settings {
   pasteLastShortcut: PasteLastShortcut | null;
   retainHistory: boolean;
   meetingRetainAudio: boolean;
+  meetingEchoCancellationEnabled: boolean;
   meetingRetentionDays: number;            // 0 = no age limit
   meetingMaxSessions: number;
   soundCuesEnabled: boolean;
@@ -179,6 +180,7 @@ model-selection side effects.
 | `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
 | `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
 | `meetingRetainAudio` | `boolean` | `false` | `true` / `false` | Keeps each meeting chunk WAV after its transcript commits. Off deletes the WAV only after the corresponding SQLite transaction succeeds. |
+| `meetingEchoCancellationEnabled` | `boolean` | `false` | `true` / `false` | Experimental helper-side speaker-echo reduction for the Me channel. Processing failures bypass to the original microphone stream; Them remains unchanged. |
 | `meetingRetentionDays` | `number` | `0` | `0` or 1–3650 days | Age cap applied before starting a meeting; `0` preserves completed sessions by age. |
 | `meetingMaxSessions` | `number` | `100` | 1–10,000 | Maximum completed/interrupted sessions retained when pruning before a new meeting. |
 | `soundCuesEnabled` | `boolean` | `true` | `true` / `false` | Plays output-only start, stop, delivery-success, and failure cues for dictation. |
