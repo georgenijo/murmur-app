@@ -110,8 +110,9 @@ pub(crate) enum DictationCaptureArmStatusV1 {
     Capturing { recording_id: u64 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum ArmState {
+    #[default]
     Unarmed,
     Armed {
         expires_at_ms: i64,
@@ -121,12 +122,6 @@ enum ArmState {
         capture_id: String,
         captured_at_ms: i64,
     },
-}
-
-impl Default for ArmState {
-    fn default() -> Self {
-        Self::Unarmed
-    }
 }
 
 #[derive(Default)]
