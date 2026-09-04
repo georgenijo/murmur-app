@@ -1,0 +1,360 @@
+/* Variant B — "Rhythm". Every rule is scoped to the variant root so this
+   file can never leak into the shipped home dashboard. */
+
+[data-redesign-variant="B"] {
+  /* --- Sona bridge gaps -------------------------------------------------
+     Several Sona registry components read shadcn token names that Murmur's
+     styles.css only exposes through Tailwind's `--color-*` aliases, not as
+     bare custom properties: --primary (activity-graph levels), --popover /
+     --popover-foreground (activity-graph tooltip), --tabs-surface /
+     --tabs-indicator / --tabs-indicator-border and --radius-lg (fluid-tabs).
+     Without these the components render transparent cells and an invisible
+     tab capsule, so the variant root supplies them. */
+  --primary: var(--murmur-primary);
+  --popover: var(--murmur-surface-container-lowest);
+  --popover-foreground: var(--murmur-on-surface);
+  --tabs-surface: var(--murmur-surface-container-low);
+  --tabs-indicator: var(--murmur-surface-container-lowest);
+  --tabs-indicator-border: var(--ui-hairline);
+  --radius-lg: 0.5rem;
+
+  /* Activity-graph density. The rail is narrow, so the cells shrink with it. */
+  --vb-cell-size: 0.6875rem;
+  --vb-cell-gap: 0.1875rem;
+  --vb-rail-width: 16rem;
+}
+
+@media (min-width: 1020px) {
+  [data-redesign-variant="B"] {
+    --vb-cell-size: 0.875rem;
+    --vb-cell-gap: 0.25rem;
+    --vb-rail-width: 20.5rem;
+  }
+}
+
+[data-redesign-variant="B"] .vb-grid {
+  grid-template-columns: minmax(0, 1fr) var(--vb-rail-width);
+}
+
+[data-redesign-variant="B"] .vb-heading {
+  margin-bottom: var(--ui-space-5);
+}
+
+/* --- Hero ------------------------------------------------------------- */
+
+[data-redesign-variant="B"] .vb-main > .ui-dashboard-surface:first-child {
+  min-height: 3.5rem;
+}
+
+[data-redesign-variant="B"] .vb-hero {
+  display: flex;
+  min-height: 2.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-4) var(--ui-space-6);
+}
+
+[data-redesign-variant="B"] .vb-hero > .ui-dashboard-action {
+  min-width: 6.5rem;
+}
+
+[data-redesign-variant="B"] .vb-expanding {
+  /* The component's own token puts a 55% accent wash behind hovered
+     options, which reads as a saturated slab in both themes. !important is
+     required: the component writes its token map as an inline style. */
+  --expanding-action-hover: color-mix(in srgb, var(--murmur-primary) 12%, transparent) !important;
+  --expanding-action-surface: var(--murmur-surface-container-low) !important;
+  flex: 0 0 auto;
+}
+
+[data-redesign-variant="B"] .vb-expanding-trigger {
+  height: 2.25rem;
+  padding-inline: var(--ui-space-6);
+  font-size: var(--ui-font-label);
+  font-weight: 650;
+  letter-spacing: var(--ui-track-tight);
+  color: var(--murmur-primary);
+}
+
+[data-redesign-variant="B"] .vb-expanding-option {
+  height: 1.875rem;
+  padding-inline: var(--ui-space-5);
+  font-size: var(--ui-font-label);
+  font-weight: 550;
+}
+
+[data-redesign-variant="B"] .vb-hero-state {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 11rem;
+  flex-direction: column;
+  gap: 0.1875rem;
+}
+
+[data-redesign-variant="B"] .vb-hero-status {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-body);
+  letter-spacing: var(--ui-track-tight);
+}
+
+[data-redesign-variant="B"] .vb-hero-status strong {
+  font-weight: 650;
+}
+
+[data-redesign-variant="B"] .vb-hero-dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--murmur-on-surface-variant);
+}
+
+[data-redesign-variant="B"] .vb-hero-status[data-tone="ready"] .vb-hero-dot {
+  background: var(--murmur-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--murmur-success) 18%, transparent);
+}
+
+[data-redesign-variant="B"] .vb-hero-status[data-tone="live"] .vb-hero-dot {
+  background: var(--murmur-error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--murmur-error) 20%, transparent);
+}
+
+[data-redesign-variant="B"] .vb-hero-status[data-tone="busy"] .vb-hero-dot {
+  background: var(--murmur-primary);
+}
+
+[data-redesign-variant="B"] .vb-hero-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+}
+
+[data-redesign-variant="B"] .vb-hero-hint kbd {
+  display: inline-flex;
+  min-width: 1.125rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ui-hairline);
+  border-bottom-width: 2px;
+  border-radius: 0.3125rem;
+  background: var(--murmur-surface-container-lowest);
+  padding: 0.0625rem 0.3125rem;
+  color: var(--murmur-on-surface);
+  font-family: inherit;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+/* --- Recent dictations ------------------------------------------------ */
+
+[data-redesign-variant="B"] .vb-history {
+  margin-top: var(--ui-space-5);
+}
+
+[data-redesign-variant="B"] .vb-history-heading {
+  justify-content: space-between;
+  margin-bottom: var(--ui-space-4);
+}
+
+[data-redesign-variant="B"] .vb-history-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  margin-bottom: var(--ui-space-4);
+}
+
+[data-redesign-variant="B"] .vb-tabs-list {
+  border: 1px solid var(--ui-dashboard-border-subtle);
+}
+
+[data-redesign-variant="B"] .vb-tabs {
+  --fluid-tabs-hover: color-mix(in srgb, var(--murmur-primary) 9%, transparent) !important;
+  flex: 0 0 auto;
+}
+
+[data-redesign-variant="B"] .vb-search {
+  width: 11rem;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: 15rem;
+  height: var(--ui-control-compact);
+}
+
+[data-redesign-variant="B"] .vb-search:focus-within {
+  width: 11rem;
+}
+
+[data-redesign-variant="B"] .vb-list {
+  padding-top: 0;
+}
+
+[data-redesign-variant="B"] .vb-transcript-text {
+  padding-right: var(--ui-space-4);
+}
+
+[data-redesign-variant="B"] .vb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-4);
+  padding: 2.5rem 0;
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-label);
+}
+
+[data-redesign-variant="B"] .vb-empty button {
+  border-radius: var(--ui-radius-inset);
+  background: var(--murmur-surface-container);
+  padding: var(--ui-space-2) var(--ui-space-5);
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-caption);
+  font-weight: 650;
+}
+
+/* --- Rail ------------------------------------------------------------- */
+
+[data-redesign-variant="B"] .vb-rail {
+  gap: var(--ui-space-5);
+}
+
+[data-redesign-variant="B"] .vb-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+  min-height: 1.25rem;
+}
+
+[data-redesign-variant="B"] .vb-graph {
+  margin-top: var(--ui-space-5);
+}
+
+[data-redesign-variant="B"] .vb-graph [data-slot="activity-graph-scroll-area"] {
+  padding-bottom: 0;
+  scrollbar-width: none;
+}
+
+[data-redesign-variant="B"] .vb-graph [data-slot="activity-graph-scroll-area"]::-webkit-scrollbar {
+  display: none;
+}
+
+[data-redesign-variant="B"] .vb-graph-cell {
+  transition: none;
+}
+
+[data-redesign-variant="B"] .vb-graph-legend {
+  margin-top: var(--ui-space-4);
+}
+
+[data-redesign-variant="B"] .vb-graph-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  line-height: 1.3;
+}
+
+[data-redesign-variant="B"] .vb-graph-tooltip strong {
+  color: var(--murmur-on-surface);
+  font-weight: 650;
+}
+
+[data-redesign-variant="B"] .vb-graph-tooltip span {
+  color: var(--murmur-on-surface-variant);
+}
+
+[data-redesign-variant="B"] .vb-graph-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  margin-top: var(--ui-space-4);
+  border-top: 1px solid var(--ui-dashboard-border-subtle);
+  padding-top: var(--ui-space-4);
+}
+
+[data-redesign-variant="B"] .vb-graph-summary strong {
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-label);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ui-track-tight);
+}
+
+[data-redesign-variant="B"] .vb-graph-summary span {
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.6875rem;
+}
+
+/* --- Stat tiles ------------------------------------------------------- */
+
+[data-redesign-variant="B"] .vb-tiles-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
+}
+
+[data-redesign-variant="B"] .vb-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-space-4);
+}
+
+[data-redesign-variant="B"] .vb-tile {
+  border-style: solid;
+  border-width: 1px;
+}
+
+[data-redesign-variant="B"] .vb-tile-label {
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: var(--ui-track-caps);
+  text-transform: uppercase;
+}
+
+[data-redesign-variant="B"] .vb-tile-value {
+  margin-top: 0.125rem;
+  color: var(--murmur-on-surface);
+  font-size: 1.375rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ui-track-title);
+  line-height: 1.15;
+}
+
+[data-redesign-variant="B"] .vb-tile-detail {
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.625rem;
+}
+
+[data-redesign-variant="B"] .vb-demo-chip {
+  border: 1px solid var(--ui-dashboard-border-subtle);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tint-accent-subtle);
+  padding: 0.0625rem var(--ui-space-4);
+  color: var(--murmur-primary);
+  font-size: 0.625rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Compact width: the rail stacks under the main column, so let the graph
+   card and the tiles share the row instead of stretching. */
+@media (max-width: 759px) {
+  [data-redesign-variant="B"] .vb-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-redesign-variant="B"] .vb-rail {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

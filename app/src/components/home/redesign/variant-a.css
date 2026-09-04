@@ -1,0 +1,329 @@
+/* Variant A — "Adopt the primitives".
+ *
+ * Everything here is either scoped under [data-redesign-variant="A"] or, for
+ * the two Base UI menus that portal to <body> and therefore escape that
+ * scope, namespaced with a `variant-a-` class prefix that no sibling variant
+ * uses. Nothing in this file touches a shared selector. */
+
+[data-redesign-variant="A"] {
+  /* FluidTabs reads --tabs-surface / --tabs-indicator / --tabs-indicator-border
+     from an ancestor. The Murmur token bridge in styles.css never defined
+     them, so an un-tokenised FluidTabs renders a transparent capsule with an
+     invisible indicator. Map them onto the same sunken-track / raised-chip
+     language `.history-filter-track` + `.ui-filter-chip` already use. */
+  --tabs-surface: var(--ui-tint-sunken);
+  --tabs-indicator: var(--ui-tint-raised);
+  --tabs-indicator-border: color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
+}
+
+/* ── Record pill (BubbleUpButton) ────────────────────────────────────────── */
+
+/* BubbleUpButton hard-codes `bg-background text-foreground px-16 py-2
+   rounded-2xl h-fit w-fit`. Two-class specificity beats those utilities
+   regardless of stylesheet order, so the pill inherits the dashboard
+   primary-action look instead of the registry default. */
+[data-redesign-variant="A"] .variant-a-record {
+  min-width: 8.5rem;
+  min-height: 2.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-4);
+  border-radius: var(--ui-radius-pill);
+  padding: 0 var(--ui-space-5);
+  background: linear-gradient(140deg, var(--murmur-primary), var(--murmur-primary-dim));
+  color: var(--murmur-on-primary);
+  box-shadow: var(--ui-shadow-accent);
+  font-size: var(--ui-font-body);
+  font-weight: 650;
+  letter-spacing: var(--ui-track-tight);
+  line-height: 1;
+  transition: box-shadow var(--ui-motion-fast), transform var(--ui-motion-fast);
+}
+
+[data-redesign-variant="A"] .variant-a-record:active {
+  transform: scale(0.98);
+}
+
+[data-redesign-variant="A"] .variant-a-record[data-tone="danger"] {
+  border: 1px solid var(--ui-dashboard-error-border);
+  background: var(--ui-dashboard-error-subtle);
+  color: var(--murmur-error);
+  box-shadow: var(--ui-shadow-1);
+}
+
+[data-redesign-variant="A"] .variant-a-record:disabled {
+  border: 0;
+  background: var(--murmur-surface-container);
+  color: var(--ui-dashboard-disabled);
+  box-shadow: none;
+}
+
+/* The rising fill layer is `bg-foreground` inside the component; recolour it
+   to the pressed accent so the bubble reads as a deeper press of the same
+   pill rather than an inverted black wash. */
+[data-redesign-variant="A"] .variant-a-record > div {
+  background: color-mix(in srgb, var(--murmur-primary) 82%, var(--murmur-on-surface));
+}
+
+[data-redesign-variant="A"] .variant-a-record[data-tone="danger"] > div {
+  background: var(--ui-dashboard-error-hover);
+}
+
+/* The label span ships `text-white mix-blend-difference`, which only reads
+   correctly on the component's own background/foreground pair. On an accent
+   pill it produces an off-hue inversion, so blend normally and keep the
+   on-primary colour. */
+[data-redesign-variant="A"] .variant-a-record > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-4);
+  mix-blend-mode: normal;
+  color: inherit;
+}
+
+[data-redesign-variant="A"] .variant-a-record-label {
+  position: relative;
+  display: inline-grid;
+  overflow: hidden;
+  min-width: 6.25rem;
+  height: 1.125rem;
+  align-items: center;
+  text-align: left;
+}
+
+[data-redesign-variant="A"] .variant-a-record-label > span {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+
+[data-redesign-variant="A"] .variant-a-record .home-record-dot {
+  background: currentColor;
+}
+
+[data-redesign-variant="A"] .variant-a-record[data-tone="danger"] .home-record-dot {
+  border-radius: 2px;
+}
+
+/* ── History toolbar ─────────────────────────────────────────────────────── */
+
+[data-redesign-variant="A"] .variant-a-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-1) 0 var(--ui-space-4);
+}
+
+[data-redesign-variant="A"] .variant-a-count {
+  margin-left: auto;
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+/* FluidTabs' own root is `w-fit overflow-x-auto`; the overflow clips the
+   focus ring of the first/last trigger, so pad the scroll box out by the
+   ring width instead of letting it crop. */
+[data-redesign-variant="A"] .variant-a-tabs {
+  flex-shrink: 0;
+  padding: 2px;
+  margin: -2px;
+}
+
+[data-redesign-variant="A"] .variant-a-tabs-list {
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
+  border-radius: var(--ui-radius-pill);
+  padding: 3px;
+}
+
+[data-redesign-variant="A"] .variant-a-tab-indicator {
+  border-radius: var(--ui-radius-pill) !important;
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-1);
+}
+
+/* Sona sizes its `sm` trigger at min-h-8/px-2.5; match the 26px pill chip the
+   rest of Murmur uses so the capsule sits on the same 32px control rhythm. */
+[data-redesign-variant="A"] .variant-a-tabs [role="tab"] {
+  min-height: 1.625rem;
+  border-radius: var(--ui-radius-pill);
+  padding-inline: var(--ui-space-5);
+  font-size: var(--ui-font-label);
+  font-weight: 550;
+  letter-spacing: var(--ui-track-tight);
+}
+
+[data-redesign-variant="A"] .variant-a-tabs [role="tab"][data-selected] {
+  font-weight: 650;
+}
+
+/* AnimatedDropdownTrigger ships `bg-secondary px-3 py-1.5 rounded-lg`; make it
+   the same 28px square quiet icon button the current toolbar uses. */
+[data-redesign-variant="A"] .variant-a-export-trigger {
+  box-sizing: border-box;
+  display: grid;
+  width: var(--ui-control-compact);
+  min-width: var(--ui-control-compact);
+  height: var(--ui-control-compact);
+  flex-shrink: 0;
+  place-items: center;
+  gap: 0;
+  padding: 0;
+  border-radius: var(--ui-radius-control);
+  background: transparent;
+  color: var(--murmur-on-surface-variant);
+}
+
+[data-redesign-variant="A"] .variant-a-export-trigger:hover,
+[data-redesign-variant="A"] .variant-a-export-trigger[data-popup-open] {
+  background: color-mix(in srgb, var(--murmur-on-surface) 6%, transparent);
+  color: var(--murmur-on-surface);
+}
+
+/* ── Transcript list ─────────────────────────────────────────────────────── */
+
+[data-redesign-variant="A"] .variant-a-history-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--ui-history-gap);
+  overflow-y: auto;
+  padding: var(--ui-space-1) 0 var(--ui-space-5);
+}
+
+[data-redesign-variant="A"] .history-date-label {
+  display: block;
+  padding: var(--ui-space-2) var(--ui-space-2) var(--ui-space-4);
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: var(--ui-track-caps);
+  text-transform: uppercase;
+}
+
+[data-redesign-variant="A"] .variant-a-history-list .history-date-label:not(:first-child) {
+  padding-top: var(--ui-space-5);
+}
+
+[data-redesign-variant="A"] .variant-a-history-list .transcript-card {
+  display: grid;
+  grid-template-columns: 4.875rem minmax(0, 1fr);
+  column-gap: var(--ui-space-6);
+  padding: var(--ui-space-4) var(--ui-space-5);
+}
+
+[data-redesign-variant="A"] .variant-a-history-list .transcript-meta {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+  align-items: flex-start;
+  margin: 0;
+}
+
+[data-redesign-variant="A"] .variant-a-history-list .transcript-meta > div:first-child {
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ui-space-2);
+}
+
+[data-redesign-variant="A"] .variant-a-history-list .transcript-meta > div:first-child > span {
+  max-width: 100%;
+}
+
+[data-redesign-variant="A"] .variant-a-history-list .transcript-text {
+  grid-column: 2;
+  padding-right: 3.75rem;
+  font-size: var(--ui-font-label);
+  line-height: 1.4;
+}
+
+[data-redesign-variant="A"] .variant-a-showmore {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 0.125rem;
+  border-radius: var(--ui-radius-control);
+  padding: 0.0625rem 0.25rem;
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  font-weight: 650;
+  line-height: 1rem;
+}
+
+[data-redesign-variant="A"] .variant-a-showmore:hover {
+  color: var(--murmur-on-surface);
+}
+
+[data-redesign-variant="A"] .variant-a-actions {
+  grid-column: 2;
+  margin-top: var(--ui-space-3);
+  border-top: 1px solid var(--ui-dashboard-border-subtle);
+  padding-top: var(--ui-space-2);
+}
+
+[data-redesign-variant="A"] .variant-a-action {
+  height: 1.625rem;
+  gap: var(--ui-space-3);
+  padding-inline: var(--ui-space-4);
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  font-weight: 600;
+}
+
+[data-redesign-variant="A"] .variant-a-action:hover {
+  background: color-mix(in srgb, var(--murmur-on-surface) 6%, transparent);
+  color: var(--murmur-on-surface);
+}
+
+[data-redesign-variant="A"] .variant-a-more {
+  width: 1.625rem;
+  min-width: 1.625rem;
+  height: 1.625rem;
+  border-radius: var(--ui-radius-control);
+}
+
+[data-redesign-variant="A"] .variant-a-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-space-2);
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-label);
+}
+
+/* ── Portalled Base UI menus (escape the [data-redesign-variant] scope) ───── */
+
+/* The shadcn bridge maps --color-danger-foreground onto --murmur-on-primary
+   (#f3faff light / #00394b dark). `text-danger-foreground` is therefore
+   near-invisible on the popover surface in BOTH themes. Repaint the resting
+   colour with --murmur-error; the highlighted state (bg-danger + white text)
+   is already correct and is deliberately left alone. */
+.variant-a-danger-item.variant-a-danger-item {
+  color: var(--murmur-error);
+}
+
+.variant-a-danger-item.variant-a-danger-item:focus,
+.variant-a-danger-item.variant-a-danger-item:hover {
+  color: #fff;
+}
+
+.variant-a-danger-item.variant-a-danger-item > span:first-child {
+  color: inherit;
+}
+
+/* SmartOverflow exposes no per-item className, so the same fix is applied by
+   matching the utility class the component emits on its destructive items. */
+.variant-a-overflow-menu [role="menuitem"].text-danger-foreground:not([data-highlighted]) {
+  color: var(--murmur-error);
+}
+
+.variant-a-menu,
+.variant-a-overflow-menu {
+  border-radius: var(--ui-radius-popover);
+  border-color: var(--ui-hairline);
+  box-shadow: var(--ui-shadow-3);
+}
