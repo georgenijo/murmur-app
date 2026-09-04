@@ -1,11 +1,37 @@
-import type { Ref } from 'react';
+import { useEffect, useState, type Ref } from 'react';
 import type { MainDestination } from '../../lib/homeDashboard';
 import { MainNavItem } from '../ui/DashboardPrimitives';
+import { FluidTooltip } from '../ui/fluid-tooltip/fluid-tooltip';
 
 interface HomeSidebarProps {
   active: MainDestination;
   homeButtonRef?: Ref<HTMLButtonElement>;
   onNavigate: (destination: MainDestination) => void;
+}
+
+const COMPACT_QUERY = '(max-width: 760px)';
+
+/** Mirrors the CSS breakpoint that hides `.home-nav-label` — the sidebar's
+ *  tooltips are redundant once the text label is visible, so gate them to
+ *  the same width. SSR/jsdom-safe: falls back to non-compact when
+ *  matchMedia is unavailable, and tests mock it to open tooltips on hover. */
+function useIsCompactSidebar(): boolean {
+  const [isCompact, setIsCompact] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(COMPACT_QUERY).matches
+      : false
+  ));
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia(COMPACT_QUERY);
+    const handleChange = () => setIsCompact(mql.matches);
+    handleChange();
+    mql.addEventListener('change', handleChange);
+    return () => mql.removeEventListener('change', handleChange);
+  }, []);
+
+  return isCompact;
 }
 
 type IconName = 'home' | 'meeting' | 'query' | 'insights';
@@ -25,6 +51,7 @@ function NavIcon({ name }: { name: IconName }) {
 }
 
 export function HomeSidebar({ active, homeButtonRef, onNavigate }: HomeSidebarProps) {
+  const isCompact = useIsCompactSidebar();
   return (
     <aside className="home-sidebar" aria-label="Murmur navigation">
       <div className="home-brand" aria-label="Murmur">
@@ -35,10 +62,35 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate }: HomeSidebarPr
       </div>
 
       <nav className="home-nav" aria-label="Main destinations">
-        <MainNavItem ref={homeButtonRef} label="Home" icon={<NavIcon name="home" />} selected={active === 'home'} onActivate={() => onNavigate('home')} />
-        <MainNavItem label="Notetaker" icon={<NavIcon name="meeting" />} selected={active === 'meetings'} onActivate={() => onNavigate('meetings')} />
-        <MainNavItem label="Queries" icon={<NavIcon name="query" />} selected={active === 'queries'} onActivate={() => onNavigate('queries')} />
-        <MainNavItem label="Insights" icon={<NavIcon name="insights" />} selected={active === 'insights'} onActivate={() => onNavigate('insights')} />
+        {/* Tooltips are redundant once the sidebar's text labels are visible
+            (≥760px); disabling the whole group there avoids a pointless hover
+            popup next to text that already says the same thing. */}
+        <FluidTooltip.Group orientation="vertical" disabled={!isCompact}>
+          <FluidTooltip.Root id="home-nav-home" side="right">
+            <FluidTooltip.Trigger>
+              <MainNavItem ref={homeButtonRef} label="Home" icon={<NavIcon name="home" />} selected={active === 'home'} onActivate={() => onNavigate('home')} />
+            </FluidTooltip.Trigger>
+            <FluidTooltip.Content>Home</FluidTooltip.Content>
+          </FluidTooltip.Root>
+          <FluidTooltip.Root id="home-nav-meetings" side="right">
+            <FluidTooltip.Trigger>
+              <MainNavItem label="Notetaker" icon={<NavIcon name="meeting" />} selected={active === 'meetings'} onActivate={() => onNavigate('meetings')} />
+            </FluidTooltip.Trigger>
+            <FluidTooltip.Content>Notetaker</FluidTooltip.Content>
+          </FluidTooltip.Root>
+          <FluidTooltip.Root id="home-nav-queries" side="right">
+            <FluidTooltip.Trigger>
+              <MainNavItem label="Queries" icon={<NavIcon name="query" />} selected={active === 'queries'} onActivate={() => onNavigate('queries')} />
+            </FluidTooltip.Trigger>
+            <FluidTooltip.Content>Queries</FluidTooltip.Content>
+          </FluidTooltip.Root>
+          <FluidTooltip.Root id="home-nav-insights" side="right">
+            <FluidTooltip.Trigger>
+              <MainNavItem label="Insights" icon={<NavIcon name="insights" />} selected={active === 'insights'} onActivate={() => onNavigate('insights')} />
+            </FluidTooltip.Trigger>
+            <FluidTooltip.Content>Insights</FluidTooltip.Content>
+          </FluidTooltip.Root>
+        </FluidTooltip.Group>
       </nav>
 
       <div className="home-sidebar-bottom">

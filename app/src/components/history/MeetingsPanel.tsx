@@ -80,7 +80,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-outline-variant/20 px-4 py-3">
+      <div className="shrink-0 border-b border-[var(--ui-hairline)] px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -107,10 +107,10 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
             type="button"
             disabled={processing || meetings.status.phase === 'stopping'}
             onClick={() => void (active ? meetings.stop() : meetings.start())}
-            className={`rounded-full px-4 py-2 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`rounded-[var(--ui-radius-pill)] px-4 py-2 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               active
                 ? 'border border-error/40 bg-error/10 text-error hover:bg-error/15'
-                : 'bg-primary text-on-primary hover:brightness-105'
+                : 'bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[var(--ui-shadow-accent)] hover:brightness-105'
             }`}
           >
             {active ? 'Stop Meeting' : processing ? 'Finishing…' : 'Start Meeting'}
@@ -120,7 +120,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
           Me comes from your microphone; Them comes from Mac playback. If your own voice is played through speakers, it can also appear as Them.
         </p>
         {(failure || meetings.error) && (
-          <div role="alert" className="mt-2 flex items-center gap-2 rounded-lg border border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
+          <div role="alert" className="dialog-toast mt-2 flex items-center gap-2 border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
             <span className="min-w-0 flex-1">{failure ?? meetings.error}</span>
             {meetings.permission === 'denied' && (
               <button type="button" onClick={() => void meetings.openSystemAudioPreferences()} className="shrink-0 font-semibold underline">
@@ -130,7 +130,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
           </div>
         )}
         {meetings.permission !== 'granted' && meetings.permission !== 'unsupported' && !active && !processing && (
-          <div className="mt-2 flex items-center gap-2 rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant">
+          <div className="dialog-card mt-2 flex items-center gap-2 px-3 py-2 text-xs text-on-surface-variant">
             <span className="min-w-0 flex-1">
               System Audio access is requested only when you explicitly check it or start a meeting.
             </span>
@@ -148,8 +148,8 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(12rem,0.78fr)_minmax(0,1.5fr)] overflow-hidden">
-        <aside className="flex min-h-0 flex-col border-r border-outline-variant/20">
-          <div className="flex shrink-0 gap-2 border-b border-outline-variant/15 p-2.5">
+        <aside className="flex min-h-0 flex-col border-r border-[var(--ui-hairline)]">
+          <div className="flex shrink-0 gap-2 border-b border-[var(--ui-hairline)] p-2.5">
             <input
               type="search"
               value={query}
@@ -159,9 +159,9 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               }}
               placeholder="Search meetings"
               aria-label="Search meetings"
-              className="h-8 min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container-low px-2.5 text-xs text-on-surface outline-none focus:border-primary"
+              className="h-8 min-w-0 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2.5 text-xs text-on-surface outline-none focus:border-primary focus-visible:ring-2 focus-visible:ring-primary"
             />
-            <button type="button" onClick={() => void meetings.refresh(query)} className="rounded-lg px-2 text-xs font-semibold text-primary hover:bg-surface-container-high">
+            <button type="button" onClick={() => void meetings.refresh(query)} className="rounded-[var(--ui-radius-control)] px-2 text-xs font-semibold text-primary hover:bg-surface-container-high">
               Search
             </button>
           </div>
@@ -178,9 +178,9 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
                 type="button"
                 onClick={() => void meetings.select(session.id)}
                 aria-pressed={meetings.detail?.session.id === session.id}
-                className={`mb-1 w-full rounded-xl px-3 py-2.5 text-left transition-colors ${
+                className={`mb-1 w-full rounded-[var(--ui-radius-card)] px-3 py-2.5 text-left transition-colors ${
                   meetings.detail?.session.id === session.id
-                    ? 'bg-surface-container-high ring-1 ring-inset ring-primary'
+                    ? 'bg-surface-container-high shadow-[var(--ui-shadow-1)] ring-1 ring-inset ring-primary/45'
                     : 'hover:bg-surface-container-low'
                 }`}
               >
@@ -200,8 +200,8 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
             <button
               type="button"
               onClick={() => void clearAll()}
-              className={`m-2 mt-0 rounded-lg border px-3 py-2 text-xs font-semibold ${
-                confirmClear ? 'border-error/30 bg-error/10 text-error' : 'border-outline-variant/25 text-on-surface-variant hover:text-error'
+              className={`m-2 mt-0 rounded-[var(--ui-radius-control)] border px-3 py-2 text-xs font-semibold ${
+                confirmClear ? 'border-error/30 bg-error/10 text-error' : 'border-[var(--ui-hairline)] text-on-surface-variant hover:text-error'
               }`}
             >
               {confirmClear ? 'Confirm Delete All' : 'Delete All Meetings'}
@@ -212,7 +212,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
         <section className="flex min-h-0 flex-col overflow-hidden">
           {meetings.detail ? (
             <>
-              <div className="flex shrink-0 items-center gap-2 border-b border-outline-variant/15 px-4 py-2.5">
+              <div className="flex shrink-0 items-center gap-2 border-b border-[var(--ui-hairline)] px-4 py-2.5">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-on-surface">
                     {new Date(meetings.detail.session.startedAtMs).toLocaleString()}
@@ -225,7 +225,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
                   type="button"
                   disabled={active && meetings.status.sessionId === meetings.detail.session.id}
                   onClick={() => void deleteSelected()}
-                  className={`rounded-lg px-2 py-1.5 text-xs font-semibold disabled:opacity-40 ${confirmDelete === meetings.detail.session.id ? 'bg-error/10 text-error' : 'text-on-surface-variant hover:text-error'}`}
+                  className={`rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold disabled:opacity-40 ${confirmDelete === meetings.detail.session.id ? 'bg-error/10 text-error' : 'text-on-surface-variant hover:text-error'}`}
                 >
                   {confirmDelete === meetings.detail.session.id ? 'Confirm Delete' : 'Delete'}
                 </button>
@@ -240,7 +240,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
           ) : (
             <div className="grid h-full place-items-center p-8 text-center">
               <div>
-                <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-2xl bg-surface-container-high text-primary">◎</div>
+                <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-[var(--ui-radius-card)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[var(--ui-shadow-accent)]">◎</div>
                 <p className="text-sm font-semibold text-on-surface">Select a meeting</p>
                 <p className="mt-1 max-w-xs text-xs leading-relaxed text-on-surface-variant">
                   Durable Me/Them transcripts are searchable and stay local to this Mac.

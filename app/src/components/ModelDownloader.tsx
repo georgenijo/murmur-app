@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { cn } from '../lib/sona-utils';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 import {
   correlatedModelDownloadAttempt,
@@ -183,18 +184,20 @@ export function ModelDownloadPanel({
               aria-pressed={selected === model.name}
               onClick={() => selectModel(model.name)}
               disabled={isDownloading}
-              className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+              className={cn(
+                'dialog-card w-full px-4 py-3 text-left transition-colors',
                 selected === model.name
-                  ? 'border-primary bg-surface-container-low'
-                  : 'border-outline-variant/20 bg-surface-container-lowest hover:border-primary/50'
-              } ${isDownloading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                  ? 'border-primary/45 bg-[var(--ui-tint-accent-subtle)] shadow-[var(--ui-shadow-2)]'
+                  : 'hover:border-primary/30',
+                isDownloading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
+              )}
             >
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-on-surface">
                   {model.label}
                 </span>
                 {installedModels?.[model.name] ? (
-                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-on-surface">
+                  <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-[11px] font-medium text-on-surface">
                     Installed
                   </span>
                 ) : (
@@ -220,18 +223,17 @@ export function ModelDownloadPanel({
                 <span>Working...</span>
               )}
             </div>
-            <div className="w-full h-2 bg-surface-container-highest rounded-full overflow-hidden">
+            <div className="w-full h-2 overflow-hidden rounded-full bg-[var(--ui-tint-sunken)]">
               <div
                 role="progressbar"
                 aria-valuenow={progressPercent ?? undefined}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuetext={progressPercent === null ? 'Model installation in progress' : undefined}
-                className={`h-full bg-primary rounded-full ${
-                  progressPercent === null
-                    ? 'model-download-indeterminate'
-                    : 'transition-all duration-200'
-                }`}
+                className={cn(
+                  'h-full rounded-full bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))]',
+                  progressPercent === null ? 'model-download-indeterminate' : 'transition-all duration-200',
+                )}
                 style={progressPercent === null ? undefined : { width: `${progressPercent}%` }}
               />
             </div>
@@ -245,21 +247,21 @@ export function ModelDownloadPanel({
         )}
 
         {downloadState.phase === 'error' && (
-          <div role="alert" className="mb-4 rounded-lg border border-error/30 bg-error/10 px-4 py-3">
+          <div role="alert" className="dialog-toast mb-4 border-error/30 bg-error/10 px-4 py-3">
             <p className="text-sm text-error">{downloadState.message}</p>
             {selected === 'parakeet-tdt-0.6b-v3-coreml' && (
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => chooseFallback('base.en')}
-                  className="rounded-lg border border-error/30 px-2.5 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/10"
+                  className="dialog-pill-btn border-error/30 px-2.5 py-1.5 text-xs text-error hover:bg-error/10"
                 >
                   Use Whisper Base
                 </button>
                 <button
                   type="button"
                   onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')}
-                  className="rounded-lg border border-error/30 px-2.5 py-1.5 text-xs font-medium text-error transition-colors hover:bg-error/10"
+                  className="dialog-pill-btn border-error/30 px-2.5 py-1.5 text-xs text-error hover:bg-error/10"
                 >
                   Use CPU Parakeet
                 </button>
@@ -279,7 +281,7 @@ export function ModelDownloadPanel({
             type="button"
             onClick={activatePrimary}
             disabled={isDownloading}
-            className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-colors hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {primaryLabel}
           </button>
@@ -296,7 +298,7 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
   return (
     <div className="h-screen bg-background flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
-        <h1 className="text-xl font-semibold text-on-surface mb-1">
+        <h1 className="text-xl font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface mb-1">
           Download a Model
         </h1>
         <p className="text-sm text-on-surface-variant mb-6">

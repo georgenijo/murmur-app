@@ -1,0 +1,362 @@
+/* Settings workspace styles (Sona refresh). Owned by the settings lane. */
+
+@layer components {
+
+/* Falls back to literal spec values when the tokens lane has not yet landed
+   the ui-hairline, ui-shadow, ui-tint, and ui-track custom properties in
+   src/styles.css. Once those are defined at the top level, the var()
+   lookups below pick them up automatically. */
+
+.settings-workspace {
+  --settings-hairline: var(--ui-hairline, color-mix(in srgb, var(--murmur-outline-variant) 55%, transparent));
+  --settings-hairline-strong: var(--ui-hairline-strong, color-mix(in srgb, var(--murmur-outline-variant) 78%, transparent));
+  --settings-shadow-1: var(--ui-shadow-1, 0 1px 2px color-mix(in srgb, var(--murmur-on-surface) 7%, transparent));
+  --settings-shadow-2: var(--ui-shadow-2, 0 1px 2px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent), 0 8px 20px -10px color-mix(in srgb, var(--murmur-on-surface) 22%, transparent));
+  --settings-tint-raised: var(--ui-tint-raised, var(--murmur-surface-container-lowest));
+  --settings-tint-sunken: var(--ui-tint-sunken, color-mix(in srgb, var(--murmur-surface-container-low) 70%, var(--murmur-background)));
+  --settings-tint-accent-subtle: var(--ui-tint-accent-subtle, color-mix(in srgb, var(--murmur-primary) 7%, var(--murmur-surface-container-lowest)));
+  --settings-radius-pill: var(--ui-radius-pill, 999px);
+  --settings-radius-control: var(--ui-radius-control, 0.625rem);
+  --settings-radius-card: var(--ui-radius-card, 0.875rem);
+  --settings-track-tight: var(--ui-track-tight, -0.012em);
+  --settings-track-title: var(--ui-track-title, -0.022em);
+  --settings-track-caps: var(--ui-track-caps, 0.07em);
+}
+
+/* ---------- sidebar ------------------------------------------------------ */
+
+.settings-sidebar {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--murmur-surface-container-low) 88%, var(--murmur-background)),
+    var(--murmur-surface-container-low)
+  );
+  border-right: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
+}
+
+.settings-search {
+  position: relative;
+  display: block;
+}
+
+.settings-search input {
+  border-radius: var(--settings-radius-pill);
+  border: 1px solid var(--settings-hairline);
+  background: var(--murmur-surface-container-lowest);
+  box-shadow: var(--settings-shadow-1);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-search input:focus {
+  border-color: var(--murmur-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
+  outline: none;
+}
+
+.settings-nav-item {
+  position: relative;
+  border-radius: var(--settings-radius-control);
+  font-weight: 550;
+  letter-spacing: var(--settings-track-tight);
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-nav-item[aria-current='page'] {
+  background: var(--murmur-surface-container-lowest);
+  box-shadow: var(--settings-shadow-1);
+  font-weight: 650;
+}
+
+.settings-nav-item[aria-current='page'] svg {
+  color: var(--murmur-primary);
+}
+
+.settings-nav-item[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: var(--settings-radius-pill);
+  background: var(--murmur-primary);
+}
+
+.settings-tools-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: var(--settings-track-caps);
+  text-transform: uppercase;
+  color: var(--murmur-on-surface-variant);
+}
+
+/* ---------- page header + cards ------------------------------------------ */
+
+.settings-page-head {
+  margin-bottom: 14px;
+}
+
+.settings-page-title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: var(--settings-track-title);
+  line-height: 1.15;
+  color: var(--murmur-on-surface);
+}
+
+.settings-page-subtitle {
+  margin-top: 5px;
+  font-size: 13px;
+  letter-spacing: var(--settings-track-tight);
+  color: var(--murmur-on-surface-variant);
+}
+
+.settings-card {
+  border-radius: var(--settings-radius-card);
+  border: 1px solid var(--settings-hairline);
+  background: var(--settings-tint-raised);
+  box-shadow: var(--settings-shadow-1);
+}
+
+.settings-card-body {
+  margin-top: 14px;
+  padding: 6px 20px;
+}
+
+.settings-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--murmur-on-surface-variant);
+}
+
+/* ---------- back / pill / quiet buttons ----------------------------------- */
+
+.settings-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--settings-radius-pill);
+  border: 1px solid var(--settings-hairline);
+  background: var(--murmur-surface-container-lowest);
+  box-shadow: var(--settings-shadow-1);
+  color: var(--murmur-on-surface-variant);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.settings-back-btn:hover {
+  color: var(--murmur-on-surface);
+  background: var(--murmur-surface-container-low);
+}
+
+.settings-quiet-btn {
+  border-radius: var(--settings-radius-control);
+  border: 1px solid var(--settings-hairline);
+  background: var(--murmur-surface-container-lowest);
+  box-shadow: var(--settings-shadow-1);
+  font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.settings-quiet-btn:hover {
+  background: var(--murmur-surface-container-low);
+}
+
+/* ---------- segmented control (Recording Trigger, Stop on Silence, …) ---- */
+
+.settings-segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--settings-radius-pill);
+  background: var(--settings-tint-sunken);
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
+}
+
+.settings-segmented-btn {
+  flex: 1;
+  height: 30px;
+  border: 0;
+  border-radius: var(--settings-radius-pill);
+  background: transparent;
+  color: var(--murmur-on-surface-variant);
+  font-weight: 550;
+  font-size: var(--ui-font-label, 0.8125rem);
+  letter-spacing: var(--settings-track-tight);
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-segmented-btn:hover:not(:disabled) {
+  color: var(--murmur-on-surface);
+}
+
+.settings-segmented-btn[data-selected='true'] {
+  background: var(--murmur-surface-container-lowest);
+  color: var(--murmur-on-surface);
+  font-weight: 650;
+  box-shadow: var(--settings-shadow-1);
+}
+
+.settings-segmented-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ---------- microphone meter card ----------------------------------------- */
+
+.settings-meter-card {
+  margin-top: 12px;
+  border-radius: var(--settings-radius-card);
+  border: 1px solid var(--settings-hairline);
+  background: var(--settings-tint-raised);
+  box-shadow: var(--settings-shadow-1);
+  padding: 12px 14px;
+}
+
+.settings-meter-track {
+  background: var(--settings-tint-sunken);
+}
+
+/* ---------- customize hub cards -------------------------------------------- */
+
+.settings-hub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-hub-card {
+  border-radius: var(--settings-radius-card);
+  border: 1px solid var(--settings-hairline);
+  background: var(--settings-tint-raised);
+  box-shadow: var(--settings-shadow-1);
+  overflow: hidden;
+  transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.settings-hub-card:hover,
+.settings-hub-card:focus-within {
+  box-shadow: var(--settings-shadow-2);
+  border-color: color-mix(in srgb, var(--murmur-primary) 45%, transparent);
+}
+
+@media (hover: hover) {
+  .settings-hub-card:hover {
+    transform: translateY(-1px);
+  }
+}
+
+/* ---------- form controls: selects, text inputs, sliders ------------------ */
+
+.settings-workspace button[role='combobox'] {
+  height: 34px;
+  border-radius: var(--settings-radius-control);
+  border: 1px solid var(--settings-hairline);
+  background: var(--settings-tint-raised);
+  box-shadow: var(--settings-shadow-1);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-workspace button[role='combobox']:focus {
+  border-color: var(--murmur-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
+}
+
+.settings-workspace ul[role='listbox'] {
+  border-radius: var(--ui-radius-popover, 1rem);
+  border: 1px solid var(--settings-hairline-strong);
+  background: var(--murmur-surface-container-lowest);
+  box-shadow: var(--ui-shadow-3, 0 2px 4px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent), 0 16px 40px -16px color-mix(in srgb, var(--murmur-on-surface) 34%, transparent));
+}
+
+/* `input:not([type])` covers plain text inputs that omit the attribute
+   (the HTML default is still "text"); CSS attribute selectors only match
+   attributes that are actually present in markup. */
+.settings-workspace input[type='text'],
+.settings-workspace input:not([type]),
+.settings-workspace input[type='number'],
+.settings-workspace input[type='search'],
+.settings-workspace input[type='url'],
+.settings-workspace select,
+.settings-workspace textarea {
+  border-radius: var(--settings-radius-control);
+  border: 1px solid var(--settings-hairline);
+  background: var(--settings-tint-raised);
+  box-shadow: var(--settings-shadow-1);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.settings-workspace input[type='text']:focus,
+.settings-workspace input:not([type]):focus,
+.settings-workspace input[type='number']:focus,
+.settings-workspace input[type='search']:focus,
+.settings-workspace input[type='url']:focus,
+.settings-workspace select:focus,
+.settings-workspace textarea:focus {
+  border-color: var(--murmur-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
+  outline: none;
+}
+
+/* Range sliders: sunken track, primary thumb — matches spec's "sliders keep
+   native input but style the track with --ui-tint-sunken and primary thumb". */
+.settings-workspace input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: var(--settings-radius-pill);
+  background: var(--settings-tint-sunken);
+  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
+}
+
+.settings-workspace input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--murmur-primary);
+  box-shadow: var(--settings-shadow-1);
+  border: 2px solid var(--murmur-surface-container-lowest);
+  cursor: pointer;
+}
+
+.settings-workspace input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--murmur-primary);
+  box-shadow: var(--settings-shadow-1);
+  border: 2px solid var(--murmur-surface-container-lowest);
+  cursor: pointer;
+}
+
+.settings-workspace input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: var(--settings-radius-pill);
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-item,
+  .settings-search input,
+  .settings-back-btn,
+  .settings-quiet-btn,
+  .settings-segmented-btn,
+  .settings-hub-card,
+  .settings-workspace button[role='combobox'],
+  .settings-workspace input[type],
+  .settings-workspace input:not([type]),
+  .settings-workspace select,
+  .settings-workspace textarea {
+    transition: none;
+  }
+}
+
+}

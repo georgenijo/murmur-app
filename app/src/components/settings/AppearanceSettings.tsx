@@ -102,7 +102,7 @@ function ColorControl({
           type="color"
           value={/^#[0-9a-fA-F]{6}$/.test(draft) ? draft : fallback}
           onChange={(event) => commit(event.currentTarget.value)}
-          className="h-8 w-10 cursor-pointer rounded-md border border-on-surface-variant bg-surface-container-lowest p-0.5"
+          className="h-8 w-10 cursor-pointer rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) p-0.5"
         />
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -116,7 +116,7 @@ function ColorControl({
             if (event.key === "Enter") commit(event.currentTarget.value);
           }}
           spellCheck={false}
-          className="w-32 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="w-32 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
         />
         {value && (
           <button
@@ -254,7 +254,7 @@ export function AppearanceSettings() {
           <div
             role="radiogroup"
             aria-labelledby="appearance-mode-label"
-            className="inline-flex rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest p-0.5"
+            className="settings-segmented"
           >
           {MODE_OPTIONS.map((option, index) => {
             const selected = appearance.document.mode === option.value;
@@ -288,11 +288,8 @@ export function AppearanceSettings() {
                 }}
                 aria-label={option.value === "system" ? "Follow the system appearance" : `Use ${option.value} mode`}
                 title={option.description}
-                className={`h-8 rounded-md px-3 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${
-                  selected
-                    ? "bg-primary text-on-primary"
-                    : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"
-                }`}
+                data-selected={selected}
+                className="settings-segmented-btn px-3 outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <span className="inline-flex items-center gap-1.5">
                   {selected && <span aria-hidden="true">✓</span>}
@@ -322,18 +319,18 @@ export function AppearanceSettings() {
 
       {customEditorOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-5 backdrop-blur-[2px]"
+          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setCustomEditorOpen(false);
           }}
         >
-          <div role="dialog" aria-modal="true" aria-labelledby="theme-editor-title" className="max-h-[86vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-on-surface-variant bg-surface p-5 shadow-2xl">
+          <div role="dialog" aria-modal="true" aria-labelledby="theme-editor-title" className="dialog-popover max-h-[86vh] w-full max-w-lg overflow-y-auto p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>
                 <p className="mt-1 text-xs text-on-surface-variant">Start from the colors currently on screen.</p>
               </div>
-              <button autoFocus type="button" aria-label="Close theme editor" onClick={() => setCustomEditorOpen(false)} className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
+              <button type="button" aria-label="Close theme editor" onClick={() => setCustomEditorOpen(false)} className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
             </div>
 
             <div className="mt-5 space-y-5">
@@ -399,8 +396,8 @@ export function AppearanceSettings() {
             <div className="mt-5 flex items-center justify-between gap-3 border-t border-outline-variant pt-4">
               <button type="button" disabled={appearance.busy} onClick={() => runControllerAction(appearance.reset())} className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-50">Reset to Sonic</button>
               <div className="flex gap-2">
-                <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>
-                <button type="button" onClick={() => setCustomEditorOpen(false)} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
+                <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-(--ui-radius-pill) border border-(--ui-hairline) px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>
+                <button type="button" onClick={() => setCustomEditorOpen(false)} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
               </div>
             </div>
           </div>

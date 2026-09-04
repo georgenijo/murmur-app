@@ -10,6 +10,9 @@ const save = vi.fn().mockResolvedValue('/Users/me/Documents/murmur-history.md');
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ save: (...args: unknown[]) => save(...args) }));
 
+// The Pointer Capture API stub used by HoldToDeleteButton's synthetic
+// PointerEvents lives in vitest.setup.ts (shared across test files).
+
 function entry(overrides: Partial<HistoryEntry> & { id: string }): HistoryEntry {
   return {
     text: 'hello world',
@@ -277,17 +280,236 @@ describe('HistoryPanel', () => {
     expect(container.textContent).not.toContain('Saved');
   });
 
-  it('clears only after a second confirming click', async () => {
+  // The hold-to-delete control drives its visible progress fill through
+  // Motion's rAF-based animation, which fake timers cannot usefully observe
+  // in jsdom. The actual commit path (and this test) is the plain
+  // `setTimeout(..., holdDuration)` in HoldToDeleteButton's pointerdown
+  // handler, so we assert on that instead of the animated fill.
+  it('clears history only after holding the clear control for the full duration', async () => {
+    vi.useFakeTimers();
     const onClear = vi.fn();
     await render({ onClear });
 
     await act(async () => moreActions().click());
-    const clear = byText('Clear history')!;
-    await act(async () => clear.click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+    expect(clear).toBeTruthy();
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
     expect(onClear).not.toHaveBeenCalled();
-    expect(clear.textContent).toBe('Clear all history?');
-    await act(async () => clear.click());
+
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
     expect(onClear).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it('does not clear history when the hold is released early', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(onClear).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('cancels an in-progress hold when the window loses focus', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      window.dispatchEvent(new Event('blur'));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(onClear).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('cancels an in-progress hold on Escape', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(onClear).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('arms a discrete-click confirm state instead of clearing immediately', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    });
+
+    expect(onClear).not.toHaveBeenCalled();
+    expect(clear.textContent).toContain('Click again to clear history');
+    vi.useRealTimers();
+  });
+
+  it('clears history on a second discrete click while armed', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    });
+    expect(onClear).not.toHaveBeenCalled();
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    });
+    expect(onClear).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it('auto-disarms the discrete-click confirm state after the timeout', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    });
+    expect(clear.textContent).toContain('Click again to clear history');
+
+    await act(async () => {
+      vi.advanceTimersByTime(4000);
+    });
+    expect(clear.textContent).toContain('Hold to clear history');
+
+    // A subsequent quick click re-arms rather than committing, since the
+    // earlier arm expired.
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    });
+    expect(onClear).not.toHaveBeenCalled();
+    expect(clear.textContent).toContain('Click again to clear history');
+    vi.useRealTimers();
+  });
+
+  it('closes the export menu and returns focus to the ··· trigger after a completed hold', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    await act(async () => {
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(onClear).toHaveBeenCalledOnce();
+    expect(container.querySelector('[aria-label="History actions"]')).toBeNull();
+    expect(document.activeElement).toBe(moreActions());
+    vi.useRealTimers();
+  });
+
+  it('clears history via a held Space key, and cancels a keyboard hold on Escape', async () => {
+    vi.useFakeTimers();
+    const onClear = vi.fn();
+    await render({ onClear });
+
+    await act(async () => moreActions().click());
+    const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+
+    // A held Space key commits after the full duration, same as a pointer hold.
+    await act(async () => {
+      clear.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(onClear).toHaveBeenCalledOnce();
+
+    // The completed hold above closed the menu; reopen it to hold again and
+    // interrupt this one with Escape partway through.
+    await act(async () => moreActions().click());
+    const clearAgain = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
+    await act(async () => {
+      clearAgain.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(onClear).toHaveBeenCalledOnce();
+    vi.useRealTimers();
   });
 
   it('focuses the search box when the focus token changes', async () => {

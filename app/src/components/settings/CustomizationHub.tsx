@@ -43,10 +43,10 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
 
   return (
     <section aria-labelledby="customization-title">
-      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-on-surface-variant">
+      <p className="settings-eyebrow">
         Make it yours
       </p>
-      <h1 id="customization-title" className="mt-2 text-2xl font-semibold tracking-tight text-on-surface">
+      <h1 id="customization-title" className="settings-page-title mt-2">
         Customize Murmur
       </h1>
       <p className="mt-1 max-w-2xl text-sm leading-relaxed text-on-surface-variant">
@@ -55,10 +55,10 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
 
       <ol
         aria-label="Customization destinations"
-        className="mt-6 overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest"
+        className="settings-hub-list mt-6"
       >
         {DESTINATIONS.map((destination, index) => (
-          <li key={destination.id} className="border-b border-outline-variant/20 last:border-b-0">
+          <li key={destination.id} className="settings-hub-card">
             <button
               ref={(node) => {
                 if (node) rowRefs.current[destination.id] = node;

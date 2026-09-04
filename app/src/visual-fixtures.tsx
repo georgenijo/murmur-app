@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
+import { CommandPalette } from './components/CommandPalette';
+import { AboutModal } from './components/AboutModal';
 import { DictationPreviewCard } from './components/dictation-preview/DictationPreviewApp';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
@@ -400,6 +402,19 @@ function VisualFixture() {
           </div>
         </div>
       )}
+      <CommandPalette
+        isOpen={requestedState === 'palette'}
+        onClose={() => {}}
+        commands={[
+          { id: 'record', title: 'Start recording', section: 'Dictation', hint: '⇧ hold', run: () => {} },
+          { id: 'transcribe', title: 'Transcribe audio file…', section: 'Dictation', run: () => {} },
+          { id: 'history', title: 'Search transcripts', section: 'History', hint: '⌘F', run: () => {} },
+          { id: 'insights', title: 'Open Insights', section: 'Navigate', run: () => {} },
+          { id: 'settings', title: 'Open Settings', section: 'Navigate', hint: '⌘,', run: () => {} },
+          { id: 'logs', title: 'Open Performance workspace', section: 'Navigate', hint: '⌘L', run: () => {} },
+        ]}
+      />
+      <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
     </div>
   );
 }

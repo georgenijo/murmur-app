@@ -137,7 +137,7 @@ export function VocabTermsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-[2px]"
+      className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6 backdrop-blur-[2px]"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -148,7 +148,7 @@ export function VocabTermsModal({
         aria-modal="true"
         aria-labelledby="vocab-terms-title"
         tabIndex={-1}
-        className="flex max-h-[82vh] w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-outline-variant/40 bg-surface-container-lowest shadow-2xl"
+        className="dialog-popover flex max-h-[82vh] w-full max-w-[560px] flex-col overflow-hidden"
       >
         {/* header */}
         <div className="border-b border-outline-variant/40 px-[18px] pb-3 pt-4">
@@ -186,7 +186,7 @@ export function VocabTermsModal({
 
         {/* tools: search + sort */}
         <div className="flex items-center gap-2.5 border-b border-outline-variant/40 px-[18px] py-[11px]">
-          <div className="flex flex-1 items-center gap-2 rounded-lg border border-on-surface-variant bg-surface-container-low px-[11px] py-[7px]">
+          <div className="flex flex-1 items-center gap-2 rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-[11px] py-[7px]">
             <svg
               className="shrink-0 text-on-surface-variant"
               width="13"
@@ -213,7 +213,7 @@ export function VocabTermsModal({
           <select
             value={sortMode}
             onChange={(e) => setSortMode(e.target.value as SortMode)}
-            className="cursor-pointer rounded-lg border border-on-surface-variant bg-surface-container-low px-2.5 py-[7px] text-[11px] text-on-surface-variant"
+            className="cursor-pointer rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-[7px] text-[11px] text-on-surface-variant"
           >
             <option value="freq">Sort: frequency</option>
             <option value="alpha">Sort: A–Z</option>

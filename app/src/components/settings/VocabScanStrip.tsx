@@ -116,7 +116,7 @@ export function VocabScanStrip({
   const actionDisabled = !scanning && !folder;
 
   return (
-    <div className="mt-3.5 overflow-hidden rounded-xl border border-outline-variant/40 bg-surface-container-low">
+    <div className="settings-card mt-3.5 overflow-hidden">
       {/* status row */}
       <div className="flex items-center gap-2.5 px-3 py-3">
         <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />

@@ -72,12 +72,12 @@ function ConfirmDialog({ title, children, confirmLabel, dangerous = false, disab
   onConfirm: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6">
-      <div role="dialog" aria-modal="true" aria-labelledby="knowledge-confirm-title" className="w-full max-w-md rounded-2xl bg-surface p-5 shadow-2xl">
+    <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div role="dialog" aria-modal="true" aria-labelledby="knowledge-confirm-title" className="dialog-popover w-full max-w-md p-5">
         <h2 id="knowledge-confirm-title" className="text-base font-semibold text-on-surface">{title}</h2>
         <div className="mt-2 text-sm text-on-surface-variant">{children}</div>
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-medium">Cancel</button>
+          <button type="button" onClick={onCancel} className="settings-quiet-btn px-3 py-2 text-xs text-on-surface">Cancel</button>
           <button type="button" disabled={disabled} onClick={onConfirm} className={`rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-40 ${dangerous ? 'border border-error/30 bg-error/10 text-error' : 'bg-primary text-on-primary'}`}>{confirmLabel}</button>
         </div>
       </div>
@@ -161,7 +161,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         onRetry={() => void retry()}
       />
 
-      <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
+      <div className="settings-card p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-medium text-on-surface">Personal knowledge</p>
@@ -169,7 +169,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
               Manage local replacement rules, vocabulary, reusable snippets, and Voice Command records. Voice-enabled records run locally during live transcription; other enabled replacements run through Smart Correction with deterministic scope and provenance precedence.
             </p>
           </div>
-          <button type="button" onClick={() => setEditing(null)} disabled={unavailable} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge</button>
+          <button type="button" onClick={() => setEditing(null)} disabled={unavailable} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge</button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" onClick={() => void chooseExport().catch(() => {})} disabled={unavailable} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Export…</button>
@@ -180,14 +180,14 @@ export function KnowledgeManager({ active, profiles }: Props) {
       </div>
 
       <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_repeat(3,minmax(105px,auto))]">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-xs outline-none focus:border-primary" />
-        <select aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-2 text-xs">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs outline-none focus:border-primary" />
+        <select aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">All types</option><option value="replacement_rule">Replacements</option><option value="vocabulary_term">Vocabulary</option><option value="snippet">Snippets</option><option value="transform">Transforms</option>
         </select>
-        <select aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-2 text-xs">
+        <select aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">Any state</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
         </select>
-        <select aria-label="Filter visibility" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-2 text-xs">
+        <select aria-label="Filter visibility" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">Any visibility</option><option value="global">Global</option><option value="app">App</option><option value="project">Project</option>
         </select>
       </div>
@@ -195,7 +195,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
       {(actionError || knowledge.error) && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{actionError ?? knowledge.error}</p>}
       {notice && <p role="status" className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">{notice}</p>}
 
-      <div className="overflow-hidden rounded-xl border border-outline-variant/30">
+      <div className="settings-card overflow-hidden">
         <div className="flex items-center justify-between bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
           <span>{knowledge.loading && knowledge.entries.length === 0 ? 'Loading…' : `${knowledge.total} matching ${knowledge.total === 1 ? 'record' : 'records'}`}</span>
           <button type="button" onClick={() => void knowledge.refresh()} disabled={knowledge.loading || unavailable} className="font-medium underline disabled:opacity-40">Refresh</button>
@@ -255,7 +255,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
       {deleteAllOpen && <ConfirmDialog title="Delete all personal knowledge?" confirmLabel="Delete everything" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
         <p>This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later.</p>
         <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
-          <input autoFocus aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-lg border border-error bg-surface-container-lowest px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />
+          <input aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-(--ui-radius-control) border border-error bg-(--ui-tint-raised) px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />
         </label>
       </ConfirmDialog>}
     </div>

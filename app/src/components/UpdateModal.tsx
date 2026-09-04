@@ -1,8 +1,10 @@
 import { exit } from '@tauri-apps/plugin-process';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { motion, useReducedMotion } from 'motion/react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import type { UpdateStatus } from '../lib/updater';
+import { cn } from '../lib/sona-utils';
 
 // Replace with an owned stable redirect (for example, murmur.georgenijo.com/download)
 // once one is publicly available.
@@ -17,6 +19,7 @@ interface UpdateModalProps {
 }
 
 export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismiss }: UpdateModalProps) {
+  const shouldReduceMotion = useReducedMotion();
   if (
     status.phase !== 'available' &&
     status.phase !== 'preparing' &&
@@ -46,19 +49,24 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50"
+        className="dialog-backdrop fixed inset-0 z-50"
         onClick={!isForced && !isBusy ? onDismiss : undefined}
       />
 
       {/* Modal */}
       <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-        <div className="bg-surface-container-lowest rounded-2xl shadow-xl p-6 w-96 pointer-events-auto relative">
+        <motion.div
+          initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: shouldReduceMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}
+          className="dialog-popover relative w-96 p-6 pointer-events-auto"
+        >
           {/* Close button — shown on non-forced error and non-forced available states */}
           {((isError && !isForced) || (status.phase === 'available' && !isForced)) && (
             <button
               onClick={onDismiss}
               aria-label="Close update dialog"
-              className="absolute right-4 top-4 rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              className="absolute right-4 top-4 rounded-[var(--ui-radius-control)] p-1 text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -67,13 +75,13 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
           )}
 
           {/* Icon */}
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--ui-radius-card)] bg-[var(--ui-tint-accent-subtle)]">
             <svg className="h-6 w-6 text-on-surface" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
           </div>
 
-          <h2 className="text-lg font-semibold text-on-surface text-center mb-1">
+          <h2 className="text-lg font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface text-center mb-1">
             {requiresReinstall
               ? 'Reinstall Murmur to Update'
               : isForced
@@ -95,7 +103,7 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
 
           {/* Release notes */}
           {status.phase === 'available' && status.notes && (
-            <div className="mb-4 max-h-32 overflow-y-auto rounded-lg bg-background px-3 py-2 text-xs text-on-surface-variant [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-surface-container-high [&_code]:px-1 [&_h1]:mb-1 [&_h1]:mt-2 [&_h1]:text-sm [&_h1]:font-semibold [&_h2]:mb-1 [&_h2]:mt-2 [&_h2]:text-xs [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:mt-1 [&_h3]:text-xs [&_h3]:font-medium [&_li]:my-0 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4">
+            <div className="dialog-card mb-4 max-h-32 overflow-y-auto px-3 py-2 text-xs text-on-surface-variant [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-surface-container-high [&_code]:px-1 [&_h1]:mb-1 [&_h1]:mt-2 [&_h1]:text-sm [&_h1]:font-semibold [&_h2]:mb-1 [&_h2]:mt-2 [&_h2]:text-xs [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:mt-1 [&_h3]:text-xs [&_h3]:font-medium [&_li]:my-0 [&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:my-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4">
               <Markdown rehypePlugins={[rehypeSanitize]}>{status.notes}</Markdown>
             </div>
           )}
@@ -113,9 +121,9 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
                 <span>Downloading...</span>
                 <span>{status.progress}%</span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-surface-container-highest">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--ui-tint-sunken)]">
                 <div
-                  className="h-full bg-primary rounded-full transition-all duration-200"
+                  className="h-full rounded-full bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] transition-all duration-200"
                   style={{ width: `${status.progress}%` }}
                 />
               </div>
@@ -131,7 +139,7 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
 
           {/* Error state */}
           {isError && (
-            <div className="mb-4 px-3 py-2 bg-error/10 border border-error/30 rounded-lg">
+            <div className="dialog-card mb-4 border-error/30 bg-error/10 px-3 py-2">
               <p className="text-xs text-error">{status.message}</p>
             </div>
           )}
@@ -141,7 +149,11 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
             {(status.phase === 'available' || (isError && !requiresReinstall)) && (
               <button
                 onClick={isCheckError ? onRetryCheck : onDownload}
-                className="w-full py-2 px-4 bg-primary hover:bg-primary-dim text-on-primary text-sm font-medium rounded-lg transition-colors"
+                className={cn(
+                  'w-full rounded-[var(--ui-radius-pill)] px-4 py-2 text-sm font-semibold text-on-primary transition-colors',
+                  'bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))]',
+                  'shadow-[var(--ui-shadow-accent)]',
+                )}
               >
                 {isError ? 'Retry' : 'Update Now'}
               </button>
@@ -151,7 +163,7 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
               <button
                 type="button"
                 onClick={() => void openUrl(LATEST_RELEASES_URL)}
-                className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-4 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container"
+                className="dialog-pill-btn w-full px-4 py-2 text-sm text-on-surface hover:bg-surface-container"
               >
                 Download latest version
               </button>
@@ -161,7 +173,7 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
               <>
                 <button
                   onClick={onSkip}
-                  className="w-full rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-4 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container"
+                  className="dialog-pill-btn w-full px-4 py-2 text-sm text-on-surface hover:bg-surface-container"
                 >
                   Skip This Version
                 </button>
@@ -177,13 +189,13 @@ export function UpdateModal({ status, onDownload, onRetryCheck, onSkip, onDismis
             {(((status.phase === 'available' || isError) && isForced) || requiresReinstall) && (
               <button
                 onClick={() => exit(0)}
-                className="w-full rounded-lg border border-error/30 bg-surface-container-lowest px-4 py-2 text-sm font-medium text-error transition-colors hover:bg-error/10"
+                className="dialog-pill-btn w-full px-4 py-2 text-sm text-error hover:bg-error/10"
               >
                 Quit
               </button>
             )}
           </div>
-        </div>
+        </motion.div>
       </div>
     </>
   );

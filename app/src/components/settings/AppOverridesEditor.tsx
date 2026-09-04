@@ -105,7 +105,7 @@ function OverrideSelect({
         aria-label={`${label} for ${appLabel}`}
         value={overrideChoice(value)}
         onChange={(event) => onChange(overrideValue(event.target.value as OverrideChoice))}
-        className="mt-1 w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2.5 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+        className="mt-1 w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
       >
         {OVERRIDE_OPTIONS.map((option) => (
           <option key={option.value} value={option.value}>{option.label}</option>
@@ -219,7 +219,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
+      <div className="settings-card p-3">
         <h2 className="text-sm font-medium text-on-surface">Add an app</h2>
         <p className="mt-1 text-xs text-on-surface-variant">
           Murmur reads only the names and bundle IDs of currently running apps for this picker. The list stays in memory, is never logged, and is not saved unless you choose an app.
@@ -230,7 +230,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
               aria-label="Running app"
               value={selectedApp}
               onChange={(event) => setSelectedApp(event.target.value)}
-              className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               <option value="">Choose a running app…</option>
               {availableApps.map((app) => (
@@ -244,7 +244,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                 const app = availableApps.find((candidate) => candidate.bundleId === selectedApp);
                 if (app) addProfile(app.bundleId, app.name);
               }}
-              className="shrink-0 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-on-primary disabled:cursor-not-allowed disabled:opacity-50"
+              className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-medium text-on-primary disabled:cursor-not-allowed disabled:opacity-50"
             >
               Add app
             </button>
@@ -263,7 +263,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
               placeholder="App name (optional)"
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
+              className="w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
             />
             <div className="flex gap-2">
               <input
@@ -276,7 +276,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}
-                className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
               />
               <button
                 type="button"
@@ -299,7 +299,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
           {profiles.map((profile) => {
             const appLabel = profile.label || profile.bundleId;
             return (
-              <li key={profile.bundleId} className="space-y-3 rounded-xl border border-outline-variant/25 bg-surface-container-lowest p-3 shadow-sm">
+              <li key={profile.bundleId} className="settings-card space-y-3 p-3">
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     <h3 className="truncate text-sm font-medium text-on-surface">{appLabel}</h3>

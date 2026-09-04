@@ -18,6 +18,7 @@
     "test:visual": "playwright test"
   },
   "dependencies": {
+    "@base-ui/react": "^1.7.0",
     "@noble/hashes": "^2.3.0",
     "@tailwindcss/vite": "^4.1.18",
     "@tauri-apps/api": "^2",
@@ -27,12 +28,16 @@
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-updater": "^2",
+    "clsx": "^2.1.1",
     "jsonc-parser": "^3.3.1",
     "jszip": "^3.10.1",
+    "lucide-react": "^1.40.0",
+    "motion": "^13.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "rehype-sanitize": "^6.0.0",
+    "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.1.18"
   },
   "devDependencies": {

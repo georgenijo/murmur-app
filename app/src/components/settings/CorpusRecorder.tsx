@@ -292,7 +292,7 @@ export function CorpusRecorder({
         </select>
       </div>
 
-      <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low p-4">
+      <div className="settings-card p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">Prompt {promptIndex + 1} of {PERSONAL_CORPUS_PROMPTS.length}</span>
@@ -358,7 +358,7 @@ export function CorpusRecorder({
           </div>
           {lastRecording.qualityWarnings.map((warning) => <p key={warning} className="mt-1 text-primary">{warning}</p>)}
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <button type="button" onClick={useAndContinue} className="rounded-md bg-primary px-3 py-1.5 font-semibold text-on-primary hover:bg-primary-dim">Use & Next</button>
+            <button type="button" onClick={useAndContinue} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 font-semibold text-on-primary hover:bg-primary-dim">Use & Next</button>
             <button type="button" disabled={!canRecord} onClick={() => void beginRecording()} className="font-medium text-on-surface-variant underline hover:text-primary disabled:cursor-not-allowed disabled:opacity-40">Record another take</button>
           </div>
         </div>

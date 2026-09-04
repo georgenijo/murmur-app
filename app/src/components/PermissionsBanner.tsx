@@ -158,7 +158,7 @@ export function PermissionsBanner() {
     <div
       role="region"
       aria-label="Permission warning"
-      className="relative mx-3.5 mb-1.5 flex shrink-0 items-center gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning"
+      className="dialog-banner relative mx-3.5 mb-1.5 flex shrink-0 items-center gap-2 border-warning/25 bg-[color-mix(in_srgb,var(--murmur-warning)_10%,transparent)] px-3 py-2 text-xs text-warning"
     >
       <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
       <span className="min-w-0 flex-1 truncate">{message}</span>
@@ -169,7 +169,7 @@ export function PermissionsBanner() {
           : micDenied
             ? handleOpenMicrophone()
             : handleOpenAccessibility())}
-        className="shrink-0 font-semibold underline underline-offset-2 hover:no-underline"
+        className="shrink-0 rounded-[var(--ui-radius-pill)] px-2.5 py-1 font-semibold transition-colors hover:bg-warning/10"
       >
         Open System Settings
       </button>
@@ -178,10 +178,10 @@ export function PermissionsBanner() {
         onToggle={(event) => setMoreOpen(event.currentTarget.open)}
         className="relative shrink-0"
       >
-        <summary className="cursor-pointer list-none rounded px-1 py-0.5 font-semibold hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning">
+        <summary className="cursor-pointer list-none rounded-[var(--ui-radius-control)] px-1.5 py-0.5 font-semibold hover:bg-warning/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning">
           More
         </summary>
-        <div className="absolute right-0 top-6 z-40 w-72 space-y-2 rounded-xl border border-outline-variant/25 bg-surface-container-lowest p-3 text-on-surface shadow-2xl">
+        <div className="dialog-popover absolute right-0 top-6 z-40 w-72 space-y-2 p-3 text-on-surface">
           <button
             type="button"
             onClick={checkPermissions}
@@ -190,7 +190,7 @@ export function PermissionsBanner() {
             Re-check permissions
           </button>
           {micDenied && (
-            <div className="space-y-1 border-t border-outline-variant/20 pt-2">
+            <div className="space-y-1 border-t border-[var(--ui-hairline)] pt-2">
               <button
                 type="button"
                 onClick={handleResetMicrophone}
@@ -205,7 +205,7 @@ export function PermissionsBanner() {
               {micResetError && (
                 <p
                   role="alert"
-                  className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
+                  className="rounded-[var(--ui-radius-control)] border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
                 >
                   {micResetError}
                 </p>
@@ -213,7 +213,7 @@ export function PermissionsBanner() {
             </div>
           )}
           {needsAccessibility && (
-            <div className="space-y-1 border-t border-outline-variant/20 pt-2">
+            <div className="space-y-1 border-t border-[var(--ui-hairline)] pt-2">
               <button
                 type="button"
                 onClick={handleResetAccessibility}
@@ -228,7 +228,7 @@ export function PermissionsBanner() {
               {resetError && (
                 <p
                   role="alert"
-                  className="rounded-md border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
+                  className="rounded-[var(--ui-radius-control)] border border-error bg-surface-container-lowest px-2 py-1 text-xs text-error"
                 >
                   {resetError}
                 </p>
@@ -240,7 +240,7 @@ export function PermissionsBanner() {
       <button
         type="button"
         onClick={() => setDismissed(true)}
-        className="grid h-5 w-5 shrink-0 place-items-center rounded text-warning transition-colors hover:bg-warning/10"
+        className="grid h-5 w-5 shrink-0 place-items-center rounded-[var(--ui-radius-control)] text-warning transition-colors hover:bg-warning/10"
         aria-label="Dismiss"
       >
         <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

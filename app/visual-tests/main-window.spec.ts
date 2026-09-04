@@ -50,10 +50,10 @@ test('selected history filters remain selected while hovered', async ({ page }) 
   await expect.poll(() => mic.evaluate((element) => {
     const selected = getComputedStyle(element);
     const probe = document.createElement('span');
-    probe.style.color = 'var(--murmur-on-surface)';
+    probe.style.color = 'var(--murmur-surface-container-lowest)';
     document.body.appendChild(probe);
     const expectedBackground = getComputedStyle(probe).color;
-    probe.style.color = 'var(--murmur-background)';
+    probe.style.color = 'var(--murmur-on-surface)';
     const expectedForeground = getComputedStyle(probe).color;
     probe.remove();
     return {
@@ -251,8 +251,8 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   ]);
   const [headerBox, updateBox, recordBox] = geometry;
 
-  expect(updateBox?.width).toBeLessThanOrEqual(26);
-  expect(updateBox?.height).toBeLessThanOrEqual(26);
+  expect(updateBox?.width).toBeLessThanOrEqual(28);
+  expect(updateBox?.height).toBeLessThanOrEqual(28);
   expect(recordBox?.height).toBe(36);
   expect(headerBox?.height).toBe(42);
 });

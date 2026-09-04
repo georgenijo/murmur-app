@@ -86,7 +86,7 @@ export function VocabularyAliasesEditor({
         <button
           type="button"
           onClick={addEntry}
-          className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary hover:brightness-110"
+          className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:brightness-110"
         >
           + Add spelling
         </button>
@@ -100,7 +100,7 @@ export function VocabularyAliasesEditor({
           </p>
         </div>
       ) : (
-        <div className="mt-3 overflow-hidden rounded-xl border border-outline-variant/30 bg-surface-container-lowest">
+        <div className="settings-card mt-3 overflow-hidden">
           <div className="grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_76px] items-center gap-2 border-b border-outline-variant/30 bg-surface-container-low px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
             <span>Murmur hears <span className="font-normal normal-case tracking-normal">(optional)</span></span>
             <span aria-hidden="true" />
@@ -129,7 +129,7 @@ export function VocabularyAliasesEditor({
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="min-w-0 rounded-lg border border-on-surface-variant bg-surface-container px-2.5 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="min-w-0 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
                 <svg
                   aria-hidden="true"
@@ -149,7 +149,7 @@ export function VocabularyAliasesEditor({
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="min-w-0 rounded-lg border border-on-surface-variant bg-surface-container px-2.5 py-1.5 text-xs font-medium text-on-surface placeholder:font-normal placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="min-w-0 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 text-xs font-medium text-on-surface placeholder:font-normal placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-primary"
                 />
                 <div className="flex items-center justify-end gap-2">
                   <button
@@ -187,7 +187,7 @@ export function VocabularyAliasesEditor({
         </p>
       )}
 
-      <div className="mt-3 rounded-xl border border-outline-variant/30 bg-surface-container-lowest">
+      <div className="settings-card mt-3">
         <button
           type="button"
           aria-expanded={previewExpanded}
@@ -216,13 +216,13 @@ export function VocabularyAliasesEditor({
                 aria-label="Alias preview input"
                 value={previewInput}
                 onChange={(event) => { setPreviewInput(event.target.value); setPreviewOutput(''); }}
-                className="min-w-0 flex-1 rounded-lg border border-on-surface-variant bg-surface-container px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
               />
               <button
                 type="button"
                 disabled={previewing || !previewInput.trim()}
                 onClick={() => void runPreview()}
-                className="rounded-lg bg-primary px-3 py-2 text-xs font-medium text-on-primary disabled:opacity-50"
+                className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-medium text-on-primary disabled:opacity-50"
               >
                 {previewing ? 'Testing…' : 'Test'}
               </button>

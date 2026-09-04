@@ -13,6 +13,7 @@ import {
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { flog } from '../../lib/log';
+import HoldToDeleteButton from '@/components/ui/hold-to-delete-button/hold-to-delete-button';
 import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
 
 interface HistoryPanelProps {
@@ -114,7 +115,6 @@ function HistoryPanelComponent({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirmClear, setConfirmClear] = useState(false);
   const [renderLimit, setRenderLimit] = useState(HISTORY_RENDER_BATCH);
   const copyGroupId = useId();
   const saveGroupId = useId();
@@ -125,12 +125,10 @@ function HistoryPanelComponent({
   const exportButtonRef = useRef<HTMLButtonElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -223,19 +221,6 @@ function HistoryPanelComponent({
     }
   };
 
-  // Two-step confirm rather than window.confirm: the main window is a
-  // non-activating utility surface and a native modal steals focus from it.
-  const handleClear = () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    if (!confirmClear) {
-      setConfirmClear(true);
-      confirmTimerRef.current = setTimeout(() => setConfirmClear(false), 4000);
-      return;
-    }
-    setConfirmClear(false);
-    onClear();
-  };
-
   const closeSearch = () => {
     setQuery('');
   };
@@ -280,21 +265,23 @@ function HistoryPanelComponent({
                 ×
               </button>
             ) : (
-              <kbd className="pointer-events-none absolute right-2 top-1 rounded bg-surface-container-high px-1 py-0.5 font-mono text-[9px] text-on-surface-variant">/</kbd>
+              <kbd className="pointer-events-none absolute right-2 top-1 rounded-full bg-on-surface/6 px-1 py-0.5 font-mono text-[9px] text-on-surface-variant">/</kbd>
             )}
           </div>
 
-          {HISTORY_FILTER_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={filter === option.value}
-              onClick={() => setFilter(option.value)}
-              className="ui-filter-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              {option.label}
-            </button>
-          ))}
+          <div className="history-filter-track" role="group" aria-label="Filter transcripts">
+            {HISTORY_FILTER_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={filter === option.value}
+                onClick={() => setFilter(option.value)}
+                className="ui-filter-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
 
           <span className="ml-auto text-xs tabular-nums text-on-surface-variant">
             {visible.length === entries.length
@@ -369,16 +356,22 @@ function HistoryPanelComponent({
                   ))}
                 </div>
                 <div className="my-1 border-t border-outline-variant/20" />
-                <button
-                  type="button"
-                  onClick={handleClear}
+                {/* Hold-to-clear rather than window.confirm or a two-click
+                    toggle: the main window is a non-activating utility
+                    surface and a native modal steals focus from it, and a
+                    deliberate hold reads as intentional without a second
+                    click to remember. */}
+                <HoldToDeleteButton
+                  label="Hold to clear history"
+                  confirmLabel="Click again to clear history"
+                  holdDuration={1200}
+                  onDelete={() => {
+                    onClear();
+                    closeExportAndFocus();
+                  }}
                   disabled={entries.length === 0}
-                  className={`block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium disabled:opacity-40 ${
-                    confirmClear ? 'bg-error/10 text-error' : 'text-error hover:bg-error/10'
-                  }`}
-                >
-                  {confirmClear ? 'Clear all history?' : 'Clear history'}
-                </button>
+                  className="h-9 w-full min-w-0 justify-start rounded-none px-3 text-[length:var(--ui-font-label)]"
+                />
               </div>
             )}
           </div>
@@ -412,6 +405,7 @@ function HistoryPanelComponent({
                 data-testid="transcript-card"
                 data-copied={copiedId === entry.id}
                 data-day-end={endsDay}
+                data-newest={isNewest}
                 role="group"
                 tabIndex={0}
                 aria-label={`Transcription from ${formatTimestamp(entry.timestamp)}. Press Enter or Space to copy.`}
@@ -427,12 +421,12 @@ function HistoryPanelComponent({
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="shrink-0">{formatTimestamp(entry.timestamp)}</span>
                   {entrySource(entry) === 'file' ? (
-                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 text-xs font-medium text-on-surface">
+                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/11 px-1.5 text-[10.5px] font-semibold text-primary">
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                       <span className="truncate">{entry.sourceName || 'File'}</span>
                     </span>
                   ) : (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-surface-container px-1.5 text-xs font-medium text-on-surface-variant">
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-on-surface/6 px-1.5 text-[10.5px] font-semibold text-on-surface-variant">
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" /></svg>
                       Mic
                     </span>

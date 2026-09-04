@@ -25,6 +25,11 @@ function uiLatencyBuildId(): string {
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": resolve(__dirname, "./src"),
+    },
+  },
   define: {
     "import.meta.env.VITE_MURMUR_BUILD_ID": JSON.stringify(uiLatencyBuildId()),
   },
