@@ -813,20 +813,22 @@ impl AecProtocolTracker {
     }
 
     fn observe(&mut self, status: EchoCancellationStatus) -> bool {
-        let valid = match (self.requested, self.observed, status) {
-            (EchoCancellationMode::Disabled, None, EchoCancellationStatus::Disabled) => true,
+        let valid = matches!(
+            (self.requested, self.observed, status),
             (
+                EchoCancellationMode::Disabled,
+                None,
+                EchoCancellationStatus::Disabled
+            ) | (
                 EchoCancellationMode::Enabled,
                 None,
                 EchoCancellationStatus::Active | EchoCancellationStatus::Bypassed { .. },
-            ) => true,
-            (
+            ) | (
                 EchoCancellationMode::Enabled,
                 Some(EchoCancellationStatus::Active),
                 EchoCancellationStatus::Bypassed { .. },
-            ) => true,
-            _ => false,
-        };
+            )
+        );
         if valid {
             self.observed = Some(status);
         }
