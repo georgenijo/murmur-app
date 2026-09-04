@@ -10,6 +10,10 @@ import { PerformanceView } from './PerformanceView';
 import { RunsView } from './RunsView';
 import { ReportCompareView } from './ReportCompareView';
 import { TransformDiagnosticsView } from './TransformDiagnosticsView';
+import {
+  DictationCaptureStatusBadge,
+  DictationDiagnosticsView,
+} from './DictationDiagnosticsView';
 import { LatencyMapView } from './LatencyMapView';
 import { LEVELS, STREAMS, type StreamName, type LevelName } from '../../lib/events';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
@@ -21,7 +25,7 @@ import {
   type CorrelationFilter,
 } from '../../lib/eventFilters';
 
-export type DiagnosticsTab = 'events' | 'performance' | 'latency' | 'runs' | 'transforms' | 'reports';
+export type DiagnosticsTab = 'events' | 'performance' | 'latency' | 'runs' | 'transforms' | 'dictation' | 'reports';
 const MAX_RENDERED_EVENTS = 100;
 const TABS: { id: DiagnosticsTab; label: string }[] = [
   { id: 'events', label: 'Events' },
@@ -30,6 +34,7 @@ const TABS: { id: DiagnosticsTab; label: string }[] = [
   { id: 'latency', label: 'Latency' },
   { id: 'reports', label: 'Compare' },
   { id: 'transforms', label: 'Transform' },
+  { id: 'dictation', label: 'Dictation' },
 ];
 
 export function isDiagnosticsTab(value: string): value is DiagnosticsTab {
@@ -42,6 +47,7 @@ interface DiagnosticsWorkspaceProps {
   onPopOut?: (tab: DiagnosticsTab) => void;
   /** Authorized `main` and `diagnostics` webviews may read or recover store health. */
   storeHealthEnabled?: boolean;
+  canArmPrivateCapture?: boolean;
 }
 
 export function DiagnosticsWorkspace({
@@ -49,6 +55,7 @@ export function DiagnosticsWorkspace({
   requestedTab,
   onPopOut,
   storeHealthEnabled = false,
+  canArmPrivateCapture = true,
 }: DiagnosticsWorkspaceProps) {
   const { events, clear } = useEventStore(active);
   const [tab, setTab] = useState<DiagnosticsTab>(requestedTab ?? 'events');
@@ -163,6 +170,10 @@ export function DiagnosticsWorkspace({
               </button>
             ))}
           </div>
+          <DictationCaptureStatusBadge
+            active={active}
+            onOpen={() => setTab('dictation')}
+          />
           {/* Actions */}
           {(onPopOut || tab === 'events') && (
             <div className="flex flex-wrap gap-2">
@@ -327,6 +338,16 @@ export function DiagnosticsWorkspace({
           className="flex-1 overflow-y-auto"
         >
           <TransformDiagnosticsView />
+        </div>
+      )}
+      {tab === 'dictation' && (
+        <div
+          role="tabpanel"
+          id="diagnostics-panel-dictation"
+          aria-labelledby="diagnostics-tab-dictation"
+          className="flex-1 overflow-y-auto"
+        >
+          <DictationDiagnosticsView active={active} canArm={canArmPrivateCapture} />
         </div>
       )}
       <div

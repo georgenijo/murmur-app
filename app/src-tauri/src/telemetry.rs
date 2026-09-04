@@ -850,6 +850,35 @@ fn sanitize_dictation_slo_event(data: &mut serde_json::Map<String, serde_json::V
     }
 }
 
+fn is_dictation_terminal_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_terminal")
+}
+
+fn is_safe_dictation_terminal_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("pipeline.dictation_terminal"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "outcome" => value.as_str().is_some_and(is_safe_dictation_outcome),
+        "error_code" => value.as_str().is_some_and(is_safe_dictation_error_code),
+        "char_count" => value.as_u64().is_some(),
+        _ => false,
+    }
+}
+
+fn sanitize_dictation_terminal_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_invalid_known_field = data.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "event_code" | "recording_id" | "outcome" | "error_code" | "char_count"
+        ) && !is_safe_dictation_terminal_field(key, value)
+    });
+    data.retain(|key, value| is_safe_dictation_terminal_field(key, value));
+    if has_invalid_known_field || data.len() != 5 {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
 fn is_delivery_target_verification_event(
     data: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
@@ -1489,6 +1518,12 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_dictation_preview_presentation_event(obj) {
         sanitize_dictation_preview_presentation_event(obj);
+        return;
+    }
+    if is_dictation_terminal_event(obj) {
+        // Terminal lifecycle records share the event file with Fleet uploads.
+        // Keep the exact content-free schema in debug and release builds.
+        sanitize_dictation_terminal_event(obj);
         return;
     }
     if is_delivery_target_verification_event(obj) {
@@ -2561,7 +2596,7 @@ mod tests {
     fn release_pipeline_keeps_only_allowlisted_dictation_lifecycle_strings() {
         let mut data = serde_json::json!({
             "recording_id": 9,
-            "total_ms": 420,
+            "char_count": 42,
             "event_code": "pipeline.dictation_terminal",
             "outcome": "runtime_interruption",
             "error_code": "stream_invalidated",
@@ -2572,7 +2607,7 @@ mod tests {
         sanitize_event_data("pipeline", &mut data, false);
 
         assert_eq!(data["recording_id"], 9);
-        assert_eq!(data["total_ms"], 420);
+        assert_eq!(data["char_count"], 42);
         assert_eq!(data["event_code"], "pipeline.dictation_terminal");
         assert_eq!(data["outcome"], "runtime_interruption");
         assert_eq!(data["error_code"], "stream_invalidated");
@@ -2586,6 +2621,54 @@ mod tests {
         assert!(data.get("event_code").is_none());
         assert!(data.get("outcome").is_none());
         assert!(data.get("error_code").is_none());
+    }
+
+    #[test]
+    fn dictation_terminal_never_retains_private_capture_content() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "pipeline.dictation_terminal",
+                "recording_id": 9,
+                "outcome": "success",
+                "error_code": "none",
+                "char_count": 24,
+                "raw_text": "SENTINEL PRIVATE RAW",
+                "final_text": "SENTINEL PRIVATE FINAL",
+                "capture": {
+                    "rawText": "SENTINEL PRIVATE NESTED RAW",
+                    "finalText": "SENTINEL PRIVATE NESTED FINAL"
+                }
+            });
+
+            sanitize_event_data("pipeline", &mut data, debug_build);
+
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert_eq!(data["event_code"], "pipeline.dictation_terminal");
+            assert_eq!(data["recording_id"], 9);
+            assert_eq!(data["outcome"], "success");
+            assert_eq!(data["error_code"], "none");
+            assert_eq!(data["char_count"], 24);
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(data.get("raw_text").is_none());
+            assert!(data.get("final_text").is_none());
+            assert!(data.get("capture").is_none());
+        }
+    }
+
+    #[test]
+    fn content_free_dictation_terminal_bytes_are_unchanged() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_terminal",
+            "recording_id": 41,
+            "outcome": "success",
+            "error_code": "none",
+            "char_count": 12
+        });
+        let expected = serde_json::to_vec(&data).unwrap();
+
+        sanitize_event_data("pipeline", &mut data, false);
+
+        assert_eq!(serde_json::to_vec(&data).unwrap(), expected);
     }
 
     #[test]

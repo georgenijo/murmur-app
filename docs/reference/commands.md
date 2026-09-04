@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 180 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 188 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -30,6 +30,18 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_ide_context_status` | `bundle_id: String` | `IdeContextStatus` | Index state for one profile. |
 | `refresh_ide_context` | `bundle_id: String` | `Result<IdeContextStatus, String>` | Rebuilds the memory-only index from that profile's opted-in roots. |
 | `clear_ide_context` | `bundle_id: String` | `Result<IdeContextStatus, String>` | Drops the in-memory index for that profile. |
+
+## Private dictation capture (`commands/dictation_diagnostics.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `arm_next_dictation_diagnostic_capture` | — | `Result<DictationCaptureArmStatusV1, String>` | Main-window-only consent for exact text from the next accepted live dictation. The arm expires after 10 minutes and applies to one recording. |
+| `disarm_next_dictation_diagnostic_capture` | — | `Result<DictationCaptureArmStatusV1, String>` | Main-window-only revocation of an unclaimed arm. A recording that already claimed the arm remains active. |
+| `get_dictation_diagnostic_capture_status` | — | `Result<DictationCaptureArmStatusV1, String>` | Returns `unarmed`, an armed expiry time, or the recording ID that claimed the arm. Only the main and Diagnostics windows can call it. |
+| `list_dictation_diagnostic_captures` | — | `Result<Vec<DictationDiagnosticCaptureSummaryV1>, String>` | Lists the three newest unexpired local captures without returning transcript text. Only the main and Diagnostics windows can call it. |
+| `get_dictation_diagnostic_capture` | `capture_id: String` | `Result<Option<DictationDiagnosticCaptureV1>, String>` | Returns one local capture for private review. Only the main and Diagnostics windows can call it. |
+| `delete_dictation_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Deletes one local capture and syncs the capture directory. Only the main and Diagnostics windows can call it. |
+| `upload_dictation_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Sends one selected capture in one in-memory POST with no retry store. The Diagnostics UI asks for separate upload confirmation before calling it. |
 
 ## Permissions (`commands/permissions.rs`)
 
