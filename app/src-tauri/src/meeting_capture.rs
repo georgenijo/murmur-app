@@ -8,7 +8,8 @@ use crate::state::WHISPER_SAMPLE_RATE;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
     read_production_frame, valid_input_resolution_evidence, write_production_control,
-    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
+    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationBypassReason,
+    EchoCancellationMode, EchoCancellationStatus, FailureCode, ProductionFrame,
     ProductionHelperMessage, ProductionHostMessage, ProductionPcm, SessionNonce, SetupTransition,
     SystemAudioPermissionStatus,
 };
@@ -90,6 +91,22 @@ pub enum MeetingRuntimePhase {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MeetingEchoCancellationRuntime {
+    #[default]
+    Off,
+    Starting,
+    Active,
+    Bypassed {
+        reason: EchoCancellationBypassReason,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingRuntimeStatus {
@@ -99,6 +116,7 @@ pub struct MeetingRuntimeStatus {
     pub elapsed_ms: u64,
     pub microphone_active: bool,
     pub system_audio_active: bool,
+    pub echo_cancellation: MeetingEchoCancellationRuntime,
     pub error_code: Option<String>,
 }
 
@@ -111,6 +129,7 @@ impl Default for MeetingRuntimeStatus {
             elapsed_ms: 0,
             microphone_active: false,
             system_audio_active: false,
+            echo_cancellation: MeetingEchoCancellationRuntime::Off,
             error_code: None,
         }
     }
@@ -122,6 +141,7 @@ pub struct MeetingCaptureConfig {
     pub session_id: String,
     pub vad_sensitivity: u32,
     pub device_id: Option<String>,
+    pub echo_cancellation: EchoCancellationMode,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +239,10 @@ impl MeetingCoordinator {
                 generation: config.generation,
                 session_id: Some(config.session_id.clone()),
                 phase: MeetingRuntimePhase::Starting,
+                echo_cancellation: match config.echo_cancellation {
+                    EchoCancellationMode::Disabled => MeetingEchoCancellationRuntime::Off,
+                    EchoCancellationMode::Enabled => MeetingEchoCancellationRuntime::Starting,
+                },
                 ..MeetingRuntimeStatus::default()
             };
             inner.active = Some(ActiveMeeting {
@@ -428,6 +452,33 @@ impl MeetingCoordinator {
         publish_status(app, &status);
     }
 
+    fn update_echo_cancellation(
+        &self,
+        app: &tauri::AppHandle,
+        generation: u64,
+        value: EchoCancellationStatus,
+    ) {
+        let status = {
+            let mut inner = self.inner.lock_or_recover();
+            if inner
+                .active
+                .as_ref()
+                .is_none_or(|active| active.generation != generation)
+            {
+                return;
+            }
+            inner.status.echo_cancellation = match value {
+                EchoCancellationStatus::Disabled => MeetingEchoCancellationRuntime::Off,
+                EchoCancellationStatus::Active => MeetingEchoCancellationRuntime::Active,
+                EchoCancellationStatus::Bypassed { reason } => {
+                    MeetingEchoCancellationRuntime::Bypassed { reason }
+                }
+            };
+            inner.status.clone()
+        };
+        publish_status(app, &status);
+    }
+
     fn finish(&self, app: &tauri::AppHandle, generation: u64, error: Option<&MeetingError>) {
         let status = {
             let mut inner = self.inner.lock_or_recover();
@@ -455,6 +506,7 @@ impl MeetingCoordinator {
             if error.is_none() {
                 inner.status.session_id = None;
                 inner.status.elapsed_ms = 0;
+                inner.status.echo_cancellation = MeetingEchoCancellationRuntime::Off;
             }
             inner.status.error_code = error.map(|error| error.code.to_string());
             inner.status.clone()
@@ -526,7 +578,7 @@ fn spawn_worker(
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v7", capture_id_text.as_str(), nonce_hex],
+        &["--production-v8", capture_id_text.as_str(), nonce_hex],
         &[],
     )
     .map_err(|_| {
@@ -745,6 +797,47 @@ struct ChannelSequence {
     next_sequence: u64,
     next_sample_offset: u64,
     sample_rate: Option<u32>,
+}
+
+struct AecProtocolTracker {
+    requested: EchoCancellationMode,
+    observed: Option<EchoCancellationStatus>,
+}
+
+impl AecProtocolTracker {
+    fn new(requested: EchoCancellationMode) -> Self {
+        Self {
+            requested,
+            observed: None,
+        }
+    }
+
+    fn observe(&mut self, status: EchoCancellationStatus) -> bool {
+        let valid = matches!(
+            (self.requested, self.observed, status),
+            (
+                EchoCancellationMode::Disabled,
+                None,
+                EchoCancellationStatus::Disabled
+            ) | (
+                EchoCancellationMode::Enabled,
+                None,
+                EchoCancellationStatus::Active | EchoCancellationStatus::Bypassed { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Active),
+                EchoCancellationStatus::Bypassed { .. },
+            )
+        );
+        if valid {
+            self.observed = Some(status);
+        }
+        valid
+    }
+
+    fn permits_microphone_pcm(&self) -> bool {
+        self.observed.is_some()
+    }
 }
 
 #[derive(Default)]
@@ -1029,6 +1122,7 @@ fn run_capture_session(
         &ProductionHostMessage::StartMeeting {
             device_id: config.device_id.clone(),
             backend: microphone_backend,
+            echo_cancellation: config.echo_cancellation,
         },
     )
     .map_err(|_| MeetingError::new("protocol_error", "Meeting capture failed to start."))?;
@@ -1040,6 +1134,7 @@ fn run_capture_session(
     let mut system_sequence = ChannelSequence::default();
     let mut setup_watchdog = SetupWatchdog::default();
     let mut input_resolution = MeetingInputResolutionTracker::default();
+    let mut aec_protocol = AecProtocolTracker::new(config.echo_cancellation);
     let mut stopping = false;
     let mut stop_requested_at = None;
     let mut terminal_error = None;
@@ -1138,6 +1233,15 @@ fn run_capture_session(
                     ));
                     break;
                 }
+                if pcm.channel == CaptureChannel::Microphone
+                    && !aec_protocol.permits_microphone_pcm()
+                {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned microphone audio before reporting echo-cancellation state.",
+                    ));
+                    break;
+                }
                 let sequence = match pcm.channel {
                     CaptureChannel::Microphone => &mut microphone_sequence,
                     CaptureChannel::System => &mut system_sequence,
@@ -1166,6 +1270,18 @@ fn run_capture_session(
                         break;
                     }
                 }
+            }
+            Ok(WorkerRead::Frame(ProductionFrame::Control(
+                ProductionHelperMessage::MeetingEchoCancellation { status },
+            ))) => {
+                if !aec_protocol.observe(status) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned an invalid echo-cancellation transition.",
+                    ));
+                    break;
+                }
+                coordinator.update_echo_cancellation(app, config.generation, status);
             }
             Ok(WorkerRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::MeetingPhase { phase, channel },

@@ -18,6 +18,17 @@ export type MeetingRuntimePhase = 'idle' | 'starting' | 'recording' | 'stopping'
 export type MeetingSessionStatus = 'active' | 'complete' | 'interrupted' | 'failed';
 export type MeetingSegmentStatus = 'pending' | 'final' | 'failed';
 export type MeetingSpeaker = 'me' | 'them';
+export type EchoCancellationBypassReason =
+  | 'initializationFailed'
+  | 'unsupportedFormat'
+  | 'renderDiscontinuity'
+  | 'processorFailed'
+  | 'processingBacklog';
+export type MeetingEchoCancellationRuntime =
+  | { state: 'off' }
+  | { state: 'starting' }
+  | { state: 'active' }
+  | { state: 'bypassed'; reason: EchoCancellationBypassReason };
 
 export interface MeetingRuntimeStatus {
   generation: number;
@@ -26,6 +37,7 @@ export interface MeetingRuntimeStatus {
   elapsedMs: number;
   microphoneActive: boolean;
   systemAudioActive: boolean;
+  echoCancellation: MeetingEchoCancellationRuntime;
   errorCode: string | null;
 }
 
@@ -134,6 +146,7 @@ export interface StartMeetingOptions {
   retainAudio: boolean;
   retentionDays: number;
   maxSessions: number;
+  echoCancellation: boolean;
 }
 
 export const IDLE_MEETING_STATUS: MeetingRuntimeStatus = {
@@ -143,6 +156,7 @@ export const IDLE_MEETING_STATUS: MeetingRuntimeStatus = {
   elapsedMs: 0,
   microphoneActive: false,
   systemAudioActive: false,
+  echoCancellation: { state: 'off' },
   errorCode: null,
 };
 
@@ -157,6 +171,7 @@ export async function startMeeting(options: StartMeetingOptions): Promise<Meetin
       retainAudio: options.retainAudio,
       retentionDays: options.retentionDays === 0 ? null : options.retentionDays,
       maxSessions: options.maxSessions,
+      echoCancellation: options.echoCancellation,
     },
   });
 }

@@ -137,6 +137,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install capture worker build tools
+        run: brew install meson ninja pkg-config
+
       - name: Check Rust formatting
         run: cd app/src-tauri && cargo fmt --all -- --check
 

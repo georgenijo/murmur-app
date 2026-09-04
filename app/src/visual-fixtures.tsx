@@ -109,6 +109,7 @@ mockIPC((command) => {
       chunksCommitted: 0,
       microphoneActive: false,
       systemAudioActive: false,
+      echoCancellation: { state: 'off' },
       errorCode: null,
     };
   }

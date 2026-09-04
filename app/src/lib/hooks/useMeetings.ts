@@ -159,6 +159,7 @@ export function useMeetings(settings: Settings) {
         retainAudio: settings.meetingRetainAudio,
         retentionDays: settings.meetingRetentionDays,
         maxSessions: settings.meetingMaxSessions,
+        echoCancellation: settings.meetingEchoCancellationEnabled,
       });
       setPage((current) => ({
         ...current,
@@ -169,7 +170,7 @@ export function useMeetings(settings: Settings) {
     } catch (cause) {
       setError(String(cause));
     }
-  }, [select, settings.meetingMaxSessions, settings.meetingRetainAudio, settings.meetingRetentionDays, settings.microphone]);
+  }, [select, settings.meetingEchoCancellationEnabled, settings.meetingMaxSessions, settings.meetingRetainAudio, settings.meetingRetentionDays, settings.microphone]);
 
   const stop = useCallback(async () => {
     setError(null);

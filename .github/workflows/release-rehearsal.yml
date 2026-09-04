@@ -121,6 +121,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
+      - name: Install capture worker build tools
+        run: brew install meson ninja pkg-config
+
       - name: Restore isolated macOS release cache
         id: rust-cache
         uses: swatinem/rust-cache@v2

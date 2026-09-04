@@ -2141,6 +2141,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               checked={settings.meetingRetainAudio}
               onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
             />
+            <SettingToggle
+              targetId="meeting-echo-cancellation"
+              title="Reduce Speaker Echo"
+              description="Experimental and off by default. Removes speaker playback from the Me channel. If processing fails, Murmur keeps the original microphone audio."
+              checked={settings.meetingEchoCancellationEnabled}
+              onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
+            />
             <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg px-1 transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="text-sm font-medium text-on-surface">
                 Keep transcripts by age

@@ -7,6 +7,7 @@ import tempfile
 import tomllib
 import unittest
 
+from scripts.build_local_llm_sidecar import unexpected_dynamic_dependencies
 from scripts.capture_helper_evidence import (
     ALLOWED_PROBE_OUTCOMES,
     CAPTURE_AGENT_ENTITLEMENTS,
@@ -55,6 +56,18 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_bundled_helpers_reject_homebrew_dynamic_dependencies(self) -> None:
+        output = """helper:
+\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 300.0.0)
+\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1.0.0)
+\t@rpath/libswift_Concurrency.dylib (compatibility version 1.0.0, current version 1.0.0)
+\t/opt/homebrew/opt/abseil/lib/libabsl_strings.2407.0.0.dylib (compatibility version 0.0.0, current version 0.0.0)
+"""
+        self.assertEqual(
+            unexpected_dynamic_dependencies(output),
+            ["/opt/homebrew/opt/abseil/lib/libabsl_strings.2407.0.0.dylib"],
+        )
 
     def test_valid_artifacts_and_manifest_signatures_match_sig_assets(self) -> None:
         validated_path = self.root / "validated.json"

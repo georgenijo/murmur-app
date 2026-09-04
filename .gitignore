@@ -49,6 +49,7 @@ app/src-tauri/binaries/murmur-capture-worker-*
 
 # Local-only notes, migrations, scratch work (not tracked)
 local/
+aec-spike/
 
 # Project tickets / notes
 local-voice-dictation-tickets.md

@@ -129,6 +129,11 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
             )}
           </div>
         )}
+        {meetings.status.echoCancellation.state === 'bypassed' && (
+          <p role="status" className="mt-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-on-surface-variant">
+            Speaker echo reduction became unavailable. Murmur is keeping the original microphone audio for this meeting.
+          </p>
+        )}
         {meetings.permission !== 'granted' && meetings.permission !== 'unsupported' && !active && !processing && (
           <div className="dialog-card mt-2 flex items-center gap-2 px-3 py-2 text-xs text-on-surface-variant">
             <span className="min-w-0 flex-1">

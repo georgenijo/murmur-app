@@ -5,7 +5,7 @@
 //! inverse of creation: stop IO, destroy the IO proc, destroy the private
 //! aggregate device, then destroy the process tap.
 
-use crate::production::SpscRing;
+use crate::production::{CallbackClock, SpscRing};
 use murmur_capture_helper_protocol::{CaptureSetupStep, FailureCode, SetupTransition};
 use objc2::AnyThread;
 use objc2_core_audio::{
@@ -160,7 +160,7 @@ fn aggregate_properties(tap_uid: &NSString, aggregate_uid: &str) -> CFRetained<C
     }
 }
 
-fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
+fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) -> usize {
     let list = unsafe { input_data.as_ref() };
     let buffers =
         unsafe { std::slice::from_raw_parts(list.mBuffers.as_ptr(), list.mNumberBuffers as usize) };
@@ -178,7 +178,7 @@ fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
         channel_count += channels;
     }
     if frame_count == usize::MAX || frame_count == 0 || channel_count == 0 {
-        return;
+        return 0;
     }
     for frame in 0..frame_count {
         let mut sum = 0_f32;
@@ -199,6 +199,7 @@ fn capture_input_data(ring: &SpscRing, input_data: NonNull<AudioBufferList>) {
         }
         ring.push(sum / channel_count as f32);
     }
+    frame_count
 }
 
 fn failure_for_status(status: i32) -> FailureCode {
@@ -220,6 +221,14 @@ pub(super) struct SystemAudioStream {
 impl SystemAudioStream {
     pub(super) fn start_observed(
         ring: Arc<SpscRing>,
+        observe: impl FnMut(CaptureSetupStep, SetupTransition),
+    ) -> Result<Self, FailureCode> {
+        Self::start_observed_with_clock(ring, None, observe)
+    }
+
+    pub(super) fn start_observed_with_clock(
+        ring: Arc<SpscRing>,
+        callback_clock: Option<Arc<CallbackClock>>,
         mut observe: impl FnMut(CaptureSetupStep, SetupTransition),
     ) -> Result<Self, FailureCode> {
         if !supported() {
@@ -281,13 +290,24 @@ impl SystemAudioStream {
         );
 
         let callback_ring = Arc::clone(&ring);
+        let callback_clock = callback_clock.clone();
         let io_block = block2::RcBlock::new(
-            move |_now: NonNull<AudioTimeStamp>,
+            move |now: NonNull<AudioTimeStamp>,
                   input_data: NonNull<AudioBufferList>,
                   _input_time: NonNull<AudioTimeStamp>,
                   _output_data: NonNull<AudioBufferList>,
                   _output_time: NonNull<AudioTimeStamp>| {
-                capture_input_data(&callback_ring, input_data);
+                let timestamp = unsafe { now.as_ref() };
+                let frame_count = capture_input_data(&callback_ring, input_data);
+                if let Some(clock) = &callback_clock {
+                    let timing_valid = timestamp.mFlags.0 & 0b11 == 0b11 && frame_count > 0;
+                    clock.note(
+                        timestamp.mHostTime,
+                        timestamp.mSampleTime,
+                        frame_count,
+                        timing_valid,
+                    );
+                }
             },
         );
         let mut io_proc_id: AudioDeviceIOProcID = None;
