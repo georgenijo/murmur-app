@@ -34,7 +34,7 @@ describe('HistoryPanel', () => {
   let root: Root;
   let writeText: ReturnType<typeof vi.fn>;
 
-  const buttons = () => Array.from(container.querySelectorAll('button'));
+  const buttons = () => Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]'));
   const byText = (text: string) => buttons().find((b) => b.textContent === text);
   const cardText = () => Array.from(container.querySelectorAll('article')).map((a) => a.textContent ?? '');
   const searchShell = () => container.querySelector('[data-testid="history-search-shell"]') as HTMLDivElement;
@@ -105,9 +105,9 @@ describe('HistoryPanel', () => {
     expect(byText('Show 5 older')).toBeTruthy();
 
     await act(async () => moreActions().click());
-    const copyJson = container.querySelector(
-      'button[aria-label="Copy 35 shown as JSON"]',
-    ) as HTMLButtonElement;
+    const copyJson = document.querySelector(
+      '[aria-label="Copy 35 shown as JSON"]',
+    ) as HTMLElement;
     await act(async () => copyJson.click());
     const lastCall = writeText.mock.calls[writeText.mock.calls.length - 1];
     const exported = JSON.parse(lastCall[0] as string) as { count: number };
@@ -162,11 +162,11 @@ describe('HistoryPanel', () => {
     await render();
     const all = byText('All')!;
     const file = byText('File')!;
-    expect(all.getAttribute('aria-pressed')).toBe('true');
-    expect(file.getAttribute('aria-pressed')).toBe('false');
+    expect(all.getAttribute('aria-selected')).toBe('true');
+    expect(file.getAttribute('aria-selected')).toBe('false');
     await act(async () => file.click());
-    expect(all.getAttribute('aria-pressed')).toBe('false');
-    expect(file.getAttribute('aria-pressed')).toBe('true');
+    expect(all.getAttribute('aria-selected')).toBe('false');
+    expect(file.getAttribute('aria-selected')).toBe('true');
     expect(cardText()).toHaveLength(1);
     expect(cardText()[0]).toContain('standup.wav');
   });
@@ -175,9 +175,9 @@ describe('HistoryPanel', () => {
     await render();
     await type('tauri');
     await act(async () => moreActions().click());
-    const copyMarkdown = container.querySelector(
-      'button[aria-label="Copy 1 shown as Markdown"]',
-    ) as HTMLButtonElement;
+    const copyMarkdown = document.querySelector(
+      '[aria-label="Copy 1 shown as Markdown"]',
+    ) as HTMLElement;
     await act(async () => copyMarkdown.click());
     const calls = writeText.mock.calls;
     const written = calls[calls.length - 1][0] as string;
@@ -249,6 +249,10 @@ describe('HistoryPanel', () => {
 
     await act(async () => byText('Show more')!.click());
     expect(writeText).not.toHaveBeenCalled();
+    const moreTranscriptActions = container.querySelector(
+      '[aria-label="More transcript actions"]',
+    ) as HTMLButtonElement;
+    await act(async () => moreTranscriptActions.click());
     await act(async () => byText('Correct & Teach')!.click());
     expect(writeText).not.toHaveBeenCalled();
   });
@@ -256,9 +260,9 @@ describe('HistoryPanel', () => {
   it('saves an export through the native dialog and the validated command', async () => {
     await render();
     await act(async () => moreActions().click());
-    const saveJson = container.querySelector(
-      'button[aria-label="Save 3 shown as JSON"]',
-    ) as HTMLButtonElement;
+    const saveJson = document.querySelector(
+      '[aria-label="Save 3 shown as JSON"]',
+    ) as HTMLElement;
     await act(async () => saveJson.click());
     expect(save).toHaveBeenCalledOnce();
     expect(save.mock.calls[0][0].defaultPath).toMatch(/^murmur-history-.*\.json$/);
@@ -272,9 +276,9 @@ describe('HistoryPanel', () => {
     save.mockResolvedValueOnce(null);
     await render();
     await act(async () => moreActions().click());
-    const saveMarkdown = container.querySelector(
-      'button[aria-label="Save 3 shown as Markdown"]',
-    ) as HTMLButtonElement;
+    const saveMarkdown = document.querySelector(
+      '[aria-label="Save 3 shown as Markdown"]',
+    ) as HTMLElement;
     await act(async () => saveMarkdown.click());
     expect(invoke.mock.calls.filter(([name]) => name === 'save_text_export')).toHaveLength(0);
     expect(container.textContent).not.toContain('Saved');
@@ -472,7 +476,7 @@ describe('HistoryPanel', () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onClear).toHaveBeenCalledOnce();
-    expect(container.querySelector('[aria-label="History actions"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(moreActions());
     vi.useRealTimers();
   });
@@ -563,14 +567,14 @@ describe('HistoryPanel', () => {
     await render();
     const trigger = moreActions();
     await act(async () => trigger.click());
-    const firstAction = container.querySelector(
-      'button[aria-label="Copy 3 shown as Markdown"]',
-    ) as HTMLButtonElement;
+    const firstAction = document.querySelector(
+      '[aria-label="Copy 3 shown as Markdown"]',
+    ) as HTMLElement;
     firstAction.focus();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
-    expect(container.querySelector('[aria-label="History actions"]')).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
 

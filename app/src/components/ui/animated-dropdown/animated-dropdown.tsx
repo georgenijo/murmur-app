@@ -76,6 +76,8 @@ export interface AnimatedDropdownContentProps {
 
 export interface AnimatedDropdownItemProps {
   children: ReactNode;
+  /** Accessible name when the visible label is not unique. */
+  "aria-label"?: string;
   /** Icon to display before the label (any ReactNode — no HugeIcons dependency). */
   icon?: ReactNode;
   /**
@@ -91,6 +93,8 @@ export interface AnimatedDropdownItemProps {
 export interface AnimatedDropdownTriggerProps {
   children: ReactNode;
   className?: string;
+  /** Accessible name for icon-only triggers. */
+  "aria-label"?: string;
   /** Associates the trigger with an external visible label. */
   "aria-labelledby"?: string;
 }
@@ -147,10 +151,12 @@ export function AnimatedDropdown({
 export function AnimatedDropdownTrigger({
   children,
   className,
+  "aria-label": ariaLabel,
   "aria-labelledby": ariaLabelledBy,
 }: AnimatedDropdownTriggerProps) {
   return (
     <Menu.Trigger
+      aria-label={ariaLabel}
       aria-labelledby={ariaLabelledBy}
       className={cn(
         "group inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5",
@@ -248,6 +254,7 @@ export function AnimatedDropdownContent({
  */
 export function AnimatedDropdownItem({
   children,
+  "aria-label": ariaLabel,
   icon,
   variant = "default",
   disabled,
@@ -262,6 +269,7 @@ export function AnimatedDropdownItem({
 
   return (
     <Menu.Item
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
       className={cn(

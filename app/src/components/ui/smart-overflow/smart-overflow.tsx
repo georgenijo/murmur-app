@@ -183,6 +183,10 @@ export default function SmartOverflow({
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+    if (typeof ResizeObserver === "undefined") {
+      setIsMeasured(true);
+      return;
+    }
     const observer = new ResizeObserver(updateLayout);
     observer.observe(root);
     return () => observer.disconnect();
