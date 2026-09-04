@@ -5,17 +5,6 @@
  * scope, namespaced with a `variant-a-` class prefix that no sibling variant
  * uses. Nothing in this file touches a shared selector. */
 
-[data-redesign-variant="A"] {
-  /* FluidTabs reads --tabs-surface / --tabs-indicator / --tabs-indicator-border
-     from an ancestor. The Murmur token bridge in styles.css never defined
-     them, so an un-tokenised FluidTabs renders a transparent capsule with an
-     invisible indicator. Map them onto the same sunken-track / raised-chip
-     language `.history-filter-track` + `.ui-filter-chip` already use. */
-  --tabs-surface: var(--ui-tint-sunken);
-  --tabs-indicator: var(--ui-tint-raised);
-  --tabs-indicator-border: color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
-}
-
 /* ── Record pill (BubbleUpButton) ────────────────────────────────────────── */
 
 /* BubbleUpButton hard-codes `bg-background text-foreground px-16 py-2
@@ -296,30 +285,6 @@
 }
 
 /* ── Portalled Base UI menus (escape the [data-redesign-variant] scope) ───── */
-
-/* The shadcn bridge maps --color-danger-foreground onto --murmur-on-primary
-   (#f3faff light / #00394b dark). `text-danger-foreground` is therefore
-   near-invisible on the popover surface in BOTH themes. Repaint the resting
-   colour with --murmur-error; the highlighted state (bg-danger + white text)
-   is already correct and is deliberately left alone. */
-.variant-a-danger-item.variant-a-danger-item {
-  color: var(--murmur-error);
-}
-
-.variant-a-danger-item.variant-a-danger-item:focus,
-.variant-a-danger-item.variant-a-danger-item:hover {
-  color: #fff;
-}
-
-.variant-a-danger-item.variant-a-danger-item > span:first-child {
-  color: inherit;
-}
-
-/* SmartOverflow exposes no per-item className, so the same fix is applied by
-   matching the utility class the component emits on its destructive items. */
-.variant-a-overflow-menu [role="menuitem"].text-danger-foreground:not([data-highlighted]) {
-  color: var(--murmur-error);
-}
 
 .variant-a-menu,
 .variant-a-overflow-menu {

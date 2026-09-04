@@ -42,15 +42,22 @@
      reference the standard shadcn token contract through Tailwind's
      generated `bg-muted`/`text-muted-foreground`/`bg-danger`/... utilities,
      which the `@theme inline` block below serves from --color-* aliases
-     onto the existing --murmur-* semantic tokens. Only --background and
-     --foreground are also read directly via bare `var(--foo)` (fluid-tooltip),
-     so those are the only shadcn-named bridge vars aliased here in :root.
+     onto the existing --murmur-* semantic tokens. Some components also read
+     the bare vars below directly, so keep those aliases in :root alongside
+     the Tailwind bridge.
      --muted and --accent above keep their original Murmur meanings
      (on-surface-variant / primary); they are unrelated to the shadcn
      `--color-muted` / `--color-accent` utility tokens below. */
   --background: var(--murmur-background);
   --foreground: var(--murmur-on-surface);
   --muted-foreground: var(--murmur-on-surface-variant);
+  --primary: var(--murmur-primary);
+  --popover: var(--murmur-surface-container-lowest);
+  --popover-foreground: var(--murmur-on-surface);
+  --tabs-surface: var(--murmur-surface-container);
+  --tabs-indicator: var(--murmur-surface-container-lowest);
+  --tabs-indicator-border: var(--murmur-outline-variant);
+  --radius-lg: var(--ui-radius-inset);
   --ring: var(--murmur-primary);
   --danger-border: color-mix(in srgb, var(--murmur-error) 45%, transparent);
 
@@ -216,7 +223,7 @@
   --color-destructive: var(--murmur-error);
   --color-destructive-foreground: var(--murmur-on-primary);
   --color-danger: var(--murmur-error);
-  --color-danger-foreground: var(--murmur-on-primary);
+  --color-danger-foreground: var(--murmur-error);
   --color-border: var(--murmur-outline-variant);
   --color-input: var(--murmur-outline-variant);
   --color-ring: var(--murmur-primary);
@@ -1099,4 +1106,3 @@ body.overlay-window {
     transition-delay: 0ms !important;
   }
 }
-

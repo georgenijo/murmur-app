@@ -2,22 +2,6 @@
    file can never leak into the shipped home dashboard. */
 
 [data-redesign-variant="B"] {
-  /* --- Sona bridge gaps -------------------------------------------------
-     Several Sona registry components read shadcn token names that Murmur's
-     styles.css only exposes through Tailwind's `--color-*` aliases, not as
-     bare custom properties: --primary (activity-graph levels), --popover /
-     --popover-foreground (activity-graph tooltip), --tabs-surface /
-     --tabs-indicator / --tabs-indicator-border and --radius-lg (fluid-tabs).
-     Without these the components render transparent cells and an invisible
-     tab capsule, so the variant root supplies them. */
-  --primary: var(--murmur-primary);
-  --popover: var(--murmur-surface-container-lowest);
-  --popover-foreground: var(--murmur-on-surface);
-  --tabs-surface: var(--murmur-surface-container-low);
-  --tabs-indicator: var(--murmur-surface-container-lowest);
-  --tabs-indicator-border: var(--ui-hairline);
-  --radius-lg: 0.5rem;
-
   /* Activity-graph density. The rail is narrow, so the cells shrink with it. */
   --vb-cell-size: 0.6875rem;
   --vb-cell-gap: 0.1875rem;

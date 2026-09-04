@@ -3,17 +3,9 @@
    promoted or deleted without touching shared styles. These rules live
    outside Tailwind's @layer, so they intentionally win over the Sona
    components' utility classes where the registry defaults are wrong for
-   Murmur (see the --primary / --tabs-* bridge below). */
+   Murmur. */
 
 [data-redesign-variant='C'] {
-  /* Sona registry components read bare shadcn tokens that Murmur's bridge
-     only exposes as Tailwind --color-* utilities. Define the handful the
-     activity graph and the tabs need, mapped onto --murmur-*. */
-  --primary: var(--murmur-primary);
-  --tabs-surface: var(--murmur-surface-container);
-  --tabs-indicator: var(--murmur-surface-container-lowest);
-  --tabs-indicator-border: var(--ui-hairline);
-
   --vc-rail: 13.25rem;
   --vc-gutter: var(--ui-space-6);
   padding: var(--ui-dashboard-inset) var(--ui-dashboard-inset) var(--ui-space-5);
