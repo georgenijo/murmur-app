@@ -64,9 +64,9 @@ pub(super) struct SpscRing {
 
 /// The latest Core Audio callback clock observed for one channel.
 ///
-/// Only the private Stage 0 AEC feasibility tool constructs this. It records
-/// callback anchors alongside drained samples so drift can be measured without
-/// changing the production capture protocol.
+/// Production AEC uses the anchors to align the render and microphone clocks
+/// before processing and to detect drift. The private Stage 0 tool also stores
+/// snapshots beside its local fixtures.
 #[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
 pub(super) struct CallbackClock {
     revision: ProcessAtomicU64,
