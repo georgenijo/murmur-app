@@ -21,7 +21,7 @@ import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
-import { applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { DEFAULT_THEME, applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -81,6 +81,7 @@ const importedTheme = importedThemeFixture
   ? importedThemeFixtures[importedThemeFixture]
   : undefined;
 if (importedTheme) applyResolvedTheme(resolveTheme(importedTheme, appearance));
+else if (appearance === 'dark') applyResolvedTheme(resolveTheme(DEFAULT_THEME, appearance));
 else document.documentElement.dataset.appearance = appearance;
 
 const meetingFixture = {
