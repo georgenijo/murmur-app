@@ -25,6 +25,11 @@ Stdlib only.
       <root>/<install-uuid>/hang-bundle-<epoch_ms>.txt. Never enters SQLite,
       the dashboard, or search. 403 when the install is not currently armed.
 
+    POST /private-capture — explicit, device-approved dictation text capture
+      Authorization: Bearer <token>
+      X-Install-Id: <uuid4>
+      body: one bounded JSON capture, stored outside events.jsonl and SQLite
+
     GET /dashboard   — HTML overview of every install (gate behind CF Access)
     GET /search      — indexed historical filters and keyset pages (CF Access)
     GET /install/<id>/raw?limit=200|500 — bounded or complete JSONL download
@@ -35,14 +40,19 @@ Responses: 204 ok, 401 bad token, 400 bad payload, 413 too large.
 """
 
 import html
+import hashlib
+import hmac
 import io
 import json
 import math
 import os
 import re
+import secrets
+import stat
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode
@@ -86,6 +96,14 @@ MAX_FILE = 200 * 1024 * 1024  # per-install cap: stop appending past 200 MB
 INSTALL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 MAX_INSTALLS = 150
 MAX_TOTAL = 10 * 1024 * 1024 * 1024  # 10 GB across all installs
+PRIVATE_CAPTURE_MAX_BODY = 24 * 1024
+PRIVATE_CAPTURE_MAX_TEXT_BYTES = 8 * 1024
+PRIVATE_CAPTURE_MAX_FILES = 3
+PRIVATE_CAPTURE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+PRIVATE_CAPTURE_DIRECTORY = "private-captures"
+PRIVATE_CAPTURE_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 # Server-armed hang diagnostics (docs/features/log-shipping.md). Both files
 # live directly under ROOT (not per-install) and are re-read on every request
 # — never cached — so a server-side disarm takes effect within one shipper
@@ -94,6 +112,8 @@ DIAG_INSTALLS_FILENAME = "diag-installs.txt"
 COLLECT_NOW_FILENAME = "collect-now.txt"
 # Serializes /bundle quota admission + filename allocation (threaded server).
 _BUNDLE_WRITE_LOCK = threading.Lock()
+_PRIVATE_CAPTURE_WRITE_LOCK = threading.Lock()
+_DASHBOARD_CSRF_SECRET = secrets.token_bytes(32)
 EXPORT_LIMITS = (200, 500)
 MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
 MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
@@ -308,6 +328,357 @@ def atomic_write_json(path, obj):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+class InvalidPrivateCapture(ValueError):
+    pass
+
+
+def _strict_positive_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _validate_private_text(value):
+    if not isinstance(value, dict) or set(value) != {"text", "truncated"}:
+        raise InvalidPrivateCapture("invalid private text")
+    text = value.get("text")
+    if not isinstance(text, str):
+        raise InvalidPrivateCapture("invalid private text")
+    if len(text.encode("utf-8")) > PRIVATE_CAPTURE_MAX_TEXT_BYTES:
+        raise InvalidPrivateCapture("private text exceeds limit")
+    if not isinstance(value.get("truncated"), bool):
+        raise InvalidPrivateCapture("invalid truncation marker")
+
+
+def normalize_private_capture(value):
+    if not isinstance(value, dict) or set(value) != {
+        "schemaVersion",
+        "captureId",
+        "recordingId",
+        "capturedAtMs",
+        "expiresAtMs",
+        "result",
+    }:
+        raise InvalidPrivateCapture("invalid private capture")
+    if value.get("schemaVersion") != 1:
+        raise InvalidPrivateCapture("unsupported private capture version")
+    capture_id = value.get("captureId")
+    if not isinstance(capture_id, str) or not PRIVATE_CAPTURE_ID_RE.fullmatch(capture_id):
+        raise InvalidPrivateCapture("invalid private capture id")
+    try:
+        parsed_id = uuid.UUID(capture_id)
+    except ValueError as error:
+        raise InvalidPrivateCapture("invalid private capture id") from error
+    if parsed_id.version != 4 or str(parsed_id) != capture_id:
+        raise InvalidPrivateCapture("invalid private capture id")
+    if not _strict_positive_int(value.get("recordingId")):
+        raise InvalidPrivateCapture("invalid recording id")
+    if not _strict_positive_int(value.get("capturedAtMs")):
+        raise InvalidPrivateCapture("invalid capture time")
+    if (
+        not _strict_positive_int(value.get("expiresAtMs"))
+        or value["expiresAtMs"] <= value["capturedAtMs"]
+    ):
+        raise InvalidPrivateCapture("invalid expiry")
+
+    result = value.get("result")
+    if not isinstance(result, dict):
+        raise InvalidPrivateCapture("invalid capture result")
+    kind = result.get("kind")
+    if kind == "success":
+        if set(result) != {"kind", "rawText", "finalText", "modelId", "totalMs"}:
+            raise InvalidPrivateCapture("invalid success capture")
+        _validate_private_text(result.get("rawText"))
+        _validate_private_text(result.get("finalText"))
+        model_id = result.get("modelId")
+        if (
+            not isinstance(model_id, str)
+            or not 1 <= len(model_id.encode("utf-8")) <= 128
+            or re.fullmatch(r"[0-9A-Za-z._+-]+", model_id) is None
+        ):
+            raise InvalidPrivateCapture("invalid model id")
+        total_ms = result.get("totalMs")
+        if not _strict_positive_int(total_ms) or total_ms > 24 * 60 * 60 * 1000:
+            raise InvalidPrivateCapture("invalid total duration")
+    elif kind == "noContent":
+        if set(result) != {"kind", "outcome", "errorCode"}:
+            raise InvalidPrivateCapture("invalid terminal capture")
+        if result.get("outcome") not in DICTATION_TERMINAL_OUTCOMES - {"success"}:
+            raise InvalidPrivateCapture("invalid terminal outcome")
+        if result.get("errorCode") not in DICTATION_ERROR_CODES:
+            raise InvalidPrivateCapture("invalid terminal error")
+    else:
+        raise InvalidPrivateCapture("invalid capture result kind")
+    return value
+
+
+def _private_capture_root(install_id):
+    return os.path.join(ROOT, install_id, PRIVATE_CAPTURE_DIRECTORY)
+
+
+def _ensure_private_capture_root(install_id):
+    install_dir = os.path.join(ROOT, install_id)
+    try:
+        install_metadata = os.lstat(install_dir)
+    except FileNotFoundError:
+        os.mkdir(install_dir, mode=0o700)
+    else:
+        if stat.S_ISLNK(install_metadata.st_mode) or not stat.S_ISDIR(
+            install_metadata.st_mode
+        ):
+            raise OSError("private capture install root refused")
+    root = _private_capture_root(install_id)
+    try:
+        metadata = os.lstat(root)
+    except FileNotFoundError:
+        os.mkdir(root, mode=0o700)
+    else:
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise OSError("private capture root refused")
+    os.chmod(root, 0o700)
+    return root
+
+
+def _read_private_capture(path):
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise OSError("private capture target refused")
+        if metadata.st_size > PRIVATE_CAPTURE_MAX_BODY + 4096:
+            raise InvalidPrivateCapture("stored private capture exceeds limit")
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            descriptor = -1
+            document = json.load(handle)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(document, dict) or set(document) != {
+        "capture",
+        "receivedAtMs",
+        "serverExpiresAtMs",
+        "appVersion",
+    }:
+        raise InvalidPrivateCapture("invalid stored private capture")
+    normalize_private_capture(document.get("capture"))
+    if not _strict_positive_int(document.get("receivedAtMs")):
+        raise InvalidPrivateCapture("invalid receive time")
+    if not _strict_positive_int(document.get("serverExpiresAtMs")):
+        raise InvalidPrivateCapture("invalid server expiry")
+    if (
+        document["serverExpiresAtMs"]
+        != document["receivedAtMs"] + PRIVATE_CAPTURE_RETENTION_MS
+    ):
+        raise InvalidPrivateCapture("invalid server expiry")
+    if document["receivedAtMs"] > int(time.time() * 1000) + 5 * 60 * 1000:
+        raise InvalidPrivateCapture("invalid receive time")
+    if ingest_app_version(document.get("appVersion")) is None:
+        raise InvalidPrivateCapture("invalid capture app version")
+    return document
+
+
+def _private_capture_documents(install_id, *, prune=True):
+    root = _private_capture_root(install_id)
+    if not os.path.isdir(root) or os.path.islink(root):
+        return []
+    now_ms = int(time.time() * 1000)
+    documents = []
+    for name in os.listdir(root):
+        capture_id = name.removesuffix(".json")
+        if name != capture_id + ".json" or not PRIVATE_CAPTURE_ID_RE.fullmatch(capture_id):
+            if prune:
+                _remove_private_store_entry(os.path.join(root, name))
+            continue
+        path = os.path.join(root, name)
+        try:
+            document = _read_private_capture(path)
+        except (OSError, ValueError, InvalidPrivateCapture):
+            if prune:
+                _remove_private_store_entry(path)
+            continue
+        if document["serverExpiresAtMs"] <= now_ms:
+            if prune:
+                _remove_private_store_entry(path)
+            continue
+        documents.append(document)
+    documents.sort(key=lambda item: item["receivedAtMs"], reverse=True)
+    if prune:
+        for document in documents[PRIVATE_CAPTURE_MAX_FILES:]:
+            capture_id = document["capture"]["captureId"]
+            _remove_private_store_entry(os.path.join(root, capture_id + ".json"))
+        documents = documents[:PRIVATE_CAPTURE_MAX_FILES]
+    return documents
+
+
+def _remove_private_store_entry(path):
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(metadata.st_mode):
+        raise OSError("private capture cleanup refused directory")
+    os.unlink(path)
+
+
+def store_private_capture(install_id, app_version, capture):
+    capture = normalize_private_capture(capture)
+    root = _ensure_private_capture_root(install_id)
+    capture_id = capture["captureId"]
+    path = os.path.join(root, capture_id + ".json")
+    if os.path.lexists(path):
+        existing = _read_private_capture(path)
+        if existing["capture"] == capture:
+            return
+        raise InvalidPrivateCapture("capture id already exists")
+    received_at_ms = int(time.time() * 1000)
+    document = {
+        "capture": capture,
+        "receivedAtMs": received_at_ms,
+        "serverExpiresAtMs": received_at_ms + PRIVATE_CAPTURE_RETENTION_MS,
+        "appVersion": app_version,
+    }
+    payload = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    if len(payload) > PRIVATE_CAPTURE_MAX_BODY + 4096:
+        raise InvalidPrivateCapture("private capture exceeds storage limit")
+    temp_path = os.path.join(root, "." + capture_id + ".tmp")
+    descriptor = os.open(
+        temp_path,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        os.chmod(path, 0o600)
+        directory = os.open(root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+    _private_capture_documents(install_id, prune=True)
+
+
+def delete_private_capture(install_id, capture_id):
+    if not PRIVATE_CAPTURE_ID_RE.fullmatch(capture_id):
+        raise InvalidPrivateCapture("invalid private capture id")
+    path = os.path.join(_private_capture_root(install_id), capture_id + ".json")
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise OSError("private capture target refused")
+    os.unlink(path)
+    root = _private_capture_root(install_id)
+    descriptor = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def prune_all_private_captures():
+    for install_id in os.listdir(ROOT) if os.path.isdir(ROOT) else []:
+        if not INSTALL_ID_RE.fullmatch(install_id):
+            continue
+        _private_capture_documents(install_id.lower(), prune=True)
+
+
+def _maintain_private_captures():
+    while True:
+        try:
+            with _PRIVATE_CAPTURE_WRITE_LOCK:
+                prune_all_private_captures()
+        except OSError:
+            sys.stderr.write("private capture retention cleanup failed\n")
+        time.sleep(60 * 60)
+
+
+def _private_capture_csrf(install_id, capture_id):
+    message = (install_id + ":" + capture_id + ":delete").encode("ascii")
+    return hmac.new(_DASHBOARD_CSRF_SECRET, message, hashlib.sha256).hexdigest()
+
+
+def render_private_capture_index(install_id):
+    captures = _private_capture_documents(install_id, prune=True)
+    if not captures:
+        return ""
+    rows = []
+    for document in captures:
+        capture = document["capture"]
+        result = capture["result"]
+        outcome = "success" if result["kind"] == "success" else result["outcome"]
+        capture_id = capture["captureId"]
+        rows.append(
+            "<div class='private-capture-index'><span>Recording %s · %s · %s</span>"
+            "<a class='download-link' href='/install/%s/private-captures/%s'>Review private capture</a></div>"
+            % (
+                capture["recordingId"],
+                html.escape(outcome),
+                html.escape(document["appVersion"]),
+                html.escape(install_id, quote=True),
+                html.escape(capture_id, quote=True),
+            )
+        )
+    return (
+        "<section class='private-captures'><h2>Private diagnostic captures</h2>"
+        "<p class='sub'>Explicitly uploaded transcript text. Captures expire after seven days.</p>"
+        "%s</section>" % "".join(rows)
+    )
+
+
+def render_private_capture_review(install_id, capture_id):
+    for document in _private_capture_documents(install_id, prune=True):
+        capture = document["capture"]
+        if capture["captureId"] != capture_id:
+            continue
+        result = capture["result"]
+        if result["kind"] == "success":
+            raw = html.escape(result["rawText"]["text"])
+            final = html.escape(result["finalText"]["text"])
+            outcome = "success"
+            content = (
+                "<h2>Raw recognition</h2><pre>%s</pre>"
+                "<h2>Final delivery</h2><pre>%s</pre>" % (raw, final)
+            )
+        else:
+            outcome = result["outcome"]
+            content = "<p>No transcript content was captured for this outcome.</p>"
+        token = _private_capture_csrf(install_id, capture_id)
+        body = (
+            "<p class='back'><a href='/install/%s'>&larr; device diagnostics</a></p>"
+            "<h1>Private diagnostic capture</h1>"
+            "<p class='sub'>Recording %s · %s · v%s. This page contains transcript text.</p>"
+            "%s<form method='post' action='/install/%s/private-captures/%s/delete'>"
+            "<input type='hidden' name='csrf' value='%s'>"
+            "<button class='private-delete' type='submit'>Delete now</button></form>"
+            % (
+                html.escape(install_id, quote=True),
+                capture["recordingId"],
+                html.escape(outcome),
+                html.escape(document["appVersion"]),
+                content,
+                html.escape(install_id, quote=True),
+                html.escape(capture_id, quote=True),
+                token,
+            )
+        )
+        return page_shell(body)
+    return None
 
 
 def current_state_snapshot(value):
@@ -2875,6 +3246,10 @@ tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .search-panel input,.search-panel select,.filter-grid input,.filter-grid select{background:#0b1120;border:1px solid #334155;border-radius:6px;color:#e2e8f0;max-width:18rem;padding:.32rem .45rem}
 .search-panel button,.filter-grid button{background:#1d4ed8;border:0;border-radius:6px;color:white;cursor:pointer;padding:.38rem .65rem}
 .search-results{margin-top:1rem}.search-results .install-link{font-family:ui-monospace,monospace;font-size:.75rem}.pagination{margin:1rem 0}
+.private-captures{border:1px solid #7f1d1d;border-radius:12px;background:#1f1118;margin:1.4rem 0;padding:.2rem .9rem 1rem}
+.private-capture-index{align-items:center;border-top:1px solid #3f1d2a;display:flex;font-size:.82rem;gap:1rem;justify-content:space-between;padding:.7rem 0}
+.private-delete{background:#7f1d1d;border:0;border-radius:6px;color:#fecaca;cursor:pointer;padding:.5rem .75rem}
+pre{background:#0b1120;border-radius:8px;max-height:22rem;overflow:auto;padding:.8rem;white-space:pre-wrap}
 .raw-timeline{border-top:1px solid #1e293b;margin-top:1.8rem;padding-top:.6rem}
 .raw-timeline>summary{cursor:pointer;font-size:1rem;font-weight:700;margin:.6rem 0}
 </style></head><body>%s</body></html>""" % (refresh_meta, body)
@@ -3048,6 +3423,7 @@ def render_install(install_id, kind, n=200):
             base, kind, base, kind,
         )
     )
+    private_captures_html = render_private_capture_index(install_id) if kind == "prod" else ""
     body = (
         '<p class="back"><a href="/">&larr; all devices</a></p>'
         "<h1>%s</h1><p class='sub'>%s</p>"
@@ -3055,7 +3431,7 @@ def render_install(install_id, kind, n=200):
         "show latest <a href='%s?kind=%s&n=200'>200</a> &middot; "
         "<a href='/search?install=%s'>search complete history</a> &middot; "
         "<a href='/search?install=%s&amp;view=problems'>full-history warnings/errors</a></p>"
-        "%s%s%s%s"
+        "%s%s%s%s%s"
         "<details class='raw-timeline'><summary>Raw technical timeline "
         "(%d loaded events)</summary><table><tbody>%s</tbody></table></details>"
         % (
@@ -3070,6 +3446,7 @@ def render_install(install_id, kind, n=200):
             health_html,
             info_html,
             attention_html + explanations_html,
+            private_captures_html,
             len(events),
             "".join(raw_event_row(event) for event in reversed(events)),
         )
@@ -3265,6 +3642,55 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
 
     def do_POST(self):
+        if self.path == "/private-capture":
+            return self._do_private_capture()
+        if self.path.startswith("/install/"):
+            parts = self.path.strip("/").split("/")
+            if (
+                len(parts) == 5
+                and parts[0] == "install"
+                and parts[2] == "private-captures"
+                and parts[4] == "delete"
+                and INSTALL_ID_RE.fullmatch(parts[1])
+                and PRIVATE_CAPTURE_ID_RE.fullmatch(parts[3])
+            ):
+                self.close_connection = True
+                if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != (
+                    "application/x-www-form-urlencoded"
+                ):
+                    return self._reply(415, b"form content type required")
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    return self._reply(400, b"bad length")
+                if not 0 < length <= 512:
+                    return self._reply(400, b"bad length")
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    return self._reply(400, b"incomplete body")
+                try:
+                    params = parse_qs(
+                        body.decode("ascii"),
+                        keep_blank_values=True,
+                        max_num_fields=2,
+                    )
+                except (UnicodeDecodeError, ValueError):
+                    return self._reply(400, b"invalid delete request")
+                if set(params) != {"csrf"} or len(params["csrf"]) != 1:
+                    return self._reply(400, b"invalid delete request")
+                install_id = parts[1].lower()
+                expected = _private_capture_csrf(install_id, parts[3])
+                if not hmac.compare_digest(params["csrf"][0], expected):
+                    return self._reply(403, b"invalid delete confirmation")
+                try:
+                    with _PRIVATE_CAPTURE_WRITE_LOCK:
+                        delete_private_capture(install_id, parts[3])
+                except (OSError, InvalidPrivateCapture):
+                    return self._reply(400, b"private capture could not be deleted")
+                return self._reply(
+                    303,
+                    headers={"Location": "/install/" + install_id},
+                )
         if self.path == "/state":
             return self._do_state()
         if self.path == "/bundle":
@@ -3370,6 +3796,47 @@ class Handler(BaseHTTPRequestHandler):
                 }
             ).encode("utf-8")
             return self._reply(200, reply, ctype="application/json")
+        self._reply(204)
+
+    def _do_private_capture(self):
+        self.close_connection = True
+        if self.headers.get("Authorization", "") != "Bearer " + TOKEN:
+            return self._reply(401)
+        install_id = self.headers.get("X-Install-Id", "").lower()
+        if not INSTALL_ID_RE.fullmatch(install_id):
+            return self._reply(400, b"bad install id")
+        if self.headers.get("X-Dev") == "1":
+            return self._reply(403, b"development private capture refused")
+        app_version = ingest_app_version(self.headers.get("X-App-Version", ""))
+        if app_version is None:
+            return self._reply(400, b"bad app version")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return self._reply(400, b"bad length")
+        if not 0 < length <= PRIVATE_CAPTURE_MAX_BODY:
+            return self._reply(413)
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return self._reply(400, b"incomplete body")
+        try:
+            capture = normalize_private_capture(json.loads(body))
+        except (UnicodeDecodeError, ValueError, InvalidPrivateCapture):
+            return self._reply(400, b"bad private capture")
+        with _PRIVATE_CAPTURE_WRITE_LOCK:
+            usage = root_usage()
+            dirpath = os.path.join(ROOT, install_id)
+            if usage["bytes"] > MAX_TOTAL:
+                return self._reply(507, b"global quota exceeded")
+            if not os.path.isdir(dirpath) and usage["dirs"] >= MAX_INSTALLS:
+                return self._reply(507, b"install limit reached")
+            try:
+                store_private_capture(install_id, app_version, capture)
+            except InvalidPrivateCapture:
+                return self._reply(409, b"private capture conflict")
+            except OSError:
+                return self._reply(503, b"private capture storage failed")
+        _usage_cache["t"] = 0.0
         self._reply(204)
 
     def _do_bundle(self):
@@ -3523,6 +3990,26 @@ class Handler(BaseHTTPRequestHandler):
             if not INSTALL_ID_RE.match(install_id):
                 return self._reply(400, b"bad install id")
             install_id = install_id.lower()
+            private_parts = sub.split("/")
+            if (
+                len(private_parts) == 2
+                and private_parts[0] == "private-captures"
+                and PRIVATE_CAPTURE_ID_RE.fullmatch(private_parts[1])
+            ):
+                try:
+                    page = render_private_capture_review(
+                        install_id,
+                        private_parts[1],
+                    )
+                except (OSError, ValueError, InvalidPrivateCapture):
+                    return self._reply(503, b"private capture store unavailable")
+                if page is None:
+                    return self._reply(404, b"no such private capture")
+                return self._reply(
+                    200,
+                    page.encode("utf-8"),
+                    "text/html; charset=utf-8",
+                )
             if sub == "raw":
                 fname = "events.dev.jsonl" if kind == "dev" else "events.jsonl"
                 path = os.path.join(ROOT, install_id, fname)
@@ -3624,6 +4111,7 @@ def main():
     os.makedirs(ROOT, exist_ok=True)
     store = event_store()
     readiness = "sqlite" if store.is_dashboard_ready() else "raw-awaiting-reconciliation"
+    threading.Thread(target=_maintain_private_captures, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", LISTEN_PORT), Handler)
     sys.stderr.write(
         "murmur-logs receiver on 127.0.0.1:%d dashboard=%s\n"
