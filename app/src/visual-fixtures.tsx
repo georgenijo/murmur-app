@@ -12,7 +12,7 @@ import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
-import { DEFAULT_SETTINGS } from './lib/settings';
+import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
@@ -307,6 +307,7 @@ function VisualFixture() {
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-site-modes';
   const meetings = useMeetings(fixtureSettings);
+  const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
@@ -363,8 +364,8 @@ function VisualFixture() {
       />
       {settingsOpen ? (
         <SettingsPanel
-          settings={fixtureSettings}
-          onUpdateSettings={() => {}}
+          settings={settings}
+          onUpdateSettings={(updates) => setSettings((current) => ({ ...current, ...updates }))}
           initialized
           status="idle"
           onResetStats={() => {}}
