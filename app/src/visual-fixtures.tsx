@@ -156,14 +156,15 @@ mockIPC((command) => {
   if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_audio_input_inventory') {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 1,
       status: 'available',
       devices: [
-        { id: 'fixture-built-in', name: 'MacBook Pro Microphone' },
-        { id: 'fixture-desk', name: 'Desk Microphone' },
+        { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
+        { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
       ],
       defaultInputId: 'fixture-built-in',
+      lidState: 'open',
       errorCode: null,
     };
   }
@@ -235,6 +236,13 @@ const entries: HistoryEntry[] = [
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
+  smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
+  smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in', 'fixture-anker']
+    : [],
+  smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in']
+    : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
@@ -305,7 +313,8 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
-    || requestedState === 'settings-site-modes';
+    || requestedState === 'settings-site-modes'
+    || requestedState === 'settings-smart-auto';
   const meetings = useMeetings(fixtureSettings);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
