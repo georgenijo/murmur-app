@@ -3531,6 +3531,7 @@ mod tests {
                 "from": "active",
                 "to": "recovering",
                 "reason": "render_discontinuity",
+                "recovery_episode": 4,
                 "recovery_attempt": 1,
                 "recovery_max_attempts": 3,
                 "transcript": "SENTINEL_PRIVATE_TRANSCRIPT",
@@ -3547,6 +3548,7 @@ mod tests {
             assert_eq!(data["from"], "active");
             assert_eq!(data["to"], "recovering");
             assert_eq!(data["reason"], "render_discontinuity");
+            assert_eq!(data["recovery_episode"], 4);
             assert_eq!(data["recovery_attempt"], 1);
             assert_eq!(data["recovery_max_attempts"], 3);
             assert!(!encoded.contains("SENTINEL"));

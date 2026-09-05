@@ -73,6 +73,7 @@ pub enum EchoCancellationStatus {
     Active,
     Recovering {
         reason: EchoCancellationBypassReason,
+        episode: u64,
         attempt: u8,
         max_attempts: u8,
     },
@@ -851,6 +852,7 @@ mod tests {
         let status = ProductionHelperMessage::MeetingEchoCancellation {
             status: EchoCancellationStatus::Recovering {
                 reason: EchoCancellationBypassReason::RenderDiscontinuity,
+                episode: 4,
                 attempt: 2,
                 max_attempts: 3,
             },

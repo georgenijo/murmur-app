@@ -29,7 +29,7 @@ export type MeetingEchoCancellationRuntime =
   | { state: 'off' }
   | { state: 'starting' }
   | { state: 'active' }
-  | { state: 'recovering'; reason: EchoCancellationBypassReason; attempt: number; maxAttempts: number }
+  | { state: 'recovering'; reason: EchoCancellationBypassReason; episode: number; attempt: number; maxAttempts: number }
   | { state: 'bypassed'; reason: EchoCancellationBypassReason };
 
 export interface MeetingRuntimeStatus {

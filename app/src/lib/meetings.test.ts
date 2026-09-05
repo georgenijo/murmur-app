@@ -48,6 +48,7 @@ describe('meeting presentation', () => {
     expect(echoCancellationNotice({
       state: 'recovering',
       reason: 'renderDiscontinuity',
+      episode: 4,
       attempt: 2,
       maxAttempts: 3,
     })).toContain('attempt 2 of 3');

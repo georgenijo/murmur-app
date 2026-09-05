@@ -60,6 +60,7 @@ const AEC_MAX_RENDER_LAG_MS: u64 = 20;
 const AEC_MAX_CLOCK_DRIFT_MS: u64 = 40;
 const AEC_RECOVERY_COOLDOWN: Duration = Duration::from_millis(250);
 const AEC_RECOVERY_ATTEMPT_WINDOW: Duration = Duration::from_secs(3);
+const AEC_RECOVERY_BUDGET_RESET: Duration = Duration::from_secs(30);
 const AEC_RECOVERY_LOW_WATER_SAMPLES: usize = 4_800;
 const AEC_RECOVERY_STABLE_CALLBACKS: u8 = 3;
 /// How long the permission probe watches for a first callback. This bounds an
@@ -492,16 +493,14 @@ impl StableCallbackClocks {
 
 struct AecRecovery {
     reason: AecRecoveryReason,
-    attempt: u8,
     started_at: Instant,
     clocks: StableCallbackClocks,
 }
 
 impl AecRecovery {
-    fn new(reason: AecRecoveryReason, attempt: u8, started_at: Instant) -> Self {
+    fn new(reason: AecRecoveryReason, started_at: Instant) -> Self {
         Self {
             reason,
-            attempt,
             started_at,
             clocks: StableCallbackClocks::default(),
         }
@@ -529,11 +528,39 @@ enum AecRuntime {
     Recovering(AecRecovery),
 }
 
+#[derive(Default)]
+struct AecRecoveryBudget {
+    episode: u64,
+    attempts: u8,
+    healthy_since: Option<Instant>,
+}
+
+impl AecRecoveryBudget {
+    fn mark_active(&mut self, now: Instant) {
+        self.healthy_since = Some(now);
+    }
+
+    fn next_attempt(&mut self, now: Instant) -> (u64, u8) {
+        if self.attempts > 0
+            && self.healthy_since.is_some_and(|active| {
+                now.saturating_duration_since(active) >= AEC_RECOVERY_BUDGET_RESET
+            })
+        {
+            self.attempts = 0;
+        }
+        if self.attempts == 0 {
+            self.episode = self.episode.saturating_add(1);
+        }
+        self.attempts = self.attempts.saturating_add(1);
+        self.healthy_since = None;
+        (self.episode, self.attempts)
+    }
+}
+
 enum AecRecoveryAction {
     None,
     Retry {
         reason: AecRecoveryReason,
-        attempt: u8,
     },
     Ready {
         microphone: CallbackAnchor,
@@ -543,20 +570,22 @@ enum AecRecoveryAction {
 
 fn begin_aec_recovery(
     runtime: &mut AecRuntime,
+    budget: &mut AecRecoveryBudget,
     reason: AecRecoveryReason,
-    attempt: u8,
     now: Instant,
 ) -> EchoCancellationStatus {
     let protocol_reason = reason.protocol_reason();
+    let (episode, attempt) = budget.next_attempt(now);
     if attempt > MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS {
         *runtime = AecRuntime::Inactive;
         EchoCancellationStatus::Bypassed {
             reason: protocol_reason,
         }
     } else {
-        *runtime = AecRuntime::Recovering(AecRecovery::new(reason, attempt, now));
+        *runtime = AecRuntime::Recovering(AecRecovery::new(reason, now));
         EchoCancellationStatus::Recovering {
             reason: protocol_reason,
+            episode,
             attempt,
             max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
         }
@@ -1672,7 +1701,7 @@ fn run_meeting(
         }
         _ => AecRuntime::Inactive,
     };
-    let mut aec_recovery_attempts = 0_u8;
+    let mut aec_recovery_budget = AecRecoveryBudget::default();
     write_production_control(
         stdout,
         capture_id,
@@ -1749,11 +1778,10 @@ fn run_meeting(
             if let Some(EchoCancellationStatus::Bypassed { .. }) =
                 microphone_path.bypass_for_backlog(microphone_ring.len(), system_ring.len())
             {
-                aec_recovery_attempts = aec_recovery_attempts.saturating_add(1);
                 let status = begin_aec_recovery(
                     &mut aec_runtime,
+                    &mut aec_recovery_budget,
                     AecRecoveryReason::ProcessingBacklog,
-                    aec_recovery_attempts,
                     Instant::now(),
                 );
                 write_production_control(
@@ -1783,11 +1811,10 @@ fn run_meeting(
                 if let Some(EchoCancellationStatus::Bypassed { .. }) =
                     microphone_path.bypass(EchoCancellationBypassReason::RenderDiscontinuity)
                 {
-                    aec_recovery_attempts = aec_recovery_attempts.saturating_add(1);
                     let status = begin_aec_recovery(
                         &mut aec_runtime,
+                        &mut aec_recovery_budget,
                         AecRecoveryReason::RenderDiscontinuity,
-                        aec_recovery_attempts,
                         Instant::now(),
                     );
                     write_production_control(
@@ -1810,7 +1837,6 @@ fn run_meeting(
             if now.duration_since(recovery.started_at) >= AEC_RECOVERY_ATTEMPT_WINDOW {
                 AecRecoveryAction::Retry {
                     reason: recovery.reason,
-                    attempt: recovery.attempt.saturating_add(1),
                 }
             } else if now.duration_since(recovery.started_at) >= AEC_RECOVERY_COOLDOWN
                 && microphone_ring.len() < AEC_RECOVERY_LOW_WATER_SAMPLES
@@ -1837,9 +1863,13 @@ fn run_meeting(
         };
         match recovery_action {
             AecRecoveryAction::None => {}
-            AecRecoveryAction::Retry { reason, attempt } => {
-                aec_recovery_attempts = attempt;
-                recovery_status = Some(begin_aec_recovery(&mut aec_runtime, reason, attempt, now));
+            AecRecoveryAction::Retry { reason } => {
+                recovery_status = Some(begin_aec_recovery(
+                    &mut aec_runtime,
+                    &mut aec_recovery_budget,
+                    reason,
+                    now,
+                ));
             }
             AecRecoveryAction::Ready { microphone, system } => {
                 let timeline = AecTimeline::at_stream_offsets(
@@ -1858,6 +1888,7 @@ fn run_meeting(
                 if let Some(timeline) = timeline {
                     match microphone_path.restart(system_rate) {
                         Some(EchoCancellationStatus::Active) => {
+                            aec_recovery_budget.mark_active(now);
                             recovered_timeline = Some(timeline);
                             recovery_status = Some(EchoCancellationStatus::Active);
                         }
@@ -2330,33 +2361,62 @@ mod tests {
     }
 
     #[test]
-    fn recovery_attempts_end_in_a_terminal_raw_path() {
+    fn tightly_repeated_recovery_attempts_end_in_a_terminal_raw_path() {
         let now = Instant::now();
         let mut runtime = AecRuntime::Inactive;
+        let mut budget = AecRecoveryBudget::default();
+        for attempt in 1..=MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS {
+            assert!(matches!(
+                begin_aec_recovery(
+                    &mut runtime,
+                    &mut budget,
+                    AecRecoveryReason::RenderDiscontinuity,
+                    now,
+                ),
+                EchoCancellationStatus::Recovering {
+                    episode: 1,
+                    attempt: actual,
+                    max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+                    ..
+                } if actual == attempt
+            ));
+            budget.mark_active(now);
+        }
         assert!(matches!(
             begin_aec_recovery(
                 &mut runtime,
+                &mut budget,
                 AecRecoveryReason::RenderDiscontinuity,
-                MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
-                now,
-            ),
-            EchoCancellationStatus::Recovering {
-                attempt: 3,
-                max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
-                ..
-            }
-        ));
-        assert!(matches!(runtime, AecRuntime::Recovering(_)));
-        assert!(matches!(
-            begin_aec_recovery(
-                &mut runtime,
-                AecRecoveryReason::RenderDiscontinuity,
-                MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS + 1,
                 now,
             ),
             EchoCancellationStatus::Bypassed { .. }
         ));
         assert!(matches!(runtime, AecRuntime::Inactive));
+    }
+
+    #[test]
+    fn sustained_active_windows_start_fresh_recovery_episodes() {
+        let mut now = Instant::now();
+        let mut runtime = AecRuntime::Inactive;
+        let mut budget = AecRecoveryBudget::default();
+
+        for episode in 1..=4 {
+            assert!(matches!(
+                begin_aec_recovery(
+                    &mut runtime,
+                    &mut budget,
+                    AecRecoveryReason::RenderDiscontinuity,
+                    now,
+                ),
+                EchoCancellationStatus::Recovering {
+                    episode: actual_episode,
+                    attempt: 1,
+                    ..
+                } if actual_episode == episode
+            ));
+            budget.mark_active(now);
+            now += AEC_RECOVERY_BUDGET_RESET + Duration::from_millis(1);
+        }
     }
 
     #[test]

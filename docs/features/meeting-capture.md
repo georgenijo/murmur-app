@@ -94,10 +94,13 @@ The production protocol freezes echo cancellation at meeting start. The worker r
 callback-clock discontinuity or processing backlog moves AEC into a bounded
 `recovering` state. Murmur passes through raw microphone audio while three
 fresh callback pairs establish a new timeline, then creates a new AEC3
-processor. Three unsuccessful recovery windows end in `bypassed` for the rest
-of the meeting. Initialization and processor failures bypass immediately. The
-worker retains each raw 10 ms microphone frame until processing succeeds, so
-every transition to raw PCM preserves the near-end samples without duplication.
+processor. Each attempt waits 250 ms before checking the clocks and has a
+three-second deadline. Three unsuccessful attempts in one recovery episode end
+in `bypassed` for the rest of the meeting. Thirty seconds of uninterrupted
+active processing resets that budget, so later route changes start a new
+episode. Initialization and processor failures bypass immediately. The worker
+retains each raw 10 ms microphone frame until processing succeeds, so every
+transition to raw PCM preserves the near-end samples without duplication.
 
 Protocol v8 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
@@ -195,8 +198,8 @@ state, permission, capture readiness, audio flow, relaunch), and
 
 Each echo-cancellation transition also writes
 `meeting.echo_cancellation_state_changed` with only the prior and current
-state, typed reason, recovery attempt, and meeting generation. Audio, device
-identity, transcript text, and session IDs are excluded.
+state, typed reason, recovery episode and attempt, and meeting generation.
+Audio, device identity, transcript text, and session IDs are excluded.
 
 Meeting traces contain only allowlisted lifecycle phase, channel, generation,
 and stable error code. The sanitizer removes every other string in all builds.

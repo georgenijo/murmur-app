@@ -104,6 +104,7 @@ pub enum MeetingEchoCancellationRuntime {
     Active,
     Recovering {
         reason: EchoCancellationBypassReason,
+        episode: u64,
         attempt: u8,
         max_attempts: u8,
     },
@@ -139,6 +140,13 @@ impl MeetingEchoCancellationRuntime {
     fn recovery_attempt(&self) -> u8 {
         match self {
             Self::Recovering { attempt, .. } => *attempt,
+            Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
+        }
+    }
+
+    fn recovery_episode(&self) -> u64 {
+        match self {
+            Self::Recovering { episode, .. } => *episode,
             Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
         }
     }
@@ -517,10 +525,12 @@ impl MeetingCoordinator {
                 EchoCancellationStatus::Active => MeetingEchoCancellationRuntime::Active,
                 EchoCancellationStatus::Recovering {
                     reason,
+                    episode,
                     attempt,
                     max_attempts,
                 } => MeetingEchoCancellationRuntime::Recovering {
                     reason,
+                    episode,
                     attempt,
                     max_attempts,
                 },
@@ -539,6 +549,10 @@ impl MeetingCoordinator {
             .echo_cancellation
             .recovery_attempt()
             .max(previous.recovery_attempt());
+        let recovery_episode = status
+            .echo_cancellation
+            .recovery_episode()
+            .max(previous.recovery_episode());
         let recovery_max_attempts = status
             .echo_cancellation
             .recovery_max_attempts()
@@ -550,6 +564,7 @@ impl MeetingCoordinator {
             from = previous.event_state(),
             to = status.echo_cancellation.event_state(),
             reason,
+            recovery_episode,
             recovery_attempt = u64::from(recovery_attempt),
             recovery_max_attempts = u64::from(recovery_max_attempts),
             "meeting echo cancellation state changed"
@@ -880,6 +895,7 @@ struct ChannelSequence {
 struct AecProtocolTracker {
     requested: EchoCancellationMode,
     observed: Option<EchoCancellationStatus>,
+    recovery_episode: u64,
     recovery_attempts: u8,
 }
 
@@ -888,6 +904,7 @@ impl AecProtocolTracker {
         Self {
             requested,
             observed: None,
+            recovery_episode: 0,
             recovery_attempts: 0,
         }
     }
@@ -926,6 +943,7 @@ impl AecProtocolTracker {
         }
         if let EchoCancellationStatus::Recovering {
             reason,
+            episode,
             attempt,
             max_attempts,
         } = status
@@ -934,7 +952,12 @@ impl AecProtocolTracker {
                 Some(EchoCancellationStatus::Recovering { reason, .. }) => Some(reason),
                 _ => None,
             };
-            if attempt != self.recovery_attempts.saturating_add(1)
+            let continues_episode = episode == self.recovery_episode
+                && attempt == self.recovery_attempts.saturating_add(1);
+            let starts_episode = matches!(self.observed, Some(EchoCancellationStatus::Active))
+                && episode == self.recovery_episode.saturating_add(1)
+                && attempt == 1;
+            if !(continues_episode || starts_episode)
                 || attempt > max_attempts
                 || max_attempts != MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS
                 || previous_reason.is_some_and(|previous| previous != reason)
@@ -946,6 +969,7 @@ impl AecProtocolTracker {
             {
                 return false;
             }
+            self.recovery_episode = episode;
             self.recovery_attempts = attempt;
         }
         self.observed = Some(status);
@@ -2146,18 +2170,21 @@ mod tests {
         assert!(tracker.observe(EchoCancellationStatus::Active));
         assert!(tracker.observe(EchoCancellationStatus::Recovering {
             reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            episode: 1,
             attempt: 1,
             max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
         }));
         assert!(tracker.observe(EchoCancellationStatus::Recovering {
             reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            episode: 1,
             attempt: 2,
             max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
         }));
         assert!(tracker.observe(EchoCancellationStatus::Active));
         assert!(tracker.observe(EchoCancellationStatus::Recovering {
             reason: EchoCancellationBypassReason::ProcessingBacklog,
-            attempt: 3,
+            episode: 2,
+            attempt: 1,
             max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
         }));
         assert!(tracker.observe(EchoCancellationStatus::Bypassed {
@@ -2171,6 +2198,7 @@ mod tests {
         assert!(skipped.observe(EchoCancellationStatus::Active));
         assert!(!skipped.observe(EchoCancellationStatus::Recovering {
             reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            episode: 1,
             attempt: 2,
             max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
         }));
@@ -2179,6 +2207,7 @@ mod tests {
         assert!(permanent.observe(EchoCancellationStatus::Active));
         assert!(!permanent.observe(EchoCancellationStatus::Recovering {
             reason: EchoCancellationBypassReason::ProcessorFailed,
+            episode: 1,
             attempt: 1,
             max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
         }));
