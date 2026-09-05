@@ -578,7 +578,7 @@ fn spawn_worker(
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v8", capture_id_text.as_str(), nonce_hex],
+        &["--production-v9", capture_id_text.as_str(), nonce_hex],
         &[],
     )
     .map_err(|_| {

@@ -2,6 +2,7 @@ use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, Audio
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
 use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
+use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
 use crate::performance_metrics::{
     AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceRunGuard,
@@ -4171,6 +4172,7 @@ pub async fn start_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
     origin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // This lock covers only the synchronous ownership transition. Core Audio
@@ -4221,14 +4223,19 @@ pub async fn start_native_recording(
         Some("hold") => "hold",
         _ => "toggle",
     };
-    let device_selection = if device_name.is_some() {
-        "explicit"
-    } else {
-        "system_default"
-    };
+    if smart_auto.is_some() && device_name.is_some() {
+        return Err("Smart Auto cannot be combined with a fixed microphone.".to_string());
+    }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let (rid, performance_started_at_ms, delivery_target, site_identity) = {
+    let (
+        rid,
+        performance_started_at_ms,
+        delivery_target,
+        site_identity,
+        selected_device_name,
+        smart_auto_reason,
+    ) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.meeting_blocks_asr() {
             tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
@@ -4318,6 +4325,29 @@ pub async fn start_native_recording(
                 }));
             }
             DictationStatus::Idle => {
+                // This is a cache-only policy read while the capture lifecycle
+                // is Idle. Its stable ID is passed to the supervisor below,
+                // which freezes it for the whole generation.
+                let (selected_device_name, device_selection, smart_auto_reason) =
+                    match smart_auto.as_ref() {
+                        Some(request) => {
+                            let selection = crate::audio_inventory::resolve_smart_auto(request)?;
+                            (
+                                Some(selection.device_id),
+                                "smart_auto",
+                                Some(selection.reason.as_str()),
+                            )
+                        }
+                        None => (
+                            device_name.clone(),
+                            if device_name.is_some() {
+                                "explicit"
+                            } else {
+                                "system_default"
+                            },
+                            None,
+                        ),
+                    };
                 // A new recording invalidates any stale transform session
                 // (issue #312 PR-B2) — the guards above already ensure no
                 // transform is in progress, but a completed one (applied or
@@ -4357,6 +4387,8 @@ pub async fn start_native_recording(
                     performance_started_at_ms,
                     delivery_target,
                     site_identity,
+                    selected_device_name,
+                    smart_auto_reason,
                 )
             }
         }
@@ -4373,9 +4405,12 @@ pub async fn start_native_recording(
     // events. Terminal persistence can now wait for the asynchronous begin
     // without holding capture ownership or the recording transition.
     dictation_performance_begins().register(rid);
-    if let Err(error) =
-        audio_lifecycle::start_dictation_recording(app_handle.clone(), device_name, rid, origin)
-    {
+    if let Err(error) = audio_lifecycle::start_dictation_recording(
+        app_handle.clone(),
+        selected_device_name,
+        rid,
+        origin,
+    ) {
         dictation_performance_begins().abort(rid);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
@@ -4402,7 +4437,11 @@ pub async fn start_native_recording(
             other => Err(other.to_string()),
         };
     }
-    tracing::info!(target: "pipeline", "start_native_recording: starting");
+    tracing::info!(
+        target: "pipeline",
+        smart_auto_reason = smart_auto_reason.unwrap_or("not_used"),
+        "start_native_recording: starting"
+    );
 
     // Resolve profile and IDE context from the same native sample frozen at
     // acceptance. A later focus change cannot splice another application's

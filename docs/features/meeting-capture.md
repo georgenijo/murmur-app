@@ -73,7 +73,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 ## Capture boundary
 
-`murmur-capture-worker --production-v8` owns both native streams:
+`murmur-capture-worker --production-v9` owns both native streams:
 
 1. A private, unmuted stereo `CATap` captures global system output and the
    realtime callback downmixes it to mono without allocation.

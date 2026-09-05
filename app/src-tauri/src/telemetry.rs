@@ -721,7 +721,7 @@ fn is_safe_dictation_requested_field(key: &str, value: &serde_json::Value) -> bo
             .is_some_and(|value| matches!(value, "hold" | "toggle")),
         "device_selection" => value
             .as_str()
-            .is_some_and(|value| matches!(value, "explicit" | "system_default")),
+            .is_some_and(|value| matches!(value, "explicit" | "system_default" | "smart_auto")),
         _ => false,
     }
 }

@@ -98,6 +98,23 @@ describe('loadSettings', () => {
     expect(settings).toEqual(DEFAULT_SETTINGS);
   });
 
+  it('keeps Smart Auto opt-in and retains only bounded approved stable IDs', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: ['anker', 'anker', '', 'bad\u0000id', 'studio'],
+      smartAutoPreferredDeviceIds: ['studio', 'missing', 'anker'],
+      smartAutoAllowContinuity: true,
+    }));
+
+    expect(loadSettings()).toMatchObject({
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: ['anker', 'studio'],
+      smartAutoPreferredDeviceIds: ['studio', 'anker'],
+      smartAutoAllowContinuity: true,
+    });
+  });
+
   it('marks an old System Default selection migration-complete without inventory proof', () => {
     const old = { ...DEFAULT_SETTINGS, settingsVersion: 2 } as Record<string, unknown>;
     delete old.microphoneIdMigrationComplete;
@@ -244,7 +261,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 4,
+      settingsVersion: 5,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -270,7 +287,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 4,
+      settingsVersion: 5,
     });
   });
 
@@ -286,7 +303,7 @@ describe('loadSettings', () => {
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       overlayVerticalOffset: 0,
-      settingsVersion: 4,
+      settingsVersion: 5,
     });
   });
 
@@ -1034,7 +1051,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 4 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 5 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 

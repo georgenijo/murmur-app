@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from '../log';
-import { DEFAULT_SETTINGS, loadSettings } from '../settings';
+import { DEFAULT_SETTINGS, loadSettings, smartAutoMicrophoneRequest } from '../settings';
 import type { DictationStatus } from '../types';
 import type { DictationResponse } from '../dictation';
 
@@ -85,15 +85,18 @@ export function useRecordingControls({
           // overlay has no React settings context, so it loads localStorage
           // directly, but through loadSettings() rather than a raw parse).
           let deviceName: string | null = null;
+          let smartAuto = null;
           try {
             const settings = loadSettings();
             if (settings.microphone && settings.microphone !== DEFAULT_SETTINGS.microphone) {
               deviceName = settings.microphone;
             }
+            smartAuto = smartAutoMicrophoneRequest(settings);
           } catch { /* ignore parse errors */ }
           flog.info('overlay', 'invoking start_native_recording', { deviceName });
           const res = await invoke<DictationResponse>('start_native_recording', {
             deviceName,
+            smartAuto,
             origin: 'toggle',
           });
           flog.info('overlay', 'start_native_recording result', { type: res.type, state: res.state });

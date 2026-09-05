@@ -82,11 +82,12 @@ beforeEach(() => {
   coreMocks.invoke.mockReset();
   coreMocks.invoke.mockImplementation(async (command: string) => {
     if (command === 'get_audio_input_inventory') return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 1,
       status: 'available',
       devices: [],
       defaultInputId: null,
+      lidState: 'unknown',
       errorCode: null,
     };
     if (command === 'get_microphone_preview_status') {
@@ -284,11 +285,12 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => recording.click());
     await act(async () => {
       eventMocks.listeners.get('audio-input-inventory-changed')?.({ payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         revision: 2,
         status: 'unavailable',
         devices: [],
         defaultInputId: null,
+        lidState: 'unknown',
         errorCode: 'enumerationFailed',
       } });
     });

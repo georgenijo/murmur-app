@@ -48,7 +48,7 @@ no audio, yields to real dictation, resumes afterward, and stops when Dictation
 Settings is left or hidden. See
 [Microphone Input Test](../features/microphone-input-test.md).
 
-The microphone list is operational state too. One Rust-owned schema-v1 snapshot
+The microphone list is operational state too. One Rust-owned schema-v2 snapshot
 is invalidated by a passive signed-worker Core Audio listener, refreshed at
 startup, and guarded by a bounded five-minute backend fallback, never by
 Settings focus. Refresh work coalesces and defers through every capture-owned
@@ -275,6 +275,10 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 |---------|------|---------|-------------------|-------------|
 | `microphone` | `string` | `'system_default'` | `'system_default'` or a descriptor `id` from the shared input inventory | Stable audio input ID for recording. On CoreAudio this is the raw device UID, without CPAL's host prefix. Display names are presentation-only. When set to `'system_default'`, the frontend sends `null` and the backend resolves the live system default at recording start. A missing explicit ID fails closed; it never records from another physical microphone. |
 | `microphoneIdMigrationComplete` | `boolean` | `true` | `true` / `false` | Durable proof that `microphone` is the System Default sentinel or a stable ID selected/proven against an authoritative inventory. Schema v3 marks old `system_default` values complete without an inventory request. Other old strings remain pending because opaque CoreAudio UIDs cannot be distinguished syntactically from legacy display names. Exact ID membership or one unique display-name match completes migration; ambiguous/missing names remain unresolved. |
+| `smartAutoMicrophoneEnabled` | `boolean` | `false` | `true` / `false` | Opt-in Dictation routing. The next recording resolves once from the current bounded inventory and freezes that stable ID for the generation. Manual microphone selection disables it. |
+| `smartAutoApprovedDeviceIds` | `string[]` | `[]` | 1–32 inventory descriptor IDs | The only physical microphones Smart Auto may select. Connecting a new microphone never approves it. |
+| `smartAutoPreferredDeviceIds` | `string[]` | `[]` | ordered subset of approved IDs | Explicit preference order evaluated before the approved macOS default and deterministic external fallback. |
+| `smartAutoAllowContinuity` | `boolean` | `false` | `true` / `false` | Allows an already-approved Continuity Capture microphone. It remains excluded by default. |
 | `launchAtLogin` | `boolean` | `false` | `true` / `false` | Whether the app starts automatically on macOS login. Uses `@tauri-apps/plugin-autostart` with `MacosLauncher::LaunchAgent`. On mount, the hook checks the actual OS autostart state and reconciles with the stored setting (handles the case where the user removed the login item from System Settings). |
 | `overlayVerticalOffset` | `number` | `0` | Integer `-12` through `12` | Confirmed native overlay fine-tuning in logical points. Settings previews the real window; Cancel restores the baseline, Preview default is transient, and Save or inactive Reset persists. Schema v2 resets offsets from the former broken drag flow once. |
 

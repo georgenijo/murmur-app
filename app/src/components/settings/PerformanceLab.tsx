@@ -31,7 +31,7 @@ import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 import { CorpusRecorder } from './CorpusRecorder';
 import { MicrophoneStartupBenchmark } from './MicrophoneStartupBenchmark';
-import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
+import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
@@ -147,7 +147,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
   status: DictationStatus;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
-  audioInventory: AudioInputInventoryV1 | null;
+  audioInventory: AudioInputInventoryV2 | null;
 }) {
   const [models, setModels] = useState<BenchmarkModel[]>([]);
   const [selected, setSelected] = useState<string[]>([]);

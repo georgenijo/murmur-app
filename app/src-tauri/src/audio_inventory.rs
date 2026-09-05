@@ -10,7 +10,9 @@
 //! try to spawn the macOS helper or its reaper service.
 
 use crate::audio::{AudioDeviceDescriptor, EnumeratedAudioInputInventory};
+use crate::microphone_auto::{self, SmartAutoRequest, SmartAutoSelection};
 use crate::MutexExt;
+use murmur_capture_helper_protocol::ProductionLidState;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -20,7 +22,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tauri::Emitter;
 
-const INVENTORY_SCHEMA_VERSION: u8 = 1;
+const INVENTORY_SCHEMA_VERSION: u8 = 2;
 #[cfg(target_os = "macos")]
 const TOPOLOGY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const INITIAL_REFRESH_WAIT: Duration = Duration::from_secs(8);
@@ -58,6 +60,7 @@ pub struct AudioInputInventorySnapshot {
     status: AudioInputInventoryStatus,
     devices: Vec<AudioDeviceDescriptor>,
     default_input_id: Option<String>,
+    lid_state: ProductionLidState,
     error_code: Option<AudioInputInventoryErrorCode>,
 }
 
@@ -72,6 +75,7 @@ pub(crate) struct AudioInputInventoryAggregate {
 struct AudioInputTopology {
     devices: Vec<AudioDeviceDescriptor>,
     default_input_id: Option<String>,
+    lid_state: ProductionLidState,
 }
 
 #[derive(Default)]
@@ -122,17 +126,24 @@ impl AudioInputInventoryCoordinator {
                 ),
             }
         };
-        let (devices, default_input_id) = state
+        let (devices, default_input_id, lid_state) = state
             .topology
             .as_ref()
-            .map(|topology| (topology.devices.clone(), topology.default_input_id.clone()))
-            .unwrap_or_default();
+            .map(|topology| {
+                (
+                    topology.devices.clone(),
+                    topology.default_input_id.clone(),
+                    topology.lid_state,
+                )
+            })
+            .unwrap_or((Vec::new(), None, ProductionLidState::Unknown));
         AudioInputInventorySnapshot {
             schema_version: INVENTORY_SCHEMA_VERSION,
             revision: state.revision,
             status,
             devices,
             default_input_id,
+            lid_state,
             error_code,
         }
     }
@@ -236,6 +247,7 @@ impl AudioInputInventoryCoordinator {
         let changed = before.status != after_without_revision.status
             || before.devices != after_without_revision.devices
             || before.default_input_id != after_without_revision.default_input_id
+            || before.lid_state != after_without_revision.lid_state
             || before.error_code != after_without_revision.error_code;
         if changed {
             state.revision = state.revision.wrapping_add(1).max(1);
@@ -292,6 +304,7 @@ fn normalize_inventory(
     Ok(AudioInputTopology {
         devices,
         default_input_id,
+        lid_state: inventory.lid_state,
     })
 }
 
@@ -622,6 +635,28 @@ pub(crate) fn available_devices() -> Result<Vec<AudioDeviceDescriptor>, String> 
     }
 }
 
+/// Resolve only from the current authoritative cache. This never asks Core
+/// Audio for a fresh list or opens a device, so a Smart Auto choice is bounded
+/// to the same idle-only inventory contract as every other consumer.
+pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAutoSelection, String> {
+    let state = coordinator().state.lock_or_recover();
+    if state.invalidated || state.latest_error.is_some() || !state.attempted {
+        return Err("Smart Auto needs a current microphone inventory.".to_string());
+    }
+    let Some(topology) = state.topology.as_ref() else {
+        return Err("Smart Auto needs a current microphone inventory.".to_string());
+    };
+    microphone_auto::select(
+        request,
+        &topology.devices,
+        topology.default_input_id.as_deref(),
+        // Do not reuse the inventory's lid state: closing a MacBook lid can
+        // leave both its built-in input and macOS default unchanged.
+        microphone_auto::current_lid_state(),
+    )
+    .map_err(str::to_string)
+}
+
 pub(crate) fn privacy_aggregate() -> AudioInputInventoryAggregate {
     privacy_aggregate_for_snapshot(&coordinator().snapshot())
 }
@@ -654,6 +689,9 @@ mod tests {
         AudioDeviceDescriptor {
             id: id.to_string(),
             name: name.to_string(),
+            kind: murmur_capture_helper_protocol::ProductionDeviceKind::External,
+            connected: true,
+            has_input: true,
         }
     }
 
@@ -661,6 +699,7 @@ mod tests {
         EnumeratedAudioInputInventory {
             devices: ids.iter().map(|(id, name)| device(id, name)).collect(),
             default_input_id: default.map(str::to_string),
+            lid_state: ProductionLidState::Open,
         }
     }
 

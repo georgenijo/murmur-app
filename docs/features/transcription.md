@@ -56,6 +56,27 @@ never serialize either field. Production protocol v6 retains the optional
 controls; capture selection itself still resolves the immutable device choice
 afresh at recording start.
 
+### Smart Auto microphone selection
+
+Smart Auto is an opt-in Dictation policy. It evaluates only when a Dictation
+recording is accepted from Idle and reads the existing authoritative inventory;
+it never enumerates, probes, opens, or monitors a microphone in the background.
+The user explicitly approves stable IDs, can place approved IDs in a preference
+order, and may separately allow approved Continuity Capture devices. A newly
+connected input is never trusted automatically.
+
+The resolver chooses the first eligible preferred input, then an eligible
+approved macOS default, then the lexicographically stable eligible external
+fallback. It requires native input capability and a live connection, excludes
+unknown transport classes and output-only sources, and reads
+`AppleClamshellState` from the macOS IORegistry at the selection boundary.
+Built-in microphones are rejected when that state is closed or unavailable,
+including when closing the lid did not trigger a Core Audio topology change.
+The selected stable ID is passed into the ordinary capture lifecycle and is
+immutable for that recording; a later device or lid change only affects the
+next Dictation recording. This narrower policy does not complete issue #525's
+verified-signal routing work.
+
 Direct AUHAL is the primary backend and CPAL is the independent fallback. Each
 resolution pass allows one fallback only before any audio is retained and must
 target the same raw device UID. The fallback starts only after the primary process group is

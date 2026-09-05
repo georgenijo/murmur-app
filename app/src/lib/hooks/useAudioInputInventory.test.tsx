@@ -9,11 +9,12 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 import { useAudioInputInventory } from './useAudioInputInventory';
 
 const snapshot = (revision: number, name = 'Mic') => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   revision,
   status: 'available',
-  devices: [{ id: `uid-${revision}`, name }],
+  devices: [{ id: `uid-${revision}`, name, kind: 'external', connected: true, hasInput: true }],
   defaultInputId: `uid-${revision}`,
+  lidState: 'open',
   errorCode: null,
 });
 

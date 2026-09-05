@@ -74,7 +74,7 @@ class CaptureWorkerSmokeTests(unittest.TestCase):
             import struct
             import sys
 
-            assert sys.argv[1] == "--production-v8"
+            assert sys.argv[1] == "--production-v9"
             capture_id = int(sys.argv[2])
             nonce = bytes.fromhex(sys.argv[3])
 

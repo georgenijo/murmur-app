@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import {
   audioDeviceSelectOptions,
   selectedDeviceExists,
-  type AudioInputInventoryV1,
+  type AudioInputInventoryV2,
 } from '../../lib/audioDevices';
 import {
   cancelCorpusRecording,
@@ -22,7 +22,7 @@ import type { DictationStatus } from '../../lib/types';
 type RecorderPhase = CorpusStatusEvent['state'];
 
 export function corpusMicrophoneAvailability(
-  inventory: AudioInputInventoryV1 | null,
+  inventory: AudioInputInventoryV2 | null,
   deviceId: string,
 ) {
   const inventoryAvailable = inventory?.status === 'available';
@@ -62,7 +62,7 @@ export function CorpusRecorder({
   benchmarkRunning: boolean;
   fileTranscribing: boolean;
   settings: Settings;
-  audioInventory: AudioInputInventoryV1 | null;
+  audioInventory: AudioInputInventoryV2 | null;
   onUpdateSettings: (updates: Partial<Settings>) => void;
   onBusyChange: (busy: boolean) => void;
 }) {

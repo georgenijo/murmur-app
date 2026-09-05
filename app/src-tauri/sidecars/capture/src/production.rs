@@ -1,5 +1,6 @@
 use core_foundation_sys::base::CFTypeRef;
 use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString, CFStringRef};
+use core_graphics::display::CGDisplay;
 use coreaudio::audio_unit::audio_format::LinearPcmFlags;
 use coreaudio::audio_unit::macos_helpers::{
     get_audio_device_ids_for_scope, get_default_device_id, get_device_name,
@@ -9,7 +10,8 @@ use coreaudio::audio_unit::{
     AudioUnit, Element, IOType, SampleFormat as AuSampleFormat, Scope, StreamFormat,
 };
 use coreaudio::sys::{
-    kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultInputDevice,
+    kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID,
+    kAudioDevicePropertyTransportType, kAudioHardwarePropertyDefaultInputDevice,
     kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMaster,
     kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
     kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO, AudioDeviceID,
@@ -21,9 +23,17 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use murmur_capture_helper_protocol::{
     read_production_frame, write_production_control, write_production_pcm, CaptureBackend,
     CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationBypassReason,
-    EchoCancellationMode, FailureCode, ProductionDevice, ProductionFrame, ProductionHelperMessage,
-    ProductionHostMessage, ProductionPcmMetadata, SessionNonce, SetupTransition,
-    SystemAudioPermissionStatus, MAX_INPUT_DEVICE_COUNT,
+    EchoCancellationMode, FailureCode, ProductionDevice, ProductionDeviceKind, ProductionFrame,
+    ProductionHelperMessage, ProductionHostMessage, ProductionLidState, ProductionPcmMetadata,
+    SessionNonce, SetupTransition, SystemAudioPermissionStatus, MAX_INPUT_DEVICE_COUNT,
+};
+use objc2_core_audio::{
+    kAudioDeviceTransportTypeAVB, kAudioDeviceTransportTypeBluetooth,
+    kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeBuiltIn,
+    kAudioDeviceTransportTypeContinuityCapture, kAudioDeviceTransportTypeContinuityCaptureWired,
+    kAudioDeviceTransportTypeContinuityCaptureWireless, kAudioDeviceTransportTypeFireWire,
+    kAudioDeviceTransportTypePCI, kAudioDeviceTransportTypeThunderbolt,
+    kAudioDeviceTransportTypeUSB,
 };
 use std::ffi::c_void;
 use std::io::{Read, Write};
@@ -525,7 +535,63 @@ fn raw_uid(device: AudioDeviceID) -> Option<String> {
     )
 }
 
-fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>), FailureCode> {
+fn device_property_u32(device_id: AudioDeviceID, selector: u32) -> Option<u32> {
+    let address = AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMaster,
+    };
+    let mut value = 0_u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device_id,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            (&mut value as *mut u32).cast(),
+        )
+    };
+    (status == 0 && size == std::mem::size_of::<u32>() as u32).then_some(value)
+}
+
+fn device_kind(transport: Option<u32>) -> ProductionDeviceKind {
+    match transport {
+        Some(kAudioDeviceTransportTypeBuiltIn) => ProductionDeviceKind::BuiltIn,
+        Some(kAudioDeviceTransportTypeContinuityCapture)
+        | Some(kAudioDeviceTransportTypeContinuityCaptureWired)
+        | Some(kAudioDeviceTransportTypeContinuityCaptureWireless) => {
+            ProductionDeviceKind::Continuity
+        }
+        Some(kAudioDeviceTransportTypeAVB)
+        | Some(kAudioDeviceTransportTypeBluetooth)
+        | Some(kAudioDeviceTransportTypeBluetoothLE)
+        | Some(kAudioDeviceTransportTypeFireWire)
+        | Some(kAudioDeviceTransportTypePCI)
+        | Some(kAudioDeviceTransportTypeThunderbolt)
+        | Some(kAudioDeviceTransportTypeUSB) => ProductionDeviceKind::External,
+        _ => ProductionDeviceKind::Unknown,
+    }
+}
+
+/// Uses the public Core Graphics active-display API. If it cannot provide a
+/// result, Auto leaves the lid state unknown and never infers one from a label.
+fn lid_state() -> ProductionLidState {
+    match CGDisplay::active_displays() {
+        Ok(displays)
+            if displays
+                .into_iter()
+                .any(|id| CGDisplay::new(id).is_builtin()) =>
+        {
+            ProductionLidState::Open
+        }
+        Ok(_) => ProductionLidState::Closed,
+        Err(_) => ProductionLidState::Unknown,
+    }
+}
+
+fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>, ProductionLidState), FailureCode> {
     let ids =
         get_audio_device_ids_for_scope(Scope::Input).map_err(|_| FailureCode::EnumerationFailed)?;
     let default_input_id = get_default_device_id(true).and_then(raw_uid);
@@ -535,10 +601,15 @@ fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>), FailureCode> {
             Some(ProductionDevice {
                 id: raw_uid(id)?,
                 name: get_device_name(id).ok()?,
+                kind: device_kind(device_property_u32(id, kAudioDevicePropertyTransportType)),
+                connected: device_property_u32(id, kAudioDevicePropertyDeviceIsAlive) == Some(1),
+                // Input-scope enumeration is native proof this source has an
+                // input stream. It prevents output-only display routes.
+                has_input: true,
             })
         })
         .collect();
-    Ok((devices, default_input_id))
+    Ok((devices, default_input_id, lid_state()))
 }
 
 unsafe extern "C" fn input_topology_changed(
@@ -2147,7 +2218,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
     .map_err(|_| ())?;
     match read_control(&mut stdin, capture_id, nonce)? {
         ProductionHostMessage::Enumerate => {
-            let (devices, default_input_id) = enumerate().map_err(|_| ())?;
+            let (devices, default_input_id, lid_state) = enumerate().map_err(|_| ())?;
             write_production_control(
                 &mut stdout,
                 capture_id,
@@ -2155,6 +2226,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 &ProductionHelperMessage::Devices {
                     devices,
                     default_input_id,
+                    lid_state,
                 },
             )
             .map_err(|_| ())?;

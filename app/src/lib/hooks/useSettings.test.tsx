@@ -104,9 +104,9 @@ describe('useSettings configure rollback privacy', () => {
     mocks.invoke.mockImplementation(async (command?: string) => (
       command === 'get_audio_input_inventory'
         ? {
-            schemaVersion: 1, revision: 1, status: 'available', defaultInputId: null, errorCode: null, devices: [
-            { id: 'raw-coreaudio-built-in', name: 'Built-in Mic' },
-            { id: 'raw-coreaudio-studio', name: 'Studio Mic' },
+            schemaVersion: 2, revision: 1, status: 'available', defaultInputId: null, lidState: 'open', errorCode: null, devices: [
+            { id: 'raw-coreaudio-built-in', name: 'Built-in Mic', kind: 'builtIn', connected: true, hasInput: true },
+            { id: 'raw-coreaudio-studio', name: 'Studio Mic', kind: 'external', connected: true, hasInput: true },
             ],
           }
         : undefined
@@ -130,9 +130,9 @@ describe('useSettings configure rollback privacy', () => {
     mocks.invoke.mockImplementation(async (command?: string) => (
       command === 'get_audio_input_inventory'
         ? {
-            schemaVersion: 1, revision: 1, status: 'available', defaultInputId: null, errorCode: null, devices: [
-            { id: 'raw-coreaudio-studio-a', name: 'Studio Mic' },
-            { id: 'raw-coreaudio-studio-b', name: 'Studio Mic' },
+            schemaVersion: 2, revision: 1, status: 'available', defaultInputId: null, lidState: 'open', errorCode: null, devices: [
+            { id: 'raw-coreaudio-studio-a', name: 'Studio Mic', kind: 'external', connected: true, hasInput: true },
+            { id: 'raw-coreaudio-studio-b', name: 'Studio Mic', kind: 'external', connected: true, hasInput: true },
             ],
           }
         : undefined
@@ -161,11 +161,12 @@ describe('useSettings configure rollback privacy', () => {
     mocks.invoke.mockImplementation(async (command?: string) => (
       command === 'get_audio_input_inventory'
         ? {
-            schemaVersion: 1,
+            schemaVersion: 2,
             revision: 2,
             status: 'stale',
-            devices: [{ id: 'raw-coreaudio-studio', name: 'Studio Mic' }],
+            devices: [{ id: 'raw-coreaudio-studio', name: 'Studio Mic', kind: 'external', connected: true, hasInput: true }],
             defaultInputId: null,
+            lidState: 'open',
             errorCode: 'refreshPending',
           }
         : undefined
@@ -185,11 +186,12 @@ describe('useSettings configure rollback privacy', () => {
     mocks.invoke.mockImplementation(async (command?: string) => (
       command === 'get_audio_input_inventory'
         ? {
-            schemaVersion: 1,
+            schemaVersion: 2,
             revision: 3,
             status: 'available',
-            devices: [{ id: 'opaque uid', name: 'Studio Mic' }],
+            devices: [{ id: 'opaque uid', name: 'Studio Mic', kind: 'external', connected: true, hasInput: true }],
             defaultInputId: 'opaque uid',
+            lidState: 'open',
             errorCode: null,
           }
         : undefined

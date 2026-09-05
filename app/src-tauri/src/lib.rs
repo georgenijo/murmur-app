@@ -41,6 +41,7 @@ mod meeting_artifact;
 mod meeting_capture;
 mod meeting_review;
 mod meeting_store;
+mod microphone_auto;
 mod microphone_preview;
 mod model_artifact;
 mod model_runtime;

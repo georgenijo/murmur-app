@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 8;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 9;
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -100,11 +100,34 @@ impl CaptureBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProductionDeviceKind {
+    BuiltIn,
+    External,
+    Continuity,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ProductionLidState {
+    Open,
+    Closed,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionDevice {
     pub id: String,
     pub name: String,
+    /// Derived from the Core Audio transport property, never from the label.
+    pub kind: ProductionDeviceKind,
+    /// `kAudioDevicePropertyDeviceIsAlive` at the bounded inventory read.
+    pub connected: bool,
+    /// Native input stream configuration has at least one channel.
+    pub has_input: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,6 +172,7 @@ pub enum ProductionHelperMessage {
     Devices {
         devices: Vec<ProductionDevice>,
         default_input_id: Option<String>,
+        lid_state: ProductionLidState,
     },
     InputTopologyWatchReady,
     /// Content-free invalidation signal. The host performs any enumeration
@@ -968,12 +992,16 @@ mod tests {
             devices: vec![ProductionDevice {
                 id: "stable-uid".to_string(),
                 name: "Built-in Microphone".to_string(),
+                kind: ProductionDeviceKind::BuiltIn,
+                connected: true,
+                has_input: true,
             }],
             default_input_id: Some("stable-uid".to_string()),
+            lid_state: ProductionLidState::Open,
         };
         assert_eq!(
             serde_json::to_string(&devices).unwrap(),
-            r#"{"type":"devices","devices":[{"id":"stable-uid","name":"Built-in Microphone"}],"defaultInputId":"stable-uid"}"#
+            r#"{"type":"devices","devices":[{"id":"stable-uid","name":"Built-in Microphone","kind":"builtIn","connected":true,"hasInput":true}],"defaultInputId":"stable-uid","lidState":"open"}"#
         );
 
         let resolution = ProductionHelperMessage::InputResolution {
