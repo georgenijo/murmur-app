@@ -127,6 +127,13 @@ auto-paste is enabled, with a "Grant" button that opens System Settings.
 
 Both are sent to the Rust backend via `configure_dictation` command.
 
+Settings keeps delivery dependencies beside the switch that owns them. Auto-Paste
+reveals its delay and any missing Accessibility action beneath the switch; Save
+Transcript and Save Audio reveal one shared output-folder branch beneath the pair.
+The stored auto-paste preference remains independent while file output is active,
+so the branch reports that delivery is paused and resumes when both file toggles
+are off. Paste Last remains a separate shortcut and permission flow.
+
 ## Save to File
 
 Live hotkey dictation can optionally persist its output to disk via two independent toggles in Settings > Delivery:

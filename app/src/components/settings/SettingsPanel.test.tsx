@@ -639,6 +639,95 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => autoPasteSwitch.click());
     expect(onUpdateSettings).not.toHaveBeenCalled();
   });
+
+  it('reveals dependent controls directly beneath their owning switch', async () => {
+    function Harness() {
+      const [current, setCurrent] = useState(DEFAULT_SETTINGS);
+      return (
+        <SettingsPanel
+          settings={current}
+          onUpdateSettings={(updates) => setCurrent((previous) => ({ ...previous, ...updates }))}
+          initialized
+          status="idle"
+          onResetStats={vi.fn()}
+          onRerunSetup={vi.fn()}
+          accessibilityGranted={false}
+          onCheckForUpdate={vi.fn(async () => {})}
+          updateStatus={{ phase: 'idle' }}
+          configureError={null}
+        />
+      );
+    }
+
+    await act(async () => root.render(<Harness />));
+    const delivery = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Delivery',
+    ) as HTMLButtonElement;
+    await act(async () => delivery.click());
+
+    const autoPasteSwitch = container.querySelector('[role="switch"][aria-label="Auto paste"]') as HTMLElement;
+    const autoPasteBranch = autoPasteSwitch.parentElement?.nextElementSibling as HTMLElement;
+    expect(autoPasteBranch.dataset.expanded).toBe('false');
+    expect(autoPasteBranch.getAttribute('aria-hidden')).toBe('true');
+
+    await act(async () => autoPasteSwitch.click());
+    expect(autoPasteBranch.dataset.expanded).toBe('true');
+    expect(autoPasteBranch.getAttribute('aria-hidden')).toBe('false');
+    expect(autoPasteBranch.hasAttribute('inert')).toBe(false);
+    expect(autoPasteBranch.querySelector('input[type="range"]')).toBeTruthy();
+    expect(autoPasteBranch.textContent).toContain('Accessibility permission is required');
+    expect(autoPasteBranch.textContent).not.toContain('Accessibility permission granted');
+
+    const autoPasteSlider = autoPasteBranch.querySelector('input[type="range"]') as HTMLInputElement;
+    autoPasteSlider.focus();
+    await act(async () => autoPasteSwitch.click());
+    expect(autoPasteBranch.dataset.expanded).toBe('false');
+    expect(autoPasteBranch.getBoundingClientRect().height).toBe(0);
+    expect(autoPasteBranch.hasAttribute('inert')).toBe(true);
+    expect(autoPasteBranch.querySelector('input[type="range"]')).toBeTruthy();
+    expect(document.activeElement).toBe(autoPasteSwitch);
+
+    const pasteLast = container.querySelector('[data-setting-target="paste-last-shortcut"]') as HTMLElement;
+    expect(pasteLast.parentElement).toBe(autoPasteBranch.parentElement);
+    expect(autoPasteBranch.nextElementSibling).toBe(pasteLast);
+  });
+
+  it('uses the same branch treatment for cleanup and file output dependencies', async () => {
+    await act(async () => root.render(
+      <SettingsPanel
+        settings={{ ...DEFAULT_SETTINGS, cleanupEnabled: true, saveAudio: true }}
+        onUpdateSettings={onUpdateSettings}
+        initialized
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+      />,
+    ));
+    const text = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Text & Vocabulary',
+    ) as HTMLButtonElement;
+    await act(async () => text.click());
+    const cleanupSwitch = container.querySelector('[role="switch"][aria-label="Transcript Cleanup"]') as HTMLElement;
+    const cleanupBranch = cleanupSwitch.parentElement?.nextElementSibling as HTMLElement;
+    expect(cleanupBranch.classList.contains('settings-dependent-branch')).toBe(true);
+    expect(cleanupBranch.dataset.expanded).toBe('true');
+    expect(cleanupBranch.querySelector('[aria-label="Remove filler words"]')).toBeTruthy();
+
+    await act(async () => {
+      const delivery = Array.from(container.querySelectorAll('nav button')).find(
+        (button) => button.textContent === 'Delivery',
+      ) as HTMLButtonElement;
+      delivery.click();
+    });
+    const fileOutput = container.querySelector('[data-setting-target="file-output"]') as HTMLElement;
+    const fileBranch = fileOutput.querySelector('.settings-dependent-branch') as HTMLElement;
+    expect(fileBranch.dataset.expanded).toBe('true');
+    expect(fileBranch.textContent).toContain('Output Folder');
+  });
 });
 
 describe('SettingsPanel Voice Query async ownership', () => {
