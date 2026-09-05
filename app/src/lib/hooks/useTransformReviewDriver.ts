@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS, loadSettings } from '../settings';
+import { DEFAULT_SETTINGS, loadSettings, smartAutoMicrophoneRequest } from '../settings';
 import { flog } from '../log';
 import {
   EMPTY_REVIEW_CONTENT,
@@ -28,6 +28,14 @@ function deviceNameArg(): string | null {
   try {
     const mic = loadSettings().microphone;
     return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+  } catch {
+    return null;
+  }
+}
+
+function smartAutoArg() {
+  try {
+    return smartAutoMicrophoneRequest(loadSettings());
   } catch {
     return null;
   }
@@ -197,7 +205,11 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     });
   }, [transformPassId]);
   const retry = useCallback(() => {
-    invoke('retry_transform_instruction', { deviceName: deviceNameArg() }).catch((e) => {
+    const smartAuto = smartAutoArg();
+    invoke('retry_transform_instruction', {
+      deviceName: smartAuto ? null : deviceNameArg(),
+      ...(smartAuto ? { smartAuto } : {}),
+    }).catch((e) => {
       flog.warn('transform-review', 'retry_transform_instruction failed', { error: String(e) });
     });
   }, []);

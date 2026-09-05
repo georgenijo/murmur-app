@@ -1,4 +1,5 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::microphone_auto::SmartAutoRequest;
 use crate::microphone_preview::{MicrophonePreviewStatus, PreviewPhase};
 use crate::state::DictationStatus;
 use crate::{keyboard, MutexExt, State};
@@ -87,6 +88,7 @@ pub async fn start_microphone_preview(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     device_id: String,
+    smart_auto: Option<SmartAutoRequest>,
     vad_sensitivity: u32,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
@@ -135,6 +137,7 @@ pub async fn start_microphone_preview(
             );
         }
     }
+    let device_id = crate::microphone_auto::resolve_capture_device(device_id, smart_auto.as_ref())?;
     let preview_id = state.app_state.microphone_preview.claim(vad_sensitivity)?;
     tracing::info!(
         target: "audio",

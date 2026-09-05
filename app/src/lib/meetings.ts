@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { SmartAutoMicrophoneRequest } from './settings';
 import { save } from '@tauri-apps/plugin-dialog';
 
 export type SystemAudioPermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported';
@@ -28,6 +29,7 @@ export type MeetingEchoCancellationRuntime =
   | { state: 'off' }
   | { state: 'starting' }
   | { state: 'active' }
+  | { state: 'recovering'; reason: EchoCancellationBypassReason; episode: number; attempt: number; maxAttempts: number }
   | { state: 'bypassed'; reason: EchoCancellationBypassReason };
 
 export interface MeetingRuntimeStatus {
@@ -143,6 +145,7 @@ export interface MeetingPage {
 
 export interface StartMeetingOptions {
   microphone: string;
+  smartAuto?: SmartAutoMicrophoneRequest | null;
   retainAudio: boolean;
   retentionDays: number;
   maxSessions: number;
@@ -167,7 +170,8 @@ export async function getMeetingStatus(): Promise<MeetingRuntimeStatus> {
 export async function startMeeting(options: StartMeetingOptions): Promise<MeetingSession> {
   return invoke('start_meeting', {
     request: {
-      deviceName: options.microphone,
+      deviceName: options.smartAuto ? null : options.microphone,
+      ...(options.smartAuto ? { smartAuto: options.smartAuto } : {}),
       retainAudio: options.retainAudio,
       retentionDays: options.retentionDays === 0 ? null : options.retentionDays,
       maxSessions: options.maxSessions,
@@ -263,6 +267,19 @@ export function formatMeetingTimestamp(ms: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+export function echoCancellationNotice(status: MeetingEchoCancellationRuntime): string | null {
+  switch (status.state) {
+    case 'recovering':
+      return `Speaker echo reduction was interrupted. Murmur is keeping the original microphone audio while it recovers (attempt ${status.attempt} of ${status.maxAttempts}).`;
+    case 'bypassed':
+      return 'Speaker echo reduction is unavailable. Murmur is keeping the original microphone audio for the rest of this meeting.';
+    case 'off':
+    case 'starting':
+    case 'active':
+      return null;
+  }
 }
 
 export function orderedMeetingSegments(segments: MeetingSegment[], limit = 200): MeetingSegment[] {

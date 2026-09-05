@@ -58,7 +58,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
 import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
-import { pasteLastShortcutLabel } from './lib/settings';
+import { pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -213,7 +213,11 @@ function App() {
     status, recordingDuration, error: recordingError,
     dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
-  } = useRecordingState({ addEntry, microphone: settings.microphone });
+  } = useRecordingState({
+    addEntry,
+    microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
+  });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const [queryStatsVersion, setQueryStatsVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
@@ -252,6 +256,7 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
   });
   useQueryFlow({
     enabled: hotkeysArmed
@@ -261,6 +266,7 @@ function App() {
     accessibilityGranted,
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
     automaticallyCopyAnswers: settings.queryAutomaticallyCopyAnswers,
     command: {
       provider: settings.queryProvider,

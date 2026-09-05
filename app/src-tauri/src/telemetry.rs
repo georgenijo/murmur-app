@@ -248,6 +248,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "meeting.channel_active" => Some("meeting.channel_active"),
         "meeting.tap_active" => Some("meeting.tap_active"),
         "meeting.tap_destroyed" => Some("meeting.tap_destroyed"),
+        "meeting.echo_cancellation_state_changed" => {
+            Some("meeting.echo_cancellation_state_changed")
+        }
         "meeting.permission_probe_started" => Some("meeting.permission_probe_started"),
         "meeting.permission_probe_finished" => Some("meeting.permission_probe_finished"),
         "meeting.permission_probe_failed" => Some("meeting.permission_probe_failed"),
@@ -721,7 +724,7 @@ fn is_safe_dictation_requested_field(key: &str, value: &serde_json::Value) -> bo
             .is_some_and(|value| matches!(value, "hold" | "toggle")),
         "device_selection" => value
             .as_str()
-            .is_some_and(|value| matches!(value, "explicit" | "system_default")),
+            .is_some_and(|value| matches!(value, "explicit" | "system_default" | "smart_auto")),
         _ => false,
     }
 }
@@ -1572,6 +1575,19 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
                     "idle" | "starting" | "recording" | "stopping" | "processing" | "failed"
                 ),
                 "channel" => matches!(value, "microphone" | "system" | "both" | "none"),
+                "from" | "to" => matches!(
+                    value,
+                    "off" | "starting" | "active" | "recovering" | "bypassed"
+                ),
+                "reason" => matches!(
+                    value,
+                    "none"
+                        | "initialization_failed"
+                        | "unsupported_format"
+                        | "render_discontinuity"
+                        | "processor_failed"
+                        | "processing_backlog"
+                ),
                 "permission" => {
                     matches!(value, "unknown" | "granted" | "denied" | "unsupported")
                 }
@@ -3504,6 +3520,40 @@ mod tests {
         );
         assert_eq!(summary, "Meeting event");
         assert!(!summary.contains("SENTINEL"));
+    }
+
+    #[test]
+    fn echo_cancellation_transition_keeps_only_content_free_recovery_evidence() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "meeting.echo_cancellation_state_changed",
+                "generation": 12,
+                "from": "active",
+                "to": "recovering",
+                "reason": "render_discontinuity",
+                "recovery_episode": 4,
+                "recovery_attempt": 1,
+                "recovery_max_attempts": 3,
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT",
+                "device_name": "SENTINEL_PRIVATE_DEVICE",
+                "session_id": "SENTINEL_PRIVATE_SESSION",
+                "audio_path": "/Users/private/SENTINEL.wav"
+            });
+            sanitize_event_data("meeting", &mut data, debug_build);
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert_eq!(
+                data["event_code"],
+                "meeting.echo_cancellation_state_changed"
+            );
+            assert_eq!(data["from"], "active");
+            assert_eq!(data["to"], "recovering");
+            assert_eq!(data["reason"], "render_discontinuity");
+            assert_eq!(data["recovery_episode"], 4);
+            assert_eq!(data["recovery_attempt"], 1);
+            assert_eq!(data["recovery_max_attempts"], 3);
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(!encoded.contains("/Users/private"));
+        }
     }
 
     #[test]

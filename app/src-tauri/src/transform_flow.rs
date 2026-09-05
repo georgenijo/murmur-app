@@ -1706,6 +1706,7 @@ pub(crate) async fn start_transform_capture(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
     state.transform_diagnostics.begin(transform_pass_id);
@@ -1792,6 +1793,15 @@ pub(crate) async fn start_transform_capture(
         let _ = app_handle.emit("transform-busy", ());
         return Ok(());
     }
+    let device_name =
+        match crate::microphone_auto::resolve_capture_device(device_name, smart_auto.as_ref()) {
+            Ok(device_name) => device_name,
+            Err(error) => {
+                state.app_state.set_transform_status(TransformStatus::Idle);
+                state.app_state.clear_transform_pass(transform_pass_id);
+                return Err(error);
+            }
+        };
     let mut performance_guard = begin_transform_performance(&state, transform_pass_id);
 
     let model_ready = crate::commands::transform_model::transform_model_state()
@@ -2461,6 +2471,7 @@ pub(crate) async fn retry_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
 ) -> Result<(), String> {
     let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
@@ -2505,6 +2516,16 @@ pub(crate) async fn retry_transform_instruction(
     fx.set_focusable(false);
     fx.emit_state(ReviewState::Connecting, None);
     let _attempt = state.app_state.next_instruction_attempt();
+    let device_name =
+        match crate::microphone_auto::resolve_capture_device(device_name, smart_auto.as_ref()) {
+            Ok(device_name) => device_name,
+            Err(error) => {
+                state.app_state.set_transform_status(TransformStatus::Idle);
+                transform_apply::clear_session(&state.app_state);
+                state.app_state.clear_transform_pass(transform_pass_id);
+                return Err(error);
+            }
+        };
 
     if let Err(e) = crate::audio::start_transform_capture_audio(
         Some(app_handle.clone()),

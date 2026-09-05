@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
-import type { Settings } from '../settings';
+import { smartAutoMicrophoneRequest, type Settings } from '../settings';
 import {
   IDLE_MEETING_STATUS,
   IDLE_MEETING_SUMMARY_STATUS,
@@ -156,6 +156,7 @@ export function useMeetings(settings: Settings) {
     try {
       const session = await startMeeting({
         microphone: settings.microphone,
+        smartAuto: smartAutoMicrophoneRequest(settings),
         retainAudio: settings.meetingRetainAudio,
         retentionDays: settings.meetingRetentionDays,
         maxSessions: settings.meetingMaxSessions,

@@ -53,7 +53,7 @@ Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }`
 ## Configuration and lifecycle (main window)
 
 ### `useAudioInputInventory`
-Strictly parses the shared schema-v1 microphone inventory returned by
+Strictly parses the shared schema-v2 microphone inventory returned by
 `get_audio_input_inventory` and applies only same-or-newer revisions from the
 targeted `audio-input-inventory-changed` event. The hook never enumerates on
 window focus. It exposes the last validated snapshot plus bounded loading/error

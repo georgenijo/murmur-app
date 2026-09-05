@@ -1157,7 +1157,8 @@ export const SettingsPanel = memo(function SettingsPanel({
       // Cancellation leaves the configured executable untouched.
     }
   };
-  const missingDevice = settings.microphone !== DEFAULT_SETTINGS.microphone
+  const missingDevice = !settings.smartAutoMicrophoneEnabled
+    && settings.microphone !== DEFAULT_SETTINGS.microphone
     && audioInventory?.status === 'available'
     && !selectedDeviceExists(settings.microphone, audioDevices);
   const englishOnly = selectedRuntime ? !selectedRuntime.capabilities.multilingual : true;
@@ -1376,6 +1377,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 inventoryAvailable={audioInventory?.status === 'available'}
                 inventoryLoading={audioInventoryState.loading}
                 onChange={(microphone) => onUpdateSettings({ microphone })}
+                smartAuto={settings}
+                lidState={audioInventory?.lidState ?? 'unknown'}
+                onSmartAutoChange={onUpdateSettings}
               />
               {audioInventoryState.error && (
                 <p role="alert" className="mt-2 text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
