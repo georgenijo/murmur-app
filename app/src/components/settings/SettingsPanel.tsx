@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -75,6 +75,7 @@ import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
+import { SettingsBranch } from './SettingsBranch';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
@@ -120,45 +121,6 @@ function SettingToggle({ title, description, label = title, checked, onChange, d
         <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">{description}</p>
       </div>
       <Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />
-    </div>
-  );
-}
-
-/**
- * Reveals controls that only make sense while their owning switch is on.
- * Keeping the branch mounted preserves draft values while the switch is off;
- * visibility removes collapsed controls from the keyboard and accessibility
- * tree while the grid transition keeps the layout change quiet and bounded.
- */
-function SettingsBranch({ open, children, className = '' }: {
-  open: boolean;
-  children: ReactNode;
-  className?: string;
-}) {
-  const branchRef = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    const branch = branchRef.current;
-    if (!branch) return;
-    if (!open && branch.contains(document.activeElement)) {
-      branch.previousElementSibling?.querySelector<HTMLElement>('[role="switch"]')?.focus();
-    }
-    if (open) branch.removeAttribute('inert');
-    else branch.setAttribute('inert', '');
-  }, [open]);
-
-  return (
-    <div
-      ref={branchRef}
-      className={`settings-dependent-branch !border-t-0 !py-0 ${open ? 'settings-dependent-branch-open' : ''} ${className}`.trim()}
-      data-expanded={open}
-      aria-hidden={!open}
-    >
-      <div className="settings-dependent-branch-clip">
-        <div className="settings-dependent-branch-content">
-          {children}
-        </div>
-      </div>
     </div>
   );
 }
