@@ -194,3 +194,19 @@ repository's installed Playwright Chromium supplied the passing visual suite
 and inspected screenshots. Native audio capture, signed helper packaging, Rust
 test execution, and Murmur Bench were not run. Native source and dependencies
 were unchanged. This audit does not include a merge or release.
+
+## Follow-up verification, September 4, 2026
+
+PR #675's initial CI run failed five Insights screenshots after midnight UTC.
+Both the PR at `cc131bf` and its unchanged base at `8181b61` reproduced all five
+failures with `TZ=UTC`. Their actual `light-insights.png` images had the same
+SHA-256, `1b62a7f16ca5ebde13f8146d40803c0f176437642eb520ada7eae1925ea26dc4`.
+The differences were the calendar cells and current-month recording count.
+The fixtures used the wall-clock date, so they had advanced to September 5
+while the checked-in screenshots represented September 4.
+
+The visual suite now fixes the browser date to September 4 at 16:00 in
+`America/New_York`. Playwright's fixed-date clock leaves timers running.
+No production code, screenshot goldens, or comparison thresholds changed.
+All 42 visual tests passed under both `TZ=UTC` and `TZ=Pacific/Auckland`.
+The production frontend build and all 1,118 frontend tests also passed again.
