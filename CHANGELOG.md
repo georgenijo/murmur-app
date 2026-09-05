@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-04
+
+### Added
+
+- Meeting Capture includes opt-in, realtime speaker-echo cancellation using
+  bundled WebRTC AEC3 inside the signed capture worker with callback-clock
+  stream alignment and automatic fallback to raw audio (#598).
+- Diagnostics includes a reviewed one-shot consented dictation capture workflow
+  with a bounded local store, persistent armed indicator, and isolated private
+  diagnostic receiver (#674).
+
+### Changed
+
+- The main window adopts the Sona UI design language across home, history,
+  insights, settings, dialogs, banners, command palette, and onboarding (#670).
+- The home dashboard focuses on history with fluid tabs for source filters,
+  animated dropdowns, compact recording controls, flat transcript rows, and an
+  activity graph after 14 active days (#672).
+
+### Fixed
+
+- Live dictation preview renders non-empty partial transcripts in the hidden
+  webview before showing its transparent window, eliminating premature empty
+  window commits (#669).
+- Setup assistant action buttons use gradient transitions to prevent white
+  backing layer flash on hover in macOS WKWebView (#673).
+
 ## [0.40.0] - 2026-08-31
 
 ### Added
