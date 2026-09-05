@@ -75,6 +75,7 @@ import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
+import { SettingsBranch } from './SettingsBranch';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
@@ -1420,8 +1421,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                 checked={settings.soundCuesEnabled}
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
-              {settings.soundCuesEnabled && (
-                <div className="mt-2 space-y-3 pl-1">
+              <SettingsBranch open={settings.soundCuesEnabled}>
+                <div className="space-y-3">
                   <label className="block text-xs font-medium text-on-surface-variant">
                     Volume · {settings.soundCueVolume}%
                     <input
@@ -1453,7 +1454,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                     onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
                   />
                 </div>
-              )}
+              </SettingsBranch>
             </div>
             <div data-setting-target="stop-on-silence" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="mb-2 block text-sm font-medium text-on-surface">Stop on Silence</label>
@@ -1867,11 +1868,11 @@ export const SettingsPanel = memo(function SettingsPanel({
                 );
               }}
             />
-            {settings.transformHoldKey !== null && (
-              <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
+            <SettingsBranch open={settings.transformHoldKey !== null}>
+              <div className="space-y-2">
                 <label className="mb-1 block text-sm font-medium text-on-surface">Hold key</label>
                 <Select
-                  value={settings.transformHoldKey}
+                  value={settings.transformHoldKey ?? 'alt_r'}
                   onChange={(value) => {
                     void updateTransformHoldKey(value as TransformKey);
                   }}
@@ -1890,7 +1891,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   </div>
                 )}
               </div>
-            )}
+            </SettingsBranch>
             <div className="border-t border-outline-variant/20 pt-4">
               <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
               <p className="mt-1 mb-3 text-xs text-on-surface-variant">
@@ -2015,12 +2016,12 @@ export const SettingsPanel = memo(function SettingsPanel({
           <SettingsSection pageId="text" activePage={activeCat} title="Text & Vocabulary" subtitle="Cleanup, preferred terms, structured writing, and knowledge">
             <SettingToggle targetId="punctuation" title="Automatic Punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions." checked={settings.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
             <SettingToggle targetId="cleanup" title="Transcript Cleanup" description="Remove filler and tidy spacing before delivery." checked={settings.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
-            {settings.cleanupEnabled && (
-              <div className="ml-3 space-y-3 border-l border-outline-variant/30 pl-3">
+            <SettingsBranch open={settings.cleanupEnabled}>
+              <div className="space-y-3">
                 <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh." checked={settings.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
                 <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts." checked={settings.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
               </div>
-            )}
+            </SettingsBranch>
             <div data-setting-target="text-editors" className="grid gap-2 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               {([
                 ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans.'],
@@ -2044,15 +2045,17 @@ export const SettingsPanel = memo(function SettingsPanel({
               </summary>
               <div className="mt-3 space-y-4 border-t border-outline-variant/20 pt-3">
                 <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
-                {settings.codeVocabEnabled && (
-                  <div className="ml-3 space-y-2 border-l border-outline-variant/30 pl-3">
+                <SettingsBranch open={settings.codeVocabEnabled}>
+                  <div className="space-y-2">
                     <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
                     <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
                     <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
                   </div>
-                )}
+                </SettingsBranch>
                 <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
-                {settings.correctionEnabled && <div className="ml-3 border-l border-outline-variant/30 pl-3"><SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} /></div>}
+                <SettingsBranch open={settings.correctionEnabled}>
+                  <SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
+                </SettingsBranch>
                 <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
                 <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
               </div>
@@ -2065,6 +2068,21 @@ export const SettingsPanel = memo(function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">Auto-paste and file output happen afterward, so the finished text remains recoverable.</p>
             </div>
             <SettingToggle targetId="auto-paste" title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
+            <SettingsBranch open={settings.autoPaste}>
+              {saveToFile && <p role="status" className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
+              {!saveToFile && accessibilityGranted === false && (
+                <div className="flex items-center gap-2 text-xs text-primary">
+                  <span>Accessibility permission is required to paste into the active app.</span>
+                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                </div>
+              )}
+              <div
+                aria-hidden={settings.autoPaste && !autoPasteOn}
+                className={settings.autoPaste && !autoPasteOn ? 'hidden' : undefined}
+              >
+                <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />
+              </div>
+            </SettingsBranch>
             <div data-setting-target="paste-last-shortcut" className="space-y-2 rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <p className="block text-sm font-medium text-on-surface">
                 Paste Last Shortcut
@@ -2093,20 +2111,17 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               )}
             </div>
-            {settings.autoPaste && saveToFile && <p role="status" className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
-            {autoPasteOn && accessibilityGranted !== null && <div className={`flex items-center gap-2 text-xs ${accessibilityGranted ? 'text-success ' : 'text-primary '}`}><span>{accessibilityGranted ? 'Accessibility permission granted' : 'Accessibility permission required'}</span>{accessibilityGranted === false && <button type="button" onClick={requestAccessibility} className="underline">Grant</button>}</div>}
-            {autoPasteOn && <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />}
             <div data-setting-target="file-output" className="space-y-3 rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <SettingToggle title="Save Transcript to File" description="Write each completed transcription to a .txt file." checked={settings.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
               <SettingToggle title="Save Audio to File" description="Write each recording to a .wav file." checked={settings.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
-              {saveToFile && (
+              <SettingsBranch open={saveToFile}>
                 <div>
-                  <p className="mb-1 text-xs text-on-surface-variant">Output Folder</p>
+                  <p className="mb-1 text-xs text-on-surface-variant">Shared Output Folder</p>
                   <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.outputDir || 'Documents/Murmur (default)'}</p>
                   <div className="mt-2 flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
-                  <p className="mt-2 text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
+                  <p className="mt-2 text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
                 </div>
-              )}
+              </SettingsBranch>
             </div>
             <SettingToggle
               targetId="history"
