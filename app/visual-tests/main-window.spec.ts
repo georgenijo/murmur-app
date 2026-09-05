@@ -1,5 +1,12 @@
 import { expect, test } from '@playwright/test';
 
+test.use({ timezoneId: 'America/New_York' });
+
+test.beforeEach(async ({ page }) => {
+  // Keep calendar-based fixture data aligned with the checked-in screenshots.
+  await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
+});
+
 const states = ['idle', 'recording', 'processing', 'update-recovering', 'settings'] as const;
 const appearances = ['light', 'dark'] as const;
 const dashboardThemeMatrix = [
