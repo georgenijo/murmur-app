@@ -403,7 +403,7 @@ export function MicrophoneInputTest({
   const automaticHelperText = smartAutoActive
     ? smartAutoSelection
       ? `Smart Auto will use ${smartAutoSelection.device.name} (${smartAutoSelection.reason.replace(/_/g, ' ')}). This choice is frozen when recording starts.`
-      : 'Smart Auto has no approved, usable microphone. Approve an available external microphone or choose another mode.'
+      : 'Smart Auto has no approved, usable microphone. Approve an available microphone or choose another mode.'
     : microphone === 'system_default' && inventoryAvailable
     ? defaultDevice
       ? `Following macOS: ${defaultDevice.name}. Docking, undocking, or changing the system input applies automatically to the next recording.`
