@@ -27,6 +27,7 @@ import {
 import { Select } from '../ui/Select';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
+import { SettingsBranch } from './SettingsBranch';
 
 interface MicrophoneInputTestProps {
   microphone: string;
@@ -473,58 +474,61 @@ export function MicrophoneInputTest({
               })}
             />
           </div>
-          {approvableDevices.length > 0 && (
-            <button
-              type="button"
-              className="mt-3 text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={busy}
-              onClick={() => onSmartAutoChange({
-                smartAutoApprovedDeviceIds: Array.from(new Set([
-                  ...smartAuto.smartAutoApprovedDeviceIds,
-                  ...approvableDevices.map((device) => device.id),
-                ])),
-              })}
-            >
-              Allow available microphones ({approvableDevices.length})
-            </button>
-          )}
-          {manualDevice && (
-            <button
-              type="button"
-              className="ml-3 mt-3 text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={busy}
-              onClick={() => onSmartAutoChange({
-                smartAutoApprovedDeviceIds: Array.from(new Set([
-                  ...smartAuto.smartAutoApprovedDeviceIds,
-                  manualDevice.id,
-                ])),
-                smartAutoPreferredDeviceIds: [
-                  manualDevice.id,
-                  ...smartAuto.smartAutoPreferredDeviceIds.filter((id) => id !== manualDevice.id),
-                ],
-              })}
-            >
-              Prefer {manualDevice.name}
-            </button>
-          )}
-          {smartAuto.smartAutoApprovedDeviceIds.length > 0 && (
-            <p className="mt-2 text-xs text-on-surface-variant">
-              Approved: {smartAuto.smartAutoApprovedDeviceIds
-                .map((id) => devices.find((device) => device.id === id)?.name)
-                .filter((name): name is string => Boolean(name))
-                .join(', ') || 'Unavailable microphones'}.
-            </p>
-          )}
-          <label className="mt-2 flex items-center gap-2 text-xs text-on-surface-variant">
-            <input
-              type="checkbox"
-              checked={smartAuto.smartAutoAllowContinuity}
-              disabled={busy}
-              onChange={(event) => onSmartAutoChange({ smartAutoAllowContinuity: event.currentTarget.checked })}
-            />
-            Allow approved iPhone Continuity Camera microphones
-          </label>
-          {smartAutoUnavailable && <p className="mt-2 text-xs text-warning">No approved microphone is usable right now.</p>}
+          <SettingsBranch open={smartAutoActive}>
+            {approvableDevices.length > 0 && (
+              <button
+                type="button"
+                className="mt-3 text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={busy}
+                onClick={() => onSmartAutoChange({
+                  smartAutoApprovedDeviceIds: Array.from(new Set([
+                    ...smartAuto.smartAutoApprovedDeviceIds,
+                    ...approvableDevices.map((device) => device.id),
+                  ])),
+                })}
+              >
+                Allow available microphones ({approvableDevices.length})
+              </button>
+            )}
+            {manualDevice && (
+              <button
+                type="button"
+                className="ml-3 mt-3 text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={busy}
+                onClick={() => onSmartAutoChange({
+                  smartAutoApprovedDeviceIds: Array.from(new Set([
+                    ...smartAuto.smartAutoApprovedDeviceIds,
+                    manualDevice.id,
+                  ])),
+                  smartAutoPreferredDeviceIds: [
+                    manualDevice.id,
+                    ...smartAuto.smartAutoPreferredDeviceIds.filter((id) => id !== manualDevice.id),
+                  ],
+                })}
+              >
+                Prefer {manualDevice.name}
+              </button>
+            )}
+            {smartAuto.smartAutoApprovedDeviceIds.length > 0 && (
+              <p className="mt-2 text-xs text-on-surface-variant">
+                Approved: {smartAuto.smartAutoApprovedDeviceIds
+                  .map((id) => devices.find((device) => device.id === id)?.name)
+                  .filter((name): name is string => Boolean(name))
+                  .join(', ') || 'Unavailable microphones'}.
+              </p>
+            )}
+            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-on-surface-variant">
+              <span>Allow approved iPhone Continuity Camera microphones</span>
+              <AnimatedSwitch
+                size="sm"
+                aria-label="Allow approved iPhone Continuity Camera microphones"
+                checked={smartAuto.smartAutoAllowContinuity}
+                disabled={busy}
+                onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })}
+              />
+            </div>
+            {smartAutoUnavailable && <p className="mt-2 text-xs text-warning">No approved microphone is usable right now.</p>}
+          </SettingsBranch>
         </div>
       )}
       <div className="settings-meter-card">
