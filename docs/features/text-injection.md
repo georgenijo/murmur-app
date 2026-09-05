@@ -117,8 +117,8 @@ Retry never records, transcribes, transforms, adds History, changes statistics,
 or updates correction learning. The retained text is replaced only by a later
 successful final delivery and disappears when Murmur exits.
 
-Settings > Delivery shows accessibility permission status when effective
-auto-paste is enabled, with a "Grant" button that opens System Settings.
+When effective auto-paste is enabled and Accessibility permission is missing,
+Settings > Delivery shows a "Grant" action that opens System Settings.
 
 ## Settings
 
