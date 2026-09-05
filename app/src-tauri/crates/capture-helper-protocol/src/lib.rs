@@ -50,6 +50,8 @@ pub enum EchoCancellationMode {
     Enabled,
 }
 
+pub const MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS: u8 = 3;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum EchoCancellationBypassReason {
@@ -69,6 +71,11 @@ pub enum EchoCancellationBypassReason {
 pub enum EchoCancellationStatus {
     Disabled,
     Active,
+    Recovering {
+        reason: EchoCancellationBypassReason,
+        attempt: u8,
+        max_attempts: u8,
+    },
     Bypassed {
         reason: EchoCancellationBypassReason,
     },
@@ -842,8 +849,10 @@ mod tests {
             request
         );
         let status = ProductionHelperMessage::MeetingEchoCancellation {
-            status: EchoCancellationStatus::Bypassed {
-                reason: EchoCancellationBypassReason::ProcessorFailed,
+            status: EchoCancellationStatus::Recovering {
+                reason: EchoCancellationBypassReason::RenderDiscontinuity,
+                attempt: 2,
+                max_attempts: 3,
             },
         };
         let encoded = serde_json::to_vec(&status).unwrap();

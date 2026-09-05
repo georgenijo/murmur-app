@@ -29,6 +29,7 @@ export type MeetingEchoCancellationRuntime =
   | { state: 'off' }
   | { state: 'starting' }
   | { state: 'active' }
+  | { state: 'recovering'; reason: EchoCancellationBypassReason; attempt: number; maxAttempts: number }
   | { state: 'bypassed'; reason: EchoCancellationBypassReason };
 
 export interface MeetingRuntimeStatus {
@@ -266,6 +267,19 @@ export function formatMeetingTimestamp(ms: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+export function echoCancellationNotice(status: MeetingEchoCancellationRuntime): string | null {
+  switch (status.state) {
+    case 'recovering':
+      return `Speaker echo reduction was interrupted. Murmur is keeping the original microphone audio while it recovers (attempt ${status.attempt} of ${status.maxAttempts}).`;
+    case 'bypassed':
+      return 'Speaker echo reduction is unavailable. Murmur is keeping the original microphone audio for the rest of this meeting.';
+    case 'off':
+    case 'starting':
+    case 'active':
+      return null;
+  }
 }
 
 export function orderedMeetingSegments(segments: MeetingSegment[], limit = 200): MeetingSegment[] {

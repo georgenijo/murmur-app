@@ -147,19 +147,24 @@ impl MeetingMicrophonePath {
         if microphone_rate != SAMPLE_RATE {
             return Self::bypassed(EchoCancellationBypassReason::UnsupportedFormat);
         }
-        let Ok(render) = RenderFramer::new(system_rate) else {
-            return Self::bypassed(EchoCancellationBypassReason::UnsupportedFormat);
-        };
-        let Ok(processor) = WebRtcEchoProcessor::new() else {
-            return Self::bypassed(EchoCancellationBypassReason::InitializationFailed);
-        };
-        Self {
-            state: PathState::Active(Box::new(ActiveAec {
-                processor: Box::new(processor),
-                render,
-                capture: RawTail::default(),
-            })),
+        match Self::new_active(system_rate) {
+            Ok(active) => Self {
+                state: PathState::Active(active),
+            },
+            Err(reason) => Self::bypassed(reason),
         }
+    }
+
+    fn new_active(system_rate: u32) -> Result<Box<ActiveAec>, EchoCancellationBypassReason> {
+        let render = RenderFramer::new(system_rate)
+            .map_err(|_| EchoCancellationBypassReason::UnsupportedFormat)?;
+        let processor = WebRtcEchoProcessor::new()
+            .map_err(|_| EchoCancellationBypassReason::InitializationFailed)?;
+        Ok(Box::new(ActiveAec {
+            processor: Box::new(processor),
+            render,
+            capture: RawTail::default(),
+        }))
     }
 
     fn bypassed(reason: EchoCancellationBypassReason) -> Self {
@@ -259,6 +264,31 @@ impl MeetingMicrophonePath {
                     pending: Box::new(capture),
                 };
                 Some(self.status())
+            }
+            other => {
+                self.state = other;
+                None
+            }
+        }
+    }
+
+    /// Start a fresh processor after a transient timing failure. The caller
+    /// must keep emitting raw microphone audio until the saved partial frame
+    /// has drained, so recovery never consumes that frame twice.
+    pub(super) fn restart(&mut self, system_rate: u32) -> Option<EchoCancellationStatus> {
+        let state = std::mem::replace(&mut self.state, PathState::Disabled);
+        match state {
+            PathState::Bypassed { reason: _, pending } if pending.len == 0 => {
+                match Self::new_active(system_rate) {
+                    Ok(active) => {
+                        self.state = PathState::Active(active);
+                        Some(EchoCancellationStatus::Active)
+                    }
+                    Err(reason) => {
+                        self.state = PathState::Bypassed { reason, pending };
+                        Some(EchoCancellationStatus::Bypassed { reason })
+                    }
+                }
             }
             other => {
                 self.state = other;
@@ -471,5 +501,45 @@ mod tests {
         })
         .unwrap();
         assert_eq!(output, [vec![0.5; 17], vec![0.25; 3]].concat());
+    }
+
+    #[test]
+    fn native_processor_recovers_after_discontinuity_without_losing_raw_transition_audio() {
+        let mut path =
+            MeetingMicrophonePath::new(EchoCancellationMode::Enabled, SAMPLE_RATE, SAMPLE_RATE);
+        assert_eq!(path.status(), EchoCancellationStatus::Active);
+
+        let mut output = Vec::new();
+        path.push_capture(&[0.5; 17], |samples| {
+            output.extend_from_slice(samples);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(
+            path.bypass(EchoCancellationBypassReason::RenderDiscontinuity),
+            Some(EchoCancellationStatus::Bypassed {
+                reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            })
+        );
+        assert_eq!(path.restart(SAMPLE_RATE), None);
+
+        path.push_capture(&[0.25; 3], |samples| {
+            output.extend_from_slice(samples);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(output, [vec![0.5; 17], vec![0.25; 3]].concat());
+        assert_eq!(
+            path.restart(SAMPLE_RATE),
+            Some(EchoCancellationStatus::Active)
+        );
+
+        path.push_render(&[0.0; FRAME_SAMPLES]);
+        path.push_capture(&[0.75; FRAME_SAMPLES], |samples| {
+            output.extend_from_slice(samples);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(output.len(), 20 + FRAME_SAMPLES);
     }
 }

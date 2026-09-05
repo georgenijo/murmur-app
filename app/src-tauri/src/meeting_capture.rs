@@ -11,7 +11,7 @@ use murmur_capture_helper_protocol::{
     CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationBypassReason,
     EchoCancellationMode, EchoCancellationStatus, FailureCode, ProductionFrame,
     ProductionHelperMessage, ProductionHostMessage, ProductionPcm, SessionNonce, SetupTransition,
-    SystemAudioPermissionStatus,
+    SystemAudioPermissionStatus, MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -102,9 +102,53 @@ pub enum MeetingEchoCancellationRuntime {
     Off,
     Starting,
     Active,
+    Recovering {
+        reason: EchoCancellationBypassReason,
+        attempt: u8,
+        max_attempts: u8,
+    },
     Bypassed {
         reason: EchoCancellationBypassReason,
     },
+}
+
+impl MeetingEchoCancellationRuntime {
+    fn event_state(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Starting => "starting",
+            Self::Active => "active",
+            Self::Recovering { .. } => "recovering",
+            Self::Bypassed { .. } => "bypassed",
+        }
+    }
+
+    fn event_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Recovering { reason, .. } | Self::Bypassed { reason } => match reason {
+                EchoCancellationBypassReason::InitializationFailed => Some("initialization_failed"),
+                EchoCancellationBypassReason::UnsupportedFormat => Some("unsupported_format"),
+                EchoCancellationBypassReason::RenderDiscontinuity => Some("render_discontinuity"),
+                EchoCancellationBypassReason::ProcessorFailed => Some("processor_failed"),
+                EchoCancellationBypassReason::ProcessingBacklog => Some("processing_backlog"),
+            },
+            Self::Off | Self::Starting | Self::Active => None,
+        }
+    }
+
+    fn recovery_attempt(&self) -> u8 {
+        match self {
+            Self::Recovering { attempt, .. } => *attempt,
+            Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
+        }
+    }
+
+    fn recovery_max_attempts(&self) -> u8 {
+        match self {
+            Self::Recovering { max_attempts, .. } => *max_attempts,
+            Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -458,7 +502,7 @@ impl MeetingCoordinator {
         generation: u64,
         value: EchoCancellationStatus,
     ) {
-        let status = {
+        let (status, previous) = {
             let mut inner = self.inner.lock_or_recover();
             if inner
                 .active
@@ -467,15 +511,49 @@ impl MeetingCoordinator {
             {
                 return;
             }
+            let previous = inner.status.echo_cancellation;
             inner.status.echo_cancellation = match value {
                 EchoCancellationStatus::Disabled => MeetingEchoCancellationRuntime::Off,
                 EchoCancellationStatus::Active => MeetingEchoCancellationRuntime::Active,
+                EchoCancellationStatus::Recovering {
+                    reason,
+                    attempt,
+                    max_attempts,
+                } => MeetingEchoCancellationRuntime::Recovering {
+                    reason,
+                    attempt,
+                    max_attempts,
+                },
                 EchoCancellationStatus::Bypassed { reason } => {
                     MeetingEchoCancellationRuntime::Bypassed { reason }
                 }
             };
-            inner.status.clone()
+            (inner.status.clone(), previous)
         };
+        let reason = status
+            .echo_cancellation
+            .event_reason()
+            .or_else(|| previous.event_reason())
+            .unwrap_or("none");
+        let recovery_attempt = status
+            .echo_cancellation
+            .recovery_attempt()
+            .max(previous.recovery_attempt());
+        let recovery_max_attempts = status
+            .echo_cancellation
+            .recovery_max_attempts()
+            .max(previous.recovery_max_attempts());
+        tracing::info!(
+            target: "meeting",
+            event_code = "meeting.echo_cancellation_state_changed",
+            generation,
+            from = previous.event_state(),
+            to = status.echo_cancellation.event_state(),
+            reason,
+            recovery_attempt = u64::from(recovery_attempt),
+            recovery_max_attempts = u64::from(recovery_max_attempts),
+            "meeting echo cancellation state changed"
+        );
         publish_status(app, &status);
     }
 
@@ -802,6 +880,7 @@ struct ChannelSequence {
 struct AecProtocolTracker {
     requested: EchoCancellationMode,
     observed: Option<EchoCancellationStatus>,
+    recovery_attempts: u8,
 }
 
 impl AecProtocolTracker {
@@ -809,6 +888,7 @@ impl AecProtocolTracker {
         Self {
             requested,
             observed: None,
+            recovery_attempts: 0,
         }
     }
 
@@ -827,12 +907,49 @@ impl AecProtocolTracker {
                 EchoCancellationMode::Enabled,
                 Some(EchoCancellationStatus::Active),
                 EchoCancellationStatus::Bypassed { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Active),
+                EchoCancellationStatus::Recovering { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Recovering { .. }),
+                EchoCancellationStatus::Active | EchoCancellationStatus::Bypassed { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Recovering { .. }),
+                EchoCancellationStatus::Recovering { .. },
             )
         );
-        if valid {
-            self.observed = Some(status);
+        if !valid {
+            return false;
         }
-        valid
+        if let EchoCancellationStatus::Recovering {
+            reason,
+            attempt,
+            max_attempts,
+        } = status
+        {
+            let previous_reason = match self.observed {
+                Some(EchoCancellationStatus::Recovering { reason, .. }) => Some(reason),
+                _ => None,
+            };
+            if attempt != self.recovery_attempts.saturating_add(1)
+                || attempt > max_attempts
+                || max_attempts != MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS
+                || previous_reason.is_some_and(|previous| previous != reason)
+                || !matches!(
+                    reason,
+                    EchoCancellationBypassReason::RenderDiscontinuity
+                        | EchoCancellationBypassReason::ProcessingBacklog
+                )
+            {
+                return false;
+            }
+            self.recovery_attempts = attempt;
+        }
+        self.observed = Some(status);
+        true
     }
 
     fn permits_microphone_pcm(&self) -> bool {
@@ -2021,6 +2138,50 @@ mod tests {
             audio_flowing,
             needs_relaunch: false,
         }
+    }
+
+    #[test]
+    fn aec_protocol_accepts_bounded_recovery_and_return_to_active() {
+        let mut tracker = AecProtocolTracker::new(EchoCancellationMode::Enabled);
+        assert!(tracker.observe(EchoCancellationStatus::Active));
+        assert!(tracker.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            attempt: 1,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+        assert!(tracker.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            attempt: 2,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+        assert!(tracker.observe(EchoCancellationStatus::Active));
+        assert!(tracker.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::ProcessingBacklog,
+            attempt: 3,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+        assert!(tracker.observe(EchoCancellationStatus::Bypassed {
+            reason: EchoCancellationBypassReason::ProcessingBacklog,
+        }));
+    }
+
+    #[test]
+    fn aec_protocol_rejects_unbounded_or_out_of_order_recovery() {
+        let mut skipped = AecProtocolTracker::new(EchoCancellationMode::Enabled);
+        assert!(skipped.observe(EchoCancellationStatus::Active));
+        assert!(!skipped.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            attempt: 2,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+
+        let mut permanent = AecProtocolTracker::new(EchoCancellationMode::Enabled);
+        assert!(permanent.observe(EchoCancellationStatus::Active));
+        assert!(!permanent.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::ProcessorFailed,
+            attempt: 1,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
     }
 
     #[test]

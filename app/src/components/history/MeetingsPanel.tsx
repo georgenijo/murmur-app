@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
+import { echoCancellationNotice, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
 
@@ -29,6 +29,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
     meetings.status.sessionId ? meetings.liveSegments.filter((segment) => segment.sessionId === meetings.status.sessionId) : []
   );
   const failure = meetingErrorMessage(meetings.status.errorCode);
+  const echoCancellationStatus = echoCancellationNotice(meetings.status.echoCancellation);
 
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -129,9 +130,9 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
             )}
           </div>
         )}
-        {meetings.status.echoCancellation.state === 'bypassed' && (
+        {echoCancellationStatus && (
           <p role="status" className="mt-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-xs text-on-surface-variant">
-            Speaker echo reduction became unavailable. Murmur is keeping the original microphone audio for this meeting.
+            {echoCancellationStatus}
           </p>
         )}
         {meetings.permission !== 'granted' && meetings.permission !== 'unsupported' && !active && !processing && (

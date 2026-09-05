@@ -89,11 +89,15 @@ a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
 rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v7
 frames. It never mixes the streams.
 
-Protocol v8 also freezes echo cancellation at meeting start. The worker reports
-`disabled`, `active`, or a typed `bypassed` reason before microphone PCM. AEC
-initialization, processing, or backlog failure does not fail the meeting. The
-worker retains each raw 10 ms microphone frame until processing succeeds, so a
-failure can switch to raw PCM without dropping or duplicating samples.
+The production protocol freezes echo cancellation at meeting start. The worker reports
+`disabled`, `active`, or a typed `bypassed` reason before microphone PCM. A
+callback-clock discontinuity or processing backlog moves AEC into a bounded
+`recovering` state. Murmur passes through raw microphone audio while three
+fresh callback pairs establish a new timeline, then creates a new AEC3
+processor. Three unsuccessful recovery windows end in `bypassed` for the rest
+of the meeting. Initialization and processor failures bypass immediately. The
+worker retains each raw 10 ms microphone frame until processing succeeds, so
+every transition to raw PCM preserves the near-end samples without duplication.
 
 Protocol v8 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
@@ -188,6 +192,11 @@ Every probe writes a content-free terminal result to the `meeting` stream:
 `meeting.permission_probe_started`, `meeting.permission_probe_finished` (TCC
 state, permission, capture readiness, audio flow, relaunch), and
 `meeting.permission_probe_failed`.
+
+Each echo-cancellation transition also writes
+`meeting.echo_cancellation_state_changed` with only the prior and current
+state, typed reason, recovery attempt, and meeting generation. Audio, device
+identity, transcript text, and session IDs are excluded.
 
 Meeting traces contain only allowlisted lifecycle phase, channel, generation,
 and stable error code. The sanitizer removes every other string in all builds.
