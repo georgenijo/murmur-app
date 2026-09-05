@@ -388,4 +388,3 @@ Other localStorage caches and browser-scoped state:
 | `dictation-stats` | Synchronous cache for durable `stats.json` usage aggregates | `lib/stats.ts` |
 | `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |
-| `resource-monitor-collapsed` | Whether the resource monitor panel is collapsed | ResourceMonitor component |

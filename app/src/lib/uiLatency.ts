@@ -235,10 +235,6 @@ export function useUiLatencySamples(): UiLatencySampleV1[] {
   return useSyncExternalStore(subscribeUiLatency, getUiLatencySamples, () => SERVER_SNAPSHOT);
 }
 
-export function getCurrentUiLatencyView(): string {
-  return currentView;
-}
-
 export function beginUiTransition(
   from: string,
   to: string,

@@ -15,6 +15,7 @@
     "tauri:bench:build": "VITE_MURMUR_INTERNAL_BENCHMARK=1 tauri build --features internal-benchmark --config src-tauri/tauri.bench.conf.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "audit:dead-code": "node ../scripts/audit_frontend_dead_code.mjs",
     "test:visual": "playwright test"
   },
   "dependencies": {
@@ -36,7 +37,6 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
-    "react-use-measure": "^2.1.7",
     "rehype-sanitize": "^6.0.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.1.18"
