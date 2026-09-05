@@ -109,7 +109,7 @@ export function deriveReviewState(input: ReviewStateInput): ReviewViewModel {
         showDiff: true,
         cancelEnabled: true,
         retryEnabled: true,
-        approveEnabled: true,
+        approveEnabled: input.original.length > 0 && input.proposed.length > 0,
         keyboardActionsActive: true,
       };
 

@@ -15,6 +15,7 @@ import {
 import { deriveReviewState } from './deriveReviewState';
 import { ReviewChip } from './ReviewChip';
 import { ReviewDiff } from './ReviewDiff';
+import { CorrectionTeaching } from './CorrectionTeaching';
 import { ReviewActions } from './ReviewActions';
 import { ReviewApplied } from './ReviewApplied';
 
@@ -36,14 +37,23 @@ export function TransformReviewApp() {
   const driver = mockEnabled ? mockDriver : realDriver;
 
   const vm = useMemo(
-    () => deriveReviewState({
+    () => {
+      const base = deriveReviewState({
       state: driver.state,
       errorCode: driver.errorCode,
       instruction: driver.content.instruction,
       original: driver.content.original,
       proposed: driver.content.proposed,
       thinkingElapsedMs: driver.thinkingElapsedMs,
-    }),
+      });
+      return driver.content.correction ? {
+        ...base,
+        statusText: driver.state === 'thinking' ? 'Finding the correction…' : base.statusText,
+        subText: driver.state === 'listening' ? 'Say the correction, then click Done' : base.subText,
+        cancelEnabled: driver.state !== 'applied',
+        keyboardActionsActive: driver.state !== 'applied',
+      } : base;
+    },
     [driver.state, driver.errorCode, driver.content, driver.thinkingElapsedMs],
   );
 
@@ -145,7 +155,7 @@ export function TransformReviewApp() {
 
   return (
     <div
-      className="transform-review-surface w-full h-full overflow-hidden select-none"
+      className="transform-review-surface w-full h-full overflow-y-auto select-none"
       style={{
         background: 'rgba(20, 20, 20, 0.92)',
         borderRadius: 14,
@@ -158,6 +168,17 @@ export function TransformReviewApp() {
       }}
     >
       <ReviewChip vm={vm} />
+      {driver.content.correction && (
+        <div className="px-3 pb-2 text-[11px] text-white/60">
+          Correct last dictation · {driver.content.correction === 'copy'
+            ? 'Review and copy. Your original text stays untouched.'
+            : 'Review and replace the matching selection.'}
+          {driver.state === 'listening' && (
+            <button type="button" onClick={driver.finish}
+              className="ml-2 rounded-md bg-white/15 px-2 py-1 text-white">Done speaking</button>
+          )}
+        </div>
+      )}
 
       {vm.showStreamingPreview && (
         <div
@@ -176,10 +197,17 @@ export function TransformReviewApp() {
         <div className="px-3 py-2 text-[12px] text-red-300/90">{vm.errorMessage}</div>
       )}
 
-      {vm.showUndo && <ReviewApplied onUndo={driver.undo} errorMessage={vm.errorMessage} />}
+      {vm.showUndo && (driver.content.correction === 'copy'
+        ? <div role="status" className="px-3 pb-3 text-[12px] text-emerald-300">Correction copied. Select the original text and paste to replace it.</div>
+        : <ReviewApplied onUndo={driver.undo} errorMessage={vm.errorMessage} />)}
 
+      {driver.content.correction && driver.state === 'ready' && (
+        <CorrectionTeaching original={driver.content.original} proposed={driver.content.proposed}
+          context={driver.content.teachingContext} />
+      )}
       {(vm.approveEnabled || vm.retryEnabled || vm.cancelEnabled) && (
         <ReviewActions
+          approveLabel={driver.content.correction === 'copy' ? 'Copy correction' : 'Approve'}
           approveEnabled={vm.approveEnabled}
           retryEnabled={vm.retryEnabled}
           cancelEnabled={vm.cancelEnabled}

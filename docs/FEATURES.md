@@ -121,6 +121,9 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 ### Voice Commands 2.0 — [features/voice-commands.md](features/voice-commands.md)
 Typed, persistent local commands: text replacements and multiline snippets, deterministic `{{date}}` / `{{time}}` variables, explicitly permitted `{{clipboard}}` insertion, global and per-app scopes, conflict validation, and a no-paste preview/test UI.
 
+### Correct last dictation — [features/dictation-correction.md](features/dictation-correction.md)
+Explicit spoken correction of the latest delivery through the existing local model, literal spelled-letter preservation, reviewed copy or matching-selection replacement, and separate optional teaching. Available from the command palette and an opt-in ⌘⇧E shortcut.
+
 ### Correct and Teach — [features/correct-and-teach.md](features/correct-and-teach.md)
 Edit the newest history entry and Murmur proposes **one bounded replacement** to learn, scoped global / app / project. Uses uniquely provable case-insensitive context alignment, so casing differences can't widen a one-word fix into a sentence rule; ambiguous alignments fail closed. **Teach specific term** lets you select one exact heard term inside a longer sentence when automatic extraction is too broad. Nothing persists without explicit confirmation.
 

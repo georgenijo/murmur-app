@@ -2157,9 +2157,18 @@ async fn run_transcription_pipeline(
             Ok(Ok(Some(Ok(result)))) => {
                 if result.outcome != injector::InjectionOutcome::NoText {
                     app_handle.state::<State>().delivery_recovery.remember(
+                        recording_id,
                         text.clone(),
                         recovery_target,
                         paste_delay_ms,
+                        crate::correct_and_teach::teaching_context(
+                            context.app.bundle_id.as_deref(),
+                            context
+                                .matched_profile
+                                .as_ref()
+                                .map(|profile| profile.label.as_str()),
+                            context.teaching_project_root.as_deref(),
+                        ),
                     );
                 }
                 if let injector::InjectionOutcome::ClipboardOnly(reason) = result.outcome {

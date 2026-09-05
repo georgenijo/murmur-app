@@ -960,7 +960,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 /// dictation listener (`start_listener`) and the transform hotkey
 /// (`start_transform_listener`) call this; whichever runs first wins the
 /// spawn, the other is a no-op via the `compare_exchange` guard.
-fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
+pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
     // Only spawn the thread once
     if LISTENER_THREAD_SPAWNED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -991,11 +991,14 @@ fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
                     && !QUERY_ACTIVE.load(Ordering::SeqCst)
                     && !PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
+                    && !crate::correction_shortcut::enabled()
                 {
                     return;
                 }
                 LAST_RDEV_CALLBACK_AT_MS.store(now_unix_ms(), Ordering::SeqCst);
                 LAST_TAP_SILENCE_WARNING_AT_MS.store(0, Ordering::SeqCst);
+
+                crate::correction_shortcut::handle(&handle, &event.event_type);
 
                 let mode = {
                     let m = ACTIVE_MODE.lock_or_recover();

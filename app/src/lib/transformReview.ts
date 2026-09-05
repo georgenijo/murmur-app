@@ -1,3 +1,4 @@
+import type { TeachingContext } from './correctAndTeach';
 // Shared types + validators for the transform review popover's events
 // contract. Mirrors `lib/overlayGeometry.ts` / `lib/types.ts`'s runtime-guard
 // pattern: never trust a raw event/command payload without checking its shape
@@ -182,9 +183,18 @@ export function normalizeReviewErrorCode(v: unknown): ReviewErrorCode | null {
 
 /** Return value of the `get_transform_review_content` command. */
 export interface TransformReviewContent {
+  correction?: 'copy' | 'selection';
+  teachingContext?: TeachingContext;
   instruction: string;
   original: string;
   proposed: string;
+}
+
+function isTeachingContext(value: unknown): value is TeachingContext {
+  if (typeof value !== 'object' || value === null) return false;
+  return (!('appBundleId' in value) || value.appBundleId === null || typeof value.appBundleId === 'string')
+    && (!('appLabel' in value) || value.appLabel === null || typeof value.appLabel === 'string')
+    && (!('projectRoot' in value) || value.projectRoot === null || typeof value.projectRoot === 'string');
 }
 
 export function isTransformReviewContent(v: unknown): v is TransformReviewContent {
@@ -194,6 +204,8 @@ export function isTransformReviewContent(v: unknown): v is TransformReviewConten
     typeof o.instruction === 'string'
     && typeof o.original === 'string'
     && typeof o.proposed === 'string'
+    && (o.teachingContext === undefined || isTeachingContext(o.teachingContext))
+    && (o.correction === undefined || o.correction === 'copy' || o.correction === 'selection')
   );
 }
 

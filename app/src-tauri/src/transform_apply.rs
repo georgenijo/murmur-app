@@ -138,6 +138,7 @@ use crate::MutexExt;
 /// machinery that consumes it.
 #[derive(Clone)]
 pub struct TransformSession {
+    pub(crate) purpose: crate::dictation_correction::ReviewPurpose,
     pub snapshot: crate::selection::TransformSnapshot,
     /// The spoken instruction transcribed for this pass (issue #312 PR-C2).
     /// Filled by `finish_transform_instruction` before the sidecar call.
@@ -166,6 +167,7 @@ impl TransformSession {
     ) -> Self {
         Self {
             snapshot,
+            purpose: crate::dictation_correction::ReviewPurpose::default(),
             instruction: None,
             proposed: None,
             applied: false,
@@ -257,6 +259,7 @@ fn set_applied(app_state: &AppState, applied: bool, generation: u64) {
 /// confidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppliedVia {
+    Copied,
     /// `AXUIElementSetAttributeValue` succeeded and a verify-after-write read
     /// back confirmed the change landed.
     Ax,
@@ -275,6 +278,7 @@ pub enum AppliedVia {
 impl AppliedVia {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Copied => "copied",
             Self::Ax => "ax",
             Self::AxUnverified => "ax_unverified",
             Self::Paste => "paste",
@@ -581,6 +585,7 @@ async fn run_apply(
     replacement: String,
     apply_epoch: u64,
     transform_pass_id: u64,
+    expected_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
 ) -> Result<AppliedVia, ApplyError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<native::NativeApplyOutcome>();
     app_handle
@@ -591,6 +596,7 @@ async fn run_apply(
                 range_len,
                 &expected_current,
                 &replacement,
+                expected_target.as_ref(),
             );
             let _ = tx.send(outcome);
         })
@@ -626,6 +632,35 @@ async fn run_apply(
     outcome.result
 }
 
+fn update_correction_delivery(
+    app: &tauri::AppHandle,
+    session: &Option<TransformSession>,
+    undo: bool,
+) {
+    use tauri::Manager;
+    let Some(session) = session else {
+        return;
+    };
+    let crate::dictation_correction::ReviewPurpose::Correction { recording_id, .. } =
+        &session.purpose
+    else {
+        return;
+    };
+    let Some(proposed) = session.proposed.as_deref() else {
+        return;
+    };
+    if let Some(state) = app.try_state::<crate::State>() {
+        let (before, after) = if undo {
+            (proposed, session.snapshot.text.as_str())
+        } else {
+            (session.snapshot.text.as_str(), proposed)
+        };
+        state
+            .delivery_recovery
+            .correct(*recording_id, before, after);
+    }
+}
+
 /// Apply the active session's proposed text to the target document.
 ///
 /// Cross-platform signature; the real implementation is macOS-only (see
@@ -637,6 +672,16 @@ pub async fn apply_transform(
 ) -> Result<AppliedVia, ApplyError> {
     let session = session_snapshot(app_state);
     let (text, snapshot, generation, transform_pass_id) = validate_apply(&session)?;
+    if session
+        .as_ref()
+        .is_some_and(|session| session.purpose.copy_only())
+    {
+        crate::injector::write_clipboard_text(&text)
+            .map_err(|_| ApplyError::ClipboardUnavailable)?;
+        set_applied(app_state, true, generation);
+        update_correction_delivery(app_handle, &session, false);
+        return Ok(AppliedVia::Copied);
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -656,10 +701,14 @@ pub async fn apply_transform(
             text,
             apply_epoch,
             transform_pass_id,
+            session
+                .as_ref()
+                .and_then(|session| session.purpose.target()),
         )
         .await;
         if result.is_ok() {
             set_applied(app_state, true, generation);
+            update_correction_delivery(app_handle, &session, false);
         }
         result
     }
@@ -685,6 +734,12 @@ pub async fn undo_applied_transform(
     app_state: &AppState,
 ) -> Result<(), ApplyError> {
     let session = session_snapshot(app_state);
+    if session
+        .as_ref()
+        .is_some_and(|session| session.purpose.copy_only())
+    {
+        return Err(ApplyError::NotApplied);
+    }
     let (snapshot, proposed, generation, transform_pass_id) = validate_undo(&session)?;
 
     #[cfg(target_os = "macos")]
@@ -707,10 +762,14 @@ pub async fn undo_applied_transform(
             original,
             apply_epoch,
             transform_pass_id,
+            session
+                .as_ref()
+                .and_then(|session| session.purpose.target()),
         )
         .await;
         result.map(|_| {
             set_applied(app_state, false, generation);
+            update_correction_delivery(app_handle, &session, true);
         })
     }
 
@@ -1104,6 +1163,7 @@ mod native {
         range_len: usize,
         expected_current: &str,
         replacement: &str,
+        expected_target: Option<&crate::frontmost::DeliveryTargetSnapshot>,
     ) -> NativeApplyOutcome {
         // House rule: the replacement text is written to the clipboard
         // FIRST, unconditionally, before anything else is attempted. The
@@ -1116,7 +1176,10 @@ mod native {
             };
         }
 
-        let target_is_frontmost = activate_and_check_frontmost(pid);
+        let target_is_frontmost = activate_and_check_frontmost(pid)
+            && expected_target.is_none_or(|target| {
+                crate::frontmost::verify_delivery_target(target, true).verified()
+            });
 
         // Fetch the focused element ONCE (finding: re-fetching per call could
         // let restore/read/write silently operate on different elements if

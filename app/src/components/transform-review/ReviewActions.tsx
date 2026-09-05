@@ -1,4 +1,5 @@
 interface ReviewActionsProps {
+  approveLabel?: string;
   approveEnabled: boolean;
   retryEnabled: boolean;
   cancelEnabled: boolean;
@@ -14,6 +15,7 @@ interface ReviewActionsProps {
  * same component.
  */
 export function ReviewActions({
+  approveLabel = 'Approve',
   approveEnabled,
   retryEnabled,
   cancelEnabled,
@@ -29,7 +31,7 @@ export function ReviewActions({
           onClick={onApprove}
           className="px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors"
         >
-          Approve <span className="text-white/40 ml-1">⏎</span>
+          {approveLabel} <span className="text-white/40 ml-1">⏎</span>
         </button>
       )}
       {retryEnabled && (

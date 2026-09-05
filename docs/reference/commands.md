@@ -157,10 +157,12 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 |---------|-----------|---------|-------------|
 | `start_transform_capture` | `device_name: Option<String>`, `transform_pass_id: u64` | `Result<(), String>` | Begins a pass: arms the mic, freezes the AX selection snapshot, shows the popover in `listening`. Refuses (with a stable error code) when dictation, a benchmark, a file transcription, or another transform owns the pipeline. |
 | `finish_transform_instruction` | `transform_pass_id: u64` | `Result<(), String>` | Stops the instruction mic, transcribes it (cleanup-only), expands preset/saved-transform names, and runs the sidecar. `listening` → `thinking` → `ready`/`failed`. |
-| `retry_transform_instruction` | `device_name: Option<String>` | `Result<(), String>` | Re-arms listening for a new instruction against the **same** frozen selection, keeping the pass ID and advancing the attempt counter. |
-| `approve_transform` | — | `Result<(), String>` | Applies the proposal through `transform_apply` (AX set-value, else paste fallback with clipboard restore) and schedules the linger-hide. |
+| `start_dictation_correction` | `device_name: Option<String>` | `Result<(), String>` | Main-window-only correction start against the frozen latest delivery. |
+| `set_correction_shortcut` | `enabled: bool, device_name: Option<String>` | `Result<(), String>` | Main-window-only opt-in ⌘⇧E registration on the shared keyboard listener. |
+| `retry_transform_instruction` | `device_name: Option<String>, transform_pass_id: u64` | `Result<(), String>` | Re-arms listening for a new instruction against the **same** frozen selection, keeping the pass ID and advancing the attempt counter. |
+| `approve_transform` | `transform_pass_id: u64` | `Result<(), String>` | Applies the proposal through `transform_apply` (AX set-value, else paste fallback with clipboard restore) and schedules the linger-hide. |
 | `cancel_transform` | `transform_pass_id: Option<u64>` | `Result<(), String>` | Scoped cancellation. A no-op if that pass no longer owns the flow, so a delayed Escape cannot cancel the next pass. Idempotent. |
-| `undo_transform_and_close` | — | `Result<(), String>` | Restores the frozen original and closes the popover. On failure the Applied session is kept and `applied` is re-emitted with an error code so Undo stays available. |
+| `undo_transform_and_close` | `transform_pass_id: u64` | `Result<(), String>` | Restores the frozen original and closes the popover. On failure the Applied session is kept and `applied` is re-emitted with an error code so Undo stays available. |
 | `apply_transform_result` | — | `Result<String, String>` | Lower-level write-back entry point. |
 | `undo_transform` | — | `Result<(), String>` | Lower-level undo entry point. |
 
@@ -173,7 +175,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `hide_transform_popover` | — | `Result<(), String>` | Hides the popover. |
 | `set_transform_popover_expanded` | `expanded: bool` | `Result<PopoverBox, String>` | Resizes between compact (listening/thinking) and expanded (ready/failed) against the cached anchor; returns the applied box as an acknowledgment. |
 | `set_transform_popover_focusable` | `focusable: bool` | `Result<(), String>` | `false` during listening/thinking so focus is never stolen; `true` at ready/failed so Enter/Esc/Cmd+R reach the webview. |
-| `get_transform_review_content` | — | `TransformReviewContent` | `{instruction, original, proposed}`. Fetched on each state change rather than broadcast, so sensitive text never rides an event payload. |
+| `get_transform_review_content` | `transform_pass_id: u64` | `TransformReviewContent` | `{instruction, original, proposed}`. Fetched on each state change rather than broadcast, so sensitive text never rides an event payload. |
 
 ## Transform model (`commands/transform_model.rs`)
 

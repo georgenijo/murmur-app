@@ -915,7 +915,16 @@ pub(crate) async fn run_transform(
 
     let sidecar = Arc::clone(sidecar);
     let input = original;
-    let instr = instruction;
+    let correction = transform_apply::session_snapshot(app_state)
+        .is_some_and(|session| session.purpose.is_correction());
+    let correction_input = input.clone();
+    let correction_spoken = instruction.clone();
+    let instr = if correction {
+        crate::dictation_correction::model_instruction(&instruction)
+    } else {
+        instruction
+    };
+    let on_chunk = if correction { None } else { on_chunk };
     // Per-request cancel token (item 11): created here, before the spawn, and
     // handed to the sidecar for exactly this request. `transform` registers it
     // as the in-flight token, so `cancel_transform`'s
@@ -995,7 +1004,18 @@ pub(crate) async fn run_transform(
                 cache_hit: outcome.cache_hit,
                 diagnostics: outcome.diagnostics,
             };
-            match outcome.result {
+            let result = outcome.result.and_then(|mut output| {
+                if correction {
+                    output.output = crate::dictation_correction::corrected_text(
+                        &correction_input,
+                        &correction_spoken,
+                        &output.output,
+                    )
+                    .map_err(|_| TransformError::OutputInvalid)?;
+                }
+                Ok(output)
+            });
+            match result {
                 Ok(output) => {
                     if !app_state.try_transition_transform_status(
                         TransformStatus::Thinking,
@@ -1708,6 +1728,70 @@ pub(crate) async fn start_transform_capture(
     device_name: Option<String>,
     transform_pass_id: u64,
 ) -> Result<(), String> {
+    start_capture(app_handle, state, device_name, transform_pass_id, None).await
+}
+
+#[tauri::command]
+pub(crate) async fn start_dictation_correction(
+    window: tauri::WebviewWindow,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("main_window_required".into());
+    }
+    begin_dictation_correction(app_handle, state, device_name).await
+}
+
+pub(crate) async fn begin_dictation_correction(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    if crate::keyboard::is_app_disabled() {
+        return Err("Enable Murmur before correcting a dictation.".into());
+    }
+    let latest = state
+        .delivery_recovery
+        .latest()
+        .ok_or("No dictation to correct yet.")?;
+    if latest.text.len() > crate::selection::MAX_SELECTION_BYTES {
+        return Err("The last dictation is too long to correct. Select a shorter passage and use Transform.".into());
+    }
+    let pass_id = {
+        let _dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.transform_status() != TransformStatus::Idle
+            || state.app_state.active_transform_pass_id().is_some()
+        {
+            return Err("Finish or cancel the current transform first.".into());
+        }
+        let id = state.app_state.next_transform_pass_id();
+        state.app_state.activate_transform_pass(id);
+        id
+    };
+    let result = start_capture(
+        app_handle.clone(),
+        state,
+        device_name,
+        pass_id,
+        Some(latest),
+    )
+    .await;
+    let live = app_handle.state::<crate::State>();
+    if result.is_err() && live.app_state.transform_status() == TransformStatus::Idle {
+        live.app_state.clear_transform_pass(pass_id);
+    }
+    result
+}
+
+async fn start_capture(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+    transform_pass_id: u64,
+    correction: Option<crate::delivery_recovery::LastDelivery>,
+) -> Result<(), String> {
     state.transform_diagnostics.begin(transform_pass_id);
     // Serialize against dictation start/stop, taking the same locks in the
     // same order (`recording_transition` then `dictation`) as
@@ -1888,8 +1972,33 @@ pub(crate) async fn start_transform_capture(
     }
 
     let capture_started = std::time::Instant::now();
+    let mut correction_delivery = crate::dictation_correction::CorrectionDelivery::Copy;
     let capture_result = if model_ready {
-        Some(crate::selection::capture_selection(&app_handle, transform_pass_id).await)
+        if let Some(latest) = correction.as_ref() {
+            let matching = crate::selection::capture_matching_dictation_selection(
+                &app_handle,
+                &latest.text,
+                &latest.target,
+            )
+            .await;
+            if let Some(snapshot) = matching {
+                correction_delivery = crate::dictation_correction::CorrectionDelivery::Selection(
+                    latest.target.clone(),
+                );
+                Some(Ok(snapshot))
+            } else {
+                Some(Ok(TransformSnapshot {
+                    text: latest.text.clone(),
+                    bundle_id: None,
+                    pid: 0,
+                    range: None,
+                    bounds: None,
+                    captured_at: std::time::Instant::now(),
+                }))
+            }
+        } else {
+            Some(crate::selection::capture_selection(&app_handle, transform_pass_id).await)
+        }
     } else {
         None
     };
@@ -2003,6 +2112,26 @@ pub(crate) async fn start_transform_capture(
                 .finish(transform_pass_id, "failed");
         }
         return Ok(());
+    }
+    if let Some(correction) = correction {
+        let mut session = state.app_state.transform_session.lock_or_recover();
+        if let Some(session) = session
+            .as_mut()
+            .filter(|session| session.transform_pass_id == transform_pass_id)
+        {
+            session.purpose = crate::dictation_correction::ReviewPurpose::Correction {
+                recording_id: correction.recording_id,
+                delivery: correction_delivery,
+                teaching_context: correction.teaching_context,
+            };
+        }
+        match state.app_state.transform_status() {
+            TransformStatus::Listening => fx.emit_state(ReviewState::Listening, None),
+            TransformStatus::Connecting => fx.emit_state(ReviewState::Connecting, None),
+            _ => return Ok(()),
+        }
+        fx.set_expanded(true);
+        fx.set_focusable(true);
     }
     if let Some(guard) = performance_guard.as_mut() {
         guard.enter(PerformanceStageV1::InstructionCapture);
@@ -2208,7 +2337,15 @@ pub(crate) async fn finish_transform_instruction(
                     Some(instruction_asr_started.elapsed().as_millis() as u64),
                     None,
                 );
-                Ok(expand_instruction(&state, &raw))
+                Ok(
+                    if transform_apply::session_snapshot(&state.app_state)
+                        .is_some_and(|session| session.purpose.is_correction())
+                    {
+                        raw
+                    } else {
+                        expand_instruction(&state, &raw)
+                    },
+                )
             }
             Err(error) => {
                 state.transform_diagnostics.phase(
@@ -2455,12 +2592,21 @@ fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String>
     None
 }
 
+fn require_review_pass(app_state: &AppState, pass_id: u64) -> Result<(), String> {
+    if pass_id == 0 || app_state.active_transform_pass_id() != Some(pass_id) {
+        Err("stale_pass".into())
+    } else {
+        Ok(())
+    }
+}
+
 /// Retry: re-arm listening for a NEW instruction on the SAME frozen snapshot.
 #[tauri::command]
 pub(crate) async fn retry_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
     let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
@@ -2472,7 +2618,7 @@ pub(crate) async fn retry_transform_instruction(
         app: &app_handle,
         state: &state,
     };
-    let transform_pass_id = state.app_state.active_transform_pass_id().unwrap_or(0);
+    require_review_pass(&state.app_state, transform_pass_id)?;
 
     // Retry only means anything with a live session (a frozen snapshot). A
     // failed popover with no session (e.g. model_not_downloaded) has nothing
@@ -2557,12 +2703,10 @@ pub(crate) async fn retry_transform_instruction(
 pub(crate) async fn approve_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
+    require_review_pass(&state.app_state, transform_pass_id)?;
     let performance_started = std::time::Instant::now();
-    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
-        .map(|session| session.transform_pass_id)
-        .or_else(|| state.app_state.active_transform_pass_id())
-        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -2594,6 +2738,7 @@ pub(crate) async fn approve_transform(
         }
     };
 
+    require_review_pass(&state.app_state, transform_pass_id)?;
     match transform_apply::apply_transform(&app_handle, &state.app_state).await {
         Ok(via) => {
             guard.mark_succeeded(); // status -> Idle; session.applied stays true
@@ -2892,12 +3037,10 @@ pub(crate) fn clear_parked_review_for_pipeline_work(
 pub(crate) async fn undo_transform_and_close(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
+    require_review_pass(&state.app_state, transform_pass_id)?;
     let performance_started = std::time::Instant::now();
-    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
-        .map(|session| session.transform_pass_id)
-        .or_else(|| state.app_state.active_transform_pass_id())
-        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -2921,6 +3064,7 @@ pub(crate) async fn undo_transform_and_close(
             }
         };
 
+    require_review_pass(&state.app_state, transform_pass_id)?;
     match transform_apply::undo_applied_transform(&app_handle, &state.app_state).await {
         Ok(()) => {
             guard.mark_succeeded();
