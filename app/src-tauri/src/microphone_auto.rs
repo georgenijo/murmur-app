@@ -153,7 +153,7 @@ pub(crate) fn select(
 pub(crate) fn current_lid_state() -> ProductionLidState {
     #[cfg(target_os = "macos")]
     {
-        return macos_lid_state().unwrap_or(ProductionLidState::Unknown);
+        macos_lid_state().unwrap_or(ProductionLidState::Unknown)
     }
     #[cfg(not(target_os = "macos"))]
     ProductionLidState::Unknown
@@ -183,7 +183,7 @@ fn macos_lid_state() -> Option<ProductionLidState> {
     use core_foundation::boolean::{kCFBooleanTrue, CFBooleanGetTypeID, CFBooleanRef};
     use core_foundation::string::CFString;
     use core_foundation::string::CFStringRef;
-    use std::ffi::{c_char, CStr};
+    use std::ffi::c_char;
 
     type IoRegistryEntry = u32;
     type KernReturn = i32;
@@ -200,8 +200,7 @@ fn macos_lid_state() -> Option<ProductionLidState> {
         fn IOObjectRelease(object: IoRegistryEntry) -> KernReturn;
     }
 
-    let path = CStr::from_bytes_with_nul(b"IOService:/\0").ok()?;
-    let entry = unsafe { IORegistryEntryFromPath(0, path.as_ptr()) };
+    let entry = unsafe { IORegistryEntryFromPath(0, c"IOService:/".as_ptr()) };
     if entry == 0 {
         return None;
     }

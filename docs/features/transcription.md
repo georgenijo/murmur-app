@@ -58,9 +58,11 @@ afresh at recording start.
 
 ### Smart Auto microphone selection
 
-Smart Auto is an opt-in Dictation policy. It evaluates only when a Dictation
-recording is accepted from Idle and reads the existing authoritative inventory;
-it never enumerates, probes, opens, or monitors a microphone in the background.
+Smart Auto is an opt-in capture policy. Dictation, Meeting Capture, Voice
+Query, selected-text Transform (including Retry), and the Settings microphone
+preview each resolve it only as their capture owner is accepted from idle and
+read the existing authoritative inventory; it never enumerates, probes, opens,
+or monitors a microphone in the background.
 The user explicitly approves stable IDs, can place approved IDs in a preference
 order, and may separately allow approved Continuity Capture devices. A newly
 connected input is never trusted automatically.
@@ -74,7 +76,7 @@ Built-in microphones are rejected when that state is closed or unavailable,
 including when closing the lid did not trigger a Core Audio topology change.
 The selected stable ID is passed into the ordinary capture lifecycle and is
 immutable for that recording; a later device or lid change only affects the
-next Dictation recording. This narrower policy does not complete issue #525's
+next capture. This narrower policy does not complete issue #525's
 verified-signal routing work.
 
 Direct AUHAL is the primary backend and CPAL is the independent fallback. Each

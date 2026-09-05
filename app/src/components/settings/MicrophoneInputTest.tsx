@@ -449,7 +449,7 @@ export function MicrophoneInputTest({
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-on-surface">Smart Auto</p>
-              <p className="mt-0.5 text-xs text-on-surface-variant">Dictation uses only microphones you approve. Manual selection turns Smart Auto off.</p>
+              <p className="mt-0.5 text-xs text-on-surface-variant">Murmur capture uses only microphones you approve. Manual selection turns Smart Auto off.</p>
             </div>
             <AnimatedSwitch
               size="md"

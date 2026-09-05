@@ -1809,6 +1809,7 @@ async fn resolve_query_context(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command parameters are the stable IPC boundary.
 pub(crate) async fn start_query_capture(
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,

@@ -559,19 +559,27 @@ fn device_property_u32(device_id: AudioDeviceID, selector: u32) -> Option<u32> {
 
 fn device_kind(transport: Option<u32>) -> ProductionDeviceKind {
     match transport {
-        Some(kAudioDeviceTransportTypeBuiltIn) => ProductionDeviceKind::BuiltIn,
-        Some(LEGACY_CONTINUITY_CAPTURE_TRANSPORT)
-        | Some(kAudioDeviceTransportTypeContinuityCaptureWired)
-        | Some(kAudioDeviceTransportTypeContinuityCaptureWireless) => {
+        Some(transport) if transport == kAudioDeviceTransportTypeBuiltIn => {
+            ProductionDeviceKind::BuiltIn
+        }
+        Some(transport)
+            if transport == LEGACY_CONTINUITY_CAPTURE_TRANSPORT
+                || transport == kAudioDeviceTransportTypeContinuityCaptureWired
+                || transport == kAudioDeviceTransportTypeContinuityCaptureWireless =>
+        {
             ProductionDeviceKind::Continuity
         }
-        Some(kAudioDeviceTransportTypeAVB)
-        | Some(kAudioDeviceTransportTypeBluetooth)
-        | Some(kAudioDeviceTransportTypeBluetoothLE)
-        | Some(kAudioDeviceTransportTypeFireWire)
-        | Some(kAudioDeviceTransportTypePCI)
-        | Some(kAudioDeviceTransportTypeThunderbolt)
-        | Some(kAudioDeviceTransportTypeUSB) => ProductionDeviceKind::External,
+        Some(transport)
+            if transport == kAudioDeviceTransportTypeAVB
+                || transport == kAudioDeviceTransportTypeBluetooth
+                || transport == kAudioDeviceTransportTypeBluetoothLE
+                || transport == kAudioDeviceTransportTypeFireWire
+                || transport == kAudioDeviceTransportTypePCI
+                || transport == kAudioDeviceTransportTypeThunderbolt
+                || transport == kAudioDeviceTransportTypeUSB =>
+        {
+            ProductionDeviceKind::External
+        }
         _ => ProductionDeviceKind::Unknown,
     }
 }
