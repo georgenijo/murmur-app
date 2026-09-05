@@ -2,9 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 import type { KnowledgeEntry, KnowledgeScope } from './knowledge';
 
 export interface TeachingContext {
-  appBundleId?: string;
-  appLabel?: string;
-  projectRoot?: string;
+  appBundleId?: string | null;
+  appLabel?: string | null;
+  projectRoot?: string | null;
 }
 
 export interface CorrectionScopeOption {

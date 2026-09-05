@@ -169,6 +169,13 @@ function App() {
   useOverlaySettingsSync(applyExternalSettings);
 
   useEffect(() => {
+    void invoke('set_correction_shortcut', {
+      enabled: settings.correctionShortcutEnabled === true && !settings.disabled,
+      deviceName: settings.microphone || null,
+    }).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
+  }, [settings.correctionShortcutEnabled, settings.disabled, settings.microphone]);
+
+  useEffect(() => {
     const requested = settings.pasteLastShortcut;
     const generation = ++pasteLastShortcutGenerationRef.current;
     void setPasteLastShortcut(requested)
@@ -192,6 +199,15 @@ function App() {
       window.setTimeout(() => setDeliveryRecoveryMessage(''), 5000);
     }).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>('correction-start-failed', ({ payload }) => {
+      setDeliveryRecoveryMessage(typeof payload === 'string' ? payload : 'Could not start correction. Try Correct last dictation from ⌘K.');
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
   // Track accessibility permission — when it transitions false→true the
@@ -549,6 +565,16 @@ function App() {
         run: () => { void pickAudioFiles(); },
       },
       {
+        id: 'correct-last-dictation',
+        title: 'Correct last dictation…',
+        section: 'History',
+        keywords: ['fix', 'spelling', 'voice', 'correction'],
+        run: () => {
+          void invoke('start_dictation_correction', { deviceName: settings.microphone || null })
+            .catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+        },
+      },
+      {
         id: 'paste-last',
         title: 'Paste Last / Retry Delivery',
         section: 'History',
@@ -644,7 +670,7 @@ function App() {
     ];
     return items;
   }, [
-    status, historyEntries, settings.disabled, settings.pasteLastShortcut, updateSettings, handleStart, handleStop,
+    status, historyEntries, settings.disabled, settings.pasteLastShortcut, settings.microphone, updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
     meetings,
   ]);

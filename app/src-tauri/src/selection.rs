@@ -344,6 +344,39 @@ impl CaptureTrace {
     }
 }
 
+/// Reads an explicit matching selection in the original app without a clipboard fallback.
+pub(crate) async fn capture_matching_dictation_selection(
+    app_handle: &tauri::AppHandle,
+    text: &str,
+    target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> Option<TransformSnapshot> {
+    let expected = text.to_string();
+    let target = target.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .run_on_main_thread(move || {
+            #[cfg(target_os = "macos")]
+            let snapshot = if crate::frontmost::verify_delivery_target(&target, true).verified() {
+                native::capture_selection_native()
+                    .ok()
+                    .filter(|snapshot| snapshot.text == expected)
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "macos"))]
+            let snapshot = {
+                let _ = expected;
+                None
+            };
+            let _ = tx.send(snapshot);
+        })
+        .ok()?;
+    tokio::time::timeout(std::time::Duration::from_millis(500), rx)
+        .await
+        .ok()?
+        .ok()?
+}
+
 /// Capture the current AX text selection.
 ///
 /// AX calls must run on the main thread (same constraint as

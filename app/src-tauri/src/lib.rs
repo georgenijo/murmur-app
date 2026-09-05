@@ -20,8 +20,10 @@ mod commands;
 pub mod coreml_installer;
 mod correct_and_teach;
 mod correction;
+mod correction_shortcut;
 mod delivery_recovery;
 mod dictation_context;
+mod dictation_correction;
 mod dictation_diagnostics;
 #[cfg(test)]
 mod dictation_diagnostics_contract;
@@ -288,6 +290,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
+            correction_shortcut::set_correction_shortcut,
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
@@ -349,6 +352,7 @@ pub fn run() {
             transform_apply::apply_transform_result,
             transform_apply::undo_transform,
             transform_flow::start_transform_capture,
+            transform_flow::start_dictation_correction,
             transform_flow::finish_transform_instruction,
             transform_flow::retry_transform_instruction,
             transform_flow::approve_transform,

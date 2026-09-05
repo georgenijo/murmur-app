@@ -575,6 +575,10 @@ pub(crate) fn set_focusable_internal(
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TransformReviewContent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teaching_context: Option<crate::correct_and_teach::TeachingContext>,
     pub instruction: String,
     pub original: String,
     pub proposed: String,
@@ -586,9 +590,36 @@ pub struct TransformReviewContent {
 /// `transform-state-changed` event, so potentially sensitive selected text
 /// stays out of the event bus, logs, and telemetry.
 #[tauri::command]
-pub fn get_transform_review_content(state: tauri::State<'_, State>) -> TransformReviewContent {
-    match crate::transform_apply::session_snapshot(&state.app_state) {
+pub fn get_transform_review_content(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, State>,
+    transform_pass_id: u64,
+) -> TransformReviewContent {
+    if window.label() != "transform-review" {
+        return TransformReviewContent::default();
+    }
+    match crate::transform_apply::session_snapshot(&state.app_state)
+        .filter(|session| session.transform_pass_id == transform_pass_id)
+    {
         Some(session) => TransformReviewContent {
+            correction: if session.purpose.is_correction() {
+                Some(
+                    if session.purpose.copy_only() {
+                        "copy"
+                    } else {
+                        "selection"
+                    }
+                    .to_string(),
+                )
+            } else {
+                None
+            },
+            teaching_context: match &session.purpose {
+                crate::dictation_correction::ReviewPurpose::Correction {
+                    teaching_context, ..
+                } => teaching_context.clone(),
+                crate::dictation_correction::ReviewPurpose::SelectedText => None,
+            },
             instruction: session.instruction.unwrap_or_default(),
             original: session.snapshot.text,
             proposed: session.proposed.unwrap_or_default(),

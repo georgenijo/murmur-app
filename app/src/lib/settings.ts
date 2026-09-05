@@ -299,6 +299,7 @@ export interface Settings {
   autoPasteDelayMs: number;
   /** Global Paste Last chord. `null` disables it. */
   pasteLastShortcut: PasteLastShortcut | null;
+  correctionShortcutEnabled: boolean;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -538,6 +539,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
   pasteLastShortcut: null,
+  correctionShortcutEnabled: false,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -1102,6 +1104,9 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
+      }
+      if (typeof parsed.correctionShortcutEnabled !== 'boolean') {
+        parsed.correctionShortcutEnabled = false;
       }
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;

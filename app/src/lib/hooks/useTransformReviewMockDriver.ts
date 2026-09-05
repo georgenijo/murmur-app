@@ -113,5 +113,11 @@ export function useMockReviewDriver(enabled: boolean): ReviewDriverResult {
     setState('listening');
   }, []);
 
-  return { state, errorCode, content: SAMPLE_CONTENT, thinkingElapsedMs, cancel, retry, approve, undo };
+  const correction = enabled ? new URLSearchParams(window.location.search).get('correction') : null;
+  const content: TransformReviewContent = correction === 'copy' || correction === 'selection'
+    ? { correction, instruction: 'The framework is spelled T A U R I.',
+        original: 'We should use Tori for the desktop app.',
+        proposed: 'We should use TAURI for the desktop app.' }
+    : SAMPLE_CONTENT;
+  return { state, errorCode, content, thinkingElapsedMs, cancel, retry, approve, undo, finish: () => setState('ready') };
 }
