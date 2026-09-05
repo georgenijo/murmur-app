@@ -159,12 +159,30 @@ pub(crate) fn current_lid_state() -> ProductionLidState {
     ProductionLidState::Unknown
 }
 
+/// Keep every ordinary capture entry point on the same contract: a manual
+/// stable ID or System Default remains untouched, while Smart Auto resolves
+/// once to a stable ID before that owner starts.
+pub(crate) fn resolve_capture_device(
+    device_name: Option<String>,
+    smart_auto: Option<&SmartAutoRequest>,
+) -> Result<Option<String>, String> {
+    if smart_auto.is_some() && device_name.is_some() {
+        return Err("Smart Auto cannot be combined with a fixed microphone.".to_string());
+    }
+    match smart_auto {
+        Some(request) => crate::audio_inventory::resolve_smart_auto(request)
+            .map(|selection| Some(selection.device_id)),
+        None => Ok(device_name),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn macos_lid_state() -> Option<ProductionLidState> {
     use core_foundation::base::TCFType;
+    use core_foundation::base::{CFAllocatorRef, CFGetTypeID, CFRelease, CFTypeRef};
+    use core_foundation::boolean::{kCFBooleanTrue, CFBooleanGetTypeID, CFBooleanRef};
     use core_foundation::string::CFString;
-    use core_foundation_sys::base::{CFGetTypeID, CFRelease, CFTypeRef};
-    use core_foundation_sys::boolean::{CFBooleanGetTypeID, CFBooleanGetValue, CFBooleanRef};
+    use core_foundation::string::CFStringRef;
     use std::ffi::{c_char, CStr};
 
     type IoRegistryEntry = u32;
@@ -175,8 +193,8 @@ fn macos_lid_state() -> Option<ProductionLidState> {
         fn IORegistryEntryFromPath(main_port: u32, path: *const c_char) -> IoRegistryEntry;
         fn IORegistryEntryCreateCFProperty(
             entry: IoRegistryEntry,
-            key: core_foundation_sys::string::CFStringRef,
-            allocator: core_foundation_sys::base::CFAllocatorRef,
+            key: CFStringRef,
+            allocator: CFAllocatorRef,
             options: u32,
         ) -> CFTypeRef;
         fn IOObjectRelease(object: IoRegistryEntry) -> KernReturn;
@@ -199,7 +217,7 @@ fn macos_lid_state() -> Option<ProductionLidState> {
     }
     let is_boolean = unsafe { CFGetTypeID(property) == CFBooleanGetTypeID() };
     let closed = if is_boolean {
-        Some(unsafe { CFBooleanGetValue(property as CFBooleanRef) != 0 })
+        Some(property as CFBooleanRef == unsafe { kCFBooleanTrue })
     } else {
         None
     };

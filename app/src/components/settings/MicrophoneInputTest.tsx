@@ -284,16 +284,24 @@ export function MicrophoneInputTest({
     : null;
   const previewMicrophone = smartAutoSelection?.device.id ?? microphone;
   const smartAutoUnavailable = smartAutoActive && smartAutoSelection === null;
-  const eligibleExternalDevices = devices.filter((device) => (
-    device.kind === 'external' && device.connected === true && device.hasInput === true
+  const approvableDevices = devices.filter((device) => (
+    device.kind !== 'unknown' && device.connected === true && device.hasInput === true
   ));
-  const manualExternalDevice = eligibleExternalDevices.find((device) => device.id === microphone) ?? null;
+  const manualDevice = approvableDevices.find((device) => device.id === microphone) ?? null;
 
   const start = useCallback(() => runExclusive(async () => {
     setOperation('starting');
     setActionError(null);
     try {
-      const next = await startMicrophonePreview(previewMicrophone, vadSensitivity);
+      const next = await startMicrophonePreview(
+        previewMicrophone,
+        vadSensitivity,
+        smartAutoActive && smartAuto ? {
+          approvedDeviceIds: smartAuto.smartAutoApprovedDeviceIds,
+          preferredDeviceIds: smartAuto.smartAutoPreferredDeviceIds,
+          allowContinuity: smartAuto.smartAutoAllowContinuity,
+        } : null,
+      );
       if (!mountedRef.current) {
         if (next.previewId !== null) void cancelMicrophonePreview(next.previewId).catch(() => {});
         return;
@@ -302,7 +310,7 @@ export function MicrophoneInputTest({
     } catch (error) {
       if (mountedRef.current) setActionError(String(error));
     }
-  }), [applyStatus, previewMicrophone, runExclusive, vadSensitivity]);
+  }), [applyStatus, previewMicrophone, runExclusive, smartAuto, smartAutoActive, vadSensitivity]);
 
   useEffect(() => {
     if (!subscriptionsReady) return;
@@ -448,10 +456,24 @@ export function MicrophoneInputTest({
               checked={smartAutoActive}
               disabled={!inventoryAvailable || busy}
               aria-label="Enable Smart Auto microphone selection"
-              onCheckedChange={() => onSmartAutoChange({ smartAutoMicrophoneEnabled: !smartAutoActive })}
+              onCheckedChange={() => onSmartAutoChange(smartAutoActive ? {
+                smartAutoMicrophoneEnabled: false,
+              } : {
+                smartAutoMicrophoneEnabled: true,
+                ...(manualDevice ? {
+                  smartAutoApprovedDeviceIds: Array.from(new Set([
+                    ...smartAuto.smartAutoApprovedDeviceIds,
+                    manualDevice.id,
+                  ])),
+                  smartAutoPreferredDeviceIds: [
+                    manualDevice.id,
+                    ...smartAuto.smartAutoPreferredDeviceIds.filter((id) => id !== manualDevice.id),
+                  ],
+                } : {}),
+              })}
             />
           </div>
-          {eligibleExternalDevices.length > 0 && (
+          {approvableDevices.length > 0 && (
             <button
               type="button"
               className="mt-3 text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
@@ -459,14 +481,14 @@ export function MicrophoneInputTest({
               onClick={() => onSmartAutoChange({
                 smartAutoApprovedDeviceIds: Array.from(new Set([
                   ...smartAuto.smartAutoApprovedDeviceIds,
-                  ...eligibleExternalDevices.map((device) => device.id),
+                  ...approvableDevices.map((device) => device.id),
                 ])),
               })}
             >
-              Allow connected external microphones ({eligibleExternalDevices.length})
+              Allow available microphones ({approvableDevices.length})
             </button>
           )}
-          {manualExternalDevice && (
+          {manualDevice && (
             <button
               type="button"
               className="ml-3 mt-3 text-xs font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50"
@@ -474,15 +496,15 @@ export function MicrophoneInputTest({
               onClick={() => onSmartAutoChange({
                 smartAutoApprovedDeviceIds: Array.from(new Set([
                   ...smartAuto.smartAutoApprovedDeviceIds,
-                  manualExternalDevice.id,
+                  manualDevice.id,
                 ])),
                 smartAutoPreferredDeviceIds: [
-                  manualExternalDevice.id,
-                  ...smartAuto.smartAutoPreferredDeviceIds.filter((id) => id !== manualExternalDevice.id),
+                  manualDevice.id,
+                  ...smartAuto.smartAutoPreferredDeviceIds.filter((id) => id !== manualDevice.id),
                 ],
               })}
             >
-              Prefer {manualExternalDevice.name}
+              Prefer {manualDevice.name}
             </button>
           )}
           {smartAuto.smartAutoApprovedDeviceIds.length > 0 && (

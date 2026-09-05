@@ -126,7 +126,7 @@ impl AudioInputInventoryCoordinator {
                 ),
             }
         };
-        let (devices, default_input_id, lid_state) = state
+        let (devices, default_input_id, _cached_lid_state) = state
             .topology
             .as_ref()
             .map(|topology| {
@@ -143,7 +143,10 @@ impl AudioInputInventoryCoordinator {
             status,
             devices,
             default_input_id,
-            lid_state,
+            // A closed lid can leave Core Audio topology untouched. The UI
+            // therefore receives the same fresh IORegistry observation used
+            // by the Smart Auto resolver, never a display-derived guess.
+            lid_state: microphone_auto::current_lid_state(),
             error_code,
         }
     }

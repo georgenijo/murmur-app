@@ -92,6 +92,7 @@ export function useRecordingControls({
               deviceName = settings.microphone;
             }
             smartAuto = smartAutoMicrophoneRequest(settings);
+            if (smartAuto) deviceName = null;
           } catch { /* ignore parse errors */ }
           flog.info('overlay', 'invoking start_native_recording', { deviceName });
           const res = await invoke<DictationResponse>('start_native_recording', {

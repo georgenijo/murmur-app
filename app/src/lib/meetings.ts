@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { SmartAutoMicrophoneRequest } from './settings';
 import { save } from '@tauri-apps/plugin-dialog';
 
 export type SystemAudioPermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported';
@@ -143,6 +144,7 @@ export interface MeetingPage {
 
 export interface StartMeetingOptions {
   microphone: string;
+  smartAuto?: SmartAutoMicrophoneRequest | null;
   retainAudio: boolean;
   retentionDays: number;
   maxSessions: number;
@@ -167,7 +169,8 @@ export async function getMeetingStatus(): Promise<MeetingRuntimeStatus> {
 export async function startMeeting(options: StartMeetingOptions): Promise<MeetingSession> {
   return invoke('start_meeting', {
     request: {
-      deviceName: options.microphone,
+      deviceName: options.smartAuto ? null : options.microphone,
+      ...(options.smartAuto ? { smartAuto: options.smartAuto } : {}),
       retainAudio: options.retainAudio,
       retentionDays: options.retentionDays === 0 ? null : options.retentionDays,
       maxSessions: options.maxSessions,

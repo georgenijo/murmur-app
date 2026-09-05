@@ -256,6 +256,7 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
   });
   useQueryFlow({
     enabled: hotkeysArmed
@@ -265,6 +266,7 @@ function App() {
     accessibilityGranted,
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
     automaticallyCopyAnswers: settings.queryAutomaticallyCopyAnswers,
     command: {
       provider: settings.queryProvider,

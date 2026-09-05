@@ -7,6 +7,7 @@
 
 use crate::dictation_context::DictationContextSnapshot;
 use crate::managed_child::{ConfirmedTermination, ManagedChild};
+use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::PreparationReason;
 use crate::performance_metrics::{
     PerformanceStageV1, QueryProcessSummaryV1, RunCorrelationV1, RunOutcomeV1, StableRunErrorV1,
@@ -1813,6 +1814,7 @@ pub(crate) async fn start_query_capture(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
     query_pass_id: u64,
     automatically_copy_answer: bool,
     command: QueryCommandConfig,
@@ -1875,6 +1877,14 @@ pub(crate) async fn start_query_capture(
         let _ = app_handle.emit("query-busy", ());
         return Ok(());
     }
+    let device_name =
+        match crate::microphone_auto::resolve_capture_device(device_name, smart_auto.as_ref()) {
+            Ok(device_name) => device_name,
+            Err(_) => {
+                fail_query(&app_handle, &state, query_pass_id, "audio_start_failed");
+                return Ok(());
+            }
+        };
 
     // This identity sampler is deliberately native-only. The query path must
     // never fall back to AppleScript or any other spawned helper.

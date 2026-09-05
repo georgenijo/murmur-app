@@ -30,7 +30,7 @@ use murmur_capture_helper_protocol::{
 use objc2_core_audio::{
     kAudioDeviceTransportTypeAVB, kAudioDeviceTransportTypeBluetooth,
     kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeBuiltIn,
-    kAudioDeviceTransportTypeContinuityCapture, kAudioDeviceTransportTypeContinuityCaptureWired,
+    kAudioDeviceTransportTypeContinuityCaptureWired,
     kAudioDeviceTransportTypeContinuityCaptureWireless, kAudioDeviceTransportTypeFireWire,
     kAudioDeviceTransportTypePCI, kAudioDeviceTransportTypeThunderbolt,
     kAudioDeviceTransportTypeUSB,
@@ -64,6 +64,7 @@ const SYSTEM_AUDIO_FLOW_OBSERVATION: Duration = Duration::from_millis(500);
 // state alive until process exit because Core Audio does not promise that a
 // failed/best-effort listener removal has drained every racing callback.
 static INPUT_TOPOLOGY_CHANGED: ProcessAtomicBool = ProcessAtomicBool::new(false);
+const LEGACY_CONTINUITY_CAPTURE_TRANSPORT: u32 = 0x6363_6170;
 
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
@@ -559,7 +560,7 @@ fn device_property_u32(device_id: AudioDeviceID, selector: u32) -> Option<u32> {
 fn device_kind(transport: Option<u32>) -> ProductionDeviceKind {
     match transport {
         Some(kAudioDeviceTransportTypeBuiltIn) => ProductionDeviceKind::BuiltIn,
-        Some(kAudioDeviceTransportTypeContinuityCapture)
+        Some(LEGACY_CONTINUITY_CAPTURE_TRANSPORT)
         | Some(kAudioDeviceTransportTypeContinuityCaptureWired)
         | Some(kAudioDeviceTransportTypeContinuityCaptureWireless) => {
             ProductionDeviceKind::Continuity
@@ -579,11 +580,7 @@ fn device_kind(transport: Option<u32>) -> ProductionDeviceKind {
 /// result, Auto leaves the lid state unknown and never infers one from a label.
 fn lid_state() -> ProductionLidState {
     match CGDisplay::active_displays() {
-        Ok(displays)
-            if displays
-                .into_iter()
-                .any(|id| CGDisplay::new(id).is_builtin()) =>
-        {
+        Ok(displays) if displays.iter().any(|id| CGDisplay::new(*id).is_builtin()) => {
             ProductionLidState::Open
         }
         Ok(_) => ProductionLidState::Closed,

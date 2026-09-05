@@ -6,6 +6,7 @@ use crate::meeting_review::{
     SaveMeetingReviewRequest,
 };
 use crate::meeting_store::{MeetingPage, MeetingSession, MeetingStoreStatus};
+use crate::microphone_auto::SmartAutoRequest;
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use serde::Deserialize;
@@ -18,6 +19,8 @@ use uuid::Uuid;
 pub struct StartMeetingRequest {
     #[serde(default)]
     pub device_name: Option<String>,
+    #[serde(default)]
+    pub smart_auto: Option<SmartAutoRequest>,
     #[serde(default)]
     pub retain_audio: bool,
     #[serde(default)]
@@ -124,13 +127,15 @@ pub async fn start_meeting(
         .meeting_inference_active
         .store(true, Ordering::SeqCst);
     state.transform_runtime.shutdown();
+    let device_id = crate::microphone_auto::resolve_capture_device(
+        request.device_name.clone(),
+        request.smart_auto.as_ref(),
+    )?;
     let config = MeetingCaptureConfig {
         generation,
         session_id: session_id.clone(),
         vad_sensitivity,
-        device_id: request
-            .device_name
-            .filter(|device| device != "system_default"),
+        device_id: device_id.filter(|device| device != "system_default"),
         echo_cancellation: if request.echo_cancellation {
             murmur_capture_helper_protocol::EchoCancellationMode::Enabled
         } else {

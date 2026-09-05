@@ -22,7 +22,7 @@ export async function startRecording(
 ): Promise<DictationResponse> {
   try {
     return await invoke('start_native_recording', {
-      deviceName: deviceName && deviceName !== DEFAULT_SETTINGS.microphone ? deviceName : null,
+      deviceName: smartAuto ? null : deviceName && deviceName !== DEFAULT_SETTINGS.microphone ? deviceName : null,
       smartAuto: smartAuto ?? null,
       origin,
     });
