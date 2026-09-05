@@ -362,10 +362,6 @@ export function getWPM(stats: DictationStats): number {
   return Math.round(sum / stats.wpmSamples.length);
 }
 
-export function getApproxTokens(stats: DictationStats): number {
-  return Math.round(stats.totalWords * 1.3);
-}
-
 // --- Daily-bucket derivations for the usage dashboard ---
 
 export interface DaySummary extends DayBucket {

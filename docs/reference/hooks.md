@@ -176,9 +176,6 @@ the typed skipped-run/failure evidence plus **Retry Store**. A failed
 refresh preserves the last valid bounded health value and surfaces a local UI
 error; it never changes dictation state.
 
-### `useResourceMonitor`
-CPU/memory polling with a rolling 60-reading buffer. Only polls while the panel is expanded.
-
 ---
 
 ## Settings surfaces

@@ -183,7 +183,6 @@ Read these before working on a feature:
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
-| `lib/hooks/useResourceMonitor.ts` | CPU/memory polling with rolling buffer |
 | `lib/hooks/useOverlayGeometry.ts` | Overlay geometry contract from Rust (fetch + `overlay-geometry-changed`) |
 | `lib/hooks/useOverlayExpansion.ts` | Overlay hover-expand lifecycle; single writer to the native resize path |
 | `lib/hooks/useOverlayRuntime.ts` | Overlay cancelled/hotkey-miss flash timers, `app-disabled-changed` mirror |
