@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS } from '../settings';
+import { DEFAULT_SETTINGS, type SmartAutoMicrophoneRequest } from '../settings';
 import { flog } from '../log';
 import {
   INITIAL_TRANSFORM_FLOW_STATE,
@@ -19,6 +19,7 @@ interface UseTransformFlowProps {
   transformHoldKey: string | null;
   /** Selected microphone device id (same contract as start_native_recording). */
   microphone?: string;
+  smartAuto?: SmartAutoMicrophoneRequest | null;
 }
 
 interface TransformKeyPayload {
@@ -61,12 +62,15 @@ export function useTransformFlow({
   accessibilityGranted,
   transformHoldKey,
   microphone,
+  smartAuto = null,
 }: UseTransformFlowProps) {
   const stateRef = useRef<TransformFlowState>(INITIAL_TRANSFORM_FLOW_STATE);
   const microphoneRef = useRef(microphone);
+  const smartAutoRef = useRef(smartAuto);
   useEffect(() => {
     microphoneRef.current = microphone;
   }, [microphone]);
+  useEffect(() => { smartAutoRef.current = smartAuto; }, [smartAuto]);
 
   useEffect(() => {
     if (!enabled || !initialized || !accessibilityGranted || !transformHoldKey) return;
@@ -95,7 +99,8 @@ export function useTransformFlow({
         }
         const args = step.command === 'start_transform_capture'
           ? {
-              deviceName: deviceNameArg(),
+              deviceName: smartAutoRef.current ? null : deviceNameArg(),
+              ...(smartAutoRef.current ? { smartAuto: smartAutoRef.current } : {}),
               transformPassId: step.transformPassId,
             }
           : { transformPassId: step.transformPassId };

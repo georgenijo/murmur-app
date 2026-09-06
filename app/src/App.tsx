@@ -58,7 +58,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
 import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
-import { pasteLastShortcutLabel } from './lib/settings';
+import { pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -169,11 +169,21 @@ function App() {
   useOverlaySettingsSync(applyExternalSettings);
 
   useEffect(() => {
+    const smartAuto = smartAutoMicrophoneRequest(settings);
     void invoke('set_correction_shortcut', {
       enabled: settings.correctionShortcutEnabled === true && !settings.disabled,
-      deviceName: settings.microphone || null,
+      deviceName: smartAuto ? null : settings.microphone || null,
+      smartAuto,
     }).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
-  }, [settings.correctionShortcutEnabled, settings.disabled, settings.microphone]);
+  }, [
+    settings.correctionShortcutEnabled,
+    settings.disabled,
+    settings.microphone,
+    settings.smartAutoMicrophoneEnabled,
+    settings.smartAutoApprovedDeviceIds,
+    settings.smartAutoPreferredDeviceIds,
+    settings.smartAutoAllowContinuity,
+  ]);
 
   useEffect(() => {
     const requested = settings.pasteLastShortcut;
@@ -229,7 +239,11 @@ function App() {
     status, recordingDuration, error: recordingError,
     dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
-  } = useRecordingState({ addEntry, microphone: settings.microphone });
+  } = useRecordingState({
+    addEntry,
+    microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
+  });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const [queryStatsVersion, setQueryStatsVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
@@ -268,6 +282,7 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
   });
   useQueryFlow({
     enabled: hotkeysArmed
@@ -277,6 +292,7 @@ function App() {
     accessibilityGranted,
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
     automaticallyCopyAnswers: settings.queryAutomaticallyCopyAnswers,
     command: {
       provider: settings.queryProvider,
@@ -570,8 +586,11 @@ function App() {
         section: 'History',
         keywords: ['fix', 'spelling', 'voice', 'correction'],
         run: () => {
-          void invoke('start_dictation_correction', { deviceName: settings.microphone || null })
-            .catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+          const smartAuto = smartAutoMicrophoneRequest(settings);
+          void invoke('start_dictation_correction', {
+            deviceName: smartAuto ? null : settings.microphone || null,
+            smartAuto,
+          }).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
         },
       },
       {
@@ -670,7 +689,10 @@ function App() {
     ];
     return items;
   }, [
-    status, historyEntries, settings.disabled, settings.pasteLastShortcut, settings.microphone, updateSettings, handleStart, handleStop,
+    status, historyEntries, settings.disabled, settings.pasteLastShortcut, settings.microphone,
+    settings.smartAutoMicrophoneEnabled, settings.smartAutoApprovedDeviceIds,
+    settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
+    updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
     meetings,
   ]);

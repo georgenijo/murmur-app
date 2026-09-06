@@ -157,8 +157,8 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 |---------|-----------|---------|-------------|
 | `start_transform_capture` | `device_name: Option<String>`, `transform_pass_id: u64` | `Result<(), String>` | Begins a pass: arms the mic, freezes the AX selection snapshot, shows the popover in `listening`. Refuses (with a stable error code) when dictation, a benchmark, a file transcription, or another transform owns the pipeline. |
 | `finish_transform_instruction` | `transform_pass_id: u64` | `Result<(), String>` | Stops the instruction mic, transcribes it (cleanup-only), expands preset/saved-transform names, and runs the sidecar. `listening` → `thinking` → `ready`/`failed`. |
-| `start_dictation_correction` | `device_name: Option<String>` | `Result<(), String>` | Main-window-only correction start against the frozen latest delivery. |
-| `set_correction_shortcut` | `enabled: bool, device_name: Option<String>` | `Result<(), String>` | Main-window-only opt-in ⌘⇧E registration on the shared keyboard listener. |
+| `start_dictation_correction` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<(), String>` | Main-window-only correction start against the frozen latest delivery. |
+| `set_correction_shortcut` | `enabled: bool, device_name: Option<String>, smart_auto: Option<SmartAutoRequest>` | `Result<(), String>` | Main-window-only opt-in ⌘⇧E registration on the shared keyboard listener. |
 | `retry_transform_instruction` | `device_name: Option<String>, transform_pass_id: u64` | `Result<(), String>` | Re-arms listening for a new instruction against the **same** frozen selection, keeping the pass ID and advancing the attempt counter. |
 | `approve_transform` | `transform_pass_id: u64` | `Result<(), String>` | Applies the proposal through `transform_apply` (AX set-value, else paste fallback with clipboard restore) and schedules the linger-hide. |
 | `cancel_transform` | `transform_pass_id: Option<u64>` | `Result<(), String>` | Scoped cancellation. A no-op if that pass no longer owns the flow, so a delayed Escape cannot cancel the next pass. Idempotent. |

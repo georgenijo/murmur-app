@@ -6,8 +6,9 @@ use crate::microphone_preview::{
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, valid_input_resolution_evidence, write_production_control,
-    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
-    ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
+    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode,
+    ProductionDeviceKind, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
+    ProductionLidState, SessionNonce, SetupTransition,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -237,12 +238,16 @@ fn failure_kind(code: FailureCode) -> AudioFailureKind {
 pub struct AudioDeviceDescriptor {
     pub id: String,
     pub name: String,
+    pub kind: ProductionDeviceKind,
+    pub connected: bool,
+    pub has_input: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EnumeratedAudioInputInventory {
     pub(crate) devices: Vec<AudioDeviceDescriptor>,
     pub(crate) default_input_id: Option<String>,
+    pub(crate) lid_state: ProductionLidState,
 }
 
 pub(crate) enum AudioCommand {
@@ -471,7 +476,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v8", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v9", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -917,15 +922,20 @@ pub(crate) fn enumerate_input_devices() -> Result<EnumeratedAudioInputInventory,
         ProductionFrame::Control(ProductionHelperMessage::Devices {
             devices,
             default_input_id,
+            lid_state,
         }) => EnumeratedAudioInputInventory {
             devices: devices
                 .into_iter()
                 .map(|device| AudioDeviceDescriptor {
                     id: device.id,
                     name: device.name,
+                    kind: device.kind,
+                    connected: device.connected,
+                    has_input: device.has_input,
                 })
                 .collect(),
             default_input_id,
+            lid_state,
         },
         _ => {
             drop(input);
@@ -3076,8 +3086,12 @@ mod tests {
             devices: vec![AudioDeviceDescriptor {
                 id: "uid".to_string(),
                 name: "Mic".to_string(),
+                kind: ProductionDeviceKind::External,
+                connected: true,
+                has_input: true,
             }],
             default_input_id: Some("uid".to_string()),
+            lid_state: ProductionLidState::Open,
         };
         assert!(inventory_after_confirmed_helper_exit(inventory.clone(), false, false).is_err());
         assert!(inventory_after_confirmed_helper_exit(inventory.clone(), true, true).is_err());

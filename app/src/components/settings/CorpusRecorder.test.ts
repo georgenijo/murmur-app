@@ -2,7 +2,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../../lib/settings';
-import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
+import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 
 const mocks = vi.hoisted(() => ({
   start: vi.fn(async () => {}),
@@ -25,11 +25,12 @@ vi.mock('../../lib/corpusRecorder', async (importOriginal) => {
 import { CorpusRecorder, corpusMicrophoneAvailability } from './CorpusRecorder';
 
 const available = {
-  schemaVersion: 1 as const,
+  schemaVersion: 2 as const,
   revision: 1,
   status: 'available' as const,
-  devices: [{ id: 'uid-1', name: 'Studio Mic' }],
+  devices: [{ id: 'uid-1', name: 'Studio Mic', kind: 'external' as const, connected: true, hasInput: true }],
   defaultInputId: 'uid-1',
+  lidState: 'open' as const,
   errorCode: null,
 };
 
@@ -66,7 +67,7 @@ describe('CorpusRecorder microphone inventory consumer', () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     const onBusyChange = vi.fn();
-    const render = (audioInventory: AudioInputInventoryV1) => root.render(createElement(CorpusRecorder, {
+    const render = (audioInventory: AudioInputInventoryV2) => root.render(createElement(CorpusRecorder, {
       status: 'idle',
       benchmarkRunning: false,
       fileTranscribing: false,

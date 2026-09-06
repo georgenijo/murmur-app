@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
+import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import {
   MICROPHONE_STARTUP_BENCHMARK_CYCLES,
   addMicrophoneStartupReport,
@@ -82,7 +82,7 @@ export function MicrophoneStartupBenchmark({
 }: {
   status: DictationStatus;
   deviceId: string;
-  audioInventory: AudioInputInventoryV1 | null;
+  audioInventory: AudioInputInventoryV2 | null;
   modelBenchmarkRunning: boolean;
   fileTranscribing: boolean;
   corpusBusy: boolean;

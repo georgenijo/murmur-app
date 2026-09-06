@@ -117,8 +117,8 @@ Retry never records, transcribes, transforms, adds History, changes statistics,
 or updates correction learning. The retained text is replaced only by a later
 successful final delivery and disappears when Murmur exits.
 
-Settings > Delivery shows accessibility permission status when effective
-auto-paste is enabled, with a "Grant" button that opens System Settings.
+When effective auto-paste is enabled and Accessibility permission is missing,
+Settings > Delivery shows a "Grant" action that opens System Settings.
 
 ## Settings
 
@@ -126,6 +126,13 @@ auto-paste is enabled, with a "Grant" button that opens System Settings.
 - `autoPasteDelayMs: number` — delay in ms before simulating Cmd+V (default 0, range 0–500). Persisted to localStorage.
 
 Both are sent to the Rust backend via `configure_dictation` command.
+
+Settings keeps delivery dependencies beside the switch that owns them. Auto-Paste
+reveals its delay and any missing Accessibility action beneath the switch; Save
+Transcript and Save Audio reveal one shared output-folder branch beneath the pair.
+The stored auto-paste preference remains independent while file output is active,
+so the branch reports that delivery is paused and resumes when both file toggles
+are off. Paste Last remains a separate shortcut and permission flow.
 
 ## Save to File
 

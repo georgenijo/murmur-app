@@ -275,6 +275,21 @@ test('recording settings make the live automatic microphone choice explicit', as
   await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
 });
 
+test('recording settings disclose approved Smart Auto microphones beneath their switch', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings-smart-auto&appearance=light');
+  await page.getByRole('button', { name: 'Recording', exact: true }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  const smartAuto = page.getByRole('switch', { name: 'Enable Smart Auto microphone selection' });
+  await expect(smartAuto).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone (preferred approved).')).toBeVisible();
+  await expect(page.getByText('Approved: MacBook Pro Microphone, Anker USB Microphone.')).toBeVisible();
+  const branch = smartAuto.locator('xpath=../following-sibling::*[1]');
+  await expect(branch).toHaveAttribute('data-expanded', 'true');
+  await expect(branch).toHaveAttribute('aria-hidden', 'false');
+  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
+});
+
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
   await page.getByRole('button', { name: 'Delivery', exact: true }).click();

@@ -6,6 +6,7 @@ use tauri::{Emitter, Manager};
 #[derive(Clone)]
 struct ShortcutConfig {
     device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
 }
 static CONFIG: Mutex<Option<ShortcutConfig>> = Mutex::new(None);
 static CHORD: Mutex<Chord> = Mutex::new(Chord {
@@ -71,11 +72,15 @@ pub(crate) fn set_correction_shortcut(
     app_handle: tauri::AppHandle,
     enabled: bool,
     device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("main_window_required".into());
     }
-    *CONFIG.lock_or_recover() = enabled.then_some(ShortcutConfig { device_name });
+    *CONFIG.lock_or_recover() = enabled.then_some(ShortcutConfig {
+        device_name,
+        smart_auto,
+    });
     *CHORD.lock_or_recover() = Chord {
         modifiers: 0,
         latched: false,
@@ -90,7 +95,11 @@ pub(crate) fn handle(app: &tauri::AppHandle, event: &EventType) {
     if !enabled() || !CHORD.lock_or_recover().handle(event) {
         return;
     }
-    let Some(ShortcutConfig { device_name }) = CONFIG.lock_or_recover().clone() else {
+    let Some(ShortcutConfig {
+        device_name,
+        smart_auto,
+    }) = CONFIG.lock_or_recover().clone()
+    else {
         return;
     };
     let app = app.clone();
@@ -114,7 +123,13 @@ pub(crate) fn handle(app: &tauri::AppHandle, event: &EventType) {
                 Ok(())
             }
         } else {
-            crate::transform_flow::begin_dictation_correction(app.clone(), state, device_name).await
+            crate::transform_flow::begin_dictation_correction(
+                app.clone(),
+                state,
+                device_name,
+                smart_auto,
+            )
+            .await
         };
         if let Err(error) = result {
             let _ = app.emit_to("main", "correction-start-failed", error);

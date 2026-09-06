@@ -12,7 +12,7 @@ import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
-import { DEFAULT_SETTINGS } from './lib/settings';
+import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
@@ -156,14 +156,15 @@ mockIPC((command) => {
   if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_audio_input_inventory') {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 1,
       status: 'available',
       devices: [
-        { id: 'fixture-built-in', name: 'MacBook Pro Microphone' },
-        { id: 'fixture-desk', name: 'Desk Microphone' },
+        { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
+        { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
       ],
       defaultInputId: 'fixture-built-in',
+      lidState: 'open',
       errorCode: null,
     };
   }
@@ -235,6 +236,13 @@ const entries: HistoryEntry[] = [
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
+  smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
+  smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in', 'fixture-anker']
+    : [],
+  smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in']
+    : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
@@ -305,8 +313,10 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
-    || requestedState === 'settings-site-modes';
+    || requestedState === 'settings-site-modes'
+    || requestedState === 'settings-smart-auto';
   const meetings = useMeetings(fixtureSettings);
+  const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
@@ -363,8 +373,8 @@ function VisualFixture() {
       />
       {settingsOpen ? (
         <SettingsPanel
-          settings={fixtureSettings}
-          onUpdateSettings={() => {}}
+          settings={settings}
+          onUpdateSettings={(updates) => setSettings((current) => ({ ...current, ...updates }))}
           initialized
           status="idle"
           onResetStats={() => {}}

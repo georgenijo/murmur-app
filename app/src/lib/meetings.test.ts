@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { formatMeetingTimestamp, orderedMeetingSegments, type MeetingSegment } from './meetings';
+import {
+  echoCancellationNotice,
+  formatMeetingTimestamp,
+  orderedMeetingSegments,
+  type MeetingSegment,
+} from './meetings';
 
 function segment(id: number, startMs: number): MeetingSegment {
   return {
@@ -37,5 +42,20 @@ describe('meeting presentation', () => {
   it('formats long meeting-relative timestamps', () => {
     expect(formatMeetingTimestamp(62_000)).toBe('1:02');
     expect(formatMeetingTimestamp(3_662_000)).toBe('1:01:02');
+  });
+
+  it('distinguishes temporary echo recovery from terminal raw-audio fallback', () => {
+    expect(echoCancellationNotice({
+      state: 'recovering',
+      reason: 'renderDiscontinuity',
+      episode: 4,
+      attempt: 2,
+      maxAttempts: 3,
+    })).toContain('attempt 2 of 3');
+    expect(echoCancellationNotice({
+      state: 'bypassed',
+      reason: 'processingBacklog',
+    })).toContain('rest of this meeting');
+    expect(echoCancellationNotice({ state: 'active' })).toBeNull();
   });
 });
