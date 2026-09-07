@@ -1157,6 +1157,9 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // correction shortcut and the ⌘K correction command
                             // also call so an applied review's lingering pass
                             // never blocks a chained correction.
+                            // Match correction starts and linger retirement: no
+                            // delayed cleanup may hide a newly claimed pass.
+                            let _dictation = app_state.dictation.lock_or_recover();
                             let at_pass_boundary = match app_state.transform_status() {
                                 crate::state::TransformStatus::Idle => true,
                                 crate::state::TransformStatus::ReviewPending => app_state
@@ -1174,6 +1177,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 );
                                 app_state.activate_transform_pass(pass_id);
                             }
+                            drop(_dictation);
                             let _ = handle.emit(
                                 "transform-key-pressed",
                                 serde_json::json!({ "transformPassId": pass_id }),
