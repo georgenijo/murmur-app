@@ -262,3 +262,72 @@ is open. Its event and performance subscriptions are disabled while inactive,
 the full bounded event buffer remains available for filtering and copying, and
 only the newest 100 matching rows are rendered. This keeps the hidden Settings
 surface quiet without changing the persistent pop-out window's live behavior.
+
+## Production app-version comparisons
+
+Issue [#430](https://github.com/georgenijo/murmur-app/issues/430) adds **Compare
+app versions** to Diagnostics → Runs. This compares the bounded local production
+dictation records, separately from imported Performance Lab and evaluation
+reports in Reports. It does not query the log receiver or upload diagnostics.
+
+New native dictation runs carry an optional `production` companion with its own
+`schemaVersion: 1`. Older run JSON remains readable; a missing companion means
+compatibility is unavailable and cannot produce a latency verdict. Unknown
+companion versions, unknown fields, invalid identifiers, or invalid measurements
+fail closed. The companion lives in the same active/completed run JSON, so the
+existing 200-run retention, restart interruption, Clear epoch, and recovery
+rules apply. Clear also drops pending in-memory observations; delayed updates
+only update an existing active row and cannot recreate a cleared observation.
+
+The capture worker sends bounded typed observations through the supervisor's
+exact `AudioOwner::Dictation(recording_id)` checks. These preserve helper
+resolve/signature/spawn times, stream-open time, first-callback wait,
+start-to-first-retained-PCM, total readiness, confirmed stop-to-helper-exit,
+fallback attempt/result, and stable failure evidence. Readiness and stop/error
+checkpoints persist off the capture path. Completion records whether the actual
+retained sample array was empty; a missing measurement never becomes zero.
+The helper timing totals include observed attempts; stream-open and first-PCM
+measurements describe the successful/current attempt. A failed attempt remains
+visible even if fallback later succeeds. Stale-owner events and unconfirmed
+termination mark worker-invariant evidence when their run is still retained in
+the bounded pending set. A confirmed normal helper stop supplies healthy
+termination evidence; unobserved invariants remain unavailable. This is not an
+OS-wide count of arbitrary processes.
+
+Compatibility matches local installation identity, numeric OS version,
+architecture, release/development mode, microphone selection and cached device
+class, model/backend/accelerator/warm state, capture backend/order, supported
+runtime configuration, recording-duration bucket, and output-size bucket. The
+installation identity is a random UUID retained in the diagnostics directory;
+it contains no hostname, hardware serial, or device UID. Do not copy a whole
+installation's diagnostics directory to another machine and treat it as local
+comparison evidence. Device class is obtained only from the existing valid
+inventory cache; a stale/unknown cache cannot establish compatibility.
+
+The configuration fingerprint contains only supported content-free settings
+and capture backend order. It never hashes transcript, prompt, vocabulary,
+learned correction, project, or profile text. Runs with custom context/rules,
+IDE context, or external file-output configuration that cannot be compared on
+that basis have an unavailable configuration identity. The UI states that these
+runs cannot establish a compatible latency cohort. Missing/unknown warm state
+and historical metadata also exclude a run. Separate compatible cohorts remain
+separate; the UI never combines different microphone/configuration/size buckets
+into a single release-regression verdict.
+
+For each metric the UI uses successful runs with a measured value, reports
+separate sample counts, and shows median, absolute delta and percentage delta.
+Small samples are preliminary. Nearest-rank p95 requires at least 20 measured
+values per side for that metric; fewer samples cannot generate a p95 verdict.
+Central policy requires both more than 20 ms and more than 15% for a median
+warning, or both more than 30 ms and more than 20% for a p95 warning. A zero
+baseline has no meaningful percentage delta and cannot satisfy a percentage
+threshold by inference.
+
+Version-wide success/failure counts, capture-error observations, fallback,
+zero-sample success, and stale/unconfirmed worker evidence remain visible even
+without enough compatible latency samples. They are labeled observations, not
+proof that incompatible cohorts establish a release-caused latency regression.
+For releases whose retained baseline predates this companion, keep the manual
+read-only production validation described in `prompts/PROMPT_RELEASE.md`; the
+in-app comparison becomes authoritative only when both selected cohorts carry
+the required evidence.

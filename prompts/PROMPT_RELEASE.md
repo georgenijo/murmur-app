@@ -164,6 +164,14 @@ For any release that changes capture, transcription, delivery, model runtime,
 or performance-sensitive dependencies, the release is published but its
 performance validation remains pending until natural production use exists.
 
+Use Diagnostics → Runs → Compare app versions first when both retained
+production versions contain the #430 companion metadata. Select baseline and
+candidate, review every compatibility exclusion, and report the displayed
+per-metric counts, medians, supported p95, and independent anomaly observations.
+This replaces the JSONL/SQLite join below only for proven compatible cohorts.
+When either version predates the companion or has unsupported configuration,
+keep the following read-only fallback and label its compatibility limits.
+
 1. Ask the user to make at least three normal prompts in the updated production
    app. Do not generate synthetic prompts, drive another Mac's UI, or run a
    second app build for this check.

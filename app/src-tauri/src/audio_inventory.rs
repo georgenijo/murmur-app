@@ -660,6 +660,25 @@ pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAuto
     .map_err(str::to_string)
 }
 
+pub(crate) fn production_device_kind(
+    selected: Option<&str>,
+) -> Option<crate::performance_metrics::production::MicrophoneKindV1> {
+    use crate::performance_metrics::production::MicrophoneKindV1;
+    use murmur_capture_helper_protocol::ProductionDeviceKind;
+    let snapshot = coordinator().snapshot();
+    if snapshot.status != AudioInputInventoryStatus::Available {
+        return None;
+    }
+    let id = selected.or(snapshot.default_input_id.as_deref())?;
+    let device = snapshot.devices.iter().find(|device| device.id == id)?;
+    match device.kind {
+        ProductionDeviceKind::BuiltIn => Some(MicrophoneKindV1::BuiltIn),
+        ProductionDeviceKind::External => Some(MicrophoneKindV1::External),
+        ProductionDeviceKind::Continuity => Some(MicrophoneKindV1::Continuity),
+        ProductionDeviceKind::Unknown => None,
+    }
+}
+
 pub(crate) fn privacy_aggregate() -> AudioInputInventoryAggregate {
     privacy_aggregate_for_snapshot(&coordinator().snapshot())
 }

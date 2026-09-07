@@ -295,3 +295,11 @@ interface AppearanceChangedEvent {
 Main is the only emitter and themed runtime. It handles
 `matchMedia('(prefers-color-scheme: dark)')` locally while the saved mode is
 System, so OS transitions do not emit appearance events.
+
+
+The optional `production` field on `performance-run-completed` is a versioned,
+content-free companion for native dictation version comparisons. It contains
+only opaque local installation identity, bounded OS/configuration/device
+classes and capture measurements. It never contains raw device IDs, paths,
+transcripts, prompts, or vocabulary. Older records omit the field. See
+[production comparisons](../features/performance-diagnostics.md#production-app-version-comparisons).

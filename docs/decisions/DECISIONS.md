@@ -1,5 +1,19 @@
 # Decisions Log
 
+## 2026-09-07: Compare production versions only with explicit cohort evidence (#430)
+
+Persist a versioned content-free production companion within each native
+performance run. Capture observations keep the canonical recording owner and
+use the existing database retention and clear epoch. Older runs remain readable
+but cannot establish compatible cohorts. Compare exact known machine/OS,
+runtime, microphone, configuration and size classes; retain missing values and
+show incompatible or insufficient evidence instead of manufacturing a verdict.
+Custom-content configurations have no diagnostic fingerprint. Keep failure,
+fallback and worker-invariant observations visible independently of latency
+sample thresholds. The production comparison is local and separate from both
+imported benchmark reports and the remote capture dashboard.
+
+
 Running log of architectural, scope, and process decisions for this project. Newest entries at the top. Each entry is short — for deep rationale on a single locked decision, write an ADR alongside in `docs/decisions/YYYY-MM-DD-*.md` and reference it here.
 
 Maintained via the `/decisions` skill. See `~/.claude/skills/decisions/SKILL.md` for the entry format and invocation rules.

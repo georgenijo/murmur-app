@@ -186,6 +186,80 @@ describe('performance contracts', () => {
       correlation: { kind: 'fileTranscription', fileRunId: 4 },
     })).toBe(false);
 
+    const production = {
+      schemaVersion: 1,
+      cohort: {
+        machineId: '123e4567-e89b-12d3-a456-426614174000',
+        osVersion: '15.6.1',
+        architecture: 'aarch64',
+        buildMode: 'release',
+        microphoneSelection: 'systemDefault',
+        microphoneKind: 'builtIn',
+        configurationKey: 'a'.repeat(64),
+      },
+      capture: {
+        helperResolveMs: 0,
+        helperSignatureMs: 2,
+        helperSpawnMs: 3,
+        streamOpenMs: 40,
+        firstCallbackWaitMs: 80,
+        firstPcmMs: 120,
+        readyMs: 150,
+        stopToWorkerExitMs: null,
+        backend: 'auhal',
+        fallbackAttempted: false,
+        fallbackSucceeded: null,
+        failureKind: null,
+        workerInvariantViolation: false,
+        zeroSampleSuccess: false,
+      },
+    };
+    expect(isPerformanceRunV1({ ...base, production })).toBe(true);
+    expect(isPerformanceRunV1({ ...base, production: null })).toBe(true);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: { ...production, schemaVersion: 2 },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: { ...production, transcript: 'private' },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: {
+        ...production,
+        cohort: { ...production.cohort, rawDeviceUid: 'private' },
+      },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: {
+        ...production,
+        capture: { ...production.capture, helperResolveMs: -1 },
+      },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: {
+        ...production,
+        capture: { ...production.capture, helperResolveMs: 1.5 },
+      },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: {
+        ...production,
+        cohort: { ...production.cohort, osVersion: 'macOS 15.6' },
+      },
+    })).toBe(false);
+    expect(isPerformanceRunV1({
+      ...base,
+      production: {
+        ...production,
+        cohort: { ...production.cohort, configurationKey: 'A'.repeat(64) },
+      },
+    })).toBe(false);
+
     const voiceQuery = {
       ...base,
       kind: 'voiceQuery',

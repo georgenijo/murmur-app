@@ -604,6 +604,8 @@ pub struct PerformanceRunV1 {
     /// run kinds so the V1 JSON envelope remains backward compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_process: Option<QueryProcessSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production: Option<super::production::ProductionRunV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -621,6 +623,8 @@ pub(crate) struct ActiveRunV1 {
     pub clear_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_process: Option<QueryProcessSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production: Option<super::production::ProductionRunV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

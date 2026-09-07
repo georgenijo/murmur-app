@@ -19,6 +19,7 @@ import {
 } from '../../lib/performancePresentation';
 import { RunDetail } from './RunDetail';
 import { PerformanceStoreHealthBanner } from './PerformanceStoreHealthBanner';
+import { ProductionComparison } from './ProductionComparison';
 
 type OutcomeFilter =
   | 'all'
@@ -200,6 +201,8 @@ export function RunsView({
           </button>
         </div>
       </div>
+
+      <ProductionComparison runs={runs} />
 
       {(error || clearError || detailError) && (
         <div role="alert" className="mb-3 rounded-xl border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
