@@ -122,12 +122,12 @@ export function ProductionComparison({ runs }: ProductionComparisonProps) {
       </summary>
       <div className="border-t border-outline-variant/10 p-3">
         <p className="text-[11px] leading-4 text-on-surface-variant">
-          Murmur compares successful dictation measurements only within exact release cohorts. Version-wide failures and capture anomalies stay visible even when latency cannot be compared.
+          Murmur compares retained dictation measurements within exact release cohorts. Only the newest 200 completed runs across all run kinds are retained, so older baseline versions can disappear. Compare soon after a release.
         </p>
 
         {versions.length < 2 ? (
           <p className="mt-3 rounded-lg border border-dashed border-outline-variant/30 bg-surface-container-low px-3 py-3 text-xs text-on-surface-variant">
-            Dictation runs from two app versions are needed before a comparison can be made.
+            Retained dictation runs from two app versions are needed before a comparison can be made.
           </p>
         ) : comparison && (
           <>
@@ -171,7 +171,7 @@ export function ProductionComparison({ runs }: ProductionComparisonProps) {
                     Version-wide observations
                   </h3>
                   <p className="text-[10px] text-on-surface-variant">
-                    Counts cover every dictation run for the selected versions. They do not claim a compatible latency cause.
+                    Counts cover retained dictation runs for the selected versions, not their complete history. They do not claim a compatible latency cause.
                   </p>
                 </div>
                 <span className="text-[10px] tabular-nums text-on-surface-variant">

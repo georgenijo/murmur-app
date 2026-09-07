@@ -165,8 +165,10 @@ or performance-sensitive dependencies, the release is published but its
 performance validation remains pending until natural production use exists.
 
 Use Diagnostics → Runs → Compare app versions first when both retained
-production versions contain the #430 companion metadata. Select baseline and
-candidate, review every compatibility exclusion, and report the displayed
+production versions contain the #430 companion metadata. Compare promptly:
+the newest 200 completed runs across all run kinds share one retention limit,
+so later use can prune the baseline. Select baseline and candidate, review
+every compatibility exclusion, and report the displayed
 per-metric counts, medians, supported p95, and independent anomaly observations.
 This replaces the JSONL/SQLite join below only for proven compatible cohorts.
 When either version predates the companion or has unsupported configuration,

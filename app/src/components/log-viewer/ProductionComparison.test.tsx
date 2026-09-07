@@ -72,7 +72,7 @@ describe('ProductionComparison', () => {
 
     expect(container.querySelector('details > summary')?.textContent).toContain('Compare app versions');
     expect(container.textContent).toContain(
-      'Dictation runs from two app versions are needed before a comparison can be made.',
+      'Retained dictation runs from two app versions are needed before a comparison can be made.',
     );
   });
 

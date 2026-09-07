@@ -270,6 +270,13 @@ app versions** to Diagnostics → Runs. This compares the bounded local producti
 dictation records, separately from imported Performance Lab and evaluation
 reports in Reports. It does not query the log receiver or upload diagnostics.
 
+Comparisons use only the newest 200 completed runs across all run kinds.
+Older baseline rows are deleted as new dictation, file, transform, or Voice
+Query runs complete. Version selectors and counts describe this retained
+window, not a version's complete history. Compare soon after a release;
+a baseline is not preserved as a durable snapshot. There is no separate
+comparison archive or longer retention period.
+
 New native dictation runs carry an optional `production` companion with its own
 `schemaVersion: 1`. Older run JSON remains readable; a missing companion means
 compatibility is unavailable and cannot produce a latency verdict. Unknown
@@ -323,7 +330,7 @@ warning, or both more than 30 ms and more than 20% for a p95 warning. A zero
 baseline has no meaningful percentage delta and cannot satisfy a percentage
 threshold by inference.
 
-Version-wide success/failure counts, capture-error observations, fallback,
+Within the retained window, version-wide success/failure counts, capture-error observations, fallback,
 zero-sample success, and stale/unconfirmed worker evidence remain visible even
 without enough compatible latency samples. They are labeled observations, not
 proof that incompatible cohorts establish a release-caused latency regression.
