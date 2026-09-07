@@ -1145,21 +1145,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             *TRANSFORM_HOLD_CONTEXT.lock_or_recover() =
                                 Some((pass_id, Instant::now()));
                             crate::transform_trace::key_start(pass_id);
-                            // Pass boundary (issue #337 defect B): drop the
-                            // sticky main-window visibility snapshot so the
-                            // new pass re-records it at its first popover
-                            // show. The supersede paths below never route
-                            // through hide_popover_internal (which is where
-                            // the snapshot is normally cleared), so without
-                            // this a pass could inherit the previous pass's
-                            // snapshot and force-hide a main window the user
-                            // deliberately opened between passes. Gated the
-                            // same way as the session clear: only at a real
-                            // pass boundary (Idle / ReviewPending), never
-                            // under a mid-flight pass.
-                            let clear_visibility_snapshot = || {
-                                *state.transform_main_was_visible.lock_or_recover() = None;
-                            };
                             // N2 (B2 review): every session clear must be paired
                             // with the matching status transition so the status
                             // is never left stranded at ReviewPending with no
@@ -1167,65 +1152,27 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             // Idle). From ReviewPending, atomically move
                             // ReviewPending -> Idle and only then clear — a
                             // mid-flight pass (Capturing/Listening/Thinking/
-                            // Applying) is left untouched.
-                            match app_state.transform_status() {
-                                crate::state::TransformStatus::Idle => {
-                                    if let Some(previous_pass_id) =
-                                        app_state.active_transform_pass_id()
-                                    {
-                                        crate::transform_trace::resolution(
-                                            previous_pass_id,
-                                            "cancelled",
-                                            "superseded",
-                                            None,
-                                        );
-                                        state.transform_diagnostics.phase(
-                                            previous_pass_id,
-                                            "supersession",
-                                            "completed",
-                                            None,
-                                            None,
-                                        );
-                                        state
-                                            .transform_diagnostics
-                                            .finish(previous_pass_id, "superseded");
-                                        app_state.clear_transform_pass(previous_pass_id);
-                                    }
-                                    crate::transform_apply::clear_session(app_state);
-                                    clear_visibility_snapshot();
-                                    app_state.activate_transform_pass(pass_id);
-                                }
-                                crate::state::TransformStatus::ReviewPending => {
-                                    let previous_pass_id = app_state.active_transform_pass_id();
-                                    if app_state.try_transition_transform_status(
+                            // Applying) is left untouched. Both arms share
+                            // `supersede_idle_transform_pass`, which the
+                            // correction shortcut and the ⌘K correction command
+                            // also call so an applied review's lingering pass
+                            // never blocks a chained correction.
+                            let at_pass_boundary = match app_state.transform_status() {
+                                crate::state::TransformStatus::Idle => true,
+                                crate::state::TransformStatus::ReviewPending => app_state
+                                    .try_transition_transform_status(
                                         crate::state::TransformStatus::ReviewPending,
                                         crate::state::TransformStatus::Idle,
-                                    ) {
-                                        if let Some(previous_pass_id) = previous_pass_id {
-                                            crate::transform_trace::resolution(
-                                                previous_pass_id,
-                                                "cancelled",
-                                                "superseded",
-                                                None,
-                                            );
-                                            state.transform_diagnostics.phase(
-                                                previous_pass_id,
-                                                "supersession",
-                                                "completed",
-                                                None,
-                                                None,
-                                            );
-                                            state
-                                                .transform_diagnostics
-                                                .finish(previous_pass_id, "superseded");
-                                            app_state.clear_transform_pass(previous_pass_id);
-                                        }
-                                        crate::transform_apply::clear_session(app_state);
-                                        clear_visibility_snapshot();
-                                        app_state.activate_transform_pass(pass_id);
-                                    }
-                                }
-                                _ => {}
+                                    ),
+                                _ => false,
+                            };
+                            if at_pass_boundary {
+                                crate::transform_flow::supersede_idle_transform_pass(
+                                    app_state,
+                                    &state.transform_diagnostics,
+                                    &state.transform_main_was_visible,
+                                );
+                                app_state.activate_transform_pass(pass_id);
                             }
                             let _ = handle.emit(
                                 "transform-key-pressed",

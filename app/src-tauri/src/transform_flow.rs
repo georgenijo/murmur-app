@@ -1755,6 +1755,47 @@ pub(crate) async fn start_dictation_correction(
     begin_dictation_correction(app_handle, state, device_name, smart_auto).await
 }
 
+/// Release a finished-but-still-claimed transform pass at a real pass boundary
+/// so a new pass can start.
+///
+/// Approve/Copy returns the status to `Idle` immediately, but the pass ID stays
+/// claimed — and the applied session stays alive so Undo remains reachable —
+/// until `schedule_linger_hide` fires `APPLIED_LINGER_MS` later. Every
+/// start path has to be able to supersede that lingering pass; otherwise
+/// chaining another correction onto the one just approved is dead for four
+/// seconds. Clearing the session also makes the pending linger task a no-op:
+/// its `still_applied` guard reads the session it just lost.
+///
+/// The caller must have observed `TransformStatus::Idle` (or have just
+/// transitioned `ReviewPending -> Idle`). Deliberately does NOT hide the
+/// popover: the superseding pass shows it again a moment later, and routing
+/// through `hide_popover_internal` here would flicker it. This mirrors the
+/// hold-key supersede in `keyboard.rs`, which this function was extracted from.
+///
+/// Does not claim the new pass — callers call `activate_transform_pass`
+/// themselves once they have allocated their ID.
+///
+/// Takes the three pieces of `crate::State` it touches rather than `State`
+/// itself, so it is unit-testable without a Tauri app handle.
+pub(crate) fn supersede_idle_transform_pass(
+    app_state: &AppState,
+    diagnostics: &crate::transform_diagnostics::TransformDiagnostics,
+    main_was_visible: &std::sync::Mutex<Option<bool>>,
+) {
+    if let Some(previous_pass_id) = app_state.active_transform_pass_id() {
+        crate::transform_trace::resolution(previous_pass_id, "cancelled", "superseded", None);
+        diagnostics.phase(previous_pass_id, "supersession", "completed", None, None);
+        diagnostics.finish(previous_pass_id, "superseded");
+        app_state.clear_transform_pass(previous_pass_id);
+    }
+    crate::transform_apply::clear_session(app_state);
+    // Pass boundary (issue #337 defect B): drop the sticky main-window
+    // visibility snapshot so the new pass re-records it at its first popover
+    // show, instead of inheriting the previous pass's snapshot and force-hiding
+    // a main window the user deliberately opened between passes.
+    *main_was_visible.lock_or_recover() = None;
+}
+
 pub(crate) async fn begin_dictation_correction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
@@ -1773,10 +1814,26 @@ pub(crate) async fn begin_dictation_correction(
     }
     let pass_id = {
         let _dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.transform_status() != TransformStatus::Idle
-            || state.app_state.active_transform_pass_id().is_some()
-        {
+        if state.app_state.transform_status() != TransformStatus::Idle {
             return Err("Finish or cancel the current transform first.".into());
+        }
+        if state.app_state.active_transform_pass_id().is_some() {
+            // Idle with a claimed pass is one of two states. Either the
+            // previous review was approved/copied and is lingering for its
+            // APPLIED_LINGER_MS Undo window — supersede it, exactly as the
+            // hold key does, so chaining a correction onto the one just
+            // approved works — or a pass has claimed its ID but not yet left
+            // Idle, which is a genuine concurrent start and must be refused.
+            if !transform_apply::session_snapshot(&state.app_state)
+                .is_some_and(|session| session.applied)
+            {
+                return Err("Finish or cancel the current transform first.".into());
+            }
+            supersede_idle_transform_pass(
+                &state.app_state,
+                &state.transform_diagnostics,
+                &state.transform_main_was_visible,
+            );
         }
         let id = state.app_state.next_transform_pass_id();
         state.app_state.activate_transform_pass(id);
@@ -3854,6 +3911,46 @@ mod tests {
             bounds: None,
             captured_at: std::time::Instant::now(),
         }
+    }
+
+    #[test]
+    fn supersede_releases_a_lingering_applied_pass() {
+        // Approve/Copy: status back to Idle, pass ID still claimed, session
+        // still applied so Undo stays reachable for APPLIED_LINGER_MS.
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+        let main_was_visible = std::sync::Mutex::new(Some(true));
+        app_state.activate_transform_pass(7);
+        transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
+        transform_apply::session_snapshot(&app_state).expect("session installed");
+        app_state
+            .transform_session
+            .lock_or_recover()
+            .as_mut()
+            .expect("session installed")
+            .applied = true;
+
+        supersede_idle_transform_pass(&app_state, &diagnostics, &main_was_visible);
+
+        assert_eq!(app_state.active_transform_pass_id(), None);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        // The sticky visibility snapshot must not leak into the next pass.
+        assert_eq!(*main_was_visible.lock_or_recover(), None);
+        // The pending linger task's `still_applied` guard now reads no session,
+        // so it returns without yanking the superseding pass's popover.
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+    }
+
+    #[test]
+    fn supersede_with_no_claimed_pass_is_a_no_op_clear() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+        let main_was_visible = std::sync::Mutex::new(None);
+
+        supersede_idle_transform_pass(&app_state, &diagnostics, &main_was_visible);
+
+        assert_eq!(app_state.active_transform_pass_id(), None);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
     }
 
     #[test]

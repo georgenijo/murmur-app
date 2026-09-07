@@ -114,11 +114,22 @@ enum ShortcutAction {
 
 fn decide(
     correction_session: bool,
+    session_applied: bool,
     transform_status: crate::state::TransformStatus,
     transform_pass_active: bool,
 ) -> ShortcutAction {
     if correction_session && transform_status == crate::state::TransformStatus::Listening {
         return ShortcutAction::Finish;
+    }
+    // Approve/Copy drops the status straight back to Idle but keeps the pass ID
+    // claimed and the session alive for the APPLIED_LINGER_MS Undo window.
+    // Chaining a second correction onto the one just approved is an advertised
+    // flow, so this press must reach `begin_dictation_correction`, which
+    // supersedes the lingering pass the same way the hold key does. Only the
+    // applied session distinguishes this from the startup window below, where a
+    // pass has claimed its ID but not yet left Idle.
+    if transform_status == crate::state::TransformStatus::Idle && session_applied {
+        return ShortcutAction::Begin;
     }
     if transform_pass_active || transform_status != crate::state::TransformStatus::Idle {
         return ShortcutAction::Ignore;
@@ -151,6 +162,7 @@ pub(crate) fn handle(app: &tauri::AppHandle, event: &EventType) {
             session
                 .as_ref()
                 .is_some_and(|session| session.purpose.is_correction()),
+            session.as_ref().is_some_and(|session| session.applied),
             state.app_state.transform_status(),
             state.app_state.active_transform_pass_id().is_some(),
         );
@@ -193,7 +205,7 @@ mod tests {
     #[test]
     fn listening_correction_press_finishes_the_instruction() {
         assert_eq!(
-            decide(true, TransformStatus::Listening, true),
+            decide(true, false, TransformStatus::Listening, true),
             ShortcutAction::Finish
         );
     }
@@ -201,13 +213,13 @@ mod tests {
     #[test]
     fn idle_press_begins_a_correction() {
         assert_eq!(
-            decide(false, TransformStatus::Idle, false),
+            decide(false, false, TransformStatus::Idle, false),
             ShortcutAction::Begin
         );
         // A leftover snapshot with no live pass still starts a fresh pass;
         // `begin_dictation_correction` re-checks the same two conditions.
         assert_eq!(
-            decide(true, TransformStatus::Idle, false),
+            decide(true, false, TransformStatus::Idle, false),
             ShortcutAction::Begin
         );
     }
@@ -225,7 +237,44 @@ mod tests {
             TransformStatus::ReviewPending,
         ] {
             assert_eq!(
-                decide(true, status, true),
+                decide(true, false, status, true),
+                ShortcutAction::Ignore,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn press_during_the_applied_linger_window_starts_a_chained_correction() {
+        // Approve/Copy leaves status Idle with the pass ID still claimed for
+        // APPLIED_LINGER_MS. begin_dictation_correction supersedes that pass,
+        // so the press must not be swallowed — chained correction is the
+        // advertised flow.
+        assert_eq!(
+            decide(true, true, TransformStatus::Idle, true),
+            ShortcutAction::Begin
+        );
+        // The same applies after an ordinary selected-text transform was
+        // approved: an applied review never blocks starting a correction.
+        assert_eq!(
+            decide(false, true, TransformStatus::Idle, true),
+            ShortcutAction::Begin
+        );
+    }
+
+    #[test]
+    fn an_applied_session_does_not_unblock_a_mid_flight_pass() {
+        // `applied` only means "linger" while the status is Idle. A live pass
+        // still owns the pipeline whatever a stale session says.
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Connecting,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+            TransformStatus::Applying,
+        ] {
+            assert_eq!(
+                decide(true, true, status, true),
                 ShortcutAction::Ignore,
                 "{status:?}"
             );
@@ -242,7 +291,7 @@ mod tests {
             TransformStatus::ReviewPending,
         ] {
             assert_eq!(
-                decide(false, status, true),
+                decide(false, false, status, true),
                 ShortcutAction::Ignore,
                 "{status:?}"
             );
@@ -253,7 +302,7 @@ mod tests {
     fn a_claimed_pass_id_alone_blocks_a_new_correction() {
         // `activate_transform_pass` runs before the status leaves Idle.
         assert_eq!(
-            decide(false, TransformStatus::Idle, true),
+            decide(false, false, TransformStatus::Idle, true),
             ShortcutAction::Ignore
         );
     }

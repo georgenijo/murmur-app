@@ -395,6 +395,14 @@ pub(crate) async fn capture_matching_dictation_selection(
     text: &str,
     target: &crate::frontmost::DeliveryTargetSnapshot,
 ) -> Option<TransformSnapshot> {
+    // Preflight, mirroring `capture_selection_with_trace`. Without
+    // Accessibility permission every AX query fails with `kAXErrorAPIDisabled`,
+    // which is indistinguishable from a cold AX tree at this layer — the ladder
+    // would burn its full budget before the popover reaches Listening, on every
+    // single correction, for a permission state that cannot change mid-probe.
+    if !crate::injector::is_accessibility_enabled() {
+        return None;
+    }
     let attempts = if target_is_known_chromium(target) {
         1
     } else {
@@ -422,6 +430,27 @@ fn target_is_known_chromium(target: &crate::frontmost::DeliveryTargetSnapshot) -
     }
 }
 
+/// Pure classification of one identity-probe attempt. Factored out of the AX
+/// I/O so it is testable without Accessibility permission or a running AX
+/// server, the same way `classify_selection` is.
+///
+/// Only a genuinely broken AX query retries. `NoSelection` — which
+/// `capture_selection_native` now also returns when the application has no
+/// focused element at all — is the app answering truthfully and is final.
+fn classify_identity_probe(
+    result: Result<TransformSnapshot, SelectionError>,
+    expected: &str,
+) -> IdentityProbe {
+    match result {
+        Ok(snapshot) if snapshot.text == expected => IdentityProbe::Matched(Box::new(snapshot)),
+        Ok(_) => IdentityProbe::Refused,
+        Err(SelectionError::AxUnavailable) | Err(SelectionError::SecureCheckFailed) => {
+            IdentityProbe::AxFailed
+        }
+        Err(_) => IdentityProbe::Refused,
+    }
+}
+
 async fn probe_matching_dictation_selection(
     app_handle: &tauri::AppHandle,
     text: &str,
@@ -433,16 +462,7 @@ async fn probe_matching_dictation_selection(
     let dispatched = app_handle.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
         let outcome = if crate::frontmost::verify_delivery_target(&target, true).verified() {
-            match native::capture_selection_native() {
-                Ok(snapshot) if snapshot.text == expected => {
-                    IdentityProbe::Matched(Box::new(snapshot))
-                }
-                Ok(_) => IdentityProbe::Refused,
-                Err(SelectionError::AxUnavailable) | Err(SelectionError::SecureCheckFailed) => {
-                    IdentityProbe::AxFailed
-                }
-                Err(_) => IdentityProbe::Refused,
-            }
+            classify_identity_probe(native::capture_selection_native(), &expected)
         } else {
             IdentityProbe::Refused
         };
@@ -1293,7 +1313,21 @@ mod native {
         let _app_guard = CFGuard(app);
         set_timeout(app)?;
 
-        let focused = copy_attribute(app, "AXFocusedUIElement")?;
+        // A benign "no value" / "attribute unsupported" status here means the
+        // application truthfully has nothing focused — not a broken AX tree.
+        // Collapsing it into `AxUnavailable` (as the plain `copy_attribute`
+        // mapping does) made every focus-less window look like a cold AX tree
+        // worth retrying. Both errors are retry- and fallback-eligible for
+        // `capture_selection`, so its control flow is unchanged; the correction
+        // identity probe, which retries only `AxUnavailable`, stops paying the
+        // full ladder for it.
+        let focused = match copy_attribute_raw(app, "AXFocusedUIElement") {
+            Ok(focused) => focused,
+            Err(status) if super::is_benign_role_query_error(status) => {
+                return Err(SelectionError::NoSelection)
+            }
+            Err(_) => return Err(SelectionError::AxUnavailable),
+        };
         // From here on we hold a focused element whose secure-ness is not yet
         // established. Any failure to complete the secure-field check —
         // including failing to arm the messaging timeout it depends on — is
@@ -1463,6 +1497,74 @@ mod tests {
         assert!(!is_benign_role_query_error(-1));
         assert!(!is_benign_role_query_error(i32::MIN));
         assert!(!is_benign_role_query_error(i32::MAX));
+    }
+
+    fn probe_snapshot(text: &str) -> TransformSnapshot {
+        TransformSnapshot {
+            bundle_id: Some("com.example.app".to_string()),
+            pid: 42,
+            text: text.to_string(),
+            range: Some((0, text.encode_utf16().count())),
+            bounds: None,
+            captured_at: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn identity_probe_matches_only_the_exact_previous_dictation() {
+        assert!(matches!(
+            classify_identity_probe(Ok(probe_snapshot("Ship it on Friday")), "Ship it on Friday"),
+            IdentityProbe::Matched(_)
+        ));
+        assert!(matches!(
+            classify_identity_probe(Ok(probe_snapshot("Ship it on Friday")), "Ship it on Monday"),
+            IdentityProbe::Refused
+        ));
+        // A partial selection is not the complete previous dictation.
+        assert!(matches!(
+            classify_identity_probe(Ok(probe_snapshot("Ship it")), "Ship it on Friday"),
+            IdentityProbe::Refused
+        ));
+    }
+
+    #[test]
+    fn identity_probe_retries_only_a_broken_ax_query() {
+        for error in [
+            SelectionError::AxUnavailable,
+            SelectionError::SecureCheckFailed,
+        ] {
+            assert!(
+                matches!(
+                    classify_identity_probe(Err(error), "anything"),
+                    IdentityProbe::AxFailed
+                ),
+                "{}",
+                error.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn identity_probe_treats_a_truthful_answer_as_final() {
+        // `NoSelection` now also covers "the application has no focused element
+        // at all" (benign status on AXFocusedUIElement). Retrying any of these
+        // would stall the correction popover for the ladder's full budget on
+        // the common path, while the user is already speaking.
+        for error in [
+            SelectionError::NoSelection,
+            SelectionError::TooLarge,
+            SelectionError::SecureField,
+            SelectionError::AccessibilityDenied,
+        ] {
+            assert!(
+                matches!(
+                    classify_identity_probe(Err(error), "anything"),
+                    IdentityProbe::Refused
+                ),
+                "{}",
+                error.as_str()
+            );
+        }
     }
 
     #[test]
