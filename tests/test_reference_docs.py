@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -28,7 +29,8 @@ def copy_reference_fixture(root: Path) -> None:
 
 class ReferenceDocsTests(unittest.TestCase):
     def test_repository_reference_docs_match_registered_commands(self) -> None:
-        self.assertEqual(validate_reference_docs(), 188)
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        self.assertEqual(validate_reference_docs(), len(commands))
 
     def test_missing_command_row_fails_even_when_prose_count_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -52,11 +54,10 @@ class ReferenceDocsTests(unittest.TestCase):
             root = Path(directory)
             copy_reference_fixture(root)
             architecture = root / "docs/ARCHITECTURE.md"
-            architecture.write_text(
-                architecture.read_text().replace(
-                    "188 registered commands", "187 registered commands", 1
-                )
-            )
+            original = architecture.read_text()
+            stale = re.sub(r"\b\d+ registered commands\b", "0 registered commands", original, count=1)
+            self.assertNotEqual(original, stale)
+            architecture.write_text(stale)
 
             with self.assertRaisesRegex(AssertionError, r"stale command count"):
                 validate_reference_docs(root)

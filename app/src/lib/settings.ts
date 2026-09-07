@@ -299,6 +299,7 @@ export interface Settings {
   autoPasteDelayMs: number;
   /** Global Paste Last chord. `null` disables it. */
   pasteLastShortcut: PasteLastShortcut | null;
+  correctionShortcutEnabled: boolean;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -546,6 +547,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
   pasteLastShortcut: null,
+  correctionShortcutEnabled: false,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -641,6 +643,17 @@ export function smartAutoMicrophoneRequest(
     preferredDeviceIds: settings.smartAutoPreferredDeviceIds,
     allowContinuity: settings.smartAutoAllowContinuity,
   };
+}
+
+/**
+ * Normalize the persisted microphone setting into the `deviceName` argument the
+ * capture commands expect. `DEFAULT_SETTINGS.microphone` is the sentinel string
+ * `'system_default'`, not a CoreAudio UID — forwarding it verbatim makes the
+ * Rust device lookup fail with `NoInputDevice`. It (and an empty value) must
+ * become `null`, which means "let the backend pick the system default".
+ */
+export function microphoneDeviceNameArg(microphone: string | null | undefined): string | null {
+  return microphone && microphone !== DEFAULT_SETTINGS.microphone ? microphone : null;
 }
 
 export function clampOverlayVerticalOffset(value: unknown): number {
@@ -1158,6 +1171,9 @@ export function loadSettings(): Settings {
 
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
+      }
+      if (typeof parsed.correctionShortcutEnabled !== 'boolean') {
+        parsed.correctionShortcutEnabled = false;
       }
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;

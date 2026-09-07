@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DEFAULT_SETTINGS, Settings, AppProfile, BrowserSiteRule, MurmurMode, VoiceCommand, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
+import { microphoneDeviceNameArg, Settings, AppProfile, BrowserSiteRule, MurmurMode, VoiceCommand, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -22,7 +22,7 @@ export async function startRecording(
 ): Promise<DictationResponse> {
   try {
     return await invoke('start_native_recording', {
-      deviceName: smartAuto ? null : deviceName && deviceName !== DEFAULT_SETTINGS.microphone ? deviceName : null,
+      deviceName: smartAuto ? null : microphoneDeviceNameArg(deviceName),
       smartAuto: smartAuto ?? null,
       origin,
     });

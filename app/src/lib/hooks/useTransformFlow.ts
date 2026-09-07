@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS, type SmartAutoMicrophoneRequest } from '../settings';
+import { microphoneDeviceNameArg, type SmartAutoMicrophoneRequest } from '../settings';
 import { flog } from '../log';
 import {
   INITIAL_TRANSFORM_FLOW_STATE,
@@ -80,10 +80,7 @@ export function useTransformFlow({
     let unlistenReleased: (() => void) | null = null;
     let unlistenEscape: (() => void) | null = null;
 
-    const deviceNameArg = () => {
-      const mic = microphoneRef.current;
-      return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
-    };
+    const deviceNameArg = () => microphoneDeviceNameArg(microphoneRef.current);
 
     const dispatch = (input: TransformFlowInput) => {
       const step = reduceTransformFlow(stateRef.current, input);
