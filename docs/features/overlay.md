@@ -8,7 +8,7 @@ The frontend is layered bottom-up:
 
 1. **Geometry contract** (Rust → `useOverlayGeometry`) — every pixel dimension.
 2. **Expansion controller** (`useOverlayExpansion`) — the hover-expand lifecycle and the single writer to the native resize path.
-3. **Runtime hooks** (`useOverlayRuntime`, `useRecordingControls`, `useOverlaySettingsMirror`, `useWaveform`) — Tauri event subscriptions, click handling, the settings mirror, and the waveform animation.
+3. **Runtime hooks** (`useOverlayRecordingStatus`, `useOverlayRuntime`, `useRecordingControls`, `useOverlaySettingsMirror`, `useWaveform`) — Tauri event subscriptions, click handling, the settings mirror, and the waveform animation.
 4. **Presentational components** (`OverlayPill`, `OverlayDropdown`) — pure rendering, driven by a `deriveVisual()` descriptor.
 5. **`OverlayWidget.tsx`** — a composition shell (~150 lines) that calls the hooks above and wires refs/handlers into the island container JSX.
 
@@ -209,6 +209,17 @@ When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected`
 
 **Styling:** Dark background (`rgba(20, 20, 20, 0.92)`), 40px backdrop blur, rounded bottom corners.
 
+## Reload recovery
+
+`useOverlayRecordingStatus` subscribes to `recording-status-changed` before
+reading `get_status`. Reloading the overlay restores the current native state,
+including an ongoing recording or transcription. A status event received during
+the read takes precedence over the snapshot. The hook updates the click-handler
+status ref synchronously and discards callbacks after unmount.
+
+Reloading the webview does not stop native capture. To stop a recording, click
+the recording indicator or use the recording shortcut.
+
 ## Waveform Animation
 
 7 bars (`BAR_COUNT` in `useWaveform.ts`) animate via `requestAnimationFrame` with direct DOM manipulation (no React state updates per frame).
@@ -260,7 +271,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
-- Calls: `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `set_app_disabled`, `configure_dictation`.
+- Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `set_app_disabled`, `configure_dictation`.
 - Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
