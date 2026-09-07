@@ -91,6 +91,41 @@ pub(crate) fn set_correction_shortcut(
     Ok(())
 }
 
+/// What a correction-shortcut press should do, given the pass state the app is
+/// in when the chord fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShortcutAction {
+    /// A correction pass is listening: this press is the "done speaking" half.
+    Finish,
+    /// Nothing owns the transform pipeline: start a new correction pass.
+    Begin,
+    /// Something else owns the pipeline — an ordinary transform pass, or a
+    /// correction pass still arming (audio start plus the AX identity probe),
+    /// thinking, or awaiting review. Swallow the press.
+    ///
+    /// Falling through to `begin_dictation_correction` here would fail its own
+    /// `Finish or cancel the current transform first.` guard, and `handle`
+    /// would answer a stray keystroke by popping the main window — stealing
+    /// focus from the app the user is actually correcting text in. The main
+    /// window is reserved for genuine "nothing to correct" / model-missing
+    /// errors.
+    Ignore,
+}
+
+fn decide(
+    correction_session: bool,
+    transform_status: crate::state::TransformStatus,
+    transform_pass_active: bool,
+) -> ShortcutAction {
+    if correction_session && transform_status == crate::state::TransformStatus::Listening {
+        return ShortcutAction::Finish;
+    }
+    if transform_pass_active || transform_status != crate::state::TransformStatus::Idle {
+        return ShortcutAction::Ignore;
+    }
+    ShortcutAction::Begin
+}
+
 pub(crate) fn handle(app: &tauri::AppHandle, event: &EventType) {
     if !enabled() || !CHORD.lock_or_recover().handle(event) {
         return;
@@ -109,27 +144,38 @@ pub(crate) fn handle(app: &tauri::AppHandle, event: &EventType) {
             return;
         }
         let session = crate::transform_apply::session_snapshot(&state.app_state);
-        let result = if let Some(session) =
-            session.filter(|session| session.purpose.is_correction())
-        {
-            if state.app_state.transform_status() == crate::state::TransformStatus::Listening {
-                crate::transform_flow::finish_transform_instruction(
+        // `purpose` is stamped as the session is installed (see
+        // `transform_flow::start_capture`), so this read is accurate from the
+        // first `Listening` emit onwards rather than only after the AX probe.
+        let action = decide(
+            session
+                .as_ref()
+                .is_some_and(|session| session.purpose.is_correction()),
+            state.app_state.transform_status(),
+            state.app_state.active_transform_pass_id().is_some(),
+        );
+        let result = match action {
+            ShortcutAction::Ignore => return,
+            ShortcutAction::Finish => match session {
+                Some(session) => {
+                    crate::transform_flow::finish_transform_instruction(
+                        app.clone(),
+                        state,
+                        session.transform_pass_id,
+                    )
+                    .await
+                }
+                None => return,
+            },
+            ShortcutAction::Begin => {
+                crate::transform_flow::begin_dictation_correction(
                     app.clone(),
                     state,
-                    session.transform_pass_id,
+                    device_name,
+                    smart_auto,
                 )
                 .await
-            } else {
-                Ok(())
             }
-        } else {
-            crate::transform_flow::begin_dictation_correction(
-                app.clone(),
-                state,
-                device_name,
-                smart_auto,
-            )
-            .await
         };
         if let Err(error) = result {
             let _ = app.emit_to("main", "correction-start-failed", error);
@@ -141,6 +187,76 @@ pub(crate) fn handle(app: &tauri::AppHandle, event: &EventType) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::state::TransformStatus;
+
+    #[test]
+    fn listening_correction_press_finishes_the_instruction() {
+        assert_eq!(
+            decide(true, TransformStatus::Listening, true),
+            ShortcutAction::Finish
+        );
+    }
+
+    #[test]
+    fn idle_press_begins_a_correction() {
+        assert_eq!(
+            decide(false, TransformStatus::Idle, false),
+            ShortcutAction::Begin
+        );
+        // A leftover snapshot with no live pass still starts a fresh pass;
+        // `begin_dictation_correction` re-checks the same two conditions.
+        assert_eq!(
+            decide(true, TransformStatus::Idle, false),
+            ShortcutAction::Begin
+        );
+    }
+
+    #[test]
+    fn press_during_correction_startup_is_swallowed_not_surfaced() {
+        // Between activate_transform_pass and the first Listening emit the
+        // pass is Capturing/Connecting. A second chord here must not fall
+        // through to begin_dictation_correction, whose refusal would pop the
+        // main window over the app being corrected.
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Connecting,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+        ] {
+            assert_eq!(
+                decide(true, status, true),
+                ShortcutAction::Ignore,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn press_during_an_ordinary_transform_pass_is_swallowed() {
+        for status in [
+            TransformStatus::Capturing,
+            TransformStatus::Connecting,
+            TransformStatus::Listening,
+            TransformStatus::Thinking,
+            TransformStatus::ReviewPending,
+        ] {
+            assert_eq!(
+                decide(false, status, true),
+                ShortcutAction::Ignore,
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_claimed_pass_id_alone_blocks_a_new_correction() {
+        // `activate_transform_pass` runs before the status leaves Idle.
+        assert_eq!(
+            decide(false, TransformStatus::Idle, true),
+            ShortcutAction::Ignore
+        );
+    }
     #[test]
     fn chord_requires_both_modifiers_and_latches_key_repeat() {
         let mut chord = Chord {

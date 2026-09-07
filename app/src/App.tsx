@@ -58,7 +58,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
 import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
-import { pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
+import { microphoneDeviceNameArg, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -172,7 +172,7 @@ function App() {
     const smartAuto = smartAutoMicrophoneRequest(settings);
     void invoke('set_correction_shortcut', {
       enabled: settings.correctionShortcutEnabled === true && !settings.disabled,
-      deviceName: smartAuto ? null : settings.microphone || null,
+      deviceName: smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
       smartAuto,
     }).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
   }, [
@@ -588,7 +588,7 @@ function App() {
         run: () => {
           const smartAuto = smartAutoMicrophoneRequest(settings);
           void invoke('start_dictation_correction', {
-            deviceName: smartAuto ? null : settings.microphone || null,
+            deviceName: smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
             smartAuto,
           }).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
         },

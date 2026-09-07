@@ -183,13 +183,27 @@ impl TransformSession {
 /// Start a new session for a freshly captured selection, replacing whatever
 /// session (if any) was active. There is only ever one active session.
 pub fn start_session(app_state: &AppState, snapshot: crate::selection::TransformSnapshot) {
+    start_session_with_purpose(
+        app_state,
+        snapshot,
+        crate::dictation_correction::ReviewPurpose::SelectedText,
+    );
+}
+
+/// Same as `start_session`, but stamps the review purpose as the session is
+/// installed. The purpose has to be part of the installed session, not patched
+/// on afterwards: the very first `Listening` emit — and any `⌘⇧E` press racing
+/// it — reads `purpose` to tell a correction pass from a selected-text pass.
+pub fn start_session_with_purpose(
+    app_state: &AppState,
+    snapshot: crate::selection::TransformSnapshot,
+    purpose: crate::dictation_correction::ReviewPurpose,
+) {
     let generation = app_state.next_transform_session_generation();
     let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
-    *app_state.transform_session.lock_or_recover() = Some(TransformSession::new_for_pass(
-        snapshot,
-        generation,
-        transform_pass_id,
-    ));
+    let mut session = TransformSession::new_for_pass(snapshot, generation, transform_pass_id);
+    session.purpose = purpose;
+    *app_state.transform_session.lock_or_recover() = Some(session);
 }
 
 /// Fill in (or replace) the proposed replacement text for the active session.

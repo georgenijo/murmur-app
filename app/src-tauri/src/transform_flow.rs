@@ -730,6 +730,7 @@ pub(crate) async fn core_start_capture<Fut>(
     app_state: &AppState,
     fx: &dyn FlowEffects,
     model_ready: bool,
+    purpose: crate::dictation_correction::ReviewPurpose,
     capture: Fut,
 ) -> StartOutcome
 where
@@ -776,7 +777,7 @@ where
                 return StartOutcome::Aborted;
             }
             let anchor = snapshot_anchor(&snapshot);
-            transform_apply::start_session(app_state, snapshot);
+            transform_apply::start_session_with_purpose(app_state, snapshot, purpose);
             fx.show_popover(anchor);
             fx.set_focusable(false);
             if !enter_transform_listening_if_ready(
@@ -2087,7 +2088,21 @@ async fn start_capture(
             },
         ),
     );
-    let outcome = core_start_capture(&state.app_state, &fx, model_ready, async move {
+    // Stamp the review purpose BEFORE the session is installed. Patching it in
+    // after `core_start_capture` returned left a window — audio arm plus the
+    // up-to-500ms AX identity probe — in which the installed session still read
+    // as `SelectedText`, so a second correction-shortcut press (or the popover)
+    // could not tell a correction pass from an ordinary transform pass.
+    let is_correction = correction.is_some();
+    let purpose = match correction {
+        Some(correction) => crate::dictation_correction::ReviewPurpose::Correction {
+            recording_id: correction.recording_id,
+            delivery: correction_delivery,
+            teaching_context: correction.teaching_context,
+        },
+        None => crate::dictation_correction::ReviewPurpose::SelectedText,
+    };
+    let outcome = core_start_capture(&state.app_state, &fx, model_ready, purpose, async move {
         capture_result.expect("capture future is polled only when the model is ready")
     })
     .await;
@@ -2135,25 +2150,25 @@ async fn start_capture(
         }
         return Ok(());
     }
-    if let Some(correction) = correction {
-        let mut session = state.app_state.transform_session.lock_or_recover();
-        if let Some(session) = session
-            .as_mut()
-            .filter(|session| session.transform_pass_id == transform_pass_id)
-        {
-            session.purpose = crate::dictation_correction::ReviewPurpose::Correction {
-                recording_id: correction.recording_id,
-                delivery: correction_delivery,
-                teaching_context: correction.teaching_context,
-            };
-        }
+    if is_correction {
+        // The correction review is a visible, focusable popover from the start
+        // (there is no hold-key to release), so re-announce the current phase
+        // and expand. If cancellation already won this pass, do NOT return
+        // here: fall through to the mic-leak teardown below, which is the only
+        // code that stops the already-armed recorder.
         match state.app_state.transform_status() {
-            TransformStatus::Listening => fx.emit_state(ReviewState::Listening, None),
-            TransformStatus::Connecting => fx.emit_state(ReviewState::Connecting, None),
-            _ => return Ok(()),
+            TransformStatus::Listening => {
+                fx.emit_state(ReviewState::Listening, None);
+                fx.set_expanded(true);
+                fx.set_focusable(true);
+            }
+            TransformStatus::Connecting => {
+                fx.emit_state(ReviewState::Connecting, None);
+                fx.set_expanded(true);
+                fx.set_focusable(true);
+            }
+            _ => {}
         }
-        fx.set_expanded(true);
-        fx.set_focusable(true);
     }
     if let Some(guard) = performance_guard.as_mut() {
         guard.enter(PerformanceStageV1::InstructionCapture);
@@ -3341,7 +3356,14 @@ pub async fn run_happy_path_for_test(
     app_state.activate_transform_pass(1);
     assert!(app_state
         .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
-    let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
+    let outcome = core_start_capture(
+        &app_state,
+        &fx,
+        true,
+        crate::dictation_correction::ReviewPurpose::SelectedText,
+        async move { Ok(snapshot) },
+    )
+    .await;
     assert_eq!(outcome, StartOutcome::CaptureReady);
     assert!(enter_transform_listening_if_ready(
         &app_state, &fx, 1, true, true,
@@ -3724,7 +3746,14 @@ mod tests {
             bounds: None,
             captured_at: Instant::now(),
         };
-        let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            true,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async move { Ok(snapshot) },
+        )
+        .await;
 
         assert_eq!(outcome, StartOutcome::CaptureReady);
         assert_eq!(app_state.transform_status(), TransformStatus::Connecting);
@@ -3760,9 +3789,13 @@ mod tests {
         let fx = RecordingFlowEffects::new();
         app_state.set_transform_status(TransformStatus::Capturing);
 
-        let outcome = core_start_capture(&app_state, &fx, true, async {
-            Err(SelectionError::SecureField)
-        })
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            true,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async { Err(SelectionError::SecureField) },
+        )
         .await;
 
         assert_eq!(outcome, StartOutcome::Aborted);
@@ -3780,16 +3813,22 @@ mod tests {
         let fx = RecordingFlowEffects::new();
         app_state.set_transform_status(TransformStatus::Capturing);
 
-        let outcome = core_start_capture(&app_state, &fx, false, async {
-            Ok(TransformSnapshot {
-                bundle_id: None,
-                pid: 1,
-                text: "x".to_string(),
-                range: None,
-                bounds: None,
-                captured_at: std::time::Instant::now(),
-            })
-        })
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            false,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async {
+                Ok(TransformSnapshot {
+                    bundle_id: None,
+                    pid: 1,
+                    text: "x".to_string(),
+                    range: None,
+                    bounds: None,
+                    captured_at: std::time::Instant::now(),
+                })
+            },
+        )
         .await;
 
         assert_eq!(outcome, StartOutcome::Aborted);
@@ -4059,11 +4098,17 @@ mod tests {
         };
 
         let cancel_state = Arc::clone(&app_state);
-        let outcome = core_start_capture(&app_state, &fx, true, async move {
-            // Simulate cancel mid-capture: leave Capturing before Ok lands.
-            cancel_state.set_transform_status(TransformStatus::Idle);
-            Ok(snapshot)
-        })
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            true,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async move {
+                // Simulate cancel mid-capture: leave Capturing before Ok lands.
+                cancel_state.set_transform_status(TransformStatus::Idle);
+                Ok(snapshot)
+            },
+        )
         .await;
 
         assert_eq!(outcome, StartOutcome::Aborted);

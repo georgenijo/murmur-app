@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS, loadSettings, smartAutoMicrophoneRequest } from '../settings';
+import { loadSettings, microphoneDeviceNameArg, smartAutoMicrophoneRequest } from '../settings';
 import { flog } from '../log';
 import {
   EMPTY_REVIEW_CONTENT,
@@ -27,8 +27,7 @@ export interface ReviewDriverResult {
 
 function deviceNameArg(): string | null {
   try {
-    const mic = loadSettings().microphone;
-    return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+    return microphoneDeviceNameArg(loadSettings().microphone);
   } catch {
     return null;
   }

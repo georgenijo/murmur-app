@@ -19,6 +19,7 @@ import {
   BUILTIN_MODES,
   DEFAULT_SETTINGS,
   LEGACY_OVERLAY_OFFSET_KEY,
+  microphoneDeviceNameArg,
   MODEL_OPTIONS,
   pasteLastShortcutConflict,
   STORAGE_KEY,
@@ -1151,5 +1152,26 @@ describe('Voice Query settings', () => {
       false,
       false,
     ]);
+  });
+});
+
+describe('microphoneDeviceNameArg', () => {
+  it('drops the system-default sentinel so Rust picks the default input device', () => {
+    // `DEFAULT_SETTINGS.microphone` is a sentinel, not a CoreAudio UID.
+    // Forwarding it verbatim fails the device lookup with NoInputDevice.
+    expect(DEFAULT_SETTINGS.microphone).toBe('system_default');
+    expect(microphoneDeviceNameArg(DEFAULT_SETTINGS.microphone)).toBeNull();
+    expect(microphoneDeviceNameArg('system_default')).toBeNull();
+  });
+
+  it('drops empty and absent values', () => {
+    expect(microphoneDeviceNameArg('')).toBeNull();
+    expect(microphoneDeviceNameArg(null)).toBeNull();
+    expect(microphoneDeviceNameArg(undefined)).toBeNull();
+  });
+
+  it('passes an explicitly chosen device identifier through unchanged', () => {
+    expect(microphoneDeviceNameArg('AppleUSBAudioEngine:Shure:MV7:1234:1'))
+      .toBe('AppleUSBAudioEngine:Shure:MV7:1234:1');
   });
 });

@@ -645,6 +645,17 @@ export function smartAutoMicrophoneRequest(
   };
 }
 
+/**
+ * Normalize the persisted microphone setting into the `deviceName` argument the
+ * capture commands expect. `DEFAULT_SETTINGS.microphone` is the sentinel string
+ * `'system_default'`, not a CoreAudio UID — forwarding it verbatim makes the
+ * Rust device lookup fail with `NoInputDevice`. It (and an empty value) must
+ * become `null`, which means "let the backend pick the system default".
+ */
+export function microphoneDeviceNameArg(microphone: string | null | undefined): string | null {
+  return microphone && microphone !== DEFAULT_SETTINGS.microphone ? microphone : null;
+}
+
 export function clampOverlayVerticalOffset(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return DEFAULT_SETTINGS.overlayVerticalOffset;

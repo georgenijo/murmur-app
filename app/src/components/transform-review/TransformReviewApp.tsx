@@ -201,7 +201,10 @@ export function TransformReviewApp() {
         ? <div role="status" className="px-3 pb-3 text-[12px] text-emerald-300">Correction copied. Select the original text and paste to replace it.</div>
         : <ReviewApplied onUndo={driver.undo} errorMessage={vm.errorMessage} />)}
 
-      {driver.content.correction && driver.state === 'ready' && (
+      {/* `vm.approveEnabled` is the gate, not `state === 'ready'`: the popover
+          reaches `ready` before the pulled content fills `proposed`, and a
+          click in that window would teach an empty replacement. */}
+      {driver.content.correction && driver.state === 'ready' && vm.approveEnabled && (
         <CorrectionTeaching original={driver.content.original} proposed={driver.content.proposed}
           context={driver.content.teachingContext} />
       )}

@@ -121,6 +121,16 @@ impl SelectionError {
 /// secure-field check and reads nothing unless that check passes — so this
 /// includes `SecureCheckFailed` (Chromium's lazy AX tree times out the first
 /// subrole queries; the retries are what warm it).
+/// Bounded AX warm-up ladder shared by `capture_selection` and the
+/// correction identity probe: lazily built AX trees can fail the first query
+/// and answer a moment later.
+const AX_ATTEMPTS: u32 = 3;
+const AX_RETRY_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+/// Per-attempt ceiling for the correction identity probe. `capture_selection`
+/// awaits its main-thread reply unbounded; the correction path runs while the
+/// user is already speaking, so each probe is capped.
+const IDENTITY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 fn retry_eligible(error: SelectionError) -> bool {
     matches!(
         error,
@@ -344,37 +354,114 @@ impl CaptureTrace {
     }
 }
 
+/// Outcome of one identity probe attempt (see
+/// `capture_matching_dictation_selection`).
+enum IdentityProbe {
+    /// The app confirmed the exact previous dictation is selected right now.
+    Matched(Box<TransformSnapshot>),
+    /// The app answered and the answer is "no": the application instance no
+    /// longer matches, nothing is selected, or something else is. Final — a
+    /// retry would only re-ask a question already answered truthfully.
+    Refused,
+    /// The AX query itself failed (`AxUnavailable`, or the secure-field check
+    /// errored). A lazily built AX tree can answer a moment later, so this is
+    /// the only outcome the warm-up ladder retries.
+    AxFailed,
+}
+
 /// Reads an explicit matching selection in the original app without a clipboard fallback.
+///
+/// Bounded AX warm-up ladder, same shape and constants as `capture_selection`:
+/// up to `AX_ATTEMPTS` probes separated by `AX_RETRY_GAP`, each capped at
+/// `IDENTITY_PROBE_TIMEOUT`. Two deliberate narrowings keep the correction
+/// popover responsive:
+///
+/// * only `IdentityProbe::AxFailed` retries. Unlike `capture_selection`, whose
+///   caller has explicitly selected text, the overwhelmingly common answer here
+///   is a truthful "nothing (matching) is selected" — retrying that would stall
+///   every ordinary correction start behind dead gaps while the user is already
+///   speaking.
+/// * known Chromium browsers get a single attempt, exactly as in
+///   `capture_selection` (#340). There they resolve through the clipboard
+///   fallback, which correction never uses — Murmur will not synthesize a Copy
+///   gesture to acquire a correction target — so extra gaps would only delay the
+///   copy-only outcome those apps are going to reach anyway.
+///
+/// Fails closed throughout: a probe error, a timeout, an unverified application
+/// identity, and an exhausted ladder all return `None`, which downgrades the
+/// correction to copy-only rather than guessing a write target.
 pub(crate) async fn capture_matching_dictation_selection(
     app_handle: &tauri::AppHandle,
     text: &str,
     target: &crate::frontmost::DeliveryTargetSnapshot,
 ) -> Option<TransformSnapshot> {
+    let attempts = if target_is_known_chromium(target) {
+        1
+    } else {
+        AX_ATTEMPTS
+    };
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            tokio::time::sleep(AX_RETRY_GAP).await;
+        }
+        match probe_matching_dictation_selection(app_handle, text, target).await {
+            IdentityProbe::Matched(snapshot) => return Some(*snapshot),
+            IdentityProbe::Refused => return None,
+            IdentityProbe::AxFailed => {}
+        }
+    }
+    None
+}
+
+fn target_is_known_chromium(target: &crate::frontmost::DeliveryTargetSnapshot) -> bool {
+    match target {
+        crate::frontmost::DeliveryTargetSnapshot::Complete(identity) => {
+            is_known_chromium_browser(&identity.bundle_id)
+        }
+        _ => false,
+    }
+}
+
+async fn probe_matching_dictation_selection(
+    app_handle: &tauri::AppHandle,
+    text: &str,
+    target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> IdentityProbe {
     let expected = text.to_string();
     let target = target.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app_handle
-        .run_on_main_thread(move || {
-            #[cfg(target_os = "macos")]
-            let snapshot = if crate::frontmost::verify_delivery_target(&target, true).verified() {
-                native::capture_selection_native()
-                    .ok()
-                    .filter(|snapshot| snapshot.text == expected)
-            } else {
-                None
-            };
-            #[cfg(not(target_os = "macos"))]
-            let snapshot = {
-                let _ = expected;
-                None
-            };
-            let _ = tx.send(snapshot);
-        })
-        .ok()?;
-    tokio::time::timeout(std::time::Duration::from_millis(500), rx)
-        .await
-        .ok()?
-        .ok()?
+    let dispatched = app_handle.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        let outcome = if crate::frontmost::verify_delivery_target(&target, true).verified() {
+            match native::capture_selection_native() {
+                Ok(snapshot) if snapshot.text == expected => {
+                    IdentityProbe::Matched(Box::new(snapshot))
+                }
+                Ok(_) => IdentityProbe::Refused,
+                Err(SelectionError::AxUnavailable) | Err(SelectionError::SecureCheckFailed) => {
+                    IdentityProbe::AxFailed
+                }
+                Err(_) => IdentityProbe::Refused,
+            }
+        } else {
+            IdentityProbe::Refused
+        };
+        #[cfg(not(target_os = "macos"))]
+        let outcome = {
+            let _ = (expected, &target);
+            IdentityProbe::Refused
+        };
+        let _ = tx.send(outcome);
+    });
+    if dispatched.is_err() {
+        return IdentityProbe::Refused;
+    }
+    match tokio::time::timeout(IDENTITY_PROBE_TIMEOUT, rx).await {
+        Ok(Ok(outcome)) => outcome,
+        // A dropped sender or an exhausted deadline proves nothing about the
+        // selection: fail closed rather than spend the rest of the ladder on it.
+        _ => IdentityProbe::Refused,
+    }
 }
 
 /// Capture the current AX text selection.
@@ -446,9 +533,6 @@ async fn capture_selection_with_trace(
         // overwhelmingly fall back to Copy in shipped telemetry, so after one
         // secure-field-aware AX attempt they go directly to the bounded
         // clipboard fallback instead of paying two 250ms gaps (#340).
-        const AX_ATTEMPTS: u32 = 3;
-        const AX_RETRY_GAP: std::time::Duration = std::time::Duration::from_millis(250);
-
         let mut ax_result = Err(SelectionError::AxUnavailable);
         let mut frontmost: Option<(i32, Option<String>)> = None;
         // Sticky across attempts (issue #334): once any attempt errors the
