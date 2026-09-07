@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Close abandoned transform confirmations when a chained capture cannot start, and keep an older confirmation timer from dismissing a newer review (#682, #683).
 - Reloading the notch restores the active recording or processing indicator from native state instead of showing idle while recording continues (#680).
 
 ### Added
