@@ -1740,8 +1740,9 @@ fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV
     stages
 }
 
-struct NativeDictationCompletionMetrics<'a> {
+struct NativeDictationMetrics<'a> {
     recording_id: u64,
+    outcome: DictationTerminalOutcome,
     timings: &'a PipelineTimings,
     total_ms: u64,
     audio_secs: f64,
@@ -1751,10 +1752,14 @@ struct NativeDictationCompletionMetrics<'a> {
     backend_name: &'a str,
 }
 
-fn emit_native_dictation_completed(metrics: NativeDictationCompletionMetrics<'_>) {
+fn emit_native_dictation_metrics(metrics: NativeDictationMetrics<'_>) {
+    let event_code = match metrics.outcome {
+        DictationTerminalOutcome::Success => "pipeline.dictation_completed",
+        _ => "pipeline.dictation_metrics",
+    };
     tracing::info!(
         target: "pipeline",
-        event_code = "pipeline.dictation_completed",
+        event_code = event_code,
         recording_id = metrics.recording_id,
         vad_ms = metrics.timings.vad_ms,
         model_load_ms = metrics.timings.model_load_ms,
@@ -5002,8 +5007,9 @@ async fn stop_native_recording_for(
         successful_capture,
     );
 
-    emit_native_dictation_completed(NativeDictationCompletionMetrics {
+    emit_native_dictation_metrics(NativeDictationMetrics {
         recording_id: rid,
+        outcome: terminal_outcome,
         timings: &timings,
         total_ms,
         audio_secs,
@@ -5669,8 +5675,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_completion_emitter_declares_aggregator_contract() {
+    fn capture_native_completion(
+        outcome: DictationTerminalOutcome,
+        char_count: usize,
+    ) -> Vec<String> {
         let layer = CompletionCaptureLayer::default();
         let captured = Arc::clone(&layer.0);
         let subscriber = Registry::default().with(layer);
@@ -5682,13 +5690,14 @@ mod tests {
         };
 
         tracing::subscriber::with_default(subscriber, || {
-            emit_native_dictation_completed(NativeDictationCompletionMetrics {
+            emit_native_dictation_metrics(NativeDictationMetrics {
                 recording_id: 41,
+                outcome,
                 timings: &timings,
                 total_ms: 220,
                 audio_secs: 1.5,
                 word_count: 3,
-                char_count: 18,
+                char_count,
                 model_name: "test-model",
                 backend_name: "test-backend",
             });
@@ -5696,11 +5705,27 @@ mod tests {
 
         let fields = captured
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        fields
+    }
+
+    #[test]
+    fn native_completion_emitter_declares_aggregator_contract() {
+        let fields = capture_native_completion(DictationTerminalOutcome::Success, 18);
         assert!(fields.contains(&"event_code=\"pipeline.dictation_completed\"".to_string()));
         assert!(fields.contains(&"recording_id=41".to_string()));
         assert!(fields.contains(&"total_ms=220".to_string()));
         assert!(fields.contains(&"char_count=18".to_string()));
+    }
+
+    #[test]
+    fn native_partial_interruption_emits_neutral_metrics() {
+        let fields = capture_native_completion(DictationTerminalOutcome::RuntimeInterruption, 18);
+        assert!(fields.contains(&"event_code=\"pipeline.dictation_metrics\"".to_string()));
+        assert!(!fields.contains(&"event_code=\"pipeline.dictation_completed\"".to_string()));
+        assert!(fields.contains(&"char_count=18".to_string()));
+        assert!(fields.contains(&"total_ms=220".to_string()));
     }
 
     #[test]

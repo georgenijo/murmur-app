@@ -565,6 +565,68 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertEqual(classified["title"], "Dictation completed")
         self.assertIn("220 ms", classified["explanation"])
 
+    def test_partial_interruption_metrics_do_not_claim_success(self) -> None:
+        events = [
+            {
+                **event(
+                    "system.startup_baseline",
+                    timestamp="2026-08-05T00:00:00Z",
+                    stream="system",
+                    data={"event_code": "system.startup_baseline"},
+                ),
+                "ingest_app_version": "0.41.0",
+            },
+            {
+                **event(
+                    "pipeline.dictation_terminal",
+                    timestamp="2026-08-05T00:00:01Z",
+                    stream="pipeline",
+                    data={
+                        "event_code": "pipeline.dictation_terminal",
+                        "recording_id": 41,
+                        "outcome": "runtime_interruption",
+                        "error_code": "stream_invalidated",
+                        "char_count": 18,
+                    },
+                ),
+                "ingest_app_version": "0.41.0",
+            },
+            {
+                **event(
+                    "pipeline.dictation_metrics",
+                    timestamp="2026-08-05T00:00:02Z",
+                    stream="pipeline",
+                    data={
+                        "event_code": "pipeline.dictation_metrics",
+                        "recording_id": 41,
+                        "char_count": 18,
+                        "total_ms": 220,
+                    },
+                ),
+                "ingest_app_version": "0.41.0",
+            },
+        ]
+
+        signals = receiver.build_health_signals(events)
+        cards = receiver.build_health_cards(signals, {})
+        dictation = next(card for card in cards if card["area"] == "dictation")
+        with tempfile.TemporaryDirectory() as directory:
+            install = Path(directory) / "12345678-abcd"
+            install.mkdir()
+            path = install / "events.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            activity = receiver.find_activity_metrics(str(path))
+            report = watch.build_report(directory)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["code"], "pipeline.dictation_terminal")
+        self.assertEqual(dictation["status"], "degraded")
+        self.assertIsNone(activity["last_successful_transcription"])
+        self.assertEqual(report["cohorts"][0]["post_stop_latency_sample_count"], 0)
+
     def test_microphone_benchmark_owner_cannot_pollute_dashboard_correlation(self) -> None:
         benchmark_data = {
             "owner": 7,

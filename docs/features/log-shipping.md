@@ -267,7 +267,7 @@ capture metrics by install and receiver-observed app version:
 
 - dictation readiness `startup_ms` p50/p95;
 - post-stop latency: the `pipeline.dictation_completed` `total_ms` p50/p95,
-  covering the interval from stop handoff to delivered output;
+  covering Murmur's processing interval after it accepts the stop;
 - active initialization timeouts split by stable backend and
   `last_setup_step`;
 - fallback and both-backends-failed counts;
@@ -300,15 +300,24 @@ Post-stop latency samples apply the same trusted install, app-session, and
 version cohort boundaries as the lifecycle report. The watch retains a
 `total_ms` value only while a `startup_baseline` session is open and the
 event's receiver-observed version matches that session's version. Both
-`recording_id` and `char_count` must be positive, so empty completions do not
-skew the cohort. A completion observed before any baseline (pre-baseline), one
-whose version disagrees with the open session (a late-arriving batch stamped
-for an already-closed session, i.e. cross-session), or a malformed, negative,
-non-finite, or out-of-range (`> 300000` ms) `total_ms` is dropped rather than
-guessed. No transcript text is read or retained. Samples are bounded to the
-newest 500 per cohort, matching the startup-sample retention window; the
-report also carries the total observed count so silent truncation stays
-visible.
+`recording_id` and `char_count` must be positive, and the producer emits the
+completion code only for a successful pipeline outcome. Empty completions and
+partial text from interrupted pipelines remain neutral metrics and do not skew
+the successful cohort. A completion observed before any baseline
+(pre-baseline), one whose version disagrees with the open session (a
+late-arriving batch stamped for an already-closed session, i.e. cross-session),
+or a malformed, negative, non-finite, or out-of-range (`> 300000` ms)
+`total_ms` is dropped rather than guessed. No transcript text is read or
+retained. Samples are bounded to the newest 500 per cohort, matching the
+startup-sample retention window; the report also carries the total observed
+count so silent truncation stays visible.
+
+The `total_ms` timer starts after Murmur accepts the stop and enters processing,
+immediately before capture teardown and 16 kHz resampling. It ends after the
+transcription pipeline and the configured clipboard or paste delivery attempt.
+It excludes earlier UI or hotkey dispatch and the delivery-target snapshot.
+The metric records Murmur's delivery attempt; it does not prove that the target
+application accepted a paste.
 
 Reports contain no raw event summaries, device fields, content, paths, or free
 form errors. Backend/setup-step values are allowlisted (including the explicit
