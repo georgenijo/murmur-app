@@ -6,8 +6,9 @@ use crate::microphone_preview::{
 use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, valid_input_resolution_evidence, write_production_control,
-    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
-    ProductionHelperMessage, ProductionHostMessage, SessionNonce, SetupTransition,
+    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode,
+    ProductionDeviceKind, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
+    ProductionLidState, SessionNonce, SetupTransition,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -106,8 +107,9 @@ fn inventory_reaper_service_slot() -> &'static Mutex<Option<InventoryReaperServi
     SERVICE.get_or_init(|| Mutex::new(None))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AudioFailureKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioFailureKind {
     PermissionDenied,
     DeviceUnavailable,
     HostUnavailable,
@@ -237,12 +239,16 @@ fn failure_kind(code: FailureCode) -> AudioFailureKind {
 pub struct AudioDeviceDescriptor {
     pub id: String,
     pub name: String,
+    pub kind: ProductionDeviceKind,
+    pub connected: bool,
+    pub has_input: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EnumeratedAudioInputInventory {
     pub(crate) devices: Vec<AudioDeviceDescriptor>,
     pub(crate) default_input_id: Option<String>,
+    pub(crate) lid_state: ProductionLidState,
 }
 
 pub(crate) enum AudioCommand {
@@ -314,10 +320,22 @@ pub(crate) enum AudioWorkerEvent {
 }
 
 /// Content-free observations from the production capture worker. These are
-/// emitted only for the bounded microphone startup benchmark; regular capture
-/// owners keep their existing lifecycle/event surface.
+/// retained for the bounded startup benchmark and production dictation diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioStartupDiagnostic {
+    WorkerInvariantViolation,
+    HelperReady {
+        resolve_ms: u64,
+        signature_ms: u64,
+        spawn_ms: u64,
+    },
+    WorkerStopped {
+        elapsed_ms: u64,
+    },
+    PhaseDuration {
+        phase: AudioInitPhase,
+        elapsed_ms: u64,
+    },
     BackendPlan {
         primary: CaptureBackend,
         fallback: CaptureBackend,
@@ -442,6 +460,7 @@ fn spawn_helper(
     capture_id: u64,
     nonce_hex: &str,
     fault: Option<&str>,
+    observation: Option<(crate::audio_lifecycle::AudioOwner, &AudioWorkerEventSender)>,
 ) -> Result<
     (
         ManagedChild,
@@ -471,7 +490,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v8", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v9", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -482,6 +501,17 @@ fn spawn_helper(
             AudioInitPhase::StreamBuild,
         )
     })?;
+    let spawn_ms = spawn_started.elapsed().as_millis() as u64;
+    if let Some((owner, sender)) = observation {
+        let _ = sender.send(AudioWorkerEvent::StartupDiagnostic {
+            owner,
+            diagnostic: AudioStartupDiagnostic::HelperReady {
+                resolve_ms,
+                signature_ms,
+                spawn_ms,
+            },
+        });
+    }
     tracing::info!(
         target: "audio",
         capture_id,
@@ -831,7 +861,7 @@ fn spawn_inventory_helper(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard = next_guard;
     }
-    spawn_helper(capture_id, nonce_hex, None).map_err(|failure| failure.to_string())
+    spawn_helper(capture_id, nonce_hex, None, None).map_err(|failure| failure.to_string())
 }
 
 /// Return whether the helper exited within its ordinary bounded budget. A
@@ -917,15 +947,20 @@ pub(crate) fn enumerate_input_devices() -> Result<EnumeratedAudioInputInventory,
         ProductionFrame::Control(ProductionHelperMessage::Devices {
             devices,
             default_input_id,
+            lid_state,
         }) => EnumeratedAudioInputInventory {
             devices: devices
                 .into_iter()
                 .map(|device| AudioDeviceDescriptor {
                     id: device.id,
                     name: device.name,
+                    kind: device.kind,
+                    connected: device.connected,
+                    has_input: device.has_input,
                 })
                 .collect(),
             default_input_id,
+            lid_state,
         },
         _ => {
             drop(input);
@@ -1891,7 +1926,7 @@ fn run_backend(
     } else {
         backend_attempt_budget(backend)
     };
-    if owner.is_microphone_benchmark() {
+    if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
         let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
             owner,
             diagnostic: AudioStartupDiagnostic::AttemptStarted {
@@ -1925,24 +1960,28 @@ fn run_backend(
     }
 
     let (capture_id, nonce, nonce_hex) = capture_identity();
-    let (child, mut input, output) =
-        match spawn_helper(capture_id, &nonce_hex, requested_capture_fault()) {
-            Ok(value) => value,
-            Err(failure) => {
-                end_permission_prompt_pause(
-                    &mut permission_prompt_started,
-                    &mut clock,
-                    owner,
-                    event_sender,
-                    Instant::now(),
-                );
-                return AttemptResult::Failed {
-                    failure,
-                    retained_audio: false,
-                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
-                };
-            }
-        };
+    let (child, mut input, output) = match spawn_helper(
+        capture_id,
+        &nonce_hex,
+        requested_capture_fault(),
+        owner.dictation_id().map(|_| (owner, event_sender)),
+    ) {
+        Ok(value) => value,
+        Err(failure) => {
+            end_permission_prompt_pause(
+                &mut permission_prompt_started,
+                &mut clock,
+                owner,
+                event_sender,
+                Instant::now(),
+            );
+            return AttemptResult::Failed {
+                failure,
+                retained_audio: false,
+                active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
+            };
+        }
+    };
     let output = match hello(&mut input, output, capture_id, nonce) {
         Ok(output) => output,
         Err(failure) => {
@@ -2041,7 +2080,8 @@ fn run_backend(
     let mut expected_sequence = 0_u64;
     let mut sample_rate = None;
     let mut retained_audio = false;
-    let mut first_callback_wait_started = None;
+    let mut first_callback_wait_started: Option<Instant> = None;
+    let mut stream_open_started: Option<Instant> = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
     let mut preview_levels = PreviewLevelAccumulator::default();
     let mut preview_classification = PreviewLevelTracker::default();
@@ -2088,6 +2128,14 @@ fn run_backend(
                         stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
                         "capture helper stopped and exited"
                     );
+                    if owner.dictation_id().is_some() {
+                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                            owner,
+                            diagnostic: AudioStartupDiagnostic::WorkerStopped {
+                                elapsed_ms: stop_started.elapsed().as_millis() as u64,
+                            },
+                        });
+                    }
                     let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
                     return AttemptResult::Stopped;
                 }
@@ -2356,7 +2404,7 @@ fn run_backend(
                     current_phase = AudioInitPhase::Runtime;
                     // A successful preview is real device-readiness evidence,
                     // so it intentionally trains the per-device backend memo.
-                    if owner.is_microphone_benchmark() {
+                    if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                         let active_elapsed_ms = clock.elapsed(Instant::now()).as_millis() as u64;
                         let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
                             owner,
@@ -2372,7 +2420,8 @@ fn run_backend(
                                 active_elapsed_ms,
                             },
                         });
-                    } else if should_update_capture_memo(owner) {
+                    }
+                    if should_update_capture_memo(owner) {
                         note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
                     }
                     end_permission_prompt_pause(
@@ -2388,6 +2437,17 @@ fn run_backend(
                         start_to_first_pcm_ms = start_sent_at.elapsed().as_millis() as u64,
                         "capture helper first PCM accepted"
                     );
+                    if let Some(started) = first_callback_wait_started {
+                        if owner.dictation_id().is_some() {
+                            let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                                owner,
+                                diagnostic: AudioStartupDiagnostic::PhaseDuration {
+                                    phase: AudioInitPhase::FirstBufferWait,
+                                    elapsed_ms: started.elapsed().as_millis() as u64,
+                                },
+                            });
+                        }
+                    }
                     let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
                         owner,
                         phase: AudioInitPhase::FirstBufferWait,
@@ -2474,7 +2534,21 @@ fn run_backend(
                     start_elapsed_ms = start_sent_at.elapsed().as_millis() as u64,
                     "capture helper phase received"
                 );
+                if phase == CapturePhase::StreamOpen {
+                    stream_open_started = Some(Instant::now());
+                }
                 if phase == CapturePhase::AwaitingFirstCallback {
+                    if let Some(started) = stream_open_started.take() {
+                        if owner.dictation_id().is_some() {
+                            let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                                owner,
+                                diagnostic: AudioStartupDiagnostic::PhaseDuration {
+                                    phase: AudioInitPhase::StreamBuild,
+                                    elapsed_ms: started.elapsed().as_millis() as u64,
+                                },
+                            });
+                        }
+                    }
                     first_callback_wait_started = Some(Instant::now());
                 }
                 let phase = match phase {
@@ -2588,7 +2662,7 @@ fn run_backend(
                     };
                 }
                 last_setup_step = Some((step, transition));
-                if owner.is_microphone_benchmark() {
+                if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
                         owner,
                         diagnostic: AudioStartupDiagnostic::SetupStep {
@@ -2746,7 +2820,7 @@ fn run_capture_backend_pass(
                 retained_audio,
                 active_elapsed_ms,
             } if !retained_audio && attempt_index == 0 && failure.permits_backend_fallback() => {
-                if owner.is_microphone_benchmark() {
+                if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
                         owner,
                         diagnostic: AudioStartupDiagnostic::AttemptFailed {
@@ -2784,7 +2858,7 @@ fn run_capture_backend_pass(
                 retained_audio,
                 active_elapsed_ms,
             } => {
-                if owner.is_microphone_benchmark() {
+                if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
                         owner,
                         diagnostic: AudioStartupDiagnostic::AttemptFailed {
@@ -2943,7 +3017,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
     );
     let backends = preferred_backends_for(device_id.as_deref());
     let memo_promoted = backends != preferred_backends();
-    if owner.is_microphone_benchmark() {
+    if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
         let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
             owner,
             diagnostic: AudioStartupDiagnostic::BackendPlan {
@@ -3076,8 +3150,12 @@ mod tests {
             devices: vec![AudioDeviceDescriptor {
                 id: "uid".to_string(),
                 name: "Mic".to_string(),
+                kind: ProductionDeviceKind::External,
+                connected: true,
+                has_input: true,
             }],
             default_input_id: Some("uid".to_string()),
+            lid_state: ProductionLidState::Open,
         };
         assert!(inventory_after_confirmed_helper_exit(inventory.clone(), false, false).is_err());
         assert!(inventory_after_confirmed_helper_exit(inventory.clone(), true, true).is_err());
@@ -4032,7 +4110,13 @@ mod tests {
         );
 
         assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
-        assert!(events.lock().unwrap().is_empty());
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [AudioWorkerEvent::StartupDiagnostic {
+                diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -4086,13 +4170,23 @@ mod tests {
         assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
         assert!(matches!(
             events.lock().unwrap().as_slice(),
-            [AudioWorkerEvent::InitFailed {
-                failure: AudioFailure {
-                    kind: AudioFailureKind::InitializationTimeout,
+            [
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
                     ..
                 },
-                ..
-            }]
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::InitFailed {
+                    failure: AudioFailure {
+                        kind: AudioFailureKind::InitializationTimeout,
+                        ..
+                    },
+                    ..
+                }
+            ]
         ));
     }
 
@@ -4133,13 +4227,39 @@ mod tests {
         );
         assert!(matches!(
             events.lock().unwrap().as_slice(),
-            [AudioWorkerEvent::InitFailed {
-                failure: AudioFailure {
-                    kind: AudioFailureKind::DeviceUnavailable,
+            [
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
                     ..
                 },
-                ..
-            }]
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::InitFailed {
+                    failure: AudioFailure {
+                        kind: AudioFailureKind::DeviceUnavailable,
+                        ..
+                    },
+                    ..
+                }
+            ]
         ));
     }
 
@@ -4190,7 +4310,23 @@ mod tests {
                 CaptureBackend::Cpal,
             ]
         );
-        assert!(events.lock().unwrap().is_empty());
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                }
+            ]
+        ));
     }
 
     #[test]
@@ -4220,7 +4356,17 @@ mod tests {
         assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
         assert!(matches!(
             events.lock().unwrap().as_slice(),
-            [AudioWorkerEvent::InitFailed { .. }]
+            [
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::InitFailed { .. }
+            ]
         ));
     }
 
@@ -4258,13 +4404,23 @@ mod tests {
         assert_eq!(calls, vec![CaptureBackend::Auhal, CaptureBackend::Cpal]);
         assert!(matches!(
             events.lock().unwrap().as_slice(),
-            [AudioWorkerEvent::InitFailed {
-                failure: AudioFailure {
-                    kind: AudioFailureKind::DeviceUnavailable,
+            [
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
                     ..
                 },
-                ..
-            }]
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::InitFailed {
+                    failure: AudioFailure {
+                        kind: AudioFailureKind::DeviceUnavailable,
+                        ..
+                    },
+                    ..
+                }
+            ]
         ));
     }
 
@@ -4324,7 +4480,13 @@ mod tests {
         assert_eq!(calls, vec![CaptureBackend::Auhal]);
         assert!(matches!(
             events.lock().unwrap().as_slice(),
-            [AudioWorkerEvent::RuntimeFailed { .. }]
+            [
+                AudioWorkerEvent::StartupDiagnostic {
+                    diagnostic: AudioStartupDiagnostic::AttemptFailed { .. },
+                    ..
+                },
+                AudioWorkerEvent::RuntimeFailed { .. }
+            ]
         ));
     }
 }

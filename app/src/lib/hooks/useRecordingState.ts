@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { cancelRecording, startRecording, stopRecording } from '../dictation';
+import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
@@ -16,6 +17,7 @@ import {
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
   microphone: string;
+  smartAuto?: SmartAutoMicrophoneRequest | null;
 }
 
 type RecordingErrorKind = 'cleanup' | 'other';
@@ -33,7 +35,7 @@ interface PresentErrorOptions {
   producerEpoch?: number;
 }
 
-export function useRecordingState({ addEntry, microphone }: UseRecordingStateProps) {
+export function useRecordingState({ addEntry, microphone, smartAuto = null }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [errorPresentation, setErrorPresentation] = useState<RecordingErrorPresentation | null>(null);
@@ -46,6 +48,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
   const microphoneRef = useRef(microphone);
+  const smartAutoRef = useRef(smartAuto);
   const recordingStartTimeRef = useRef(recordingStartTime);
   const latestRecordingGenerationRef = useRef(0);
   const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
@@ -54,6 +57,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
   const dismissedErrorRef = useRef<{ message: string; recordingId?: number } | null>(null);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
+  useEffect(() => { smartAutoRef.current = smartAuto; }, [smartAuto]);
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);
@@ -350,7 +354,7 @@ export function useRecordingState({ addEntry, microphone }: UseRecordingStatePro
     const operation = (async () => {
       const producerEpoch = beginErrorProducer();
       try {
-        const res = await startRecording(microphoneRef.current, origin);
+        const res = await startRecording(microphoneRef.current, origin, smartAutoRef.current);
         // These two responses may describe a transform-owned supervisor
         // attempt while dictation itself is Idle. Lifecycle events remain the
         // authority; never let a later invoke response overwrite them.

@@ -828,6 +828,15 @@ fn handle_worker_event(
         return;
     };
     if current.owner != owner {
+        if owner.dictation_id().is_some() {
+            sink.notify(
+                current.app_handle.as_ref(),
+                owner,
+                AudioLifecycleEvent::StartupDiagnostic(
+                    crate::audio::AudioStartupDiagnostic::WorkerInvariantViolation,
+                ),
+            );
+        }
         tracing::warn!(
             target: "audio",
             owner = owner.telemetry_id(),
@@ -952,7 +961,7 @@ fn handle_worker_event(
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
                 public.set_phase(PublicPhase::Recording);
-                if owner.is_microphone_benchmark() {
+                if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     sink.notify(
                         current.app_handle.as_ref(),
                         current.owner,
@@ -2600,6 +2609,14 @@ mod tests {
         // was handled before these assertions.
         assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
         assert!(!active_flags.lock().unwrap()[0].load(Ordering::SeqCst));
+        let invariant = AudioLifecycleEvent::StartupDiagnostic(
+            crate::audio::AudioStartupDiagnostic::WorkerInvariantViolation,
+        );
+        let observed = sink.events.lock().unwrap();
+        assert!(observed.contains(&(AudioOwner::Dictation(8), invariant.clone())));
+        assert!(!observed.contains(&(owner, invariant)));
+        drop(observed);
+
         assert!(!sink
             .events
             .lock()

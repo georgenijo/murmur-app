@@ -47,13 +47,13 @@ class CaptureWorkerSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(SmokeError, "invalid protocol header"):
                 read_control_frame(stream, 42, nonce, time.monotonic() + 1)
 
-    def test_v7_protocol_version_fails_closed(self) -> None:
+    def test_previous_v8_protocol_version_fails_closed(self) -> None:
         capture_id = 42
         nonce = bytes(range(16))
         encoded = bytearray(
             encode_control_frame(capture_id, nonce, {"type": "helloAck"})
         )
-        encoded[4:6] = struct.pack("<H", 7)
+        encoded[4:6] = struct.pack("<H", 8)
         read_fd, write_fd = os.pipe()
         try:
             os.write(write_fd, encoded)
@@ -74,19 +74,19 @@ class CaptureWorkerSmokeTests(unittest.TestCase):
             import struct
             import sys
 
-            assert sys.argv[1] == "--production-v8"
+            assert sys.argv[1] == "--production-v9"
             capture_id = int(sys.argv[2])
             nonce = bytes.fromhex(sys.argv[3])
 
             def read_frame():
                 header = sys.stdin.buffer.read(36)
                 magic, version, kind, reserved, length, actual_id, actual_nonce = struct.unpack("<4sHBBIQ16s", header)
-                assert (magic, version, kind, reserved, actual_id, actual_nonce) == (b"MRMR", 8, 0, 0, capture_id, nonce)
+                assert (magic, version, kind, reserved, actual_id, actual_nonce) == (b"MRMR", 9, 0, 0, capture_id, nonce)
                 return json.loads(sys.stdin.buffer.read(length))
 
             def write_frame(message):
                 body = json.dumps(message, separators=(",", ":")).encode()
-                sys.stdout.buffer.write(struct.pack("<4sHBBIQ16s", b"MRMR", 8, 0, 0, len(body), capture_id, nonce) + body)
+                sys.stdout.buffer.write(struct.pack("<4sHBBIQ16s", b"MRMR", 9, 0, 0, len(body), capture_id, nonce) + body)
                 sys.stdout.buffer.flush()
 
             assert read_frame() == {"type": "hello"}

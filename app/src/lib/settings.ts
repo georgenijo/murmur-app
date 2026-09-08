@@ -299,6 +299,7 @@ export interface Settings {
   autoPasteDelayMs: number;
   /** Global Paste Last chord. `null` disables it. */
   pasteLastShortcut: PasteLastShortcut | null;
+  correctionShortcutEnabled: boolean;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -316,6 +317,14 @@ export interface Settings {
   microphone: string;
   /** True once `microphone` is proven to be a backend ID or System Default. */
   microphoneIdMigrationComplete: boolean;
+  /** Opt-in cached-inventory routing for the next dictation recording. */
+  smartAutoMicrophoneEnabled: boolean;
+  /** Stable Core Audio UIDs the user has explicitly allowed Smart Auto to use. */
+  smartAutoApprovedDeviceIds: string[];
+  /** Optional ordered stable-ID preferences, evaluated before the macOS default. */
+  smartAutoPreferredDeviceIds: string[];
+  /** Continuity Capture remains excluded unless the user explicitly allows it. */
+  smartAutoAllowContinuity: boolean;
   launchAtLogin: boolean;
   /** Confirmed vertical fine-tuning for the notch overlay, in logical points. */
   overlayVerticalOffset: number;
@@ -330,6 +339,8 @@ export interface Settings {
   retainHistory: boolean;
   /** Keep meeting chunk WAV files after their durable transcript commits. */
   meetingRetainAudio: boolean;
+  /** Opt in to local, session-scoped labels for remote meeting speakers. */
+  meetingDiarization: boolean;
   /** Opt in to helper-side acoustic echo cancellation for Meeting Capture. */
   meetingEchoCancellationEnabled: boolean;
   /** Delete completed meetings older than this many days; 0 keeps them by age. */
@@ -538,6 +549,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
   pasteLastShortcut: null,
+  correctionShortcutEnabled: false,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -547,6 +559,10 @@ export const DEFAULT_SETTINGS: Settings = {
   autoStopSilenceMs: 0,
   microphone: 'system_default',
   microphoneIdMigrationComplete: true,
+  smartAutoMicrophoneEnabled: false,
+  smartAutoApprovedDeviceIds: [],
+  smartAutoPreferredDeviceIds: [],
+  smartAutoAllowContinuity: false,
   launchAtLogin: false,
   overlayVerticalOffset: 0,
   vadSensitivity: 50,
@@ -557,6 +573,7 @@ export const DEFAULT_SETTINGS: Settings = {
   smartPunctuation: true,
   retainHistory: true,
   meetingRetainAudio: false,
+  meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
   meetingRetentionDays: 0,
   meetingMaxSessions: 100,
@@ -590,9 +607,57 @@ export const STORAGE_KEY = 'dictation-settings';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
 const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
+const MAX_SMART_AUTO_DEVICES = 32;
+
+export interface SmartAutoMicrophoneRequest {
+  approvedDeviceIds: string[];
+  preferredDeviceIds: string[];
+  allowContinuity: boolean;
+}
+
+function sanitizeSmartAutoDeviceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== 'string') continue;
+    const id = candidate.trim();
+    if (!id || id.includes('\0') || new TextEncoder().encode(id).length > 4096 || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+    if (result.length === MAX_SMART_AUTO_DEVICES) break;
+  }
+  return result;
+}
+
+export function smartAutoMicrophoneRequest(
+  settings: Pick<Settings,
+    'smartAutoMicrophoneEnabled'
+    | 'smartAutoApprovedDeviceIds'
+    | 'smartAutoPreferredDeviceIds'
+    | 'smartAutoAllowContinuity'>,
+): SmartAutoMicrophoneRequest | null {
+  if (!settings.smartAutoMicrophoneEnabled) return null;
+  return {
+    approvedDeviceIds: settings.smartAutoApprovedDeviceIds,
+    preferredDeviceIds: settings.smartAutoPreferredDeviceIds,
+    allowContinuity: settings.smartAutoAllowContinuity,
+  };
+}
+
+/**
+ * Normalize the persisted microphone setting into the `deviceName` argument the
+ * capture commands expect. `DEFAULT_SETTINGS.microphone` is the sentinel string
+ * `'system_default'`, not a CoreAudio UID — forwarding it verbatim makes the
+ * Rust device lookup fail with `NoInputDevice`. It (and an empty value) must
+ * become `null`, which means "let the backend pick the system default".
+ */
+export function microphoneDeviceNameArg(microphone: string | null | undefined): string | null {
+  return microphone && microphone !== DEFAULT_SETTINGS.microphone ? microphone : null;
+}
 
 export function clampOverlayVerticalOffset(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -855,6 +920,13 @@ export function loadSettings(): Settings {
         parsed.microphoneIdMigrationComplete = false;
       }
 
+      parsed.smartAutoMicrophoneEnabled = parsed.smartAutoMicrophoneEnabled === true;
+      const smartAutoApprovedDeviceIds = sanitizeSmartAutoDeviceIds(parsed.smartAutoApprovedDeviceIds);
+      parsed.smartAutoApprovedDeviceIds = smartAutoApprovedDeviceIds;
+      parsed.smartAutoPreferredDeviceIds = sanitizeSmartAutoDeviceIds(parsed.smartAutoPreferredDeviceIds)
+        .filter((id) => smartAutoApprovedDeviceIds.includes(id));
+      parsed.smartAutoAllowContinuity = parsed.smartAutoAllowContinuity === true;
+
       // Validate model against current allow-list (includes Moonshine migration)
       const validModels = new Set<string>(AVAILABLE_MODEL_OPTIONS.map((m) => m.value));
       if (typeof parsed.model !== 'string' || !validModels.has(parsed.model)) {
@@ -1103,6 +1175,9 @@ export function loadSettings(): Settings {
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
+      if (typeof parsed.correctionShortcutEnabled !== 'boolean') {
+        parsed.correctionShortcutEnabled = false;
+      }
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;
       }
@@ -1119,6 +1194,9 @@ export function loadSettings(): Settings {
       }
       if (typeof parsed.meetingRetainAudio !== 'boolean') {
         parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;
+      }
+      if (typeof parsed.meetingDiarization !== 'boolean') {
+        parsed.meetingDiarization = DEFAULT_SETTINGS.meetingDiarization;
       }
       if (typeof parsed.meetingEchoCancellationEnabled !== 'boolean') {
         parsed.meetingEchoCancellationEnabled = DEFAULT_SETTINGS.meetingEchoCancellationEnabled;

@@ -8,9 +8,11 @@ use tauri::{Emitter, Manager};
 
 #[derive(Clone)]
 pub(crate) struct LastDelivery {
-    text: String,
-    target: DeliveryTargetSnapshot,
+    pub(crate) recording_id: u64,
+    pub(crate) text: String,
+    pub(crate) target: DeliveryTargetSnapshot,
     delay_ms: u64,
+    pub(crate) teaching_context: Option<crate::correct_and_teach::TeachingContext>,
 }
 
 #[derive(Default)]
@@ -20,18 +22,35 @@ pub(crate) struct DeliveryRecoveryState {
 }
 
 impl DeliveryRecoveryState {
-    pub(crate) fn remember(&self, text: String, target: DeliveryTargetSnapshot, delay_ms: u64) {
+    pub(crate) fn remember(
+        &self,
+        recording_id: u64,
+        text: String,
+        target: DeliveryTargetSnapshot,
+        delay_ms: u64,
+        teaching_context: Option<crate::correct_and_teach::TeachingContext>,
+    ) {
         if text.trim().is_empty() {
             return;
         }
         *self.latest.lock_or_recover() = Some(LastDelivery {
+            recording_id,
             text,
             target,
             delay_ms: delay_ms.min(500),
+            teaching_context,
         });
     }
 
-    fn latest(&self) -> Option<LastDelivery> {
+    pub(crate) fn correct(&self, recording_id: u64, original: &str, corrected: &str) {
+        if let Some(latest) = self.latest.lock_or_recover().as_mut() {
+            if latest.recording_id == recording_id && latest.text == original {
+                latest.text = corrected.to_string();
+            }
+        }
+    }
+
+    pub(crate) fn latest(&self) -> Option<LastDelivery> {
         self.latest.lock_or_recover().clone()
     }
 }
@@ -170,11 +189,41 @@ mod tests {
     fn empty_and_whitespace_never_replace_the_latest_delivery() {
         let state = DeliveryRecoveryState::default();
         assert!(state.latest().is_none());
-        state.remember("hello".into(), DeliveryTargetSnapshot::Incomplete, 900);
-        state.remember("   ".into(), DeliveryTargetSnapshot::SelfTarget, 0);
+        state.remember(
+            1,
+            "hello".into(),
+            DeliveryTargetSnapshot::Incomplete,
+            900,
+            None,
+        );
+        state.remember(2, "   ".into(), DeliveryTargetSnapshot::SelfTarget, 0, None);
         let latest = state.latest().expect("delivery retained");
         assert_eq!(latest.text, "hello");
         assert_eq!(latest.delay_ms, 500);
         assert!(matches!(latest.target, DeliveryTargetSnapshot::Incomplete));
+    }
+    #[test]
+    fn corrections_build_on_approved_text_and_cannot_replace_a_newer_delivery() {
+        let state = DeliveryRecoveryState::default();
+        state.remember(
+            41,
+            "Tori Friday".into(),
+            DeliveryTargetSnapshot::Incomplete,
+            0,
+            None,
+        );
+        state.correct(41, "Tori Friday", "TAURI Friday");
+        assert_eq!(state.latest().unwrap().text, "TAURI Friday");
+        state.correct(41, "Tori Friday", "stale");
+        assert_eq!(state.latest().unwrap().text, "TAURI Friday");
+        state.remember(
+            42,
+            "Tori Friday".into(),
+            DeliveryTargetSnapshot::Incomplete,
+            0,
+            None,
+        );
+        state.correct(41, "Tori Friday", "wrong recording");
+        assert_eq!(state.latest().unwrap().text, "Tori Friday");
     }
 }

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { SmartAutoMicrophoneRequest } from './settings';
 import { save } from '@tauri-apps/plugin-dialog';
 
 export type SystemAudioPermissionState = 'unknown' | 'granted' | 'denied' | 'unsupported';
@@ -28,6 +29,7 @@ export type MeetingEchoCancellationRuntime =
   | { state: 'off' }
   | { state: 'starting' }
   | { state: 'active' }
+  | { state: 'recovering'; reason: EchoCancellationBypassReason; episode: number; attempt: number; maxAttempts: number }
   | { state: 'bypassed'; reason: EchoCancellationBypassReason };
 
 export interface MeetingRuntimeStatus {
@@ -60,6 +62,7 @@ export interface MeetingSegment {
   id: number;
   sessionId: string;
   speaker: MeetingSpeaker;
+  remoteSpeakerId: number | null;
   sequence: number;
   startMs: number;
   endMs: number;
@@ -73,6 +76,7 @@ export interface MeetingDetail {
   session: MeetingSession;
   segments: MeetingSegment[];
   labels: MeetingSpeakerLabels;
+  remoteSpeakers: RemoteSpeakerLabel[];
   generated: GeneratedMeetingReview | null;
   review: SavedMeetingReview | null;
   activeDocument: MeetingReviewDocumentV1 | null;
@@ -80,6 +84,7 @@ export interface MeetingDetail {
 }
 
 export interface MeetingSpeakerLabels { me: string; them: string }
+export interface RemoteSpeakerLabel { speakerId: number; label: string }
 export interface ReviewText { key: string; text: string; sourceSegmentIds: number[] }
 export interface ReviewAction extends ReviewText { owner: string | null; dueDate: string | null }
 export interface MeetingReviewDocumentV1 {
@@ -143,11 +148,22 @@ export interface MeetingPage {
 
 export interface StartMeetingOptions {
   microphone: string;
+  smartAuto?: SmartAutoMicrophoneRequest | null;
   retainAudio: boolean;
   retentionDays: number;
   maxSessions: number;
   echoCancellation: boolean;
+  diarization: boolean;
 }
+
+export interface DiarizationModelStatus {
+  supported: boolean;
+  installed: boolean;
+  installing: boolean;
+  bytes: number;
+}
+
+export const MEETING_DIARIZATION_MODEL_ID = 'meeting-diarization-coreml';
 
 export const IDLE_MEETING_STATUS: MeetingRuntimeStatus = {
   generation: 0,
@@ -167,13 +183,35 @@ export async function getMeetingStatus(): Promise<MeetingRuntimeStatus> {
 export async function startMeeting(options: StartMeetingOptions): Promise<MeetingSession> {
   return invoke('start_meeting', {
     request: {
-      deviceName: options.microphone,
+      deviceName: options.smartAuto ? null : options.microphone,
+      ...(options.smartAuto ? { smartAuto: options.smartAuto } : {}),
       retainAudio: options.retainAudio,
       retentionDays: options.retentionDays === 0 ? null : options.retentionDays,
       maxSessions: options.maxSessions,
       echoCancellation: options.echoCancellation,
+      diarization: options.diarization,
     },
   });
+}
+
+export async function getDiarizationModelStatus(): Promise<DiarizationModelStatus> {
+  return invoke('get_diarization_model_status');
+}
+
+export async function downloadDiarizationModel(): Promise<void> {
+  await invoke('download_model', { modelName: MEETING_DIARIZATION_MODEL_ID });
+}
+
+export async function removeDiarizationModel(): Promise<void> {
+  await invoke('remove_diarization_model');
+}
+
+export async function renameMeetingRemoteSpeaker(
+  sessionId: string,
+  speakerId: number,
+  label: string,
+): Promise<MeetingDetail> {
+  return invoke('rename_meeting_remote_speaker', { sessionId, speakerId, label });
 }
 
 export async function stopMeeting(): Promise<void> {
@@ -265,10 +303,34 @@ export function formatMeetingTimestamp(ms: number): string {
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
+export function echoCancellationNotice(status: MeetingEchoCancellationRuntime): string | null {
+  switch (status.state) {
+    case 'recovering':
+      return `Speaker echo reduction was interrupted. Murmur is keeping the original microphone audio while it recovers (attempt ${status.attempt} of ${status.maxAttempts}).`;
+    case 'bypassed':
+      return 'Speaker echo reduction is unavailable. Murmur is keeping the original microphone audio for the rest of this meeting.';
+    case 'off':
+    case 'starting':
+    case 'active':
+      return null;
+  }
+}
+
 export function orderedMeetingSegments(segments: MeetingSegment[], limit = 200): MeetingSegment[] {
   return [...new Map(segments.map((segment) => [segment.id, segment])).values()]
     .sort((left, right) => left.startMs - right.startMs || left.id - right.id)
     .slice(-Math.max(1, limit));
+}
+
+export function meetingSegmentDisplayLabel(
+  segment: MeetingSegment,
+  labels: MeetingSpeakerLabels,
+  remoteSpeakers: RemoteSpeakerLabel[],
+): string {
+  if (segment.speaker === 'me') return labels.me;
+  if (segment.remoteSpeakerId === null) return labels.them;
+  return remoteSpeakers.find((speaker) => speaker.speakerId === segment.remoteSpeakerId)?.label
+    ?? labels.them;
 }
 
 export function meetingErrorMessage(code: string | null): string | null {

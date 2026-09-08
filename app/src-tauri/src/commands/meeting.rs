@@ -6,6 +6,7 @@ use crate::meeting_review::{
     SaveMeetingReviewRequest,
 };
 use crate::meeting_store::{MeetingPage, MeetingSession, MeetingStoreStatus};
+use crate::microphone_auto::SmartAutoRequest;
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use serde::Deserialize;
@@ -19,6 +20,8 @@ pub struct StartMeetingRequest {
     #[serde(default)]
     pub device_name: Option<String>,
     #[serde(default)]
+    pub smart_auto: Option<SmartAutoRequest>,
+    #[serde(default)]
     pub retain_audio: bool,
     #[serde(default)]
     pub retention_days: Option<u32>,
@@ -26,6 +29,8 @@ pub struct StartMeetingRequest {
     pub max_sessions: u32,
     #[serde(default)]
     pub echo_cancellation: bool,
+    #[serde(default)]
+    pub diarization: bool,
 }
 
 fn default_max_sessions() -> u32 {
@@ -77,6 +82,7 @@ pub async fn start_meeting(
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSession, String> {
     let _transition = state.app_state.recording_transition.lock().await;
+    crate::meeting_diarization::cancel_all()?;
     if let Some(error) = meeting_conflict(&state) {
         return Err(error.to_string());
     }
@@ -124,13 +130,16 @@ pub async fn start_meeting(
         .meeting_inference_active
         .store(true, Ordering::SeqCst);
     state.transform_runtime.shutdown();
+    let device_id = crate::microphone_auto::resolve_capture_device(
+        request.device_name.clone(),
+        request.smart_auto.as_ref(),
+    )?;
     let config = MeetingCaptureConfig {
         generation,
         session_id: session_id.clone(),
         vad_sensitivity,
-        device_id: request
-            .device_name
-            .filter(|device| device != "system_default"),
+        diarization: request.diarization && crate::diarization_model::installed(),
+        device_id: device_id.filter(|device| device != "system_default"),
         echo_cancellation: if request.echo_cancellation {
             murmur_capture_helper_protocol::EchoCancellationMode::Enabled
         } else {
@@ -305,6 +314,7 @@ pub fn delete_meeting(id: String, state: tauri::State<'_, State>) -> Result<(), 
     {
         return Err("Cancel this meeting summary before deleting it.".to_string());
     }
+    crate::meeting_diarization::cancel_session(id)?;
     state.meeting_store.repository()?.delete_session(id)
 }
 
@@ -320,6 +330,7 @@ pub fn delete_all_meetings(state: tauri::State<'_, State>) -> Result<(), String>
     ) {
         return Err("Cancel the active meeting summary before deleting meeting history.".into());
     }
+    crate::meeting_diarization::cancel_all()?;
     state.meeting_store.repository()?.delete_all()
 }
 
@@ -333,4 +344,17 @@ pub fn prune_meetings(
         retention_days.map(|days| days.clamp(1, 3650)),
         max_sessions.clamp(1, 10_000),
     )
+}
+
+#[tauri::command]
+pub fn rename_meeting_remote_speaker(
+    state: tauri::State<'_, State>,
+    session_id: String,
+    speaker_id: u32,
+    label: String,
+) -> Result<MeetingWorkspace, String> {
+    state
+        .meeting_store
+        .repository()?
+        .rename_remote_speaker(&session_id, speaker_id, &label)
 }

@@ -679,6 +679,8 @@ impl ModelRuntimeManager {
         model_name: &str,
         reason: PreparationReason,
     ) -> Result<LoadReport, String> {
+        let _diarization_reservation =
+            crate::meeting_diarization::ForegroundReservation::acquire()?;
         let lock_started = std::time::Instant::now();
         let mut inner = self.inner.lock_or_recover();
         let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
@@ -694,6 +696,8 @@ impl ModelRuntimeManager {
         reason: PreparationReason,
         operation: impl FnOnce(&mut dyn TranscriptionBackend) -> Result<T, String>,
     ) -> Result<(T, LoadReport), String> {
+        let _diarization_reservation =
+            crate::meeting_diarization::ForegroundReservation::acquire()?;
         let lock_started = std::time::Instant::now();
         let mut inner = self.inner.lock_or_recover();
         let lock_wait_ms = lock_started.elapsed().as_millis() as u64;

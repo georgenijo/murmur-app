@@ -215,7 +215,7 @@ impl PerformanceRepository {
         runtimes: Vec<RuntimeIdentityV1>,
         input: ContentFreeInputSummaryV1,
     ) -> StoreResult<ActiveRunV1> {
-        self.begin_at(kind, correlation, runtimes, input, now_ms())
+        self.begin_at(kind, correlation, runtimes, input, now_ms(), None)
     }
 
     pub(crate) fn begin_at(
@@ -225,6 +225,7 @@ impl PerformanceRepository {
         runtimes: Vec<RuntimeIdentityV1>,
         input: ContentFreeInputSummaryV1,
         started_at_ms: i64,
+        production: Option<super::production::ProductionRunV1>,
     ) -> StoreResult<ActiveRunV1> {
         retry_operation(PerformanceStoreOperationV1::Begin, || {
             self.begin_once(
@@ -233,6 +234,7 @@ impl PerformanceRepository {
                 runtimes.clone(),
                 input.clone(),
                 started_at_ms,
+                production.clone(),
             )
         })
     }
@@ -244,6 +246,7 @@ impl PerformanceRepository {
         runtimes: Vec<RuntimeIdentityV1>,
         input: ContentFreeInputSummaryV1,
         started_at_ms: i64,
+        production: Option<super::production::ProductionRunV1>,
     ) -> StoreResult<ActiveRunV1> {
         let mut connection = self.open()?;
         let transaction = connection.transaction().map_err(db_error)?;
@@ -263,6 +266,7 @@ impl PerformanceRepository {
             input,
             clear_epoch,
             query_process: None,
+            production,
         };
         insert_active(&transaction, &active)?;
         transaction.commit().map_err(db_error)?;
@@ -379,6 +383,7 @@ impl PerformanceRepository {
             resources,
             follow_ups: Vec::new(),
             query_process: active.query_process,
+            production: active.production,
         };
         let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
         let (correlation_kind, correlation_id) = run.correlation.storage_parts();

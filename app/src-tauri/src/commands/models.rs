@@ -117,6 +117,9 @@ pub fn get_model_runtime_status(
 
 #[tauri::command]
 pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: String) -> bool {
+    if model_name == crate::diarization_model::MODEL_ID {
+        return crate::diarization_model::installed();
+    }
     if !is_safe_model_identifier(&model_name) {
         return false;
     }
@@ -138,6 +141,9 @@ pub async fn download_model(
     state: tauri::State<'_, State>,
     model_name: String,
 ) -> Result<(), String> {
+    if model_name == crate::diarization_model::MODEL_ID {
+        return crate::diarization_model::download(&app_handle).await;
+    }
     let definition = model_runtime::model_definition(&model_name)?;
     if !model_runtime::model_supported(definition) {
         return Err("This model is not supported on the current platform".to_string());

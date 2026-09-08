@@ -58,7 +58,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
 import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
-import { pasteLastShortcutLabel } from './lib/settings';
+import { microphoneDeviceNameArg, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -169,6 +169,23 @@ function App() {
   useOverlaySettingsSync(applyExternalSettings);
 
   useEffect(() => {
+    const smartAuto = smartAutoMicrophoneRequest(settings);
+    void invoke('set_correction_shortcut', {
+      enabled: settings.correctionShortcutEnabled === true && !settings.disabled,
+      deviceName: smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
+      smartAuto,
+    }).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
+  }, [
+    settings.correctionShortcutEnabled,
+    settings.disabled,
+    settings.microphone,
+    settings.smartAutoMicrophoneEnabled,
+    settings.smartAutoApprovedDeviceIds,
+    settings.smartAutoPreferredDeviceIds,
+    settings.smartAutoAllowContinuity,
+  ]);
+
+  useEffect(() => {
     const requested = settings.pasteLastShortcut;
     const generation = ++pasteLastShortcutGenerationRef.current;
     void setPasteLastShortcut(requested)
@@ -194,6 +211,15 @@ function App() {
     return () => unlisten?.();
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>('correction-start-failed', ({ payload }) => {
+      setDeliveryRecoveryMessage(typeof payload === 'string' ? payload : 'Could not start correction. Try Correct last dictation from ⌘K.');
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
   // if started without permission).
@@ -213,7 +239,11 @@ function App() {
     status, recordingDuration, error: recordingError,
     dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
-  } = useRecordingState({ addEntry, microphone: settings.microphone });
+  } = useRecordingState({
+    addEntry,
+    microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
+  });
   const [statsResetVersion, setStatsResetVersion] = useState(0);
   const [queryStatsVersion, setQueryStatsVersion] = useState(0);
   const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
@@ -252,6 +282,7 @@ function App() {
     accessibilityGranted,
     transformHoldKey: settings.transformHoldKey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
   });
   useQueryFlow({
     enabled: hotkeysArmed
@@ -261,6 +292,7 @@ function App() {
     accessibilityGranted,
     queryHotkey: settings.queryHotkey,
     microphone: settings.microphone,
+    smartAuto: smartAutoMicrophoneRequest(settings),
     automaticallyCopyAnswers: settings.queryAutomaticallyCopyAnswers,
     command: {
       provider: settings.queryProvider,
@@ -549,6 +581,19 @@ function App() {
         run: () => { void pickAudioFiles(); },
       },
       {
+        id: 'correct-last-dictation',
+        title: 'Correct last dictation…',
+        section: 'History',
+        keywords: ['fix', 'spelling', 'voice', 'correction'],
+        run: () => {
+          const smartAuto = smartAutoMicrophoneRequest(settings);
+          void invoke('start_dictation_correction', {
+            deviceName: smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
+            smartAuto,
+          }).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+        },
+      },
+      {
         id: 'paste-last',
         title: 'Paste Last / Retry Delivery',
         section: 'History',
@@ -644,7 +689,10 @@ function App() {
     ];
     return items;
   }, [
-    status, historyEntries, settings.disabled, settings.pasteLastShortcut, updateSettings, handleStart, handleStop,
+    status, historyEntries, settings.disabled, settings.pasteLastShortcut, settings.microphone,
+    settings.smartAutoMicrophoneEnabled, settings.smartAutoApprovedDeviceIds,
+    settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
+    updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
     meetings,
   ]);

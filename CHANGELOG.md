@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Close abandoned transform confirmations when a chained capture cannot start, and keep an older confirmation timer from dismissing a newer review (#682, #683).
+- Reloading the notch restores the active recording or processing indicator from native state instead of showing idle while recording continues (#680).
+
+### Added
+
+- Correct the latest dictation with a spoken instruction, review the local model's proposed change, and copy or replace a matching selection. Optional ⌘⇧E shortcut, literal spelling preservation, and separate correction teaching (#676).
+
 ## [0.41.0] - 2026-09-04
 
 ### Added

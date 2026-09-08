@@ -1,3 +1,4 @@
+pub(crate) mod production;
 mod repository;
 mod types;
 
@@ -13,6 +14,7 @@ use tauri::Emitter;
 pub(crate) struct PerformanceMetrics {
     inner: Arc<Mutex<PerformanceMetricsInner>>,
     operation_lock: Arc<Mutex<()>>,
+    production: Arc<Mutex<production::ProductionAccumulator>>,
 }
 
 impl Default for PerformanceMetrics {
@@ -20,6 +22,7 @@ impl Default for PerformanceMetrics {
         Self {
             inner: Arc::new(Mutex::new(PerformanceMetricsInner::default())),
             operation_lock: Arc::new(Mutex::new(())),
+            production: Arc::new(Mutex::new(production::ProductionAccumulator::default())),
         }
     }
 }
@@ -42,6 +45,12 @@ impl PerformanceMetrics {
             .operation_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        {
+            let mut production = self.production.lock().unwrap_or_else(|p| p.into_inner());
+            production.machine_id = production::local_machine_id(&root);
+            production.os_version =
+                sysinfo::System::os_version().filter(|value| production::valid_os_version(value));
+        }
         let result = PerformanceRepository::initialize(root.clone());
         let mut inner = self
             .inner
@@ -91,6 +100,88 @@ impl PerformanceMetrics {
                     .unwrap_or(PerformanceStoreErrorClassV1::Unavailable),
                 attempts: 1,
             })
+    }
+
+    pub(crate) fn register_production(
+        &self,
+        id: u64,
+        selection: production::MicrophoneSelectionV1,
+        kind: Option<production::MicrophoneKindV1>,
+    ) {
+        self.production
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .register(id, selection, kind);
+    }
+    pub(crate) fn production_context(
+        &self,
+        id: u64,
+        context: &crate::dictation_context::DictationContextSnapshot,
+    ) {
+        self.production
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .context(id, context);
+    }
+    pub(crate) fn observe_production_capture(
+        &self,
+        id: u64,
+        event: crate::audio::AudioStartupDiagnostic,
+    ) {
+        let persist = self
+            .production
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .observe(id, event);
+        if persist {
+            self.schedule_production_persistence(id);
+        }
+    }
+    pub(crate) fn production_sample_count(&self, id: u64, count: usize) {
+        self.production
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sample_count(id, count);
+    }
+
+    pub(crate) fn production_capture_failure(&self, id: u64, kind: crate::audio::AudioFailureKind) {
+        let persist = self
+            .production
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .failure(id, kind);
+        if persist {
+            self.schedule_production_persistence(id);
+        }
+    }
+    fn schedule_production_persistence(&self, id: u64) {
+        let metrics = self.clone();
+        drop(tauri::async_runtime::spawn_blocking(move || {
+            let _ = metrics.persist_production(id);
+        }));
+    }
+    fn persist_production(&self, id: u64) -> Result<(), String> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let snapshot = self
+            .production
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .active_snapshot(id);
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
+        let result = self
+            .repository(PerformanceStoreOperationV1::Update)
+            .and_then(|repository| {
+                repository.update_active(
+                    &RunCorrelationV1::Dictation { recording_id: id },
+                    |active| active.production = Some(snapshot.clone()),
+                )
+            });
+        self.observe(result).map(|_| ())
     }
 
     pub(crate) fn health(&self) -> PerformanceStoreHealthV1 {
@@ -187,7 +278,20 @@ impl PerformanceMetrics {
         let result = self
             .repository(PerformanceStoreOperationV1::Begin)
             .and_then(|repository| {
-                repository.begin_at(kind, correlation, runtimes, input, started_at_ms)
+                let production = recording_id.and_then(|id| {
+                    self.production
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .active_snapshot(id)
+                });
+                repository.begin_at(
+                    kind,
+                    correlation,
+                    runtimes,
+                    input,
+                    started_at_ms,
+                    production,
+                )
             });
         if let Err(error) = &result {
             let mut inner = self
@@ -355,7 +459,29 @@ impl PerformanceMetrics {
             let result = self
                 .repository(PerformanceStoreOperationV1::Complete)
                 .and_then(|repository| {
-                    repository.complete(correlation, outcome, stages, input, runtimes)
+                    let production =
+                        if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                            self.production
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .snapshot(*recording_id, &outcome)
+                        } else {
+                            None
+                        };
+                    if production.is_some() {
+                        repository.update_active(correlation, |active| {
+                            active.production = production.clone()
+                        })?;
+                    }
+                    let completed =
+                        repository.complete(correlation, outcome, stages, input, runtimes)?;
+                    if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                        self.production
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(*recording_id);
+                    }
+                    Ok(completed)
                 });
             self.observe(result)?
         };
@@ -479,6 +605,10 @@ impl PerformanceMetrics {
                 .repository(PerformanceStoreOperationV1::Clear)
                 .and_then(|repository| repository.clear());
             self.observe(result)?;
+            self.production
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
         }
         let app_handle = self
             .inner
@@ -963,5 +1093,199 @@ mod tests {
         assert_eq!(recovered.status, PerformanceStoreStatusV1::Available);
         assert_eq!(metrics.health().status, PerformanceStoreStatusV1::Available);
         assert!(!temp.path().join("diagnostics/quarantine").exists());
+    }
+}
+
+#[cfg(test)]
+mod production_persistence_tests {
+    use super::*;
+    use crate::audio::{AudioBackendOrderSource, AudioStartupDiagnostic};
+    use murmur_capture_helper_protocol::CaptureBackend;
+
+    fn begin(metrics: &PerformanceMetrics, id: u64) {
+        metrics.register_production(
+            id,
+            production::MicrophoneSelectionV1::SystemDefault,
+            Some(production::MicrophoneKindV1::BuiltIn),
+        );
+        metrics.production.lock().unwrap().observe(
+            id,
+            AudioStartupDiagnostic::BackendPlan {
+                primary: CaptureBackend::Auhal,
+                fallback: CaptureBackend::Cpal,
+                source: AudioBackendOrderSource::Default,
+            },
+        );
+        metrics.begin_dictation(id, Vec::new()).unwrap();
+    }
+    #[test]
+    fn production_capture_survives_restart_and_clear_discards_delayed_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 1);
+        metrics.production.lock().unwrap().observe(
+            1,
+            AudioStartupDiagnostic::CycleReady {
+                cycle_start_to_first_pcm_ms: 123,
+            },
+        );
+        metrics.persist_production(1).unwrap();
+        let restarted = PerformanceMetrics::default();
+        restarted
+            .initialize(temp.path().to_path_buf(), None)
+            .unwrap();
+        let runs = restarted.list(200).unwrap().runs;
+        assert_eq!(runs.len(), 1);
+        assert!(matches!(runs[0].outcome, RunOutcomeV1::Interrupted { .. }));
+        assert_eq!(
+            runs[0].production.as_ref().unwrap().capture.ready_ms,
+            Some(123)
+        );
+        begin(&restarted, 2);
+        restarted.clear().unwrap();
+        assert!(restarted
+            .production
+            .lock()
+            .unwrap()
+            .active_snapshot(2)
+            .is_none());
+        restarted.production.lock().unwrap().observe(
+            2,
+            AudioStartupDiagnostic::CycleReady {
+                cycle_start_to_first_pcm_ms: 456,
+            },
+        );
+        restarted.persist_production(2).unwrap();
+        assert!(restarted
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: 2 },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None
+            )
+            .unwrap()
+            .is_none());
+        assert!(restarted.list(200).unwrap().runs.is_empty());
+    }
+    #[test]
+    fn resource_heartbeats_preserve_early_and_late_production_capture_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 7);
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::HelperReady {
+                resolve_ms: 2,
+                signature_ms: 3,
+                spawn_ms: 4,
+            },
+        );
+        let mut sample = ResourceSampleV1 {
+            schema_version: RESOURCE_SAMPLE_SCHEMA_VERSION,
+            observed_at_ms: chrono::Utc::now().timestamp_millis(),
+            host: HostResourceSampleV1 {
+                cpu_percent: MeasurementV1::measured(1.0),
+            },
+            main_process: ProcessResourceSampleV1 {
+                cpu_percent: MeasurementV1::measured(1.0),
+                rss_bytes: MeasurementV1::measured(1024),
+                rust_heap_bytes: MeasurementV1::NotApplicable,
+                ffi_native_heap_bytes: MeasurementV1::NotApplicable,
+            },
+            sidecar_process: SidecarResourceSampleV1::unavailable(UnavailableReasonV1::NoSamples),
+        };
+        metrics.insert_resource_sample(&sample).unwrap();
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::FirstPcm {
+                backend: CaptureBackend::Auhal,
+                resolution_pass: 1,
+                attempt_index: 1,
+                attempt_start_to_first_pcm_ms: 145,
+                active_elapsed_ms: 160,
+            },
+        );
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::CycleReady {
+                cycle_start_to_first_pcm_ms: 180,
+            },
+        );
+        sample.observed_at_ms += 1;
+        metrics.insert_resource_sample(&sample).unwrap();
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 20 },
+        );
+        metrics.production_sample_count(7, 16_000);
+        let run = metrics
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: 7 },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                Some(ContentFreeInputSummaryV1::audio(1_000)),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let capture = &run.production.as_ref().unwrap().capture;
+        assert_eq!(capture.helper_resolve_ms, Some(2));
+        assert_eq!(capture.helper_signature_ms, Some(3));
+        assert_eq!(capture.helper_spawn_ms, Some(4));
+        assert_eq!(capture.first_pcm_ms, Some(145));
+        assert_eq!(capture.ready_ms, Some(180));
+        assert_eq!(capture.stop_to_worker_exit_ms, Some(20));
+        assert_eq!(capture.zero_sample_success, Some(false));
+        assert_eq!(
+            metrics.list(200).unwrap().runs[0].production,
+            run.production
+        );
+        assert_eq!(metrics.resource_window().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn completed_snapshot_preserves_exact_recording_and_real_zero_sample_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 5);
+        metrics.production.lock().unwrap().observe(
+            99,
+            AudioStartupDiagnostic::CycleReady {
+                cycle_start_to_first_pcm_ms: 999,
+            },
+        );
+        metrics.production.lock().unwrap().observe(
+            5,
+            AudioStartupDiagnostic::CycleReady {
+                cycle_start_to_first_pcm_ms: 180,
+            },
+        );
+        metrics.production_sample_count(5, 0);
+        let run = metrics
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: 5 },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                Some(ContentFreeInputSummaryV1::audio(0)),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let capture = &run.production.as_ref().unwrap().capture;
+        assert_eq!(capture.ready_ms, Some(180));
+        assert_eq!(capture.zero_sample_success, Some(true));
+        assert_eq!(capture.first_callback_wait_ms, None);
+        let stored = metrics.list(200).unwrap().runs;
+        assert_eq!(stored[0].production, run.production);
+        assert!(metrics
+            .production
+            .lock()
+            .unwrap()
+            .active_snapshot(5)
+            .is_none());
     }
 }

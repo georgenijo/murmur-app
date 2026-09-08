@@ -49,6 +49,7 @@ jobs:
               - 'scripts/release_artifacts.py'
               - 'scripts/capture_agent_matrix.py'
               - 'scripts/smoke_test_capture_worker.py'
+              - 'scripts/smoke_test_capture_first_pcm.py'
               - 'scripts/validate_capture_boundary.py'
               - 'scripts/validate_reference_docs.py'
               - 'scripts/release_version.py'
@@ -63,6 +64,9 @@ jobs:
               - 'tests/test_workflow_policy.py'
               - 'tests/test_capture_agent_matrix.py'
               - 'tests/test_capture_worker_smoke.py'
+              - 'tests/test_capture_first_pcm.py'
+              - 'tests/test_native_capture_ci.py'
+              - 'infra/native-capture-ci/**'
               - 'tests/test_log_receiver.py'
               - 'tests/test_event_store.py'
 
@@ -78,6 +82,8 @@ jobs:
             tests/test_workflow_policy.py \
             tests/test_capture_agent_matrix.py \
             tests/test_capture_worker_smoke.py \
+            tests/test_capture_first_pcm.py \
+            tests/test_native_capture_ci.py \
             tests/test_event_store.py \
             tests/test_log_receiver.py
 

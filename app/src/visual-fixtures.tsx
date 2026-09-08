@@ -12,7 +12,7 @@ import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
-import { DEFAULT_SETTINGS } from './lib/settings';
+import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
@@ -90,10 +90,11 @@ const meetingFixture = {
     preview: 'We agreed to ship the local review workspace.', errorCode: null,
   },
   segments: [
-    { id: 101, sessionId: 'meeting-fixture', speaker: 'me', sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'We agreed to ship the local review workspace.', audioAvailable: false, errorCode: null },
-    { id: 102, sessionId: 'meeting-fixture', speaker: 'them', sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'I will verify the export formats and source links.', audioAvailable: false, errorCode: null },
+    { id: 101, sessionId: 'meeting-fixture', speaker: 'me', remoteSpeakerId: null, sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'We agreed to ship the local review workspace.', audioAvailable: false, errorCode: null },
+    { id: 102, sessionId: 'meeting-fixture', speaker: 'them', remoteSpeakerId: null, sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'I will verify the export formats and source links.', audioAvailable: false, errorCode: null },
   ],
   labels: { me: 'George', them: 'Alex' },
+  remoteSpeakers: [],
   generated: { revision: 2, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The team agreed to ship and verify the local review workspace.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Ship the review workspace locally.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify export formats and source links.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
   review: { revision: 1, basedOnGeneratedRevision: 1, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
   activeDocument: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] },
@@ -156,14 +157,15 @@ mockIPC((command) => {
   if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_audio_input_inventory') {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 1,
       status: 'available',
       devices: [
-        { id: 'fixture-built-in', name: 'MacBook Pro Microphone' },
-        { id: 'fixture-desk', name: 'Desk Microphone' },
+        { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
+        { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
       ],
       defaultInputId: 'fixture-built-in',
+      lidState: 'open',
       errorCode: null,
     };
   }
@@ -235,6 +237,13 @@ const entries: HistoryEntry[] = [
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
+  smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
+  smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in', 'fixture-anker']
+    : [],
+  smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in']
+    : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
@@ -305,8 +314,10 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
-    || requestedState === 'settings-site-modes';
+    || requestedState === 'settings-site-modes'
+    || requestedState === 'settings-smart-auto';
   const meetings = useMeetings(fixtureSettings);
+  const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
@@ -363,8 +374,8 @@ function VisualFixture() {
       />
       {settingsOpen ? (
         <SettingsPanel
-          settings={fixtureSettings}
-          onUpdateSettings={() => {}}
+          settings={settings}
+          onUpdateSettings={(updates) => setSettings((current) => ({ ...current, ...updates }))}
           initialized
           status="idle"
           onResetStats={() => {}}

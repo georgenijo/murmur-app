@@ -83,7 +83,7 @@ describe('useTransformReviewDriver (real driver)', () => {
 
     expect(current!.state).toBe('ready');
     // The real (non-mock) driver fetched the text content by command.
-    expect(mocks.invoke).toHaveBeenCalledWith('get_transform_review_content');
+    expect(mocks.invoke).toHaveBeenCalledWith('get_transform_review_content', { transformPassId: 41 });
     expect(current!.content).toEqual(CONTENT);
   });
 
@@ -174,7 +174,7 @@ describe('useTransformReviewDriver (real driver)', () => {
     await act(async () => { current!.cancel(); });
 
     const names = mocks.invoke.mock.calls.map((c) => c[0]);
-    expect(names).toContain('approve_transform');
+    expect(mocks.invoke).toHaveBeenCalledWith('approve_transform', { transformPassId: 43 });
     expect(names).toContain('retry_transform_instruction');
     expect(names).toContain('cancel_transform');
     expect(mocks.invoke).toHaveBeenCalledWith('cancel_transform', {
@@ -272,6 +272,10 @@ describe('useTransformReviewDriver (real driver)', () => {
       await Promise.resolve();
     });
 
+    await act(async () => {
+      mocks.listeners['transform-state-changed']?.({ payload: { state: 'applied', transformPassId: 44 } });
+      await Promise.resolve();
+    });
     await act(async () => {
       current!.undo();
       await Promise.resolve();

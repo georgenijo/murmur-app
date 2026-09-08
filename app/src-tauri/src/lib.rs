@@ -20,8 +20,13 @@ mod commands;
 pub mod coreml_installer;
 mod correct_and_teach;
 mod correction;
+mod correction_shortcut;
 mod delivery_recovery;
+mod diarization_assignment;
+mod diarization_audio;
+mod diarization_model;
 mod dictation_context;
+mod dictation_correction;
 mod dictation_diagnostics;
 #[cfg(test)]
 mod dictation_diagnostics_contract;
@@ -39,8 +44,10 @@ mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
 mod meeting_capture;
+pub mod meeting_diarization;
 mod meeting_review;
 mod meeting_store;
+mod microphone_auto;
 mod microphone_preview;
 mod model_artifact;
 mod model_runtime;
@@ -288,6 +295,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
+            correction_shortcut::set_correction_shortcut,
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
@@ -349,6 +357,7 @@ pub fn run() {
             transform_apply::apply_transform_result,
             transform_apply::undo_transform,
             transform_flow::start_transform_capture,
+            transform_flow::start_dictation_correction,
             transform_flow::finish_transform_instruction,
             transform_flow::retry_transform_instruction,
             transform_flow::approve_transform,
@@ -383,6 +392,9 @@ pub fn run() {
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
             commands::meeting::start_meeting,
+            commands::meeting::rename_meeting_remote_speaker,
+            diarization_model::get_diarization_model_status,
+            diarization_model::remove_diarization_model,
             commands::meeting::stop_meeting,
             commands::meeting::get_meeting_status,
             commands::meeting::get_system_audio_permission_status,
@@ -595,6 +607,7 @@ pub fn run() {
             );
 
             let meeting_root = app.path().app_data_dir()?.join("meetings");
+            diarization_audio::sweep_abandoned(&meeting_root);
             let meeting_status = app
                 .state::<State>()
                 .meeting_store
@@ -801,6 +814,7 @@ pub fn run() {
             // the app (all no-op when no child is running).
             #[cfg(target_os = "macos")]
             if let Some(state) = _app_handle.try_state::<State>() {
+                let _ = meeting_diarization::cancel_all();
                 state.meetings.shutdown(_app_handle);
                 state.transform_runtime.shutdown();
                 state.query.shutdown();

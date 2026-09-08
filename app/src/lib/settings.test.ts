@@ -19,6 +19,7 @@ import {
   BUILTIN_MODES,
   DEFAULT_SETTINGS,
   LEGACY_OVERLAY_OFFSET_KEY,
+  microphoneDeviceNameArg,
   MODEL_OPTIONS,
   pasteLastShortcutConflict,
   STORAGE_KEY,
@@ -96,6 +97,23 @@ describe('loadSettings', () => {
   it('returns defaults when localStorage is empty', () => {
     const settings = loadSettings();
     expect(settings).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it('keeps Smart Auto opt-in and retains only bounded approved stable IDs', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: ['anker', 'anker', '', 'bad\u0000id', 'studio'],
+      smartAutoPreferredDeviceIds: ['studio', 'missing', 'anker'],
+      smartAutoAllowContinuity: true,
+    }));
+
+    expect(loadSettings()).toMatchObject({
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: ['anker', 'studio'],
+      smartAutoPreferredDeviceIds: ['studio', 'anker'],
+      smartAutoAllowContinuity: true,
+    });
   });
 
   it('marks an old System Default selection migration-complete without inventory proof', () => {
@@ -235,6 +253,21 @@ describe('loadSettings', () => {
     }
   });
 
+  it('keeps remote speaker labeling opt-in and rejects malformed persisted values', () => {
+    expect(DEFAULT_SETTINGS.meetingDiarization).toBe(false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      meetingDiarization: true,
+    }));
+    expect(loadSettings().meetingDiarization).toBe(true);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      meetingDiarization: 'yes',
+    }));
+    expect(loadSettings().meetingDiarization).toBe(false);
+  });
+
   it('migrates the exact legacy 50 ms paste delay to zero once', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,
@@ -244,7 +277,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 4,
+      settingsVersion: 5,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -270,7 +303,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 4,
+      settingsVersion: 5,
     });
   });
 
@@ -286,7 +319,7 @@ describe('loadSettings', () => {
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       overlayVerticalOffset: 0,
-      settingsVersion: 4,
+      settingsVersion: 5,
     });
   });
 
@@ -1034,7 +1067,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 4 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 5 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 
@@ -1134,5 +1167,26 @@ describe('Voice Query settings', () => {
       false,
       false,
     ]);
+  });
+});
+
+describe('microphoneDeviceNameArg', () => {
+  it('drops the system-default sentinel so Rust picks the default input device', () => {
+    // `DEFAULT_SETTINGS.microphone` is a sentinel, not a CoreAudio UID.
+    // Forwarding it verbatim fails the device lookup with NoInputDevice.
+    expect(DEFAULT_SETTINGS.microphone).toBe('system_default');
+    expect(microphoneDeviceNameArg(DEFAULT_SETTINGS.microphone)).toBeNull();
+    expect(microphoneDeviceNameArg('system_default')).toBeNull();
+  });
+
+  it('drops empty and absent values', () => {
+    expect(microphoneDeviceNameArg('')).toBeNull();
+    expect(microphoneDeviceNameArg(null)).toBeNull();
+    expect(microphoneDeviceNameArg(undefined)).toBeNull();
+  });
+
+  it('passes an explicitly chosen device identifier through unchanged', () => {
+    expect(microphoneDeviceNameArg('AppleUSBAudioEngine:Shure:MV7:1234:1'))
+      .toBe('AppleUSBAudioEngine:Shure:MV7:1234:1');
   });
 });
