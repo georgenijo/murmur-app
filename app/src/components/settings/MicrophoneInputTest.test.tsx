@@ -274,6 +274,35 @@ describe('MicrophoneInputTest', () => {
     expect(document.activeElement).toBe(picker);
   });
 
+  it('does not steal focus when the user moves on during microphone teardown', async () => {
+    includeSmartAuto = true;
+    let finishStop: ((status: MicrophonePreviewStatus) => void) | null = null;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') return active;
+      if (command === 'stop_microphone_preview') {
+        return new Promise<MicrophonePreviewStatus>((resolve) => { finishStop = resolve; });
+      }
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
+      if (command === 'cancel_microphone_preview') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    await emitStatus(active);
+    const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    await act(async () => picker.click());
+    const builtInRadio = Array.from(container.querySelectorAll('input[type="radio"]'))
+      .find((radio) => radio.parentElement?.textContent?.includes('Built-in Microphone')) as HTMLInputElement;
+    await act(async () => builtInRadio.click());
+
+    const nextControl = document.createElement('button');
+    document.body.appendChild(nextControl);
+    nextControl.focus();
+    await act(async () => finishStop?.(idle));
+    expect(document.activeElement).toBe(nextControl);
+    nextControl.remove();
+  });
+
   it('keeps a saved unknown-kind input available for manual selection', async () => {
     includeSmartAuto = true;
     selected = 'unknown-input';

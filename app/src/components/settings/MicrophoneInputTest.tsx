@@ -109,7 +109,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
     }
     if (restoreFocusWhenEnabledRef.current) {
       restoreFocusWhenEnabledRef.current = false;
-      triggerRef.current?.focus();
+      if (document.activeElement === document.body) triggerRef.current?.focus();
     }
   }, [disabled]);
 
