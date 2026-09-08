@@ -126,12 +126,18 @@ def read_production_frame(
             raise SmokeError("capture worker returned a non-object control message")
         return "control", message
     if is_pcm:
-        sample_count = struct.unpack_from("<I", payload, 12)[0]
-        if sample_count == 0 or length != 32 + sample_count * 4:
+        sequence, sample_rate, sample_count, captured_at_ns, sample_offset = struct.unpack_from(
+            "<QIIQQ", payload
+        )
+        if sample_rate == 0 or sample_count == 0 or length != 32 + sample_count * 4:
             raise SmokeError("capture worker returned malformed PCM")
         return "pcm", {
             "channel": "microphone" if channel == 1 else "system",
             "sampleCount": sample_count,
+            "sequence": sequence,
+            "sampleRate": sample_rate,
+            "capturedAtNs": captured_at_ns,
+            "sampleOffset": sample_offset,
         }
     raise AssertionError("validated production frame kind was not handled")
 
