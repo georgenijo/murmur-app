@@ -5,7 +5,9 @@ capture-scoped framing, bounded callback rings, and interrupted-prefix
 transcription keep the app responsive without discarding already-delivered
 speech. See [Transcription](features/transcription.md) and
 [Meeting Capture](features/meeting-capture.md) and its
-[Meeting Review Workspace](features/meeting-review-workspace.md).
+[Meeting Review Workspace](features/meeting-review-workspace.md). Optional
+[remote-speaker labels](features/meeting-diarization.md) refine clear system-audio
+passages locally after the meeting.
 
 Current as of **v0.30.1**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -120,6 +122,9 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 
 ### Voice Commands 2.0 — [features/voice-commands.md](features/voice-commands.md)
 Typed, persistent local commands: text replacements and multiline snippets, deterministic `{{date}}` / `{{time}}` variables, explicitly permitted `{{clipboard}}` insertion, global and per-app scopes, conflict validation, and a no-paste preview/test UI.
+
+### Correct last dictation — [features/dictation-correction.md](features/dictation-correction.md)
+Explicit spoken correction of the latest delivery through the existing local model, literal spelled-letter preservation, reviewed copy or matching-selection replacement, and separate optional teaching. Available from the command palette and an opt-in ⌘⇧E shortcut.
 
 ### Correct and Teach — [features/correct-and-teach.md](features/correct-and-teach.md)
 Edit the newest history entry and Murmur proposes **one bounded replacement** to learn, scoped global / app / project. Uses uniquely provable case-insensitive context alignment, so casing differences can't widen a one-word fix into a sentence rule; ambiguous alignments fail closed. **Teach specific term** lets you select one exact heard term inside a longer sentence when automatic extraction is too broad. Nothing persists without explicit confirmation.
@@ -280,7 +285,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 - Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
-- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained.
+- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained, apart from disclosed bounded temporary system audio for opted-in speaker refinement.
 - All local data is inspectable and deletable from within the app.
 
 ---

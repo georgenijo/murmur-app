@@ -101,11 +101,12 @@ describe('MicrophoneStartupBenchmark', () => {
         status="idle"
         deviceId="missing-pinned-id"
         audioInventory={{
-          schemaVersion: 1,
+          schemaVersion: 2,
           revision: 1,
           status: 'available',
           devices: [],
           defaultInputId: null,
+          lidState: 'unknown',
           errorCode: null,
         }}
         modelBenchmarkRunning={false}

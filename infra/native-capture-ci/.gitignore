@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+_work/
+_diag/
+.runner
+.credentials*
+.env
+.path
+source.git/
+state.json*
+poll.lock

@@ -1,5 +1,7 @@
 import { forwardRef, type ReactNode } from 'react';
 
+import { cn } from '@/lib/sona-utils';
+
 export type DashboardSurfaceVariant = 'flat' | 'outlined' | 'elevated';
 
 interface DashboardSurfaceProps {
@@ -147,21 +149,39 @@ interface MainNavItemProps {
   onActivate: () => void;
 }
 
-export const MainNavItem = forwardRef<HTMLButtonElement, MainNavItemProps>(function MainNavItem({
+export const MainNavItem = forwardRef<
+  HTMLButtonElement,
+  MainNavItemProps & React.ButtonHTMLAttributes<HTMLButtonElement>
+>(function MainNavItem({
   label,
   icon,
   selected,
   badge,
   onActivate,
+  onClick,
+  className,
+  ...rest
 }, ref) {
   return (
     <button
       ref={ref}
       type="button"
-      onClick={onActivate}
+      {...rest}
+      // Compose rather than overwrite: a tooltip trigger (Base UI's render
+      // prop) may inject its own onClick (e.g. for closeOnClick) on this
+      // element. Calling both — instead of letting a later spread silently
+      // replace onActivate — keeps navigation working under any wrapper.
+      // These three props are re-asserted after the spread (rather than
+      // spreading `rest` last) so a wrapper-injected aria-current/className
+      // can never silently shadow the nav item's own selected state or base
+      // styling; className is merged, not overwritten, via cn().
+      onClick={(event) => {
+        onClick?.(event);
+        onActivate();
+      }}
       aria-current={selected ? 'page' : undefined}
       aria-label={label}
-      className="ui-main-nav-item"
+      className={cn('ui-main-nav-item', className)}
     >
       {icon}
       <span className="home-nav-label">{label}</span>

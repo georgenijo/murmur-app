@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS, type QueryKey } from '../settings';
+import { DEFAULT_SETTINGS, type QueryKey, type SmartAutoMicrophoneRequest } from '../settings';
 import { validateQueryCommand, type QueryCommandConfig } from '../queryProviders';
 import { isQueryUsage } from '../queryUsage';
 import type { QueryCompletion } from '../stats';
@@ -33,6 +33,7 @@ interface UseQueryFlowProps {
   accessibilityGranted: boolean | null;
   queryHotkey: QueryKey | null;
   microphone?: string;
+  smartAuto?: SmartAutoMicrophoneRequest | null;
   automaticallyCopyAnswers: boolean;
   command: QueryCommandConfig;
   onQueryCompleted?: (completion: QueryCompletion) => void;
@@ -73,6 +74,7 @@ export function useQueryFlow({
   accessibilityGranted,
   queryHotkey,
   microphone,
+  smartAuto = null,
   automaticallyCopyAnswers,
   command,
   onQueryCompleted,
@@ -81,11 +83,13 @@ export function useQueryFlow({
   const trackedPassesRef = useRef(new Map<number, TrackedQueryPass>());
   const commandRef = useRef(command);
   const microphoneRef = useRef(microphone);
+  const smartAutoRef = useRef(smartAuto);
   const automaticallyCopyAnswersRef = useRef(automaticallyCopyAnswers);
   const onQueryCompletedRef = useRef(onQueryCompleted);
   const terminalListenersReadyRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => { commandRef.current = command; }, [command]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
+  useEffect(() => { smartAutoRef.current = smartAuto; }, [smartAuto]);
   useEffect(() => { automaticallyCopyAnswersRef.current = automaticallyCopyAnswers; }, [automaticallyCopyAnswers]);
   useEffect(() => { onQueryCompletedRef.current = onQueryCompleted; }, [onQueryCompleted]);
 
@@ -192,9 +196,10 @@ export function useQueryFlow({
           const selectedMicrophone = microphoneRef.current;
           void invoke('start_query_capture', {
             queryPassId,
-            deviceName: selectedMicrophone && selectedMicrophone !== DEFAULT_SETTINGS.microphone
+            deviceName: smartAutoRef.current ? null : selectedMicrophone && selectedMicrophone !== DEFAULT_SETTINGS.microphone
               ? selectedMicrophone
               : null,
+            ...(smartAutoRef.current ? { smartAuto: smartAutoRef.current } : {}),
             automaticallyCopyAnswer: automaticallyCopyAnswersRef.current,
             command: immutableCommand,
           }).catch(() => {

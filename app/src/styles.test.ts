@@ -63,7 +63,7 @@ function contrast(foreground: string, background: string): number {
 describe('Sonic Canvas semantic color tokens', () => {
   it('compiles dark utilities against the concrete appearance selector', async () => {
     const compiler = await compile(css, {
-      base: process.cwd(),
+      base: resolve(process.cwd(), 'src'),
       loadStylesheet: async (id, base) => {
         const path = id === 'tailwindcss'
           ? resolve(process.cwd(), 'node_modules/tailwindcss/index.css')
@@ -112,32 +112,35 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-window-content-offset-y: -0.125rem;');
     expect(css).toContain('--ui-record-width: 4.5rem;');
     expect(css).toContain('--ui-status-min-width: 4.5rem;');
-    expect(css).toContain('--ui-history-gap: 0.3125rem;');
+    expect(css).toContain('--ui-history-gap: 0.375rem;');
     expect(css).toContain('--ui-history-card-y: 0.5rem;');
   });
 
-  it('derives dashboard states from semantic tokens while keeping selection separate from elevation', () => {
-    expect(css).toContain('--ui-dashboard-border: color-mix(in srgb, var(--murmur-on-surface-variant) 42%, transparent);');
+  it('derives dashboard states from the soft Sona hairline/shadow ramp, with selection carrying its own raised elevation', () => {
+    expect(css).toContain('--ui-dashboard-border: var(--ui-hairline);');
     expect(css).toContain('--ui-dashboard-hover: var(--murmur-surface-container);');
     expect(css).toContain('--ui-dashboard-selected: var(--murmur-surface-container-lowest);');
-    expect(css).toContain('--ui-dashboard-shadow: 0 2px 8px rgb(0 0 0 / 0.14);');
-    expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*background:\s*var\(--ui-dashboard-selected\);[^}]*\}/s);
-    expect(css).not.toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*box-shadow:/s);
+    expect(css).toContain('--ui-dashboard-shadow: var(--ui-shadow-2);');
+    expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*background:\s*var\(--ui-tint-raised\);[^}]*\}/s);
+    expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*box-shadow:\s*var\(--ui-shadow-1\);[^}]*\}/s);
     expect(css).toMatch(/\.ui-dashboard-action:disabled\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
   });
 
-  it('reserves home-history text space for copy feedback and draws a complete inset outline', () => {
+  it('keeps copy feedback and uses flat, full-width home history rows', () => {
     expect(css).toMatch(
       /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*2;[^}]*padding-right:\s*3\.75rem;/s,
+      /\.home-history \.transcript-card\s*\{[^}]*border-bottom-color:\s*var\(--ui-dashboard-border-subtle\);[^}]*border-radius:\s*0;[^}]*padding:\s*var\(--ui-space-5\) var\(--ui-space-4\);[^}]*box-shadow:\s*none;/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-card\[data-copied="true"\]:not\(\[data-day-end="true"\]\)\s*\{[^}]*box-shadow:\s*inset 0 -1px 0 var\(--murmur-success\);/s,
+      /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*padding-right:\s*0;/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-copy-feedback\s*\{[^}]*right:\s*var\(--ui-space-5\);[^}]*bottom:\s*auto;[^}]*top:\s*var\(--ui-space-3\);/s,
+      /\.home-history \.transcript-card\[data-copied="true"\]\s*\{[^}]*border-bottom-color:\s*color-mix\(in srgb, var\(--murmur-success\) 50%, transparent\);[^}]*box-shadow:\s*none;/s,
+    );
+    expect(css).toMatch(
+      /\.home-insights-rail\s*\{[^}]*width:\s*var\(--ui-dashboard-rail\);/s,
     );
   });
 

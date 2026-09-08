@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 interface DictationPartialPayload {
@@ -29,9 +30,9 @@ function validRecordingId(value: unknown): value is number {
  *
  * Generation-gated the same way the Rust ticker is: a partial is only rendered
  * while it belongs to the newest recording seen on this window. The preview
- * window is shown and hidden by Rust, so this hook never decides visibility —
- * it only makes sure a card that is on screen is never showing another
- * recording's words.
+ * This hook renders the current recording's words before it asks Rust to show
+ * the native window. Rust validates ownership, performs the native show, and
+ * hides the window when recording ends.
  *
  * It also drops the text the moment capture leaves `recording`. Rust hides the
  * window when the partial ticker exits, but that can trail the actual stop by
@@ -40,8 +41,9 @@ function validRecordingId(value: unknown): value is number {
  * while the native hide catches up.
  */
 export function useDictationPartial(): string {
-  const [partial, setPartial] = useState('');
+  const [partial, setPartial] = useState<DictationPartialPayload | null>(null);
   const recordingIdRef = useRef(0);
+  const shownRecordingIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,11 +58,15 @@ export function useDictationPartial(): string {
       const recordingId = (payload as { recordingId?: unknown } | null)?.recordingId;
       if (!validRecordingId(recordingId)) return;
       recordingIdRef.current = recordingId;
-      setPartial('');
+      shownRecordingIdRef.current = 0;
+      setPartial(null);
     }));
 
     track(listen<unknown>('recording-status-changed', ({ payload }) => {
-      if (payload !== 'recording') setPartial('');
+      if (payload !== 'recording') {
+        shownRecordingIdRef.current = 0;
+        setPartial(null);
+      }
     }));
 
     track(listen<unknown>('dictation-partial', ({ payload }) => {
@@ -69,7 +75,7 @@ export function useDictationPartial(): string {
       // (the card is only shown once words exist). Adopt the newer id rather
       // than dropping the very first line of the transcript.
       recordingIdRef.current = payload.recordingId;
-      setPartial(payload.text.trim());
+      setPartial({ recordingId: payload.recordingId, text: payload.text.trim() });
     }));
 
     return () => {
@@ -78,5 +84,18 @@ export function useDictationPartial(): string {
     };
   }, []);
 
-  return partial;
+  // The hidden webview must paint the card before AppKit shows its transparent
+  // NSWindow. Showing first can commit an empty transparent frame that macOS
+  // removes from the on-screen window list before the text event renders.
+  useEffect(() => {
+    if (!partial?.text || shownRecordingIdRef.current === partial.recordingId) return;
+    shownRecordingIdRef.current = partial.recordingId;
+    void invoke('show_dictation_preview', { recordingId: partial.recordingId }).catch(() => {
+      if (shownRecordingIdRef.current === partial.recordingId) {
+        shownRecordingIdRef.current = 0;
+      }
+    });
+  }, [partial]);
+
+  return partial?.text ?? '';
 }

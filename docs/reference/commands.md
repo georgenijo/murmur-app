@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 180 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 193 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -31,6 +31,18 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `refresh_ide_context` | `bundle_id: String` | `Result<IdeContextStatus, String>` | Rebuilds the memory-only index from that profile's opted-in roots. |
 | `clear_ide_context` | `bundle_id: String` | `Result<IdeContextStatus, String>` | Drops the in-memory index for that profile. |
 
+## Private dictation capture (`commands/dictation_diagnostics.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `arm_next_dictation_diagnostic_capture` | — | `Result<DictationCaptureArmStatusV1, String>` | Main-window-only consent for exact text from the next accepted live dictation. The arm expires after 10 minutes and applies to one recording. |
+| `disarm_next_dictation_diagnostic_capture` | — | `Result<DictationCaptureArmStatusV1, String>` | Main-window-only revocation of an unclaimed arm. A recording that already claimed the arm remains active. |
+| `get_dictation_diagnostic_capture_status` | — | `Result<DictationCaptureArmStatusV1, String>` | Returns `unarmed`, an armed expiry time, or the recording ID that claimed the arm. Only the main and Diagnostics windows can call it. |
+| `list_dictation_diagnostic_captures` | — | `Result<Vec<DictationDiagnosticCaptureSummaryV1>, String>` | Lists the three newest unexpired local captures without returning transcript text. Only the main and Diagnostics windows can call it. |
+| `get_dictation_diagnostic_capture` | `capture_id: String` | `Result<Option<DictationDiagnosticCaptureV1>, String>` | Returns one local capture for private review. Only the main and Diagnostics windows can call it. |
+| `delete_dictation_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Deletes one local capture and syncs the capture directory. Only the main and Diagnostics windows can call it. |
+| `upload_dictation_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Sends one selected capture in one in-memory POST with no retry store. The Diagnostics UI asks for separate upload confirmation before calling it. |
+
 ## Permissions (`commands/permissions.rs`)
 
 | Command | Parameters | Returns | Description |
@@ -60,6 +72,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
 | `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches finalized transcript text through FTS5. |
 | `get_meeting` | `id` | `Result<MeetingWorkspace, String>` | One session, immutable Me/Them segments, display labels, revisioned generated/reviewed documents, and the Rust-resolved active document. |
+| `rename_meeting_remote_speaker` | `session_id: String`, `speaker_id: u32`, `label: String` | `Result<MeetingWorkspace, String>` | Validates and saves one session-scoped display label for a remote speaker, then returns the updated meeting workspace. Transcript evidence remains unchanged. |
 | `save_meeting_review` | `request` | `Result<MeetingWorkspace, String>` | Revision-checks a complete edit, restores source IDs from the selected server-owned base, and atomically saves labels plus the reviewed snapshot. |
 | `restore_meeting_review_from_generated` | `request` | `Result<MeetingWorkspace, String>` | Explicitly replaces a saved review from the exact generated revision after checking the current review revision. Raw transcript evidence is unchanged. |
 | `get_meeting_review_export` | `id`, `format` | `Result<String, String>` | Renders one bounded reviewed-meeting snapshot as Markdown, plain text, or schema-v1 JSON for explicit clipboard copy. |
@@ -145,10 +158,12 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 |---------|-----------|---------|-------------|
 | `start_transform_capture` | `device_name: Option<String>`, `transform_pass_id: u64` | `Result<(), String>` | Begins a pass: arms the mic, freezes the AX selection snapshot, shows the popover in `listening`. Refuses (with a stable error code) when dictation, a benchmark, a file transcription, or another transform owns the pipeline. |
 | `finish_transform_instruction` | `transform_pass_id: u64` | `Result<(), String>` | Stops the instruction mic, transcribes it (cleanup-only), expands preset/saved-transform names, and runs the sidecar. `listening` → `thinking` → `ready`/`failed`. |
-| `retry_transform_instruction` | `device_name: Option<String>` | `Result<(), String>` | Re-arms listening for a new instruction against the **same** frozen selection, keeping the pass ID and advancing the attempt counter. |
-| `approve_transform` | — | `Result<(), String>` | Applies the proposal through `transform_apply` (AX set-value, else paste fallback with clipboard restore) and schedules the linger-hide. |
+| `start_dictation_correction` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<(), String>` | Main-window-only correction start against the frozen latest delivery. |
+| `set_correction_shortcut` | `enabled: bool, device_name: Option<String>, smart_auto: Option<SmartAutoRequest>` | `Result<(), String>` | Main-window-only opt-in ⌘⇧E registration on the shared keyboard listener. |
+| `retry_transform_instruction` | `device_name: Option<String>, transform_pass_id: u64` | `Result<(), String>` | Re-arms listening for a new instruction against the **same** frozen selection, keeping the pass ID and advancing the attempt counter. |
+| `approve_transform` | `transform_pass_id: u64` | `Result<(), String>` | Applies the proposal through `transform_apply` (AX set-value, else paste fallback with clipboard restore) and schedules the linger-hide. |
 | `cancel_transform` | `transform_pass_id: Option<u64>` | `Result<(), String>` | Scoped cancellation. A no-op if that pass no longer owns the flow, so a delayed Escape cannot cancel the next pass. Idempotent. |
-| `undo_transform_and_close` | — | `Result<(), String>` | Restores the frozen original and closes the popover. On failure the Applied session is kept and `applied` is re-emitted with an error code so Undo stays available. |
+| `undo_transform_and_close` | `transform_pass_id: u64` | `Result<(), String>` | Restores the frozen original and closes the popover. On failure the Applied session is kept and `applied` is re-emitted with an error code so Undo stays available. |
 | `apply_transform_result` | — | `Result<String, String>` | Lower-level write-back entry point. |
 | `undo_transform` | — | `Result<(), String>` | Lower-level undo entry point. |
 
@@ -161,7 +176,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `hide_transform_popover` | — | `Result<(), String>` | Hides the popover. |
 | `set_transform_popover_expanded` | `expanded: bool` | `Result<PopoverBox, String>` | Resizes between compact (listening/thinking) and expanded (ready/failed) against the cached anchor; returns the applied box as an acknowledgment. |
 | `set_transform_popover_focusable` | `focusable: bool` | `Result<(), String>` | `false` during listening/thinking so focus is never stolen; `true` at ready/failed so Enter/Esc/Cmd+R reach the webview. |
-| `get_transform_review_content` | — | `TransformReviewContent` | `{instruction, original, proposed}`. Fetched on each state change rather than broadcast, so sensitive text never rides an event payload. |
+| `get_transform_review_content` | `transform_pass_id: u64` | `TransformReviewContent` | `{instruction, original, proposed}`. Fetched on each state change rather than broadcast, so sensitive text never rides an event payload. |
 
 ## Transform model (`commands/transform_model.rs`)
 
@@ -191,7 +206,9 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `check_specific_model_exists` | `model_name: String` | `bool` | Whether a named model is on disk. Path-traversal protected. |
 | `get_model_runtime_catalog` | — | `Vec<ModelRuntimeSnapshot>` | Every catalog entry with backend, accelerator, capabilities, platform support, install state, and lifecycle state. |
 | `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
+| `get_diarization_model_status` | — | `ModelStatus` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. |
 | `download_model` | `model_name: String` | `Result<(), String>` | Single-flight install with attempt-correlated `download-progress`, atomic publication, and Silero VAD co-download. Core ML setup runs behind a same-signed killable process boundary with a hard deadline, durable incomplete-repair detection, confirmed cleanup, validation, Retry, and fallback-ready terminal errors. |
+| `remove_diarization_model` | — | `Result<(), String>` | Cancels active diarization work, waits for model-use ownership, and removes the installed speaker-model directory after acquiring the shared model-cache lease. |
 
 ## Personal knowledge (`commands/knowledge.rs`)
 
@@ -306,6 +323,12 @@ without logging their content.
 | `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes between collapsed and expanded frames (top-anchored) and returns the applied frame, so CSS never animates into a window that hasn't grown yet. |
 | `set_overlay_vertical_offset` | `offset: f64` | `Result<(), String>` | Clamps calibration to ±12 logical points, moves the actual native overlay window relative to the active monitor's top-center default, and logs target plus applied physical coordinates. The command is non-persistent; the frontend persists only Save and inactive Reset actions. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
+
+## Dictation preview (`commands/dictation_preview.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `show_dictation_preview` | `recording_id: u64` | `Result<(), String>` | Accepts calls only from the `dictation-preview` webview after it renders non-empty text. Refuses zero, stale, cancelled, or non-recording generations before Rust shows the non-activating native window. |
 
 ## Frontmost apps (`frontmost.rs`)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the final signed capture worker's production-v7 startup protocol."""
+"""Exercise the final signed capture worker's production-v9 startup protocol."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import BinaryIO
 
 
 MAGIC = b"MRMR"
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 9
 HEADER_BYTES = 36
 MAX_CONTROL_BYTES = 16 * 1024
 MAX_PCM_SAMPLES = 16 * 1024
@@ -126,12 +126,18 @@ def read_production_frame(
             raise SmokeError("capture worker returned a non-object control message")
         return "control", message
     if is_pcm:
-        sample_count = struct.unpack_from("<I", payload, 12)[0]
-        if sample_count == 0 or length != 32 + sample_count * 4:
+        sequence, sample_rate, sample_count, captured_at_ns, sample_offset = struct.unpack_from(
+            "<QIIQQ", payload
+        )
+        if sample_rate == 0 or sample_count == 0 or length != 32 + sample_count * 4:
             raise SmokeError("capture worker returned malformed PCM")
         return "pcm", {
             "channel": "microphone" if channel == 1 else "system",
             "sampleCount": sample_count,
+            "sequence": sequence,
+            "sampleRate": sample_rate,
+            "capturedAtNs": captured_at_ns,
+            "sampleOffset": sample_offset,
         }
     raise AssertionError("validated production frame kind was not handled")
 
@@ -153,7 +159,7 @@ def smoke_test(worker: Path, timeout_seconds: float = 5.0) -> None:
     capture_id = secrets.randbits(63) or 1
     nonce = os.urandom(16)
     process = subprocess.Popen(
-        [str(worker), "--production-v7", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v9", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -198,7 +204,7 @@ def smoke_test_meeting(worker: Path, timeout_seconds: float = 20.0) -> None:
     capture_id = secrets.randbits(63) or 1
     nonce = os.urandom(16)
     process = subprocess.Popen(
-        [str(worker), "--production-v7", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v9", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -221,7 +227,12 @@ def smoke_test_meeting(worker: Path, timeout_seconds: float = 20.0) -> None:
             encode_control_frame(
                 capture_id,
                 nonce,
-                {"type": "startMeeting", "deviceId": None, "backend": "auhal"},
+                {
+                    "type": "startMeeting",
+                    "deviceId": None,
+                    "backend": "auhal",
+                    "echoCancellation": "disabled",
+                },
             )
         )
         process.stdin.flush()
@@ -278,9 +289,9 @@ def main() -> int:
     except SmokeError as error:
         raise SystemExit(f"ERROR: {error}") from error
     if arguments.meeting:
-        print("signed capture worker production-v7 meeting smoke passed")
+        print("signed capture worker production-v9 meeting smoke passed")
     else:
-        print("signed capture worker production-v7 startup smoke passed")
+        print("signed capture worker production-v9 startup smoke passed")
     return 0
 
 

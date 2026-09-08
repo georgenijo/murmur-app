@@ -84,6 +84,62 @@ export interface ContentFreeInputSummaryV1 {
   outputTokenCount: MeasurementV1<number>;
 }
 
+export type ProductionArchitectureV1 = 'aarch64' | 'x86_64' | 'other';
+export type ProductionBuildModeV1 = 'development' | 'release';
+export type ProductionMicrophoneSelectionV1 = 'systemDefault' | 'explicit' | 'smartAuto';
+export type ProductionMicrophoneKindV1 =
+  | 'builtIn'
+  | 'external'
+  | 'bluetooth'
+  | 'virtual'
+  | 'continuity';
+export type ProductionCaptureBackendV1 = 'auhal' | 'cpal';
+export type ProductionCaptureFailureKindV1 =
+  | 'permission_denied'
+  | 'device_unavailable'
+  | 'host_unavailable'
+  | 'invalid_input'
+  | 'resource_exhausted'
+  | 'stream_invalidated'
+  | 'unsupported_config'
+  | 'backend_error'
+  | 'protocol_error'
+  | 'first_buffer_timeout'
+  | 'initialization_timeout'
+  | 'permission_prompt_timeout'
+  | 'termination_unconfirmed'
+  | 'worker_panicked'
+  | 'signature_invalid';
+
+export interface ProductionRunV1 {
+  schemaVersion: 1;
+  cohort: {
+    machineId: string;
+    osVersion: string | null;
+    architecture: ProductionArchitectureV1;
+    buildMode: ProductionBuildModeV1;
+    microphoneSelection: ProductionMicrophoneSelectionV1;
+    microphoneKind: ProductionMicrophoneKindV1 | null;
+    configurationKey: string | null;
+  };
+  capture: {
+    helperResolveMs: number | null;
+    helperSignatureMs: number | null;
+    helperSpawnMs: number | null;
+    streamOpenMs: number | null;
+    firstCallbackWaitMs: number | null;
+    firstPcmMs: number | null;
+    readyMs: number | null;
+    stopToWorkerExitMs: number | null;
+    backend: ProductionCaptureBackendV1 | null;
+    fallbackAttempted: boolean | null;
+    fallbackSucceeded: boolean | null;
+    failureKind: ProductionCaptureFailureKindV1 | null;
+    workerInvariantViolation: boolean | null;
+    zeroSampleSuccess: boolean | null;
+  };
+}
+
 export interface ResourceRangeV1<T> {
   start: MeasurementV1<T>;
   average: MeasurementV1<T>;
@@ -169,6 +225,7 @@ export interface PerformanceRunV1 {
     exitCode: number | null;
     stderrPresent: boolean;
   };
+  production?: ProductionRunV1 | null;
 }
 
 export interface PerformanceRunListV1 {
@@ -260,6 +317,24 @@ const performanceStoreOperations = new Set<PerformanceStoreOperationV1>([
 ]);
 const performanceStoreRecommendedActions = new Set<PerformanceStoreRecommendedActionV1>([
   'none', 'retry', 'freeDisk', 'checkPermissions', 'reinitializeStore', 'restartApp',
+]);
+const productionArchitectures = new Set<string>([
+  'aarch64', 'x86_64', 'other',
+]);
+const productionBuildModes = new Set<string>(['development', 'release']);
+const productionMicrophoneSelections = new Set<string>([
+  'systemDefault', 'explicit', 'smartAuto',
+]);
+const productionMicrophoneKinds = new Set<string>([
+  'builtIn', 'external', 'bluetooth', 'virtual', 'continuity',
+]);
+const productionCaptureBackends = new Set<string>(['auhal', 'cpal']);
+const productionCaptureFailureKinds = new Set<string>([
+  'permission_denied', 'device_unavailable', 'host_unavailable', 'invalid_input',
+  'resource_exhausted', 'stream_invalidated', 'unsupported_config', 'backend_error',
+  'protocol_error', 'first_buffer_timeout', 'initialization_timeout',
+  'permission_prompt_timeout', 'termination_unconfirmed', 'worker_panicked',
+  'signature_invalid',
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -502,6 +577,76 @@ function isQueryProcess(value: unknown): boolean {
     && typeof value.stderrPresent === 'boolean';
 }
 
+function isProductionRunV1(value: unknown): value is ProductionRunV1 {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ['schemaVersion', 'cohort', 'capture'])
+    || value.schemaVersion !== 1
+    || !isRecord(value.cohort)
+    || !hasExactKeys(value.cohort, [
+      'machineId', 'osVersion', 'architecture', 'buildMode', 'microphoneSelection',
+      'microphoneKind', 'configurationKey',
+    ])
+    || typeof value.cohort.machineId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.cohort.machineId)
+    || (value.cohort.osVersion !== null && (
+      typeof value.cohort.osVersion !== 'string'
+      || value.cohort.osVersion.length > 32
+      || !/^\d+(?:\.\d+)*$/.test(value.cohort.osVersion)
+    ))
+    || typeof value.cohort.architecture !== 'string'
+    || !productionArchitectures.has(value.cohort.architecture)
+    || typeof value.cohort.buildMode !== 'string'
+    || !productionBuildModes.has(value.cohort.buildMode)
+    || typeof value.cohort.microphoneSelection !== 'string'
+    || !productionMicrophoneSelections.has(
+      value.cohort.microphoneSelection,
+    )
+    || (value.cohort.microphoneKind !== null && (
+      typeof value.cohort.microphoneKind !== 'string'
+      || !productionMicrophoneKinds.has(value.cohort.microphoneKind)
+    ))
+    || (value.cohort.configurationKey !== null && (
+      typeof value.cohort.configurationKey !== 'string'
+      || !/^[0-9a-f]{64}$/.test(value.cohort.configurationKey)
+    ))
+    || !isRecord(value.capture)
+    || !hasExactKeys(value.capture, [
+      'helperResolveMs', 'helperSignatureMs', 'helperSpawnMs', 'streamOpenMs',
+      'firstCallbackWaitMs', 'firstPcmMs', 'readyMs', 'stopToWorkerExitMs',
+      'backend', 'fallbackAttempted', 'fallbackSucceeded', 'failureKind',
+      'workerInvariantViolation', 'zeroSampleSuccess',
+    ])) {
+    return false;
+  }
+  const durations = [
+    value.capture.helperResolveMs,
+    value.capture.helperSignatureMs,
+    value.capture.helperSpawnMs,
+    value.capture.streamOpenMs,
+    value.capture.firstCallbackWaitMs,
+    value.capture.firstPcmMs,
+    value.capture.readyMs,
+    value.capture.stopToWorkerExitMs,
+  ];
+  return durations.every(duration => duration === null || isNonNegativeSafeInteger(duration))
+    && (value.capture.backend === null || (
+      typeof value.capture.backend === 'string'
+      && productionCaptureBackends.has(value.capture.backend)
+    ))
+    && [
+      value.capture.fallbackAttempted,
+      value.capture.fallbackSucceeded,
+      value.capture.workerInvariantViolation,
+      value.capture.zeroSampleSuccess,
+    ].every(flag => flag === null || typeof flag === 'boolean')
+    && (value.capture.failureKind === null || (
+      typeof value.capture.failureKind === 'string'
+      && productionCaptureFailureKinds.has(
+        value.capture.failureKind,
+      )
+    ));
+}
+
 function isRunCorrelation(value: unknown, kind: PerformanceRunKindV1): value is RunCorrelationV1 {
   if (!isRecord(value) || value.kind !== kind) return false;
   switch (kind) {
@@ -527,6 +672,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     'correlation', 'outcome', 'runtimes', 'stages', 'input', 'resources', 'followUps',
   ];
   if ('queryProcess' in value) expectedKeys.push('queryProcess');
+  if ('production' in value) expectedKeys.push('production');
   if (!hasExactKeys(value, expectedKeys)
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string'
@@ -544,7 +690,10 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || !value.runtimes.every(isRuntime)
     || !value.stages.every(isStageTiming)
     || !value.followUps.every(isFollowUp)
-    || ('queryProcess' in value && !isQueryProcess(value.queryProcess))) {
+    || ('queryProcess' in value && !isQueryProcess(value.queryProcess))
+    || ('production' in value
+      && value.production !== null
+      && !isProductionRunV1(value.production))) {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));

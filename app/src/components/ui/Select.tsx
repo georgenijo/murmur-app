@@ -227,7 +227,7 @@ export function Select<T extends string = string>({
         aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
-        className={`flex h-8 w-full items-center justify-between rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${
+        className={`flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) shadow-(--ui-shadow-1) px-3 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         }`}
       >
@@ -254,7 +254,7 @@ export function Select<T extends string = string>({
           ref={listboxRef}
           role="listbox"
           id={`${id}-listbox`}
-          className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-on-surface-variant bg-surface-container-lowest py-1 shadow-lg"
+          className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-(--ui-radius-popover) border border-(--ui-hairline-strong) bg-surface-container-lowest py-1 shadow-(--ui-shadow-3)"
         >
           {isGrouped(items)
             ? items.map((group, gi) => (

@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../lib/log';
-import { isDictationStatus } from '../lib/types';
-import type { DictationStatus } from '../lib/types';
+import { useOverlayRecordingStatus } from '../lib/hooks/useOverlayRecordingStatus';
 import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
 import { useOverlayExpansion } from '../lib/hooks/useOverlayExpansion';
 import { useOverlayRuntime } from '../lib/hooks/useOverlayRuntime';
@@ -29,7 +28,7 @@ export function OverlayWidget() {
   // on useOverlayRuntime / useOverlaySettingsMirror.
   const [disabled, setDisabled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
-  const [status, setStatus] = useState<DictationStatus>('idle');
+  const { status, statusRef } = useOverlayRecordingStatus();
   // True while the local-LLM transform is thinking (issue #312 PR-C2). Driven
   // by the broadcast `transform-state-changed` event; the overlay is a
   // separate webview so it listens directly.
@@ -37,7 +36,6 @@ export function OverlayWidget() {
   const [meetingPhase, setMeetingPhase] = useState<MeetingRuntimePhase>('idle');
   const [stillConnecting, setStillConnecting] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
-  const statusRef = useRef<DictationStatus>('idle');
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
 
@@ -147,28 +145,6 @@ export function OverlayWidget() {
     flog.info('overlay', 'mounted');
     return () => { flog.info('overlay', 'unmounted'); };
   }, []);
-
-  // Subscribe to recording status events from Rust. This is the overlay's only
-  // status source now that the live-preview hook (which used to carry it) is gone.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<unknown>('recording-status-changed', (event) => {
-      if (isDictationStatus(event.payload)) {
-        setStatus(event.payload);
-      }
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, []);
-
-  // Keep statusRef in sync for the hooks that need synchronous reads (click
-  // handlers, the hotkey-tap-rejected listener) rather than a render-time value.
-  useEffect(() => {
-    statusRef.current = status;
-    flog.info('overlay', 'status changed', { status });
-  }, [status]);
 
   // Refresh quick-control values from localStorage as the card starts opening,
   // so the dropdown (revealed once the resize acks) shows current settings. The

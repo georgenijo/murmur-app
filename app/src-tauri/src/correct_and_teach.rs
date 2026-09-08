@@ -226,7 +226,7 @@ impl CorrectAndTeachState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RuleCandidate {
+pub(crate) struct RuleCandidate {
     source: String,
     replacement: String,
     occurrence_count: u32,
@@ -282,7 +282,7 @@ fn tokenize(text: &str) -> Vec<Token<'_>> {
     tokens
 }
 
-fn propose_rule(original: &str, corrected: &str) -> Result<RuleCandidate, String> {
+pub(crate) fn propose_rule(original: &str, corrected: &str) -> Result<RuleCandidate, String> {
     if original == corrected {
         return Err("Make a correction before asking Murmur to learn it.".to_string());
     }

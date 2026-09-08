@@ -229,6 +229,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
+        "pipeline.dictation_preview_presentation" => {
+            Some("pipeline.dictation_preview_presentation")
+        }
         "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
         "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
@@ -245,6 +248,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "meeting.channel_active" => Some("meeting.channel_active"),
         "meeting.tap_active" => Some("meeting.tap_active"),
         "meeting.tap_destroyed" => Some("meeting.tap_destroyed"),
+        "meeting.echo_cancellation_state_changed" => {
+            Some("meeting.echo_cancellation_state_changed")
+        }
         "meeting.permission_probe_started" => Some("meeting.permission_probe_started"),
         "meeting.permission_probe_finished" => Some("meeting.permission_probe_finished"),
         "meeting.permission_probe_failed" => Some("meeting.permission_probe_failed"),
@@ -410,9 +416,30 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
                     | "no_context"
                     | "too_short"
                     | "emitted"
+                    | "emit_failed"
                     | "stale"
                     | "empty"
             )
+        }),
+        _ => false,
+    });
+}
+
+fn is_dictation_preview_presentation_event(
+    data: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_preview_presentation")
+}
+
+fn sanitize_dictation_preview_presentation_event(
+    data: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => value.as_str() == Some("pipeline.dictation_preview_presentation"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "outcome" => value.as_str().is_some_and(|value| {
+            matches!(value, "shown" | "show_failed" | "hidden" | "hide_failed")
         }),
         _ => false,
     });
@@ -697,7 +724,7 @@ fn is_safe_dictation_requested_field(key: &str, value: &serde_json::Value) -> bo
             .is_some_and(|value| matches!(value, "hold" | "toggle")),
         "device_selection" => value
             .as_str()
-            .is_some_and(|value| matches!(value, "explicit" | "system_default")),
+            .is_some_and(|value| matches!(value, "explicit" | "system_default" | "smart_auto")),
         _ => false,
     }
 }
@@ -822,6 +849,35 @@ fn sanitize_dictation_slo_event(data: &mut serde_json::Map<String, serde_json::V
     };
     data.retain(|key, value| is_safe_dictation_slo_field(&event_code, key, value));
     if !valid_dictation_slo_shape(data) {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
+fn is_dictation_terminal_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_terminal")
+}
+
+fn is_safe_dictation_terminal_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "event_code" => value.as_str() == Some("pipeline.dictation_terminal"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "outcome" => value.as_str().is_some_and(is_safe_dictation_outcome),
+        "error_code" => value.as_str().is_some_and(is_safe_dictation_error_code),
+        "char_count" => value.as_u64().is_some(),
+        _ => false,
+    }
+}
+
+fn sanitize_dictation_terminal_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_invalid_known_field = data.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "event_code" | "recording_id" | "outcome" | "error_code" | "char_count"
+        ) && !is_safe_dictation_terminal_field(key, value)
+    });
+    data.retain(|key, value| is_safe_dictation_terminal_field(key, value));
+    if has_invalid_known_field || data.len() != 5 {
         data.retain(|key, _| key == "event_code");
     }
 }
@@ -1463,6 +1519,16 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         sanitize_dictation_partial_tick_event(obj);
         return;
     }
+    if is_dictation_preview_presentation_event(obj) {
+        sanitize_dictation_preview_presentation_event(obj);
+        return;
+    }
+    if is_dictation_terminal_event(obj) {
+        // Terminal lifecycle records share the event file with Fleet uploads.
+        // Keep the exact content-free schema in debug and release builds.
+        sanitize_dictation_terminal_event(obj);
+        return;
+    }
     if is_delivery_target_verification_event(obj) {
         // Delivery identity is privacy-sensitive even in debug builds. Keep
         // only bounded equality facts and stable outcome/source codes so app,
@@ -1509,6 +1575,19 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
                     "idle" | "starting" | "recording" | "stopping" | "processing" | "failed"
                 ),
                 "channel" => matches!(value, "microphone" | "system" | "both" | "none"),
+                "from" | "to" => matches!(
+                    value,
+                    "off" | "starting" | "active" | "recovering" | "bypassed"
+                ),
+                "reason" => matches!(
+                    value,
+                    "none"
+                        | "initialization_failed"
+                        | "unsupported_format"
+                        | "render_discontinuity"
+                        | "processor_failed"
+                        | "processing_backlog"
+                ),
                 "permission" => {
                     matches!(value, "unknown" | "granted" | "denied" | "unsupported")
                 }
@@ -2533,7 +2612,7 @@ mod tests {
     fn release_pipeline_keeps_only_allowlisted_dictation_lifecycle_strings() {
         let mut data = serde_json::json!({
             "recording_id": 9,
-            "total_ms": 420,
+            "char_count": 42,
             "event_code": "pipeline.dictation_terminal",
             "outcome": "runtime_interruption",
             "error_code": "stream_invalidated",
@@ -2544,7 +2623,7 @@ mod tests {
         sanitize_event_data("pipeline", &mut data, false);
 
         assert_eq!(data["recording_id"], 9);
-        assert_eq!(data["total_ms"], 420);
+        assert_eq!(data["char_count"], 42);
         assert_eq!(data["event_code"], "pipeline.dictation_terminal");
         assert_eq!(data["outcome"], "runtime_interruption");
         assert_eq!(data["error_code"], "stream_invalidated");
@@ -2561,25 +2640,102 @@ mod tests {
     }
 
     #[test]
-    fn dictation_partial_tick_schema_is_exact_and_content_free_in_every_build() {
+    fn dictation_terminal_never_retains_private_capture_content() {
         for debug_build in [true, false] {
             let mut data = serde_json::json!({
-                "event_code": "pipeline.dictation_partial_tick",
+                "event_code": "pipeline.dictation_terminal",
                 "recording_id": 9,
-                "outcome": "emitted",
-                "sample_count": 320_000,
-                "text": "SENTINEL_TRANSCRIPT",
-                "path": "/Users/private/project"
+                "outcome": "success",
+                "error_code": "none",
+                "char_count": 24,
+                "raw_text": "SENTINEL PRIVATE RAW",
+                "final_text": "SENTINEL PRIVATE FINAL",
+                "capture": {
+                    "rawText": "SENTINEL PRIVATE NESTED RAW",
+                    "finalText": "SENTINEL PRIVATE NESTED FINAL"
+                }
             });
 
             sanitize_event_data("pipeline", &mut data, debug_build);
 
-            assert_eq!(data["event_code"], "pipeline.dictation_partial_tick");
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert_eq!(data["event_code"], "pipeline.dictation_terminal");
             assert_eq!(data["recording_id"], 9);
-            assert_eq!(data["outcome"], "emitted");
-            assert_eq!(data["sample_count"], 320_000);
-            assert_eq!(data.as_object().unwrap().len(), 4);
-            assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+            assert_eq!(data["outcome"], "success");
+            assert_eq!(data["error_code"], "none");
+            assert_eq!(data["char_count"], 24);
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(data.get("raw_text").is_none());
+            assert!(data.get("final_text").is_none());
+            assert!(data.get("capture").is_none());
+        }
+    }
+
+    #[test]
+    fn content_free_dictation_terminal_bytes_are_unchanged() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_terminal",
+            "recording_id": 41,
+            "outcome": "success",
+            "error_code": "none",
+            "char_count": 12
+        });
+        let expected = serde_json::to_vec(&data).unwrap();
+
+        sanitize_event_data("pipeline", &mut data, false);
+
+        assert_eq!(serde_json::to_vec(&data).unwrap(), expected);
+    }
+
+    #[test]
+    fn dictation_partial_tick_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for outcome in ["emitted", "emit_failed"] {
+                let mut data = serde_json::json!({
+                    "event_code": "pipeline.dictation_partial_tick",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "sample_count": 320_000,
+                    "text": "SENTINEL_TRANSCRIPT",
+                    "path": "/Users/private/project"
+                });
+
+                sanitize_event_data("pipeline", &mut data, debug_build);
+
+                assert_eq!(data["event_code"], "pipeline.dictation_partial_tick");
+                assert_eq!(data["recording_id"], 9);
+                assert_eq!(data["outcome"], outcome);
+                assert_eq!(data["sample_count"], 320_000);
+                assert_eq!(data.as_object().unwrap().len(), 4);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+            }
+        }
+    }
+
+    #[test]
+    fn dictation_preview_presentation_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for outcome in ["shown", "show_failed", "hidden", "hide_failed"] {
+                let mut data = serde_json::json!({
+                    "event_code": "pipeline.dictation_preview_presentation",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "text": "SENTINEL_TRANSCRIPT",
+                    "error": "/Users/private/project"
+                });
+
+                sanitize_event_data("pipeline", &mut data, debug_build);
+
+                assert_eq!(
+                    data["event_code"],
+                    "pipeline.dictation_preview_presentation"
+                );
+                assert_eq!(data["recording_id"], 9);
+                assert_eq!(data["outcome"], outcome);
+                assert_eq!(data.as_object().unwrap().len(), 3);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+                assert!(!serde_json::to_string(&data).unwrap().contains("private"));
+            }
         }
     }
 
@@ -3364,6 +3520,40 @@ mod tests {
         );
         assert_eq!(summary, "Meeting event");
         assert!(!summary.contains("SENTINEL"));
+    }
+
+    #[test]
+    fn echo_cancellation_transition_keeps_only_content_free_recovery_evidence() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "meeting.echo_cancellation_state_changed",
+                "generation": 12,
+                "from": "active",
+                "to": "recovering",
+                "reason": "render_discontinuity",
+                "recovery_episode": 4,
+                "recovery_attempt": 1,
+                "recovery_max_attempts": 3,
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT",
+                "device_name": "SENTINEL_PRIVATE_DEVICE",
+                "session_id": "SENTINEL_PRIVATE_SESSION",
+                "audio_path": "/Users/private/SENTINEL.wav"
+            });
+            sanitize_event_data("meeting", &mut data, debug_build);
+            let encoded = serde_json::to_string(&data).unwrap();
+            assert_eq!(
+                data["event_code"],
+                "meeting.echo_cancellation_state_changed"
+            );
+            assert_eq!(data["from"], "active");
+            assert_eq!(data["to"], "recovering");
+            assert_eq!(data["reason"], "render_discontinuity");
+            assert_eq!(data["recovery_episode"], 4);
+            assert_eq!(data["recovery_attempt"], 1);
+            assert_eq!(data["recovery_max_attempts"], 3);
+            assert!(!encoded.contains("SENTINEL"));
+            assert!(!encoded.contains("/Users/private"));
+        }
     }
 
     #[test]

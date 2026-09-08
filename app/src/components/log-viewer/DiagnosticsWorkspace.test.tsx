@@ -13,6 +13,7 @@ const hookMocks = vi.hoisted(() => ({
   useEventStore: vi.fn(),
   usePerformanceDiagnostics: vi.fn(),
   usePerformanceStoreHealth: vi.fn(),
+  getDictationCaptureStatus: vi.fn(),
 }));
 
 vi.mock('../../lib/hooks/useEventStore', () => ({
@@ -93,6 +94,16 @@ vi.mock('../../lib/transformDiagnostics', () => ({
   deleteTransformCapture: vi.fn(),
 }));
 
+vi.mock('../../lib/dictationDiagnostics', () => ({
+  getDictationCaptureStatus: () => hookMocks.getDictationCaptureStatus(),
+  listDictationCaptures: vi.fn(async () => []),
+  armNextDictationCapture: vi.fn(),
+  disarmNextDictationCapture: vi.fn(),
+  getDictationCapture: vi.fn(),
+  deleteDictationCapture: vi.fn(),
+  uploadDictationCapture: vi.fn(),
+}));
+
 import { DiagnosticsWorkspace, type DiagnosticsTab } from './DiagnosticsWorkspace';
 
 describe('DiagnosticsWorkspace shared diagnostics shell', () => {
@@ -106,6 +117,8 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     hookMocks.useEventStore.mockClear();
     hookMocks.usePerformanceDiagnostics.mockClear();
     hookMocks.usePerformanceStoreHealth.mockClear();
+    hookMocks.getDictationCaptureStatus.mockReset();
+    hookMocks.getDictationCaptureStatus.mockResolvedValue({ state: 'unarmed' });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -119,7 +132,7 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     container.remove();
   });
 
-  it('renders the six diagnostics tabs in their intended order', async () => {
+  it('renders the diagnostics tabs in their intended order', async () => {
     const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
     expect(tabs.map(tab => tab.textContent)).toEqual([
       'Events',
@@ -128,6 +141,7 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
       'Latency',
       'Compare',
       'Transform',
+      'Dictation',
     ]);
     expect(container.textContent).not.toContain('Metrics');
 
@@ -173,6 +187,25 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     ));
     expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
     expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps the private capture badge visible while switching diagnostics tabs', async () => {
+    hookMocks.getDictationCaptureStatus.mockResolvedValue({
+      state: 'armed',
+      expiresAtMs: Date.now() + 60_000,
+    });
+    await act(async () => root.render(
+      <DiagnosticsWorkspace key="armed" onPopOut={onPopOut} />,
+    ));
+    expect(container.textContent).toContain('Private capture armed');
+
+    const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
+    await act(async () => {
+      const performanceTab = tabs.find(tab => tab.textContent === 'Performance');
+      if (!(performanceTab instanceof HTMLButtonElement)) throw new Error('Missing Performance tab');
+      performanceTab.click();
+    });
+    expect(container.textContent).toContain('Private capture armed');
   });
 
   it('enables store health only when an authorized host opts in', async () => {

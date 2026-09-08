@@ -460,6 +460,7 @@ describe('appearance color math and resolver', () => {
       `on-surface-variant:raw:${TEST_SURFACE_TOKENS.join(',')}`,
       `primary:raw:${TEST_SURFACE_TOKENS.join(',')}`,
       'on-primary:raw:primary,primary-dim',
+      'on-primary:raw:error',
       `error:raw:${TEST_SURFACE_TOKENS.join(',')}`,
       `error:self@0.1:${TEST_SURFACE_TOKENS.join(',')}`,
       `success:raw:${TEST_SURFACE_TOKENS.join(',')}`,
@@ -475,6 +476,37 @@ describe('appearance color math and resolver', () => {
       `success:raw:${TEST_SURFACE_TOKENS.join(',')}`,
       `warning:raw:${TEST_SURFACE_TOKENS.join(',')}`,
     ]);
+  });
+
+  it('enforces on-primary contrast against error, not just primary, for the built-in palettes', () => {
+    // The hold-to-delete progress fill renders on-primary text directly on
+    // the error color (bg-danger text-danger-foreground); on-primary must
+    // stay readable there, not only on primary/primary-dim.
+    expect(contrastRatio(SONIC_LIGHT['on-primary'], SONIC_LIGHT.error)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(SONIC_DARK['on-primary'], SONIC_DARK.error)).toBeGreaterThanOrEqual(4.5);
+    expect(sonicSupportedTextContrastFailures(SONIC_LIGHT)).toEqual([]);
+    expect(sonicSupportedTextContrastFailures(SONIC_DARK)).toEqual([]);
+  });
+
+  it('repairs on-primary against error for a pale-accent imported light theme', () => {
+    // Mirrors a VS Code theme import: only `accent` (and a light background)
+    // are supplied, as parseVsCodeThemeFile produces. A pale, high-lightness
+    // accent used to resolve on-primary toward black via deriveAccent's
+    // primary/primary-dim-only contrast check, while error stayed a dark red
+    // needing light text -- unreadable on the danger progress fill.
+    const paleAccentThemes = [
+      { version: 1 as const, presetId: 'custom' as const, accent: '#cfe8ff', background: '#fbfdff' },
+      { version: 1 as const, presetId: 'custom' as const, accent: '#e6f4ea', background: '#ffffff' },
+      { version: 1 as const, presetId: 'custom' as const, accent: '#fdf0d5', background: '#fffdf7' },
+    ];
+    for (const theme of paleAccentThemes) {
+      const resolved = resolveTheme(theme, 'light');
+      expect(
+        contrastRatio(resolved.tokens['on-primary'], resolved.tokens.error),
+        `on-primary vs error for ${JSON.stringify(theme)}`,
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(semanticContrastFailures(resolved.tokens)).toEqual([]);
+    }
   });
 
   it('repairs an explicitly split black/white surface ladder', () => {

@@ -59,9 +59,11 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 ## User contract
 
 - Start or stop from **History → Meetings**, or with the command palette.
-- **Me** is microphone audio. **Them** is system playback. No diarization or
-  speaker inference occurs. If the user's voice is played through speakers, it
-  can also appear as Them; phase 1 does not perform echo cancellation.
+- **Me** is microphone audio. **Them** is system playback. Optional
+  [local remote-speaker labels](meeting-diarization.md) can refine unambiguous
+  Them passages after transcription. Experimental speaker-echo reduction is off by
+  default. When enabled, it removes the System reference only from Me and
+  bypasses to the original microphone stream if processing fails.
 - The overlay shows a persistent two-dot meeting state from accepted start
   through capture stop. A spinner remains while final durable chunks transcribe.
 - Dictation, file transcription, benchmarks, corpus capture, selected-text
@@ -72,7 +74,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 ## Capture boundary
 
-`murmur-capture-worker --production-v7` owns both native streams:
+`murmur-capture-worker --production-v9` owns both native streams:
 
 1. A private, unmuted stereo `CATap` captures global system output and the
    realtime callback downmixes it to mono without allocation.
@@ -80,13 +82,28 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 3. The existing AUHAL microphone path captures the selected input.
 4. Each callback writes only to its own preallocated eight-second SPSC ring.
 5. The worker drains those rings into channel-tagged, capture-scoped PCM frames.
+6. When the user opts in, WebRTC AEC3 consumes 10 ms System reference frames
+   and emits processed Microphone frames. System PCM remains unchanged.
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
 rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v7
 frames. It never mixes the streams.
 
-Protocol v7 also carries bounded `InputResolution` evidence before the live
+The production protocol freezes echo cancellation at meeting start. The worker reports
+`disabled`, `active`, or a typed `bypassed` reason before microphone PCM. A
+callback-clock discontinuity or processing backlog moves AEC into a bounded
+`recovering` state. Murmur passes through raw microphone audio while three
+fresh callback pairs establish a new timeline, then creates a new AEC3
+processor. Each attempt waits 250 ms before checking the clocks and has a
+three-second deadline. Three unsuccessful attempts in one recovery episode end
+in `bypassed` for the rest of the meeting. Thirty seconds of uninterrupted
+active processing resets that budget, so later route changes start a new
+episode. Initialization and processor failures bypass immediately. The worker
+retains each raw 10 ms microphone frame until processing succeeds, so every
+transition to raw PCM preserves the near-end samples without duplication.
+
+Protocol v8 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
 presence, a count capped at 256, and default-input availability. It contains no
 device ID, display name, raw error, path, or audio content.
@@ -129,7 +146,7 @@ live or recovery inference owns the meeting flag.
 
 The store lives under the app data directory in `meetings/`:
 
-- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v3.
+- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v4.
 - `meeting_sessions` stores start/end, status, selected model/language, frozen
   punctuation/audio policy, and a stable content-free failure code.
 - `meeting_segments` stores speaker, per-channel sequence, relative timing,
@@ -137,6 +154,8 @@ The store lives under the app data directory in `meetings/`:
 - `meeting_artifacts` stores one validated schema-v1 derived result plus its
   content-free runtime, peak helper RSS, and monotonic revision; deleting the
   session cascades it.
+- `meeting_remote_speakers` stores session-local display labels. Remote segments
+  may reference a speaker in that same session; Me segments cannot.
 - `meeting_reviews` stores one revisioned reviewed snapshot and its bounded
   channel display labels. It never stores or mutates raw transcript evidence.
 - FTS5 indexes finalized segment text for bounded session search.
@@ -180,6 +199,11 @@ Every probe writes a content-free terminal result to the `meeting` stream:
 state, permission, capture readiness, audio flow, relaunch), and
 `meeting.permission_probe_failed`.
 
+Each echo-cancellation transition also writes
+`meeting.echo_cancellation_state_changed` with only the prior and current
+state, typed reason, recovery episode and attempt, and meeting generation.
+Audio, device identity, transcript text, and session IDs are excluded.
+
 Meeting traces contain only allowlisted lifecycle phase, channel, generation,
 and stable error code. The sanitizer removes every other string in all builds.
 The fleet log shipper additionally drops the entire `meeting` stream and
@@ -199,6 +223,7 @@ Mac.
 
 ## Non-goals
 
-No system-channel diarization, calendar integration, auto-start, cloud sync,
-translation, or caption overlay is part of phase 1. Action items are derived
+System-channel diarization is a separate optional phase-2 feature. Calendar
+integration, auto-start, cloud sync, translation, and caption overlays are not
+part of meeting capture. Action items are derived
 text only; Murmur does not execute, send, or sync them.

@@ -35,14 +35,14 @@ export function FileTranscriptionToasts({
   return (
     <div className="pointer-events-none absolute bottom-4 right-4 z-30 flex w-[min(340px,calc(100vw-32px))] flex-col gap-2" aria-live="polite">
       {error && (
-        <div className="pointer-events-auto rounded-xl border border-error/30 bg-surface-container-lowest p-3 text-xs text-error shadow-xl">
+        <div className="dialog-toast pointer-events-auto border-error/30 p-3 text-xs text-error">
           {error}
         </div>
       )}
       {visible.map((item) => (
-        <div key={item.id} className="pointer-events-auto overflow-hidden rounded-xl border border-outline-variant/25 bg-surface-container-lowest shadow-xl">
+        <div key={item.id} className="dialog-toast pointer-events-auto overflow-hidden">
           <div className="flex items-start gap-3 p-3">
-            <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg ${
+            <span className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-[var(--ui-radius-control)] ${
               item.status === 'done' ? 'bg-success/10 text-success' : item.status === 'error' ? 'bg-error/10 text-error' : 'bg-surface-container-high text-on-surface'
             }`}>
               {item.status === 'transcribing' ? (
@@ -56,17 +56,17 @@ export function FileTranscriptionToasts({
               }`}>{statusText(item)}</span>
             </span>
             {item.status === 'transcribing' && (
-              <button type="button" onClick={() => onCancel(item.id)} className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-container hover:text-on-surface">
+              <button type="button" onClick={() => onCancel(item.id)} className="rounded-[var(--ui-radius-control)] px-1.5 py-0.5 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-container hover:text-on-surface">
                 Cancel
               </button>
             )}
             {(item.status === 'done' || item.status === 'error') && (
-              <button type="button" onClick={() => onDismiss(item.id)} aria-label={`Dismiss ${item.name}`} className="rounded p-0.5 text-on-surface-variant hover:bg-surface-container hover:text-on-surface">×</button>
+              <button type="button" onClick={() => onDismiss(item.id)} aria-label={`Dismiss ${item.name}`} className="rounded-[var(--ui-radius-control)] p-0.5 text-on-surface-variant hover:bg-surface-container hover:text-on-surface">×</button>
             )}
           </div>
           {item.status === 'transcribing' && (
             <div className="h-0.5 overflow-hidden bg-surface-container-high">
-              <div className="model-download-indeterminate h-full bg-primary" />
+              <div className="model-download-indeterminate h-full bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))]" />
             </div>
           )}
         </div>

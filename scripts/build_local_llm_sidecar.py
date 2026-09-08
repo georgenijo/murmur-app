@@ -28,10 +28,27 @@ CAPTURE_HELPER_NAME = "murmur-capture-helper"
 CAPTURE_AGENT_NAME = "murmur-capture-agent"
 CAPTURE_WORKER_NAME = "murmur-capture-worker"
 TARGET = "aarch64-apple-darwin"
+ALLOWED_DYLIB_PREFIXES = (
+    "/System/Library/",
+    "/usr/lib/",
+    "@executable_path/",
+    "@loader_path/",
+    "@rpath/",
+)
 
 
 def run(command: list[str], *, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, check=True, capture_output=True)
+
+
+def unexpected_dynamic_dependencies(otool_output: str) -> list[str]:
+    dependencies: list[str] = []
+    for line in otool_output.splitlines()[1:]:
+        value = line.strip().split(" (compatibility version", 1)[0]
+        if not value or value.startswith(ALLOWED_DYLIB_PREFIXES):
+            continue
+        dependencies.append(value)
+    return dependencies
 
 
 def publish_binary(
@@ -53,11 +70,15 @@ def publish_binary(
     if archs != ["arm64"]:
         raise SystemExit(f"{name} architecture must be exactly arm64, found {archs}")
 
-    dependencies = run(["otool", "-L", str(destination)]).stdout.lower()
+    dependency_output = run(["otool", "-L", str(destination)]).stdout
+    dependencies = dependency_output.lower()
     forbidden = ("libcurl", "libssl", "libcrypto")
     present = [library for library in forbidden if library in dependencies]
     if present:
         raise SystemExit(f"{name} links forbidden networking dependencies: {present}")
+    unexpected = unexpected_dynamic_dependencies(dependency_output)
+    if unexpected:
+        raise SystemExit(f"{name} links non-system dynamic dependencies: {unexpected}")
     return destination
 
 
@@ -137,9 +158,14 @@ def main() -> int:
     capture_command = ["cargo", "build", "-p", CAPTURE_HELPER_NAME]
     if args.release:
         capture_command.append("--release")
-    subprocess.run(capture_command, cwd=TAURI_ROOT, env=env, check=True)
+    capture_env = env.copy()
+    empty_pkg_config = TAURI_ROOT / "target" / "capture-empty-pkgconfig"
+    empty_pkg_config.mkdir(parents=True, exist_ok=True)
+    capture_env.pop("PKG_CONFIG_PATH", None)
+    capture_env["PKG_CONFIG_LIBDIR"] = str(empty_pkg_config)
+    subprocess.run(capture_command, cwd=TAURI_ROOT, env=capture_env, check=True)
     worker_target = TAURI_ROOT / "target" / "capture-worker-build"
-    worker_env = env.copy()
+    worker_env = capture_env.copy()
     worker_env.update(
         {
             "MURMUR_CAPTURE_ROLE": "worker",

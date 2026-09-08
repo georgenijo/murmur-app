@@ -1,0 +1,87 @@
+/* Dialog, banner, palette, and window-chrome styles (Sona refresh). Owned by the dialogs lane. */
+
+/* Everything below lives in the Tailwind `components` layer so Tailwind
+   utilities (`@layer utilities`, e.g. border-primary/45, bg-[...], shadow-[...])
+   applied alongside these classes always win, per Tailwind's cascade-layer
+   ordering (utilities is declared after components). Unlayered rules here
+   would otherwise beat any co-applied utility regardless of source order or
+   specificity. */
+@layer components {
+  /* ── Backdrop ────────────────────────────────────────────────────────── */
+
+  .dialog-backdrop {
+    background: var(--ui-scrim);
+  }
+
+  /* ── Surfaces ────────────────────────────────────────────────────────── */
+
+  .dialog-popover {
+    border-radius: var(--ui-radius-popover);
+    border: 1px solid var(--ui-hairline-strong);
+    background: var(--ui-tint-raised);
+    box-shadow: var(--ui-shadow-3);
+  }
+
+  .dialog-card {
+    border-radius: var(--ui-radius-card);
+    border: 1px solid var(--ui-hairline);
+    background: var(--ui-tint-raised);
+    box-shadow: var(--ui-shadow-1);
+  }
+
+  .dialog-toast {
+    border-radius: var(--ui-radius-card);
+    border: 1px solid var(--ui-hairline);
+    background: var(--ui-tint-raised);
+    box-shadow: var(--ui-shadow-2);
+  }
+
+  .dialog-banner {
+    border-radius: var(--ui-radius-card);
+    border: 1px solid var(--ui-hairline);
+  }
+
+  /* ── Controls ────────────────────────────────────────────────────────── */
+
+  .dialog-pill-btn {
+    border-radius: var(--ui-radius-pill);
+    border: 1px solid var(--ui-hairline);
+    background: var(--ui-tint-raised);
+    box-shadow: var(--ui-shadow-1);
+    font-weight: 600;
+    transition: transform 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+  }
+
+  .dialog-pill-btn:active {
+    transform: scale(0.98);
+  }
+
+  .dialog-search-pill {
+    border-radius: var(--ui-radius-pill);
+    border: 1px solid var(--ui-hairline);
+    background: var(--ui-tint-raised);
+    box-shadow: var(--ui-shadow-1);
+  }
+
+  .dialog-kbd {
+    border-radius: var(--ui-radius-control);
+    background: color-mix(in srgb, var(--murmur-on-surface) 6%, transparent);
+  }
+
+  .dialog-eyebrow {
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: var(--ui-track-caps);
+    text-transform: uppercase;
+  }
+
+  /* Reduced motion: state changes still happen, transitions collapse to zero. */
+  @media (prefers-reduced-motion: reduce) {
+    .dialog-pill-btn {
+      transition: none;
+    }
+    .dialog-pill-btn:active {
+      transform: none;
+    }
+  }
+}

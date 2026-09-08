@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { DEFAULT_SETTINGS, loadSettings } from '../settings';
+import { loadSettings, microphoneDeviceNameArg, smartAutoMicrophoneRequest } from '../settings';
 import { flog } from '../log';
 import {
   EMPTY_REVIEW_CONTENT,
@@ -22,12 +22,20 @@ export interface ReviewDriverResult {
   retry: () => void;
   approve: () => void;
   undo: () => void;
+  finish: () => void;
 }
 
 function deviceNameArg(): string | null {
   try {
-    const mic = loadSettings().microphone;
-    return mic && mic !== DEFAULT_SETTINGS.microphone ? mic : null;
+    return microphoneDeviceNameArg(loadSettings().microphone);
+  } catch {
+    return null;
+  }
+}
+
+function smartAutoArg() {
+  try {
+    return smartAutoMicrophoneRequest(loadSettings());
   } catch {
     return null;
   }
@@ -99,12 +107,16 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
       ) {
         previewSequenceRef.current = -1;
       }
+      const changedPass = activePassRef.current !== payload.transformPassId;
       activePassRef.current = payload.transformPassId;
-      if (payload.state === 'thinking') {
+      if (changedPass || payload.transformPassId === null) {
+        setContent(EMPTY_REVIEW_CONTENT);
+      } else if (payload.state === 'thinking' || payload.state === 'ready') {
         setContent((current) => ({ ...current, proposed: '' }));
       }
+      if (payload.transformPassId === null) return;
 
-      invoke<unknown>('get_transform_review_content')
+      invoke<unknown>('get_transform_review_content', { transformPassId: payload.transformPassId })
         .then((value) => {
           if (cancelled) return;
           if (
@@ -197,27 +209,41 @@ export function useTransformReviewDriver(enabled: boolean): ReviewDriverResult {
     });
   }, [transformPassId]);
   const retry = useCallback(() => {
-    invoke('retry_transform_instruction', { deviceName: deviceNameArg() }).catch((e) => {
+    if (transformPassId === null) return;
+    const smartAuto = smartAutoArg();
+    invoke('retry_transform_instruction', {
+      deviceName: smartAuto ? null : deviceNameArg(),
+      ...(smartAuto ? { smartAuto } : {}),
+      transformPassId,
+    }).catch((e) => {
       flog.warn('transform-review', 'retry_transform_instruction failed', { error: String(e) });
     });
-  }, []);
+  }, [transformPassId]);
   const approve = useCallback(() => {
-    invoke('approve_transform').catch((e) => {
+    if (transformPassId === null) return;
+    invoke('approve_transform', { transformPassId }).catch((e) => {
       flog.warn('transform-review', 'approve_transform failed', { error: String(e) });
     });
-  }, []);
+  }, [transformPassId]);
   const undo = useCallback(() => {
     // Flow-level undo: hides + clears session on success WITHOUT a second
     // epoch bump (chaining cancel_transform would clobber paste-fallback
     // clipboard restore inside the 300ms window — C2 finding 4).
-    invoke('undo_transform_and_close')
+    if (transformPassId === null) return;
+    invoke('undo_transform_and_close', { transformPassId })
       .then(() => {
         setContent(EMPTY_REVIEW_CONTENT);
       })
       .catch((e) => {
         flog.warn('transform-review', 'undo_transform_and_close failed', { error: String(e) });
       });
-  }, []);
+  }, [transformPassId]);
 
-  return { state, errorCode, content, thinkingElapsedMs, cancel, retry, approve, undo };
+  const finish = useCallback(() => {
+    if (transformPassId === null || state !== 'listening') return;
+    void invoke('finish_transform_instruction', { transformPassId }).catch(() => {
+      flog.warn('transform-review', 'instruction finish failed');
+    });
+  }, [state, transformPassId]);
+  return { state, errorCode, content, thinkingElapsedMs, cancel, retry, approve, undo, finish };
 }

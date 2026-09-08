@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
+import { CommandPalette } from './components/CommandPalette';
+import { AboutModal } from './components/AboutModal';
 import { DictationPreviewCard } from './components/dictation-preview/DictationPreviewApp';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
@@ -10,13 +12,14 @@ import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
-import { DEFAULT_SETTINGS } from './lib/settings';
+import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
+import type { HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
-import { applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { DEFAULT_THEME, applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -76,6 +79,7 @@ const importedTheme = importedThemeFixture
   ? importedThemeFixtures[importedThemeFixture]
   : undefined;
 if (importedTheme) applyResolvedTheme(resolveTheme(importedTheme, appearance));
+else if (appearance === 'dark') applyResolvedTheme(resolveTheme(DEFAULT_THEME, appearance));
 else document.documentElement.dataset.appearance = appearance;
 
 const meetingFixture = {
@@ -86,10 +90,11 @@ const meetingFixture = {
     preview: 'We agreed to ship the local review workspace.', errorCode: null,
   },
   segments: [
-    { id: 101, sessionId: 'meeting-fixture', speaker: 'me', sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'We agreed to ship the local review workspace.', audioAvailable: false, errorCode: null },
-    { id: 102, sessionId: 'meeting-fixture', speaker: 'them', sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'I will verify the export formats and source links.', audioAvailable: false, errorCode: null },
+    { id: 101, sessionId: 'meeting-fixture', speaker: 'me', remoteSpeakerId: null, sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'We agreed to ship the local review workspace.', audioAvailable: false, errorCode: null },
+    { id: 102, sessionId: 'meeting-fixture', speaker: 'them', remoteSpeakerId: null, sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'I will verify the export formats and source links.', audioAvailable: false, errorCode: null },
   ],
   labels: { me: 'George', them: 'Alex' },
+  remoteSpeakers: [],
   generated: { revision: 2, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The team agreed to ship and verify the local review workspace.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Ship the review workspace locally.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify export formats and source links.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
   review: { revision: 1, basedOnGeneratedRevision: 1, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
   activeDocument: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] },
@@ -105,6 +110,7 @@ mockIPC((command) => {
       chunksCommitted: 0,
       microphoneActive: false,
       systemAudioActive: false,
+      echoCancellation: { state: 'off' },
       errorCode: null,
     };
   }
@@ -151,14 +157,15 @@ mockIPC((command) => {
   if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_audio_input_inventory') {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       revision: 1,
       status: 'available',
       devices: [
-        { id: 'fixture-built-in', name: 'MacBook Pro Microphone' },
-        { id: 'fixture-desk', name: 'Desk Microphone' },
+        { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
+        { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
       ],
       defaultInputId: 'fixture-built-in',
+      lidState: 'open',
       errorCode: null,
     };
   }
@@ -180,33 +187,63 @@ mockIPC((command) => {
   return null;
 }, { shouldMockEvents: true });
 
-const entries = [
+const fixtureToday = new Date();
+
+function fixtureTimestamp(dayOffset: number, hour: number, minute: number): number {
+  return new Date(
+    fixtureToday.getFullYear(),
+    fixtureToday.getMonth(),
+    fixtureToday.getDate() + dayOffset,
+    hour,
+    minute,
+  ).getTime();
+}
+
+const entries: HistoryEntry[] = [
+  ...Array.from({ length: 14 }, (_, index): HistoryEntry => {
+    const dayOffset = index - 13;
+    const daysAgo = Math.abs(dayOffset);
+    const source = index % 5 === 0 ? 'file' : 'recording';
+    return {
+      schemaVersion: 2,
+      id: `activity-${index}`,
+      text: dayOffset === 0
+        ? 'History owns the window, with the newest work close at hand and older notes one scroll away.'
+        : `Local fixture dictation from ${daysAgo} ${daysAgo === 1 ? 'day' : 'days'} ago keeps the activity view tied to real transcript timestamps.`,
+      timestamp: fixtureTimestamp(dayOffset, 9 + (index % 4), 5 + index),
+      duration: 6 + index,
+      source,
+      ...(source === 'file' ? { sourceName: `local-note-${index + 1}.wav` } : {}),
+    };
+  }),
   {
-    id: 'older',
-    text: 'History owns the window.',
-    timestamp: Date.UTC(2026, 7, 6, 14, 37),
-    duration: 2,
-    source: 'recording' as const,
-  },
-  {
+    schemaVersion: 2,
     id: 'file',
     text: 'Imported audio uses the same spacing rhythm without taking over the workspace.',
-    timestamp: Date.UTC(2026, 7, 6, 14, 47),
+    timestamp: fixtureTimestamp(0, 14, 47),
     duration: 38,
-    source: 'file' as const,
+    source: 'file',
     sourceName: 'design-review.wav',
   },
   {
+    schemaVersion: 2,
     id: 'newest',
     text: 'The compact transcript keeps its metadata aligned and its actions quiet.',
-    timestamp: Date.UTC(2026, 7, 6, 15, 26),
+    timestamp: fixtureTimestamp(0, 15, 26),
     duration: 8,
-    source: 'recording' as const,
+    source: 'recording',
   },
 ];
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
+  smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
+  smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in', 'fixture-anker']
+    : [],
+  smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
+    ? ['fixture-built-in']
+    : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
@@ -277,8 +314,10 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
-    || requestedState === 'settings-site-modes';
+    || requestedState === 'settings-site-modes'
+    || requestedState === 'settings-smart-auto';
   const meetings = useMeetings(fixtureSettings);
+  const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
@@ -335,8 +374,8 @@ function VisualFixture() {
       />
       {settingsOpen ? (
         <SettingsPanel
-          settings={fixtureSettings}
-          onUpdateSettings={() => {}}
+          settings={settings}
+          onUpdateSettings={(updates) => setSettings((current) => ({ ...current, ...updates }))}
           initialized
           status="idle"
           onResetStats={() => {}}
@@ -400,6 +439,19 @@ function VisualFixture() {
           </div>
         </div>
       )}
+      <CommandPalette
+        isOpen={requestedState === 'palette'}
+        onClose={() => {}}
+        commands={[
+          { id: 'record', title: 'Start recording', section: 'Dictation', hint: '⇧ hold', run: () => {} },
+          { id: 'transcribe', title: 'Transcribe audio file…', section: 'Dictation', run: () => {} },
+          { id: 'history', title: 'Search transcripts', section: 'History', hint: '⌘F', run: () => {} },
+          { id: 'insights', title: 'Open Insights', section: 'Navigate', run: () => {} },
+          { id: 'settings', title: 'Open Settings', section: 'Navigate', hint: '⌘,', run: () => {} },
+          { id: 'logs', title: 'Open Performance workspace', section: 'Navigate', hint: '⌘L', run: () => {} },
+        ]}
+      />
+      <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
     </div>
   );
 }

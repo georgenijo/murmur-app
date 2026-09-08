@@ -75,6 +75,11 @@ describe('deriveReviewState', () => {
     expect(vm.approveEnabled).toBe(false);
   });
 
+  it('waits for the final review content before enabling approval', () => {
+    expect(deriveReviewState(input({ state: 'ready', original: 'before', proposed: '' })).approveEnabled).toBe(false);
+    expect(deriveReviewState(input({ state: 'ready', original: '', proposed: 'after' })).approveEnabled).toBe(false);
+  });
+
   it('ready: shows the diff and all three actions', () => {
     const vm = deriveReviewState(input({
       state: 'ready', instruction: 'make this shorter', original: 'a b c', proposed: 'a c',
