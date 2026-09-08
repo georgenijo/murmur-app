@@ -1,0 +1,43 @@
+name: Native capture smoke
+run-name: Capture smoke ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Reviewed immutable murmur-app commit
+        required: true
+        type: string
+      source_ref:
+        description: Trusted branch containing the reviewed commit
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-capture-macbook
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    if: >-
+      github.repository == 'georgenijo/murmur-native-ci' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'georgenijo' &&
+      github.triggering_actor == 'georgenijo'
+    runs-on: [self-hosted, macOS, ARM64, murmur-capture-macbook]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: controller
+      - name: Build and test reviewed source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: python3 controller/run_capture.py
