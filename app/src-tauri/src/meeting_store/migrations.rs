@@ -105,6 +105,52 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|_| "Murmur could not migrate meeting reviews.".to_string())?;
     }
+    if schema_version(connection)? == 3 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE meeting_remote_speakers (
+                   session_id TEXT NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+                   speaker_id INTEGER NOT NULL CHECK(speaker_id BETWEEN 1 AND 32),
+                   label TEXT NOT NULL CHECK(length(CAST(label AS BLOB)) BETWEEN 1 AND 80),
+                   PRIMARY KEY(session_id, speaker_id)
+                 ) WITHOUT ROWID;
+                 ALTER TABLE meeting_segments RENAME TO meeting_segments_v3;
+                 DROP INDEX IF EXISTS meeting_segments_session_time_idx;
+                 DROP INDEX IF EXISTS meeting_segments_pending_idx;
+                 CREATE TABLE meeting_segments (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   session_id TEXT NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+                   speaker TEXT NOT NULL CHECK(speaker IN ('me','them')),
+                   remote_speaker_id INTEGER,
+                   sequence INTEGER NOT NULL CHECK(sequence >= 0),
+                   start_ms INTEGER NOT NULL CHECK(start_ms >= 0),
+                   end_ms INTEGER NOT NULL CHECK(end_ms >= start_ms),
+                   status TEXT NOT NULL CHECK(status IN ('pending','final','failed')),
+                   text TEXT NOT NULL DEFAULT '',
+                   audio_relative_path TEXT,
+                   error_code TEXT,
+                   UNIQUE(session_id, speaker, sequence),
+                   CHECK(remote_speaker_id IS NULL OR
+                         (speaker='them' AND remote_speaker_id BETWEEN 1 AND 32)),
+                   FOREIGN KEY(session_id, remote_speaker_id)
+                     REFERENCES meeting_remote_speakers(session_id, speaker_id)
+                 );
+                 INSERT INTO meeting_segments(
+                   id, session_id, speaker, sequence, start_ms, end_ms, status,
+                   text, audio_relative_path, error_code
+                 )
+                 SELECT id, session_id, speaker, sequence, start_ms, end_ms, status,
+                        text, audio_relative_path, error_code
+                 FROM meeting_segments_v3;
+                 DROP TABLE meeting_segments_v3;
+                 CREATE INDEX meeting_segments_session_time_idx ON meeting_segments(session_id, start_ms, id);
+                 CREATE INDEX meeting_segments_pending_idx ON meeting_segments(status, id);
+                 PRAGMA user_version=4;
+                 COMMIT;",
+            )
+            .map_err(|_| "Murmur could not migrate remote meeting speakers.".to_string())?;
+    }
     validate_schema(connection)
 }
 
@@ -115,6 +161,7 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
         "meeting_segments_fts",
         "meeting_artifacts",
         "meeting_reviews",
+        "meeting_remote_speakers",
     ] {
         let exists: i64 = connection
             .query_row(
@@ -128,6 +175,7 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
         }
     }
     for (table, required) in [
+        ("meeting_segments", &["remote_speaker_id"][..]),
         ("meeting_artifacts", &["revision"][..]),
         (
             "meeting_reviews",
@@ -165,6 +213,54 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
         .any(|row| matches!(row, Ok((table, action)) if table == "meeting_sessions" && action.eq_ignore_ascii_case("CASCADE")));
     if !cascades_to_session {
         return Err("The meeting transcript database schema is incomplete.".to_string());
+    }
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_list(meeting_remote_speakers)")
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
+    let labels_cascade = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(2)?, row.get::<_, String>(6)?))
+        })
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
+        .any(|row| matches!(row, Ok((table, action)) if table == "meeting_sessions" && action.eq_ignore_ascii_case("CASCADE")));
+    if !labels_cascade {
+        return Err("The meeting transcript database schema is incomplete.".to_string());
+    }
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_list(meeting_segments)")
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
+    let remote_speaker_columns = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
+        .filter_map(Result::ok)
+        .filter(|(table, _, _)| table == "meeting_remote_speakers")
+        .map(|(_, from, to)| (from, to))
+        .collect::<std::collections::HashSet<_>>();
+    if remote_speaker_columns
+        != std::collections::HashSet::from([
+            ("session_id".to_string(), "session_id".to_string()),
+            ("remote_speaker_id".to_string(), "speaker_id".to_string()),
+        ])
+    {
+        return Err("The meeting transcript database schema is incomplete.".to_string());
+    }
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
+    if statement
+        .query([])
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
+        .next()
+        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
+        .is_some()
+    {
+        return Err("The meeting transcript database failed its integrity check.".to_string());
     }
     Ok(())
 }
@@ -207,7 +303,7 @@ mod tests {
 
         migrate(&connection).unwrap();
 
-        assert_eq!(schema_version(&connection).unwrap(), 3);
+        assert_eq!(schema_version(&connection).unwrap(), 4);
         assert_eq!(
             connection
                 .query_row(
@@ -224,6 +320,85 @@ mod tests {
                     .get::<_, i64>(0))
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn v3_evidence_and_reviews_survive_remote_speaker_migration() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 CREATE TABLE meeting_sessions (
+                   id TEXT PRIMARY KEY NOT NULL, started_at_ms INTEGER NOT NULL,
+                   ended_at_ms INTEGER, status TEXT NOT NULL, model_name TEXT NOT NULL,
+                   language TEXT NOT NULL, smart_punctuation INTEGER NOT NULL,
+                   retain_audio INTEGER NOT NULL, error_code TEXT
+                 );
+                 CREATE TABLE meeting_segments (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   session_id TEXT NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+                   speaker TEXT NOT NULL, sequence INTEGER NOT NULL, start_ms INTEGER NOT NULL,
+                   end_ms INTEGER NOT NULL, status TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+                   audio_relative_path TEXT, error_code TEXT,
+                   UNIQUE(session_id, speaker, sequence)
+                 );
+                 CREATE INDEX meeting_sessions_started_idx ON meeting_sessions(started_at_ms DESC);
+                 CREATE INDEX meeting_segments_session_time_idx ON meeting_segments(session_id, start_ms, id);
+                 CREATE INDEX meeting_segments_pending_idx ON meeting_segments(status, id);
+                 CREATE VIRTUAL TABLE meeting_segments_fts USING fts5(segment_id UNINDEXED, session_id UNINDEXED, text);
+                 CREATE TABLE meeting_artifacts (
+                   session_id TEXT PRIMARY KEY NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+                   artifact_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+                   runtime_ms INTEGER NOT NULL, peak_rss_mb INTEGER NOT NULL,
+                   revision INTEGER NOT NULL DEFAULT 1
+                 );
+                 CREATE TABLE meeting_reviews (
+                   session_id TEXT PRIMARY KEY NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+                   revision INTEGER NOT NULL, based_on_artifact_revision INTEGER,
+                   me_label TEXT NOT NULL, them_label TEXT NOT NULL,
+                   review_json TEXT, updated_at_ms INTEGER NOT NULL
+                 );
+                 INSERT INTO meeting_sessions VALUES('meeting',1,2,'complete','base.en','en',1,0,NULL);
+                 INSERT INTO meeting_segments VALUES(41,'meeting','them',0,10,20,'final','preserved evidence',NULL,NULL);
+                 INSERT INTO meeting_segments_fts VALUES(41,'meeting','preserved evidence');
+                 INSERT INTO meeting_reviews VALUES('meeting',7,NULL,'George','Team',NULL,3);
+                 PRAGMA user_version=3;",
+            )
+            .unwrap();
+
+        migrate(&connection).unwrap();
+
+        assert_eq!(schema_version(&connection).unwrap(), 4);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT id, text, remote_speaker_id FROM meeting_segments WHERE session_id='meeting'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?)),
+                )
+                .unwrap(),
+            (41, "preserved evidence".to_string(), None)
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT revision, me_label, them_label FROM meeting_reviews WHERE session_id='meeting'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+                )
+                .unwrap(),
+            (7, "George".to_string(), "Team".to_string())
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT text FROM meeting_segments_fts WHERE segment_id=41",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "preserved evidence"
         );
     }
 }

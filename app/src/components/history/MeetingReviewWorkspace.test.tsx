@@ -6,13 +6,16 @@ import type { MeetingDetail, MeetingSegment } from '../../lib/meetings';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
 
 const segments: MeetingSegment[] = [
-  { id: 11, sessionId: 'meeting', speaker: 'me', sequence: 0, startMs: 1_000, endMs: 2_000, status: 'final', text: 'Raw evidence', audioAvailable: false, errorCode: null },
+  { id: 11, sessionId: 'meeting', speaker: 'me', remoteSpeakerId: null, sequence: 0, startMs: 1_000, endMs: 2_000, status: 'final', text: 'Raw evidence', audioAvailable: false, errorCode: null },
+  { id: 12, sessionId: 'meeting', speaker: 'them', remoteSpeakerId: 1, sequence: 0, startMs: 2_000, endMs: 3_000, status: 'final', text: 'Remote evidence', audioAvailable: false, errorCode: null },
+  { id: 13, sessionId: 'meeting', speaker: 'them', remoteSpeakerId: null, sequence: 1, startMs: 3_000, endMs: 4_000, status: 'final', text: 'Uncertain evidence', audioAvailable: false, errorCode: null },
 ];
 
 const detail: MeetingDetail = {
   session: { id: 'meeting', startedAtMs: 1, endedAtMs: 2, status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true, retainAudio: false, durationMs: 1_000, segmentCount: 1, preview: 'Raw evidence', errorCode: null },
   segments,
   labels: { me: 'George', them: 'Team' },
+  remoteSpeakers: [{ speakerId: 1, label: 'Casey' }],
   generated: { revision: 2, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'Generated', sourceSegmentIds: [11] }, decisions: [], actionItems: [], openQuestions: [] } },
   review: { revision: 1, basedOnGeneratedRevision: 1, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'Reviewed', sourceSegmentIds: [11] }, decisions: [], actionItems: [], openQuestions: [] } },
   activeDocument: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'Reviewed', sourceSegmentIds: [11] }, decisions: [], actionItems: [], openQuestions: [] },
@@ -29,6 +32,7 @@ function controller(overrides: Partial<ReturnType<typeof useMeetings>> = {}): Re
     exportReview: vi.fn().mockResolvedValue('/tmp/review.md'),
     summarize: vi.fn().mockResolvedValue(undefined),
     cancelSummary: vi.fn().mockResolvedValue(undefined),
+    renameRemoteSpeaker: vi.fn().mockResolvedValue(true),
     ...overrides,
   } as unknown as ReturnType<typeof useMeetings>;
 }
@@ -103,5 +107,23 @@ describe('MeetingReviewWorkspace', () => {
     expect(restoreReview).not.toHaveBeenCalled();
     await act(async () => restore().click());
     expect(restoreReview).toHaveBeenCalledWith('meeting', 2, 1);
+  });
+
+  it('shows resolved remote names, keeps uncertain Them fallback, and renames one session speaker', async () => {
+    const renameRemoteSpeaker = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+
+    expect(container.querySelector('#meeting-segment-12')?.textContent).toContain('Casey');
+    expect(container.querySelector('#meeting-segment-13')?.textContent).toContain('Team');
+    const input = container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setValue.call(input, 'Alex');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const save = input.parentElement?.querySelector('button') as HTMLButtonElement;
+    await act(async () => save.click());
+
+    expect(renameRemoteSpeaker).toHaveBeenCalledWith('meeting', 1, 'Alex');
   });
 });

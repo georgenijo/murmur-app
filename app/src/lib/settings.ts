@@ -339,6 +339,8 @@ export interface Settings {
   retainHistory: boolean;
   /** Keep meeting chunk WAV files after their durable transcript commits. */
   meetingRetainAudio: boolean;
+  /** Opt in to local, session-scoped labels for remote meeting speakers. */
+  meetingDiarization: boolean;
   /** Opt in to helper-side acoustic echo cancellation for Meeting Capture. */
   meetingEchoCancellationEnabled: boolean;
   /** Delete completed meetings older than this many days; 0 keeps them by age. */
@@ -571,6 +573,7 @@ export const DEFAULT_SETTINGS: Settings = {
   smartPunctuation: true,
   retainHistory: true,
   meetingRetainAudio: false,
+  meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
   meetingRetentionDays: 0,
   meetingMaxSessions: 100,
@@ -1191,6 +1194,9 @@ export function loadSettings(): Settings {
       }
       if (typeof parsed.meetingRetainAudio !== 'boolean') {
         parsed.meetingRetainAudio = DEFAULT_SETTINGS.meetingRetainAudio;
+      }
+      if (typeof parsed.meetingDiarization !== 'boolean') {
+        parsed.meetingDiarization = DEFAULT_SETTINGS.meetingDiarization;
       }
       if (typeof parsed.meetingEchoCancellationEnabled !== 'boolean') {
         parsed.meetingEchoCancellationEnabled = DEFAULT_SETTINGS.meetingEchoCancellationEnabled;

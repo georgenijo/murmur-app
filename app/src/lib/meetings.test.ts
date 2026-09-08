@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   echoCancellationNotice,
   formatMeetingTimestamp,
+  meetingSegmentDisplayLabel,
   orderedMeetingSegments,
   type MeetingSegment,
 } from './meetings';
@@ -11,6 +12,7 @@ function segment(id: number, startMs: number): MeetingSegment {
     id,
     sessionId: 'session',
     speaker: id % 2 === 0 ? 'me' : 'them',
+    remoteSpeakerId: null,
     sequence: id,
     startMs,
     endMs: startMs + 500,
@@ -57,5 +59,16 @@ describe('meeting presentation', () => {
       reason: 'processingBacklog',
     })).toContain('rest of this meeting');
     expect(echoCancellationNotice({ state: 'active' })).toBeNull();
+  });
+
+  it('resolves remote labels without changing the canonical channel fallback', () => {
+    const remote = { ...segment(1, 1_000), remoteSpeakerId: 2 };
+    const microphone = { ...segment(2, 2_000), remoteSpeakerId: null };
+    const labels = { me: 'George', them: 'Team' };
+    const speakers = [{ speakerId: 2, label: 'Casey' }];
+
+    expect(meetingSegmentDisplayLabel(remote, labels, speakers)).toBe('Casey');
+    expect(meetingSegmentDisplayLabel({ ...remote, remoteSpeakerId: 3 }, labels, speakers)).toBe('Team');
+    expect(meetingSegmentDisplayLabel(microphone, labels, speakers)).toBe('George');
   });
 });

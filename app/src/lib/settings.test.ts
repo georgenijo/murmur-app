@@ -253,6 +253,21 @@ describe('loadSettings', () => {
     }
   });
 
+  it('keeps remote speaker labeling opt-in and rejects malformed persisted values', () => {
+    expect(DEFAULT_SETTINGS.meetingDiarization).toBe(false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      meetingDiarization: true,
+    }));
+    expect(loadSettings().meetingDiarization).toBe(true);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      meetingDiarization: 'yes',
+    }));
+    expect(loadSettings().meetingDiarization).toBe(false);
+  });
+
   it('migrates the exact legacy 50 ms paste delay to zero once', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

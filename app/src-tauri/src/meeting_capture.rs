@@ -194,6 +194,7 @@ pub struct MeetingCaptureConfig {
     pub vad_sensitivity: u32,
     pub device_id: Option<String>,
     pub echo_cancellation: EchoCancellationMode,
+    pub diarization: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -335,7 +336,7 @@ impl MeetingCoordinator {
                     ))
                 });
                 let (session_status, error_code) = match &result {
-                    Ok(()) => (MeetingSessionStatus::Complete, None),
+                    Ok(_) => (MeetingSessionStatus::Complete, None),
                     Err(error) => (MeetingSessionStatus::Failed, Some(error.code)),
                 };
                 let _ = repository_for_thread.finish_session(
@@ -363,6 +364,15 @@ impl MeetingCoordinator {
                     config_for_thread.generation,
                     result.as_ref().err(),
                 );
+                if let Ok(Some(audio)) = result {
+                    crate::meeting_diarization::schedule(
+                        app_for_thread.clone(),
+                        repository_for_thread.clone(),
+                        config_for_thread.session_id.clone(),
+                        config_for_thread.generation,
+                        audio,
+                    );
+                }
                 completion.finish();
             });
         if spawned.is_err() {
@@ -1194,7 +1204,7 @@ fn run_capture_session(
     config: &MeetingCaptureConfig,
     command_receiver: Receiver<MeetingCommand>,
     coordinator: &MeetingCoordinator,
-) -> Result<(), MeetingError> {
+) -> Result<Option<crate::diarization_audio::RemoteAudio>, MeetingError> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) = spawn_worker(capture_id, &nonce_hex)?;
     let receiver = spawn_reader(output, capture_id, nonce);
@@ -1349,7 +1359,7 @@ fn run_capture_session(
                 );
                 break;
             }
-            Ok(Ok(())) | Err(TryRecvError::Disconnected) => {
+            Ok(Ok(_)) | Err(TryRecvError::Disconnected) => {
                 terminal_error = Some(MeetingError::new(
                     "segmenter_unavailable",
                     "The meeting segmenter stopped unexpectedly.",
@@ -1851,6 +1861,7 @@ struct ChannelProcessor {
     base_ns: Option<u64>,
     resampler: StreamingResampler,
     chunker: VadChunker,
+    remote_audio: Option<crate::diarization_audio::RemoteAudio>,
 }
 
 impl ChannelProcessor {
@@ -1861,6 +1872,7 @@ impl ChannelProcessor {
             base_ns: None,
             resampler: StreamingResampler::new(),
             chunker: VadChunker::new(vad_sensitivity)?,
+            remote_audio: None,
         })
     }
 
@@ -1874,6 +1886,13 @@ impl ChannelProcessor {
             )
         });
         let samples = self.resampler.push(pcm.sample_rate, &pcm.samples)?;
+        if self
+            .remote_audio
+            .as_mut()
+            .is_some_and(|audio| !audio.append(&samples))
+        {
+            self.remote_audio.take();
+        }
         self.chunker.push(&samples)
     }
 
@@ -1892,9 +1911,12 @@ fn process_pcm_stream(
     config: &MeetingCaptureConfig,
     receiver: Receiver<ProductionPcm>,
     ready_sender: mpsc::SyncSender<()>,
-) -> Result<(), MeetingError> {
+) -> Result<Option<crate::diarization_audio::RemoteAudio>, MeetingError> {
     let mut microphone = ChannelProcessor::new(MeetingSpeaker::Me, config.vad_sensitivity)?;
     let mut system = ChannelProcessor::new(MeetingSpeaker::Them, config.vad_sensitivity)?;
+    if config.diarization {
+        system.remote_audio = crate::diarization_audio::RemoteAudio::create(repository.root());
+    }
     let (wake_sender, wake_receiver) = mpsc::sync_channel(INFERENCE_WAKE_CAPACITY);
     let inference_app = app.clone();
     let inference_repository = repository.clone();
@@ -1940,7 +1962,10 @@ fn process_pcm_stream(
             "The meeting transcription worker stopped unexpectedly.",
         )
     })?;
-    Ok(())
+    Ok(system
+        .remote_audio
+        .take()
+        .and_then(|audio| audio.finish(system.base_ns.unwrap_or_default() / 1_000_000)))
 }
 
 fn persist_chunk(
@@ -2096,6 +2121,7 @@ fn process_pending_segment(
                     id: pending.id,
                     session_id: pending.session_id,
                     speaker: pending.speaker,
+                    remote_speaker_id: None,
                     sequence: pending.sequence,
                     start_ms: pending.start_ms,
                     end_ms: pending.end_ms,
@@ -2508,6 +2534,7 @@ mod tests {
             id: 1,
             session_id: "s".into(),
             speaker: MeetingSpeaker::Them,
+            remote_speaker_id: None,
             sequence: 0,
             start_ms: 62_000,
             end_ms: 63_000,

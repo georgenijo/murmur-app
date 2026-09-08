@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, MAIN_DB};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior, MAIN_DB};
 
 use super::migrations;
 use super::types::*;
@@ -36,6 +36,16 @@ fn to_i64(value: u64) -> Result<i64, String> {
 
 fn to_u64(value: i64) -> rusqlite::Result<u64> {
     u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
+fn to_u32(value: i64) -> rusqlite::Result<u32> {
+    u32::try_from(value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Integer,
@@ -370,7 +380,7 @@ impl MeetingRepository {
             .ok_or_else(|| "The meeting transcript no longer exists.".to_string())?;
         let mut statement = connection
             .prepare(
-                "SELECT id, session_id, speaker, sequence, start_ms, end_ms, status, text, audio_relative_path IS NOT NULL, error_code
+                "SELECT id, session_id, speaker, remote_speaker_id, sequence, start_ms, end_ms, status, text, audio_relative_path IS NOT NULL, error_code
                  FROM meeting_segments WHERE session_id=? ORDER BY start_ms ASC, id ASC",
             )
             .map_err(db_error)?;
@@ -490,15 +500,139 @@ impl MeetingRepository {
                 })
             })
             .unwrap_or((None, None));
+        let mut statement = connection
+            .prepare(
+                "SELECT speaker_id, label FROM meeting_remote_speakers
+                 WHERE session_id=? ORDER BY speaker_id ASC",
+            )
+            .map_err(db_error)?;
+        let remote_speakers = statement
+            .query_map([id], |row| {
+                Ok(RemoteSpeakerLabel {
+                    speaker_id: to_u32(row.get(0)?)?,
+                    label: row.get(1)?,
+                })
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
         Ok(MeetingWorkspace {
             session: detail.session,
             segments: detail.segments,
             labels,
+            remote_speakers,
             generated,
             review,
             active_document,
             active_origin,
         })
+    }
+
+    pub fn apply_remote_speakers(
+        &self,
+        session_id: &str,
+        assignments: &[(i64, u32)],
+    ) -> Result<(), String> {
+        if !valid_session_id(session_id)
+            || assignments
+                .iter()
+                .any(|(_, speaker_id)| !(1..=32).contains(speaker_id))
+        {
+            return Err("The remote speaker assignments are invalid.".to_string());
+        }
+        let mut segment_ids = std::collections::HashSet::with_capacity(assignments.len());
+        if assignments
+            .iter()
+            .any(|(segment_id, _)| !segment_ids.insert(*segment_id))
+        {
+            return Err("The remote speaker assignments contain a duplicate segment.".to_string());
+        }
+
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let status = transaction
+            .query_row(
+                "SELECT status FROM meeting_sessions WHERE id=?",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+        if status.as_deref() != Some("complete") {
+            return Err("Remote speakers can be applied only to a completed meeting.".to_string());
+        }
+        let existing: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM meeting_segments
+                 WHERE session_id=? AND remote_speaker_id IS NOT NULL",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if existing != 0 {
+            return Err("Remote speakers were already applied to this meeting.".to_string());
+        }
+
+        let speaker_ids = assignments
+            .iter()
+            .map(|(_, speaker_id)| *speaker_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        for speaker_id in speaker_ids {
+            transaction
+                .execute(
+                    "INSERT INTO meeting_remote_speakers(session_id, speaker_id, label)
+                     VALUES (?, ?, ?)",
+                    params![session_id, speaker_id, format!("Speaker {speaker_id}")],
+                )
+                .map_err(db_error)?;
+        }
+        for (segment_id, speaker_id) in assignments {
+            let changed = transaction
+                .execute(
+                    "UPDATE meeting_segments SET remote_speaker_id=?
+                     WHERE id=? AND session_id=? AND speaker='them'
+                       AND status='final' AND remote_speaker_id IS NULL",
+                    params![speaker_id, segment_id, session_id],
+                )
+                .map_err(db_error)?;
+            if changed != 1 {
+                return Err(
+                    "A remote speaker assignment does not belong to this completed meeting."
+                        .to_string(),
+                );
+            }
+        }
+        transaction.commit().map_err(db_error)
+    }
+
+    pub fn rename_remote_speaker(
+        &self,
+        session_id: &str,
+        speaker_id: u32,
+        label: &str,
+    ) -> Result<MeetingWorkspace, String> {
+        if !valid_session_id(session_id) || !(1..=32).contains(&speaker_id) {
+            return Err("The remote speaker label is invalid.".to_string());
+        }
+        let label = meeting_review::validate_remote_speaker_label(label)?;
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE meeting_remote_speakers SET label=?
+                 WHERE session_id=? AND speaker_id=?",
+                params![label, session_id, speaker_id],
+            )
+            .map_err(db_error)?;
+        if changed != 1 {
+            return Err("The remote speaker no longer exists in this meeting.".to_string());
+        }
+        transaction.commit().map_err(db_error)?;
+        self.workspace(session_id)
     }
 
     pub fn save_artifact(
@@ -908,13 +1042,14 @@ fn row_to_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSegment> {
         id: row.get(0)?,
         session_id: row.get(1)?,
         speaker: MeetingSpeaker::from_db(&row.get::<_, String>(2)?)?,
-        sequence: to_u64(row.get(3)?)?,
-        start_ms: to_u64(row.get(4)?)?,
-        end_ms: to_u64(row.get(5)?)?,
-        status: MeetingSegmentStatus::from_db(&row.get::<_, String>(6)?)?,
-        text: row.get(7)?,
-        audio_available: row.get(8)?,
-        error_code: row.get(9)?,
+        remote_speaker_id: row.get::<_, Option<i64>>(3)?.map(to_u32).transpose()?,
+        sequence: to_u64(row.get(4)?)?,
+        start_ms: to_u64(row.get(5)?)?,
+        end_ms: to_u64(row.get(6)?)?,
+        status: MeetingSegmentStatus::from_db(&row.get::<_, String>(7)?)?,
+        text: row.get(8)?,
+        audio_available: row.get(9)?,
+        error_code: row.get(10)?,
     })
 }
 
@@ -996,6 +1131,33 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let (repository, _) = MeetingRepository::initialize(temp.path().to_path_buf()).unwrap();
         (temp, repository)
+    }
+
+    fn final_segment(
+        repository: &MeetingRepository,
+        session_id: &str,
+        speaker: MeetingSpeaker,
+        sequence: u64,
+        text: &str,
+    ) -> i64 {
+        let channel = speaker.as_db();
+        let relative = format!("audio/{session_id}/{channel}-{sequence}.wav");
+        let audio = repository.root().join(&relative);
+        fs::create_dir_all(audio.parent().unwrap()).unwrap();
+        fs::write(&audio, b"wav").unwrap();
+        let id = repository
+            .insert_pending_segment(
+                session_id,
+                speaker,
+                sequence,
+                sequence * 1_000,
+                sequence * 1_000 + 500,
+                &relative,
+            )
+            .unwrap();
+        repository.finalize_segment(id, text, false).unwrap();
+        fs::remove_file(audio).unwrap();
+        id
     }
 
     #[test]
@@ -1211,6 +1373,132 @@ mod tests {
         assert_eq!(
             restored.active_document.unwrap().summary.text,
             "Generated two"
+        );
+    }
+
+    #[test]
+    fn remote_speaker_assignments_are_atomic_bounded_and_session_scoped() {
+        let (_temp, repository) = repository();
+        for session_id in ["first", "second"] {
+            repository
+                .create_session(session_id, "base.en", "en", true, false)
+                .unwrap();
+        }
+        let first_remote = final_segment(
+            &repository,
+            "first",
+            MeetingSpeaker::Them,
+            0,
+            "Remote evidence",
+        );
+        let first_mic = final_segment(&repository, "first", MeetingSpeaker::Me, 0, "Mic evidence");
+        let second_remote = final_segment(
+            &repository,
+            "second",
+            MeetingSpeaker::Them,
+            0,
+            "Other session evidence",
+        );
+        assert!(repository
+            .apply_remote_speakers("first", &[(first_remote, 1)])
+            .is_err());
+        for session_id in ["first", "second"] {
+            repository
+                .finish_session(session_id, MeetingSessionStatus::Complete, None)
+                .unwrap();
+        }
+
+        assert!(repository
+            .apply_remote_speakers("first", &[(first_remote, 1), (first_remote, 2)])
+            .is_err());
+        assert!(repository
+            .apply_remote_speakers("first", &[(first_remote, 1), (first_mic, 2)])
+            .is_err());
+        let rolled_back = repository.workspace("first").unwrap();
+        assert!(rolled_back.remote_speakers.is_empty());
+        assert!(rolled_back
+            .segments
+            .iter()
+            .all(|segment| segment.remote_speaker_id.is_none()));
+
+        repository
+            .apply_remote_speakers("first", &[(first_remote, 1)])
+            .unwrap();
+        repository
+            .apply_remote_speakers("second", &[(second_remote, 1)])
+            .unwrap();
+        assert!(repository
+            .apply_remote_speakers("first", &[(first_remote, 2)])
+            .is_err());
+        assert!(repository
+            .apply_remote_speakers("second", &[(second_remote, 0)])
+            .is_err());
+
+        let renamed = repository
+            .rename_remote_speaker("first", 1, "  Casey  ")
+            .unwrap();
+        assert_eq!(renamed.remote_speakers[0].label, "Casey");
+        assert_eq!(renamed.segments[0].text, "Remote evidence");
+        assert_eq!(renamed.segments[0].remote_speaker_id, Some(1));
+        assert_eq!(renamed.segments[1].text, "Mic evidence");
+        assert_eq!(renamed.segments[1].remote_speaker_id, None);
+        assert_eq!(
+            repository.workspace("second").unwrap().remote_speakers[0].label,
+            "Speaker 1"
+        );
+    }
+
+    #[test]
+    fn remote_speaker_foreign_keys_reject_cross_session_and_cascade_on_delete() {
+        let (_temp, repository) = repository();
+        for session_id in ["owner", "other"] {
+            repository
+                .create_session(session_id, "base.en", "en", true, false)
+                .unwrap();
+        }
+        let owner_remote = final_segment(
+            &repository,
+            "owner",
+            MeetingSpeaker::Them,
+            0,
+            "Owner remote",
+        );
+        let other_remote = final_segment(
+            &repository,
+            "other",
+            MeetingSpeaker::Them,
+            0,
+            "Other remote",
+        );
+        for session_id in ["owner", "other"] {
+            repository
+                .finish_session(session_id, MeetingSessionStatus::Complete, None)
+                .unwrap();
+        }
+        repository
+            .apply_remote_speakers("owner", &[(owner_remote, 1)])
+            .unwrap();
+
+        let connection = repository.open_checked().unwrap();
+        assert!(connection
+            .execute(
+                "UPDATE meeting_segments SET remote_speaker_id=1 WHERE id=?",
+                [other_remote],
+            )
+            .is_err());
+        drop(connection);
+
+        repository.delete_session("owner").unwrap();
+        let connection = repository.open_checked().unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM meeting_remote_speakers WHERE session_id='owner'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
         );
     }
 }

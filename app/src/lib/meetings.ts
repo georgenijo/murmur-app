@@ -62,6 +62,7 @@ export interface MeetingSegment {
   id: number;
   sessionId: string;
   speaker: MeetingSpeaker;
+  remoteSpeakerId: number | null;
   sequence: number;
   startMs: number;
   endMs: number;
@@ -75,6 +76,7 @@ export interface MeetingDetail {
   session: MeetingSession;
   segments: MeetingSegment[];
   labels: MeetingSpeakerLabels;
+  remoteSpeakers: RemoteSpeakerLabel[];
   generated: GeneratedMeetingReview | null;
   review: SavedMeetingReview | null;
   activeDocument: MeetingReviewDocumentV1 | null;
@@ -82,6 +84,7 @@ export interface MeetingDetail {
 }
 
 export interface MeetingSpeakerLabels { me: string; them: string }
+export interface RemoteSpeakerLabel { speakerId: number; label: string }
 export interface ReviewText { key: string; text: string; sourceSegmentIds: number[] }
 export interface ReviewAction extends ReviewText { owner: string | null; dueDate: string | null }
 export interface MeetingReviewDocumentV1 {
@@ -150,7 +153,17 @@ export interface StartMeetingOptions {
   retentionDays: number;
   maxSessions: number;
   echoCancellation: boolean;
+  diarization: boolean;
 }
+
+export interface DiarizationModelStatus {
+  supported: boolean;
+  installed: boolean;
+  installing: boolean;
+  bytes: number;
+}
+
+export const MEETING_DIARIZATION_MODEL_ID = 'meeting-diarization-coreml';
 
 export const IDLE_MEETING_STATUS: MeetingRuntimeStatus = {
   generation: 0,
@@ -176,8 +189,29 @@ export async function startMeeting(options: StartMeetingOptions): Promise<Meetin
       retentionDays: options.retentionDays === 0 ? null : options.retentionDays,
       maxSessions: options.maxSessions,
       echoCancellation: options.echoCancellation,
+      diarization: options.diarization,
     },
   });
+}
+
+export async function getDiarizationModelStatus(): Promise<DiarizationModelStatus> {
+  return invoke('get_diarization_model_status');
+}
+
+export async function downloadDiarizationModel(): Promise<void> {
+  await invoke('download_model', { modelName: MEETING_DIARIZATION_MODEL_ID });
+}
+
+export async function removeDiarizationModel(): Promise<void> {
+  await invoke('remove_diarization_model');
+}
+
+export async function renameMeetingRemoteSpeaker(
+  sessionId: string,
+  speakerId: number,
+  label: string,
+): Promise<MeetingDetail> {
+  return invoke('rename_meeting_remote_speaker', { sessionId, speakerId, label });
 }
 
 export async function stopMeeting(): Promise<void> {
@@ -286,6 +320,17 @@ export function orderedMeetingSegments(segments: MeetingSegment[], limit = 200):
   return [...new Map(segments.map((segment) => [segment.id, segment])).values()]
     .sort((left, right) => left.startMs - right.startMs || left.id - right.id)
     .slice(-Math.max(1, limit));
+}
+
+export function meetingSegmentDisplayLabel(
+  segment: MeetingSegment,
+  labels: MeetingSpeakerLabels,
+  remoteSpeakers: RemoteSpeakerLabel[],
+): string {
+  if (segment.speaker === 'me') return labels.me;
+  if (segment.remoteSpeakerId === null) return labels.them;
+  return remoteSpeakers.find((speaker) => speaker.speakerId === segment.remoteSpeakerId)?.label
+    ?? labels.them;
 }
 
 export function meetingErrorMessage(code: string | null): string | null {

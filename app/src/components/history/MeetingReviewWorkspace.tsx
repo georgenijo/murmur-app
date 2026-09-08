@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import {
   formatMeetingTimestamp,
+  meetingSegmentDisplayLabel,
   type EditableReviewDocument,
   type MeetingReviewDocumentV1,
   type MeetingReviewExportFormat,
   type MeetingSegment,
+  type RemoteSpeakerLabel,
   type ReviewEditBase,
 } from '../../lib/meetings';
 
@@ -46,12 +48,13 @@ function SourceLinks({ label, ids, onActivate }: {
   );
 }
 
-function TranscriptRow({ segment, labels }: {
+function TranscriptRow({ segment, labels, remoteSpeakers }: {
   segment: MeetingSegment;
   labels: { me: string; them: string };
+  remoteSpeakers: RemoteSpeakerLabel[];
 }) {
   const canonical = segment.speaker === 'me' ? 'Me' : 'Them';
-  const display = segment.speaker === 'me' ? labels.me : labels.them;
+  const display = meetingSegmentDisplayLabel(segment, labels, remoteSpeakers);
   return (
     <article
       id={`meeting-segment-${segment.id}`}
@@ -75,6 +78,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditableReviewDocument | null>(null);
   const [labels, setLabels] = useState(detail.labels);
+  const [remoteSpeakers, setRemoteSpeakers] = useState(detail.remoteSpeakers);
   const [format, setFormat] = useState<MeetingReviewExportFormat>('markdown');
   const [restoreConfirm, setRestoreConfirm] = useState(false);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
@@ -84,10 +88,11 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
 
   useEffect(() => {
     setLabels(detail.labels);
+    setRemoteSpeakers(detail.remoteSpeakers);
     setEditing(false);
     setDraft(null);
     setRestoreConfirm(false);
-  }, [detail.session.id, detail.review?.revision, detail.generated?.revision]);
+  }, [detail.session.id, detail.review?.revision, detail.generated?.revision, detail.remoteSpeakers]);
 
   const jumpToSource = (id: number) => {
     const target = window.document.getElementById(`meeting-segment-${id}`);
@@ -119,6 +124,12 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
       document: null,
     });
     if (saved) onNotice('Speaker labels saved on this Mac.');
+  };
+
+  const saveRemoteSpeaker = async (speaker: RemoteSpeakerLabel) => {
+    if (await meetings.renameRemoteSpeaker(detail.session.id, speaker.speakerId, speaker.label)) {
+      onNotice(`${speaker.label.trim()} saved for this meeting.`);
+    }
   };
 
   const saveEdits = async () => {
@@ -196,6 +207,34 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
         {!editing && <button type="button" onClick={() => void saveLabels()} className="dialog-pill-btn px-3 py-2 text-xs text-primary">Save labels</button>}
       </div>
 
+      {remoteSpeakers.length > 0 && (
+        <div className="dialog-card mb-3 p-3">
+          <h3 className="text-xs font-semibold text-on-surface">Remote speakers</h3>
+          <p className="mt-1 text-[11px] text-on-surface-variant">Names apply only to this meeting. Uncertain passages remain {labels.them}.</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {remoteSpeakers.map((speaker) => (
+              <label key={speaker.speakerId} className="text-[11px] font-semibold text-on-surface">
+                Speaker {speaker.speakerId}
+                <span className="mt-1 flex gap-2">
+                  <input
+                    aria-label={`Remote speaker ${speaker.speakerId} label`}
+                    value={speaker.label}
+                    maxLength={80}
+                    onChange={(event) => setRemoteSpeakers((current) => current.map((item) => (
+                      item.speakerId === speaker.speakerId
+                        ? { ...item, label: event.target.value }
+                        : item
+                    )))}
+                    className="min-w-0 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs"
+                  />
+                  <button type="button" onClick={() => void saveRemoteSpeaker(speaker)} className="dialog-pill-btn px-3 py-1.5 text-xs text-primary">Save</button>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <button type="button" disabled={captureBusy || summaryBusy} onClick={() => void meetings.summarize(detail.session.id)} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">
           {detail.generated ? 'Regenerate draft' : 'Generate review draft'}
@@ -233,7 +272,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
         </article>
       ) : <div className="mb-4 rounded-[var(--ui-radius-card)] border border-dashed border-[var(--ui-hairline-strong)] p-5 text-center"><p className="text-sm font-semibold">No review draft yet</p><p className="mt-1 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p></div>}
 
-      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} />)}</section>
+      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} />)}</section>
     </div>
   );
 }

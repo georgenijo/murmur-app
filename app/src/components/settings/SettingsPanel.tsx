@@ -73,6 +73,7 @@ import { ModesManager } from './ModesManager';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
+import { MeetingDiarizationSettings } from './MeetingDiarizationSettings';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsBranch } from './SettingsBranch';
@@ -285,6 +286,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'history', title: 'Transcription History', detail: 'Keep completed dictations on this Mac.', keywords: 'save retain local transcripts' },
   { page: 'delivery', target: 'app-overrides', title: 'App Overrides', detail: 'Customize delivery for individual apps.', keywords: 'profile bundle id per app' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting Audio', detail: 'Choose whether source audio is retained.', keywords: 'capture wav keep delete' },
+  { page: 'meetings', target: 'meeting-speakers', title: 'Remote Speaker Labels', detail: 'Install and enable local per-speaker meeting labels.', keywords: 'diarization speaker names model local system audio' },
   { page: 'meetings', target: 'meeting-retention', title: 'Meeting Retention', detail: 'Set age and session limits.', keywords: 'history days sessions sqlite' },
   { page: 'ai-transcription', target: 'transcription-model', title: 'Speech-to-Text Model', detail: 'Select and manage the local recognition model.', keywords: 'whisper parakeet core ml download speech model' },
   { page: 'ai-transcription', target: 'language', title: 'Transcription Language', detail: 'Choose a fixed language or automatic detection.', keywords: 'multilingual auto detect' },
@@ -2175,6 +2177,10 @@ export const SettingsPanel = memo(function SettingsPanel({
               description="Experimental and off by default. Removes speaker playback from the Me channel. If processing fails, Murmur keeps the original microphone audio."
               checked={settings.meetingEchoCancellationEnabled}
               onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
+            />
+            <MeetingDiarizationSettings
+              enabled={settings.meetingDiarization}
+              onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
             />
             <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg px-1 transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="text-sm font-medium text-on-surface">

@@ -17,6 +17,7 @@ import {
   openSystemAudioPreferences,
   orderedMeetingSegments,
   requestSystemAudioPermission,
+  renameMeetingRemoteSpeaker,
   restoreMeetingReviewFromGenerated,
   saveMeetingExport,
   saveMeetingReview,
@@ -126,6 +127,11 @@ export function useMeetings(settings: Settings) {
           void select(event.payload.sessionId);
         }
       }),
+      listen<{ sessionId: string }>('meeting-speakers-updated', (event) => {
+        if (selectedIdRef.current === event.payload.sessionId) {
+          void select(event.payload.sessionId);
+        }
+      }),
     ]).then((values) => {
       if (disposed) values.forEach((unlisten) => unlisten());
       else unlisteners.push(...values);
@@ -136,7 +142,7 @@ export function useMeetings(settings: Settings) {
       disposed = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [refresh]);
+  }, [refresh, select]);
 
   useEffect(() => {
     if (!['starting', 'recording', 'stopping', 'processing'].includes(status.phase)) return;
@@ -161,6 +167,7 @@ export function useMeetings(settings: Settings) {
         retentionDays: settings.meetingRetentionDays,
         maxSessions: settings.meetingMaxSessions,
         echoCancellation: settings.meetingEchoCancellationEnabled,
+        diarization: settings.meetingDiarization,
       });
       setPage((current) => ({
         ...current,
@@ -171,7 +178,7 @@ export function useMeetings(settings: Settings) {
     } catch (cause) {
       setError(String(cause));
     }
-  }, [select, settings.meetingEchoCancellationEnabled, settings.meetingMaxSessions, settings.meetingRetainAudio, settings.meetingRetentionDays, settings.microphone]);
+  }, [select, settings.meetingDiarization, settings.meetingEchoCancellationEnabled, settings.meetingMaxSessions, settings.meetingRetainAudio, settings.meetingRetentionDays, settings.microphone]);
 
   const stop = useCallback(async () => {
     setError(null);
@@ -281,6 +288,27 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
+  const renameRemoteSpeaker = useCallback(async (
+    sessionId: string,
+    speakerId: number,
+    label: string,
+  ) => {
+    setError(null);
+    const ticket = selectionTicketRef.current;
+    try {
+      const next = await renameMeetingRemoteSpeaker(sessionId, speakerId, label);
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === sessionId) {
+        setDetail(next);
+      }
+      return true;
+    } catch (cause) {
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === sessionId) {
+        setError(String(cause));
+      }
+      return false;
+    }
+  }, []);
+
   const openPreferences = useCallback(async () => {
     setError(null);
     try {
@@ -329,6 +357,7 @@ export function useMeetings(settings: Settings) {
     exportReview,
     saveReview,
     restoreReview,
+    renameRemoteSpeaker,
     remove,
     clear,
     summarize,
