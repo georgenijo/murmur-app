@@ -373,16 +373,74 @@
 }
 
 .settings-dependent-branch-content {
+  position: relative;
   margin: 0 0 2px 0.75rem;
   padding: 0 0 0 0.75rem;
-  border-left: 2px solid transparent;
   transform: translateY(-0.375rem);
-  transition: transform var(--ui-motion-standard) var(--ui-ease-out), border-color var(--ui-motion-standard) var(--ui-ease-out);
+  transition: transform var(--ui-motion-standard) var(--ui-ease-out);
+}
+
+.settings-dependent-branch-content::before {
+  position: absolute;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: '';
+  transition: background-color var(--ui-motion-standard) var(--ui-ease-out);
 }
 
 .settings-dependent-branch-open .settings-dependent-branch-content {
-  border-left-color: color-mix(in srgb, var(--murmur-primary) 24%, var(--murmur-outline-variant));
   transform: translateY(0);
+}
+
+.settings-dependent-branch-open .settings-dependent-branch-content::before {
+  background: color-mix(in srgb, var(--murmur-primary) 24%, var(--murmur-outline-variant));
+}
+
+.settings-setting-row {
+  min-height: 3rem;
+  padding-block: 0.75rem;
+}
+
+/* A grouped row owns a dependent branch but must not receive the page's
+   direct-child padding in addition to the row's measured height. */
+.settings-setting-group {
+  padding-block: 0 !important;
+}
+
+.settings-microphone-choice {
+  display: flex;
+  min-height: 2.5rem;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.625rem;
+  border-radius: var(--ui-radius-control);
+  padding: 0.375rem 0.5rem;
+  color: var(--murmur-on-surface);
+  font-size: 0.875rem;
+}
+
+.settings-microphone-choice:hover {
+  background: var(--murmur-surface-container);
+}
+
+.settings-microphone-choice input[type='radio'],
+.settings-microphone-choice input[type='checkbox'] {
+  flex: none;
+  accent-color: var(--murmur-primary);
+}
+
+.settings-microphone-active-badge {
+  flex: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--murmur-primary) 12%, transparent);
+  padding: 0.1rem 0.4rem;
+  color: var(--murmur-primary);
+  font-size: 0.625rem;
+  font-weight: 600;
 }
 
 @media (prefers-reduced-motion: reduce) {

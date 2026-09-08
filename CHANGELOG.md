@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Smart Auto now excludes output-only audio devices, exposes per-microphone approvals in one unified picker, explains why an allowed input is unavailable, and keeps Settings branch and row spacing aligned (#688).
+
 ## [0.42.0] - 2026-09-08
 
 ### Fixed

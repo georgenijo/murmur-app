@@ -3,7 +3,7 @@ use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString, CFS
 use core_graphics::display::CGDisplay;
 use coreaudio::audio_unit::audio_format::LinearPcmFlags;
 use coreaudio::audio_unit::macos_helpers::{
-    get_audio_device_ids_for_scope, get_default_device_id, get_device_name,
+    get_audio_device_ids, get_default_device_id, get_device_name,
 };
 use coreaudio::audio_unit::render_callback::{self, data};
 use coreaudio::audio_unit::{
@@ -11,12 +11,14 @@ use coreaudio::audio_unit::{
 };
 use coreaudio::sys::{
     kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID,
-    kAudioDevicePropertyTransportType, kAudioHardwarePropertyDefaultInputDevice,
-    kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMaster,
-    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-    kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO, AudioDeviceID,
-    AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectID,
-    AudioObjectPropertyAddress, AudioObjectPropertyListenerProc, AudioObjectRemovePropertyListener,
+    kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyTransportType,
+    kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDevices,
+    kAudioObjectPropertyElementMaster, kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyScopeInput, kAudioObjectSystemObject,
+    kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO, AudioBuffer,
+    AudioBufferList, AudioDeviceID, AudioObjectAddPropertyListener, AudioObjectGetPropertyData,
+    AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+    AudioObjectPropertyListenerProc, AudioObjectRemovePropertyListener,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
@@ -71,6 +73,7 @@ const SYSTEM_AUDIO_FLOW_OBSERVATION: Duration = Duration::from_millis(500);
 // failed/best-effort listener removal has drained every racing callback.
 static INPUT_TOPOLOGY_CHANGED: ProcessAtomicBool = ProcessAtomicBool::new(false);
 const LEGACY_CONTINUITY_CAPTURE_TRANSPORT: u32 = 0x6363_6170;
+const MAX_STREAM_CONFIGURATION_BYTES: usize = 64 * 1024;
 
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
@@ -802,6 +805,70 @@ fn device_property_u32(device_id: AudioDeviceID, selector: u32) -> Option<u32> {
     (status == 0 && size == std::mem::size_of::<u32>() as u32).then_some(value)
 }
 
+fn stream_configuration_has_channels(bytes: &[u8]) -> Option<bool> {
+    let buffers_offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+    if bytes.len() < buffers_offset || bytes.len() > MAX_STREAM_CONFIGURATION_BYTES {
+        return None;
+    }
+    let count = u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+    let buffer_size = std::mem::size_of::<AudioBuffer>();
+    let buffers =
+        bytes.get(buffers_offset..buffers_offset.checked_add(count.checked_mul(buffer_size)?)?)?;
+    let channels_offset = std::mem::offset_of!(AudioBuffer, mNumberChannels);
+    Some(buffers.chunks_exact(buffer_size).any(|buffer| {
+        buffer[channels_offset..channels_offset + 4]
+            .iter()
+            .any(|byte| *byte != 0)
+    }))
+}
+
+fn device_has_input_channels(device_id: AudioDeviceID) -> bool {
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioObjectPropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMaster,
+    };
+    let mut size = 0_u32;
+    let status = unsafe {
+        AudioObjectGetPropertyDataSize(device_id, &address, 0, std::ptr::null(), &mut size)
+    };
+    if status != 0
+        || (size as usize) < std::mem::offset_of!(AudioBufferList, mBuffers)
+        || size as usize > MAX_STREAM_CONFIGURATION_BYTES
+    {
+        return false;
+    }
+    let capacity = size as usize;
+    // u64 storage preserves AudioBufferList's native alignment. Zeroing also
+    // keeps every byte initialized if Core Audio returns a shorter list.
+    let mut storage = vec![0_u64; capacity.div_ceil(std::mem::size_of::<u64>())];
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device_id,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            storage.as_mut_ptr().cast(),
+        )
+    };
+    if status != 0 || size as usize > capacity {
+        return false;
+    }
+    // The returned byte length is bounded by the allocated, initialized storage.
+    let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast(), size as usize) };
+    stream_configuration_has_channels(bytes) == Some(true)
+}
+
+fn input_device_ids() -> Result<Vec<AudioDeviceID>, coreaudio::Error> {
+    // kAudioHardwarePropertyDevices lists all devices. Its system object has
+    // only global scope, so an input scope cannot establish input capability.
+    Ok(get_audio_device_ids()?
+        .into_iter()
+        .filter(|id| device_has_input_channels(*id))
+        .collect())
+}
+
 fn device_kind(transport: Option<u32>) -> ProductionDeviceKind {
     match transport {
         Some(transport) if transport == kAudioDeviceTransportTypeBuiltIn => {
@@ -842,8 +909,7 @@ fn lid_state() -> ProductionLidState {
 }
 
 fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>, ProductionLidState), FailureCode> {
-    let ids =
-        get_audio_device_ids_for_scope(Scope::Input).map_err(|_| FailureCode::EnumerationFailed)?;
+    let ids = input_device_ids().map_err(|_| FailureCode::EnumerationFailed)?;
     let default_input_id = get_default_device_id(true).and_then(raw_uid);
     let devices = ids
         .into_iter()
@@ -853,8 +919,7 @@ fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>, ProductionLidSt
                 name: get_device_name(id).ok()?,
                 kind: device_kind(device_property_u32(id, kAudioDevicePropertyTransportType)),
                 connected: device_property_u32(id, kAudioDevicePropertyDeviceIsAlive) == Some(1),
-                // Input-scope enumeration is native proof this source has an
-                // input stream. It prevents output-only display routes.
+                // Membership requires a positive native input-channel count.
                 has_input: true,
             })
         })
@@ -1224,7 +1289,7 @@ pub(super) fn start_auhal(
     let default_device = get_default_device_id(true);
     let default_input_available = default_device.is_some();
     let (device, evidence) = match requested {
-        Some(uid) => match get_audio_device_ids_for_scope(Scope::Input) {
+        Some(uid) => match input_device_ids() {
             Ok(devices) => {
                 let input_device_count = devices.len();
                 let selected = require_input_device(select_auhal_device(
@@ -1250,7 +1315,7 @@ pub(super) fn start_auhal(
             // Keep the existing default-device decision independent of the
             // supplementary count enumeration used only for telemetry.
             let selected = require_input_device(default_device);
-            let evidence = match get_audio_device_ids_for_scope(Scope::Input) {
+            let evidence = match input_device_ids() {
                 Ok(devices) => {
                     InputResolutionEvidence::observed(None, devices.len(), default_input_available)
                 }
@@ -2566,6 +2631,57 @@ mod tests {
             input_topology_changed(0, 0, std::ptr::null(), client_data);
         }
         assert!(INPUT_TOPOLOGY_CHANGED.load(ProcessOrdering::Acquire));
+    }
+
+    #[test]
+    fn input_stream_configuration_requires_a_positive_channel_count() {
+        let configuration = |channels: &[u32]| {
+            let offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+            let buffer_size = std::mem::size_of::<AudioBuffer>();
+            let mut bytes = vec![0; offset + channels.len() * buffer_size];
+            bytes[..4].copy_from_slice(&(channels.len() as u32).to_ne_bytes());
+            for (index, channels) in channels.iter().enumerate() {
+                let start = offset
+                    + index * buffer_size
+                    + std::mem::offset_of!(AudioBuffer, mNumberChannels);
+                bytes[start..start + 4].copy_from_slice(&channels.to_ne_bytes());
+            }
+            bytes
+        };
+        for channels in [vec![], vec![0], vec![0, 0]] {
+            assert_eq!(
+                stream_configuration_has_channels(&configuration(&channels)),
+                Some(false)
+            );
+        }
+        for channels in [vec![1], vec![2], vec![0, 2], vec![2, 0]] {
+            assert_eq!(
+                stream_configuration_has_channels(&configuration(&channels)),
+                Some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn input_stream_configuration_rejects_unbounded_or_truncated_native_data() {
+        let offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+        let mut one_buffer = vec![0; offset + std::mem::size_of::<AudioBuffer>()];
+        one_buffer[..4].copy_from_slice(&1_u32.to_ne_bytes());
+        let channels_offset = offset + std::mem::offset_of!(AudioBuffer, mNumberChannels);
+        one_buffer[channels_offset..channels_offset + 4].copy_from_slice(&1_u32.to_ne_bytes());
+        for length in 0..one_buffer.len() {
+            assert_eq!(
+                stream_configuration_has_channels(&one_buffer[..length]),
+                None
+            );
+        }
+        assert_eq!(stream_configuration_has_channels(&one_buffer), Some(true));
+        one_buffer[..4].copy_from_slice(&u32::MAX.to_ne_bytes());
+        assert_eq!(stream_configuration_has_channels(&one_buffer), None);
+        assert_eq!(
+            stream_configuration_has_channels(&vec![0; MAX_STREAM_CONFIGURATION_BYTES + 1]),
+            None
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { act, memo } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MicrophonePreviewStatus } from '../../lib/microphonePreview';
+import type { Settings } from '../../lib/settings';
 
 const mocks = vi.hoisted(() => {
   const listeners = new Map<string, (event: { payload: unknown }) => void>();
@@ -25,6 +26,7 @@ const MemoizedMicrophoneInputTest = memo(MicrophoneInputTest);
 const devices = [
   { id: 'built-in', name: 'Built-in Microphone', kind: 'builtIn' as const, connected: true, hasInput: true },
   { id: 'usb', name: 'USB Microphone', kind: 'external' as const, connected: true, hasInput: true },
+  { id: 'speakers', name: 'Built-in Speakers', kind: 'builtIn' as const, connected: true, hasInput: false },
 ];
 
 const idle: MicrophonePreviewStatus = {
@@ -64,6 +66,9 @@ describe('MicrophoneInputTest', () => {
   let inventoryAvailable = true;
   let inventoryLoading = false;
   let missingDevice = false;
+  let includeSmartAuto = false;
+  let smartAuto: Pick<Settings, 'smartAutoMicrophoneEnabled' | 'smartAutoApprovedDeviceIds' | 'smartAutoPreferredDeviceIds' | 'smartAutoAllowContinuity'>;
+  let handleSmartAutoChange: ReturnType<typeof vi.fn<(updates: Partial<Settings>) => void>>;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
 
@@ -87,6 +92,7 @@ describe('MicrophoneInputTest', () => {
             inventoryAvailable={inventoryAvailable}
             inventoryLoading={inventoryLoading}
             onChange={handleMicrophoneChange}
+            {...(includeSmartAuto ? { smartAuto, onSmartAutoChange: handleSmartAutoChange } : {})}
           />
         </SettingsSurfaceActiveContext.Provider>,
       );
@@ -114,6 +120,14 @@ describe('MicrophoneInputTest', () => {
     inventoryAvailable = true;
     inventoryLoading = false;
     missingDevice = false;
+    includeSmartAuto = false;
+    smartAuto = {
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb', 'missing-device'],
+      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoAllowContinuity: false,
+    };
+    handleSmartAutoChange = vi.fn();
     frames = new Map();
     nextFrame = 1;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -180,6 +194,30 @@ describe('MicrophoneInputTest', () => {
     await render();
     expect(selector.textContent).toContain('Follow macOS Default — Built-in Microphone');
     expect(selected).toBe('system_default');
+  });
+
+  it('makes Smart Auto explicit and offers separate approval controls outside a listbox', async () => {
+    includeSmartAuto = true;
+    await render();
+
+    const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    expect(picker.textContent).toContain('Smart Auto · USB Microphone');
+    await act(async () => picker.click());
+
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    expect(container.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(container.textContent).not.toContain('Built-in Speakers');
+    const usbApproval = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(usbApproval.checked).toBe(false);
+    const approvals = Array.from(container.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
+    expect(approvals.some((approval) => approval.checked)).toBe(true);
+    expect(container.textContent).toContain('Previously approved. Uncheck to forget it.');
+    const unavailableApproval = Array.from(container.querySelectorAll('label')).find((label) => label.textContent?.includes('Previously approved'))?.querySelector('input') as HTMLInputElement;
+    await act(async () => unavailableApproval.click());
+    expect(handleSmartAutoChange).toHaveBeenCalledWith({
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+    });
   });
 
   it('does not preview or allow selection from stale inventory', async () => {

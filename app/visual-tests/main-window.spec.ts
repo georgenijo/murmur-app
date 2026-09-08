@@ -275,19 +275,55 @@ test('recording settings make the live automatic microphone choice explicit', as
   await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
 });
 
-test('recording settings disclose approved Smart Auto microphones beneath their switch', async ({ page }) => {
+test('recording settings unify Smart Auto mode and per-microphone approval', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-smart-auto&appearance=light');
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  const smartAuto = page.getByRole('switch', { name: 'Enable Smart Auto microphone selection' });
-  await expect(smartAuto).toHaveAttribute('aria-checked', 'true');
+  const picker = page.getByRole('button', { name: 'Microphone input' });
+  await expect(picker).toContainText('Smart Auto · MacBook Pro Microphone');
   await expect(page.getByText('Smart Auto will use MacBook Pro Microphone (preferred approved).')).toBeVisible();
-  await expect(page.getByText('Approved: MacBook Pro Microphone, Anker USB Microphone.')).toBeVisible();
-  const branch = smartAuto.locator('xpath=../following-sibling::*[1]');
-  await expect(branch).toHaveAttribute('data-expanded', 'true');
-  await expect(branch).toHaveAttribute('aria-hidden', 'false');
+  await picker.click();
+  const pickerDialog = page.getByRole('dialog', { name: 'Choose microphone mode and Smart Auto microphones' });
+  await expect(pickerDialog.getByRole('radio', { name: /Smart Auto/ })).toBeChecked();
+  await expect(pickerDialog.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
+  await expect(pickerDialog.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
+  await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
+});
+
+test('recording setting rows and dependent rails keep the shared spacing contract', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.getByRole('button', { name: 'Recording', exact: true }).click();
+  await page.getByRole('button', { name: 'Double-Tap', exact: true }).click();
+
+  const hotkeyRow = page.locator('[data-setting-target="hotkey-feedback"]');
+  const soundGroup = page.locator('[data-setting-target="sound-cues"]');
+  const soundRow = page.locator('[data-setting-target="sound-cues"] > .settings-setting-row');
+  const dimensions = await Promise.all([hotkeyRow, soundRow].map((row) => row.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { height: box.height, left: box.left, right: box.right };
+  })));
+  expect(Math.abs(dimensions[0].height - dimensions[1].height)).toBeLessThanOrEqual(1);
+  expect(dimensions[0].height).toBeGreaterThanOrEqual(48);
+  expect(dimensions[0].left).toBe(dimensions[1].left);
+  expect(dimensions[0].right).toBe(dimensions[1].right);
+  const groupAndRow = await Promise.all([soundGroup, soundRow].map((item) => item.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { top: box.top, left: box.left, right: box.right };
+  })));
+  expect(Math.abs(groupAndRow[0].top - groupAndRow[1].top)).toBeLessThanOrEqual(1);
+  expect(groupAndRow[0].left).toBe(groupAndRow[1].left);
+  expect(groupAndRow[0].right).toBe(groupAndRow[1].right);
+
+  const rail = page.locator('[data-setting-target="sound-cues"] .settings-dependent-branch-content');
+  const railInsets = await rail.evaluate((element) => {
+    const style = getComputedStyle(element, '::before');
+    return { top: Number.parseFloat(style.top), bottom: Number.parseFloat(style.bottom) };
+  });
+  expect(railInsets.top).toBeGreaterThan(0);
+  expect(railInsets.bottom).toBeGreaterThan(0);
+  expect(Math.abs(railInsets.top - railInsets.bottom)).toBeLessThan(0.1);
 });
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
