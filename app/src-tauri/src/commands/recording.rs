@@ -1740,6 +1740,40 @@ fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV
     stages
 }
 
+struct NativeDictationCompletionMetrics<'a> {
+    recording_id: u64,
+    timings: &'a PipelineTimings,
+    total_ms: u64,
+    audio_secs: f64,
+    word_count: usize,
+    char_count: usize,
+    model_name: &'a str,
+    backend_name: &'a str,
+}
+
+fn emit_native_dictation_completed(metrics: NativeDictationCompletionMetrics<'_>) {
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.dictation_completed",
+        recording_id = metrics.recording_id,
+        vad_ms = metrics.timings.vad_ms,
+        model_load_ms = metrics.timings.model_load_ms,
+        decode_ms = metrics.timings.decode_ms,
+        inference_ms = metrics.timings.inference_ms,
+        correction_ms = metrics.timings.correction_ms,
+        paste_ms = metrics.timings.paste_ms,
+        total_ms = metrics.total_ms,
+        audio_secs = metrics.audio_secs,
+        word_count = metrics.word_count,
+        char_count = metrics.char_count,
+        rss_before_mb = metrics.timings.rss_before_mb,
+        rss_after_mb = metrics.timings.rss_after_mb,
+        model = metrics.model_name,
+        backend = metrics.backend_name,
+        "dictation processing metrics"
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn transcribe_with_coreml_vad_retry(
     backend: &mut dyn transcriber::TranscriptionBackend,
@@ -4968,25 +5002,16 @@ async fn stop_native_recording_for(
         successful_capture,
     );
 
-    tracing::info!(
-        target: "pipeline",
-        recording_id = rid,
-        vad_ms = timings.vad_ms,
-        model_load_ms = timings.model_load_ms,
-        decode_ms = timings.decode_ms,
-        inference_ms = timings.inference_ms,
-        correction_ms = timings.correction_ms,
-        paste_ms = timings.paste_ms,
-        total_ms = total_ms,
-        audio_secs = audio_secs,
-        word_count = word_count,
-        char_count = char_count,
-        rss_before_mb = timings.rss_before_mb,
-        rss_after_mb = timings.rss_after_mb,
-        model = model_name.as_str(),
-        backend = backend_name.as_str(),
-        "dictation processing metrics"
-    );
+    emit_native_dictation_completed(NativeDictationCompletionMetrics {
+        recording_id: rid,
+        timings: &timings,
+        total_ms,
+        audio_secs,
+        word_count,
+        char_count,
+        model_name: &model_name,
+        backend_name: &backend_name,
+    });
 
     let outcome = match pipeline.terminal {
         PipelineTerminal::Success => RunOutcomeV1::Success,
@@ -5613,7 +5638,70 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use tauri::Listener;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::{Layer, Registry};
+
+    #[derive(Clone, Default)]
+    struct CompletionCaptureLayer(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for CompletionCaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            struct Visitor(Vec<String>);
+
+            impl tracing::field::Visit for Visitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push(format!("{}={value:?}", field.name()));
+                }
+            }
+
+            let mut visitor = Visitor(Vec::new());
+            event.record(&mut visitor);
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend(visitor.0);
+        }
+    }
+
+    #[test]
+    fn native_completion_emitter_declares_aggregator_contract() {
+        let layer = CompletionCaptureLayer::default();
+        let captured = Arc::clone(&layer.0);
+        let subscriber = Registry::default().with(layer);
+        let timings = PipelineTimings {
+            vad_ms: 7,
+            inference_ms: 180,
+            paste_ms: 12,
+            ..PipelineTimings::default()
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            emit_native_dictation_completed(NativeDictationCompletionMetrics {
+                recording_id: 41,
+                timings: &timings,
+                total_ms: 220,
+                audio_secs: 1.5,
+                word_count: 3,
+                char_count: 18,
+                model_name: "test-model",
+                backend_name: "test-backend",
+            });
+        });
+
+        let fields = captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(fields.contains(&"event_code=\"pipeline.dictation_completed\"".to_string()));
+        assert!(fields.contains(&"recording_id=41".to_string()));
+        assert!(fields.contains(&"total_ms=220".to_string()));
+        assert!(fields.contains(&"char_count=18".to_string()));
+    }
 
     #[test]
     fn dictation_partial_window_is_bounded_to_the_trailing_twenty_seconds() {

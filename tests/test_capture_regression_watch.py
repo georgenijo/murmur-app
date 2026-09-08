@@ -1135,7 +1135,16 @@ class CaptureRegressionWatchTests(unittest.TestCase):
     def test_post_stop_latency_ignores_malformed_negative_and_out_of_range_values(
         self,
     ) -> None:
-        bad_totals = [None, "420", True, -1, float("nan"), float("inf"), 300_001]
+        bad_totals = [
+            None,
+            "420",
+            True,
+            -1,
+            float("nan"),
+            float("inf"),
+            300_001,
+            10**400,
+        ]
         events = [
             event(
                 "startup_baseline",

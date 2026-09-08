@@ -3584,6 +3584,32 @@ mod tests {
     }
 
     #[test]
+    fn release_dictation_completion_keeps_aggregator_contract() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_completed",
+            "recording_id": 41,
+            "char_count": 18,
+            "total_ms": 220,
+            "model": "PRIVATE_MODEL"
+        });
+
+        sanitize_event_data("pipeline", &mut data, false);
+        let summary = sanitized_summary(
+            "pipeline",
+            Some("dictation processing metrics".to_string()),
+            &data,
+            false,
+        );
+
+        assert_eq!(summary, "pipeline.dictation_completed");
+        assert_eq!(data["event_code"], "pipeline.dictation_completed");
+        assert_eq!(data["recording_id"], 41);
+        assert_eq!(data["char_count"], 18);
+        assert_eq!(data["total_ms"], 220);
+        assert!(data.get("model").is_none());
+    }
+
+    #[test]
     fn model_install_terminal_schema_is_content_free_in_every_build() {
         let mut data = serde_json::json!({
             "event_code": "system.model_install_terminal",

@@ -141,7 +141,9 @@ def numeric_post_stop_latency(event):
     value = event_data(event).get("total_ms")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if not math.isfinite(value) or value < 0 or value > 300_000:
+    if value < 0 or value > 300_000:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     return float(value)
 
