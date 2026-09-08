@@ -24,6 +24,14 @@ assert SPEC and SPEC.loader
 receiver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(receiver)
 
+WATCH_PATH = RECEIVER_PATH.with_name("murmur-capture-watch.py")
+WATCH_SPEC = importlib.util.spec_from_file_location(
+    "murmur_capture_watch_for_receiver", WATCH_PATH
+)
+assert WATCH_SPEC and WATCH_SPEC.loader
+watch = importlib.util.module_from_spec(WATCH_SPEC)
+WATCH_SPEC.loader.exec_module(watch)
+
 SLO_PATH = RECEIVER_PATH.with_name("reliability_slo.py")
 SLO_SPEC = importlib.util.spec_from_file_location("reliability_slo_for_dashboard", SLO_PATH)
 assert SLO_SPEC and SLO_SPEC.loader
@@ -106,6 +114,69 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("Capture regression watch · 1 alert", page)
         self.assertIn("v1.0.0 → v1.1.0", page)
         self.assertIn("p50 200 ms → 520 ms (2.6x)", page)
+
+    def test_dashboard_surfaces_bounded_post_stop_latency_cohorts(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "healthy",
+            "alerts": [],
+            "cohorts": [
+                {
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.3",
+                    "last_event_at": "2026-08-05T00:00:03Z",
+                    "post_stop_latency_sample_count": 5,
+                    "post_stop_latency_p50_ms": 300,
+                    "post_stop_latency_p95_ms": 500,
+                },
+                {
+                    "install_id": "87654321-dcba",
+                    "app_version": "1.2.3",
+                    "last_event_at": "2026-08-05T00:00:00Z",
+                    "post_stop_latency_sample_count": 0,
+                    "post_stop_latency_p50_ms": None,
+                    "post_stop_latency_p95_ms": None,
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Post-stop latency · 1 cohort", page)
+        self.assertIn("12345678</code> v1.2.3: 5 samples, p50 300 ms, p95 500 ms", page)
+        self.assertNotIn("87654321", page)
+
+    def test_dashboard_reports_no_post_stop_latency_samples_yet(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "insufficient_data",
+            "alerts": [],
+            "cohorts": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("No post-stop latency samples yet.", page)
 
     def test_dashboard_surfaces_performance_store_failure_watch(self) -> None:
         report = {
@@ -428,6 +499,133 @@ class LogReceiverHealthTests(unittest.TestCase):
         }
         self.assertNotIn("private transcript content", str(presentation))
         self.assertNotIn("/Users/private/project", str(presentation))
+
+    def test_empty_completion_keeps_prior_terminal_health_card(self) -> None:
+        cases = [
+            ("no_speech", "vad_no_speech"),
+            ("user_cancelled_processing", "cancelled_processing"),
+        ]
+        for outcome, error_code in cases:
+            with self.subTest(outcome=outcome):
+                events = [
+                    event(
+                        "pipeline.dictation_terminal",
+                        timestamp="2026-08-05T00:00:00Z",
+                        stream="pipeline",
+                        data={
+                            "event_code": "pipeline.dictation_terminal",
+                            "recording_id": 41,
+                            "outcome": outcome,
+                            "error_code": error_code,
+                            "char_count": 0,
+                        },
+                    ),
+                    event(
+                        "pipeline.dictation_completed",
+                        timestamp="2026-08-05T00:00:01Z",
+                        stream="pipeline",
+                        data={
+                            "event_code": "pipeline.dictation_completed",
+                            "recording_id": 41,
+                            "char_count": 0,
+                            "total_ms": 220,
+                        },
+                    ),
+                ]
+
+                signals = receiver.build_health_signals(events)
+                cards = receiver.build_health_cards(signals, {})
+                dictation = next(
+                    card for card in cards if card["area"] == "dictation"
+                )
+
+                self.assertEqual(len(signals), 1)
+                self.assertEqual(signals[0]["code"], "pipeline.dictation_terminal")
+                self.assertEqual(dictation["status"], "diagnostic")
+                self.assertEqual(
+                    dictation["title"], "Dictation ended without delivered text"
+                )
+
+    def test_nonempty_completion_is_a_healthy_dictation_signal(self) -> None:
+        completion = event(
+            "pipeline.dictation_completed",
+            timestamp="2026-08-05T00:00:01Z",
+            stream="pipeline",
+            data={
+                "event_code": "pipeline.dictation_completed",
+                "recording_id": 41,
+                "char_count": 18,
+                "total_ms": 220,
+            },
+        )
+
+        classified = receiver.classify_event(completion)
+
+        self.assertEqual(classified["status"], "healthy")
+        self.assertEqual(classified["title"], "Dictation completed")
+        self.assertIn("220 ms", classified["explanation"])
+
+    def test_partial_interruption_metrics_do_not_claim_success(self) -> None:
+        events = [
+            {
+                **event(
+                    "system.startup_baseline",
+                    timestamp="2026-08-05T00:00:00Z",
+                    stream="system",
+                    data={"event_code": "system.startup_baseline"},
+                ),
+                "ingest_app_version": "0.41.0",
+            },
+            {
+                **event(
+                    "pipeline.dictation_terminal",
+                    timestamp="2026-08-05T00:00:01Z",
+                    stream="pipeline",
+                    data={
+                        "event_code": "pipeline.dictation_terminal",
+                        "recording_id": 41,
+                        "outcome": "runtime_interruption",
+                        "error_code": "stream_invalidated",
+                        "char_count": 18,
+                    },
+                ),
+                "ingest_app_version": "0.41.0",
+            },
+            {
+                **event(
+                    "pipeline.dictation_metrics",
+                    timestamp="2026-08-05T00:00:02Z",
+                    stream="pipeline",
+                    data={
+                        "event_code": "pipeline.dictation_metrics",
+                        "recording_id": 41,
+                        "char_count": 18,
+                        "total_ms": 220,
+                    },
+                ),
+                "ingest_app_version": "0.41.0",
+            },
+        ]
+
+        signals = receiver.build_health_signals(events)
+        cards = receiver.build_health_cards(signals, {})
+        dictation = next(card for card in cards if card["area"] == "dictation")
+        with tempfile.TemporaryDirectory() as directory:
+            install = Path(directory) / "12345678-abcd"
+            install.mkdir()
+            path = install / "events.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(item) for item in events) + "\n",
+                encoding="utf-8",
+            )
+            activity = receiver.find_activity_metrics(str(path))
+            report = watch.build_report(directory)
+
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["code"], "pipeline.dictation_terminal")
+        self.assertEqual(dictation["status"], "degraded")
+        self.assertIsNone(activity["last_successful_transcription"])
+        self.assertEqual(report["cohorts"][0]["post_stop_latency_sample_count"], 0)
 
     def test_microphone_benchmark_owner_cannot_pollute_dashboard_correlation(self) -> None:
         benchmark_data = {
@@ -1466,6 +1664,49 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(body, b"")
         self.assertEqual(saved["ingest_app_version"], "1.2.4")
         self.assertEqual(saved["data"]["startup_ms"], 240)
+
+    def test_native_completion_contract_survives_ingest_and_watch_scan(self) -> None:
+        events = [
+            event(
+                "system.startup_baseline",
+                timestamp="2026-08-05T00:00:00Z",
+                stream="system",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            event(
+                "pipeline.dictation_completed",
+                timestamp="2026-08-05T00:00:01Z",
+                stream="pipeline",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": 41,
+                    "char_count": 18,
+                    "total_ms": 220,
+                },
+            ),
+        ]
+        payload = ("\n".join(json.dumps(item) for item in events) + "\n").encode(
+            "utf-8"
+        )
+        status, body = self.post(
+            "/ingest",
+            payload,
+            {
+                "Authorization": "Bearer " + receiver.TOKEN,
+                "X-Install-Id": self.install_id,
+                "X-App-Version": "1.2.4",
+                "Content-Type": "application/x-ndjson",
+            },
+        )
+
+        report = watch.build_report(receiver.ROOT)
+        cohort = next(
+            row for row in report["cohorts"] if row["app_version"] == "1.2.4"
+        )
+        self.assertEqual((status, body), (204, b""))
+        self.assertEqual(cohort["post_stop_latency_sample_count"], 1)
+        self.assertEqual(cohort["post_stop_latency_p50_ms"], 220)
+        self.assertEqual(cohort["post_stop_latency_p95_ms"], 220)
 
     def test_ingest_exact_retry_is_idempotent_in_database_and_raw_archive(self) -> None:
         item = event(

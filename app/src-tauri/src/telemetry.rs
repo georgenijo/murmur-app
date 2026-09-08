@@ -227,6 +227,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_stop_handoff" => Some("pipeline.dictation_stop_handoff"),
         "pipeline.dictation_terminal" => Some("pipeline.dictation_terminal"),
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
+        "pipeline.dictation_metrics" => Some("pipeline.dictation_metrics"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
         "pipeline.dictation_preview_presentation" => {
@@ -3581,6 +3582,58 @@ mod tests {
         assert_eq!(unsafe_summary, "Structured event");
         assert!(!unsafe_summary.contains("SENTINEL"));
         assert!(!unsafe_summary.contains("/Users/private"));
+    }
+
+    #[test]
+    fn release_dictation_completion_keeps_aggregator_contract() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_completed",
+            "recording_id": 41,
+            "char_count": 18,
+            "total_ms": 220,
+            "model": "PRIVATE_MODEL"
+        });
+
+        sanitize_event_data("pipeline", &mut data, false);
+        let summary = sanitized_summary(
+            "pipeline",
+            Some("dictation processing metrics".to_string()),
+            &data,
+            false,
+        );
+
+        assert_eq!(summary, "pipeline.dictation_completed");
+        assert_eq!(data["event_code"], "pipeline.dictation_completed");
+        assert_eq!(data["recording_id"], 41);
+        assert_eq!(data["char_count"], 18);
+        assert_eq!(data["total_ms"], 220);
+        assert!(data.get("model").is_none());
+    }
+
+    #[test]
+    fn release_partial_interruption_keeps_neutral_metrics_contract() {
+        let mut data = serde_json::json!({
+            "event_code": "pipeline.dictation_metrics",
+            "recording_id": 41,
+            "char_count": 18,
+            "total_ms": 220,
+            "model": "PRIVATE_MODEL"
+        });
+
+        sanitize_event_data("pipeline", &mut data, false);
+        let summary = sanitized_summary(
+            "pipeline",
+            Some("dictation processing metrics".to_string()),
+            &data,
+            false,
+        );
+
+        assert_eq!(summary, "pipeline.dictation_metrics");
+        assert_eq!(data["event_code"], "pipeline.dictation_metrics");
+        assert_eq!(data["recording_id"], 41);
+        assert_eq!(data["char_count"], 18);
+        assert_eq!(data["total_ms"], 220);
+        assert!(data.get("model").is_none());
     }
 
     #[test]
