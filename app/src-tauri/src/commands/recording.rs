@@ -3797,13 +3797,17 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
 ) {
     let state = app_handle.state::<State>();
     if let AudioLifecycleEvent::InitializationFailed { kind, .. } = &event {
-        state.performance.production_capture_failure(recording_id, *kind);
+        state
+            .performance
+            .production_capture_failure(recording_id, *kind);
     }
     let is_current = || state.app_state.recording_id.load(Ordering::SeqCst) == recording_id;
 
     match event {
         AudioLifecycleEvent::StartupDiagnostic(diagnostic) => {
-            state.performance.observe_production_capture(recording_id, diagnostic);
+            state
+                .performance
+                .observe_production_capture(recording_id, diagnostic);
         }
         AudioLifecycleEvent::Accepted => {
             state.app_state.dictation_telemetry.accepted(recording_id);
@@ -4785,7 +4789,9 @@ async fn stop_native_recording_for(
             e
         })?
     };
-    state.performance.production_sample_count(rid, samples.len());
+    state
+        .performance
+        .production_sample_count(rid, samples.len());
     let mut performance_guard = NativeDictationPerformanceGuard::new(
         state.performance.clone(),
         rid,
