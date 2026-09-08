@@ -52,13 +52,19 @@ jobs:
               - 'scripts/smoke_test_capture_first_pcm.py'
               - 'scripts/validate_capture_boundary.py'
               - 'scripts/validate_reference_docs.py'
+              - 'scripts/validate_markdown_links.py'
+              - 'requirements-test.txt'
               - 'scripts/release_version.py'
               - 'CLAUDE.md'
               - 'AGENTS.md'
-              - 'docs/ARCHITECTURE.md'
+              - 'README.md'
+              - 'CHANGELOG.md'
+              - 'THIRD_PARTY_NOTICES.md'
               - 'docs/reference/**'
+              - 'docs/**'
               - 'infra/log-receiver/**'
               - 'tests/test_reference_docs.py'
+              - 'tests/test_markdown_links.py'
               - 'tests/test_release_artifacts.py'
               - 'tests/test_release_version.py'
               - 'tests/test_workflow_policy.py'
@@ -72,11 +78,14 @@ jobs:
 
       - name: Validate workflow policy
         run: |
+          python3 -m pip install -r requirements-test.txt
           python3 scripts/validate_workflow_policy.py
           python3 scripts/validate_capture_boundary.py
           python3 scripts/validate_reference_docs.py
+          python3 scripts/validate_markdown_links.py
           python3 -m unittest \
             tests/test_reference_docs.py \
+            tests/test_markdown_links.py \
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
             tests/test_workflow_policy.py \
