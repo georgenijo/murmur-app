@@ -126,4 +126,200 @@ describe('MeetingReviewWorkspace', () => {
 
     expect(renameRemoteSpeaker).toHaveBeenCalledWith('meeting', 1, 'Alex');
   });
+
+  it('keeps unsaved review and label edits while remote speaker labels refresh', async () => {
+    const initialDetail: MeetingDetail = {
+      ...detail,
+      remoteSpeakers: [
+        { speakerId: 1, label: 'Casey' },
+        { speakerId: 2, label: 'Riley' },
+      ],
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: initialDetail })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+
+    const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const setTextAreaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+    const summary = container.querySelector('[aria-label="Review summary"]') as HTMLTextAreaElement;
+    const meLabel = container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement;
+    const secondRemote = container.querySelector('[aria-label="Remote speaker 2 label"]') as HTMLInputElement;
+    await act(async () => {
+      setTextAreaValue.call(summary, 'Unsaved review text');
+      summary.dispatchEvent(new Event('input', { bubbles: true }));
+      setInputValue.call(meLabel, 'Unsaved me label');
+      meLabel.dispatchEvent(new Event('input', { bubbles: true }));
+      setInputValue.call(secondRemote, 'Unsaved remote label');
+      secondRemote.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const refreshedDetail: MeetingDetail = {
+      ...initialDetail,
+      remoteSpeakers: [
+        { speakerId: 1, label: 'Alex' },
+        { speakerId: 2, label: 'Riley' },
+      ],
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: refreshedDetail })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+
+    expect((container.querySelector('[aria-label="Review summary"]') as HTMLTextAreaElement).value).toBe('Unsaved review text');
+    expect((container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement).value).toBe('Unsaved me label');
+    expect((container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement).value).toBe('Alex');
+    expect((container.querySelector('[aria-label="Remote speaker 2 label"]') as HTMLInputElement).value).toBe('Unsaved remote label');
+  });
+
+  it('keeps edits typed while a remote speaker save completes', async () => {
+    let resolveRename: ((saved: boolean) => void) | undefined;
+    const renameRemoteSpeaker = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveRename = resolve;
+    }));
+    const initialDetail: MeetingDetail = {
+      ...detail,
+      remoteSpeakers: [
+        { speakerId: 1, label: 'Casey' },
+        { speakerId: 2, label: 'Riley' },
+      ],
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: initialDetail, renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+
+    const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const setTextAreaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+    const summary = container.querySelector('[aria-label="Review summary"]') as HTMLTextAreaElement;
+    const meLabel = container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement;
+    const firstRemote = container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement;
+    const secondRemote = container.querySelector('[aria-label="Remote speaker 2 label"]') as HTMLInputElement;
+    await act(async () => {
+      setTextAreaValue.call(summary, 'Review typed before save');
+      summary.dispatchEvent(new Event('input', { bubbles: true }));
+      setInputValue.call(meLabel, 'Me draft');
+      meLabel.dispatchEvent(new Event('input', { bubbles: true }));
+      setInputValue.call(firstRemote, 'Alex');
+      firstRemote.dispatchEvent(new Event('input', { bubbles: true }));
+      setInputValue.call(secondRemote, 'Jordan');
+      secondRemote.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => (firstRemote.parentElement?.querySelector('button') as HTMLButtonElement).click());
+
+    await act(async () => {
+      setInputValue.call(firstRemote, 'Alexandra');
+      firstRemote.dispatchEvent(new Event('input', { bubbles: true }));
+      setTextAreaValue.call(summary, 'Review typed during save');
+      summary.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const savedDetail: MeetingDetail = {
+      ...initialDetail,
+      remoteSpeakers: [
+        { speakerId: 1, label: 'Alex' },
+        { speakerId: 2, label: 'Riley' },
+      ],
+    };
+    await act(async () => {
+      root.render(<MeetingReviewWorkspace meetings={controller({ detail: savedDetail, renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={() => {}} />);
+      resolveRename?.(true);
+    });
+
+    expect(renameRemoteSpeaker).toHaveBeenCalledWith('meeting', 1, 'Alex');
+    expect((container.querySelector('[aria-label="Review summary"]') as HTMLTextAreaElement).value).toBe('Review typed during save');
+    expect((container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement).value).toBe('Me draft');
+    expect((container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement).value).toBe('Alexandra');
+    expect((container.querySelector('[aria-label="Remote speaker 2 label"]') as HTMLInputElement).value).toBe('Jordan');
+  });
+
+  it('ignores a remote speaker save completion after switching meetings', async () => {
+    let resolveRename: ((saved: boolean) => void) | undefined;
+    const renameRemoteSpeaker = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveRename = resolve;
+    }));
+    const onNotice = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const firstMeetingInput = container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setValue.call(firstMeetingInput, 'Alex');
+      firstMeetingInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => (firstMeetingInput.parentElement?.querySelector('button') as HTMLButtonElement).click());
+
+    const nextDetail: MeetingDetail = {
+      ...detail,
+      session: { ...detail.session, id: 'next-meeting' },
+      labels: { me: 'Morgan', them: 'Clients' },
+      remoteSpeakers: [{ speakerId: 1, label: 'Taylor' }],
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: nextDetail, renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const nextMeetingInput = container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement;
+    await act(async () => {
+      setValue.call(nextMeetingInput, 'Alex');
+      nextMeetingInput.dispatchEvent(new Event('input', { bubbles: true }));
+      resolveRename?.(true);
+    });
+
+    expect((container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement).value).toBe('Alex');
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('ignores a channel label save completion after switching meetings', async () => {
+    let resolveSave: ((saved: boolean) => void) | undefined;
+    const saveReview = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveSave = resolve;
+    }));
+    const onNotice = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const firstMeetingInput = container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setValue.call(firstMeetingInput, 'Alex');
+      firstMeetingInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save labels')!.click());
+
+    const nextDetail: MeetingDetail = {
+      ...detail,
+      session: { ...detail.session, id: 'next-meeting' },
+      labels: { me: 'Morgan', them: 'Clients' },
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: nextDetail, saveReview })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const nextMeetingInput = container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement;
+    await act(async () => {
+      setValue.call(nextMeetingInput, 'Alex');
+      nextMeetingInput.dispatchEvent(new Event('input', { bubbles: true }));
+      resolveSave?.(true);
+    });
+
+    expect((container.querySelector('[aria-label="Me speaker label"]') as HTMLInputElement).value).toBe('Alex');
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('ignores a save from an earlier activation after switching away and back', async () => {
+    let resolveRename: ((saved: boolean) => void) | undefined;
+    const renameRemoteSpeaker = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveRename = resolve;
+    }));
+    const onNotice = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const originalInput = container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement;
+    await act(async () => {
+      setValue.call(originalInput, 'Alex');
+      originalInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => (originalInput.parentElement?.querySelector('button') as HTMLButtonElement).click());
+
+    const otherDetail: MeetingDetail = {
+      ...detail,
+      session: { ...detail.session, id: 'other-meeting' },
+      remoteSpeakers: [{ speakerId: 1, label: 'Taylor' }],
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: otherDetail, renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const reactivatedInput = container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement;
+    await act(async () => {
+      setValue.call(reactivatedInput, 'Alex');
+      reactivatedInput.dispatchEvent(new Event('input', { bubbles: true }));
+      resolveRename?.(true);
+    });
+
+    expect((container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement).value).toBe('Alex');
+    expect(onNotice).not.toHaveBeenCalled();
+  });
 });

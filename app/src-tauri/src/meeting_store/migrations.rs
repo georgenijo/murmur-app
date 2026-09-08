@@ -2,29 +2,98 @@ use rusqlite::Connection;
 
 use super::types::MEETING_STORE_SCHEMA_VERSION;
 
-pub(super) fn schema_version(connection: &Connection) -> Result<u32, String> {
+pub(super) fn schema_version(connection: &Connection) -> Result<u32, MeetingDatabaseError> {
     connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())
+        .map_err(MeetingDatabaseError::from)
 }
 
-pub(super) fn quick_check(connection: &Connection) -> Result<(), String> {
+pub(super) fn quick_check(connection: &Connection) -> Result<(), MeetingDatabaseError> {
     let status: String = connection
         .query_row("PRAGMA quick_check", [], |row| row.get(0))
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
+        .map_err(MeetingDatabaseError::from)?;
     if status == "ok" {
         Ok(())
     } else {
-        Err("The meeting transcript database failed its integrity check.".to_string())
+        Err(MeetingDatabaseError::InvalidData)
     }
 }
 
-pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
+#[derive(Debug)]
+pub(super) enum MeetingDatabaseError {
+    Sqlite(rusqlite::Error, &'static str),
+    InvalidSchema,
+    InvalidData,
+    UnsupportedVersion(u32),
+    NeedsMigration,
+}
+
+impl From<rusqlite::Error> for MeetingDatabaseError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error, "The meeting transcript database is unavailable.")
+    }
+}
+
+impl MeetingDatabaseError {
+    pub(super) fn is_corrupt(&self) -> bool {
+        match self {
+            Self::InvalidData => true,
+            Self::Sqlite(
+                rusqlite::Error::SqliteFailure(error, _)
+                | rusqlite::Error::SqlInputError { error, .. },
+                _,
+            ) => matches!(
+                error.extended_code & 0xff,
+                rusqlite::ffi::SQLITE_CORRUPT | rusqlite::ffi::SQLITE_NOTADB
+            ),
+            _ => false,
+        }
+    }
+
+    pub(super) fn is_invalid_backup(&self) -> bool {
+        match self {
+            Self::InvalidSchema
+            | Self::InvalidData
+            | Self::UnsupportedVersion(_)
+            | Self::NeedsMigration => true,
+            Self::Sqlite(
+                rusqlite::Error::SqliteFailure(error, _)
+                | rusqlite::Error::SqlInputError { error, .. },
+                _,
+            ) => matches!(
+                error.extended_code & 0xff,
+                rusqlite::ffi::SQLITE_ERROR
+                    | rusqlite::ffi::SQLITE_CONSTRAINT
+                    | rusqlite::ffi::SQLITE_CORRUPT
+                    | rusqlite::ffi::SQLITE_NOTADB
+            ),
+            _ => false,
+        }
+    }
+
+    pub(super) fn message(self) -> String {
+        match self {
+            Self::Sqlite(_, message) => message.to_string(),
+            Self::InvalidSchema => {
+                "The meeting transcript database schema is incomplete.".to_string()
+            }
+            Self::InvalidData => {
+                "The meeting transcript database failed its integrity check.".to_string()
+            }
+            Self::UnsupportedVersion(version) => format!(
+                "The meeting transcript database uses unsupported schema version {version}."
+            ),
+            Self::NeedsMigration => {
+                "The meeting transcript database requires migration.".to_string()
+            }
+        }
+    }
+}
+
+pub(super) fn migrate(connection: &Connection) -> Result<(), MeetingDatabaseError> {
     let version = schema_version(connection)?;
     if version > MEETING_STORE_SCHEMA_VERSION {
-        return Err(format!(
-            "This meeting database uses schema version {version}, which is newer than this Murmur build supports."
-        ));
+        return Err(MeetingDatabaseError::UnsupportedVersion(version));
     }
     if version == 0 {
         connection
@@ -66,7 +135,7 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
                  PRAGMA user_version=1;
                  COMMIT;",
             )
-            .map_err(|_| "Murmur could not create the meeting transcript database.".to_string())?;
+            .map_err(|error| MeetingDatabaseError::Sqlite(error, "Murmur could not create the meeting transcript database."))?;
     }
     if schema_version(connection)? == 1 {
         connection
@@ -82,7 +151,7 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
                  PRAGMA user_version=2;
                  COMMIT;",
             )
-            .map_err(|_| "Murmur could not migrate meeting summaries.".to_string())?;
+            .map_err(|error| MeetingDatabaseError::Sqlite(error, "Murmur could not migrate meeting summaries."))?;
     }
     if schema_version(connection)? == 2 {
         connection
@@ -103,7 +172,7 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
                  PRAGMA user_version=3;
                  COMMIT;",
             )
-            .map_err(|_| "Murmur could not migrate meeting reviews.".to_string())?;
+            .map_err(|error| MeetingDatabaseError::Sqlite(error, "Murmur could not migrate meeting reviews."))?;
     }
     if schema_version(connection)? == 3 {
         connection
@@ -149,36 +218,76 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), String> {
                  PRAGMA user_version=4;
                  COMMIT;",
             )
-            .map_err(|_| "Murmur could not migrate remote meeting speakers.".to_string())?;
+            .map_err(|error| MeetingDatabaseError::Sqlite(error, "Murmur could not migrate remote meeting speakers."))?;
     }
     validate_schema(connection)
 }
 
-pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
-    for table in [
-        "meeting_sessions",
-        "meeting_segments",
-        "meeting_segments_fts",
-        "meeting_artifacts",
-        "meeting_reviews",
-        "meeting_remote_speakers",
-    ] {
-        let exists: i64 = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?)",
-                [table],
-                |row| row.get(0),
-            )
-            .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-        if exists != 1 {
-            return Err("The meeting transcript database schema is incomplete.".to_string());
-        }
+pub(super) fn validate_schema(connection: &Connection) -> Result<(), MeetingDatabaseError> {
+    if schema_version(connection)? != MEETING_STORE_SCHEMA_VERSION {
+        return Err(MeetingDatabaseError::NeedsMigration);
     }
-    for (table, required) in [
-        ("meeting_segments", &["remote_speaker_id"][..]),
-        ("meeting_artifacts", &["revision"][..]),
+    validate_supported_schema(connection)
+}
+
+pub(super) fn validate_supported_schema(
+    connection: &Connection,
+) -> Result<(), MeetingDatabaseError> {
+    let version = schema_version(connection)?;
+    if !(1..=MEETING_STORE_SCHEMA_VERSION).contains(&version) {
+        return Err(MeetingDatabaseError::UnsupportedVersion(version));
+    }
+    let tables: &[(&str, u32, &[&str])] = &[
+        (
+            "meeting_sessions",
+            1,
+            &[
+                "id",
+                "started_at_ms",
+                "ended_at_ms",
+                "status",
+                "model_name",
+                "language",
+                "smart_punctuation",
+                "retain_audio",
+                "error_code",
+            ],
+        ),
+        (
+            "meeting_segments",
+            1,
+            &[
+                "id",
+                "session_id",
+                "speaker",
+                "sequence",
+                "start_ms",
+                "end_ms",
+                "status",
+                "text",
+                "audio_relative_path",
+                "error_code",
+            ],
+        ),
+        (
+            "meeting_segments_fts",
+            1,
+            &["segment_id", "session_id", "text"],
+        ),
+        (
+            "meeting_artifacts",
+            2,
+            &[
+                "session_id",
+                "artifact_json",
+                "created_at_ms",
+                "runtime_ms",
+                "peak_rss_mb",
+            ],
+        ),
         (
             "meeting_reviews",
+            3,
             &[
                 "session_id",
                 "revision",
@@ -187,80 +296,132 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
                 "them_label",
                 "review_json",
                 "updated_at_ms",
-            ][..],
+            ],
         ),
-    ] {
+        (
+            "meeting_remote_speakers",
+            4,
+            &["session_id", "speaker_id", "label"],
+        ),
+    ];
+    for (table, introduced, columns) in tables {
+        if version < *introduced {
+            continue;
+        }
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(MeetingDatabaseError::from)?;
+        if !exists {
+            return Err(schema_error());
+        }
+        require_columns(connection, table, columns)?;
+    }
+    require_session_cascade(connection, "meeting_segments")?;
+    if version >= 2 {
+        require_session_cascade(connection, "meeting_artifacts")?;
+    }
+    if version >= 3 {
+        require_columns(connection, "meeting_artifacts", &["revision"])?;
+        require_session_cascade(connection, "meeting_reviews")?;
+    }
+    if version >= 4 {
+        require_columns(connection, "meeting_segments", &["remote_speaker_id"])?;
+        require_session_cascade(connection, "meeting_remote_speakers")?;
         let mut statement = connection
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-        let columns = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
-            .collect::<Result<std::collections::HashSet<_>, _>>()
-            .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-        if required.iter().any(|column| !columns.contains(*column)) {
-            return Err("The meeting transcript database schema is incomplete.".to_string());
+            .prepare("PRAGMA foreign_key_list(meeting_segments)")
+            .map_err(MeetingDatabaseError::from)?;
+        let remote_speaker_columns = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(MeetingDatabaseError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(MeetingDatabaseError::from)?
+            .into_iter()
+            .filter(|(table, _, _)| table == "meeting_remote_speakers")
+            .map(|(_, from, to)| (from, to))
+            .collect::<std::collections::HashSet<_>>();
+        if remote_speaker_columns
+            != std::collections::HashSet::from([
+                ("session_id".to_string(), "session_id".to_string()),
+                ("remote_speaker_id".to_string(), "speaker_id".to_string()),
+            ])
+        {
+            return Err(schema_error());
         }
     }
     let mut statement = connection
-        .prepare("PRAGMA foreign_key_list(meeting_reviews)")
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-    let cascades_to_session = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(2)?, row.get::<_, String>(6)?))
-        })
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
-        .any(|row| matches!(row, Ok((table, action)) if table == "meeting_sessions" && action.eq_ignore_ascii_case("CASCADE")));
-    if !cascades_to_session {
-        return Err("The meeting transcript database schema is incomplete.".to_string());
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(MeetingDatabaseError::from)?;
+    if statement
+        .query([])
+        .map_err(MeetingDatabaseError::from)?
+        .next()
+        .map_err(MeetingDatabaseError::from)?
+        .is_some()
+    {
+        return Err(MeetingDatabaseError::InvalidData);
     }
+    Ok(())
+}
+
+fn schema_error() -> MeetingDatabaseError {
+    MeetingDatabaseError::InvalidSchema
+}
+
+fn require_columns(
+    connection: &Connection,
+    table: &str,
+    required: &[&str],
+) -> Result<(), MeetingDatabaseError> {
     let mut statement = connection
-        .prepare("PRAGMA foreign_key_list(meeting_remote_speakers)")
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-    let labels_cascade = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(2)?, row.get::<_, String>(6)?))
-        })
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
-        .any(|row| matches!(row, Ok((table, action)) if table == "meeting_sessions" && action.eq_ignore_ascii_case("CASCADE")));
-    if !labels_cascade {
-        return Err("The meeting transcript database schema is incomplete.".to_string());
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(MeetingDatabaseError::from)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(MeetingDatabaseError::from)?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(MeetingDatabaseError::from)?;
+    if required.iter().any(|column| !columns.contains(*column)) {
+        return Err(schema_error());
     }
+    Ok(())
+}
+
+fn require_session_cascade(
+    connection: &Connection,
+    table: &str,
+) -> Result<(), MeetingDatabaseError> {
     let mut statement = connection
-        .prepare("PRAGMA foreign_key_list(meeting_segments)")
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-    let remote_speaker_columns = statement
+        .prepare(&format!("PRAGMA foreign_key_list({table})"))
+        .map_err(MeetingDatabaseError::from)?;
+    let keys = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(6)?,
             ))
         })
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
-        .filter_map(Result::ok)
-        .filter(|(table, _, _)| table == "meeting_remote_speakers")
-        .map(|(_, from, to)| (from, to))
-        .collect::<std::collections::HashSet<_>>();
-    if remote_speaker_columns
-        != std::collections::HashSet::from([
-            ("session_id".to_string(), "session_id".to_string()),
-            ("remote_speaker_id".to_string(), "speaker_id".to_string()),
-        ])
-    {
-        return Err("The meeting transcript database schema is incomplete.".to_string());
-    }
-    let mut statement = connection
-        .prepare("PRAGMA foreign_key_check")
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?;
-    if statement
-        .query([])
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
-        .next()
-        .map_err(|_| "The meeting transcript database is unavailable.".to_string())?
-        .is_some()
-    {
-        return Err("The meeting transcript database failed its integrity check.".to_string());
+        .map_err(MeetingDatabaseError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(MeetingDatabaseError::from)?;
+    if !keys.iter().any(|(table, from, to, action)| {
+        table == "meeting_sessions"
+            && from == "session_id"
+            && to == "id"
+            && action.eq_ignore_ascii_case("CASCADE")
+    }) {
+        return Err(schema_error());
     }
     Ok(())
 }
@@ -268,6 +429,27 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operational_sqlite_failures_never_classify_as_invalid_backup_data() {
+        for code in [
+            rusqlite::ffi::SQLITE_IOERR_READ,
+            rusqlite::ffi::SQLITE_NOMEM,
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED_SHAREDCACHE,
+            rusqlite::ffi::SQLITE_FULL,
+            rusqlite::ffi::SQLITE_INTERRUPT,
+            rusqlite::ffi::SQLITE_CANTOPEN,
+        ] {
+            let error = MeetingDatabaseError::from(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("private diagnostic detail".into()),
+            ));
+            assert!(!error.is_invalid_backup(), "SQLite code {code}");
+            assert!(!error.is_corrupt(), "SQLite code {code}");
+            assert!(!error.message().contains("private diagnostic"));
+        }
+    }
 
     #[test]
     fn v2_artifacts_migrate_without_becoming_user_reviews() {

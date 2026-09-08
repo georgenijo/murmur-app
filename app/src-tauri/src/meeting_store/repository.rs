@@ -90,36 +90,162 @@ pub struct MeetingRepository {
     db_path: PathBuf,
 }
 
+struct InitializationLease {
+    root: PathBuf,
+    _file: fs::File,
+}
+
+impl InitializationLease {
+    fn acquire(root: &Path) -> Result<Self, String> {
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options
+            .open(root.join(".meeting-initialize.lock"))
+            .map_err(|_| storage_error())?;
+        file.try_lock().map_err(|error| match error {
+            fs::TryLockError::WouldBlock => {
+                "Another Murmur instance is initializing meeting data. Try again shortly."
+                    .to_string()
+            }
+            fs::TryLockError::Error(_) => storage_error(),
+        })?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            _file: file,
+        })
+    }
+}
+
+struct RecoveryCandidate {
+    path: PathBuf,
+}
+
+impl RecoveryCandidate {
+    fn sweep_abandoned(lease: &InitializationLease) -> Result<(), String> {
+        let root = &lease.root;
+        for entry in fs::read_dir(root).map_err(|_| storage_error())? {
+            let entry = entry.map_err(|_| storage_error())?;
+            let name = entry.file_name();
+            let Some((id, suffix)) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(".meeting-recovery-"))
+                .and_then(|name| name.split_once(".sqlite3"))
+            else {
+                continue;
+            };
+            if uuid::Uuid::parse_str(id).is_ok() && matches!(suffix, "" | "-wal" | "-shm") {
+                fs::remove_file(entry.path()).map_err(|_| storage_error())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn from_backup(lease: &InitializationLease, backup: &Path) -> Result<Option<Self>, String> {
+        let root = &lease.root;
+        let source = Connection::open_with_flags(backup, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(db_error)?;
+        match migrations::quick_check(&source)
+            .and_then(|()| migrations::validate_supported_schema(&source))
+        {
+            Ok(()) => {}
+            Err(error) if error.is_invalid_backup() => return Ok(None),
+            Err(error) => return Err(error.message()),
+        }
+        let path = root.join(format!(
+            ".meeting-recovery-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&path).map_err(|_| storage_error())?;
+        let candidate = Self { path };
+        source
+            .backup(MAIN_DB, &candidate.path, None)
+            .map_err(db_error)?;
+        let connection = Connection::open(&candidate.path).map_err(db_error)?;
+        configure_connection(&connection).map_err(db_error)?;
+        match migrations::migrate(&connection) {
+            Ok(()) => {}
+            Err(error) if error.is_invalid_backup() => return Ok(None),
+            Err(error) => return Err(error.message()),
+        }
+        migrations::quick_check(&connection).map_err(migrations::MeetingDatabaseError::message)?;
+        connection
+            .pragma_update(None, "journal_mode", "DELETE")
+            .map_err(db_error)?;
+        drop(connection);
+        fs::File::open(&candidate.path)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| storage_error())?;
+        Ok(Some(candidate))
+    }
+
+    fn publish(self, path: &Path, _lease: &InitializationLease) -> Result<(), String> {
+        fs::rename(&self.path, path).map_err(|_| storage_error())?;
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| storage_error())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RecoveryCandidate {
+    fn drop(&mut self) {
+        remove_sidecars(&self.path);
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl MeetingRepository {
     pub fn initialize(root: PathBuf) -> Result<(Self, InitializationOutcome), String> {
+        fs::create_dir_all(&root).map_err(|_| storage_error())?;
+        let lease = InitializationLease::acquire(&root)?;
         fs::create_dir_all(root.join("audio")).map_err(|_| storage_error())?;
         fs::create_dir_all(root.join("backups")).map_err(|_| storage_error())?;
         fs::create_dir_all(root.join("quarantine")).map_err(|_| storage_error())?;
+        RecoveryCandidate::sweep_abandoned(&lease)?;
         let repository = Self {
             db_path: root.join(DATABASE_NAME),
             root,
         };
         let mut outcome = InitializationOutcome::Opened;
         if repository.db_path.exists() {
-            let valid = repository
-                .open_raw()
-                .and_then(|connection| {
-                    configure_connection(&connection)?;
-                    migrations::quick_check(&connection)
-                })
-                .is_ok();
-            if !valid {
-                outcome = repository.recover_corrupt_database()?;
+            let connection = repository.open_raw()?;
+            let validity = configure_connection(&connection)
+                .map_err(migrations::MeetingDatabaseError::from)
+                .and_then(|()| migrations::quick_check(&connection));
+            drop(connection);
+            match validity {
+                Ok(()) => {}
+                Err(error) if error.is_corrupt() => {
+                    outcome = repository.recover_corrupt_database(&lease)?
+                }
+                Err(error) => return Err(error.message()),
             }
+        } else if !backup_files_newest_first(&repository.root.join("backups"))?.is_empty() {
+            outcome = repository.recover_corrupt_database(&lease)?;
         }
         let connection = repository.open_raw()?;
-        configure_connection(&connection)?;
-        let old_version = migrations::schema_version(&connection)?;
+        configure_connection(&connection).map_err(db_error)?;
+        let old_version = migrations::schema_version(&connection)
+            .map_err(migrations::MeetingDatabaseError::message)?;
         if old_version > 0 && old_version < MEETING_STORE_SCHEMA_VERSION {
             repository.create_backup(&connection, old_version)?;
         }
-        migrations::migrate(&connection)?;
-        migrations::quick_check(&connection)?;
+        migrations::migrate(&connection).map_err(migrations::MeetingDatabaseError::message)?;
+        migrations::quick_check(&connection).map_err(migrations::MeetingDatabaseError::message)?;
         connection
             .execute(
                 "UPDATE meeting_sessions SET status='interrupted', ended_at_ms=COALESCE(ended_at_ms, ?) WHERE status='active'",
@@ -910,49 +1036,86 @@ impl MeetingRepository {
 
     fn open_checked(&self) -> Result<Connection, String> {
         let connection = self.open_raw()?;
-        configure_connection(&connection)?;
-        migrations::quick_check(&connection)?;
-        migrations::validate_schema(&connection)?;
+        configure_connection(&connection).map_err(db_error)?;
+        migrations::quick_check(&connection).map_err(migrations::MeetingDatabaseError::message)?;
+        migrations::validate_schema(&connection)
+            .map_err(migrations::MeetingDatabaseError::message)?;
         Ok(connection)
     }
 
     fn create_backup(&self, source: &Connection, version: u32) -> Result<(), String> {
-        let path = self
-            .root
-            .join("backups")
-            .join(format!("meetings-v{version}-{}.sqlite3", now_ms()));
+        let path = self.root.join("backups").join(format!(
+            "meetings-v{version}-{}-{}.sqlite3",
+            now_ms(),
+            uuid::Uuid::new_v4()
+        ));
         source.backup(MAIN_DB, &path, None).map_err(db_error)?;
-        let check = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let check = Connection::open(&path).map_err(db_error)?;
+        check
+            .pragma_update(None, "journal_mode", "DELETE")
+            .map_err(db_error)?;
+        migrations::quick_check(&check).map_err(migrations::MeetingDatabaseError::message)?;
+        migrations::validate_supported_schema(&check)
+            .map_err(migrations::MeetingDatabaseError::message)?;
+        drop(check);
+        fs::File::open(&path)
+            .and_then(|file| file.sync_all())
             .map_err(|_| storage_error())?;
-        migrations::quick_check(&check)?;
-        let mut backups = directory_files_newest_first(&self.root.join("backups"))?;
-        for old in backups.drain(MAX_BACKUPS..) {
-            let _ = fs::remove_file(old);
+        fs::File::open(self.root.join("backups"))
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| storage_error())?;
+        for old in backup_files_newest_first(&self.root.join("backups"))?
+            .into_iter()
+            .skip(MAX_BACKUPS)
+        {
+            let _ = fs::remove_file(&old);
+            remove_sidecars(&old);
         }
         Ok(())
     }
 
-    fn recover_corrupt_database(&self) -> Result<InitializationOutcome, String> {
-        let quarantine = self
-            .root
-            .join("quarantine")
-            .join(format!("meetings-corrupt-{}.sqlite3", now_ms()));
-        fs::rename(&self.db_path, quarantine).map_err(|_| storage_error())?;
-        remove_sidecars(&self.db_path);
-        for backup in directory_files_newest_first(&self.root.join("backups"))? {
-            let valid = Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|_| storage_error())
-                .and_then(|connection| {
-                    migrations::quick_check(&connection)?;
-                    migrations::validate_schema(&connection)
-                })
-                .is_ok();
-            if valid {
-                fs::copy(backup, &self.db_path).map_err(|_| storage_error())?;
-                return Ok(InitializationOutcome::Recovered);
+    fn recover_corrupt_database(
+        &self,
+        lease: &InitializationLease,
+    ) -> Result<InitializationOutcome, String> {
+        let mut candidate = None;
+        for backup in backup_files_newest_first(&self.root.join("backups"))? {
+            if let Some(restored) = RecoveryCandidate::from_backup(lease, &backup)? {
+                candidate = Some(restored);
+                break;
             }
         }
-        Ok(InitializationOutcome::Reinitialized)
+        self.quarantine_live_database(lease)?;
+        if let Some(candidate) = candidate {
+            candidate.publish(&self.db_path, lease)?;
+            Ok(InitializationOutcome::Recovered)
+        } else {
+            Ok(InitializationOutcome::Reinitialized)
+        }
+    }
+
+    fn quarantine_live_database(&self, _lease: &InitializationLease) -> Result<(), String> {
+        let quarantine = self.root.join("quarantine").join(format!(
+            "meetings-corrupt-{}-{}.sqlite3",
+            now_ms(),
+            uuid::Uuid::new_v4()
+        ));
+        // Move sidecars first so an interrupted quarantine still leaves the main
+        // database present. Missing-main recovery also retries the same backups.
+        for suffix in ["-wal", "-shm", ""] {
+            let source = PathBuf::from(format!("{}{suffix}", self.db_path.display()));
+            if source.exists() {
+                let target = PathBuf::from(format!("{}{suffix}", quarantine.display()));
+                fs::rename(source, target).map_err(|_| storage_error())?;
+            }
+        }
+        fs::File::open(self.root.join("quarantine"))
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| storage_error())?;
+        fs::File::open(&self.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| storage_error())?;
+        Ok(())
     }
 
     fn sweep_orphan_audio(&self) -> Result<(), String> {
@@ -981,22 +1144,12 @@ impl MeetingRepository {
     }
 }
 
-fn configure_connection(connection: &Connection) -> Result<(), String> {
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .map_err(db_error)?;
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(db_error)?;
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(db_error)?;
-    connection
-        .pragma_update(None, "secure_delete", "ON")
-        .map_err(db_error)?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(db_error)
+fn configure_connection(connection: &Connection) -> rusqlite::Result<()> {
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "journal_mode", "WAL")?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    connection.pragma_update(None, "secure_delete", "ON")?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))
 }
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSession> {
@@ -1084,6 +1237,16 @@ fn remove_sidecars(path: &Path) {
     }
 }
 
+fn backup_files_newest_first(path: &Path) -> Result<Vec<PathBuf>, String> {
+    Ok(directory_files_newest_first(path)?
+        .into_iter()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "sqlite3")
+        })
+        .collect())
+}
+
 fn directory_files_newest_first(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = fs::read_dir(path)
         .map_err(|_| storage_error())?
@@ -1158,6 +1321,608 @@ mod tests {
         repository.finalize_segment(id, text, false).unwrap();
         fs::remove_file(audio).unwrap();
         id
+    }
+
+    fn v3_backup_fixture(path: &Path) -> MeetingWorkspace {
+        let (_source_root, source) = repository();
+        source
+            .create_session("recovered-meeting", "base.en", "en", true, false)
+            .unwrap();
+        let segment = final_segment(
+            &source,
+            "recovered-meeting",
+            MeetingSpeaker::Them,
+            0,
+            "Preserved transcript evidence",
+        );
+        source
+            .finish_session("recovered-meeting", MeetingSessionStatus::Complete, None)
+            .unwrap();
+        let artifact = crate::meeting_artifact::MeetingArtifactV1 {
+            schema: crate::meeting_artifact::MEETING_ARTIFACT_SCHEMA.into(),
+            summary: crate::meeting_artifact::SourcedMeetingText {
+                text: "Generated summary".into(),
+                source_segment_ids: vec![segment],
+            },
+            decisions: Vec::new(),
+            action_items: Vec::new(),
+            open_questions: Vec::new(),
+        };
+        source
+            .save_artifact("recovered-meeting", &artifact, 10, 20)
+            .unwrap();
+        let expected = source
+            .save_review(SaveMeetingReviewRequest {
+                session_id: "recovered-meeting".into(),
+                expected_review_revision: None,
+                base: ReviewEditBase::Generated {
+                    generated_revision: 1,
+                },
+                labels: MeetingSpeakerLabels {
+                    me: "Owner".into(),
+                    them: "Guests".into(),
+                },
+                document: Some(crate::meeting_review::EditableReviewDocument {
+                    summary: crate::meeting_review::EditableReviewText {
+                        key: "summary".into(),
+                        text: "Reviewed summary that must survive recovery".into(),
+                    },
+                    decisions: Vec::new(),
+                    action_items: Vec::new(),
+                    open_questions: Vec::new(),
+                }),
+            })
+            .unwrap();
+        source
+            .open_checked()
+            .unwrap()
+            .backup(MAIN_DB, path, None)
+            .unwrap();
+        let connection = Connection::open(path).unwrap();
+        connection.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             BEGIN IMMEDIATE;
+             CREATE TABLE meeting_segments_v3 (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               session_id TEXT NOT NULL REFERENCES meeting_sessions(id) ON DELETE CASCADE,
+               speaker TEXT NOT NULL CHECK(speaker IN ('me','them')),
+               sequence INTEGER NOT NULL CHECK(sequence >= 0),
+               start_ms INTEGER NOT NULL CHECK(start_ms >= 0),
+               end_ms INTEGER NOT NULL CHECK(end_ms >= start_ms),
+               status TEXT NOT NULL CHECK(status IN ('pending','final','failed')),
+               text TEXT NOT NULL DEFAULT '', audio_relative_path TEXT, error_code TEXT,
+               UNIQUE(session_id, speaker, sequence)
+             );
+             INSERT INTO meeting_segments_v3 SELECT id, session_id, speaker, sequence, start_ms, end_ms,
+               status, text, audio_relative_path, error_code FROM meeting_segments;
+             DROP TABLE meeting_segments;
+             ALTER TABLE meeting_segments_v3 RENAME TO meeting_segments;
+             CREATE INDEX meeting_segments_session_time_idx ON meeting_segments(session_id, start_ms, id);
+             CREATE INDEX meeting_segments_pending_idx ON meeting_segments(status, id);
+             DROP TABLE meeting_remote_speakers;
+             PRAGMA user_version=3;
+             COMMIT;
+             PRAGMA foreign_keys=ON;
+             PRAGMA journal_mode=DELETE;"
+        ).unwrap();
+        migrations::quick_check(&connection).unwrap();
+        assert_eq!(migrations::schema_version(&connection).unwrap(), 3);
+        migrations::validate_supported_schema(&connection).unwrap();
+        assert!(migrations::validate_schema(&connection).is_err());
+        expected
+    }
+
+    #[test]
+    fn corrupted_main_recovers_healthy_v3_backup_without_changing_backup_or_evidence() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/meetings-v3-fixture.sqlite3");
+        let expected = v3_backup_fixture(&backup);
+        let original_backup = fs::read(&backup).unwrap();
+        let corrupt_main = b"corrupt live meeting database";
+        fs::write(root.path().join(DATABASE_NAME), corrupt_main).unwrap();
+
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        assert_eq!(
+            serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(
+            recovered.status().unwrap().schema_version,
+            MEETING_STORE_SCHEMA_VERSION
+        );
+        assert_eq!(
+            recovered
+                .list_sessions(Some("Preserved transcript"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+        assert_eq!(fs::read(&backup).unwrap(), original_backup);
+        let quarantined = directory_files_newest_first(&root.path().join("quarantine")).unwrap();
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(fs::read(&quarantined[0]).unwrap(), corrupt_main);
+        assert!(!fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".meeting-recovery-")));
+    }
+
+    #[test]
+    fn corrupted_main_recovers_committed_v3_wal_snapshot() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/meetings-v3-wal.sqlite3");
+        let mut expected = v3_backup_fixture(&backup);
+        let writer = Connection::open(&backup).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer
+            .execute("UPDATE meeting_sessions SET model_name='tiny.en'", [])
+            .unwrap();
+        expected.session.model_name = "tiny.en".into();
+        let original_backup = fs::read(&backup).unwrap();
+        assert!(PathBuf::from(format!("{}-wal", backup.display())).exists());
+        fs::write(root.path().join(DATABASE_NAME), b"corrupt database").unwrap();
+
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        assert_eq!(
+            serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(migrations::schema_version(&writer).unwrap(), 3);
+        assert_eq!(fs::read(&backup).unwrap(), original_backup);
+    }
+
+    #[test]
+    fn recovery_migrates_supported_v1_and_v2_backups() {
+        for version in [1, 2] {
+            let root = TempDir::new().unwrap();
+            fs::create_dir(root.path().join("backups")).unwrap();
+            let backup = root.path().join("backups/meetings-older.sqlite3");
+            let mut expected = v3_backup_fixture(&backup);
+            let connection = Connection::open(&backup).unwrap();
+            connection.execute_batch("DROP TABLE meeting_reviews; ALTER TABLE meeting_artifacts DROP COLUMN revision;").unwrap();
+            if version == 1 {
+                connection
+                    .execute_batch("DROP TABLE meeting_artifacts")
+                    .unwrap();
+            }
+            connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            migrations::validate_supported_schema(&connection).unwrap();
+            drop(connection);
+            expected.review = None;
+            expected.labels = MeetingSpeakerLabels::default();
+            if version == 1 {
+                expected.generated = None;
+            }
+            expected.active_document = expected
+                .generated
+                .as_ref()
+                .map(|generated| generated.document.clone());
+            expected.active_origin = expected
+                .generated
+                .as_ref()
+                .map(|_| ActiveReviewOrigin::Generated);
+            let original = fs::read(&backup).unwrap();
+            fs::write(root.path().join(DATABASE_NAME), b"corrupt live database").unwrap();
+            let (recovered, outcome) =
+                MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+            assert_eq!(outcome, InitializationOutcome::Recovered);
+            assert_eq!(
+                serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+            assert_eq!(fs::read(&backup).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn locked_backup_validation_aborts_without_quarantining_the_main() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/meetings-v3-locked.sqlite3");
+        let expected = v3_backup_fixture(&backup);
+        let writer = Connection::open(&backup).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let original_backup = fs::read(&backup).unwrap();
+        let original_main = b"corrupt live database awaiting readable backup";
+        fs::write(root.path().join(DATABASE_NAME), original_main).unwrap();
+
+        let result = MeetingRepository::initialize(root.path().to_path_buf());
+
+        assert!(
+            result.is_err(),
+            "A busy healthy backup must not trigger reinitialization"
+        );
+        assert_eq!(
+            fs::read(root.path().join(DATABASE_NAME)).unwrap(),
+            original_main
+        );
+        assert_eq!(fs::read(&backup).unwrap(), original_backup);
+        assert_eq!(
+            fs::read_dir(root.path().join("quarantine"))
+                .unwrap()
+                .count(),
+            0
+        );
+        writer.execute_batch("ROLLBACK").unwrap();
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        assert_eq!(
+            serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn locked_live_database_is_not_misclassified_as_corrupt() {
+        let (root, repository) = repository();
+        repository
+            .create_session("live", "base.en", "en", true, false)
+            .unwrap();
+        final_segment(
+            &repository,
+            "live",
+            MeetingSpeaker::Me,
+            0,
+            "New evidence after the startup backup",
+        );
+        repository
+            .finish_session("live", MeetingSessionStatus::Complete, None)
+            .unwrap();
+        let writer = Connection::open(&repository.db_path).unwrap();
+        writer
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let original = fs::read(&repository.db_path).unwrap();
+
+        let result = MeetingRepository::initialize(root.path().to_path_buf());
+
+        assert!(
+            result.is_err(),
+            "A busy main database must not be quarantined or restored over"
+        );
+        assert_eq!(fs::read(&repository.db_path).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(root.path().join("quarantine"))
+                .unwrap()
+                .count(),
+            0
+        );
+        writer.execute_batch("ROLLBACK").unwrap();
+        let (opened, outcome) = MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+        assert_eq!(outcome, InitializationOutcome::Opened);
+        assert_eq!(
+            opened.detail("live").unwrap().segments[0].text,
+            "New evidence after the startup backup"
+        );
+    }
+
+    #[test]
+    fn schema_inspection_preserves_operational_errors_from_a_locked_disk_backup() {
+        let root = TempDir::new().unwrap();
+        let backup = root.path().join("v3.sqlite3");
+        v3_backup_fixture(&backup);
+        let reader =
+            Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        reader.busy_timeout(std::time::Duration::ZERO).unwrap();
+        migrations::quick_check(&reader).unwrap();
+        let writer = Connection::open(&backup).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        for result in [
+            migrations::quick_check(&reader),
+            migrations::validate_supported_schema(&reader),
+        ] {
+            let error = result.unwrap_err();
+            assert!(
+                matches!(&error, migrations::MeetingDatabaseError::Sqlite(rusqlite::Error::SqliteFailure(cause, _), _) if matches!(cause.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+            );
+            assert!(!error.is_invalid_backup());
+            assert!(!error.is_corrupt());
+        }
+        writer.execute_batch("ROLLBACK").unwrap();
+        migrations::quick_check(&reader).unwrap();
+        migrations::validate_supported_schema(&reader).unwrap();
+    }
+
+    #[test]
+    fn initialization_lease_child_process() {
+        use std::io::Read;
+        let Some(root) = std::env::var_os("MURMUR_TEST_MEETING_INITIALIZE_ROOT").map(PathBuf::from)
+        else {
+            return;
+        };
+        let lease = InitializationLease::acquire(&root).unwrap();
+        let candidate = RecoveryCandidate::from_backup(&lease, &root.join("backups/v3.sqlite3"))
+            .unwrap()
+            .unwrap();
+        let connection = Connection::open(&candidate.path).unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE meeting_sessions SET language='candidate-active'",
+                [],
+            )
+            .unwrap();
+        fs::write(
+            root.join("initialize-child-ready"),
+            candidate.path.file_name().unwrap().as_encoded_bytes(),
+        )
+        .unwrap();
+        let _ = std::io::stdin().read_exact(&mut [0u8]);
+        drop(connection);
+        drop(candidate);
+        drop(lease);
+    }
+
+    #[test]
+    fn another_process_cannot_sweep_an_active_candidate_and_crash_releases_the_lease() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/v3.sqlite3");
+        let expected = v3_backup_fixture(&backup);
+        let original_backup = fs::read(&backup).unwrap();
+        let original_main = b"corrupt main awaiting the leased recovery";
+        fs::write(root.path().join(DATABASE_NAME), original_main).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "meeting_store::repository::tests::initialization_lease_child_process",
+                "--test-threads=1",
+            ])
+            .env("MURMUR_TEST_MEETING_INITIALIZE_ROOT", root.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let ready = root.path().join("initialize-child-ready");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < deadline {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "Lease holder exited before publishing its candidate"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "Lease holder did not become ready");
+        let candidate = root.path().join(fs::read_to_string(&ready).unwrap());
+        let protected = ["", "-wal", "-shm"].map(|suffix| {
+            let path = PathBuf::from(format!("{}{suffix}", candidate.display()));
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        });
+
+        let result = MeetingRepository::initialize(root.path().to_path_buf());
+
+        assert!(result.unwrap_err().contains("Another Murmur instance"));
+        for (path, bytes) in &protected {
+            assert_eq!(fs::read(path).unwrap(), *bytes);
+        }
+        assert_eq!(
+            fs::read(root.path().join(DATABASE_NAME)).unwrap(),
+            original_main
+        );
+        assert_eq!(fs::read(&backup).unwrap(), original_backup);
+        assert!(!root.path().join("quarantine").exists());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(input);
+        assert!(
+            candidate.exists(),
+            "Hard termination must leave the disposable candidate for startup cleanup"
+        );
+
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        for (path, _) in protected {
+            assert!(!path.exists());
+        }
+        assert_eq!(
+            serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(fs::read(&backup).unwrap(), original_backup);
+    }
+
+    #[test]
+    fn recovery_does_not_treat_disk_full_as_an_invalid_backup() {
+        let root = TempDir::new().unwrap();
+        let backup = root.path().join("v3-full.sqlite3");
+        v3_backup_fixture(&backup);
+        let connection = Connection::open(&backup).unwrap();
+        connection.execute_batch("VACUUM").unwrap();
+        let pages: u32 = connection
+            .pragma_query_value(None, "page_count", |row| row.get(0))
+            .unwrap();
+        let free: u32 = connection
+            .pragma_query_value(None, "freelist_count", |row| row.get(0))
+            .unwrap();
+        assert_eq!(free, 0);
+        connection
+            .pragma_update(None, "max_page_count", pages)
+            .unwrap();
+        let original = fs::read(&backup).unwrap();
+
+        let error = migrations::migrate(&connection).unwrap_err();
+
+        assert!(
+            matches!(&error, migrations::MeetingDatabaseError::Sqlite(rusqlite::Error::SqliteFailure(cause, _), _) if cause.code == rusqlite::ErrorCode::DiskFull)
+        );
+        assert!(!error.is_invalid_backup());
+        drop(connection);
+        assert_eq!(fs::read(&backup).unwrap(), original);
+    }
+
+    #[test]
+    fn recovery_rejects_invalid_newer_backups_and_keeps_the_healthy_source() {
+        for fault in [
+            "future",
+            "missing_column",
+            "migration_conflict",
+            "foreign_key",
+            "corrupt",
+        ] {
+            let root = TempDir::new().unwrap();
+            fs::create_dir(root.path().join("backups")).unwrap();
+            let good = root.path().join("backups/meetings-v3-good.sqlite3");
+            let expected = v3_backup_fixture(&good);
+            let bad = root.path().join("backups/meetings-v3-newer.sqlite3");
+            fs::copy(&good, &bad).unwrap();
+            if fault == "corrupt" {
+                fs::write(&bad, b"corrupt backup").unwrap();
+            } else {
+                let connection = Connection::open(&bad).unwrap();
+                let sql = match fault {
+                    "future" => "PRAGMA user_version=5",
+                    "missing_column" => "ALTER TABLE meeting_reviews DROP COLUMN me_label",
+                    "migration_conflict" => {
+                        "CREATE TABLE meeting_remote_speakers(unexpected INTEGER)"
+                    }
+                    "foreign_key" => {
+                        "PRAGMA foreign_keys=OFF; UPDATE meeting_segments SET session_id='missing'"
+                    }
+                    _ => unreachable!(),
+                };
+                connection.execute_batch(sql).unwrap();
+            }
+            fs::File::open(&good)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(60))
+                .unwrap();
+            fs::File::open(&bad)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(120))
+                .unwrap();
+            let good_bytes = fs::read(&good).unwrap();
+            let bad_bytes = fs::read(&bad).unwrap();
+            fs::write(root.path().join(DATABASE_NAME), b"corrupt live database").unwrap();
+
+            let (recovered, outcome) =
+                MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+
+            assert_eq!(outcome, InitializationOutcome::Recovered, "{fault}");
+            assert_eq!(
+                serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "{fault}"
+            );
+            assert_eq!(fs::read(&good).unwrap(), good_bytes, "{fault}");
+            assert_eq!(fs::read(&bad).unwrap(), bad_bytes, "{fault}");
+            assert!(
+                !fs::read_dir(root.path())
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".meeting-recovery-")),
+                "{fault}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_retries_backup_when_main_is_missing_after_an_interrupted_publish() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/meetings-v3-fixture.sqlite3");
+        let expected = v3_backup_fixture(&backup);
+        let abandoned = root.path().join(format!(
+            ".meeting-recovery-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        for suffix in ["", "-wal", "-shm"] {
+            fs::write(
+                format!("{}{suffix}", abandoned.display()),
+                b"abandoned staging data",
+            )
+            .unwrap();
+        }
+        let unrelated = root.path().join(".meeting-recovery-user.sqlite3");
+        fs::write(&unrelated, b"preserve unrelated file").unwrap();
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        for suffix in ["", "-wal", "-shm"] {
+            assert!(!PathBuf::from(format!("{}{suffix}", abandoned.display())).exists());
+        }
+        assert_eq!(fs::read(unrelated).unwrap(), b"preserve unrelated file");
+        assert_eq!(
+            serde_json::to_value(recovered.workspace("recovered-meeting").unwrap()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn quarantine_preserves_main_and_sidecar_evidence() {
+        let (root, repository) = repository();
+        for (suffix, bytes) in [
+            ("", b"main evidence".as_slice()),
+            ("-wal", b"wal evidence"),
+            ("-shm", b"shm evidence"),
+        ] {
+            fs::write(format!("{}{suffix}", repository.db_path.display()), bytes).unwrap();
+        }
+        let lease = InitializationLease::acquire(repository.root()).unwrap();
+        repository.quarantine_live_database(&lease).unwrap();
+        let files = directory_files_newest_first(&root.path().join("quarantine")).unwrap();
+        assert_eq!(files.len(), 3);
+        for (suffix, bytes) in [
+            (".sqlite3", b"main evidence".as_slice()),
+            (".sqlite3-wal", b"wal evidence"),
+            (".sqlite3-shm", b"shm evidence"),
+        ] {
+            let path = files
+                .iter()
+                .find(|path| path.to_string_lossy().ends_with(suffix))
+                .unwrap();
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert!(!repository.db_path.exists());
+    }
+
+    #[test]
+    fn backup_retention_counts_standalone_snapshots_not_sidecars() {
+        let (root, repository) = repository();
+        let connection = repository.open_checked().unwrap();
+        for _ in 0..5 {
+            repository
+                .create_backup(&connection, MEETING_STORE_SCHEMA_VERSION)
+                .unwrap();
+        }
+        let files = directory_files_newest_first(&root.path().join("backups")).unwrap();
+        assert_eq!(files.len(), MAX_BACKUPS);
+        for path in files {
+            assert_eq!(path.extension().unwrap(), "sqlite3");
+            let check =
+                Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            migrations::quick_check(&check).unwrap();
+            migrations::validate_schema(&check).unwrap();
+            let journal: String = check
+                .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                .unwrap();
+            assert_eq!(journal, "delete");
+        }
     }
 
     #[test]
