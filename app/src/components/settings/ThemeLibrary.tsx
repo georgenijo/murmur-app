@@ -144,7 +144,7 @@ function ModePreview({
   const preview = (
     <>
       <ThemeOrb tokens={selected.tokens} mode={mode} />
-      <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-on-surface-variant bg-background text-on-surface shadow-sm">
+      <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-(--ui-hairline-strong) bg-background text-on-surface shadow-(--ui-shadow-1)">
         {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
       </span>
     </>
@@ -300,10 +300,10 @@ function CollectionCard({
       data-theme-collection={label}
       data-active={activeNow ? "true" : undefined}
       onClick={handleCardClick}
-      className={`h-[94px] w-52 max-w-full cursor-pointer overflow-hidden rounded-xl border bg-surface-container-lowest transition-colors hover:bg-surface-container-low ${
+      className={`h-[94px] w-52 max-w-full cursor-pointer overflow-hidden rounded-(--ui-radius-card) border bg-surface-container-lowest shadow-(--ui-shadow-1) transition-colors hover:bg-surface-container-low ${
         activeNow
           ? 'border-primary ring-2 ring-primary/35'
-          : 'border-on-surface-variant/70'
+          : 'border-(--ui-hairline-strong)'
       }`}
     >
       <div
@@ -466,7 +466,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 pt-1">
         <h2 id="themes-heading" className="text-sm font-medium text-on-surface">Themes</h2>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onCustomize} className="inline-flex h-7 items-center gap-1 rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest px-2.5 text-xs font-medium text-on-surface hover:bg-surface-container">
+          <button type="button" onClick={onCustomize} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface">
             <span aria-hidden="true">＋</span> Create theme
           </button>
           <div
@@ -484,12 +484,12 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
               onKeyDown={(event) => {
                 if (event.key === 'Escape') setImportMenuOpen(false);
               }}
-              className="inline-flex h-7 items-center gap-1 rounded-lg border border-on-surface-variant/70 bg-surface-container-lowest px-2.5 text-xs font-medium text-on-surface hover:bg-surface-container"
+              className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface"
             >
               <DownloadIcon /> Import theme
             </button>
             {importMenuOpen && (
-              <div role="menu" className="absolute right-0 top-9 z-40 w-44 overflow-hidden rounded-lg border border-on-surface-variant bg-surface-container-lowest p-1 shadow-lg">
+              <div role="menu" className="dialog-popover absolute right-0 top-9 z-40 w-44 overflow-hidden p-1">
                 <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onImport(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-on-surface hover:bg-surface-container">
                   <DownloadIcon /> Import file
                 </button>
@@ -546,12 +546,12 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
       </div>
 
       {removeTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-5 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveTarget(null); }}>
-          <div role="dialog" aria-modal="true" aria-labelledby="remove-theme-title" className="w-full max-w-sm rounded-2xl border border-on-surface-variant bg-surface p-5 shadow-2xl">
+        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveTarget(null); }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="remove-theme-title" className="dialog-popover w-full max-w-sm p-5">
             <h2 id="remove-theme-title" className="text-base font-semibold text-on-surface">Remove {removeTarget.label}?</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Every imported variant in this collection will be removed. You can import it again later.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setRemoveTarget(null)} className="rounded-lg border border-on-surface-variant px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container">Cancel</button>
+              <button type="button" onClick={() => setRemoveTarget(null)} className="settings-quiet-btn px-3 py-1.5 text-xs text-on-surface">Cancel</button>
               <button type="button" onClick={() => { const target = removeTarget; setRemoveTarget(null); void appearance.library.remove(target.ids).catch((cause) => setError(String(cause))); }} className="rounded-lg border border-error bg-error/10 px-3 py-1.5 text-xs font-medium text-error">Remove</button>
             </div>
           </div>

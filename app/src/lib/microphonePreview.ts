@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { SmartAutoMicrophoneRequest } from './settings';
 
 export type MicrophonePreviewPhase = 'idle' | 'connecting' | 'active' | 'stopping' | 'error';
 export type MicrophoneSignalClassification =
@@ -45,8 +46,13 @@ export function getMicrophonePreviewStatus(): Promise<MicrophonePreviewStatus> {
 export function startMicrophonePreview(
   deviceId: string,
   vadSensitivity: number,
+  smartAuto: SmartAutoMicrophoneRequest | null = null,
 ): Promise<MicrophonePreviewStatus> {
-  return invoke('start_microphone_preview', { deviceId, vadSensitivity });
+  return invoke('start_microphone_preview', {
+    deviceId,
+    vadSensitivity,
+    ...(smartAuto ? { smartAuto } : {}),
+  });
 }
 
 export function updateMicrophonePreviewVadSensitivity(

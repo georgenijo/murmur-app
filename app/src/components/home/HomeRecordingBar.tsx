@@ -72,7 +72,7 @@ export function HomeRecordingBar({
           : 'Start Recording';
 
   return (
-    <DashboardSurface as="section" variant="outlined" padding="compact" ariaLabel="Dictation controls">
+    <DashboardSurface as="section" variant="flat" ariaLabel="Dictation controls">
       <div className="home-recording-bar">
       <DashboardAction
         testId="home-record-button"
@@ -101,15 +101,11 @@ export function HomeRecordingBar({
       </div>
 
       <DashboardAction
-        variant="secondary"
+        variant="quiet"
         onActivate={onTranscribeFile}
         disabled={isCapturing || busy || meetingBusy}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M7 3h7l4 4v14H7V3Z" />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M14 3v5h5M12 17V11m0 0-3 3m3-3 3 3" />
-        </svg>
-        Transcribe File
+        Transcribe file…
       </DashboardAction>
       </div>
     </DashboardSurface>

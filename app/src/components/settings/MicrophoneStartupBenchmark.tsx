@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
+import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import {
   MICROPHONE_STARTUP_BENCHMARK_CYCLES,
   addMicrophoneStartupReport,
@@ -82,7 +82,7 @@ export function MicrophoneStartupBenchmark({
 }: {
   status: DictationStatus;
   deviceId: string;
-  audioInventory: AudioInputInventoryV1 | null;
+  audioInventory: AudioInputInventoryV2 | null;
   modelBenchmarkRunning: boolean;
   fileTranscribing: boolean;
   corpusBusy: boolean;
@@ -336,7 +336,7 @@ export function MicrophoneStartupBenchmark({
       {error && <p role="alert" className="text-xs text-error break-words">{error}</p>}
 
       {report && !running && summary && (
-        <div className="space-y-3 rounded-xl border border-outline-variant/30 bg-surface-container-low p-3">
+        <div className="settings-card space-y-3 p-3">
           <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:gap-3">
             <div>
               <h4 className="text-xs font-semibold text-on-surface">Startup results</h4>
@@ -402,7 +402,7 @@ export function MicrophoneStartupBenchmark({
                 id="microphone-startup-run"
                 value={selectedAt ?? ''}
                 onChange={(event) => setSelectedAt(event.target.value)}
-                className="min-w-0 flex-1 rounded-md border border-on-surface-variant bg-surface-container-lowest px-2 py-1.5 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-1.5 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
               >
                 {reports.map((item) => (
                   <option key={item.startedAt} value={item.startedAt}>

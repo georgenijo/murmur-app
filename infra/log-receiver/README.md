@@ -20,7 +20,7 @@ of truth and redeploy from it.
 
 | File | Deploys to | Purpose |
 |---|---|---|
-| `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, bundle, dashboard |
+| `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, bundle, explicit private capture, dashboard |
 | `event_store.py` | `/home/george/event_store.py` | stdlib-only SQLite migrations, transactional query projection, backfill/reconciliation, integrity, backup, and restore commands |
 | `murmur-logs.service` | `/etc/systemd/system/` | runs the receiver as `george`, restart-always |
 | `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
@@ -28,7 +28,7 @@ of truth and redeploy from it.
 | `reliability_slo.py` | `/home/george/reliability_slo.py` | aggregate-only complete-week evaluator for the versioned dictation SLO contract |
 | `murmur-capture-watch.service` | `/etc/systemd/system/` | one-shot capture regression analysis |
 | `murmur-capture-watch.timer` | `/etc/systemd/system/` | runs the watch hourly with a randomized delay |
-| `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/bundle`, `/murmur/healthz` |
+| `nginx-murmur-ingest-opti.conf` | `/etc/nginx/sites-available/murmur-ingest` (+ symlink in sites-enabled; default site removed) | local-only proxy on `127.0.0.1:8601` for `/murmur/ingest`, `/murmur/state`, `/murmur/bundle`, `/murmur/private-capture`, `/murmur/healthz` |
 | `cloudflared-config.yml` | `/etc/cloudflared/config.yml` | tunnel `opti-murmur`: routes `murmur.georgenijo.com` → `:8600` (dashboard) and `georgenijo.com` → `:8601` (nginx path rewrites) |
 
 ## Tunnel and DNS

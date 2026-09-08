@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import {
   formatMeetingTimestamp,
+  meetingSegmentDisplayLabel,
   type EditableReviewDocument,
   type MeetingReviewDocumentV1,
   type MeetingReviewExportFormat,
   type MeetingSegment,
+  type MeetingSpeakerLabels,
+  type RemoteSpeakerLabel,
   type ReviewEditBase,
 } from '../../lib/meetings';
 
@@ -14,6 +17,10 @@ interface MeetingReviewWorkspaceProps {
   segments: MeetingSegment[];
   captureBusy: boolean;
   onNotice: (message: string) => void;
+}
+
+interface WorkspaceActivation {
+  readonly sessionId: string;
 }
 
 const editable = (document: MeetingReviewDocumentV1): EditableReviewDocument => ({
@@ -37,7 +44,7 @@ function SourceLinks({ label, ids, onActivate }: {
           aria-controls={`meeting-segment-${id}`}
           aria-label={`${label} source ${index + 1} of ${ids.length}, transcript segment ${id}`}
           onClick={() => onActivate(id)}
-          className="rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold text-primary hover:brightness-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+          className="rounded-[var(--ui-radius-control)] bg-surface-container-high px-1.5 py-0.5 text-[10px] font-semibold text-primary hover:brightness-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
         >
           #{id}
         </button>
@@ -46,18 +53,19 @@ function SourceLinks({ label, ids, onActivate }: {
   );
 }
 
-function TranscriptRow({ segment, labels }: {
+function TranscriptRow({ segment, labels, remoteSpeakers }: {
   segment: MeetingSegment;
   labels: { me: string; them: string };
+  remoteSpeakers: RemoteSpeakerLabel[];
 }) {
   const canonical = segment.speaker === 'me' ? 'Me' : 'Them';
-  const display = segment.speaker === 'me' ? labels.me : labels.them;
+  const display = meetingSegmentDisplayLabel(segment, labels, remoteSpeakers);
   return (
     <article
       id={`meeting-segment-${segment.id}`}
       tabIndex={-1}
       aria-label={`${canonical} channel, ${display}, at ${formatMeetingTimestamp(segment.startMs)}`}
-      className="grid scroll-m-20 grid-cols-[3.25rem_7rem_minmax(0,1fr)] gap-2 border-b border-outline-variant/10 py-2 text-sm last:border-0 focus-visible:rounded-lg focus-visible:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+      className="grid scroll-m-20 grid-cols-[3.25rem_7rem_minmax(0,1fr)] gap-2 border-b border-[var(--ui-hairline)] py-2 text-sm last:border-0 focus-visible:rounded-[var(--ui-radius-control)] focus-visible:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
     >
       <span className="font-mono text-[11px] tabular-nums text-on-surface-variant">{formatMeetingTimestamp(segment.startMs)}</span>
       <span className={`truncate text-xs font-bold ${segment.speaker === 'me' ? 'text-primary' : 'text-success'}`} title={`${display} (${canonical})`}>
@@ -72,22 +80,48 @@ function TranscriptRow({ segment, labels }: {
 
 export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNotice }: MeetingReviewWorkspaceProps) {
   const detail = meetings.detail!;
+  const activeWorkspace = useRef<WorkspaceActivation | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditableReviewDocument | null>(null);
-  const [labels, setLabels] = useState(detail.labels);
+  const [labelDrafts, setLabelDrafts] = useState<Partial<MeetingSpeakerLabels>>({});
+  const [remoteSpeakerDrafts, setRemoteSpeakerDrafts] = useState<Partial<Record<number, string>>>({});
   const [format, setFormat] = useState<MeetingReviewExportFormat>('markdown');
   const [restoreConfirm, setRestoreConfirm] = useState(false);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
   const summaryBusy = summaryStatus?.phase === 'running' || summaryStatus?.phase === 'cancelling';
   const activeDocument = detail.activeDocument;
+  const labels = {
+    me: labelDrafts.me ?? detail.labels.me,
+    them: labelDrafts.them ?? detail.labels.them,
+  };
+  const remoteSpeakers = detail.remoteSpeakers.map((speaker) => ({
+    ...speaker,
+    label: remoteSpeakerDrafts[speaker.speakerId] ?? speaker.label,
+  }));
   const sourceById = useMemo(() => new Map(segments.map((segment) => [segment.id, segment])), [segments]);
 
   useEffect(() => {
-    setLabels(detail.labels);
     setEditing(false);
     setDraft(null);
     setRestoreConfirm(false);
   }, [detail.session.id, detail.review?.revision, detail.generated?.revision]);
+
+  useEffect(() => {
+    setLabelDrafts({});
+    setRemoteSpeakerDrafts({});
+  }, [detail.session.id]);
+
+  useLayoutEffect(() => {
+    const activation: WorkspaceActivation = { sessionId: detail.session.id };
+    activeWorkspace.current = activation;
+    return () => {
+      if (activeWorkspace.current === activation) activeWorkspace.current = null;
+    };
+  }, [detail.session.id]);
+
+  const isCurrentWorkspace = (activation: WorkspaceActivation | null) => (
+    activation !== null && activeWorkspace.current === activation
+  );
 
   const jumpToSource = (id: number) => {
     const target = window.document.getElementById(`meeting-segment-${id}`);
@@ -111,30 +145,66 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
   };
 
   const saveLabels = async () => {
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    const submitted = labels;
     const saved = await meetings.saveReview({
-      sessionId: detail.session.id,
+      sessionId,
       expectedReviewRevision: detail.review?.revision ?? null,
       base: { kind: 'labels_only' },
-      labels,
+      labels: submitted,
       document: null,
     });
-    if (saved) onNotice('Speaker labels saved on this Mac.');
+    if (saved && isCurrentWorkspace(activation)) {
+      setLabelDrafts((current) => {
+        const next = { ...current };
+        if (current.me === submitted.me) delete next.me;
+        if (current.them === submitted.them) delete next.them;
+        return next;
+      });
+      onNotice('Speaker labels saved on this Mac.');
+    }
+  };
+
+  const saveRemoteSpeaker = async (speaker: RemoteSpeakerLabel) => {
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    if (
+      await meetings.renameRemoteSpeaker(sessionId, speaker.speakerId, speaker.label)
+      && isCurrentWorkspace(activation)
+    ) {
+      setRemoteSpeakerDrafts((current) => {
+        if (current[speaker.speakerId] !== speaker.label) return current;
+        const next = { ...current };
+        delete next[speaker.speakerId];
+        return next;
+      });
+      onNotice(`${speaker.label.trim()} saved for this meeting.`);
+    }
   };
 
   const saveEdits = async () => {
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
     const base: ReviewEditBase = detail.activeOrigin === 'reviewed' && detail.review
       ? { kind: 'review', reviewRevision: detail.review.revision }
       : detail.generated
         ? { kind: 'generated', generatedRevision: detail.generated.revision }
         : { kind: 'labels_only' };
     const saved = await meetings.saveReview({
-      sessionId: detail.session.id,
+      sessionId,
       expectedReviewRevision: detail.review?.revision ?? null,
       base,
       labels,
       document: draft ?? (activeDocument ? editable(activeDocument) : null),
     });
-    if (saved) {
+    if (saved && isCurrentWorkspace(activation)) {
+      setLabelDrafts((current) => {
+        const next = { ...current };
+        if (current.me === labels.me) delete next.me;
+        if (current.them === labels.them) delete next.them;
+        return next;
+      });
       setEditing(false);
       onNotice('Meeting review saved on this Mac.');
     }
@@ -147,18 +217,29 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
       return;
     }
     setRestoreConfirm(false);
-    if (await meetings.restoreReview(detail.session.id, detail.generated.revision, detail.review?.revision ?? null)) {
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    if (
+      await meetings.restoreReview(sessionId, detail.generated.revision, detail.review?.revision ?? null)
+      && isCurrentWorkspace(activation)
+    ) {
       onNotice('Review replaced with the generated draft. Raw transcript evidence was unchanged.');
     }
   };
 
   const copy = async () => {
-    if (await meetings.copy(detail.session.id, format)) onNotice(`Meeting review copied as ${format}.`);
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    if (await meetings.copy(sessionId, format) && isCurrentWorkspace(activation)) {
+      onNotice(`Meeting review copied as ${format}.`);
+    }
   };
 
   const exportReview = async () => {
-    const path = await meetings.exportReview(detail.session.id, detail.session.startedAtMs, format);
-    if (path) onNotice(`Meeting review exported as ${format}.`);
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    const path = await meetings.exportReview(sessionId, detail.session.startedAtMs, format);
+    if (path && isCurrentWorkspace(activation)) onNotice(`Meeting review exported as ${format}.`);
   };
 
   const renderTextItems = (title: string, items: MeetingReviewDocumentV1['decisions']) => (
@@ -173,7 +254,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
       {summaryStatus && summaryStatus.phase !== 'idle' && (
-        <div role="status" className="mb-3 rounded-xl border border-outline-variant/20 bg-surface-container-low p-3 text-xs text-on-surface-variant">
+        <div role="status" className="dialog-card mb-3 p-3 text-xs text-on-surface-variant">
           {summaryBusy
             ? `Generating draft ${summaryStatus.completedChunks} of ${summaryStatus.totalChunks || '…'} · ${formatMeetingTimestamp(summaryStatus.elapsedMs)}`
             : summaryStatus.phase === 'failed'
@@ -186,54 +267,81 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
         </div>
       )}
 
-      <div className="mb-3 flex flex-wrap items-end gap-2 rounded-xl border border-outline-variant/20 bg-surface-container-lowest p-3">
+      <div className="dialog-card mb-3 flex flex-wrap items-end gap-2 p-3">
         <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Me channel
-          <input aria-label="Me speaker label" value={labels.me} maxLength={80} onChange={(event) => setLabels({ ...labels, me: event.target.value })} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-low px-2 py-1.5 text-xs" />
+          <input aria-label="Me speaker label" value={labels.me} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, me: event.target.value }))} className="mt-1 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs" />
         </label>
         <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Them channel
-          <input aria-label="Them speaker label" value={labels.them} maxLength={80} onChange={(event) => setLabels({ ...labels, them: event.target.value })} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-low px-2 py-1.5 text-xs" />
+          <input aria-label="Them speaker label" value={labels.them} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, them: event.target.value }))} className="mt-1 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs" />
         </label>
-        {!editing && <button type="button" onClick={() => void saveLabels()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-primary">Save labels</button>}
+        {!editing && <button type="button" onClick={() => void saveLabels()} className="dialog-pill-btn px-3 py-2 text-xs text-primary">Save labels</button>}
       </div>
 
+      {remoteSpeakers.length > 0 && (
+        <div className="dialog-card mb-3 p-3">
+          <h3 className="text-xs font-semibold text-on-surface">Remote speakers</h3>
+          <p className="mt-1 text-[11px] text-on-surface-variant">Names apply only to this meeting. Uncertain passages remain {labels.them}.</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {remoteSpeakers.map((speaker) => (
+              <label key={speaker.speakerId} className="text-[11px] font-semibold text-on-surface">
+                Speaker {speaker.speakerId}
+                <span className="mt-1 flex gap-2">
+                  <input
+                    aria-label={`Remote speaker ${speaker.speakerId} label`}
+                    value={speaker.label}
+                    maxLength={80}
+                    onChange={(event) => setRemoteSpeakerDrafts((current) => ({
+                      ...current,
+                      [speaker.speakerId]: event.target.value,
+                    }))}
+                    className="min-w-0 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs"
+                  />
+                  <button type="button" onClick={() => void saveRemoteSpeaker(speaker)} className="dialog-pill-btn px-3 py-1.5 text-xs text-primary">Save</button>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button type="button" disabled={captureBusy || summaryBusy} onClick={() => void meetings.summarize(detail.session.id)} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">
+        <button type="button" disabled={captureBusy || summaryBusy} onClick={() => void meetings.summarize(detail.session.id)} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">
           {detail.generated ? 'Regenerate draft' : 'Generate review draft'}
         </button>
-        {summaryBusy && <button type="button" onClick={() => void meetings.cancelSummary()} className="rounded-lg px-3 py-2 text-xs font-semibold text-error">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>}
-        {activeDocument && !editing && <button type="button" onClick={beginEdit} className="rounded-lg border border-outline-variant px-3 py-2 text-xs font-semibold">Edit review</button>}
+        {summaryBusy && <button type="button" onClick={() => void meetings.cancelSummary()} className="rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold text-error">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>}
+        {activeDocument && !editing && <button type="button" onClick={beginEdit} className="dialog-pill-btn px-3 py-2 text-xs">Edit review</button>}
         {detail.review?.document && detail.generated && (
-          <button type="button" aria-label="Replace review with generated draft" onClick={() => void restore()} className={`rounded-lg px-3 py-2 text-xs font-semibold ${restoreConfirm ? 'bg-error-container text-on-error-container' : 'border border-outline-variant'}`}>
+          <button type="button" aria-label="Replace review with generated draft" onClick={() => void restore()} className={`rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold ${restoreConfirm ? 'bg-error-container text-on-error-container' : 'dialog-pill-btn'}`}>
             {restoreConfirm ? 'Confirm replace review' : 'Use generated draft'}
           </button>
         )}
         <label className="ml-auto text-[11px] font-semibold">Format
-          <select aria-label="Meeting review export format" value={format} onChange={(event) => setFormat(event.target.value as MeetingReviewExportFormat)} className="ml-1 rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-1.5 text-xs">
+          <select aria-label="Meeting review export format" value={format} onChange={(event) => setFormat(event.target.value as MeetingReviewExportFormat)} className="ml-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest px-2 py-1.5 text-xs">
             <option value="markdown">Markdown</option><option value="text">Plain text</option><option value="json">JSON</option>
           </select>
         </label>
-        <button type="button" onClick={() => void copy()} className="rounded-lg px-2 py-1.5 text-xs font-semibold text-primary">Copy review</button>
-        <button type="button" onClick={() => void exportReview()} className="rounded-lg px-2 py-1.5 text-xs font-semibold text-primary">Export…</button>
+        <button type="button" onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary">Copy review</button>
+        <button type="button" onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary">Export…</button>
       </div>
 
       {editing && draft ? (
-        <form aria-label="Edit meeting review" aria-busy={false} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="mb-4 space-y-3 rounded-xl border border-primary/25 bg-surface-container-low p-4">
-          <label className="block text-xs font-semibold">Summary<textarea aria-label="Review summary" value={draft.summary.text} onChange={(event) => setDraft({ ...draft, summary: { ...draft.summary, text: event.target.value } })} className="mt-1 min-h-20 w-full rounded-lg border border-outline-variant bg-surface-container-lowest p-2 text-xs" /></label>
-          {(['decisions', 'openQuestions'] as const).map((section) => <fieldset key={section} className="space-y-2"><legend className="text-xs font-semibold">{section === 'decisions' ? 'Decisions' : 'Open questions'}</legend>{draft[section].length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft[section].map((item, index) => <div key={item.key} className="flex gap-2"><textarea aria-label={`${section} ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, [section]: draft[section].map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="min-h-14 flex-1 rounded-lg border border-outline-variant bg-surface-container-lowest p-2 text-xs" /><button type="button" aria-label={`Remove ${section} ${index + 1}`} onClick={() => setDraft({ ...draft, [section]: draft[section].filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>)}
-          <fieldset className="space-y-2"><legend className="text-xs font-semibold">Action items</legend>{draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft.actionItems.map((item, index) => <div key={item.key} className="grid gap-2 rounded-lg bg-surface-container-lowest p-2 sm:grid-cols-[minmax(0,1fr)_8rem_8rem_auto]"><input aria-label={`Action item ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} /><input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} /><input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} /><button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>
-          <div className="flex gap-2"><button type="submit" className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary">Save review</button><button type="button" onClick={() => { setEditing(false); setDraft(null); setLabels(detail.labels); }} className="rounded-lg px-3 py-2 text-xs font-semibold">Cancel</button></div>
+        <form aria-label="Edit meeting review" aria-busy={false} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="mb-4 space-y-3 rounded-[var(--ui-radius-card)] border border-primary/25 bg-surface-container-low p-4">
+          <label className="block text-xs font-semibold">Summary<textarea aria-label="Review summary" value={draft.summary.text} onChange={(event) => setDraft({ ...draft, summary: { ...draft.summary, text: event.target.value } })} className="mt-1 min-h-20 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /></label>
+          {(['decisions', 'openQuestions'] as const).map((section) => <fieldset key={section} className="space-y-2"><legend className="text-xs font-semibold">{section === 'decisions' ? 'Decisions' : 'Open questions'}</legend>{draft[section].length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft[section].map((item, index) => <div key={item.key} className="flex gap-2"><textarea aria-label={`${section} ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, [section]: draft[section].map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="min-h-14 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /><button type="button" aria-label={`Remove ${section} ${index + 1}`} onClick={() => setDraft({ ...draft, [section]: draft[section].filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>)}
+          <fieldset className="space-y-2"><legend className="text-xs font-semibold">Action items</legend>{draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft.actionItems.map((item, index) => <div key={item.key} className="grid gap-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2 sm:grid-cols-[minmax(0,1fr)_8rem_8rem_auto]"><input aria-label={`Action item ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} /><input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} /><input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} /><button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>
+          <div className="flex gap-2"><button type="submit" className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)]">Save review</button><button type="button" onClick={() => { setEditing(false); setDraft(null); setLabelDrafts({}); }} className="rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold">Cancel</button></div>
         </form>
       ) : activeDocument ? (
-        <article className="mb-4 rounded-xl border border-primary/20 bg-surface-container-low p-4">
+        <article className="mb-4 rounded-[var(--ui-radius-card)] border border-primary/25 bg-[var(--ui-tint-accent-subtle)] p-4">
           <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Meeting review</h3><span className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">{detail.activeOrigin === 'reviewed' ? 'Reviewed' : 'Generated draft'}</span></div>
           <p className="mt-2 text-xs leading-relaxed">{activeDocument.summary.text}<SourceLinks label="Summary" ids={activeDocument.summary.sourceSegmentIds} onActivate={jumpToSource} /></p>
           {renderTextItems('Decisions', activeDocument.decisions)}
           <section className="mt-3"><h4 className="text-xs font-semibold">Action items</h4>{activeDocument.actionItems.length === 0 ? <p className="mt-1 text-xs text-on-surface-variant">None recorded.</p> : activeDocument.actionItems.map((item) => <p key={item.key} className="mt-1 text-xs">• {item.text} — {item.owner ?? 'Unknown'} · {item.dueDate ?? 'Unknown'}<SourceLinks label="Action item" ids={item.sourceSegmentIds} onActivate={jumpToSource} /></p>)}</section>
           {renderTextItems('Open questions', activeDocument.openQuestions)}
         </article>
-      ) : <div className="mb-4 rounded-xl border border-dashed border-outline-variant p-5 text-center"><p className="text-sm font-semibold">No review draft yet</p><p className="mt-1 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p></div>}
+      ) : <div className="mb-4 rounded-[var(--ui-radius-card)] border border-dashed border-[var(--ui-hairline-strong)] p-5 text-center"><p className="text-sm font-semibold">No review draft yet</p><p className="mt-1 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p></div>}
 
-      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} />)}</section>
+      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} />)}</section>
     </div>
   );
 }

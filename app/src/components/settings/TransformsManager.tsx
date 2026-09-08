@@ -120,13 +120,13 @@ function TransformEditor({
   };
 
   return (
-    <div className="space-y-3 rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-3">
+    <div className="settings-card space-y-3 p-3">
       <div>
         <label className="mb-1 block text-xs font-medium text-on-surface">Spoken name</label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full rounded-lg border border-on-surface-variant bg-surface px-3 py-2 text-sm text-on-surface"
+          className="w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface"
           placeholder="e.g. meeting notes"
         />
         {shadowWarning && (
@@ -146,7 +146,7 @@ function TransformEditor({
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           rows={4}
-          className="w-full rounded-lg border border-on-surface-variant bg-surface px-3 py-2 text-sm text-on-surface"
+          className="w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface"
           placeholder="Rewrite as concise meeting notes with action items…"
         />
         {overInstructionLimit && (
@@ -166,7 +166,7 @@ function TransformEditor({
           type="button"
           disabled={saving || overInstructionLimit}
           onClick={() => void save()}
-          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
+          className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
@@ -188,6 +188,7 @@ export function TransformsManager({ active }: Props) {
   const { entries, loading, error, refresh } = useKnowledge(TRANSFORM_LIST_REQUEST, active);
   const [editing, setEditing] = useState<KnowledgeEntry | null | 'new'>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   return (
     <div className="space-y-3">
@@ -201,7 +202,7 @@ export function TransformsManager({ active }: Props) {
         <button
           type="button"
           onClick={() => setEditing('new')}
-          className="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary"
+          className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary"
         >
           Add
         </button>
@@ -269,13 +270,18 @@ export function TransformsManager({ active }: Props) {
                   type="button"
                   className="text-xs text-error underline"
                   onClick={() => {
-                    if (!window.confirm(`Delete transform “${name}”?`)) return;
+                    if (confirmDeleteId !== entry.id) {
+                      setConfirmDeleteId(entry.id);
+                      return;
+                    }
+                    setConfirmDeleteId(null);
                     void deleteKnowledge(entry)
                       .then(() => refresh())
                       .catch((e) => setActionError(String(e)));
                   }}
+                  onBlur={() => setConfirmDeleteId((current) => (current === entry.id ? null : current))}
                 >
-                  Delete
+                  {confirmDeleteId === entry.id ? 'Confirm delete' : 'Delete'}
                 </button>
               </div>
             </li>

@@ -20,8 +20,16 @@ mod commands;
 pub mod coreml_installer;
 mod correct_and_teach;
 mod correction;
+mod correction_shortcut;
 mod delivery_recovery;
+mod diarization_assignment;
+mod diarization_audio;
+mod diarization_model;
 mod dictation_context;
+mod dictation_correction;
+mod dictation_diagnostics;
+#[cfg(test)]
+mod dictation_diagnostics_contract;
 mod dictation_telemetry;
 pub mod evaluation;
 mod file_output;
@@ -36,8 +44,10 @@ mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
 mod meeting_capture;
+pub mod meeting_diarization;
 mod meeting_review;
 mod meeting_store;
+mod microphone_auto;
 mod microphone_preview;
 mod model_artifact;
 mod model_runtime;
@@ -165,6 +175,7 @@ pub(crate) struct State {
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) query_history: query_history::QueryHistoryStore,
+    pub(crate) dictation_diagnostics: dictation_diagnostics::DictationDiagnostics,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
@@ -272,6 +283,7 @@ pub fn run() {
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
             query_history: query_history::QueryHistoryStore::default(),
+            dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
             display_snapshot: Mutex::new(None),
@@ -283,6 +295,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
+            correction_shortcut::set_correction_shortcut,
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
@@ -344,6 +357,7 @@ pub fn run() {
             transform_apply::apply_transform_result,
             transform_apply::undo_transform,
             transform_flow::start_transform_capture,
+            transform_flow::start_dictation_correction,
             transform_flow::finish_transform_instruction,
             transform_flow::retry_transform_instruction,
             transform_flow::approve_transform,
@@ -378,6 +392,9 @@ pub fn run() {
             commands::knowledge::import_knowledge_from_file,
             commands::knowledge::delete_all_knowledge,
             commands::meeting::start_meeting,
+            commands::meeting::rename_meeting_remote_speaker,
+            diarization_model::get_diarization_model_status,
+            diarization_model::remove_diarization_model,
             commands::meeting::stop_meeting,
             commands::meeting::get_meeting_status,
             commands::meeting::get_system_audio_permission_status,
@@ -420,6 +437,13 @@ pub fn run() {
             commands::performance::recover_performance_store,
             commands::performance::clear_performance_diagnostics,
             commands::performance::show_diagnostics_window,
+            commands::dictation_diagnostics::arm_next_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::disarm_next_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::get_dictation_diagnostic_capture_status,
+            commands::dictation_diagnostics::list_dictation_diagnostic_captures,
+            commands::dictation_diagnostics::get_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::delete_dictation_diagnostic_capture,
+            commands::dictation_diagnostics::upload_dictation_diagnostic_capture,
             commands::transform_diagnostics::arm_next_transform_diagnostic_capture,
             commands::transform_diagnostics::get_transform_diagnostic_capture_status,
             commands::transform_diagnostics::list_transform_attempts,
@@ -452,6 +476,7 @@ pub fn run() {
             commands::overlay::set_overlay_vertical_offset,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
+            commands::dictation_preview::show_dictation_preview,
             commands::transform_popover::get_transform_popover_geometry,
             commands::transform_popover::show_transform_popover,
             commands::transform_popover::hide_transform_popover,
@@ -553,6 +578,18 @@ pub fn run() {
                     error
                 );
             }
+            if app
+                .state::<State>()
+                .dictation_diagnostics
+                .initialize(performance_root.join("dictation-captures"))
+                .is_err()
+            {
+                tracing::warn!(
+                    target: "system",
+                    diagnostics_available = false,
+                    "dictation diagnostic capture store unavailable"
+                );
+            }
 
             let knowledge_root = app.path().app_data_dir()?.join("knowledge");
             let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
@@ -570,6 +607,7 @@ pub fn run() {
             );
 
             let meeting_root = app.path().app_data_dir()?.join("meetings");
+            diarization_audio::sweep_abandoned(&meeting_root);
             let meeting_status = app
                 .state::<State>()
                 .meeting_store
@@ -776,6 +814,7 @@ pub fn run() {
             // the app (all no-op when no child is running).
             #[cfg(target_os = "macos")]
             if let Some(state) = _app_handle.try_state::<State>() {
+                let _ = meeting_diarization::cancel_all();
                 state.meetings.shutdown(_app_handle);
                 state.transform_runtime.shutdown();
                 state.query.shutdown();

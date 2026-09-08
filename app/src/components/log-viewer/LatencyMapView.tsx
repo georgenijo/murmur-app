@@ -102,7 +102,7 @@ export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps
                 value={selectedBuild}
                 onChange={event => setSelectedBuild(event.target.value)}
                 aria-label="UI latency build"
-                className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2.5 py-1.5 text-xs text-on-surface outline-none focus:border-primary"
+                className="rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 text-xs text-on-surface outline-none focus:border-primary focus-visible:ring-2 focus-visible:ring-primary"
               >
                 {!builds.includes(currentBuild) && <option value={currentBuild}>{currentBuild}</option>}
                 {builds.map(build => <option key={build} value={build}>{build}</option>)}

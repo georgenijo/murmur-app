@@ -23,8 +23,8 @@ import { SettingsSurfaceActiveContext } from './SettingsSurfaceContext';
 
 const MemoizedMicrophoneInputTest = memo(MicrophoneInputTest);
 const devices = [
-  { id: 'built-in', name: 'Built-in Microphone' },
-  { id: 'usb', name: 'USB Microphone' },
+  { id: 'built-in', name: 'Built-in Microphone', kind: 'builtIn' as const, connected: true, hasInput: true },
+  { id: 'usb', name: 'USB Microphone', kind: 'external' as const, connected: true, hasInput: true },
 ];
 
 const idle: MicrophonePreviewStatus = {

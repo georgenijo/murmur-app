@@ -31,7 +31,7 @@ import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
 import { CorpusRecorder } from './CorpusRecorder';
 import { MicrophoneStartupBenchmark } from './MicrophoneStartupBenchmark';
-import type { AudioInputInventoryV1 } from '../../lib/audioDevices';
+import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
@@ -147,7 +147,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
   status: DictationStatus;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
-  audioInventory: AudioInputInventoryV1 | null;
+  audioInventory: AudioInputInventoryV2 | null;
 }) {
   const [models, setModels] = useState<BenchmarkModel[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -536,7 +536,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             type="button"
             onClick={handleRun}
             disabled={!canRun}
-            className="w-full px-4 py-2.5 text-sm font-semibold rounded-lg bg-primary text-on-primary hover:bg-primary-dim disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full px-4 py-2.5 text-sm font-semibold rounded-(--ui-radius-control) bg-primary shadow-(--ui-shadow-accent) text-on-primary hover:bg-primary-dim disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal' ? 'Run Personal Benchmark' : 'Run Benchmark'}
           </button>
@@ -640,7 +640,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
               id="benchmark-run"
               value={dashboard.selectedAt ?? ''}
               onChange={(event) => setDashboard((current) => ({ ...current, selectedAt: event.target.value }))}
-              className="min-w-0 flex-1 px-2 py-1.5 text-xs rounded-md border border-on-surface-variant bg-surface-container-lowest text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+              className="min-w-0 flex-1 px-2 py-1.5 text-xs rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
             >
               {dashboard.reports.map((item) => (
                 <option key={item.createdAt} value={item.createdAt}>

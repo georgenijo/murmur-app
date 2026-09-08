@@ -8,9 +8,10 @@ use crate::state::WHISPER_SAMPLE_RATE;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
     read_production_frame, valid_input_resolution_evidence, write_production_control,
-    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, FailureCode, ProductionFrame,
+    CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationBypassReason,
+    EchoCancellationMode, EchoCancellationStatus, FailureCode, ProductionFrame,
     ProductionHelperMessage, ProductionHostMessage, ProductionPcm, SessionNonce, SetupTransition,
-    SystemAudioPermissionStatus,
+    SystemAudioPermissionStatus, MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -90,6 +91,74 @@ pub enum MeetingRuntimePhase {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MeetingEchoCancellationRuntime {
+    #[default]
+    Off,
+    Starting,
+    Active,
+    Recovering {
+        reason: EchoCancellationBypassReason,
+        episode: u64,
+        attempt: u8,
+        max_attempts: u8,
+    },
+    Bypassed {
+        reason: EchoCancellationBypassReason,
+    },
+}
+
+impl MeetingEchoCancellationRuntime {
+    fn event_state(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Starting => "starting",
+            Self::Active => "active",
+            Self::Recovering { .. } => "recovering",
+            Self::Bypassed { .. } => "bypassed",
+        }
+    }
+
+    fn event_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Recovering { reason, .. } | Self::Bypassed { reason } => match reason {
+                EchoCancellationBypassReason::InitializationFailed => Some("initialization_failed"),
+                EchoCancellationBypassReason::UnsupportedFormat => Some("unsupported_format"),
+                EchoCancellationBypassReason::RenderDiscontinuity => Some("render_discontinuity"),
+                EchoCancellationBypassReason::ProcessorFailed => Some("processor_failed"),
+                EchoCancellationBypassReason::ProcessingBacklog => Some("processing_backlog"),
+            },
+            Self::Off | Self::Starting | Self::Active => None,
+        }
+    }
+
+    fn recovery_attempt(&self) -> u8 {
+        match self {
+            Self::Recovering { attempt, .. } => *attempt,
+            Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
+        }
+    }
+
+    fn recovery_episode(&self) -> u64 {
+        match self {
+            Self::Recovering { episode, .. } => *episode,
+            Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
+        }
+    }
+
+    fn recovery_max_attempts(&self) -> u8 {
+        match self {
+            Self::Recovering { max_attempts, .. } => *max_attempts,
+            Self::Off | Self::Starting | Self::Active | Self::Bypassed { .. } => 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingRuntimeStatus {
@@ -99,6 +168,7 @@ pub struct MeetingRuntimeStatus {
     pub elapsed_ms: u64,
     pub microphone_active: bool,
     pub system_audio_active: bool,
+    pub echo_cancellation: MeetingEchoCancellationRuntime,
     pub error_code: Option<String>,
 }
 
@@ -111,6 +181,7 @@ impl Default for MeetingRuntimeStatus {
             elapsed_ms: 0,
             microphone_active: false,
             system_audio_active: false,
+            echo_cancellation: MeetingEchoCancellationRuntime::Off,
             error_code: None,
         }
     }
@@ -122,6 +193,8 @@ pub struct MeetingCaptureConfig {
     pub session_id: String,
     pub vad_sensitivity: u32,
     pub device_id: Option<String>,
+    pub echo_cancellation: EchoCancellationMode,
+    pub diarization: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +292,10 @@ impl MeetingCoordinator {
                 generation: config.generation,
                 session_id: Some(config.session_id.clone()),
                 phase: MeetingRuntimePhase::Starting,
+                echo_cancellation: match config.echo_cancellation {
+                    EchoCancellationMode::Disabled => MeetingEchoCancellationRuntime::Off,
+                    EchoCancellationMode::Enabled => MeetingEchoCancellationRuntime::Starting,
+                },
                 ..MeetingRuntimeStatus::default()
             };
             inner.active = Some(ActiveMeeting {
@@ -259,7 +336,7 @@ impl MeetingCoordinator {
                     ))
                 });
                 let (session_status, error_code) = match &result {
-                    Ok(()) => (MeetingSessionStatus::Complete, None),
+                    Ok(_) => (MeetingSessionStatus::Complete, None),
                     Err(error) => (MeetingSessionStatus::Failed, Some(error.code)),
                 };
                 let _ = repository_for_thread.finish_session(
@@ -287,6 +364,15 @@ impl MeetingCoordinator {
                     config_for_thread.generation,
                     result.as_ref().err(),
                 );
+                if let Ok(Some(audio)) = result {
+                    crate::meeting_diarization::schedule(
+                        app_for_thread.clone(),
+                        repository_for_thread.clone(),
+                        config_for_thread.session_id.clone(),
+                        config_for_thread.generation,
+                        audio,
+                    );
+                }
                 completion.finish();
             });
         if spawned.is_err() {
@@ -428,6 +514,74 @@ impl MeetingCoordinator {
         publish_status(app, &status);
     }
 
+    fn update_echo_cancellation(
+        &self,
+        app: &tauri::AppHandle,
+        generation: u64,
+        value: EchoCancellationStatus,
+    ) {
+        let (status, previous) = {
+            let mut inner = self.inner.lock_or_recover();
+            if inner
+                .active
+                .as_ref()
+                .is_none_or(|active| active.generation != generation)
+            {
+                return;
+            }
+            let previous = inner.status.echo_cancellation;
+            inner.status.echo_cancellation = match value {
+                EchoCancellationStatus::Disabled => MeetingEchoCancellationRuntime::Off,
+                EchoCancellationStatus::Active => MeetingEchoCancellationRuntime::Active,
+                EchoCancellationStatus::Recovering {
+                    reason,
+                    episode,
+                    attempt,
+                    max_attempts,
+                } => MeetingEchoCancellationRuntime::Recovering {
+                    reason,
+                    episode,
+                    attempt,
+                    max_attempts,
+                },
+                EchoCancellationStatus::Bypassed { reason } => {
+                    MeetingEchoCancellationRuntime::Bypassed { reason }
+                }
+            };
+            (inner.status.clone(), previous)
+        };
+        let reason = status
+            .echo_cancellation
+            .event_reason()
+            .or_else(|| previous.event_reason())
+            .unwrap_or("none");
+        let recovery_attempt = status
+            .echo_cancellation
+            .recovery_attempt()
+            .max(previous.recovery_attempt());
+        let recovery_episode = status
+            .echo_cancellation
+            .recovery_episode()
+            .max(previous.recovery_episode());
+        let recovery_max_attempts = status
+            .echo_cancellation
+            .recovery_max_attempts()
+            .max(previous.recovery_max_attempts());
+        tracing::info!(
+            target: "meeting",
+            event_code = "meeting.echo_cancellation_state_changed",
+            generation,
+            from = previous.event_state(),
+            to = status.echo_cancellation.event_state(),
+            reason,
+            recovery_episode,
+            recovery_attempt = u64::from(recovery_attempt),
+            recovery_max_attempts = u64::from(recovery_max_attempts),
+            "meeting echo cancellation state changed"
+        );
+        publish_status(app, &status);
+    }
+
     fn finish(&self, app: &tauri::AppHandle, generation: u64, error: Option<&MeetingError>) {
         let status = {
             let mut inner = self.inner.lock_or_recover();
@@ -455,6 +609,7 @@ impl MeetingCoordinator {
             if error.is_none() {
                 inner.status.session_id = None;
                 inner.status.elapsed_ms = 0;
+                inner.status.echo_cancellation = MeetingEchoCancellationRuntime::Off;
             }
             inner.status.error_code = error.map(|error| error.code.to_string());
             inner.status.clone()
@@ -526,7 +681,7 @@ fn spawn_worker(
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v7", capture_id_text.as_str(), nonce_hex],
+        &["--production-v9", capture_id_text.as_str(), nonce_hex],
         &[],
     )
     .map_err(|_| {
@@ -747,6 +902,95 @@ struct ChannelSequence {
     sample_rate: Option<u32>,
 }
 
+struct AecProtocolTracker {
+    requested: EchoCancellationMode,
+    observed: Option<EchoCancellationStatus>,
+    recovery_episode: u64,
+    recovery_attempts: u8,
+}
+
+impl AecProtocolTracker {
+    fn new(requested: EchoCancellationMode) -> Self {
+        Self {
+            requested,
+            observed: None,
+            recovery_episode: 0,
+            recovery_attempts: 0,
+        }
+    }
+
+    fn observe(&mut self, status: EchoCancellationStatus) -> bool {
+        let valid = matches!(
+            (self.requested, self.observed, status),
+            (
+                EchoCancellationMode::Disabled,
+                None,
+                EchoCancellationStatus::Disabled
+            ) | (
+                EchoCancellationMode::Enabled,
+                None,
+                EchoCancellationStatus::Active | EchoCancellationStatus::Bypassed { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Active),
+                EchoCancellationStatus::Bypassed { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Active),
+                EchoCancellationStatus::Recovering { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Recovering { .. }),
+                EchoCancellationStatus::Active | EchoCancellationStatus::Bypassed { .. },
+            ) | (
+                EchoCancellationMode::Enabled,
+                Some(EchoCancellationStatus::Recovering { .. }),
+                EchoCancellationStatus::Recovering { .. },
+            )
+        );
+        if !valid {
+            return false;
+        }
+        if let EchoCancellationStatus::Recovering {
+            reason,
+            episode,
+            attempt,
+            max_attempts,
+        } = status
+        {
+            let previous_reason = match self.observed {
+                Some(EchoCancellationStatus::Recovering { reason, .. }) => Some(reason),
+                _ => None,
+            };
+            let continues_episode = episode == self.recovery_episode
+                && attempt == self.recovery_attempts.saturating_add(1);
+            let starts_episode = matches!(self.observed, Some(EchoCancellationStatus::Active))
+                && episode == self.recovery_episode.saturating_add(1)
+                && attempt == 1;
+            if !(continues_episode || starts_episode)
+                || attempt > max_attempts
+                || max_attempts != MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS
+                || previous_reason.is_some_and(|previous| previous != reason)
+                || !matches!(
+                    reason,
+                    EchoCancellationBypassReason::RenderDiscontinuity
+                        | EchoCancellationBypassReason::ProcessingBacklog
+                )
+            {
+                return false;
+            }
+            self.recovery_episode = episode;
+            self.recovery_attempts = attempt;
+        }
+        self.observed = Some(status);
+        true
+    }
+
+    fn permits_microphone_pcm(&self) -> bool {
+        self.observed.is_some()
+    }
+}
+
 #[derive(Default)]
 struct SetupWatchdog {
     pending: Option<(CaptureChannel, CaptureSetupStep, Instant)>,
@@ -960,7 +1204,7 @@ fn run_capture_session(
     config: &MeetingCaptureConfig,
     command_receiver: Receiver<MeetingCommand>,
     coordinator: &MeetingCoordinator,
-) -> Result<(), MeetingError> {
+) -> Result<Option<crate::diarization_audio::RemoteAudio>, MeetingError> {
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) = spawn_worker(capture_id, &nonce_hex)?;
     let receiver = spawn_reader(output, capture_id, nonce);
@@ -1029,6 +1273,7 @@ fn run_capture_session(
         &ProductionHostMessage::StartMeeting {
             device_id: config.device_id.clone(),
             backend: microphone_backend,
+            echo_cancellation: config.echo_cancellation,
         },
     )
     .map_err(|_| MeetingError::new("protocol_error", "Meeting capture failed to start."))?;
@@ -1040,6 +1285,7 @@ fn run_capture_session(
     let mut system_sequence = ChannelSequence::default();
     let mut setup_watchdog = SetupWatchdog::default();
     let mut input_resolution = MeetingInputResolutionTracker::default();
+    let mut aec_protocol = AecProtocolTracker::new(config.echo_cancellation);
     let mut stopping = false;
     let mut stop_requested_at = None;
     let mut terminal_error = None;
@@ -1113,7 +1359,7 @@ fn run_capture_session(
                 );
                 break;
             }
-            Ok(Ok(())) | Err(TryRecvError::Disconnected) => {
+            Ok(Ok(_)) | Err(TryRecvError::Disconnected) => {
                 terminal_error = Some(MeetingError::new(
                     "segmenter_unavailable",
                     "The meeting segmenter stopped unexpectedly.",
@@ -1135,6 +1381,15 @@ fn run_capture_session(
                     terminal_error = Some(MeetingError::new(
                         "protocol_error",
                         "The meeting capture worker returned microphone audio before completing input resolution.",
+                    ));
+                    break;
+                }
+                if pcm.channel == CaptureChannel::Microphone
+                    && !aec_protocol.permits_microphone_pcm()
+                {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned microphone audio before reporting echo-cancellation state.",
                     ));
                     break;
                 }
@@ -1166,6 +1421,18 @@ fn run_capture_session(
                         break;
                     }
                 }
+            }
+            Ok(WorkerRead::Frame(ProductionFrame::Control(
+                ProductionHelperMessage::MeetingEchoCancellation { status },
+            ))) => {
+                if !aec_protocol.observe(status) {
+                    terminal_error = Some(MeetingError::new(
+                        "protocol_error",
+                        "The meeting capture worker returned an invalid echo-cancellation transition.",
+                    ));
+                    break;
+                }
+                coordinator.update_echo_cancellation(app, config.generation, status);
             }
             Ok(WorkerRead::Frame(ProductionFrame::Control(
                 ProductionHelperMessage::MeetingPhase { phase, channel },
@@ -1594,6 +1861,7 @@ struct ChannelProcessor {
     base_ns: Option<u64>,
     resampler: StreamingResampler,
     chunker: VadChunker,
+    remote_audio: Option<crate::diarization_audio::RemoteAudio>,
 }
 
 impl ChannelProcessor {
@@ -1604,6 +1872,7 @@ impl ChannelProcessor {
             base_ns: None,
             resampler: StreamingResampler::new(),
             chunker: VadChunker::new(vad_sensitivity)?,
+            remote_audio: None,
         })
     }
 
@@ -1617,6 +1886,13 @@ impl ChannelProcessor {
             )
         });
         let samples = self.resampler.push(pcm.sample_rate, &pcm.samples)?;
+        if self
+            .remote_audio
+            .as_mut()
+            .is_some_and(|audio| !audio.append(&samples))
+        {
+            self.remote_audio.take();
+        }
         self.chunker.push(&samples)
     }
 
@@ -1635,9 +1911,12 @@ fn process_pcm_stream(
     config: &MeetingCaptureConfig,
     receiver: Receiver<ProductionPcm>,
     ready_sender: mpsc::SyncSender<()>,
-) -> Result<(), MeetingError> {
+) -> Result<Option<crate::diarization_audio::RemoteAudio>, MeetingError> {
     let mut microphone = ChannelProcessor::new(MeetingSpeaker::Me, config.vad_sensitivity)?;
     let mut system = ChannelProcessor::new(MeetingSpeaker::Them, config.vad_sensitivity)?;
+    if config.diarization {
+        system.remote_audio = crate::diarization_audio::RemoteAudio::create(repository.root());
+    }
     let (wake_sender, wake_receiver) = mpsc::sync_channel(INFERENCE_WAKE_CAPACITY);
     let inference_app = app.clone();
     let inference_repository = repository.clone();
@@ -1683,7 +1962,10 @@ fn process_pcm_stream(
             "The meeting transcription worker stopped unexpectedly.",
         )
     })?;
-    Ok(())
+    Ok(system
+        .remote_audio
+        .take()
+        .and_then(|audio| audio.finish(system.base_ns.unwrap_or_default() / 1_000_000)))
 }
 
 fn persist_chunk(
@@ -1839,6 +2121,7 @@ fn process_pending_segment(
                     id: pending.id,
                     session_id: pending.session_id,
                     speaker: pending.speaker,
+                    remote_speaker_id: None,
                     sequence: pending.sequence,
                     start_ms: pending.start_ms,
                     end_ms: pending.end_ms,
@@ -1905,6 +2188,55 @@ mod tests {
             audio_flowing,
             needs_relaunch: false,
         }
+    }
+
+    #[test]
+    fn aec_protocol_accepts_bounded_recovery_and_return_to_active() {
+        let mut tracker = AecProtocolTracker::new(EchoCancellationMode::Enabled);
+        assert!(tracker.observe(EchoCancellationStatus::Active));
+        assert!(tracker.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            episode: 1,
+            attempt: 1,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+        assert!(tracker.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            episode: 1,
+            attempt: 2,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+        assert!(tracker.observe(EchoCancellationStatus::Active));
+        assert!(tracker.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::ProcessingBacklog,
+            episode: 2,
+            attempt: 1,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+        assert!(tracker.observe(EchoCancellationStatus::Bypassed {
+            reason: EchoCancellationBypassReason::ProcessingBacklog,
+        }));
+    }
+
+    #[test]
+    fn aec_protocol_rejects_unbounded_or_out_of_order_recovery() {
+        let mut skipped = AecProtocolTracker::new(EchoCancellationMode::Enabled);
+        assert!(skipped.observe(EchoCancellationStatus::Active));
+        assert!(!skipped.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::RenderDiscontinuity,
+            episode: 1,
+            attempt: 2,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
+
+        let mut permanent = AecProtocolTracker::new(EchoCancellationMode::Enabled);
+        assert!(permanent.observe(EchoCancellationStatus::Active));
+        assert!(!permanent.observe(EchoCancellationStatus::Recovering {
+            reason: EchoCancellationBypassReason::ProcessorFailed,
+            episode: 1,
+            attempt: 1,
+            max_attempts: MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
+        }));
     }
 
     #[test]
@@ -2202,6 +2534,7 @@ mod tests {
             id: 1,
             session_id: "s".into(),
             speaker: MeetingSpeaker::Them,
+            remote_speaker_id: None,
             sequence: 0,
             start_ms: 62_000,
             end_ms: 63_000,

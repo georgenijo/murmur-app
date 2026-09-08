@@ -24,6 +24,32 @@ acknowledged and discarded. No user setup, UI, or permissions prompt is added.
   or backend UIDs.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
 
+### Explicit one-shot dictation capture
+
+Settings → Diagnostics → Dictation provides a separate exception for a problem
+that cannot be diagnosed from content-free events. The user must confirm an
+arm for the next accepted live dictation. The arm expires after 10 minutes,
+can be revoked until a recording claims it, and is consumed by exactly one
+recording. Imported files and other microphone features cannot claim it.
+
+The completed capture is written outside `events.jsonl` in a 0700 directory as
+one 0600 JSON file. Raw and final text are independently capped at 8 KiB, only
+the three newest captures are kept, and files expire after seven days. The
+normal terminal event remains the exact five-field content-free object it was
+before this feature; when no arm exists, the capture path has no effect on the
+event bytes.
+
+Review is local. Upload requires a second confirmation after the exact content
+is visible. The client makes one in-memory POST to `/murmur/private-capture`;
+it does not add the body to `events.jsonl`, the shipper offset, a retry queue,
+or logs. A failed upload leaves only the existing local copy. The receiver uses
+its receipt time for a seven-day expiry, keeps at most three per install, and
+stores the file separately from raw events and SQLite. Ordinary install pages
+show metadata and a link only. Exact text appears only on a separate no-store
+review page behind Cloudflare Access, where deletion is CSRF-protected and
+durably synced. The public nginx host exposes the exact upload route only, not
+review or deletion.
+
 ## Server-armed hang diagnostics (`hang_diagnostics.rs`)
 
 Dormant on every install by default. The receiver's `/ingest` success reply
@@ -113,6 +139,9 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
                               Access-protected historical dashboard search
 ```
 
+The private one-shot path runs beside this diagram, never through it:
+`local private capture → explicit reviewed POST → private-captures/<id>.json`.
+
 ### Shipper (`app/src-tauri/src/log_shipper.rs`)
 
 - Spawned from `lib.rs` setup; first tick 15s after launch, then every 60s.
@@ -137,6 +166,9 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
   `X-Dev: 1` batches from older builds so their local retry offsets can advance
   without adding development noise to the fleet.
 - `MURMUR_LOG_ENDPOINT=<url>` overrides the endpoint for testing.
+- `MURMUR_PRIVATE_CAPTURE_ENDPOINT=<url>` enables the explicit private upload
+  in a development build. Without that override, development uploads are
+  disabled.
 
 ### Receiver (opti)
 

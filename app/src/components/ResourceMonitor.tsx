@@ -62,7 +62,7 @@ export function ResourceMonitor() {
   return (
     // Semantic CSS vars keep SVG strokes synchronized with every appearance preset.
     <div
-      className="shrink-0 rounded-lg border border-outline-variant/40 bg-surface-container-low overflow-hidden"
+      className="dialog-card shrink-0 overflow-hidden"
       style={{
         '--cpu-stroke': 'var(--murmur-on-surface-variant)',
         '--mem-stroke': 'var(--murmur-warning)',
@@ -73,7 +73,7 @@ export function ResourceMonitor() {
         onClick={toggle}
         className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-surface-container transition-colors"
       >
-        <span className="text-xs font-medium text-on-surface-variant uppercase tracking-wider">
+        <span className="dialog-eyebrow text-on-surface-variant">
           Resources
         </span>
         <div className="flex items-center gap-3">

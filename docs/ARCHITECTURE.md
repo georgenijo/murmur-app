@@ -83,8 +83,8 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 explicit Start Meeting
     |
-signed murmur-capture-worker --production-v7
-    |-- microphone AUHAL callback --> preallocated SPSC ring --> Me frames
+signed murmur-capture-worker --production-v9
+    |-- microphone AUHAL callback --> preallocated SPSC ring --> optional AEC3 --> Me frames
     +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
     |
 bounded protocol reader (channel/sequence/rate/offset validation)
@@ -102,6 +102,9 @@ Meeting capture is mutually exclusive with dictation, transforms, imported-file
 transcription, corpus capture, and benchmarks. The worker owns tap teardown;
 normal stop waits for a teardown receipt and the host confirms termination.
 After capture finishes, the user can explicitly summarize the stored transcript.
+AEC3 is constructed only for an opted-in meeting. It uses the System stream as
+a private render reference, never changes Them, and bypasses to raw microphone
+PCM on initialization, processing, or backlog failure.
 The signed local-LLM sidecar processes bounded chunks serially, validates every
 derived claim against stored segment IDs, and atomically replaces the session's
 schema-v1 artifact. Summary generation is cancellable and owns the heavy runtime.
@@ -169,7 +172,7 @@ always-dark glass surfaces.
 ### Capture worker boundary
 
 The signed `murmur-capture-worker` owns production microphone capture and the
-phase-one System Audio CATap. Production protocol v6 has capture-scoped
+phase-one System Audio CATap. Production protocol v9 has capture-scoped
 identity, nonce, strict bounded frames, and separate mic/system channel
 sequences. Before each live backend opens the microphone, an `InputResolution`
 message reports only bounded resolution evidence: backend, enumeration success,
@@ -209,7 +212,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 180 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 193 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -422,7 +425,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-180 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+193 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

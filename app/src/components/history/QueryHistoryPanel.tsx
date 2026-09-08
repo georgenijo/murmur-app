@@ -50,7 +50,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-outline-variant/20 px-4 py-3">
+      <div className="shrink-0 border-b border-[var(--ui-hairline)] px-4 py-3">
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-on-surface">Voice Query history</h2>
@@ -66,7 +66,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
             <select
               value={history.provider}
               onChange={(event) => history.setProvider(event.target.value as typeof history.provider)}
-              className="mt-1 block rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1.5 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="mt-1 block rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest px-2 py-1.5 text-xs normal-case tracking-normal text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               {PROVIDERS.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
@@ -77,7 +77,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
             type="button"
             onClick={() => void history.refresh()}
             disabled={history.loading}
-            className="rounded-lg border border-outline-variant/20 px-2.5 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container disabled:opacity-50"
+            className="dialog-pill-btn px-2.5 py-1.5 text-xs text-on-surface-variant hover:bg-surface-container disabled:opacity-50"
           >
             Refresh
           </button>
@@ -85,7 +85,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
             type="button"
             onClick={() => void purge()}
             disabled={history.clearing}
-            className="rounded-lg border border-error/20 px-2.5 py-1.5 text-xs font-medium text-error hover:bg-error/10 disabled:opacity-50"
+            className="dialog-pill-btn border-error/25 px-2.5 py-1.5 text-xs text-error hover:bg-error/10 disabled:opacity-50"
           >
             {history.clearing ? 'Deleting…' : 'Delete all query history'}
           </button>
@@ -95,7 +95,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
           {notice && <span role="status" className="text-success">{notice}</span>}
         </div>
         {history.error && (
-          <p role="alert" className="mt-2 rounded-lg border border-error/20 bg-error/10 px-3 py-2 text-xs text-error">
+          <p role="alert" className="dialog-toast mt-2 border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
             {history.error}
           </p>
         )}
@@ -105,12 +105,12 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
         {history.loading && history.entries.length === 0 ? (
           <div aria-label="Loading Voice Query history" className="space-y-3">
             {Array.from({ length: 4 }, (_, index) => (
-              <div key={index} className="h-28 animate-pulse rounded-xl bg-surface-container" />
+              <div key={index} className="h-28 animate-pulse rounded-[var(--ui-radius-card)] bg-surface-container" />
             ))}
           </div>
         ) : history.entries.length === 0 ? (
           <div className="grid min-h-full place-items-center text-center">
-            <div className="max-w-sm rounded-2xl border border-dashed border-outline-variant/30 bg-surface-container-low p-8">
+            <div className="max-w-sm rounded-[var(--ui-radius-popover)] border border-dashed border-[var(--ui-hairline)] bg-surface-container-low p-8">
               <p className="text-sm font-medium text-on-surface">No saved Voice Queries</p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
                 {retentionEnabled
@@ -122,7 +122,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
         ) : (
           <div className="space-y-3">
             {history.entries.map((entry) => (
-              <article key={entry.id} className="rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-4 shadow-sm">
+              <article key={entry.id} className="dialog-card p-4">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-on-surface-variant">
                   <span className="font-semibold text-on-surface">{providerLabel(entry.provider)}</span>
                   <span aria-hidden="true">·</span>
@@ -150,11 +150,11 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
                   )}
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <section aria-label="Question" className="min-w-0 rounded-lg bg-surface-container-low p-3">
+                  <section aria-label="Question" className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
                     <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Question</h3>
                     <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">{entry.question}</p>
                   </section>
-                  <section aria-label="Answer" className="min-w-0 rounded-lg bg-surface-container-low p-3">
+                  <section aria-label="Answer" className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
                     <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Answer</h3>
                     <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">
                       {entry.answer || (entry.errorCode ? 'No answer was returned.' : 'Empty answer')}
@@ -169,7 +169,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
                   type="button"
                   onClick={() => void history.loadMore()}
                   disabled={history.loading}
-                  className="rounded-lg border border-outline-variant/20 px-4 py-2 text-xs font-semibold text-primary hover:bg-surface-container disabled:opacity-50"
+                  className="dialog-pill-btn px-4 py-2 text-xs font-semibold text-primary hover:bg-surface-container disabled:opacity-50"
                 >
                   {history.loading ? 'Loading…' : 'Load more'}
                 </button>

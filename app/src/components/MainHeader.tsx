@@ -143,7 +143,7 @@ export function MainHeader({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="min-w-16 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-1 text-[length:var(--ui-font-label)] font-semibold text-on-surface shadow-sm transition-colors hover:border-primary hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="min-w-16 h-[30px] rounded-[var(--ui-radius-pill,999px)] border border-[var(--ui-hairline,var(--murmur-outline-variant))] bg-[var(--ui-tint-raised,var(--murmur-surface-container-lowest))] px-4 text-[length:var(--ui-font-label)] font-semibold text-on-surface shadow-[var(--ui-shadow-1)] transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           Done
         </button>
@@ -179,7 +179,7 @@ export function MainHeader({
                 className={`ui-record-pill active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
                   isCapturing
                     ? 'border border-error/50 bg-error/10 text-error hover:bg-error/15'
-                    : 'bg-[linear-gradient(135deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[0_2px_8px_color-mix(in_srgb,var(--murmur-primary)_18%,transparent)] hover:brightness-105'
+                    : 'bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[var(--ui-shadow-accent)] hover:brightness-105'
                 }`}
               >
                 <span

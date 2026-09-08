@@ -3,11 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   parseAudioInputInventory,
-  type AudioInputInventoryV1,
+  type AudioInputInventoryV2,
 } from '../audioDevices';
 
 export interface AudioInputInventoryState {
-  inventory: AudioInputInventoryV1 | null;
+  inventory: AudioInputInventoryV2 | null;
   loading: boolean;
   error: string | null;
 }

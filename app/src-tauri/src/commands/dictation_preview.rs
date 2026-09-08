@@ -2,15 +2,18 @@
 //!
 //! The preview mirrors the voice-query popover: a small, non-activating card
 //! that appears just below the notch while dictation is recording and shows the
-//! words recognized so far. It is presentation only — it never owns transcript
-//! state, never takes focus, and is torn down the moment the recording that
-//! opened it stops being current.
+//! words recognized so far. It is presentation only. It never owns transcript
+//! state or takes focus. The hidden webview renders recognized words first,
+//! then asks Rust to show the native window for the exact recording. Rust hides
+//! the window when that recording stops being current.
 //!
 //! It replaces the earlier attempt at rendering partials inside the overlay's
 //! 36pt wing, which could only ever show ~4 head-anchored characters ("Oka…")
 //! no matter how long the speaker talked.
 
-use crate::MutexExt;
+use crate::state::DictationStatus;
+use crate::{MutexExt, State};
+use std::sync::atomic::Ordering;
 use tauri::Manager;
 
 const WIDTH: f64 = 460.0;
@@ -92,6 +95,66 @@ pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|_| "dictation-preview window could not be shown".to_string())
 }
 
+#[derive(Clone, Copy)]
+enum PresentationOutcome {
+    Shown,
+    ShowFailed,
+    Hidden,
+    HideFailed,
+}
+
+impl PresentationOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shown => "shown",
+            Self::ShowFailed => "show_failed",
+            Self::Hidden => "hidden",
+            Self::HideFailed => "hide_failed",
+        }
+    }
+}
+
+fn emit_presentation(recording_id: u64, outcome: PresentationOutcome) {
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.dictation_preview_presentation",
+        recording_id,
+        outcome = outcome.as_str(),
+        "dictation preview presentation changed"
+    );
+}
+
+/// Show only after the preview webview has committed non-empty text for the
+/// exact recording. Rust remains the native visibility and ownership boundary.
+#[tauri::command]
+pub fn show_dictation_preview(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, State>,
+    recording_id: u64,
+) -> Result<(), String> {
+    if window.label() != "dictation-preview" {
+        return Err("dictation preview show is restricted to its own window".to_string());
+    }
+    let is_current = recording_id > 0
+        && state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && state.app_state.dictation.lock_or_recover().status == DictationStatus::Recording
+        && !state.app_state.is_cancelled(recording_id);
+    if !is_current {
+        return Err("dictation preview recording is no longer current".to_string());
+    }
+
+    let result = show_internal(window.app_handle());
+    emit_presentation(
+        recording_id,
+        if result.is_ok() {
+            PresentationOutcome::Shown
+        } else {
+            PresentationOutcome::ShowFailed
+        },
+    );
+    result
+}
+
 pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("dictation-preview") {
         Some(window) => window
@@ -99,6 +162,18 @@ pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
             .map_err(|_| "dictation-preview window could not be hidden".to_string()),
         None => Ok(()),
     }
+}
+
+pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
+    let result = hide_internal(app);
+    emit_presentation(
+        recording_id,
+        if result.is_ok() {
+            PresentationOutcome::Hidden
+        } else {
+            PresentationOutcome::HideFailed
+        },
+    );
 }
 
 pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {

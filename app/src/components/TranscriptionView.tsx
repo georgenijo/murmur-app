@@ -35,8 +35,8 @@ export const TranscriptionView = memo(function TranscriptionView({
 }: TranscriptionViewProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 justify-center border-b border-outline-variant/15 px-4 py-2">
-        <div className="inline-flex rounded-full bg-surface-container-high p-0.5" role="tablist" aria-label="History workspace">
+      <div className="flex shrink-0 justify-center border-b border-[var(--ui-hairline)] px-4 py-2">
+        <div className="inline-flex rounded-[var(--ui-radius-pill)] bg-[var(--ui-tint-sunken)] p-0.5" role="tablist" aria-label="History workspace">
           {(['transcripts', 'meetings', 'queries'] as const).map((value) => (
             <button
               key={value}
@@ -44,8 +44,10 @@ export const TranscriptionView = memo(function TranscriptionView({
               role="tab"
               aria-selected={workspace === value}
               onClick={() => onWorkspaceChange(value)}
-              className={`rounded-full px-4 py-1.5 text-xs font-semibold capitalize transition-colors ${
-                workspace === value ? 'bg-surface-container-lowest text-on-surface shadow-sm' : 'text-on-surface-variant hover:text-on-surface'
+              className={`rounded-[var(--ui-radius-pill)] px-4 py-1.5 text-xs font-semibold capitalize transition-colors ${
+                workspace === value
+                  ? 'bg-[var(--ui-tint-raised)] text-on-surface shadow-[var(--ui-shadow-1)]'
+                  : 'text-on-surface-variant hover:text-on-surface'
               }`}
             >
               {value}

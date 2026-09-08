@@ -1,4 +1,5 @@
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { Copy, GraduationCap } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_FILTER_OPTIONS,
@@ -13,6 +14,16 @@ import {
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { flog } from '../../lib/log';
+import {
+  AnimatedDropdown,
+  AnimatedDropdownContent,
+  AnimatedDropdownItem,
+  AnimatedDropdownSeparator,
+  AnimatedDropdownTrigger,
+} from '@/components/ui/animated-dropdown/animated-dropdown';
+import FluidTabs from '@/components/ui/fluid-tabs/fluid-tabs';
+import HoldToDeleteButton from '@/components/ui/hold-to-delete-button/hold-to-delete-button';
+import SmartOverflow, { SmartOverflowAction } from '@/components/ui/smart-overflow/smart-overflow';
 import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
 
 interface HistoryPanelProps {
@@ -26,6 +37,14 @@ interface HistoryPanelProps {
 }
 
 const HISTORY_RENDER_BATCH = 30;
+const HISTORY_FILTER_TABS = HISTORY_FILTER_OPTIONS.map((option) => ({
+  value: option.value,
+  title: option.label,
+}));
+
+function isHistoryFilter(value: string): value is HistoryFilter {
+  return HISTORY_FILTER_OPTIONS.some((option) => option.value === value);
+}
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
   const segments = useMemo(() => matchSegments(text, query), [text, query]);
@@ -114,23 +133,15 @@ function HistoryPanelComponent({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirmClear, setConfirmClear] = useState(false);
   const [renderLimit, setRenderLimit] = useState(HISTORY_RENDER_BATCH);
-  const copyGroupId = useId();
-  const saveGroupId = useId();
-  const exportPanelId = useId();
   const searchInputId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
-  const exportRef = useRef<HTMLDivElement>(null);
-  const exportButtonRef = useRef<HTMLButtonElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -139,35 +150,10 @@ function HistoryPanelComponent({
     searchRef.current?.select();
   }, [focusSearchToken]);
 
-  // Close the export menu on an outside click or Escape.
-  useEffect(() => {
-    if (!exportOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!exportRef.current?.contains(event.target as Node)) setExportOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setExportOpen(false);
-        exportButtonRef.current?.focus();
-      }
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [exportOpen]);
-
   const showNotice = (message: string) => {
     setNotice(message);
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = setTimeout(() => setNotice(null), 4000);
-  };
-
-  const closeExportAndFocus = () => {
-    exportButtonRef.current?.focus();
-    setExportOpen(false);
   };
 
   const visible = useMemo(
@@ -202,7 +188,7 @@ function HistoryPanelComponent({
   };
 
   const handleCopyExport = async (format: HistoryExportFormat) => {
-    closeExportAndFocus();
+    setExportOpen(false);
     try {
       const count = await copyHistoryExport(visible, format);
       showNotice(`Copied ${count} ${count === 1 ? 'entry' : 'entries'} to the clipboard.`);
@@ -213,7 +199,7 @@ function HistoryPanelComponent({
   };
 
   const handleSaveExport = async (format: HistoryExportFormat) => {
-    closeExportAndFocus();
+    setExportOpen(false);
     try {
       const path = await saveHistoryExport(visible, format);
       if (path) showNotice(`Saved ${visible.length} ${visible.length === 1 ? 'entry' : 'entries'}.`);
@@ -221,19 +207,6 @@ function HistoryPanelComponent({
       showNotice(`Could not save the export: ${String(err)}`);
       flog.warn('main', 'History export save failed', { error: String(err) });
     }
-  };
-
-  // Two-step confirm rather than window.confirm: the main window is a
-  // non-activating utility surface and a native modal steals focus from it.
-  const handleClear = () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    if (!confirmClear) {
-      setConfirmClear(true);
-      confirmTimerRef.current = setTimeout(() => setConfirmClear(false), 4000);
-      return;
-    }
-    setConfirmClear(false);
-    onClear();
   };
 
   const closeSearch = () => {
@@ -280,21 +253,23 @@ function HistoryPanelComponent({
                 ×
               </button>
             ) : (
-              <kbd className="pointer-events-none absolute right-2 top-1 rounded bg-surface-container-high px-1 py-0.5 font-mono text-[9px] text-on-surface-variant">/</kbd>
+              <kbd className="pointer-events-none absolute right-2 top-1 rounded-full bg-on-surface/6 px-1 py-0.5 font-mono text-[9px] text-on-surface-variant">/</kbd>
             )}
           </div>
 
-          {HISTORY_FILTER_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={filter === option.value}
-              onClick={() => setFilter(option.value)}
-              className="ui-filter-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              {option.label}
-            </button>
-          ))}
+          <FluidTabs
+            tabs={HISTORY_FILTER_TABS}
+            value={filter}
+            onValueChange={(value) => {
+              if (isHistoryFilter(value)) setFilter(value);
+            }}
+            variant="capsule"
+            size="sm"
+            ariaLabel="Filter transcripts"
+            className="history-filter-tabs"
+            listClassName="history-filter-tabs-list"
+            activeIndicatorClassName="history-filter-tab-indicator"
+          />
 
           <span className="ml-auto text-xs tabular-nums text-on-surface-variant">
             {visible.length === entries.length
@@ -302,86 +277,59 @@ function HistoryPanelComponent({
               : `${visible.length} of ${entries.length}`}
           </span>
 
-          <div ref={exportRef} className="relative shrink-0">
-            <button
-              ref={exportButtonRef}
-              type="button"
-              onClick={() => setExportOpen((open) => !open)}
-              aria-expanded={exportOpen}
-              aria-controls={exportPanelId}
-              aria-label="More history actions"
-              className="ui-icon-button text-base leading-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              ···
-            </button>
-            {exportOpen && (
-              <div
-                id={exportPanelId}
-                role="group"
-                aria-label="History actions"
-                className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-xl bg-surface-container-lowest py-1.5 shadow-2xl ring-1 ring-outline-variant/30"
+          <AnimatedDropdown open={exportOpen} onOpenChange={setExportOpen}>
+            <AnimatedDropdownTrigger className="history-export-trigger" aria-label="More history actions">
+              <span aria-hidden="true" className="text-base leading-none">···</span>
+            </AnimatedDropdownTrigger>
+            <AnimatedDropdownContent align="end" side="bottom" className="history-export-menu min-w-56">
+              <AnimatedDropdownItem
+                onClick={() => {
+                  setExportOpen(false);
+                  onTranscribeFile();
+                }}
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    closeExportAndFocus();
-                    onTranscribeFile();
-                  }}
-                  className="block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium text-on-surface hover:bg-surface-container"
+                Transcribe audio file…
+              </AnimatedDropdownItem>
+              <AnimatedDropdownSeparator />
+              <p className="history-export-label">
+                Copy {visible.length} shown
+              </p>
+              {HISTORY_EXPORT_FORMATS.map((format) => (
+                <AnimatedDropdownItem
+                  key={`copy-${format.value}`}
+                  className="history-export-item"
+                  aria-label={`Copy ${visible.length} shown as ${format.label}`}
+                  onClick={() => void handleCopyExport(format.value)}
                 >
-                  Transcribe audio file…
-                </button>
-                <div className="my-1 border-t border-outline-variant/20" />
-                {/* Both groups render the same format names, so each group is
-                    labelled and each item carries the verb explicitly —
-                    otherwise a screen reader announces "Markdown" twice. */}
-                <div role="group" aria-labelledby={copyGroupId}>
-                  <p id={copyGroupId} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
-                    Copy {visible.length} shown
-                  </p>
-                  {HISTORY_EXPORT_FORMATS.map((format) => (
-                    <button
-                      key={`copy-${format.value}`}
-                      type="button"
-                      aria-label={`Copy ${visible.length} shown as ${format.label}`}
-                      onClick={() => void handleCopyExport(format.value)}
-                      className="block w-full px-3 py-1.5 text-left text-[length:var(--ui-font-label)] text-on-surface hover:bg-surface-container"
-                    >
-                      {format.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="my-1 border-t border-outline-variant/20" />
-                <div role="group" aria-labelledby={saveGroupId}>
-                  <p id={saveGroupId} className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
-                    Save to file
-                  </p>
-                  {HISTORY_EXPORT_FORMATS.map((format) => (
-                    <button
-                      key={`save-${format.value}`}
-                      type="button"
-                      aria-label={`Save ${visible.length} shown as ${format.label}`}
-                      onClick={() => void handleSaveExport(format.value)}
-                      className="block w-full px-3 py-1.5 text-left text-[length:var(--ui-font-label)] text-on-surface hover:bg-surface-container"
-                    >
-                      {format.label}…
-                    </button>
-                  ))}
-                </div>
-                <div className="my-1 border-t border-outline-variant/20" />
-                <button
-                  type="button"
-                  onClick={handleClear}
-                  disabled={entries.length === 0}
-                  className={`block w-full px-3 py-2 text-left text-[length:var(--ui-font-label)] font-medium disabled:opacity-40 ${
-                    confirmClear ? 'bg-error/10 text-error' : 'text-error hover:bg-error/10'
-                  }`}
+                  {format.label}
+                </AnimatedDropdownItem>
+              ))}
+              <AnimatedDropdownSeparator />
+              <p className="history-export-label">Save to file</p>
+              {HISTORY_EXPORT_FORMATS.map((format) => (
+                <AnimatedDropdownItem
+                  key={`save-${format.value}`}
+                  className="history-export-item"
+                  aria-label={`Save ${visible.length} shown as ${format.label}`}
+                  onClick={() => void handleSaveExport(format.value)}
                 >
-                  {confirmClear ? 'Clear all history?' : 'Clear history'}
-                </button>
-              </div>
-            )}
-          </div>
+                  {format.label}…
+                </AnimatedDropdownItem>
+              ))}
+              <AnimatedDropdownSeparator />
+              <HoldToDeleteButton
+                label="Hold to clear history"
+                confirmLabel="Click again to clear history"
+                holdDuration={1200}
+                onDelete={() => {
+                  onClear();
+                  setExportOpen(false);
+                }}
+                disabled={entries.length === 0}
+                className="h-9 w-full min-w-0 justify-start rounded-lg px-2.5 text-[length:var(--ui-font-label)]"
+              />
+            </AnimatedDropdownContent>
+          </AnimatedDropdown>
         </div>
 
         {notice && (
@@ -412,6 +360,7 @@ function HistoryPanelComponent({
                 data-testid="transcript-card"
                 data-copied={copiedId === entry.id}
                 data-day-end={endsDay}
+                data-newest={isNewest}
                 role="group"
                 tabIndex={0}
                 aria-label={`Transcription from ${formatTimestamp(entry.timestamp)}. Press Enter or Space to copy.`}
@@ -427,12 +376,12 @@ function HistoryPanelComponent({
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="shrink-0">{formatTimestamp(entry.timestamp)}</span>
                   {entrySource(entry) === 'file' ? (
-                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 text-xs font-medium text-on-surface">
+                    <span title={entry.sourceName} className="inline-flex max-w-[120px] min-w-0 items-center gap-0.5 rounded-full bg-primary/11 px-1.5 text-[10.5px] font-semibold text-primary">
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                       <span className="truncate">{entry.sourceName || 'File'}</span>
                     </span>
                   ) : (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-surface-container px-1.5 text-xs font-medium text-on-surface-variant">
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-on-surface/6 px-1.5 text-[10.5px] font-semibold text-on-surface-variant">
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" /></svg>
                       Mic
                     </span>
@@ -448,21 +397,37 @@ function HistoryPanelComponent({
                 </div>
               </div>
               <ClampedTranscript text={entry.text} query={query} />
-              <span className="transcript-copy-feedback" role="status" aria-live="polite">
+              <span className="transcript-copy-feedback ui-visually-hidden" role="status" aria-live="polite">
                 {copiedId === entry.id ? 'Copied' : ''}
               </span>
-              {isNewest && (
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setTeachingEntry(entry);
-                  }}
-                  className="transcript-teach focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              <div className="transcript-actions" onClick={(event) => event.stopPropagation()}>
+                <SmartOverflow
+                  ariaLabel={`Actions for the transcript from ${formatTimestamp(entry.timestamp)}`}
+                  moreLabel="More transcript actions"
+                  actionClassName="transcript-action"
+                  moreButtonClassName="transcript-more"
+                  menuClassName="transcript-overflow-menu"
                 >
-                  Correct &amp; Teach
-                </button>
-              )}
+                  <SmartOverflowAction
+                    id="copy"
+                    priority="primary"
+                    icon={<Copy />}
+                    onSelect={() => void handleCopy(entry)}
+                  >
+                    {copiedId === entry.id ? 'Copied' : 'Copy'}
+                  </SmartOverflowAction>
+                  {isNewest && (
+                    <SmartOverflowAction
+                      id="teach"
+                      priority="overflow"
+                      icon={<GraduationCap />}
+                      onSelect={() => setTeachingEntry(entry)}
+                    >
+                      Correct &amp; Teach
+                    </SmartOverflowAction>
+                  )}
+                </SmartOverflow>
+              </div>
               {entry.derived && <span className="transcript-derived">Reformatted · {entry.derived.modeId}</span>}
               </article>
             </Fragment>

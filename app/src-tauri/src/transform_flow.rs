@@ -673,7 +673,7 @@ pub(crate) trait FlowEffects: Send + Sync {
     fn set_focusable(&self, focusable: bool);
     fn set_expanded(&self, expanded: bool);
     fn flash_secure_field(&self);
-    fn schedule_linger_hide(&self);
+    fn schedule_linger_hide(&self, transform_pass_id: u64);
 }
 
 fn snapshot_anchor(snapshot: &TransformSnapshot) -> Option<AnchorRect> {
@@ -730,6 +730,7 @@ pub(crate) async fn core_start_capture<Fut>(
     app_state: &AppState,
     fx: &dyn FlowEffects,
     model_ready: bool,
+    purpose: crate::dictation_correction::ReviewPurpose,
     capture: Fut,
 ) -> StartOutcome
 where
@@ -776,7 +777,7 @@ where
                 return StartOutcome::Aborted;
             }
             let anchor = snapshot_anchor(&snapshot);
-            transform_apply::start_session(app_state, snapshot);
+            transform_apply::start_session_with_purpose(app_state, snapshot, purpose);
             fx.show_popover(anchor);
             fx.set_focusable(false);
             if !enter_transform_listening_if_ready(
@@ -915,7 +916,16 @@ pub(crate) async fn run_transform(
 
     let sidecar = Arc::clone(sidecar);
     let input = original;
-    let instr = instruction;
+    let correction = transform_apply::session_snapshot(app_state)
+        .is_some_and(|session| session.purpose.is_correction());
+    let correction_input = input.clone();
+    let correction_spoken = instruction.clone();
+    let instr = if correction {
+        crate::dictation_correction::model_instruction(&instruction)
+    } else {
+        instruction
+    };
+    let on_chunk = if correction { None } else { on_chunk };
     // Per-request cancel token (item 11): created here, before the spawn, and
     // handed to the sidecar for exactly this request. `transform` registers it
     // as the in-flight token, so `cancel_transform`'s
@@ -995,7 +1005,18 @@ pub(crate) async fn run_transform(
                 cache_hit: outcome.cache_hit,
                 diagnostics: outcome.diagnostics,
             };
-            match outcome.result {
+            let result = outcome.result.and_then(|mut output| {
+                if correction {
+                    output.output = crate::dictation_correction::corrected_text(
+                        &correction_input,
+                        &correction_spoken,
+                        &output.output,
+                    )
+                    .map_err(|_| TransformError::OutputInvalid)?;
+                }
+                Ok(output)
+            });
+            match result {
                 Ok(output) => {
                     if !app_state.try_transition_transform_status(
                         TransformStatus::Thinking,
@@ -1400,49 +1421,65 @@ impl FlowEffects for TauriFlowEffects<'_> {
         let _ = self.app.emit("transform-secure-field", ());
     }
 
-    fn schedule_linger_hide(&self) {
+    fn schedule_linger_hide(&self, transform_pass_id: u64) {
         let app = self.app.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(APPLIED_LINGER_MS)).await;
             use tauri::Manager;
-            let transform_pass_id = if let Some(state) = app.try_state::<crate::State>() {
-                // Only auto-hide if we are still in the applied review (status
-                // Idle + an applied session). A newer flow leaves status
-                // non-Idle, so its popover is never yanked out from under it.
-                let still_applied = state.app_state.transform_status() == TransformStatus::Idle
-                    && transform_apply::session_snapshot(&state.app_state)
-                        .map(|s| s.applied)
-                        .unwrap_or(false);
-                if !still_applied {
-                    return;
-                }
-                let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
-                    .map(|session| session.transform_pass_id)
-                    .or_else(|| state.app_state.active_transform_pass_id());
-                // Free the held selection text once Undo is no longer reachable
-                // from the UI (popover gone). Content is only available via
-                // get_transform_review_content, which returns empty after this.
-                transform_apply::clear_session(&state.app_state);
-                transform_pass_id
-            } else {
-                None
-            };
-            let _ = crate::commands::transform_popover::hide_popover_internal(&app);
-            // Linger auto-hide is backend-initiated — reset stale content (item 13).
-            emit_transform_hidden(&app);
-            if let (Some(transform_pass_id), Some(state)) =
-                (transform_pass_id, app.try_state::<crate::State>())
-            {
-                crate::transform_trace::resolution(
-                    transform_pass_id,
-                    "applied",
-                    "linger_complete",
-                    None,
-                );
-                state.app_state.clear_transform_pass(transform_pass_id);
+            if let Some(state) = app.try_state::<crate::State>() {
+                let fx = TauriFlowEffects {
+                    app: &app,
+                    state: &state,
+                };
+                expire_applied_review(&state.app_state, &fx, transform_pass_id);
             }
         });
     }
+}
+
+fn expire_applied_review(
+    app_state: &AppState,
+    fx: &dyn FlowEffects,
+    transform_pass_id: u64,
+) -> bool {
+    // Both start paths claim their pass under this lock. Keep ownership stable
+    // through the native hide and content reset, not just the session check.
+    let _dictation = app_state.dictation.lock_or_recover();
+    let status = app_state.transform_status.lock_or_recover();
+    if *status != TransformStatus::Idle
+        || app_state.active_transform_pass_id() != Some(transform_pass_id)
+    {
+        return false;
+    }
+    {
+        let mut session = app_state.transform_session.lock_or_recover();
+        if !session.as_ref().is_some_and(|session| {
+            session.transform_pass_id == transform_pass_id && session.applied
+        }) {
+            return false;
+        }
+        // Release selected text only when this timer retires its own review.
+        session.take();
+    }
+    fx.hide_popover();
+    crate::transform_trace::resolution(transform_pass_id, "applied", "linger_complete", None);
+    app_state.clear_transform_pass(transform_pass_id);
+    true
+}
+
+fn finish_capture_start(app_state: &AppState, fx: &dyn FlowEffects, transform_pass_id: u64) {
+    let _dictation = app_state.dictation.lock_or_recover();
+    let status = app_state.transform_status.lock_or_recover();
+    if *status != TransformStatus::Idle
+        || app_state.transform_session.lock_or_recover().is_some()
+        || app_state
+            .active_transform_pass_id()
+            .is_some_and(|id| id != transform_pass_id)
+    {
+        return;
+    }
+    app_state.clear_transform_pass(transform_pass_id);
+    fx.hide_popover();
 }
 
 // ===========================================================================
@@ -1706,7 +1743,165 @@ pub(crate) async fn start_transform_capture(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
     transform_pass_id: u64,
+) -> Result<(), String> {
+    start_capture(
+        app_handle,
+        state,
+        device_name,
+        smart_auto,
+        transform_pass_id,
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn start_dictation_correction(
+    window: tauri::WebviewWindow,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("main_window_required".into());
+    }
+    begin_dictation_correction(app_handle, state, device_name, smart_auto).await
+}
+
+/// Release a finished-but-still-claimed transform pass at a real pass boundary
+/// so a new pass can start.
+///
+/// Approve/Copy returns the status to `Idle` immediately, but the pass ID stays
+/// claimed — and the applied session stays alive so Undo remains reachable —
+/// until `schedule_linger_hide` fires `APPLIED_LINGER_MS` later. Every
+/// start path has to be able to supersede that lingering pass; otherwise
+/// chaining another correction onto the one just approved is dead for four
+/// seconds. The old linger task is bound to the superseded pass, so it cannot
+/// retire the replacement even if that pass has already been applied.
+///
+/// The caller must have observed `TransformStatus::Idle` (or have just
+/// transitioned `ReviewPending -> Idle`). Deliberately does NOT hide the
+/// popover: the superseding pass shows it again a moment later, and routing
+/// through `hide_popover_internal` here would flicker it. This mirrors the
+/// hold-key supersede in `keyboard.rs`, which this function was extracted from.
+///
+/// Does not claim the new pass — callers call `activate_transform_pass`
+/// themselves once they have allocated their ID.
+/// Hold `app_state.dictation` through supersession and the new claim to exclude
+/// linger expiry and refused-start cleanup until the replacement has an owner.
+///
+/// Takes the three pieces of `crate::State` it touches rather than `State`
+/// itself, so it is unit-testable without a Tauri app handle.
+pub(crate) fn supersede_idle_transform_pass(
+    app_state: &AppState,
+    diagnostics: &crate::transform_diagnostics::TransformDiagnostics,
+    main_was_visible: &std::sync::Mutex<Option<bool>>,
+) {
+    if let Some(previous_pass_id) = app_state.active_transform_pass_id() {
+        crate::transform_trace::resolution(previous_pass_id, "cancelled", "superseded", None);
+        diagnostics.phase(previous_pass_id, "supersession", "completed", None, None);
+        diagnostics.finish(previous_pass_id, "superseded");
+        app_state.clear_transform_pass(previous_pass_id);
+    }
+    crate::transform_apply::clear_session(app_state);
+    // Pass boundary (issue #337 defect B): drop the sticky main-window
+    // visibility snapshot so the new pass re-records it at its first popover
+    // show, instead of inheriting the previous pass's snapshot and force-hiding
+    // a main window the user deliberately opened between passes.
+    *main_was_visible.lock_or_recover() = None;
+}
+
+pub(crate) async fn begin_dictation_correction(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
+) -> Result<(), String> {
+    if crate::keyboard::is_app_disabled() {
+        return Err("Enable Murmur before correcting a dictation.".into());
+    }
+    let latest = state
+        .delivery_recovery
+        .latest()
+        .ok_or("No dictation to correct yet.")?;
+    if latest.text.len() > crate::selection::MAX_SELECTION_BYTES {
+        return Err("The last dictation is too long to correct. Select a shorter passage and use Transform.".into());
+    }
+    let pass_id = {
+        let _dictation = state.app_state.dictation.lock_or_recover();
+        if state.app_state.transform_status() != TransformStatus::Idle {
+            return Err("Finish or cancel the current transform first.".into());
+        }
+        if state.app_state.active_transform_pass_id().is_some() {
+            // Idle with a claimed pass is one of two states. Either the
+            // previous review was approved/copied and is lingering for its
+            // APPLIED_LINGER_MS Undo window — supersede it, exactly as the
+            // hold key does, so chaining a correction onto the one just
+            // approved works — or a pass has claimed its ID but not yet left
+            // Idle, which is a genuine concurrent start and must be refused.
+            if !transform_apply::session_snapshot(&state.app_state)
+                .is_some_and(|session| session.applied)
+            {
+                return Err("Finish or cancel the current transform first.".into());
+            }
+            supersede_idle_transform_pass(
+                &state.app_state,
+                &state.transform_diagnostics,
+                &state.transform_main_was_visible,
+            );
+        }
+        let id = state.app_state.next_transform_pass_id();
+        state.app_state.activate_transform_pass(id);
+        id
+    };
+    start_capture(
+        app_handle,
+        state,
+        device_name,
+        smart_auto,
+        pass_id,
+        Some(latest),
+    )
+    .await
+}
+
+async fn start_capture(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
+    transform_pass_id: u64,
+    correction: Option<crate::delivery_recovery::LastDelivery>,
+) -> Result<(), String> {
+    let result = start_capture_inner(
+        app_handle.clone(),
+        state.clone(),
+        device_name,
+        smart_auto,
+        transform_pass_id,
+        correction,
+    )
+    .await;
+    // Supersession leaves the old popover visible to avoid flicker. Every
+    // refused or failed start must close it if no replacement owns the UI.
+    let fx = TauriFlowEffects {
+        app: &app_handle,
+        state: &state,
+    };
+    finish_capture_start(&state.app_state, &fx, transform_pass_id);
+    result
+}
+
+async fn start_capture_inner(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
+    transform_pass_id: u64,
+    correction: Option<crate::delivery_recovery::LastDelivery>,
 ) -> Result<(), String> {
     state.transform_diagnostics.begin(transform_pass_id);
     // Serialize against dictation start/stop, taking the same locks in the
@@ -1792,6 +1987,15 @@ pub(crate) async fn start_transform_capture(
         let _ = app_handle.emit("transform-busy", ());
         return Ok(());
     }
+    let device_name =
+        match crate::microphone_auto::resolve_capture_device(device_name, smart_auto.as_ref()) {
+            Ok(device_name) => device_name,
+            Err(error) => {
+                state.app_state.set_transform_status(TransformStatus::Idle);
+                state.app_state.clear_transform_pass(transform_pass_id);
+                return Err(error);
+            }
+        };
     let mut performance_guard = begin_transform_performance(&state, transform_pass_id);
 
     let model_ready = crate::commands::transform_model::transform_model_state()
@@ -1888,8 +2092,33 @@ pub(crate) async fn start_transform_capture(
     }
 
     let capture_started = std::time::Instant::now();
+    let mut correction_delivery = crate::dictation_correction::CorrectionDelivery::Copy;
     let capture_result = if model_ready {
-        Some(crate::selection::capture_selection(&app_handle, transform_pass_id).await)
+        if let Some(latest) = correction.as_ref() {
+            let matching = crate::selection::capture_matching_dictation_selection(
+                &app_handle,
+                &latest.text,
+                &latest.target,
+            )
+            .await;
+            if let Some(snapshot) = matching {
+                correction_delivery = crate::dictation_correction::CorrectionDelivery::Selection(
+                    latest.target.clone(),
+                );
+                Some(Ok(snapshot))
+            } else {
+                Some(Ok(TransformSnapshot {
+                    text: latest.text.clone(),
+                    bundle_id: None,
+                    pid: 0,
+                    range: None,
+                    bounds: None,
+                    captured_at: std::time::Instant::now(),
+                }))
+            }
+        } else {
+            Some(crate::selection::capture_selection(&app_handle, transform_pass_id).await)
+        }
     } else {
         None
     };
@@ -1956,7 +2185,21 @@ pub(crate) async fn start_transform_capture(
             },
         ),
     );
-    let outcome = core_start_capture(&state.app_state, &fx, model_ready, async move {
+    // Stamp the review purpose BEFORE the session is installed. Patching it in
+    // after `core_start_capture` returned left a window — audio arm plus the
+    // up-to-500ms AX identity probe — in which the installed session still read
+    // as `SelectedText`, so a second correction-shortcut press (or the popover)
+    // could not tell a correction pass from an ordinary transform pass.
+    let is_correction = correction.is_some();
+    let purpose = match correction {
+        Some(correction) => crate::dictation_correction::ReviewPurpose::Correction {
+            recording_id: correction.recording_id,
+            delivery: correction_delivery,
+            teaching_context: correction.teaching_context,
+        },
+        None => crate::dictation_correction::ReviewPurpose::SelectedText,
+    };
+    let outcome = core_start_capture(&state.app_state, &fx, model_ready, purpose, async move {
         capture_result.expect("capture future is polled only when the model is ready")
     })
     .await;
@@ -2003,6 +2246,26 @@ pub(crate) async fn start_transform_capture(
                 .finish(transform_pass_id, "failed");
         }
         return Ok(());
+    }
+    if is_correction {
+        // The correction review is a visible, focusable popover from the start
+        // (there is no hold-key to release), so re-announce the current phase
+        // and expand. If cancellation already won this pass, do NOT return
+        // here: fall through to the mic-leak teardown below, which is the only
+        // code that stops the already-armed recorder.
+        match state.app_state.transform_status() {
+            TransformStatus::Listening => {
+                fx.emit_state(ReviewState::Listening, None);
+                fx.set_expanded(true);
+                fx.set_focusable(true);
+            }
+            TransformStatus::Connecting => {
+                fx.emit_state(ReviewState::Connecting, None);
+                fx.set_expanded(true);
+                fx.set_focusable(true);
+            }
+            _ => {}
+        }
     }
     if let Some(guard) = performance_guard.as_mut() {
         guard.enter(PerformanceStageV1::InstructionCapture);
@@ -2208,7 +2471,15 @@ pub(crate) async fn finish_transform_instruction(
                     Some(instruction_asr_started.elapsed().as_millis() as u64),
                     None,
                 );
-                Ok(expand_instruction(&state, &raw))
+                Ok(
+                    if transform_apply::session_snapshot(&state.app_state)
+                        .is_some_and(|session| session.purpose.is_correction())
+                    {
+                        raw
+                    } else {
+                        expand_instruction(&state, &raw)
+                    },
+                )
             }
             Err(error) => {
                 state.transform_diagnostics.phase(
@@ -2455,12 +2726,22 @@ fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String>
     None
 }
 
+fn require_review_pass(app_state: &AppState, pass_id: u64) -> Result<(), String> {
+    if pass_id == 0 || app_state.active_transform_pass_id() != Some(pass_id) {
+        Err("stale_pass".into())
+    } else {
+        Ok(())
+    }
+}
+
 /// Retry: re-arm listening for a NEW instruction on the SAME frozen snapshot.
 #[tauri::command]
 pub(crate) async fn retry_transform_instruction(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
     device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
     let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
@@ -2472,7 +2753,7 @@ pub(crate) async fn retry_transform_instruction(
         app: &app_handle,
         state: &state,
     };
-    let transform_pass_id = state.app_state.active_transform_pass_id().unwrap_or(0);
+    require_review_pass(&state.app_state, transform_pass_id)?;
 
     // Retry only means anything with a live session (a frozen snapshot). A
     // failed popover with no session (e.g. model_not_downloaded) has nothing
@@ -2505,6 +2786,16 @@ pub(crate) async fn retry_transform_instruction(
     fx.set_focusable(false);
     fx.emit_state(ReviewState::Connecting, None);
     let _attempt = state.app_state.next_instruction_attempt();
+    let device_name =
+        match crate::microphone_auto::resolve_capture_device(device_name, smart_auto.as_ref()) {
+            Ok(device_name) => device_name,
+            Err(error) => {
+                state.app_state.set_transform_status(TransformStatus::Idle);
+                transform_apply::clear_session(&state.app_state);
+                state.app_state.clear_transform_pass(transform_pass_id);
+                return Err(error);
+            }
+        };
 
     if let Err(e) = crate::audio::start_transform_capture_audio(
         Some(app_handle.clone()),
@@ -2557,12 +2848,10 @@ pub(crate) async fn retry_transform_instruction(
 pub(crate) async fn approve_transform(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
+    require_review_pass(&state.app_state, transform_pass_id)?;
     let performance_started = std::time::Instant::now();
-    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
-        .map(|session| session.transform_pass_id)
-        .or_else(|| state.app_state.active_transform_pass_id())
-        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -2594,11 +2883,12 @@ pub(crate) async fn approve_transform(
         }
     };
 
+    require_review_pass(&state.app_state, transform_pass_id)?;
     match transform_apply::apply_transform(&app_handle, &state.app_state).await {
         Ok(via) => {
             guard.mark_succeeded(); // status -> Idle; session.applied stays true
             fx.emit_state(ReviewState::Applied, None);
-            fx.schedule_linger_hide();
+            fx.schedule_linger_hide(transform_pass_id);
             if transform_pass_id != 0 {
                 append_transform_follow_up(
                     &state,
@@ -2892,12 +3182,10 @@ pub(crate) fn clear_parked_review_for_pipeline_work(
 pub(crate) async fn undo_transform_and_close(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, crate::State>,
+    transform_pass_id: u64,
 ) -> Result<(), String> {
+    require_review_pass(&state.app_state, transform_pass_id)?;
     let performance_started = std::time::Instant::now();
-    let transform_pass_id = transform_apply::session_snapshot(&state.app_state)
-        .map(|session| session.transform_pass_id)
-        .or_else(|| state.app_state.active_transform_pass_id())
-        .unwrap_or(0);
     let fx = TauriFlowEffects {
         app: &app_handle,
         state: &state,
@@ -2921,6 +3209,7 @@ pub(crate) async fn undo_transform_and_close(
             }
         };
 
+    require_review_pass(&state.app_state, transform_pass_id)?;
     match transform_apply::undo_applied_transform(&app_handle, &state.app_state).await {
         Ok(()) => {
             guard.mark_succeeded();
@@ -2964,7 +3253,7 @@ pub(crate) async fn undo_transform_and_close(
             // Re-arm the linger so the error window is deterministic: the
             // approve-time timer may be about to fire (hiding the popover
             // ~instantly) or may have no-op'd mid-undo (leaving it up forever).
-            fx.schedule_linger_hide();
+            fx.schedule_linger_hide(transform_pass_id);
             if transform_pass_id != 0 {
                 append_transform_follow_up(
                     &state,
@@ -3109,7 +3398,7 @@ impl FlowEffects for RecordingFlowEffects {
             .unwrap_or_else(|p| p.into_inner())
             .secure_flash = true;
     }
-    fn schedule_linger_hide(&self) {
+    fn schedule_linger_hide(&self, _transform_pass_id: u64) {
         self.inner
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -3164,7 +3453,14 @@ pub async fn run_happy_path_for_test(
     app_state.activate_transform_pass(1);
     assert!(app_state
         .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
-    let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
+    let outcome = core_start_capture(
+        &app_state,
+        &fx,
+        true,
+        crate::dictation_correction::ReviewPurpose::SelectedText,
+        async move { Ok(snapshot) },
+    )
+    .await;
     assert_eq!(outcome, StartOutcome::CaptureReady);
     assert!(enter_transform_listening_if_ready(
         &app_state, &fx, 1, true, true,
@@ -3547,7 +3843,14 @@ mod tests {
             bounds: None,
             captured_at: Instant::now(),
         };
-        let outcome = core_start_capture(&app_state, &fx, true, async move { Ok(snapshot) }).await;
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            true,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async move { Ok(snapshot) },
+        )
+        .await;
 
         assert_eq!(outcome, StartOutcome::CaptureReady);
         assert_eq!(app_state.transform_status(), TransformStatus::Connecting);
@@ -3583,9 +3886,13 @@ mod tests {
         let fx = RecordingFlowEffects::new();
         app_state.set_transform_status(TransformStatus::Capturing);
 
-        let outcome = core_start_capture(&app_state, &fx, true, async {
-            Err(SelectionError::SecureField)
-        })
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            true,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async { Err(SelectionError::SecureField) },
+        )
         .await;
 
         assert_eq!(outcome, StartOutcome::Aborted);
@@ -3603,16 +3910,22 @@ mod tests {
         let fx = RecordingFlowEffects::new();
         app_state.set_transform_status(TransformStatus::Capturing);
 
-        let outcome = core_start_capture(&app_state, &fx, false, async {
-            Ok(TransformSnapshot {
-                bundle_id: None,
-                pid: 1,
-                text: "x".to_string(),
-                range: None,
-                bounds: None,
-                captured_at: std::time::Instant::now(),
-            })
-        })
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            false,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async {
+                Ok(TransformSnapshot {
+                    bundle_id: None,
+                    pid: 1,
+                    text: "x".to_string(),
+                    range: None,
+                    bounds: None,
+                    captured_at: std::time::Instant::now(),
+                })
+            },
+        )
         .await;
 
         assert_eq!(outcome, StartOutcome::Aborted);
@@ -3638,6 +3951,167 @@ mod tests {
             bounds: None,
             captured_at: std::time::Instant::now(),
         }
+    }
+
+    #[test]
+    fn supersede_releases_a_lingering_applied_pass() {
+        // Approve/Copy: status back to Idle, pass ID still claimed, session
+        // still applied so Undo stays reachable for APPLIED_LINGER_MS.
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+        let main_was_visible = std::sync::Mutex::new(Some(true));
+        app_state.activate_transform_pass(7);
+        transform_apply::start_session(&app_state, snapshot_for_dismiss_tests());
+        transform_apply::session_snapshot(&app_state).expect("session installed");
+        app_state
+            .transform_session
+            .lock_or_recover()
+            .as_mut()
+            .expect("session installed")
+            .applied = true;
+
+        supersede_idle_transform_pass(&app_state, &diagnostics, &main_was_visible);
+
+        assert_eq!(app_state.active_transform_pass_id(), None);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        // The sticky visibility snapshot must not leak into the next pass.
+        assert_eq!(*main_was_visible.lock_or_recover(), None);
+        // The pending linger task's `still_applied` guard now reads no session,
+        // so it returns without yanking the superseding pass's popover.
+        assert_eq!(app_state.transform_status(), TransformStatus::Idle);
+    }
+
+    #[test]
+    fn supersede_with_no_claimed_pass_is_a_no_op_clear() {
+        let app_state = AppState::default();
+        let diagnostics = crate::transform_diagnostics::TransformDiagnostics::default();
+        let main_was_visible = std::sync::Mutex::new(None);
+
+        supersede_idle_transform_pass(&app_state, &diagnostics, &main_was_visible);
+
+        assert_eq!(app_state.active_transform_pass_id(), None);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+    }
+
+    fn applied_review(app_state: &AppState, fx: &RecordingFlowEffects, pass_id: u64) {
+        app_state.activate_transform_pass(pass_id);
+        transform_apply::start_session(app_state, snapshot_for_dismiss_tests());
+        app_state
+            .transform_session
+            .lock_or_recover()
+            .as_mut()
+            .unwrap()
+            .applied = true;
+        fx.show_popover(None);
+    }
+
+    #[test]
+    fn refused_superseding_capture_hides_the_abandoned_popover() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        applied_review(&app_state, &fx, 7);
+        supersede_idle_transform_pass(
+            &app_state,
+            &crate::transform_diagnostics::TransformDiagnostics::default(),
+            &std::sync::Mutex::new(None),
+        );
+        app_state.activate_transform_pass(8);
+        // Busy refusals clear the claim; errors before the claim leave it held.
+        for already_cleared in [false, true] {
+            app_state.activate_transform_pass(8);
+            fx.show_popover(None);
+            if already_cleared {
+                app_state.clear_transform_pass(8);
+            }
+            finish_capture_start(&app_state, &fx, 8);
+            assert_eq!(app_state.active_transform_pass_id(), None);
+            assert!(!fx.popover_shown(), "refused start must dismiss Applied");
+        }
+    }
+
+    #[test]
+    fn delayed_capture_cleanup_preserves_a_new_claim_and_review() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        app_state.activate_transform_pass(9);
+        fx.show_popover(None);
+        finish_capture_start(&app_state, &fx, 8);
+        assert_eq!(app_state.active_transform_pass_id(), Some(9));
+        assert!(fx.popover_shown());
+        applied_review(&app_state, &fx, 9);
+        finish_capture_start(&app_state, &fx, 8);
+        assert_eq!(app_state.active_transform_pass_id(), Some(9));
+        assert!(
+            transform_apply::session_snapshot(&app_state)
+                .unwrap()
+                .applied
+        );
+        assert!(fx.popover_shown());
+    }
+
+    #[test]
+    fn capture_cleanup_preserves_successful_and_failed_reviews() {
+        for status in [
+            TransformStatus::Connecting,
+            TransformStatus::Listening,
+            TransformStatus::ReviewPending,
+        ] {
+            let app_state = AppState::default();
+            let fx = RecordingFlowEffects::new();
+            app_state.activate_transform_pass(8);
+            app_state.set_transform_status(status);
+            fx.show_popover(None);
+            finish_capture_start(&app_state, &fx, 8);
+            assert_eq!(app_state.active_transform_pass_id(), Some(8));
+            assert_eq!(app_state.transform_status(), status);
+            assert!(fx.popover_shown());
+        }
+    }
+
+    #[test]
+    fn linger_expiry_retires_only_its_original_applied_review() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        applied_review(&app_state, &fx, 7);
+        assert!(expire_applied_review(&app_state, &fx, 7));
+        assert_eq!(app_state.active_transform_pass_id(), None);
+        assert!(transform_apply::session_snapshot(&app_state).is_none());
+        assert!(!fx.popover_shown());
+    }
+
+    #[test]
+    fn stale_linger_expiry_preserves_a_superseding_applied_review() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        applied_review(&app_state, &fx, 7);
+        supersede_idle_transform_pass(
+            &app_state,
+            &crate::transform_diagnostics::TransformDiagnostics::default(),
+            &std::sync::Mutex::new(None),
+        );
+        applied_review(&app_state, &fx, 8);
+        assert!(!expire_applied_review(&app_state, &fx, 7));
+        assert_eq!(app_state.active_transform_pass_id(), Some(8));
+        assert_eq!(
+            transform_apply::session_snapshot(&app_state)
+                .unwrap()
+                .transform_pass_id,
+            8
+        );
+        assert!(fx.popover_shown());
+    }
+
+    #[test]
+    fn linger_expiry_preserves_a_new_owner_with_an_old_session() {
+        let app_state = AppState::default();
+        let fx = RecordingFlowEffects::new();
+        applied_review(&app_state, &fx, 7);
+        // Ownership can change before an old continuation observes session teardown.
+        app_state.activate_transform_pass(8);
+        assert!(!expire_applied_review(&app_state, &fx, 7));
+        assert_eq!(app_state.active_transform_pass_id(), Some(8));
+        assert!(transform_apply::session_snapshot(&app_state).is_some());
+        assert!(fx.popover_shown());
     }
 
     #[test]
@@ -3882,11 +4356,17 @@ mod tests {
         };
 
         let cancel_state = Arc::clone(&app_state);
-        let outcome = core_start_capture(&app_state, &fx, true, async move {
-            // Simulate cancel mid-capture: leave Capturing before Ok lands.
-            cancel_state.set_transform_status(TransformStatus::Idle);
-            Ok(snapshot)
-        })
+        let outcome = core_start_capture(
+            &app_state,
+            &fx,
+            true,
+            crate::dictation_correction::ReviewPurpose::SelectedText,
+            async move {
+                // Simulate cancel mid-capture: leave Capturing before Ok lands.
+                cancel_state.set_transform_status(TransformStatus::Idle);
+                Ok(snapshot)
+            },
+        )
         .await;
 
         assert_eq!(outcome, StartOutcome::Aborted);

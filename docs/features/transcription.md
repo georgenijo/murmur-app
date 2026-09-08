@@ -56,6 +56,29 @@ never serialize either field. Production protocol v6 retains the optional
 controls; capture selection itself still resolves the immutable device choice
 afresh at recording start.
 
+### Smart Auto microphone selection
+
+Smart Auto is an opt-in capture policy. Dictation, Meeting Capture, Voice
+Query, selected-text Transform (including Retry), and the Settings microphone
+preview each resolve it only as their capture owner is accepted from idle and
+read the existing authoritative inventory; it never enumerates, probes, opens,
+or monitors a microphone in the background.
+The user explicitly approves stable IDs, can place approved IDs in a preference
+order, and may separately allow approved Continuity Capture devices. A newly
+connected input is never trusted automatically.
+
+The resolver chooses the first eligible preferred input, then an eligible
+approved macOS default, then the lexicographically stable eligible external
+fallback. It requires native input capability and a live connection, excludes
+unknown transport classes and output-only sources, and reads
+`AppleClamshellState` from the macOS IORegistry at the selection boundary.
+Built-in microphones are rejected when that state is closed or unavailable,
+including when closing the lid did not trigger a Core Audio topology change.
+The selected stable ID is passed into the ordinary capture lifecycle and is
+immutable for that recording; a later device or lid change only affects the
+next capture. This narrower policy does not complete issue #525's
+verified-signal routing work.
+
 Direct AUHAL is the primary backend and CPAL is the independent fallback. Each
 resolution pass allows one fallback only before any audio is retained and must
 target the same raw device UID. The fallback starts only after the primary process group is
@@ -330,17 +353,20 @@ transformed, persisted, exported, logged, or counted; final stop-time delivery
 remains the only authoritative transcript. Whisper and CPU Parakeet do not run
 live previews so their slower decodes cannot compete with final delivery.
 
-The preview renders in its own `dictation-preview` window — a non-activating,
-click-through glass card centered under the notch, mirroring the voice-query
-answer popover. It is anchored to the menu-bar display — the same screen the
-notch measurement and the overlay come from — not to whichever monitor the main
-window happens to sit on. Rust owns its lifecycle end to end: `show_internal`
-opens it on the first recognized words (so a silent recording never flashes an
-empty card) and the ticker hides it when the recording stops being current,
-whatever ended it. The frontend never decides visibility, but it does clear the
-text as soon as capture leaves `recording`, so a stopped recording leaves no
-words on screen while the native hide catches up (the ticker can trail the stop
-by a tick or an in-flight decode).
+The preview renders in its own `dictation-preview` window. The non-activating,
+click-through glass card is centered under the notch and mirrors the Voice
+Query answer popover. The preview uses the menu-bar display, which also owns
+the notch measurement and overlay. It does not follow the main window to
+another monitor.
+
+Rust sends each partial to the hidden webview. React commits the non-empty card,
+then calls `show_dictation_preview` with the recording ID. Rust rejects another
+window or a stale recording before it shows the native window. This ordering
+prevents AppKit from committing an empty transparent frame and removing the
+window before the text renders. Silent recordings show nothing. The ticker
+hides the window when the recording stops being current. The frontend also
+clears the text as soon as capture leaves `recording`, because an in-flight
+decode can delay the native hide.
 
 It deliberately does **not** render inside the overlay. The overlay's wings are
 fixed 36pt slots sized for an icon and a waveform; text there fits roughly four

@@ -140,11 +140,11 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     }
   };
 
-  const inputClass = 'w-full rounded-lg border border-on-surface-variant bg-surface-container-lowest px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
+  const inputClass = 'w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-[2px]"
+      className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6 backdrop-blur-[2px]"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
@@ -152,7 +152,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
         role="dialog"
         aria-modal="true"
         aria-labelledby="knowledge-editor-title"
-        className="max-h-[86vh] w-full max-w-[560px] overflow-y-auto rounded-2xl border border-outline-variant/30 bg-surface p-5 shadow-2xl"
+        className="dialog-popover max-h-[86vh] w-full max-w-[560px] overflow-y-auto p-5"
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
@@ -283,7 +283,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
 
           <div className="flex justify-end gap-2 border-t border-outline-variant/25 pt-4">
             <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-medium text-on-surface-variant hover:bg-surface-container">Cancel</button>
-            <button type="button" onClick={() => void submit()} disabled={saving} className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
+            <button type="button" onClick={() => void submit()} disabled={saving} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
           </div>
         </div>
       </div>
