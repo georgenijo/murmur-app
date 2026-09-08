@@ -523,10 +523,6 @@ impl PerformanceMetrics {
                 .repository(PerformanceStoreOperationV1::Write)
                 .and_then(|repository| repository.insert_resource_sample(sample));
             self.observe(result)?;
-            self.production
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
         }
         let app_handle = self
             .inner
@@ -609,6 +605,10 @@ impl PerformanceMetrics {
                 .repository(PerformanceStoreOperationV1::Clear)
                 .and_then(|repository| repository.clear());
             self.observe(result)?;
+            self.production
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
         }
         let app_handle = self
             .inner
@@ -1144,6 +1144,12 @@ mod production_persistence_tests {
         );
         begin(&restarted, 2);
         restarted.clear().unwrap();
+        assert!(restarted
+            .production
+            .lock()
+            .unwrap()
+            .active_snapshot(2)
+            .is_none());
         restarted.production.lock().unwrap().observe(
             2,
             AudioStartupDiagnostic::CycleReady {
@@ -1163,6 +1169,83 @@ mod production_persistence_tests {
             .is_none());
         assert!(restarted.list(200).unwrap().runs.is_empty());
     }
+    #[test]
+    fn resource_heartbeats_preserve_early_and_late_production_capture_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 7);
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::HelperReady {
+                resolve_ms: 2,
+                signature_ms: 3,
+                spawn_ms: 4,
+            },
+        );
+        let mut sample = ResourceSampleV1 {
+            schema_version: RESOURCE_SAMPLE_SCHEMA_VERSION,
+            observed_at_ms: chrono::Utc::now().timestamp_millis(),
+            host: HostResourceSampleV1 {
+                cpu_percent: MeasurementV1::measured(1.0),
+            },
+            main_process: ProcessResourceSampleV1 {
+                cpu_percent: MeasurementV1::measured(1.0),
+                rss_bytes: MeasurementV1::measured(1024),
+                rust_heap_bytes: MeasurementV1::NotApplicable,
+                ffi_native_heap_bytes: MeasurementV1::NotApplicable,
+            },
+            sidecar_process: SidecarResourceSampleV1::unavailable(UnavailableReasonV1::NoSamples),
+        };
+        metrics.insert_resource_sample(&sample).unwrap();
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::FirstPcm {
+                backend: CaptureBackend::Auhal,
+                resolution_pass: 1,
+                attempt_index: 1,
+                attempt_start_to_first_pcm_ms: 145,
+                active_elapsed_ms: 160,
+            },
+        );
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::CycleReady {
+                cycle_start_to_first_pcm_ms: 180,
+            },
+        );
+        sample.observed_at_ms += 1;
+        metrics.insert_resource_sample(&sample).unwrap();
+        metrics.observe_production_capture(
+            7,
+            AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 20 },
+        );
+        metrics.production_sample_count(7, 16_000);
+        let run = metrics
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: 7 },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                Some(ContentFreeInputSummaryV1::audio(1_000)),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let capture = &run.production.as_ref().unwrap().capture;
+        assert_eq!(capture.helper_resolve_ms, Some(2));
+        assert_eq!(capture.helper_signature_ms, Some(3));
+        assert_eq!(capture.helper_spawn_ms, Some(4));
+        assert_eq!(capture.first_pcm_ms, Some(145));
+        assert_eq!(capture.ready_ms, Some(180));
+        assert_eq!(capture.stop_to_worker_exit_ms, Some(20));
+        assert_eq!(capture.zero_sample_success, Some(false));
+        assert_eq!(
+            metrics.list(200).unwrap().runs[0].production,
+            run.production
+        );
+        assert_eq!(metrics.resource_window().unwrap().len(), 2);
+    }
+
     #[test]
     fn completed_snapshot_preserves_exact_recording_and_real_zero_sample_evidence() {
         let temp = tempfile::tempdir().unwrap();

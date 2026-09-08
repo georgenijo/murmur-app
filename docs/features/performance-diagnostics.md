@@ -309,7 +309,10 @@ installation identity is a random UUID retained in the diagnostics directory;
 it contains no hostname, hardware serial, or device UID. Do not copy a whole
 installation's diagnostics directory to another machine and treat it as local
 comparison evidence. Device class is obtained only from the existing valid
-inventory cache; a stale/unknown cache cannot establish compatibility.
+inventory cache; a stale/unknown cache cannot establish compatibility. The
+helper's undifferentiated external-device class combines USB, Bluetooth and
+other transports, so it cannot establish compatibility either. Older companion
+records with that external label are also excluded.
 
 The configuration fingerprint contains only supported content-free settings
 and capture backend order. It never hashes transcript, prompt, vocabulary,
@@ -323,6 +326,7 @@ into a single release-regression verdict.
 
 For each metric the UI uses successful runs with a measured value, reports
 separate sample counts, and shows median, absolute delta and percentage delta.
+Use **Swap versions** to reverse the baseline and candidate.
 Small samples are preliminary. Nearest-rank p95 requires at least 20 measured
 values per side for that metric; fewer samples cannot generate a p95 verdict.
 Central policy requires both more than 20 ms and more than 15% for a median
@@ -334,6 +338,11 @@ Within the retained window, version-wide success/failure counts, capture-error o
 zero-sample success, and stale/unconfirmed worker evidence remain visible even
 without enough compatible latency samples. They are labeled observations, not
 proof that incompatible cohorts establish a release-caused latency regression.
+An anomaly is labeled new only when a nonempty baseline provides known negative
+evidence for every retained run. Missing baseline observations leave the label
+at **Observed in candidate**. An absent capture-failure value remains unknown,
+so it cannot by itself establish that no capture failure occurred.
+
 For releases whose retained baseline predates this companion, keep the manual
 read-only production validation described in `prompts/PROMPT_RELEASE.md`; the
 in-app comparison becomes authoritative only when both selected cohorts carry

@@ -126,4 +126,40 @@ describe('ProductionComparison', () => {
     expect(container.textContent).toContain('Failed, timed out, or interrupted');
     expect(container.textContent).toContain('New in candidate');
   });
+
+  it('reverses a two-version comparison including its delta direction', async () => {
+    const baseline = versionRun('1.0.0');
+    const candidate = versionRun('1.1.0', {
+      startedAtMs: baseline.startedAtMs + 1_000,
+      production: production({}, { readyMs: 220 }),
+    });
+    await render([baseline, candidate]);
+    expect(container.textContent).toContain('+40 ms · +22.2%');
+    const swap = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Swap versions');
+    if (!swap) throw new Error('Missing Swap versions button');
+    await act(async () => swap.click());
+    const baselineSelect = container.querySelector('[aria-label="Baseline app version"]');
+    const candidateSelect = container.querySelector('[aria-label="Candidate app version"]');
+    if (!(baselineSelect instanceof HTMLSelectElement) || !(candidateSelect instanceof HTMLSelectElement)) {
+      throw new Error('Missing version selectors');
+    }
+    expect(baselineSelect.value).toBe('1.1.0');
+    expect(candidateSelect.value).toBe('1.0.0');
+    expect(container.textContent).toContain('-40 ms · -18.2%');
+    expect(container.textContent).toContain('Baseline: 220 ms. Candidate: 180 ms.');
+  });
+
+  it('shows a candidate anomaly without claiming novelty against historical evidence', async () => {
+    const baseline = versionRun('1.0.0', { production: undefined });
+    const candidate = versionRun('1.1.0', {
+      startedAtMs: baseline.startedAtMs + 1_000,
+      production: production({}, { fallbackAttempted: true }),
+    });
+    await render([baseline, candidate]);
+    expect(container.textContent).toContain('Observed in candidate');
+    expect(container.textContent).toContain('1 baseline and 0 candidate unavailable');
+    expect(container.textContent).not.toContain('New in candidate');
+  });
+
 });

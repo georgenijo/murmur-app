@@ -80,7 +80,7 @@ export const PRODUCTION_EXCLUSION_LABELS: Record<ProductionExclusionReason, stri
   developmentBuild: 'Development build',
   osVersionUnknown: 'Operating-system version unavailable',
   architectureUnknown: 'Architecture unavailable',
-  microphoneKindUnknown: 'Microphone kind unavailable',
+  microphoneKindUnknown: 'Microphone class or transport unavailable',
   configurationUnknown: 'Supported configuration identity unavailable',
   captureBackendUnknown: 'Actual capture backend unavailable',
   runtimeUnknown: 'Runtime identity or warm state unavailable',
@@ -255,7 +255,9 @@ function exclusionReasons(run: PerformanceRunV1): ProductionExclusionReason[] {
   if (production.cohort.buildMode !== 'release') reasons.push('developmentBuild');
   if (production.cohort.osVersion === null) reasons.push('osVersionUnknown');
   if (production.cohort.architecture === 'other') reasons.push('architectureUnknown');
-  if (production.cohort.microphoneKind === null) reasons.push('microphoneKindUnknown');
+  if (production.cohort.microphoneKind === null || production.cohort.microphoneKind === 'external') {
+    reasons.push('microphoneKindUnknown');
+  }
   if (production.cohort.configurationKey === null) reasons.push('configurationUnknown');
   if (production.capture.backend === null) reasons.push('captureBackendUnknown');
   if (run.runtimes.length === 0
@@ -497,7 +499,8 @@ function observations(
       candidate: candidateCount,
       baselineUnavailable: baselineValues.filter(value => value === null).length,
       candidateUnavailable: candidateValues.filter(value => value === null).length,
-      newlyObserved: anomaly && baselineCount === 0 && candidateCount > 0,
+      newlyObserved: anomaly && baselineValues.length > 0
+        && baselineValues.every(value => value === false) && candidateCount > 0,
       candidateObserved: anomaly && candidateCount > 0,
     };
   });

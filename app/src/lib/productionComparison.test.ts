@@ -250,9 +250,40 @@ describe('production version comparison', () => {
     expect(result.observations).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'failure', candidate: 1, newlyObserved: true }),
       expect.objectContaining({ key: 'fallbackAttempted', candidate: 1, newlyObserved: true }),
-      expect.objectContaining({ key: 'captureFailure', candidate: 1, newlyObserved: true }),
+      expect.objectContaining({ key: 'captureFailure', candidate: 1, newlyObserved: false, candidateObserved: true }),
       expect.objectContaining({ key: 'zeroSampleSuccess', candidate: 1, newlyObserved: true }),
       expect.objectContaining({ key: 'workerInvariantViolation', candidate: 1, newlyObserved: true }),
     ]));
   });
+
+  it('refuses legacy undifferentiated external microphone cohorts', () => {
+    const result = compareProductionVersions([
+      comparisonRun('1.0.0', { production: production({ microphoneKind: 'external' }) }),
+      comparisonRun('1.1.0', { production: production({ microphoneKind: 'external' }) }),
+    ], '1.0.0', '1.1.0');
+    expect(result.cohorts).toHaveLength(0);
+    expect(result.exclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'microphoneKindUnknown' }),
+    ]));
+  });
+
+  it('requires known negative baseline evidence before calling an anomaly new', () => {
+    const known = comparisonRun('1.0.0');
+    const historical = comparisonRun('1.0.0', { production: undefined });
+    const unknown = comparisonRun('1.0.0', {
+      production: production({}, { fallbackAttempted: null }),
+    });
+    const candidate = comparisonRun('1.1.0', {
+      production: production({}, { fallbackAttempted: true }),
+    });
+    for (const baseline of [[], [historical], [unknown], [known, historical], [known, unknown]]) {
+      const result = compareProductionVersions([...baseline, candidate], '1.0.0', '1.1.0');
+      expect(result.observations.find(observation => observation.key === 'fallbackAttempted'))
+        .toMatchObject({ newlyObserved: false, candidateObserved: true });
+    }
+    const result = compareProductionVersions([known, candidate], '1.0.0', '1.1.0');
+    expect(result.observations.find(observation => observation.key === 'fallbackAttempted'))
+      .toMatchObject({ newlyObserved: true, candidateObserved: true, baselineUnavailable: 0 });
+  });
+
 });
