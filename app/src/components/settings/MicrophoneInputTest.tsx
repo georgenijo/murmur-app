@@ -86,6 +86,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusWhenEnabledRef = useRef(false);
   const smartAutoActive = smartAuto.smartAutoMicrophoneEnabled;
   const manualDevices = devices.filter((device) => device.hasInput);
   const manualOptions = audioDeviceSelectOptions(manualDevices);
@@ -102,7 +103,14 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
       : manualOptions.find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
 
   useEffect(() => {
-    if (disabled) setOpen(false);
+    if (disabled) {
+      setOpen(false);
+      return;
+    }
+    if (restoreFocusWhenEnabledRef.current) {
+      restoreFocusWhenEnabledRef.current = false;
+      triggerRef.current?.focus();
+    }
   }, [disabled]);
 
   useEffect(() => {
@@ -147,6 +155,9 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
     });
   };
   const selectManual = (deviceId: string) => {
+    if (pickerRef.current?.contains(document.activeElement)) {
+      restoreFocusWhenEnabledRef.current = true;
+    }
     onSelectManual(deviceId);
   };
 

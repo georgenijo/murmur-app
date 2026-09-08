@@ -246,6 +246,34 @@ describe('MicrophoneInputTest', () => {
     expect((container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('restores picker focus after an active preview switches microphones', async () => {
+    includeSmartAuto = true;
+    let finishStop: ((status: MicrophonePreviewStatus) => void) | null = null;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') return active;
+      if (command === 'stop_microphone_preview') {
+        return new Promise<MicrophonePreviewStatus>((resolve) => { finishStop = resolve; });
+      }
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
+      if (command === 'cancel_microphone_preview') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    await emitStatus(active);
+    const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    await act(async () => picker.click());
+    const builtInRadio = Array.from(container.querySelectorAll('input[type="radio"]'))
+      .find((radio) => radio.parentElement?.textContent?.includes('Built-in Microphone')) as HTMLInputElement;
+    await act(async () => builtInRadio.click());
+
+    expect(picker.disabled).toBe(true);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => finishStop?.(idle));
+    expect(picker.disabled).toBe(false);
+    expect(document.activeElement).toBe(picker);
+  });
+
   it('keeps a saved unknown-kind input available for manual selection', async () => {
     includeSmartAuto = true;
     selected = 'unknown-input';
