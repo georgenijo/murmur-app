@@ -262,6 +262,10 @@ impl CorrectionMatcher {
         }
     }
 
+    pub(crate) fn has_only_contextual_rules(&self) -> bool {
+        self.explicit_aliases.is_empty() && self.ac.is_none() && self.terms.is_empty()
+    }
+
     /// The built-in contextual homophone rule makes every matcher actionable,
     /// even when no user vocabulary or fuzzy terms are configured.
     pub fn is_empty(&self) -> bool {

@@ -1,0 +1,205 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { PerformanceRunV1, ProductionRunV1 } from '../../lib/performance';
+import { ProductionComparison } from './ProductionComparison';
+import { makeRun } from './testFixtures';
+
+function production(
+  cohort: Partial<ProductionRunV1['cohort']> = {},
+  capture: Partial<ProductionRunV1['capture']> = {},
+): ProductionRunV1 {
+  return {
+    schemaVersion: 1,
+    cohort: {
+      machineId: '123e4567-e89b-12d3-a456-426614174000',
+      osVersion: '15.6.1',
+      architecture: 'aarch64',
+      buildMode: 'release',
+      microphoneSelection: 'systemDefault',
+      microphoneKind: 'builtIn',
+      configurationKey: 'a'.repeat(64),
+      ...cohort,
+    },
+    capture: {
+      helperResolveMs: 4,
+      helperSignatureMs: 5,
+      helperSpawnMs: 10,
+      streamOpenMs: 40,
+      firstCallbackWaitMs: 90,
+      firstPcmMs: 145,
+      readyMs: 180,
+      stopToWorkerExitMs: 20,
+      backend: 'auhal',
+      fallbackAttempted: false,
+      fallbackSucceeded: null,
+      failureKind: null,
+      workerInvariantViolation: false,
+      zeroSampleSuccess: false,
+      ...capture,
+    },
+  };
+}
+
+function versionRun(
+  appVersion: string,
+  overrides: Partial<PerformanceRunV1> = {},
+): PerformanceRunV1 {
+  return makeRun({ appVersion, production: production(), ...overrides });
+}
+
+describe('ProductionComparison', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function render(runs: PerformanceRunV1[]) {
+    await act(async () => root.render(<ProductionComparison runs={runs} />));
+  }
+
+  it('stays separate from the run list and requires two dictation versions', async () => {
+    await render([versionRun('1.0.0')]);
+
+    expect(container.querySelector('details > summary')?.textContent).toContain('Compare app versions');
+    expect(container.textContent).toContain(
+      'Retained dictation runs from two app versions are needed before a comparison can be made.',
+    );
+  });
+
+  it('shows matched latency, preliminary raw values, and version-wide anomalies together', async () => {
+    const baseline = versionRun('1.0.0');
+    const candidate = versionRun('1.1.0', {
+      startedAtMs: baseline.startedAtMs + 1_000,
+      production: production({}, { readyMs: 220 }),
+    });
+    const candidateFailure = versionRun('1.1.0', {
+      startedAtMs: baseline.startedAtMs + 2_000,
+      outcome: { status: 'timedOut', stage: 'captureFinalization' },
+      production: production({}, {
+        fallbackAttempted: true,
+        fallbackSucceeded: false,
+        failureKind: 'first_buffer_timeout',
+        workerInvariantViolation: true,
+      }),
+    });
+    await render([baseline, candidate, candidateFailure]);
+
+    expect((container.querySelector('[aria-label="Baseline app version"]') as HTMLSelectElement).value)
+      .toBe('1.0.0');
+    expect((container.querySelector('[aria-label="Candidate app version"]') as HTMLSelectElement).value)
+      .toBe('1.1.0');
+    expect(container.textContent).toContain('Version-wide observations');
+    expect(container.textContent).toContain('New in candidate');
+    expect(container.textContent).toContain('Compatible cohort 1');
+    expect(container.textContent).toContain('Capture ready');
+    expect(container.textContent).toContain('+40 ms · +22.2%');
+    expect(container.textContent).toContain('Insufficient samples');
+    expect(container.textContent).toContain('Preliminary raw values');
+    expect(container.textContent).toContain('Baseline: 180 ms. Candidate: 220 ms.');
+  });
+
+  it('scrolls a focused metrics region with unmodified horizontal arrow keys only', async () => {
+    await render([versionRun('1.0.0'), versionRun('1.1.0')]);
+    const region = container.querySelector('[role="region"]');
+    if (!(region instanceof HTMLDivElement)) throw new Error('Missing metrics region');
+
+    region.scrollLeft = 120;
+    const left = new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true });
+    await act(async () => region.dispatchEvent(left));
+    expect(region.scrollLeft).toBeLessThan(120);
+    expect(left.defaultPrevented).toBe(true);
+
+    const afterLeft = region.scrollLeft;
+    const right = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    await act(async () => region.dispatchEvent(right));
+    expect(region.scrollLeft).toBeGreaterThan(afterLeft);
+    expect(right.defaultPrevented).toBe(true);
+
+    for (const modifiers of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      region.scrollLeft = 120;
+      const modified = new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        bubbles: true,
+        cancelable: true,
+        ...modifiers,
+      });
+      await act(async () => region.dispatchEvent(modified));
+      expect(region.scrollLeft).toBe(120);
+      expect(modified.defaultPrevented).toBe(false);
+    }
+
+    const nested = region.querySelector('table');
+    if (!(nested instanceof HTMLTableElement)) throw new Error('Missing metrics table');
+    nested.tabIndex = 0;
+    region.scrollLeft = 120;
+    const nestedArrow = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    await act(async () => nested.dispatchEvent(nestedArrow));
+    expect(region.scrollLeft).toBe(120);
+    expect(nestedArrow.defaultPrevented).toBe(false);
+  });
+
+  it('explains historical, development, and exact-cohort exclusions without hiding anomalies', async () => {
+    const historical = versionRun('1.0.0', { production: undefined });
+    const development = versionRun('1.0.0', {
+      production: production({ buildMode: 'development' }),
+    });
+    const candidate = versionRun('1.1.0', {
+      startedAtMs: historical.startedAtMs + 1_000,
+      outcome: { status: 'failed', stage: 'inferenceDecode', errorCode: 'inferenceFailed' },
+      production: production({ machineId: '223e4567-e89b-12d3-a456-426614174000' }),
+    });
+    await render([historical, development, candidate]);
+
+    expect(container.textContent).toContain('No exact-compatible latency cohort was found');
+    expect(container.textContent).toContain('Historical run without production cohort metadata');
+    expect(container.textContent).toContain('Development build');
+    expect(container.textContent).toContain('Failed, timed out, or interrupted');
+    expect(container.textContent).toContain('New in candidate');
+  });
+
+  it('reverses a two-version comparison including its delta direction', async () => {
+    const baseline = versionRun('1.0.0');
+    const candidate = versionRun('1.1.0', {
+      startedAtMs: baseline.startedAtMs + 1_000,
+      production: production({}, { readyMs: 220 }),
+    });
+    await render([baseline, candidate]);
+    expect(container.textContent).toContain('+40 ms · +22.2%');
+    const swap = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Swap versions');
+    if (!swap) throw new Error('Missing Swap versions button');
+    await act(async () => swap.click());
+    const baselineSelect = container.querySelector('[aria-label="Baseline app version"]');
+    const candidateSelect = container.querySelector('[aria-label="Candidate app version"]');
+    if (!(baselineSelect instanceof HTMLSelectElement) || !(candidateSelect instanceof HTMLSelectElement)) {
+      throw new Error('Missing version selectors');
+    }
+    expect(baselineSelect.value).toBe('1.1.0');
+    expect(candidateSelect.value).toBe('1.0.0');
+    expect(container.textContent).toContain('-40 ms · -18.2%');
+    expect(container.textContent).toContain('Baseline: 220 ms. Candidate: 180 ms.');
+  });
+
+  it('shows a candidate anomaly without claiming novelty against historical evidence', async () => {
+    const baseline = versionRun('1.0.0', { production: undefined });
+    const candidate = versionRun('1.1.0', {
+      startedAtMs: baseline.startedAtMs + 1_000,
+      production: production({}, { fallbackAttempted: true }),
+    });
+    await render([baseline, candidate]);
+    expect(container.textContent).toContain('Observed in candidate');
+    expect(container.textContent).toContain('1 baseline and 0 candidate unavailable');
+    expect(container.textContent).not.toContain('New in candidate');
+  });
+
+});

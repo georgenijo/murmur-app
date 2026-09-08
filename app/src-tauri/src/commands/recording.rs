@@ -3796,10 +3796,19 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
 ) {
     let state = app_handle.state::<State>();
+    if let AudioLifecycleEvent::InitializationFailed { kind, .. } = &event {
+        state
+            .performance
+            .production_capture_failure(recording_id, *kind);
+    }
     let is_current = || state.app_state.recording_id.load(Ordering::SeqCst) == recording_id;
 
     match event {
-        AudioLifecycleEvent::StartupDiagnostic(_) => {}
+        AudioLifecycleEvent::StartupDiagnostic(diagnostic) => {
+            state
+                .performance
+                .observe_production_capture(recording_id, diagnostic);
+        }
         AudioLifecycleEvent::Accepted => {
             state.app_state.dictation_telemetry.accepted(recording_id);
             state.dictation_diagnostics.claim(recording_id);
@@ -4413,6 +4422,17 @@ pub async fn start_native_recording(
     // Reserve the generation before the worker is allowed to emit lifecycle
     // events. Terminal persistence can now wait for the asynchronous begin
     // without holding capture ownership or the recording transition.
+    state.performance.register_production(
+        rid,
+        if smart_auto.is_some() {
+            crate::performance_metrics::production::MicrophoneSelectionV1::SmartAuto
+        } else if device_name.is_some() {
+            crate::performance_metrics::production::MicrophoneSelectionV1::Explicit
+        } else {
+            crate::performance_metrics::production::MicrophoneSelectionV1::SystemDefault
+        },
+        crate::audio_inventory::production_device_kind(selected_device_name.as_deref()),
+    );
     dictation_performance_begins().register(rid);
     if let Err(error) = audio_lifecycle::start_dictation_recording(
         app_handle.clone(),
@@ -4468,6 +4488,7 @@ pub async fn start_native_recording(
         &delivery_target,
         site_identity.as_ref(),
     );
+    state.performance.production_context(rid, &context);
     let context_action = {
         let dictation = state.app_state.dictation.lock_or_recover();
         let action = native_start_context_action(
@@ -4768,6 +4789,9 @@ async fn stop_native_recording_for(
             e
         })?
     };
+    state
+        .performance
+        .production_sample_count(rid, samples.len());
     let mut performance_guard = NativeDictationPerformanceGuard::new(
         state.performance.clone(),
         rid,

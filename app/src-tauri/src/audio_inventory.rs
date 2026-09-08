@@ -660,6 +660,30 @@ pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAuto
     .map_err(str::to_string)
 }
 
+pub(crate) fn production_device_kind(
+    selected: Option<&str>,
+) -> Option<crate::performance_metrics::production::MicrophoneKindV1> {
+    production_device_kind_for_snapshot(&coordinator().snapshot(), selected)
+}
+
+fn production_device_kind_for_snapshot(
+    snapshot: &AudioInputInventorySnapshot,
+    selected: Option<&str>,
+) -> Option<crate::performance_metrics::production::MicrophoneKindV1> {
+    use crate::performance_metrics::production::MicrophoneKindV1;
+    use murmur_capture_helper_protocol::ProductionDeviceKind;
+    if snapshot.status != AudioInputInventoryStatus::Available {
+        return None;
+    }
+    let id = selected.or(snapshot.default_input_id.as_deref())?;
+    let device = snapshot.devices.iter().find(|device| device.id == id)?;
+    match device.kind {
+        ProductionDeviceKind::BuiltIn => Some(MicrophoneKindV1::BuiltIn),
+        ProductionDeviceKind::Continuity => Some(MicrophoneKindV1::Continuity),
+        ProductionDeviceKind::External | ProductionDeviceKind::Unknown => None,
+    }
+}
+
 pub(crate) fn privacy_aggregate() -> AudioInputInventoryAggregate {
     privacy_aggregate_for_snapshot(&coordinator().snapshot())
 }
@@ -704,6 +728,41 @@ mod tests {
             default_input_id: default.map(str::to_string),
             lid_state: ProductionLidState::Open,
         }
+    }
+
+    #[test]
+    fn production_comparison_refuses_undifferentiated_external_transports() {
+        use crate::performance_metrics::production::MicrophoneKindV1;
+        use murmur_capture_helper_protocol::ProductionDeviceKind;
+        let coordinator = AudioInputInventoryCoordinator::default();
+        coordinator.request_refresh();
+        assert!(coordinator.claim_refresh(false));
+        let mut inventory = topology(
+            &[
+                ("usb-id", "USB microphone"),
+                ("bluetooth-id", "Bluetooth microphone"),
+                ("built-in-id", "Built in"),
+            ],
+            Some("usb-id"),
+        );
+        inventory.devices[2].kind = ProductionDeviceKind::BuiltIn;
+        let (snapshot, _) = coordinator.finish_refresh(Ok(inventory));
+        for selected in [None, Some("usb-id"), Some("bluetooth-id")] {
+            assert_eq!(
+                production_device_kind_for_snapshot(&snapshot, selected),
+                None
+            );
+        }
+        assert_eq!(
+            production_device_kind_for_snapshot(&snapshot, Some("built-in-id")),
+            Some(MicrophoneKindV1::BuiltIn)
+        );
+        let mut stale = snapshot;
+        stale.status = AudioInputInventoryStatus::Stale;
+        assert_eq!(
+            production_device_kind_for_snapshot(&stale, Some("built-in-id")),
+            None
+        );
     }
 
     #[test]
