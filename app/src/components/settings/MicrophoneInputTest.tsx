@@ -88,6 +88,10 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
   const triggerRef = useRef<HTMLButtonElement>(null);
   const smartAutoActive = smartAuto.smartAutoMicrophoneEnabled;
   const manualDevices = devices.filter((device) => device.hasInput);
+  const manualOptions = audioDeviceSelectOptions(manualDevices);
+  const deviceLabel = (device: AudioDeviceDescriptor) => (
+    manualOptions.find((option) => option.value === device.id)?.label ?? device.name
+  );
   const approvalDevices = manualDevices.filter((device) => device.kind !== 'unknown');
   const knownIds = new Set(approvalDevices.map((device) => device.id));
   const unavailableApprovedIds = smartAuto.smartAutoApprovedDeviceIds.filter((id) => !knownIds.has(id));
@@ -95,7 +99,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
     ? smartAutoSelection ? `Smart Auto · ${smartAutoSelection.device.name}` : 'Smart Auto · No usable microphone'
     : microphone === 'system_default'
       ? followSystemDefaultOptionLabel(manualDevices, defaultInputId)
-      : audioDeviceSelectOptions(manualDevices).find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
+      : manualOptions.find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -143,7 +147,6 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
     });
   };
   const selectManual = (deviceId: string) => {
-    setOpen(false);
     onSelectManual(deviceId);
   };
 
@@ -174,7 +177,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
             {manualDevices.map((device) => (
               <label key={`manual-${device.id}`} className="settings-microphone-choice">
                 <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} onChange={() => selectManual(device.id)} />
-                <span><span className="block font-medium">{device.name}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
+                <span><span className="block font-medium">{deviceLabel(device)}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
               </label>
             ))}
           </fieldset>
@@ -190,11 +193,11 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
                     <label className="settings-microphone-choice-main">
                       <input type="checkbox" checked={approved} disabled={disabled} onChange={(event) => setApproved(device.id, event.target.checked)} />
                       <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2"><span className="truncate font-medium">{device.name}</span>{active && <span className="settings-microphone-active-badge">Using now</span>}</span>
+                        <span className="flex items-center gap-2"><span className="truncate font-medium">{deviceLabel(device)}</span>{active && <span className="settings-microphone-active-badge">Next capture</span>}</span>
                         <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
                       </span>
                     </label>
-                    <button type="button" disabled={disabled || !approved} aria-label={`Prefer ${device.name} for Smart Auto`} aria-pressed={preferred} onClick={() => setPreferred(device.id)} className="settings-microphone-preference">
+                    <button type="button" disabled={disabled || !approved} aria-label={`Prefer ${deviceLabel(device)} for Smart Auto`} aria-pressed={preferred} onClick={() => setPreferred(device.id)} className="settings-microphone-preference">
                       {preferred ? 'Preferred' : 'Prefer'}
                     </button>
                   </div>

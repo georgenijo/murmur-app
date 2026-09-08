@@ -288,6 +288,7 @@ test('recording settings unify Smart Auto mode and per-microphone approval', asy
   await expect(pickerDialog.getByRole('radio', { name: /Smart Auto/ })).toBeChecked();
   await expect(pickerDialog.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
   await expect(pickerDialog.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
+  await expect(pickerDialog.getByText('Next capture')).toBeVisible();
   await expect(pickerDialog.getByRole('button', { name: 'Prefer MacBook Pro Microphone for Smart Auto' })).toHaveText('Preferred');
   await expect(pickerDialog.getByRole('button', { name: 'Prefer Anker USB Microphone for Smart Auto' })).toHaveText('Prefer');
   await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
@@ -341,6 +342,13 @@ test('recording setting rows and dependent rails keep the shared spacing contrac
   expect(meetingDimensions[1].height).toBeGreaterThanOrEqual(48);
   expect(meetingDimensions[0].left).toBe(meetingDimensions[1].left);
   expect(meetingDimensions[0].right).toBe(meetingDimensions[1].right);
+  const speakerBounds = await Promise.all([speakerGroup, speakerRow].map((item) => item.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { top: box.top, left: box.left, right: box.right };
+  })));
+  expect(Math.abs(speakerBounds[0].top - speakerBounds[1].top)).toBeLessThanOrEqual(1);
+  expect(speakerBounds[0].left).toBe(speakerBounds[1].left);
+  expect(speakerBounds[0].right).toBe(speakerBounds[1].right);
 });
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {

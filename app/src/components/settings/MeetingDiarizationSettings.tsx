@@ -118,7 +118,7 @@ export function MeetingDiarizationSettings({
   const supported = status?.supported !== false;
 
   return (
-    <div data-setting-target="meeting-speakers" className="space-y-3 rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+    <div data-setting-target="meeting-speakers" className="settings-setting-group space-y-3 rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
       <div className="settings-setting-row flex items-center justify-between gap-6 px-1">
         <div>
           <p className="text-sm font-medium text-on-surface">Label Remote Speakers</p>

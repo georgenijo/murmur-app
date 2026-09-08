@@ -67,6 +67,7 @@ describe('MicrophoneInputTest', () => {
   let inventoryAvailable = true;
   let inventoryLoading = false;
   let missingDevice = false;
+  let renderedDevices = [...devices];
   let includeSmartAuto = false;
   let smartAuto: Pick<Settings, 'smartAutoMicrophoneEnabled' | 'smartAutoApprovedDeviceIds' | 'smartAutoPreferredDeviceIds' | 'smartAutoAllowContinuity'>;
   let handleSmartAutoChange: ReturnType<typeof vi.fn<(updates: Partial<Settings>) => void>>;
@@ -83,7 +84,7 @@ describe('MicrophoneInputTest', () => {
         <SettingsSurfaceActiveContext.Provider value={surfaceActive}>
           <MemoizedMicrophoneInputTest
             microphone={selected}
-            devices={devices}
+            devices={renderedDevices}
             defaultInputId={defaultInputId}
             active={activePage}
             ready={appReady}
@@ -121,6 +122,7 @@ describe('MicrophoneInputTest', () => {
     inventoryAvailable = true;
     inventoryLoading = false;
     missingDevice = false;
+    renderedDevices = [...devices];
     includeSmartAuto = false;
     smartAuto = {
       smartAutoMicrophoneEnabled: true,
@@ -256,6 +258,27 @@ describe('MicrophoneInputTest', () => {
     expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(5);
     const dialog = container.querySelector('[role="dialog"]') as HTMLElement;
     expect(dialog.textContent?.match(/Legacy Audio Input/g)).toHaveLength(1);
+  });
+
+  it('disambiguates duplicate microphone names in manual and Smart Auto controls', async () => {
+    includeSmartAuto = true;
+    renderedDevices = [
+      { id: 'usb-a', name: 'USB Microphone', kind: 'external', connected: true, hasInput: true },
+      { id: 'usb-b', name: 'USB Microphone', kind: 'external', connected: true, hasInput: true },
+    ];
+    defaultInputId = 'usb-a';
+    smartAuto = {
+      ...smartAuto,
+      smartAutoApprovedDeviceIds: ['usb-a', 'usb-b'],
+      smartAutoPreferredDeviceIds: ['usb-a'],
+    };
+    await render();
+
+    await act(async () => (container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('USB Microphone (usb-a)');
+    expect(container.textContent).toContain('USB Microphone (usb-b)');
+    expect(container.querySelector('[aria-label="Prefer USB Microphone (usb-a) for Smart Auto"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Prefer USB Microphone (usb-b) for Smart Auto"]')).toBeTruthy();
   });
 
   it('does not preview or allow selection from stale inventory', async () => {
