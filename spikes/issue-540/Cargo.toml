@@ -1,0 +1,9 @@
+[package]
+name = "murmur-issue-540-diarization-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fluidaudio-rs = { git = "https://github.com/FluidInference/fluidaudio-rs", rev = "2d1083314104c812944b5150866d1e334db8eed7", default-features = false, features = ["diarization"] }
+serde_json = "1"

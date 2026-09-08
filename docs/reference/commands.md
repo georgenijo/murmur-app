@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 190 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 193 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -72,6 +72,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
 | `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches finalized transcript text through FTS5. |
 | `get_meeting` | `id` | `Result<MeetingWorkspace, String>` | One session, immutable Me/Them segments, display labels, revisioned generated/reviewed documents, and the Rust-resolved active document. |
+| `rename_meeting_remote_speaker` | `session_id: String`, `speaker_id: u32`, `label: String` | `Result<MeetingWorkspace, String>` | Validates and saves one session-scoped display label for a remote speaker, then returns the updated meeting workspace. Transcript evidence remains unchanged. |
 | `save_meeting_review` | `request` | `Result<MeetingWorkspace, String>` | Revision-checks a complete edit, restores source IDs from the selected server-owned base, and atomically saves labels plus the reviewed snapshot. |
 | `restore_meeting_review_from_generated` | `request` | `Result<MeetingWorkspace, String>` | Explicitly replaces a saved review from the exact generated revision after checking the current review revision. Raw transcript evidence is unchanged. |
 | `get_meeting_review_export` | `id`, `format` | `Result<String, String>` | Renders one bounded reviewed-meeting snapshot as Markdown, plain text, or schema-v1 JSON for explicit clipboard copy. |
@@ -205,7 +206,9 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `check_specific_model_exists` | `model_name: String` | `bool` | Whether a named model is on disk. Path-traversal protected. |
 | `get_model_runtime_catalog` | — | `Vec<ModelRuntimeSnapshot>` | Every catalog entry with backend, accelerator, capabilities, platform support, install state, and lifecycle state. |
 | `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
+| `get_diarization_model_status` | — | `ModelStatus` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. |
 | `download_model` | `model_name: String` | `Result<(), String>` | Single-flight install with attempt-correlated `download-progress`, atomic publication, and Silero VAD co-download. Core ML setup runs behind a same-signed killable process boundary with a hard deadline, durable incomplete-repair detection, confirmed cleanup, validation, Retry, and fallback-ready terminal errors. |
+| `remove_diarization_model` | — | `Result<(), String>` | Cancels active diarization work, waits for model-use ownership, and removes the installed speaker-model directory after acquiring the shared model-cache lease. |
 
 ## Personal knowledge (`commands/knowledge.rs`)
 

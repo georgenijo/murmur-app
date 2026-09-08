@@ -59,8 +59,9 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 ## User contract
 
 - Start or stop from **History → Meetings**, or with the command palette.
-- **Me** is microphone audio. **Them** is system playback. No diarization or
-  speaker inference occurs. Experimental speaker-echo reduction is off by
+- **Me** is microphone audio. **Them** is system playback. Optional
+  [local remote-speaker labels](meeting-diarization.md) can refine unambiguous
+  Them passages after transcription. Experimental speaker-echo reduction is off by
   default. When enabled, it removes the System reference only from Me and
   bypasses to the original microphone stream if processing fails.
 - The overlay shows a persistent two-dot meeting state from accepted start
@@ -145,7 +146,7 @@ live or recovery inference owns the meeting flag.
 
 The store lives under the app data directory in `meetings/`:
 
-- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v3.
+- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v4.
 - `meeting_sessions` stores start/end, status, selected model/language, frozen
   punctuation/audio policy, and a stable content-free failure code.
 - `meeting_segments` stores speaker, per-channel sequence, relative timing,
@@ -153,6 +154,8 @@ The store lives under the app data directory in `meetings/`:
 - `meeting_artifacts` stores one validated schema-v1 derived result plus its
   content-free runtime, peak helper RSS, and monotonic revision; deleting the
   session cascades it.
+- `meeting_remote_speakers` stores session-local display labels. Remote segments
+  may reference a speaker in that same session; Me segments cannot.
 - `meeting_reviews` stores one revisioned reviewed snapshot and its bounded
   channel display labels. It never stores or mutates raw transcript evidence.
 - FTS5 indexes finalized segment text for bounded session search.
@@ -220,6 +223,7 @@ Mac.
 
 ## Non-goals
 
-No system-channel diarization, calendar integration, auto-start, cloud sync,
-translation, or caption overlay is part of phase 1. Action items are derived
+System-channel diarization is a separate optional phase-2 feature. Calendar
+integration, auto-start, cloud sync, translation, and caption overlays are not
+part of meeting capture. Action items are derived
 text only; Murmur does not execute, send, or sync them.

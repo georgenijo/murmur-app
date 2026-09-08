@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const MEETING_STORE_SCHEMA_VERSION: u32 = 3;
+pub const MEETING_STORE_SCHEMA_VERSION: u32 = 4;
 pub const MAX_MEETING_PAGE_SIZE: u32 = 100;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -117,6 +117,7 @@ pub struct MeetingSegment {
     pub id: i64,
     pub session_id: String,
     pub speaker: MeetingSpeaker,
+    pub remote_speaker_id: Option<u32>,
     pub sequence: u64,
     pub start_ms: u64,
     pub end_ms: u64,
@@ -124,6 +125,13 @@ pub struct MeetingSegment {
     pub text: String,
     pub audio_available: bool,
     pub error_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSpeakerLabel {
+    pub speaker_id: u32,
+    pub label: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

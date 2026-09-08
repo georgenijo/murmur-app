@@ -2333,6 +2333,7 @@ pub async fn process_audio(
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
     let transition = state.app_state.recording_transition.lock().await;
+    crate::meeting_diarization::preempt()?;
     if state.app_state.meeting_blocks_asr() {
         return Err("Cannot process audio while a meeting transcript is active.".to_string());
     }

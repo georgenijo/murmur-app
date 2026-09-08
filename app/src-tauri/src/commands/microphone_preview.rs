@@ -286,6 +286,7 @@ pub(crate) async fn transition_after_stopping_preview<'a>(
     loop {
         let transition = state.app_state.recording_transition.lock().await;
         let Some(preview_id) = state.app_state.microphone_preview.current_id() else {
+            crate::meeting_diarization::preempt()?;
             return Ok(transition);
         };
         drop(transition);

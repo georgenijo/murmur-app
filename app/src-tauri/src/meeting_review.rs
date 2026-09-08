@@ -1,5 +1,7 @@
 use crate::meeting_artifact::{MeetingArtifactV1, SourcedMeetingText};
-use crate::meeting_store::{MeetingSegment, MeetingSegmentStatus, MeetingSession, MeetingSpeaker};
+use crate::meeting_store::{
+    MeetingSegment, MeetingSegmentStatus, MeetingSession, MeetingSpeaker, RemoteSpeakerLabel,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -82,6 +84,7 @@ pub struct MeetingWorkspace {
     pub session: MeetingSession,
     pub segments: Vec<MeetingSegment>,
     pub labels: MeetingSpeakerLabels,
+    pub remote_speakers: Vec<RemoteSpeakerLabel>,
     pub generated: Option<GeneratedMeetingReview>,
     pub review: Option<SavedMeetingReview>,
     pub active_document: Option<MeetingReviewDocumentV1>,
@@ -188,6 +191,12 @@ pub fn validate_labels(labels: MeetingSpeakerLabels) -> Result<MeetingSpeakerLab
         return Err("Use different labels for Me and Them.".into());
     }
     Ok(MeetingSpeakerLabels { me, them })
+}
+
+pub fn validate_remote_speaker_label(label: &str) -> Result<String, String> {
+    valid_user_text(label, MAX_LABEL_BYTES).ok_or_else(|| {
+        "Enter a shorter remote speaker label without control characters.".to_string()
+    })
 }
 
 fn review_text(key: String, item: &SourcedMeetingText) -> ReviewText {
@@ -391,11 +400,28 @@ pub fn apply_edit(
         .ok_or_else(|| "The reviewed meeting is invalid.".to_string())
 }
 
-fn speaker_label(labels: &MeetingSpeakerLabels, speaker: MeetingSpeaker) -> &str {
-    match speaker {
-        MeetingSpeaker::Me => &labels.me,
-        MeetingSpeaker::Them => &labels.them,
+fn speaker_label<'a>(workspace: &'a MeetingWorkspace, segment: &MeetingSegment) -> &'a str {
+    match segment.speaker {
+        MeetingSpeaker::Me => &workspace.labels.me,
+        MeetingSpeaker::Them => segment
+            .remote_speaker_id
+            .and_then(|speaker_id| {
+                workspace
+                    .remote_speakers
+                    .iter()
+                    .find(|speaker| speaker.speaker_id == speaker_id)
+            })
+            .map(|speaker| speaker.label.as_str())
+            .unwrap_or(&workspace.labels.them),
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportMeetingSegment<'a> {
+    #[serde(flatten)]
+    segment: &'a MeetingSegment,
+    display_label: &'a str,
 }
 
 fn timestamp(ms: u64) -> String {
@@ -416,13 +442,22 @@ pub fn render_export(
     format: MeetingReviewExportFormat,
 ) -> Result<String, String> {
     if format == MeetingReviewExportFormat::Json {
+        let transcript = workspace
+            .segments
+            .iter()
+            .map(|segment| ExportMeetingSegment {
+                segment,
+                display_label: speaker_label(workspace, segment),
+            })
+            .collect::<Vec<_>>();
         let output = serde_json::to_string_pretty(&serde_json::json!({
             "schema": MEETING_REVIEW_EXPORT_SCHEMA,
             "session": workspace.session,
             "labels": workspace.labels,
+            "remoteSpeakers": workspace.remote_speakers,
             "activeOrigin": workspace.active_origin,
             "review": workspace.active_document,
-            "transcript": workspace.segments,
+            "transcript": transcript,
         }))
         .map(|json| format!("{json}\n"))
         .map_err(|_| "The meeting review could not be exported.".to_string())?;
@@ -438,6 +473,15 @@ pub fn render_export(
         "Me: {}\nThem: {}\n\n",
         workspace.labels.me, workspace.labels.them
     ));
+    for speaker in &workspace.remote_speakers {
+        output.push_str(&format!(
+            "Speaker {}: {}\n",
+            speaker.speaker_id, speaker.label
+        ));
+    }
+    if !workspace.remote_speakers.is_empty() {
+        output.push('\n');
+    }
     if let Some(document) = workspace.active_document.as_ref() {
         let heading = |title: &str| {
             if markdown {
@@ -496,7 +540,7 @@ pub fn render_export(
         "TRANSCRIPT\n\n"
     });
     for segment in &workspace.segments {
-        let label = speaker_label(&workspace.labels, segment.speaker);
+        let label = speaker_label(workspace, segment);
         let status = match segment.status {
             MeetingSegmentStatus::Final => segment.text.as_str(),
             MeetingSegmentStatus::Pending => "[pending]",
@@ -617,5 +661,67 @@ mod tests {
             Some("First line\nSecond line")
         );
         assert!(valid_review_text("visible\u{0007}hidden", MAX_TEXT_BYTES).is_none());
+    }
+
+    #[test]
+    fn exports_resolve_remote_names_and_keep_channel_fallbacks() {
+        let segment = |id: i64,
+                       speaker: MeetingSpeaker,
+                       remote_speaker_id: Option<u32>,
+                       start_ms: u64,
+                       text: &str| MeetingSegment {
+            id,
+            session_id: "meeting".into(),
+            speaker,
+            remote_speaker_id,
+            sequence: id as u64,
+            start_ms,
+            end_ms: start_ms + 500,
+            status: MeetingSegmentStatus::Final,
+            text: text.into(),
+            audio_available: false,
+            error_code: None,
+        };
+        let workspace = MeetingWorkspace {
+            session: MeetingSession {
+                id: "meeting".into(),
+                started_at_ms: 1,
+                ended_at_ms: Some(2),
+                status: crate::meeting_store::MeetingSessionStatus::Complete,
+                model_name: "base.en".into(),
+                language: "en".into(),
+                smart_punctuation: true,
+                retain_audio: false,
+                duration_ms: 1,
+                segment_count: 3,
+                preview: "Mic".into(),
+                error_code: None,
+            },
+            segments: vec![
+                segment(1, MeetingSpeaker::Me, None, 0, "Mic"),
+                segment(2, MeetingSpeaker::Them, Some(1), 1_000, "Remote"),
+                segment(3, MeetingSpeaker::Them, None, 2_000, "Uncertain"),
+            ],
+            labels: MeetingSpeakerLabels {
+                me: "George".into(),
+                them: "Team".into(),
+            },
+            remote_speakers: vec![RemoteSpeakerLabel {
+                speaker_id: 1,
+                label: "Casey".into(),
+            }],
+            generated: None,
+            review: None,
+            active_document: None,
+            active_origin: None,
+        };
+
+        let text = render_export(&workspace, MeetingReviewExportFormat::Text).unwrap();
+        assert!(text.contains("[0:00] George [me]: Mic"));
+        assert!(text.contains("[0:01] Casey [them]: Remote"));
+        assert!(text.contains("[0:02] Team [them]: Uncertain"));
+        let json = render_export(&workspace, MeetingReviewExportFormat::Json).unwrap();
+        assert!(json.contains("\"displayLabel\": \"Casey\""));
+        assert!(json.contains("\"remoteSpeakers\""));
     }
 }
