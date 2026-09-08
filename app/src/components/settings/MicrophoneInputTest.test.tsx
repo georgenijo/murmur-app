@@ -26,6 +26,7 @@ const MemoizedMicrophoneInputTest = memo(MicrophoneInputTest);
 const devices = [
   { id: 'built-in', name: 'Built-in Microphone', kind: 'builtIn' as const, connected: true, hasInput: true },
   { id: 'usb', name: 'USB Microphone', kind: 'external' as const, connected: true, hasInput: true },
+  { id: 'unknown-input', name: 'Legacy Audio Input', kind: 'unknown' as const, connected: true, hasInput: true },
   { id: 'speakers', name: 'Built-in Speakers', kind: 'builtIn' as const, connected: true, hasInput: false },
 ];
 
@@ -123,8 +124,8 @@ describe('MicrophoneInputTest', () => {
     includeSmartAuto = false;
     smartAuto = {
       smartAutoMicrophoneEnabled: true,
-      smartAutoApprovedDeviceIds: ['usb', 'missing-device'],
-      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoApprovedDeviceIds: ['usb', 'built-in', 'missing-device'],
+      smartAutoPreferredDeviceIds: ['usb', 'built-in'],
       smartAutoAllowContinuity: false,
     };
     handleSmartAutoChange = vi.fn();
@@ -207,17 +208,54 @@ describe('MicrophoneInputTest', () => {
     expect(container.querySelector('[role="listbox"]')).toBeNull();
     expect(container.querySelector('[role="dialog"]')).toBeTruthy();
     expect(container.textContent).not.toContain('Built-in Speakers');
-    const usbApproval = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    expect(usbApproval.checked).toBe(false);
+    expect(container.textContent?.match(/Legacy Audio Input/g)).toHaveLength(1);
+    expect((document.activeElement as HTMLInputElement).type).toBe('radio');
+    expect((document.activeElement as HTMLInputElement).checked).toBe(true);
     const approvals = Array.from(container.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
     expect(approvals.some((approval) => approval.checked)).toBe(true);
     expect(container.textContent).toContain('Previously approved. Uncheck to forget it.');
     const unavailableApproval = Array.from(container.querySelectorAll('label')).find((label) => label.textContent?.includes('Previously approved'))?.querySelector('input') as HTMLInputElement;
     await act(async () => unavailableApproval.click());
     expect(handleSmartAutoChange).toHaveBeenCalledWith({
-      smartAutoApprovedDeviceIds: ['usb'],
-      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoApprovedDeviceIds: ['usb', 'built-in'],
+      smartAutoPreferredDeviceIds: ['usb', 'built-in'],
     });
+
+    const preferBuiltIn = container.querySelector('[aria-label="Prefer Built-in Microphone for Smart Auto"]') as HTMLButtonElement;
+    await act(async () => preferBuiltIn.click());
+    expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoPreferredDeviceIds: ['built-in', 'usb'] });
+
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    await act(async () => outside.focus());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    outside.remove();
+  });
+
+  it('closes the picker when capture makes its controls unavailable', async () => {
+    includeSmartAuto = true;
+    await render();
+    await act(async () => (container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[role="dialog"]')).toBeTruthy();
+
+    inventoryAvailable = false;
+    await render();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect((container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps a saved unknown-kind input available for manual selection', async () => {
+    includeSmartAuto = true;
+    selected = 'unknown-input';
+    smartAuto = { ...smartAuto, smartAutoMicrophoneEnabled: false };
+    await render();
+
+    const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+    expect(picker.textContent).toContain('Legacy Audio Input');
+    await act(async () => picker.click());
+    expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(5);
+    const dialog = container.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog.textContent?.match(/Legacy Audio Input/g)).toHaveLength(1);
   });
 
   it('does not preview or allow selection from stale inventory', async () => {

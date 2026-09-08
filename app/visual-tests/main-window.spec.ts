@@ -288,6 +288,8 @@ test('recording settings unify Smart Auto mode and per-microphone approval', asy
   await expect(pickerDialog.getByRole('radio', { name: /Smart Auto/ })).toBeChecked();
   await expect(pickerDialog.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
   await expect(pickerDialog.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
+  await expect(pickerDialog.getByRole('button', { name: 'Prefer MacBook Pro Microphone for Smart Auto' })).toHaveText('Preferred');
+  await expect(pickerDialog.getByRole('button', { name: 'Prefer Anker USB Microphone for Smart Auto' })).toHaveText('Prefer');
   await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
 });
@@ -324,6 +326,21 @@ test('recording setting rows and dependent rails keep the shared spacing contrac
   expect(railInsets.top).toBeGreaterThan(0);
   expect(railInsets.bottom).toBeGreaterThan(0);
   expect(Math.abs(railInsets.top - railInsets.bottom)).toBeLessThan(0.1);
+
+  await page.getByRole('button', { name: 'Meetings', exact: true }).click();
+  const meetingAudioRow = page.locator('[data-setting-target="meeting-audio"]');
+  const speakerGroup = page.locator('[data-setting-target="meeting-speakers"]');
+  const speakerRow = speakerGroup.locator('> .settings-setting-row');
+  const meetingDimensions = await Promise.all([meetingAudioRow, speakerRow].map((row) => row.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { height: box.height, left: box.left, right: box.right, minHeight: getComputedStyle(element).minHeight };
+  })));
+  expect(meetingDimensions[0].minHeight).toBe('48px');
+  expect(meetingDimensions[1].minHeight).toBe('48px');
+  expect(meetingDimensions[0].height).toBeGreaterThanOrEqual(48);
+  expect(meetingDimensions[1].height).toBeGreaterThanOrEqual(48);
+  expect(meetingDimensions[0].left).toBe(meetingDimensions[1].left);
+  expect(meetingDimensions[0].right).toBe(meetingDimensions[1].right);
 });
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {

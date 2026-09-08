@@ -427,6 +427,36 @@
   background: var(--murmur-surface-container);
 }
 
+.settings-microphone-choice-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.settings-microphone-preference {
+  display: grid;
+  min-width: 3.75rem;
+  height: 1.75rem;
+  flex: none;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--murmur-primary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.settings-microphone-preference:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--murmur-primary) 10%, transparent);
+}
+
+.settings-microphone-preference:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
 .settings-microphone-choice input[type='radio'],
 .settings-microphone-choice input[type='checkbox'] {
   flex: none;

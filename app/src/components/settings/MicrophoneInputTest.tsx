@@ -85,15 +85,26 @@ function microphoneAvailabilityReason(device: AudioDeviceDescriptor, defaultInpu
 function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smartAuto, smartAutoSelection, lidState, onSelectManual, onSmartAutoChange, describedBy }: MicrophonePickerProps) {
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const smartAutoActive = smartAuto.smartAutoMicrophoneEnabled;
-  const inputDevices = devices.filter((device) => device.hasInput && device.kind !== 'unknown');
-  const knownIds = new Set(inputDevices.map((device) => device.id));
+  const manualDevices = devices.filter((device) => device.hasInput);
+  const approvalDevices = manualDevices.filter((device) => device.kind !== 'unknown');
+  const knownIds = new Set(approvalDevices.map((device) => device.id));
   const unavailableApprovedIds = smartAuto.smartAutoApprovedDeviceIds.filter((id) => !knownIds.has(id));
   const selectedLabel = smartAutoActive
     ? smartAutoSelection ? `Smart Auto · ${smartAutoSelection.device.name}` : 'Smart Auto · No usable microphone'
     : microphone === 'system_default'
-      ? followSystemDefaultOptionLabel(inputDevices, defaultInputId)
-      : audioDeviceSelectOptions(inputDevices).find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
+      ? followSystemDefaultOptionLabel(manualDevices, defaultInputId)
+      : audioDeviceSelectOptions(manualDevices).find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    pickerRef.current?.querySelector<HTMLInputElement>('input[type="radio"]:checked')?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -101,7 +112,10 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
       if (event.target instanceof Node && !pickerRef.current?.contains(event.target)) setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener('mousedown', closeOnOutsideClick);
     document.addEventListener('keydown', closeOnEscape);
@@ -120,14 +134,28 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
       smartAutoPreferredDeviceIds: smartAuto.smartAutoPreferredDeviceIds.filter((id) => approvedIds.includes(id)),
     });
   };
+  const setPreferred = (deviceId: string) => {
+    onSmartAutoChange({
+      smartAutoPreferredDeviceIds: [
+        deviceId,
+        ...smartAuto.smartAutoPreferredDeviceIds.filter((id) => id !== deviceId && smartAuto.smartAutoApprovedDeviceIds.includes(id)),
+      ],
+    });
+  };
   const selectManual = (deviceId: string) => {
     setOpen(false);
     onSelectManual(deviceId);
   };
 
   return (
-    <div ref={pickerRef} className="relative">
-      <button type="button" aria-label="Microphone input" aria-describedby={describedBy} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)} className="flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
+    <div
+      ref={pickerRef}
+      className="relative"
+      onBlur={(event) => {
+        if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+    >
+      <button ref={triggerRef} type="button" aria-label="Microphone input" aria-describedby={describedBy} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)} className="flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
         <span className="truncate">{selectedLabel}</span>
         <svg className={`ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
       </button>
@@ -136,16 +164,16 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           <fieldset>
             <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>
             <label className="settings-microphone-choice">
-              <input type="radio" name="microphone-mode" checked={smartAutoActive} onChange={() => onSmartAutoChange({ smartAutoMicrophoneEnabled: true })} />
+              <input type="radio" name="microphone-mode" checked={smartAutoActive} disabled={disabled} onChange={() => onSmartAutoChange({ smartAutoMicrophoneEnabled: true })} />
               <span><span className="block font-medium">Smart Auto</span><span className="block text-xs text-on-surface-variant">Choose from microphones you allow</span></span>
             </label>
             <label className="settings-microphone-choice">
-              <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} onChange={() => selectManual('system_default')} />
-              <span><span className="block font-medium">Follow macOS Default</span><span className="block text-xs text-on-surface-variant">{inputDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
+              <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} onChange={() => selectManual('system_default')} />
+              <span><span className="block font-medium">Follow macOS Default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
             </label>
-            {inputDevices.map((device) => (
+            {manualDevices.map((device) => (
               <label key={`manual-${device.id}`} className="settings-microphone-choice">
-                <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} onChange={() => selectManual(device.id)} />
+                <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} onChange={() => selectManual(device.id)} />
                 <span><span className="block font-medium">{device.name}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
               </label>
             ))}
@@ -153,27 +181,33 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           {smartAutoActive && (
             <fieldset className="mt-2 border-t border-outline-variant/20 pt-2">
               <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Allowed for Smart Auto</legend>
-              {inputDevices.map((device) => {
+              {approvalDevices.map((device) => {
                 const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
                 const active = smartAutoSelection?.device.id === device.id;
+                const preferred = smartAuto.smartAutoPreferredDeviceIds[0] === device.id;
                 return (
-                  <label key={`approved-${device.id}`} className="settings-microphone-choice">
-                    <input type="checkbox" checked={approved} onChange={(event) => setApproved(device.id, event.target.checked)} />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-2"><span className="truncate font-medium">{device.name}</span>{active && <span className="settings-microphone-active-badge">Using now</span>}</span>
-                      <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
-                    </span>
-                  </label>
+                  <div key={`approved-${device.id}`} className="settings-microphone-choice">
+                    <label className="settings-microphone-choice-main">
+                      <input type="checkbox" checked={approved} disabled={disabled} onChange={(event) => setApproved(device.id, event.target.checked)} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2"><span className="truncate font-medium">{device.name}</span>{active && <span className="settings-microphone-active-badge">Using now</span>}</span>
+                        <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
+                      </span>
+                    </label>
+                    <button type="button" disabled={disabled || !approved} aria-label={`Prefer ${device.name} for Smart Auto`} aria-pressed={preferred} onClick={() => setPreferred(device.id)} className="settings-microphone-preference">
+                      {preferred ? 'Preferred' : 'Prefer'}
+                    </button>
+                  </div>
                 );
               })}
               {unavailableApprovedIds.map((id, index) => (
                 <label key={id} className="settings-microphone-choice">
-                  <input type="checkbox" checked onChange={() => setApproved(id, false)} />
+                  <input type="checkbox" checked disabled={disabled} onChange={() => setApproved(id, false)} />
                   <span><span className="block font-medium">Unavailable microphone {index + 1}</span><span className="block text-xs text-on-surface-variant">Previously approved. Uncheck to forget it.</span></span>
                 </label>
               ))}
               <label className="settings-microphone-choice mt-1 border-t border-outline-variant/15 pt-2">
-                <AnimatedSwitch size="sm" aria-label="Allow approved iPhone Continuity Camera microphones" checked={smartAuto.smartAutoAllowContinuity} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })} />
+                <AnimatedSwitch size="sm" aria-label="Allow approved iPhone Continuity Camera microphones" checked={smartAuto.smartAutoAllowContinuity} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })} />
                 <span><span className="block font-medium">Allow iPhone microphones</span><span className="block text-xs text-on-surface-variant">Only approved Continuity Camera inputs</span></span>
               </label>
             </fieldset>
