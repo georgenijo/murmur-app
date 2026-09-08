@@ -6,14 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-08
+
 ### Fixed
 
 - Close abandoned transform confirmations when a chained capture cannot start, and keep an older confirmation timer from dismissing a newer review (#682, #683).
 - Reloading the notch restores the active recording or processing indicator from native state instead of showing idle while recording continues (#680).
+- Smart Auto microphone routing now applies consistently to dictation, meetings, Voice Query, transforms, retries, and microphone previews, with bounded echo-cancellation recovery after device route changes (#678).
+- Markdown links now follow CommonMark parsing rules, including correct heading-anchor allocation (#667).
+- Dictation diagnostics distinguish successful completion from post-stop latency so empty or failed runs cannot appear as successful performance samples (#668).
 
 ### Added
 
 - Correct the latest dictation with a spoken instruction, review the local model's proposed change, and copy or replace a matching selection. Optional ⌘⇧E shortcut, literal spelling preservation, and separate correction teaching (#676).
+- Smart Auto can choose from approved physical microphones while preserving one immutable input choice for the full recording (#678).
+- Meeting review can assign local, session-scoped labels to remote speakers without changing transcript evidence (#685).
+- Diagnostics can compare compatible production dictation cohorts across app versions, with explicit exclusions and bounded retention (#686).
+- Private native capture CI verifies first PCM from both production capture backends on trusted hardware (#687).
+
+### Changed
+
+- Dependent recording settings reveal their controls through quieter animated branches with actionable permission guidance (#677).
+- Removed unused frontend components and added an automated dead-code audit to CI (#675).
 
 ## [0.41.0] - 2026-09-04
 
