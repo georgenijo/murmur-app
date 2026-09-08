@@ -2351,6 +2351,13 @@ def classify_event(event):
             group="audio.capture_failed",
         )
     if code == "pipeline.dictation_completed":
+        char_count = event_value(event, "char_count")
+        if (
+            isinstance(char_count, bool)
+            or not isinstance(char_count, int)
+            or char_count <= 0
+        ):
+            return None
         duration = format_duration_ms(event_value(event, "total_ms"))
         detail = "The most recent recognized dictation completed successfully"
         if duration:

@@ -500,6 +500,71 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertNotIn("private transcript content", str(presentation))
         self.assertNotIn("/Users/private/project", str(presentation))
 
+    def test_empty_completion_keeps_prior_terminal_health_card(self) -> None:
+        cases = [
+            ("no_speech", "vad_no_speech"),
+            ("user_cancelled_processing", "cancelled_processing"),
+        ]
+        for outcome, error_code in cases:
+            with self.subTest(outcome=outcome):
+                events = [
+                    event(
+                        "pipeline.dictation_terminal",
+                        timestamp="2026-08-05T00:00:00Z",
+                        stream="pipeline",
+                        data={
+                            "event_code": "pipeline.dictation_terminal",
+                            "recording_id": 41,
+                            "outcome": outcome,
+                            "error_code": error_code,
+                            "char_count": 0,
+                        },
+                    ),
+                    event(
+                        "pipeline.dictation_completed",
+                        timestamp="2026-08-05T00:00:01Z",
+                        stream="pipeline",
+                        data={
+                            "event_code": "pipeline.dictation_completed",
+                            "recording_id": 41,
+                            "char_count": 0,
+                            "total_ms": 220,
+                        },
+                    ),
+                ]
+
+                signals = receiver.build_health_signals(events)
+                cards = receiver.build_health_cards(signals, {})
+                dictation = next(
+                    card for card in cards if card["area"] == "dictation"
+                )
+
+                self.assertEqual(len(signals), 1)
+                self.assertEqual(signals[0]["code"], "pipeline.dictation_terminal")
+                self.assertEqual(dictation["status"], "diagnostic")
+                self.assertEqual(
+                    dictation["title"], "Dictation ended without delivered text"
+                )
+
+    def test_nonempty_completion_is_a_healthy_dictation_signal(self) -> None:
+        completion = event(
+            "pipeline.dictation_completed",
+            timestamp="2026-08-05T00:00:01Z",
+            stream="pipeline",
+            data={
+                "event_code": "pipeline.dictation_completed",
+                "recording_id": 41,
+                "char_count": 18,
+                "total_ms": 220,
+            },
+        )
+
+        classified = receiver.classify_event(completion)
+
+        self.assertEqual(classified["status"], "healthy")
+        self.assertEqual(classified["title"], "Dictation completed")
+        self.assertIn("220 ms", classified["explanation"])
+
     def test_microphone_benchmark_owner_cannot_pollute_dashboard_correlation(self) -> None:
         benchmark_data = {
             "owner": 7,
