@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type KeyboardEvent } from 'react';
 import type { PerformanceRunV1 } from '../../lib/performance';
 import {
   compareProductionVersions,
@@ -10,6 +10,26 @@ import {
 
 interface ProductionComparisonProps {
   runs: readonly PerformanceRunV1[];
+}
+
+function handleMetricsKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  if (
+    event.target !== event.currentTarget
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+  ) return;
+
+  const delta = event.key === 'ArrowLeft'
+    ? -240
+    : event.key === 'ArrowRight'
+      ? 240
+      : null;
+  if (delta === null) return;
+
+  event.currentTarget.scrollLeft += delta;
+  event.preventDefault();
 }
 
 function formatMilliseconds(value: number | null): string {
@@ -254,7 +274,14 @@ export function ProductionComparison({ runs }: ProductionComparisonProps) {
                 <p className="mt-1 text-[10px] text-on-surface-variant">
                   Runs: {cohort.baselineRunCount} baseline, {cohort.candidateRunCount} candidate. Successful latency runs: {cohort.baselineSuccessCount} baseline, {cohort.candidateSuccessCount} candidate.
                 </p>
-                <div className="mt-2 overflow-x-auto rounded-lg border border-outline-variant/10">
+                <p className="mt-1 text-[10px] text-on-surface-variant">Scroll sideways for all columns. When the table is focused, use the left and right arrow keys.</p>
+                <div
+                  role="region"
+                  aria-label={`Compatible cohort ${index + 1} metrics`}
+                  tabIndex={0}
+                  onKeyDown={handleMetricsKeyDown}
+                  className="mt-2 overflow-x-auto rounded-lg border border-outline-variant/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                >
                   <table className="w-full min-w-[58rem] text-left text-[11px]">
                     <thead className="bg-surface-container-low text-[9px] uppercase tracking-wide text-on-surface-variant">
                       <tr>

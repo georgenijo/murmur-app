@@ -108,6 +108,46 @@ describe('ProductionComparison', () => {
     expect(container.textContent).toContain('Baseline: 180 ms. Candidate: 220 ms.');
   });
 
+  it('scrolls a focused metrics region with unmodified horizontal arrow keys only', async () => {
+    await render([versionRun('1.0.0'), versionRun('1.1.0')]);
+    const region = container.querySelector('[role="region"]');
+    if (!(region instanceof HTMLDivElement)) throw new Error('Missing metrics region');
+
+    region.scrollLeft = 120;
+    const left = new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true });
+    await act(async () => region.dispatchEvent(left));
+    expect(region.scrollLeft).toBeLessThan(120);
+    expect(left.defaultPrevented).toBe(true);
+
+    const afterLeft = region.scrollLeft;
+    const right = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    await act(async () => region.dispatchEvent(right));
+    expect(region.scrollLeft).toBeGreaterThan(afterLeft);
+    expect(right.defaultPrevented).toBe(true);
+
+    for (const modifiers of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      region.scrollLeft = 120;
+      const modified = new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        bubbles: true,
+        cancelable: true,
+        ...modifiers,
+      });
+      await act(async () => region.dispatchEvent(modified));
+      expect(region.scrollLeft).toBe(120);
+      expect(modified.defaultPrevented).toBe(false);
+    }
+
+    const nested = region.querySelector('table');
+    if (!(nested instanceof HTMLTableElement)) throw new Error('Missing metrics table');
+    nested.tabIndex = 0;
+    region.scrollLeft = 120;
+    const nestedArrow = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    await act(async () => nested.dispatchEvent(nestedArrow));
+    expect(region.scrollLeft).toBe(120);
+    expect(nestedArrow.defaultPrevented).toBe(false);
+  });
+
   it('explains historical, development, and exact-cohort exclusions without hiding anomalies', async () => {
     const historical = versionRun('1.0.0', { production: undefined });
     const development = versionRun('1.0.0', {
