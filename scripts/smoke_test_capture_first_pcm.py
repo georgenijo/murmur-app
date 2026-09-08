@@ -35,10 +35,13 @@ CLEANUP_SECONDS = 1.0
 
 
 def live_group_members(group_id: int, timeout: float) -> bool:
-    result = subprocess.run(
-        ["/bin/ps", "-axo", "pgid=,stat="], capture_output=True, check=True,
-        timeout=timeout, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pgid=,stat="], capture_output=True, check=True,
+            timeout=timeout, text=True,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SmokeError("owned worker cleanup exceeded its deadline") from error
     for row in result.stdout.splitlines():
         fields = row.split()
         if len(fields) == 2 and fields[0] == str(group_id) and not fields[1].startswith("Z"):
@@ -73,10 +76,13 @@ def wait_for_exit(process: subprocess.Popen[bytes], deadline: float) -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SmokeError("worker did not exit after stop acknowledgment")
-        result = subprocess.run(
-            ["/bin/ps", "-o", "stat=", "-p", str(process.pid)],
-            capture_output=True, text=True, timeout=remaining,
-        )
+        try:
+            result = subprocess.run(
+                ["/bin/ps", "-o", "stat=", "-p", str(process.pid)],
+                capture_output=True, text=True, timeout=remaining,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise SmokeError("worker did not exit after stop acknowledgment") from error
         if result.returncode != 0:
             raise SmokeError("worker exit state could not be observed")
         if result.stdout.strip().startswith("Z"):

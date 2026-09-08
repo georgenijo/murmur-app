@@ -163,6 +163,20 @@ class FirstPcmSmokeTests(unittest.TestCase):
                 self.run_backend(scenario)
             self.assertLess(time.monotonic() - started, 2)
 
+    def test_process_observation_timeouts_use_fixed_errors(self):
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from scripts import smoke_test_capture_first_pcm as smoke
+        timeout = subprocess.TimeoutExpired(['/bin/ps'], .1)
+        with patch.object(smoke.subprocess, 'run', side_effect=timeout):
+            with self.assertRaisesRegex(
+                    SmokeError, '^worker did not exit after stop acknowledgment$'):
+                smoke.wait_for_exit(SimpleNamespace(pid=123), time.monotonic() + .1)
+            with self.assertRaisesRegex(
+                    SmokeError, '^owned worker cleanup exceeded its deadline$'):
+                smoke.live_group_members(123, .1)
+
     def test_worker_error_strings_do_not_escape(self):
         with self.assertRaises(SmokeError) as caught:
             self.run_backend('failure')
