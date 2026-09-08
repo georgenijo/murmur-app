@@ -268,7 +268,7 @@ test('recording settings make the live automatic microphone choice explicit', as
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  await expect(page.getByRole('combobox', { name: 'Microphone input' })).toContainText(
+  await expect(page.getByRole('button', { name: 'Microphone input' })).toContainText(
     'Follow macOS Default — MacBook Pro Microphone',
   );
   await expect(page.getByText(/Docking, undocking, or changing the system input/)).toBeVisible();
