@@ -152,6 +152,7 @@ pub fn schedule(
                 let transition = state.app_state.recording_transition.blocking_lock();
                 if !app_idle(&state) {
                     drop(transition);
+                    drop(_cache);
                     drop(model_use);
                     std::thread::sleep(Duration::from_millis(250));
                     continue;
@@ -162,6 +163,7 @@ pub fn schedule(
                 }
                 if control.foreground_users != 0 || control.child.is_some() {
                     drop(control);
+                    drop(_cache);
                     drop(model_use);
                     drop(transition);
                     std::thread::sleep(Duration::from_millis(250));
@@ -232,6 +234,7 @@ pub fn schedule(
                     break;
                 }
                 drop(control);
+                drop(_cache);
                 drop(model_use);
                 if interrupted {
                     std::thread::sleep(Duration::from_millis(250));
