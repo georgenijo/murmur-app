@@ -601,8 +601,6 @@ function contrastFailuresForNonTextMatrix(
   );
 }
 
-export const semanticNonTextContrastFailures = nonTextContrastFailures;
-
 export function semanticContrastFailures(tokens: MurmurTokens): SemanticContrastPair[] {
   return contrastFailuresForTextMatrix(tokens, SEMANTIC_CONTRAST_MATRIX);
 }
