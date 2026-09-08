@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from urllib.parse import unquote, urlsplit
+
+from markdown_it import MarkdownIt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,9 +49,8 @@ ARCHIVE_FILES = {
     "PAPERCLIP_FAMILY_HOST_PROOF.md",
 }
 
-LINK_RE = re.compile(r"(?<!!)\[[^\]\n]*\]\(([^)]+)\)")
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 EXTERNAL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+MARKDOWN = MarkdownIt("commonmark")
 
 
 def maintained_docs(root: Path = ROOT) -> list[Path]:
@@ -69,13 +71,11 @@ def maintained_docs(root: Path = ROOT) -> list[Path]:
 
 
 def slugify(heading: str) -> str:
-    # Inline code spans are literal text, not markdown emphasis: `hang_diagnostics.rs`
-    # must keep its underscore even though bare `_word_` elsewhere means italics.
-    parts = re.split(r"(`[^`]*`)", heading)
     text = "".join(
-        part[1:-1] if part.startswith("`") and part.endswith("`") and len(part) >= 2
-        else re.sub(r"[*_~]", "", part)
-        for part in parts
+        child.content
+        for token in MARKDOWN.parseInline(heading)
+        for child in token.children or ()
+        if child.type in {"text", "code_inline", "image"}
     )
     text = text.strip().lower()
     text = re.sub(r"[^\w\s-]", "", text)
@@ -86,7 +86,20 @@ def slugify(heading: str) -> str:
 def heading_anchors(text: str) -> set[str]:
     counts: dict[str, int] = {}
     anchors = set()
-    for _, heading in HEADING_RE.findall(text):
+    tokens = MARKDOWN.parse(text)
+    headings = (
+        token
+        for index, token in enumerate(tokens)
+        if index > 0
+        and tokens[index - 1].type == "heading_open"
+        and token.type == "inline"
+    )
+    for token in headings:
+        heading = "".join(
+            child.content
+            for child in token.children or ()
+            if child.type in {"text", "code_inline", "image"}
+        )
         slug = slugify(heading)
         seen = counts.get(slug, 0)
         counts[slug] = seen + 1
@@ -102,39 +115,52 @@ def is_external(target: str) -> bool:
     return bool(EXTERNAL_SCHEME_RE.match(target))
 
 
-def strip_title(target: str) -> str:
-    # A markdown link destination may carry a trailing `"title"`.
-    match = re.match(r'^(\S+)(?:\s+"[^"]*")?$', target.strip())
-    return match.group(1) if match else target.strip()
+def link_destinations(text: str) -> list[str]:
+    return [
+        child.attrGet("href") or ""
+        for token in MARKDOWN.parse(text)
+        if token.type == "inline"
+        for child in token.children or ()
+        if child.type == "link_open"
+    ]
 
 
 def find_broken_links(paths: list[Path], root: Path = ROOT) -> list[tuple[Path, str, str]]:
     broken = []
+    canonical_root = root.resolve()
     for path in paths:
         text = path.read_text()
-        for target in LINK_RE.findall(text):
-            target = strip_title(target)
+        canonical_path = path.resolve()
+        for target in link_destinations(text):
             if is_external(target):
                 continue
-            path_part, _, anchor = target.partition("#")
+            parsed = urlsplit(target)
+            path_part = unquote(parsed.path)
+            anchor = unquote(parsed.fragment)
             if not path_part:
-                target_file = path
+                target_file = canonical_path
             else:
-                target_file = (path.parent / path_part).resolve()
-                if root not in target_file.parents and target_file != root:
+                target_file = (canonical_path.parent / path_part).resolve()
+                if (
+                    canonical_root not in target_file.parents
+                    and target_file != canonical_root
+                ):
                     broken.append((path, target, "escapes repository root"))
                     continue
                 if not target_file.exists():
                     broken.append((path, target, "no such file or directory"))
                     continue
             if anchor and target_file.is_file() and target_file.suffix == ".md":
-                anchors = heading_anchors(text if target_file == path else target_file.read_text())
+                anchors = heading_anchors(
+                    text if target_file == canonical_path else target_file.read_text()
+                )
                 if anchor not in anchors:
                     broken.append((path, target, f"no heading matches #{anchor}"))
     return broken
 
 
 def validate_markdown_links(root: Path = ROOT) -> int:
+    root = root.resolve()
     paths = maintained_docs(root)
     broken = find_broken_links(paths, root)
     if broken:

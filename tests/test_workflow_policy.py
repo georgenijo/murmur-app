@@ -46,6 +46,18 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
+    def test_ci_installs_pinned_python_test_dependencies(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for marker in (
+            "              - 'requirements-test.txt'\n",
+            "          python3 -m pip install -r requirements-test.txt\n",
+        ):
+            with self.subTest(marker=marker.strip()):
+                mutated = workflow.replace(marker, "", 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_ci_pins_and_enforces_clippy_and_rustfmt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old in (

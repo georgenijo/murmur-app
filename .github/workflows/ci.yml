@@ -53,6 +53,7 @@ jobs:
               - 'scripts/validate_capture_boundary.py'
               - 'scripts/validate_reference_docs.py'
               - 'scripts/validate_markdown_links.py'
+              - 'requirements-test.txt'
               - 'scripts/release_version.py'
               - 'CLAUDE.md'
               - 'AGENTS.md'
@@ -77,6 +78,7 @@ jobs:
 
       - name: Validate workflow policy
         run: |
+          python3 -m pip install -r requirements-test.txt
           python3 scripts/validate_workflow_policy.py
           python3 scripts/validate_capture_boundary.py
           python3 scripts/validate_reference_docs.py

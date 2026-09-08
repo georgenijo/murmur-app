@@ -158,6 +158,8 @@ def validate_ci(ci: str) -> int:
     assert "scripts/release_artifacts.py" in ci
     assert "scripts/capture_agent_matrix.py" in ci
     assert "'scripts/release_version.py'" in ci
+    assert "'requirements-test.txt'" in ci
+    assert "python3 -m pip install -r requirements-test.txt" in ci
     assert "tests/test_release_artifacts.py" in ci
     assert ci.count("tests/test_reference_docs.py") >= 2
     assert "tests/test_release_version.py" in ci

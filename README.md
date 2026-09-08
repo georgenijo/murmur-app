@@ -259,6 +259,7 @@ cargo fmt --all -- --check
 cargo test -- --test-threads=1
 
 cd ../..
+python3 -m pip install -r requirements-test.txt
 python3 -m unittest discover -s tests
 ```
 

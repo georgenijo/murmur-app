@@ -34,6 +34,12 @@ class SlugifyTests(unittest.TestCase):
         anchors = heading_anchors("# Overview\n\n## Overview\n")
         self.assertEqual(anchors, {"overview", "overview-1"})
 
+    def test_code_blocks_do_not_create_headings_or_affect_duplicate_numbers(self) -> None:
+        anchors = heading_anchors(
+            "# Real\n\n```python\n# Fake\n# Real\n```\n\n## Real\n"
+        )
+        self.assertEqual(anchors, {"real", "real-1"})
+
 
 class IsExternalTests(unittest.TestCase):
     def test_http_and_mailto_are_external(self) -> None:
@@ -108,6 +114,99 @@ class FindBrokenLinksTests(unittest.TestCase):
             doc = root / "AGENTS.md"
             doc.write_text("![missing image](does-not-exist.png)\n")
             self.assertEqual(find_broken_links([doc], root), [])
+
+    def test_links_in_code_spans_and_fenced_blocks_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            doc = root / "AGENTS.md"
+            doc.write_text(
+                "Use `[example](inline-missing.md)` as an example.\n\n"
+                "```markdown\n[fenced](fenced-missing.md)\n```\n"
+            )
+            self.assertEqual(find_broken_links([doc], root), [])
+
+    def test_code_block_heading_cannot_satisfy_an_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            doc = root / "AGENTS.md"
+            doc.write_text("[wrong](#fake)\n\n```python\n# Fake\n```\n")
+            broken = find_broken_links([doc], root)
+            self.assertEqual(len(broken), 1)
+            self.assertEqual(broken[0][2], "no heading matches #fake")
+
+    def test_full_collapsed_and_shortcut_reference_links_are_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            doc = root / "AGENTS.md"
+            doc.write_text(
+                "[full][one] [collapsed][] [shortcut]\n\n"
+                "[one]: full-missing.md\n"
+                "[collapsed]: collapsed-missing.md\n"
+                "[shortcut]: shortcut-missing.md\n"
+            )
+            broken = find_broken_links([doc], root)
+            self.assertEqual(
+                {target for _, target, _ in broken},
+                {"full-missing.md", "collapsed-missing.md", "shortcut-missing.md"},
+            )
+
+    def test_reference_links_enforce_anchors_and_repository_containment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.md"
+            target.write_text("# Real\n")
+            doc = root / "AGENTS.md"
+            doc.write_text(
+                "[bad anchor][anchor] [outside][escape]\n\n"
+                "[anchor]: target.md#missing\n"
+                "[escape]: %2E%2E/outside.md\n"
+            )
+            broken = find_broken_links([doc], root)
+            self.assertEqual(
+                {(href, reason) for _, href, reason in broken},
+                {
+                    ("target.md#missing", "no heading matches #missing"),
+                    ("%2E%2E/outside.md", "escapes repository root"),
+                },
+            )
+
+    def test_valid_angle_encoded_and_titled_destinations_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "file name.md"
+            target.write_text("# Real Heading\n")
+            titled_target = root / "file.md"
+            titled_target.write_text("# File\n")
+            doc = root / "AGENTS.md"
+            doc.write_text(
+                "[angle](<file name.md>)\n"
+                "[encoded](file%20name.md#real%2Dheading)\n"
+                "[single](file.md 'Title')\n"
+                "[double](<file name.md> \"Title\")\n"
+                "[parenthesized](<file name.md> (Title))\n"
+            )
+            self.assertEqual(find_broken_links([doc], root), [])
+
+    def test_encoded_traversal_is_reported_as_repository_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            doc = root / "AGENTS.md"
+            doc.write_text("[outside](%2E%2E/outside.md)\n")
+            broken = find_broken_links([doc], root)
+            self.assertEqual(len(broken), 1)
+            self.assertEqual(broken[0][2], "escapes repository root")
+
+    def test_symlinked_repository_root_is_canonicalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            real_root = Path(directory) / "real"
+            real_root.mkdir()
+            linked_root = Path(directory) / "linked"
+            linked_root.symlink_to(real_root, target_is_directory=True)
+            target = real_root / "target.md"
+            target.write_text("# Target\n")
+            doc = linked_root / "AGENTS.md"
+            doc.write_text("[target](target.md)\n")
+            self.assertEqual(find_broken_links([doc], linked_root), [])
 
 
 class MaintainedDocsTests(unittest.TestCase):
