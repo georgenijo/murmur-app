@@ -34,6 +34,14 @@ class SlugifyTests(unittest.TestCase):
         anchors = heading_anchors("# Overview\n\n## Overview\n")
         self.assertEqual(anchors, {"overview", "overview-1"})
 
+    def test_duplicate_headings_skip_previously_allocated_numbered_anchors(self) -> None:
+        anchors = heading_anchors("# Overview\n# Overview-1\n# Overview\n")
+        self.assertEqual(anchors, {"overview", "overview-1", "overview-2"})
+
+    def test_code_heading_anchor_uses_literal_inline_content(self) -> None:
+        anchors = heading_anchors("# `__init__`\n# `[label](target)`\n")
+        self.assertEqual(anchors, {"__init__", "labeltarget"})
+
     def test_code_blocks_do_not_create_headings_or_affect_duplicate_numbers(self) -> None:
         anchors = heading_anchors(
             "# Real\n\n```python\n# Fake\n# Real\n```\n\n## Real\n"
@@ -86,6 +94,22 @@ class FindBrokenLinksTests(unittest.TestCase):
             doc.write_text(
                 "See [file](docs/example.md) and its "
                 "[section](docs/example.md#real-heading).\n"
+            )
+            self.assertEqual(find_broken_links([doc], root), [])
+
+    def test_code_and_duplicate_heading_anchors_validate_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            doc = root / "AGENTS.md"
+            doc.write_text(
+                "[init](#%5F%5Finit%5F%5F) "
+                "[literal](#labeltarget) "
+                "[third](#overview-2)\n\n"
+                "# `__init__`\n"
+                "# `[label](target)`\n"
+                "# Overview\n"
+                "# Overview-1\n"
+                "# Overview\n"
             )
             self.assertEqual(find_broken_links([doc], root), [])
 

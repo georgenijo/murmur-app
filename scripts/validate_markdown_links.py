@@ -77,6 +77,10 @@ def slugify(heading: str) -> str:
         for child in token.children or ()
         if child.type in {"text", "code_inline", "image"}
     )
+    return _normalize_slug(text)
+
+
+def _normalize_slug(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"[^\w\s-]", "", text)
     text = re.sub(r"\s+", "-", text)
@@ -96,14 +100,18 @@ def heading_anchors(text: str) -> set[str]:
     )
     for token in headings:
         heading = "".join(
-            child.content
+            child.content if child.type in {"text", "code_inline", "image"} else " "
             for child in token.children or ()
-            if child.type in {"text", "code_inline", "image"}
+            if child.type in {"text", "code_inline", "image", "softbreak", "hardbreak"}
         )
-        slug = slugify(heading)
-        seen = counts.get(slug, 0)
-        counts[slug] = seen + 1
-        anchors.add(slug if seen == 0 else f"{slug}-{seen}")
+        slug = _normalize_slug(heading)
+        suffix = counts.get(slug, 0)
+        anchor = slug if suffix == 0 else f"{slug}-{suffix}"
+        while anchor in anchors:
+            suffix += 1
+            anchor = f"{slug}-{suffix}"
+        counts[slug] = suffix + 1
+        anchors.add(anchor)
     return anchors
 
 
