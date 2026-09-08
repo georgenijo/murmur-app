@@ -398,16 +398,6 @@ export function effectiveAppearanceSelection(
   };
 }
 
-export function appearanceThemeLabel(
-  owner: string,
-  library: ThemeLibraryDocumentV1,
-): string {
-  if (owner === 'sonic') return 'Sonic';
-  if (owner === 'custom') return 'Custom';
-  const entry = library.themes.find((theme) => theme.id === owner);
-  return entry?.collection?.label ?? entry?.label ?? 'Custom';
-}
-
 function tokensForOwner(
   owner: string,
   appearance: ResolvedAppearance,
