@@ -88,27 +88,45 @@ impl TrustedDirectory {
         let path = canonical_directory(path)?;
         #[cfg(unix)]
         {
-            use std::os::fd::{AsRawFd, FromRawFd};
-            use std::os::unix::ffi::OsStrExt;
-            let mut directory = std::fs::File::open("/").map_err(|_| INVALID_DIRECTORY)?;
-            for component in path.components() {
-                if let std::path::Component::Normal(name) = component {
-                    let name =
-                        std::ffi::CString::new(name.as_bytes()).map_err(|_| INVALID_DIRECTORY)?;
-                    // Walk from a pinned parent, refusing symlinks at every component.
-                    let fd = unsafe {
-                        libc::openat(
-                            directory.as_raw_fd(),
-                            name.as_ptr(),
-                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                        )
-                    };
-                    if fd < 0 {
-                        return Err(INVALID_DIRECTORY);
+            #[cfg(target_os = "macos")]
+            let directory = {
+                use std::os::unix::fs::OpenOptionsExt;
+                // Full-path no-follow avoids asking TCC for read access to the
+                // selected folder's unselected ancestors.
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC)
+                    .open(&path)
+                    .map_err(|_| INVALID_DIRECTORY)?
+            };
+            #[cfg(not(target_os = "macos"))]
+            let directory = {
+                use std::os::fd::{AsRawFd, FromRawFd};
+                use std::os::unix::ffi::OsStrExt;
+                let mut directory = std::fs::File::open("/").map_err(|_| INVALID_DIRECTORY)?;
+                for component in path.components() {
+                    if let std::path::Component::Normal(name) = component {
+                        let name = std::ffi::CString::new(name.as_bytes())
+                            .map_err(|_| INVALID_DIRECTORY)?;
+                        // Walk from a pinned parent, refusing symlinks at every component.
+                        let fd = unsafe {
+                            libc::openat(
+                                directory.as_raw_fd(),
+                                name.as_ptr(),
+                                libc::O_RDONLY
+                                    | libc::O_DIRECTORY
+                                    | libc::O_NOFOLLOW
+                                    | libc::O_CLOEXEC,
+                            )
+                        };
+                        if fd < 0 {
+                            return Err(INVALID_DIRECTORY);
+                        }
+                        directory = unsafe { std::fs::File::from_raw_fd(fd) };
                     }
-                    directory = unsafe { std::fs::File::from_raw_fd(fd) };
                 }
-            }
+                directory
+            };
             let trusted = Self {
                 path,
                 handle: Arc::new(directory),

@@ -351,6 +351,8 @@ function queryConfigurationMessage(error: unknown): string {
   if (code.includes('invalid_timeout')) return 'Choose a timeout between 5 seconds and 5 minutes.';
   if (code.includes('invalid_environment')) return 'Declared environment values must be absolute config-directory paths.';
   if (code.includes('environment_unavailable')) return 'Murmur could not read the protected Voice Query environment file.';
+  if (code.includes('unsupported_capabilities')) return 'This command does not match the trusted Claude profile. Revoke workspace access or reselect Claude.';
+  if (code.includes('trusted_workspace_unavailable')) return 'The trusted folder changed or is unavailable. Revoke access and choose it again.';
   return 'Murmur could not validate this Voice Query configuration.';
 }
 

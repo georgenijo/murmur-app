@@ -67,8 +67,10 @@ queries reject malformed/truncated structured output instead of exposing raw
 tool results through the legacy raw fallback. A deliberately retained answer
 can still quote files the user authorized Claude to read.
 
-The chooser pins the canonical directory with an open descriptor, opening each
-path component without following symlinks. Confirmation and pre-spawn validation
+The chooser pins the canonical directory with an open descriptor, refusing
+symlinks in every path component. macOS uses `O_NOFOLLOW_ANY` so it needs no read
+access to the selected folder's ancestors; other Unix hosts use `openat`.
+Confirmation and pre-spawn validation
 check the path and inode against that descriptor. The child uses `fchdir` on the
 retained descriptor before closing inherited file descriptors. Replacing the
 folder or an ancestor during capture is refused; even a replacement after the
