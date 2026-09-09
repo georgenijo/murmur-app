@@ -83,6 +83,10 @@ jobs:
           python3 scripts/validate_capture_boundary.py
           python3 scripts/validate_reference_docs.py
           python3 scripts/validate_markdown_links.py
+          # tests/test_capture_regression_watch.py, tests/test_dictation_lifecycle.py,
+          # tests/test_receiver_hang_diagnostics.py, and tests/test_reliability_slo.py
+          # are self-contained unit tests but are not yet wired into this step;
+          # wiring them in is tracked separately.
           python3 -m unittest \
             tests/test_reference_docs.py \
             tests/test_markdown_links.py \
@@ -94,7 +98,10 @@ jobs:
             tests/test_capture_first_pcm.py \
             tests/test_native_capture_ci.py \
             tests/test_event_store.py \
-            tests/test_log_receiver.py
+            tests/test_log_receiver.py \
+            tests/test_murmur_bench.py \
+            tests/test_murmur_bench_remote.py
+          python3 -m pytest tests/test_murmur_canary.py -q
 
   typecheck:
     needs: changes
