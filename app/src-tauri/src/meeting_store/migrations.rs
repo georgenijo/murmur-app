@@ -3,16 +3,11 @@ use rusqlite::Connection;
 use super::types::MEETING_STORE_SCHEMA_VERSION;
 
 pub(super) fn schema_version(connection: &Connection) -> Result<u32, MeetingDatabaseError> {
-    connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(MeetingDatabaseError::from)
+    crate::sqlite_support::schema_version(connection).map_err(MeetingDatabaseError::from)
 }
 
 pub(super) fn quick_check(connection: &Connection) -> Result<(), MeetingDatabaseError> {
-    let status: String = connection
-        .query_row("PRAGMA quick_check", [], |row| row.get(0))
-        .map_err(MeetingDatabaseError::from)?;
-    if status == "ok" {
+    if crate::sqlite_support::quick_check(connection).map_err(MeetingDatabaseError::from)? {
         Ok(())
     } else {
         Err(MeetingDatabaseError::InvalidData)

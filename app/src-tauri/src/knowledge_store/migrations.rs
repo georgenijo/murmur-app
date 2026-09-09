@@ -30,9 +30,7 @@ pub fn migrate_to_for_test(connection: &mut Connection, target: u32) -> Result<(
 }
 
 pub fn schema_version(connection: &Connection) -> Result<u32, String> {
-    connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(db_error)
+    crate::sqlite_support::schema_version(connection).map_err(db_error)
 }
 
 fn apply(transaction: &Transaction<'_>, version: u32) -> Result<(), String> {
@@ -166,10 +164,7 @@ fn apply(transaction: &Transaction<'_>, version: u32) -> Result<(), String> {
 }
 
 pub fn quick_check(connection: &Connection) -> Result<(), String> {
-    let result: String = connection
-        .pragma_query_value(None, "quick_check", |row| row.get(0))
-        .map_err(db_error)?;
-    if result == "ok" {
+    if crate::sqlite_support::quick_check(connection).map_err(db_error)? {
         Ok(())
     } else {
         Err("The local knowledge database failed its integrity check.".to_string())

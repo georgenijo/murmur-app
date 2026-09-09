@@ -3,7 +3,7 @@ use crate::query_provider::QueryProviderId;
 use rusqlite::{params, Connection, OpenFlags};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const DB_FILE: &str = "query-history.sqlite3";
 const LATEST_DB_SCHEMA_VERSION: u32 = 1;
@@ -61,7 +61,7 @@ impl QueryHistoryRepository {
     }
 
     fn open_raw(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path).map_err(|_| storage_error())
+        crate::sqlite_support::open_raw(&self.db_path).map_err(|_| storage_error())
     }
 
     fn open_checked(&self) -> Result<Connection, String> {
@@ -293,8 +293,8 @@ impl QueryHistoryRepository {
             .root
             .join("quarantine")
             .join(format!("query-history-corrupt-{}.sqlite3", now_ms()));
-        fs::rename(&self.db_path, path).map_err(|_| storage_error())?;
-        remove_sidecars(&self.db_path)?;
+        crate::sqlite_support::quarantine_with_sidecars(&self.db_path, &path)
+            .map_err(|_| storage_error())?;
         Ok(InitializationOutcome::Reinitialized)
     }
 }
@@ -387,15 +387,11 @@ fn parse_provider(value: &str) -> rusqlite::Result<QueryProviderId> {
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
-             PRAGMA foreign_keys=ON;
-             PRAGMA secure_delete=ON;
-             PRAGMA busy_timeout=2000;",
-        )
-        .map_err(db_error)
+    crate::sqlite_support::configure_connection(
+        connection,
+        &crate::sqlite_support::PragmaOptions::STANDARD,
+    )
+    .map_err(db_error)
 }
 
 fn migrate(connection: &mut Connection) -> Result<(), String> {
@@ -635,16 +631,14 @@ fn read_schema_version(path: &Path) -> Result<u32, String> {
 }
 
 fn schema_version(connection: &Connection) -> Result<u32, String> {
-    connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(db_error)
+    crate::sqlite_support::schema_version(connection).map_err(db_error)
 }
 
 fn quick_check(connection: &Connection) -> Result<(), String> {
-    let status: String = connection
-        .pragma_query_value(None, "quick_check", |row| row.get(0))
-        .map_err(db_error)?;
-    (status == "ok").then_some(()).ok_or_else(invalid_record)
+    crate::sqlite_support::quick_check(connection)
+        .map_err(db_error)?
+        .then_some(())
+        .ok_or_else(invalid_record)
 }
 
 fn clear_epoch(connection: &Connection) -> Result<u64, String> {
@@ -682,7 +676,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), String> {
 
 fn remove_sidecars(path: &Path) -> Result<(), String> {
     for suffix in ["-wal", "-shm"] {
-        let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
+        let sidecar = crate::sqlite_support::sidecar_path(path, suffix);
         match fs::remove_file(&sidecar) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -734,11 +728,7 @@ fn future_version_error(version: u32) -> String {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
+    crate::sqlite_support::now_ms()
 }
 
 fn to_i64(value: u64) -> Result<i64, String> {
@@ -885,6 +875,72 @@ mod tests {
         drop(connection);
         let repository = QueryHistoryRepository::reset(root, 1).unwrap();
         assert_eq!(repository.list(0, 10, None).unwrap().total, 0);
+    }
+
+    #[test]
+    fn primary_connection_uses_expected_pragmas() {
+        let (_temp, repository) = repository();
+        let connection = repository.open_checked().unwrap();
+        let journal_mode: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        let foreign_keys: i64 = connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        let secure_delete: i64 = connection
+            .pragma_query_value(None, "secure_delete", |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 2);
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(secure_delete, 1);
+        assert_eq!(busy_timeout, 2000);
+    }
+
+    #[test]
+    fn quarantine_preserves_main_and_sidecar_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("query-history");
+        fs::create_dir_all(root.join("quarantine")).unwrap();
+        let db_path = root.join(DB_FILE);
+        for (suffix, bytes) in [
+            ("", b"main evidence".as_slice()),
+            ("-wal", b"wal evidence"),
+            ("-shm", b"shm evidence"),
+        ] {
+            fs::write(format!("{}{suffix}", db_path.display()), bytes).unwrap();
+        }
+
+        let repository = QueryHistoryRepository {
+            root: root.clone(),
+            db_path: db_path.clone(),
+        };
+        let outcome = repository.quarantine_corrupt_database().unwrap();
+        assert_eq!(outcome, InitializationOutcome::Reinitialized);
+        assert!(!db_path.exists());
+
+        let files = fs::read_dir(root.join("quarantine"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 3);
+        for (suffix, bytes) in [
+            (".sqlite3", b"main evidence".as_slice()),
+            (".sqlite3-wal", b"wal evidence"),
+            (".sqlite3-shm", b"shm evidence"),
+        ] {
+            let path = files
+                .iter()
+                .find(|path| path.to_string_lossy().ends_with(suffix))
+                .unwrap();
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
     }
 
     #[test]
