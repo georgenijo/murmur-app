@@ -63,7 +63,9 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
   [local remote-speaker labels](meeting-diarization.md) can refine unambiguous
   Them passages after transcription. Experimental speaker-echo reduction is off by
   default. When enabled, it removes the System reference only from Me and
-  bypasses to the original microphone stream if processing fails.
+  bypasses to the original microphone stream if processing fails. The
+  [AEC feasibility spike](aec-feasibility-spike.md) defines the physical matrix
+  that must pass before Murmur enables the setting by default.
 - The overlay shows a persistent two-dot meeting state from accepted start
   through capture stop. A spinner remains while final durable chunks transcribe.
 - Dictation, file transcription, benchmarks, corpus capture, selected-text
@@ -87,7 +89,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
-rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v7
+rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v9
 frames. It never mixes the streams.
 
 The production protocol freezes echo cancellation at meeting start. The worker reports
@@ -103,7 +105,7 @@ episode. Initialization and processor failures bypass immediately. The worker
 retains each raw 10 ms microphone frame until processing succeeds, so every
 transition to raw PCM preserves the near-end samples without duplication.
 
-Protocol v8 also carries bounded `InputResolution` evidence before the live
+Protocol v9 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
 presence, a count capped at 256, and default-input availability. It contains no
 device ID, display name, raw error, path, or audio content.
