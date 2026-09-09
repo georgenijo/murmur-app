@@ -62,6 +62,7 @@ mod selection;
 mod smart_formatting;
 mod spoken_numbers;
 mod spoken_structure;
+mod sqlite_support;
 mod state;
 pub mod telemetry;
 pub mod transcriber;
