@@ -6,11 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-09-09
+
 ### Added
 
-- Settings can verify five seconds of microphone signal using the existing live
-  preview, with clear results for sustained sound, silence, and interruption
-  (#525). Automatic signal-based routing remains a follow-up.
+- Smart Auto can verify five seconds of microphone signal in Settings and use
+  recent signal evidence to select an approved input. It can also run bounded,
+  consented probes when no approved microphone has recent evidence (#525).
+- Voice Query can grant compatible Claude Code versions read-only access to an
+  explicitly approved workspace for the current app session without exposing
+  ancestor directories (#573).
 
 ### Fixed
 
