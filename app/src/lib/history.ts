@@ -53,24 +53,6 @@ export interface HistoryEntry {
   derived?: { sourceEntryId: string; modeId: string; createdAt: number; stages: HistoryStageResult[] };
 }
 
-export function addDerivedHistoryEntry(
-  entries: HistoryEntry[], source: HistoryEntry, text: string, modeId: string,
-  stages: HistoryStageResult[],
-): HistoryEntry[] {
-  const createdAt = Date.now();
-  return trimHistory([...entries, {
-    schemaVersion: 2,
-    id: nextEntryId(),
-    text,
-    rawText: source.rawText,
-    timestamp: createdAt,
-    duration: source.duration,
-    source: source.source ?? 'recording',
-    ...(source.sourceName ? { sourceName: source.sourceName } : {}),
-    derived: { sourceEntryId: source.id, modeId, createdAt, stages },
-  }]);
-}
-
 /** Rolling cap on stored entries. */
 const MAX_ENTRIES = 200;
 

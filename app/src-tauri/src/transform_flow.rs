@@ -43,8 +43,6 @@
 //! epoch-bump, Applying+Cancel). Do not "fix" table drift by editing only
 //! one side — update both and the tests together.
 
-#![allow(dead_code)]
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -3333,6 +3331,12 @@ impl RecordingFlowEffects {
     }
 
     /// Emitted (state, error_code) pairs in order.
+    ///
+    /// Only read from `#[cfg(test)]` assertions in this module's own test
+    /// suite, which the plain (non-test) build target can't see even though
+    /// `RecordingFlowEffects` itself compiles there (gated on
+    /// `debug_assertions`, not `cfg(test)`, so other debug tooling can use it).
+    #[allow(dead_code)]
     pub fn emitted(&self) -> Vec<(String, Option<String>)> {
         self.inner
             .lock()
@@ -3348,6 +3352,8 @@ impl RecordingFlowEffects {
             .popover_shown
     }
 
+    /// Only read from `#[cfg(test)]` assertions — see `emitted()` above.
+    #[allow(dead_code)]
     pub fn secure_flash(&self) -> bool {
         self.inner
             .lock()
