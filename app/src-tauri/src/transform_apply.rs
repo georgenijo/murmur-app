@@ -125,8 +125,6 @@
 //! transform pass — without the check, that stale completion would flip
 //! `applied` on a session it no longer belongs to.
 
-#![allow(dead_code)]
-
 use crate::state::{AppState, TransformStatus};
 use crate::MutexExt;
 
@@ -156,6 +154,12 @@ pub struct TransformSession {
 }
 
 impl TransformSession {
+    // Test-only convenience: production code always has a transform-pass id
+    // and calls `new_for_pass` directly (see `start_session_with_purpose`
+    // below); this unpaired-pass-id constructor is exercised only by this
+    // module's own `#[cfg(test)]` suite, which the plain (non-test) build
+    // target can't see.
+    #[allow(dead_code)]
     pub fn new(snapshot: crate::selection::TransformSnapshot, generation: u64) -> Self {
         Self::new_for_pass(snapshot, generation, 0)
     }
@@ -182,6 +186,12 @@ impl TransformSession {
 
 /// Start a new session for a freshly captured selection, replacing whatever
 /// session (if any) was active. There is only ever one active session.
+///
+/// Test-only convenience: production code calls `start_session_with_purpose`
+/// directly (it always has a concrete `ReviewPurpose`); this default-purpose
+/// form is exercised only by `#[cfg(test)]` suites in this crate (here and in
+/// `transform_flow.rs`), which the plain (non-test) build target can't see.
+#[allow(dead_code)]
 pub fn start_session(app_state: &AppState, snapshot: crate::selection::TransformSnapshot) {
     start_session_with_purpose(
         app_state,
