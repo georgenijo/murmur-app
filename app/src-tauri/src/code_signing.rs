@@ -5,6 +5,27 @@
 //! valid Developer ID code, carry its fixed identifier, share the main app's
 //! Team ID, and have the hardened-runtime flag.
 
+/// A macOS Team ID is exactly 10 uppercase-alphanumeric ASCII characters
+/// (e.g. `"ABCDE12345"`). Pulled out of the macOS-only validation path so it
+/// compiles and is unit-testable on every platform, even though it only ever
+/// runs against real Security.framework output on macOS.
+pub(crate) fn team_id_is_well_formed(team_id: &str) -> bool {
+    team_id.len() == 10
+        && team_id
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+/// Build the `SecRequirement` text pinning a helper to its expected bundle
+/// identifier, an Apple-issued anchor, and the main app's own Team ID. Pulled
+/// out of the macOS-only validation path so the exact requirement string is
+/// unit-testable on every platform.
+pub(crate) fn requirement_text(expected_identifier: &str, team_id: &str) -> String {
+    format!(
+        "identifier \"{expected_identifier}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\""
+    )
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use core_foundation::base::TCFType;
@@ -67,20 +88,15 @@ mod macos {
         let self_code = SecCode::for_self(Flags::NONE).map_err(|_| ())?;
         let self_information = signing_information(&self_code)?;
         let team_id = dictionary_string(&self_information, unsafe { kSecCodeInfoTeamIdentifier })?;
-        if team_id.len() != 10
-            || !team_id
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-        {
+        if !super::team_id_is_well_formed(&team_id) {
             return Err(());
         }
 
         let url = CFURL::from_path(path, false).ok_or(())?;
         let helper = SecStaticCode::from_path(&url, Flags::NONE).map_err(|_| ())?;
-        let requirement_text = format!(
-            "identifier \"{expected_identifier}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\""
-        );
-        let requirement: SecRequirement = requirement_text.parse().map_err(|_| ())?;
+        let requirement: SecRequirement = super::requirement_text(expected_identifier, &team_id)
+            .parse()
+            .map_err(|_| ())?;
         helper
             .check_validity(
                 Flags::CHECK_ALL_ARCHITECTURES | Flags::STRICT_VALIDATE | Flags::NO_NETWORK_ACCESS,
@@ -111,5 +127,41 @@ pub fn validate_bundled_helper(
     {
         let _ = (path, expected_identifier);
         Err(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn team_id_is_well_formed_accepts_ten_uppercase_alphanumeric_chars() {
+        assert!(team_id_is_well_formed("ABCDE12345"));
+        assert!(team_id_is_well_formed("0000000000"));
+        assert!(team_id_is_well_formed("AAAAAAAAAA"));
+    }
+
+    #[test]
+    fn team_id_is_well_formed_rejects_wrong_length() {
+        assert!(!team_id_is_well_formed(""));
+        assert!(!team_id_is_well_formed("ABCDE1234"));
+        assert!(!team_id_is_well_formed("ABCDE123456"));
+    }
+
+    #[test]
+    fn team_id_is_well_formed_rejects_lowercase_or_non_alphanumeric() {
+        assert!(!team_id_is_well_formed("abcde12345"));
+        assert!(!team_id_is_well_formed("ABCDE-2345"));
+        assert!(!team_id_is_well_formed("ABCDE 2345"));
+        assert!(!team_id_is_well_formed("ABCDE12345 "));
+    }
+
+    #[test]
+    fn requirement_text_embeds_identifier_and_team_id() {
+        let text = requirement_text("com.murmur.helper", "ABCDE12345");
+        assert_eq!(
+            text,
+            "identifier \"com.murmur.helper\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\""
+        );
     }
 }
