@@ -149,6 +149,7 @@ describe('MicrophoneInputTest', () => {
       if (command === 'update_microphone_preview_vad_sensitivity') return true;
       if (command === 'stop_microphone_preview') return idle;
       if (command === 'cancel_microphone_preview') return true;
+      if (command === 'verify_microphone_preview_signal') return 'verified';
       throw new Error(`unexpected command: ${command}`);
     });
     container = document.createElement('div');
@@ -160,6 +161,33 @@ describe('MicrophoneInputTest', () => {
     await act(async () => root.unmount());
     vi.unstubAllGlobals();
     container.remove();
+  });
+
+  it('verifies only the existing preview and explains the limit of signal evidence', async () => {
+    await render();
+    const button = Array.from(container.querySelectorAll('button')).find((element) => element.textContent === 'Verify signal for 5 seconds');
+    expect(button).toBeTruthy();
+    await act(async () => button?.click());
+    expect(mocks.invoke).toHaveBeenCalledWith('verify_microphone_preview_signal', { previewId: 7 });
+    expect(container.textContent).toContain('Sustained input signal verified');
+    expect(container.textContent).toContain('not speech or microphone identity');
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'start_microphone_preview')).toHaveLength(1);
+  });
+
+  it('discards a verification result after the preview generation changes', async () => {
+    await render();
+    let finish: ((value: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'verify_microphone_preview_signal') return new Promise<string>((resolve) => { finish = resolve; });
+      return Promise.resolve(true);
+    });
+    const button = Array.from(container.querySelectorAll('button')).find((element) => element.textContent === 'Verify signal for 5 seconds');
+    await act(async () => button?.click());
+    expect(button?.disabled).toBe(true);
+    await emitStatus({ ...active, previewId: 8 });
+    await act(async () => finish?.('verified'));
+    expect(container.textContent).not.toContain('Sustained input signal verified');
+    expect(button?.disabled).toBe(false);
   });
 
   it('starts an exact preview automatically and paints level events through animation frames', async () => {

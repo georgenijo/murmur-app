@@ -1,3 +1,6 @@
+use crate::microphone_signal::{
+    SignalVerification, SignalVerificationResult, VERIFICATION_COOLDOWN,
+};
 use crate::MutexExt;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -42,7 +45,6 @@ struct PreviewError {
     message: String,
 }
 
-#[derive(Clone, Debug)]
 struct ActivePreview {
     id: u64,
     phase: PreviewPhase,
@@ -53,6 +55,8 @@ struct ActivePreview {
     vad_analysis_in_flight: bool,
     vad_last_decision: Option<(u64, PreviewVadDecision)>,
     vad_retry_after: Option<Instant>,
+    verification: Option<SignalVerification>,
+    verification_retry_after: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -111,6 +115,8 @@ impl MicrophonePreviewState {
             vad_analysis_in_flight: false,
             vad_last_decision: None,
             vad_retry_after: None,
+            verification: None,
+            verification_retry_after: None,
         });
         drop(inner);
         self.changed.notify_waiters();
@@ -119,6 +125,75 @@ impl MicrophonePreviewState {
 
     pub(crate) fn current_id(&self) -> Option<u64> {
         self.inner().active.as_ref().map(|preview| preview.id)
+    }
+
+    pub(crate) fn begin_signal_verification(
+        &self,
+        preview_id: u64,
+        now: Instant,
+    ) -> Result<Instant, String> {
+        let mut inner = self.inner();
+        let active = inner
+            .active
+            .as_mut()
+            .filter(|active| {
+                active.id == preview_id
+                    && active.phase == PreviewPhase::Active
+                    && active.error.is_none()
+            })
+            .ok_or("Wait for the selected microphone's live meter before verifying signal.")?;
+        if active.verification.is_some()
+            || active
+                .verification_retry_after
+                .is_some_and(|retry| now < retry)
+        {
+            return Err("Wait ten seconds between microphone signal checks.".to_string());
+        }
+        let verification = SignalVerification::new(now);
+        let deadline = verification.deadline;
+        active.verification = Some(verification);
+        active.verification_retry_after = Some(now + VERIFICATION_COOLDOWN);
+        Ok(deadline)
+    }
+
+    pub(crate) fn observe_signal_verification(
+        &self,
+        preview_id: u64,
+        samples: &[f32],
+        sample_rate: u32,
+        now: Instant,
+    ) {
+        let mut inner = self.inner();
+        if let Some(verification) = inner
+            .active
+            .as_mut()
+            .filter(|active| {
+                active.id == preview_id
+                    && active.phase == PreviewPhase::Active
+                    && active.error.is_none()
+            })
+            .and_then(|active| active.verification.as_mut())
+        {
+            verification.observe(samples, sample_rate, now);
+        }
+    }
+
+    pub(crate) fn finish_signal_verification(&self, preview_id: u64) -> SignalVerificationResult {
+        let mut inner = self.inner();
+        let Some(active) = inner
+            .active
+            .as_mut()
+            .filter(|active| active.id == preview_id)
+        else {
+            return SignalVerificationResult::Interrupted;
+        };
+        let verification = active.verification.take();
+        if active.phase != PreviewPhase::Active || active.error.is_some() {
+            return SignalVerificationResult::Interrupted;
+        }
+        verification.map_or(SignalVerificationResult::Interrupted, |verification| {
+            verification.result()
+        })
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -661,6 +736,55 @@ impl PreviewLevelTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signal_checks_require_the_active_generation_and_enforce_cooldown() {
+        let state = MicrophonePreviewState::default();
+        let start = Instant::now();
+        let id = state.claim(60).unwrap();
+        assert!(state.begin_signal_verification(id, start).is_err());
+        state.set_phase_if(id, PreviewPhase::Active);
+        assert!(state.begin_signal_verification(id + 1, start).is_err());
+        assert!(state.begin_signal_verification(id, start).is_ok());
+        assert!(state.begin_signal_verification(id, start).is_err());
+        state.observe_signal_verification(id + 1, &[0.1; 320], 16_000, start);
+        assert_eq!(
+            state.finish_signal_verification(id),
+            SignalVerificationResult::NoPcm
+        );
+        assert!(state
+            .begin_signal_verification(id, start + Duration::from_secs(9))
+            .is_err());
+        assert!(state
+            .begin_signal_verification(id, start + VERIFICATION_COOLDOWN)
+            .is_ok());
+        state.set_phase_if(id, PreviewPhase::Stopping);
+        assert_eq!(
+            state.finish_signal_verification(id),
+            SignalVerificationResult::Interrupted
+        );
+    }
+
+    #[test]
+    fn stale_signal_completion_cannot_consume_the_next_previews_check() {
+        let state = MicrophonePreviewState::default();
+        let start = Instant::now();
+        let first = state.claim(60).unwrap();
+        state.set_phase_if(first, PreviewPhase::Active);
+        state.begin_signal_verification(first, start).unwrap();
+        state.clear_if(first);
+        let second = state.claim(60).unwrap();
+        state.set_phase_if(second, PreviewPhase::Active);
+        state.begin_signal_verification(second, start).unwrap();
+        assert_eq!(
+            state.finish_signal_verification(first),
+            SignalVerificationResult::Interrupted
+        );
+        assert_eq!(
+            state.finish_signal_verification(second),
+            SignalVerificationResult::NoPcm
+        );
+    }
 
     #[test]
     fn signal_classification_boundaries_are_deterministic() {
