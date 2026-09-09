@@ -1,6 +1,6 @@
 # React Hooks Reference
 
-The 30 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
+The 44 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
 
 For the commands these hooks call see [commands.md](commands.md). For the events they subscribe to see [events.md](events.md). For settings managed by `useSettings` see [settings.md](settings.md).
 
@@ -48,6 +48,15 @@ Ends a hands-free recording after a run of trailing silence — any recording **
 ### `useRecordingOrigin`
 Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }` over `'hold' | 'toggle'`: `hold-down-start` marks it `'hold'`; `hold-down-stop` and `double-tap-toggle` reset to `'toggle'`, the default — button, overlay, and locked-mode starts emit no keyboard event at all (`hold-down-cancel` is handled defensively but never emitted by the current backend). `useSilenceAutoStop` calls `resetOrigin` when status leaves `'recording'`, so a `'hold'` whose stop event was lost (Escape cancel, dead rdev thread) cannot outlive its recording.
 
+### `useDictationPartial` (dictation preview window)
+Validates generation-tagged `dictation-partial` events and renders only the newest recording's provisional text. It asks Rust to show the preview after the text has painted and clears the card as soon as capture leaves `recording`.
+
+### `useDeliveryRecoveryListeners` (main window)
+Surfaces `delivery-retry-feedback` and `correction-start-failed` through the main banner. Retry messages clear after five seconds.
+
+### `useSoundCues` (main window)
+Maps dictation start, stop, delivery, initialization failure, and interruption events to local sound cues. It also maps meeting phase changes when meeting cues are enabled, while preventing dictation cues during an active meeting.
+
 ---
 
 ## Configuration and lifecycle (main window)
@@ -84,6 +93,9 @@ from the `latest-v2.json` channel. Policy absence permits an optional update;
 an unavailable or malformed policy fails the check without silently
 downgrading enforcement. Persists `skipped-update-version` and
 `updater-last-check` to localStorage.
+
+### `useDevUpdaterMock`
+Cycles through completed, failed, available, forced, preparing, and downloading update states in development builds. Production checks delegate to `useAutoUpdater`, and the hook order stays the same in both builds.
 
 ### `useOpenSettingsListener`
 Listens for `open-settings` from the overlay's gear button and opens the Settings panel — showing the main window isn't enough, since panel visibility is local React state.
@@ -129,12 +141,31 @@ Listens for `escape-cancel` and issues a **scoped** `cancel_transform` with the 
 ### `useTransformReviewDriver` (popover window)
 The review popover's state machine. Subscribes to `transform-state-changed`, re-fetching `get_transform_review_content` on each transition (content is never carried in the event payload), and exposes approve / retry / cancel / undo. Also handles `transform-apply-failed` and `transform-review-hidden`.
 
-### `useTransformReviewMockDriver` (dev only)
+### `useMockReviewDriver` (dev only)
 Demo driver reachable via `?mock=1` (or `?mock=<state>`) on the popover URL, so the whole review UI can be exercised without a backend. Gated on `import.meta.env.DEV` by its caller; never in a production code path.
 
 ---
 
+## Voice Query
+
+### `useQueryFlow` (main window)
+Owns the global Voice Query shortcut lifecycle. It preflights the immutable provider command before arming the listener, starts or finishes the exact `queryPassId`, and records one content-free completion after terminal or hidden events.
+
+### `useQueryHistory` (main window)
+Pages the opt-in Rust-owned query-history store with a provider filter and a 200-entry frontend cap. Request generations prevent stale refreshes from replacing newer state, and `query-history-changed` refreshes or clears the active view.
+
+### `useQueryReviewDriver` (query review window)
+Validates pass-scoped state, partial, context, chunk, and hidden events. Sequence gaps switch answer streaming to the Rust-owned snapshot, while terminal snapshots prevent late chunks from duplicating text. It exposes cancel, copy, sign-in repair, and review state.
+
+---
+
 ## Overlay window
+
+### `useModeRuntime`
+Hydrates the current Mode, validates `mode-runtime-changed`, and exposes native cycle and temporary-override clearing actions. Invalid payloads leave the last valid Mode in place.
+
+### `useOverlayRecordingStatus`
+Subscribes before reading `get_status`, so an event received during hydration wins over an older snapshot. It validates every status and returns both React state and a current ref for overlay callbacks.
 
 ### `useOverlayGeometry`
 Owns geometry sourced from Rust — the single source of truth. Fetches `get_overlay_geometry` with a retry/backoff schedule (a single failed fetch used to leave the transparent overlay blank until the next display change) and re-reads on `overlay-geometry-changed`.
@@ -179,6 +210,12 @@ error; it never changes dictation state.
 ---
 
 ## Settings surfaces
+
+### `useTransformModelSettings`
+Owns the selected-text model status, download progress, install, removal, reset, and shortcut updates used by the AI settings pages. Shortcut conflicts and model failures remain separate errors.
+
+### `useVoiceQuerySettings`
+Owns provider discovery, protected environment names, validation, preflight, sign-in repair, and Voice Query settings actions. Generation checks prevent stale provider switches, tests, and sign-in polls from changing a newer configuration.
 
 ### `useKnowledge`
 Bounded, paged access to the personal knowledge store (`list_knowledge`) with search/filter, driven by a request object and an `active` gate so closed panels don't query.
