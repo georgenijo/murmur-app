@@ -183,6 +183,8 @@ Read these before working on a feature:
 | `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
 | `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
 | `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |
+| `lib/voiceQuerySettings.ts` | Pure Voice Query configuration, probe-result, and request-fingerprint helpers |
+| `lib/voiceQuerySettings.test.ts` | Unit coverage for Voice Query configuration and probe presentation helpers |
 | `lib/silenceAutoStop.ts` | Deterministic trailing-silence detector (pure per-sample fold) |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
 | `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
@@ -197,6 +199,10 @@ Read these before working on a feature:
 | `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with durable write-through persistence |
 | `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free (not hold-started) recording after trailing silence |
 | `lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold- or toggle-started |
+| `lib/hooks/useVoiceQuerySettings.ts` | Voice Query settings state, effects, validation, and provider handlers |
+| `lib/hooks/useTransformModelSettings.ts` | Selected-text model status, download, shortcut, removal, and reset controller |
+| `lib/hooks/useDevUpdaterMock.ts` | Always-called development updater-state driver with production passthrough |
+| `lib/hooks/useDeliveryRecoveryListeners.ts` | Delivery retry and correction-start failure event listeners |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
@@ -228,6 +234,9 @@ Read these before working on a feature:
 | `components/CommandPalette.tsx` | ⌘K command palette dialog |
 | `components/history/HistoryPanel.tsx` | History workspace: search, filters, export menu |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
+| `components/settings/VoiceQuerySettings.tsx` | Voice Query provider, privacy, shortcut, and response settings page |
+| `components/settings/TransformModelSettings.tsx` | Selected-text rewrite model, shortcut, and saved-transform settings page |
+| `components/settings/SettingToggle.tsx` | Shared labeled settings-row toggle control |
 | `components/settings/MicrophoneInputTest.tsx` | Live capture-only microphone meter and safe input switching |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |
