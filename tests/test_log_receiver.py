@@ -121,6 +121,12 @@ class LogReceiverHealthTests(unittest.TestCase):
             "generated_at": "2026-08-05T00:00:00Z",
             "status": "healthy",
             "alerts": [],
+            "policy": {
+                "post_stop_target_min_audio_seconds": 1,
+                "post_stop_target_max_audio_seconds": 15,
+                "post_stop_target_p50_ms": 1_000,
+                "post_stop_target_p95_ms": 2_000,
+            },
             "cohorts": [
                 {
                     "install_id": "12345678-abcd",
@@ -129,6 +135,10 @@ class LogReceiverHealthTests(unittest.TestCase):
                     "post_stop_latency_sample_count": 5,
                     "post_stop_latency_p50_ms": 300,
                     "post_stop_latency_p95_ms": 500,
+                    "post_stop_target_sample_count": 5,
+                    "post_stop_target_p50_ms": 300,
+                    "post_stop_target_p95_ms": 500,
+                    "post_stop_target_verdict": "insufficient_data",
                 },
                 {
                     "install_id": "87654321-dcba",
@@ -152,9 +162,48 @@ class LogReceiverHealthTests(unittest.TestCase):
             finally:
                 receiver.ROOT = original_root
 
-        self.assertIn("Post-stop latency · 1 cohort", page)
-        self.assertIn("12345678</code> v1.2.3: 5 samples, p50 300 ms, p95 500 ms", page)
+        self.assertIn("Stop-to-delivery attempt · 1 cohort", page)
+        self.assertIn("Target cohort 1–15 s · p50 &lt; 1000 ms · p95 &lt; 2000 ms", page)
+        self.assertIn(
+            "12345678</code> v1.2.3: 5 target samples, p50 300 ms, p95 500 ms, "
+            "preliminary; all successful attempts: 5 samples, p50 300 ms, p95 500 ms",
+            page,
+        )
         self.assertNotIn("87654321", page)
+
+    def test_dashboard_surfaces_post_stop_latency_target_alert(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "alert",
+            "alerts": [
+                {
+                    "kind": "post_stop_latency_target_missed",
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.3",
+                    "sample_count": 20,
+                    "p50_ms": 1_001,
+                    "p95_ms": 2_001,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Capture regression watch · 1 alert", page)
+        self.assertIn(
+            "stop-to-delivery target missed with 20 samples, p50 1001 ms and p95 2001 ms",
+            page,
+        )
 
     def test_dashboard_reports_no_post_stop_latency_samples_yet(self) -> None:
         report = {
@@ -176,7 +225,7 @@ class LogReceiverHealthTests(unittest.TestCase):
             finally:
                 receiver.ROOT = original_root
 
-        self.assertIn("No post-stop latency samples yet.", page)
+        self.assertIn("No stop-to-delivery samples yet.", page)
 
     def test_dashboard_surfaces_performance_store_failure_watch(self) -> None:
         report = {
