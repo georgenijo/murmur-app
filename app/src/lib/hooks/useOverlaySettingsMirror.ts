@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
@@ -39,6 +39,8 @@ export function useOverlaySettingsMirror({
   hotkeyMissFeedbackRef,
 }: UseOverlaySettingsMirrorArgs): OverlaySettingsMirror {
   const [autoPaste, setAutoPaste] = useState(false);
+  const autoPasteOperation = useRef(0);
+  const disabledOperation = useRef(0);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
   const [overlayVerticalOffset, setOverlayVerticalOffset] = useState(
     () => loadSettings().overlayVerticalOffset,
@@ -84,6 +86,7 @@ export function useOverlaySettingsMirror({
   // Quick control: auto-paste. Write localStorage + notify the main window.
   const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
+    const operation = ++autoPasteOperation.current;
     try {
       const s = loadSettings();
       const next = !s.autoPaste;
@@ -93,8 +96,13 @@ export function useOverlaySettingsMirror({
       try {
         await invoke('configure_dictation', { options: buildConfigureOptions(nextSettings) });
       } catch (err) {
-        saveSettings(s);
-        applySettingsSnapshot(s);
+        const fresh = loadSettings();
+        if (operation === autoPasteOperation.current && fresh.autoPaste === next) {
+          const rollback = { ...fresh, autoPaste: s.autoPaste };
+          saveSettings(rollback);
+          applySettingsSnapshot(rollback);
+          void emit('settings-changed').catch(() => flog.warn('overlay', 'emit settings rollback failed'));
+        }
         throw err;
       }
       emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
@@ -109,11 +117,13 @@ export function useOverlaySettingsMirror({
   // Quick control: global disable. Gate the backend immediately, then notify.
   const handleToggleDisabled = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
+    const operation = ++disabledOperation.current;
     try {
       const s = loadSettings();
       const next = !s.disabled;
       await invoke('set_app_disabled', { disabled: next });
-      saveSettings({ ...s, disabled: next });
+      if (operation !== disabledOperation.current) return;
+      saveSettings({ ...loadSettings(), disabled: next });
       setDisabled(next);
       emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
     } catch (err) {

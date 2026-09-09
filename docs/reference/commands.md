@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 199 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 201 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -91,7 +91,8 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 
 ## Microphone input test (`commands/microphone_preview.rs`)
 
-These commands are gated to the main window. Preview owns the production audio
+Mutating commands are gated to the main window; the cached Auto status also
+serves the local overlay. Preview owns the production audio
 supervisor but retains no recording buffer and never enters transcription or
 delivery. Live VAD uses only a bounded rolling in-memory window.
 
@@ -99,7 +100,9 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 |---------|-----------|---------|-------------|
 | `get_microphone_preview_status` | — | `MicrophonePreviewStatus` | Returns the current generation-aware lifecycle snapshot or retained terminal error. |
 | `verify_microphone_preview_signal` | `preview_id: u64` | `Result<SignalVerificationResult, String>` | Main-window-only five-second signal check on an already active preview. Returns `verified`, `no_pcm`, `insufficient_signal`, or `interrupted`. Never starts capture or changes inputs. Enforces ten seconds between checks on that preview. |
-| `get_smart_auto_microphone_status` | `smart_auto: SmartAutoRequest` | `SmartAutoStatus` | Read-only cached next-capture decision. Returns `ready` with `deviceId`, content-free `reason`, and `validForMs`, or `blocked` with an actionable message and nullable `retryAfterMs` for a switch cooldown. Does not enumerate, open a microphone, commit selection, or refresh evidence. Device identity stays in local UI IPC. |
+| `get_smart_auto_microphone_status` | `smart_auto: SmartAutoRequest` | `SmartAutoStatus` | Read-only cached next-capture decision. Returns `ready` with `deviceId`, content-free `reason`, and `validForMs`; `probing` with local `deviceId`, `phase`, and `remainingMs`; or `blocked` with an actionable message and nullable `retryAfterMs`. Does not enumerate, open a microphone, commit selection, or refresh evidence. Device identity stays in local UI IPC. |
+| `configure_smart_auto_probe` | `policy: JSON` | `Result<u64, String>` | Main-window-only ordered consent writer. Accepts `{enabled:false}` or `{enabled:true,request:SmartAutoRequest}` and returns the policy generation. Revokes in-flight permits before validation; malformed policy disables checks. Separate from dictation configuration. |
+| `retry_smart_auto_probe` | none | `Result<u64, String>` | Main-window-only request for another bounded candidate round under the current enabled policy. Returns its generation. Preserves cooldown/backoff, refuses while a check is active, and never opens a permission prompt. |
 | `start_microphone_preview` | `device_id: String`, `vad_sensitivity: u32` | `Result<MicrophonePreviewStatus, String>` | Claims a monotonic Preview owner with the current live-VAD sensitivity, returns its Connecting status immediately, and starts the selected stable device ID asynchronously so startup can be cancelled. `system_default` is the only value normalized to the live default. Refuses competing capture and benchmark owners. |
 | `update_microphone_preview_vad_sensitivity` | `preview_id: u64`, `vad_sensitivity: u32` | `Result<bool, String>` | Updates only the exact active preview generation, clamps sensitivity to 0–100, and invalidates an in-flight decision from the previous slider value. |
 | `stop_microphone_preview` | `preview_id: u64` | `Result<MicrophonePreviewStatus, String>` | Stops only the exact generation and waits for joined-worker `Idle`; a timeout blocks device reopening. |

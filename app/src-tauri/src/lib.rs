@@ -61,6 +61,7 @@ mod query_history;
 mod query_provider;
 mod resource_monitor;
 mod selection;
+mod smart_auto_probe;
 mod smart_formatting;
 mod spoken_numbers;
 mod spoken_structure;
@@ -336,6 +337,8 @@ pub fn run() {
             commands::permissions::get_audio_input_inventory,
             commands::microphone_preview::get_microphone_preview_status,
             commands::microphone_preview::get_smart_auto_microphone_status,
+            smart_auto_probe::configure_smart_auto_probe,
+            smart_auto_probe::retry_smart_auto_probe,
             commands::microphone_preview::verify_microphone_preview_signal,
             commands::microphone_preview::start_microphone_preview,
             commands::microphone_preview::update_microphone_preview_vad_sensitivity,
@@ -513,6 +516,7 @@ pub fn run() {
         .setup(|app| {
             telemetry::init(app.handle().clone());
             audio_inventory::initialize(app.handle().clone());
+            smart_auto_probe::initialize(app.handle().clone());
             audio_graph_snapshot::set_app_handle(app.handle().clone());
             // Restore the durable per-device capture backend memo before any
             // capture can start, so a relaunch keeps the fast-fail tier a

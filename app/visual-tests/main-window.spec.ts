@@ -292,6 +292,8 @@ test('recording settings unify Smart Auto mode and per-microphone approval', asy
   await expect(pickerDialog.getByText('Available')).toBeVisible();
   await expect(pickerDialog.getByRole('button', { name: 'Prefer MacBook Pro Microphone for Smart Auto' })).toHaveText('Preferred');
   await expect(pickerDialog.getByRole('button', { name: 'Prefer Anker USB Microphone for Smart Auto' })).toHaveText('Prefer');
+  await expect(pickerDialog.getByRole('switch', { name: 'Check approved microphones in the background' })).toBeChecked();
+  await expect(pickerDialog.getByText(/Audio is never transcribed or saved/)).toBeVisible();
   await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
   await picker.click();

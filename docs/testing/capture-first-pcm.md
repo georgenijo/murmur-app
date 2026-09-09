@@ -1,6 +1,6 @@
 # Capture first-PCM smoke
 
-`scripts/smoke_test_capture_first_pcm.py` checks both native microphone backends against a protocol-v9 capture worker. It detects an AUHAL regression even when CPAL still works.
+`scripts/smoke_test_capture_first_pcm.py` checks both native microphone backends against a protocol-v10 capture worker. It detects an AUHAL regression even when CPAL still works.
 
 The runner needs an open-lid Apple Silicon Mac with a connected built-in microphone and microphone permission for the process responsible for the worker. The probe pins the built-in default input by its UID. If the default is not built-in, exactly one connected built-in input must exist. Device names and UIDs stay in process memory.
 

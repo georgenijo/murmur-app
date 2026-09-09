@@ -220,6 +220,11 @@ Dictation Settings also includes a local-only
 [live microphone input test](features/microphone-input-test.md) with RMS/peak
 metering, quiet/clipping guidance, automatic pause/resume around dictation,
 exact device switching, and no retained PCM.
+Opt-in [Smart Auto routing](features/transcription.md#smart-auto-microphone-selection)
+uses recent verified signal from approved inputs. Separate background-check
+consent enables bounded idle-only candidate checks with confirmed teardown,
+cooldown, and finite retries. The Settings row and overlay distinguish a check
+in progress from an available input and a verified next-capture choice.
 
 ### Appearance — [features/appearance.md](features/appearance.md)
 System/Light/Dark appearance with accessible custom controls, a durable local

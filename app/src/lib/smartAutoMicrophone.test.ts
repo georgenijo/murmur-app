@@ -7,6 +7,7 @@ import {
   getSmartAutoMicrophoneStatus,
   parseSmartAutoMicrophoneStatus,
   smartAutoMicrophoneReasonLabel,
+  smartAutoProbePolicy,
 } from './smartAutoMicrophone';
 
 describe('Smart Auto microphone status boundary', () => {
@@ -46,7 +47,7 @@ describe('Smart Auto microphone status boundary', () => {
       state: 'blocked', message: 'Cooling down.', retryAfterMs: 0,
     })).toBeNull();
     expect(parseSmartAutoMicrophoneStatus({
-      state: 'blocked', message: 'Cooling down.', retryAfterMs: 10_001,
+      state: 'blocked', message: 'Cooling down.', retryAfterMs: 900_001,
     })).toBeNull();
   });
 
@@ -56,6 +57,66 @@ describe('Smart Auto microphone status boundary', () => {
     expect(parseSmartAutoMicrophoneStatus({
       state: 'blocked', message: 'Switch cooldown.', retryAfterMs: 10_000,
     })).toEqual({ state: 'blocked', message: 'Switch cooldown.', retryAfterMs: 10_000 });
+  });
+
+  it('accepts bounded probe progress and longer scheduler backoff', () => {
+    expect(parseSmartAutoMicrophoneStatus({
+      state: 'probing', deviceId: 'usb', phase: 'verifying', remainingMs: 5_000,
+    })).toEqual({ state: 'probing', deviceId: 'usb', phase: 'verifying', remainingMs: 5_000 });
+    expect(parseSmartAutoMicrophoneStatus({
+      state: 'blocked', message: 'Backoff.', retryAfterMs: 900_000,
+    })).toEqual({ state: 'blocked', message: 'Backoff.', retryAfterMs: 900_000 });
+    expect(parseSmartAutoMicrophoneStatus({
+      state: 'probing', deviceId: 'usb', phase: 'transcribing', remainingMs: 5_000,
+    })).toBeNull();
+  });
+
+  it('requires separate probe consent in addition to Smart Auto', () => {
+    expect(smartAutoProbePolicy({
+      microphone: 'system_default',
+      disabled: false,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: false,
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoAllowContinuity: false,
+    })).toEqual({ enabled: false });
+    expect(smartAutoProbePolicy({
+      microphone: 'system_default',
+      disabled: false,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoAllowContinuity: false,
+    })).toEqual({
+      enabled: true,
+      request: { approvedDeviceIds: ['usb'], preferredDeviceIds: ['usb'], allowContinuity: false },
+    });
+  });
+
+  it('does not authorize background checks alongside a pinned microphone', () => {
+    expect(smartAutoProbePolicy({
+      microphone: 'pinned',
+      disabled: false,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoAllowContinuity: false,
+    })).toEqual({ enabled: false });
+  });
+
+  it('never enables probes before a saved disabled state reaches backend initialization', () => {
+    expect(smartAutoProbePolicy({
+      disabled: true,
+      microphone: 'system_default',
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoAllowContinuity: false,
+    })).toEqual({ enabled: false });
   });
 
   it('gives each backend decision reason a user-facing label', () => {

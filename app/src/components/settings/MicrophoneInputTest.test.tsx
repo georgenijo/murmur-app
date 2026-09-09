@@ -69,7 +69,7 @@ describe('MicrophoneInputTest', () => {
   let missingDevice = false;
   let renderedDevices = [...devices];
   let includeSmartAuto = false;
-  let smartAuto: Pick<Settings, 'smartAutoMicrophoneEnabled' | 'smartAutoApprovedDeviceIds' | 'smartAutoPreferredDeviceIds' | 'smartAutoAllowContinuity'>;
+  let smartAuto: Pick<Settings, 'smartAutoMicrophoneEnabled' | 'smartAutoProbeEnabled' | 'smartAutoApprovedDeviceIds' | 'smartAutoPreferredDeviceIds' | 'smartAutoAllowContinuity'>;
   let handleSmartAutoChange: ReturnType<typeof vi.fn<(updates: Partial<Settings>) => void>>;
   let frames: Map<number, FrameRequestCallback>;
   let nextFrame: number;
@@ -127,6 +127,7 @@ describe('MicrophoneInputTest', () => {
     includeSmartAuto = false;
     smartAuto = {
       smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: false,
       smartAutoApprovedDeviceIds: ['usb', 'built-in', 'missing-device'],
       smartAutoPreferredDeviceIds: ['usb', 'built-in'],
       smartAutoAllowContinuity: false,
@@ -151,6 +152,7 @@ describe('MicrophoneInputTest', () => {
       if (command === 'stop_microphone_preview') return idle;
       if (command === 'cancel_microphone_preview') return true;
       if (command === 'verify_microphone_preview_signal') return 'verified';
+      if (command === 'retry_smart_auto_probe') return 1;
       if (command === 'get_smart_auto_microphone_status') {
         return { state: 'blocked', message: 'Verify an approved microphone before recording.' };
       }
@@ -250,6 +252,12 @@ describe('MicrophoneInputTest', () => {
     expect(approvals.some((approval) => approval.checked)).toBe(true);
     expect(container.textContent).toContain('Previously approved. Uncheck to forget it.');
     expect(container.querySelector('.settings-microphone-active-badge')?.textContent).toBe('Available');
+    const backgroundChecks = container.querySelector('[aria-label="Check approved microphones in the background"]') as HTMLElement;
+    expect(backgroundChecks.getAttribute('aria-checked')).toBe('false');
+    expect(container.textContent).toContain('Briefly checks approved inputs while Murmur is idle');
+    expect(container.textContent).toContain('never transcribed or saved');
+    await act(async () => backgroundChecks.click());
+    expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoProbeEnabled: true });
     const unavailableApproval = Array.from(container.querySelectorAll('label')).find((label) => label.textContent?.includes('Previously approved'))?.querySelector('input') as HTMLInputElement;
     await act(async () => unavailableApproval.click());
     expect(handleSmartAutoChange).toHaveBeenCalledWith({
@@ -292,6 +300,28 @@ describe('MicrophoneInputTest', () => {
     expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoMicrophoneEnabled: false });
     expect(mocks.invoke).toHaveBeenCalledWith('stop_microphone_preview', { previewId: 7 });
     expect(selected).toBe('usb');
+  });
+
+  it('renders an automatic probe separately from the visible manual preview', async () => {
+    includeSmartAuto = true;
+    smartAuto = { ...smartAuto, smartAutoProbeEnabled: true };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') return active;
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
+      if (command === 'cancel_microphone_preview') return true;
+      if (command === 'get_smart_auto_microphone_status') {
+        return { state: 'probing', deviceId: 'built-in', phase: 'verifying', remainingMs: 4_000 };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    await render();
+
+    expect(container.textContent).toContain('Previewing now: USB Microphone.');
+    expect(container.textContent).toContain('Background check: Built-in Microphone, checking signal.');
+    expect(container.textContent).toContain('not transcribed or saved');
+    expect(container.textContent).not.toContain('Next capture ready');
   });
 
   it('rereads the backend when evidence expires and shows a different fresh candidate', async () => {

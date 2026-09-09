@@ -356,6 +356,7 @@ fn refresh_threads() -> &'static Mutex<Vec<JoinHandle<()>>> {
 }
 
 fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
+    crate::smart_auto_probe::inventory_changed();
     let app_handle = app_handle_slot().lock_or_recover().clone();
     if let Some(app_handle) = app_handle {
         let _ = app_handle.emit_to("main", INVENTORY_EVENT, snapshot.clone());
@@ -364,7 +365,8 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     }
 }
 
-fn emit_routing_changed() {
+pub(crate) fn emit_routing_changed() {
+    crate::smart_auto_probe::wake();
     if let Some(app_handle) = app_handle_slot().lock_or_recover().clone() {
         let _ = app_handle.emit("smart-auto-microphone-changed", ());
     }
@@ -383,6 +385,7 @@ pub(crate) fn helper_entered_detached_reap() {
     let Some((snapshot, changed)) = detached_reap_invalidation(coordinator()) else {
         return;
     };
+    crate::smart_auto_probe::inventory_changed();
     if changed {
         emit_inventory(&snapshot);
     }
@@ -459,6 +462,7 @@ fn topology_changed() {
     let Some((snapshot, changed)) = coordinator().invalidate() else {
         return;
     };
+    crate::smart_auto_probe::inventory_changed();
     if changed {
         emit_inventory(&snapshot);
     }
@@ -599,6 +603,7 @@ pub(crate) fn initialize(app_handle: tauri::AppHandle) {
 }
 
 pub(crate) fn lifecycle_became_idle() {
+    crate::smart_auto_probe::wake();
     spawn_pending_refresh("lifecycleIdle", true);
 }
 
@@ -699,11 +704,53 @@ pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAuto
 }
 
 pub(crate) fn smart_auto_status(request: &SmartAutoRequest) -> SmartAutoStatus {
+    let cached = cached_smart_auto_status(request);
+    if matches!(cached, SmartAutoStatus::Ready { .. }) {
+        return cached;
+    }
+    crate::smart_auto_probe::status(request).unwrap_or(cached)
+}
+
+pub(crate) fn cached_smart_auto_status(request: &SmartAutoRequest) -> SmartAutoStatus {
     let state = coordinator().state.lock_or_recover();
     let now = Instant::now();
     state
         .routing
         .status(verified_selection(&state, request, now), now)
+}
+
+/// Candidate ordering uses only an authoritative cache. This path cannot
+/// request enumeration, including on first launch or after invalidation.
+pub(crate) fn probe_candidates(request: &SmartAutoRequest) -> (u64, Vec<String>) {
+    let state = coordinator().state.lock_or_recover();
+    probe_candidates_for_state(&state, request, microphone_auto::current_lid_state())
+}
+
+fn probe_candidates_for_state(
+    state: &InventoryState,
+    request: &SmartAutoRequest,
+    lid: ProductionLidState,
+) -> (u64, Vec<String>) {
+    let epoch = state.invalidation_epoch;
+    let Ok(topology) = current_topology(state) else {
+        return (epoch, Vec::new());
+    };
+    let mut devices = topology.devices.clone();
+    let mut candidates = Vec::new();
+    while let Ok(selection) =
+        microphone_auto::select(request, &devices, topology.default_input_id.as_deref(), lid)
+    {
+        devices.retain(|device| device.id != selection.device_id);
+        candidates.push(selection.device_id);
+    }
+    if let Some(index) = candidates
+        .iter()
+        .position(|id| Some(id.as_str()) == state.routing.current_device_id())
+    {
+        let current = candidates.remove(index);
+        candidates.insert(0, current);
+    }
+    (epoch, candidates)
 }
 
 /// The visible Settings preview must be able to test an unverified candidate.
@@ -756,12 +803,22 @@ fn signal_evidence_key_for_state(
 }
 
 pub(crate) fn record_signal_evidence(key: &SignalEvidenceKey, result: SignalVerificationResult) {
+    record_signal_evidence_at(key, result, Instant::now());
+}
+
+pub(crate) fn record_signal_evidence_at(
+    key: &SignalEvidenceKey,
+    result: SignalVerificationResult,
+    verified_at: Instant,
+) -> bool {
     let mut state = coordinator().state.lock_or_recover();
-    if apply_signal_evidence(&mut state, key, result, Instant::now()) {
+    if apply_signal_evidence(&mut state, key, result, verified_at) {
         drop(state);
         emit_routing_changed();
         tracing::info!(target: "audio", event_code = "audio.auto_signal_evidence", verified = result == SignalVerificationResult::Verified, "bounded microphone signal evidence updated");
+        return true;
     }
+    false
 }
 
 fn apply_signal_evidence(
@@ -797,6 +854,7 @@ pub(crate) fn invalidate_signal_evidence(device_id: Option<&str>) {
         .lock_or_recover()
         .routing
         .fail(device_id);
+    crate::smart_auto_probe::inventory_changed();
     emit_routing_changed();
 }
 
@@ -868,6 +926,112 @@ mod tests {
             default_input_id: default.map(str::to_string),
             lid_state: ProductionLidState::Open,
         }
+    }
+
+    #[test]
+    fn cached_probe_order_handles_default_connect_remove_and_approval_changes() {
+        let coordinator = AudioInputInventoryCoordinator::default();
+        let request = SmartAutoRequest {
+            approved_device_ids: vec!["a".into(), "b".into(), "c".into()],
+            preferred_device_ids: vec![],
+            allow_continuity: false,
+        };
+        let candidates = |coordinator: &AudioInputInventoryCoordinator,
+                          request: &SmartAutoRequest| {
+            probe_candidates_for_state(
+                &coordinator.state.lock_or_recover(),
+                request,
+                ProductionLidState::Open,
+            )
+        };
+        assert!(candidates(&coordinator, &request).1.is_empty());
+        assert!(!coordinator.state.lock_or_recover().pending);
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(
+            &[("a", "A"), ("b", "B"), ("unapproved", "Unknown")],
+            Some("b"),
+        )));
+        let (first_epoch, first) = candidates(&coordinator, &request);
+        assert_eq!(first, ["b", "a"]);
+        coordinator.invalidate();
+        assert!(candidates(&coordinator, &request).1.is_empty());
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(
+            &[("a", "A"), ("b", "B"), ("c", "C")],
+            Some("c"),
+        )));
+        let (connected_epoch, connected) = candidates(&coordinator, &request);
+        assert_ne!(connected_epoch, first_epoch);
+        assert_eq!(connected, ["c", "a", "b"]);
+        {
+            let mut state = coordinator.state.lock_or_recover();
+            state.routing.commit(
+                &SmartAutoSelection {
+                    device_id: "b".into(),
+                    reason: microphone_auto::SmartAutoReason::PreferredApproved,
+                },
+                Instant::now(),
+            );
+        }
+        assert_eq!(candidates(&coordinator, &request).1, ["b", "c", "a"]);
+        let revoked = SmartAutoRequest {
+            approved_device_ids: vec!["a".into(), "c".into()],
+            ..request.clone()
+        };
+        assert_eq!(candidates(&coordinator, &revoked).1, ["c", "a"]);
+        coordinator.invalidate();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(&[("a", "A")], Some("a"))));
+        assert_eq!(candidates(&coordinator, &request).1, ["a"]);
+    }
+
+    #[test]
+    fn candidate_success_does_not_commit_and_failed_replacement_preserves_verified_rollback() {
+        let now = Instant::now();
+        let mut state = InventoryState {
+            attempted: true,
+            topology: Some(
+                normalize_inventory(topology(&[("a", "A"), ("b", "B")], Some("a"))).unwrap(),
+            ),
+            ..InventoryState::default()
+        };
+        let request = SmartAutoRequest {
+            approved_device_ids: vec!["a".into(), "b".into()],
+            preferred_device_ids: vec!["a".into()],
+            allow_continuity: false,
+        };
+        let key_a = signal_evidence_key_for_state(&state, Some("a")).unwrap();
+        assert!(apply_signal_evidence(
+            &mut state,
+            &key_a,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        assert_eq!(state.routing.current_device_id(), None);
+        let selected = verified_selection(&state, &request, now).unwrap();
+        state.routing.commit(&selected, now);
+        let key_b = signal_evidence_key_for_state(&state, Some("b")).unwrap();
+        assert!(apply_signal_evidence(
+            &mut state,
+            &key_b,
+            SignalVerificationResult::InsufficientSignal,
+            now
+        ));
+        assert_eq!(
+            verified_selection(&state, &request, now).unwrap().device_id,
+            "a"
+        );
+        assert_eq!(state.routing.current_device_id(), Some("a"));
+        assert!(!apply_signal_evidence(
+            &mut state,
+            &key_b,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        assert!(
+            verified_selection(&state, &request, now + microphone_auto::SIGNAL_FRESHNESS).is_err()
+        );
     }
 
     #[test]

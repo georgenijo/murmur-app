@@ -81,7 +81,9 @@ pub async fn start_meeting(
     request: StartMeetingRequest,
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSession, String> {
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition =
+        crate::commands::microphone_preview::transition_after_stopping_preview(&app, state.inner())
+            .await?;
     crate::meeting_diarization::cancel_all()?;
     if let Some(error) = meeting_conflict(&state) {
         return Err(error.to_string());
@@ -240,7 +242,11 @@ pub async fn request_system_audio_permission(
     state: tauri::State<'_, State>,
 ) -> Result<SystemAudioAccess, String> {
     {
-        let _transition = state.app_state.recording_transition.lock().await;
+        let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+            &app,
+            state.inner(),
+        )
+        .await?;
         if let Some(error) = meeting_conflict(&state) {
             return Err(error.to_string());
         }
@@ -254,6 +260,7 @@ pub async fn request_system_audio_permission(
         .app_state
         .meeting_active
         .store(false, Ordering::SeqCst);
+    crate::smart_auto_probe::wake();
     let result = joined?;
     if let Ok(access) = result.as_ref() {
         let _ = app.emit("system-audio-permission-changed", access);

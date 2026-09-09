@@ -130,7 +130,7 @@ def worker_session(worker: Path, timeout: float):
     nonce = secrets.token_bytes(16)
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(
-        [str(worker), "--production-v9", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v10", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True, bufsize=0,
     )
@@ -140,7 +140,7 @@ def worker_session(worker: Path, timeout: float):
         os.set_blocking(process.stdin.fileno(), False)
         session.send({"type": "hello"})
         if session.read() != ("control", {"type": "helloAck"}):
-            raise SmokeError("worker did not acknowledge protocol v9")
+            raise SmokeError("worker did not acknowledge protocol v10")
         yield session
     finally:
         try:
@@ -287,7 +287,7 @@ def main() -> int:
         print(json.dumps({"passed": False, "backend": backend, "error": str(error) if isinstance(error, SmokeError)
                           else "worker process or pipe operation failed"}), file=sys.stderr)
         return 1
-    print(json.dumps({"passed": True, "protocol": 9, "backends": reports}, sort_keys=True))
+    print(json.dumps({"passed": True, "protocol": 10, "backends": reports}, sort_keys=True))
     return 0
 
 

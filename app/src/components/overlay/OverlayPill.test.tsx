@@ -113,24 +113,46 @@ describe('OverlayPill transient cues', () => {
     ));
 
     const status = container.querySelector<HTMLElement>('[role="status"]');
-    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture ready with USB Microphone. Recent signal verified; preferred approved microphone.');
-    expect(status?.getAttribute('title')).toBe('Smart Auto: USB Microphone. Recent signal verified; preferred approved microphone.');
+    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture ready with USB Microphone. Verified recently; preferred approved microphone.');
+    expect(status?.getAttribute('title')).toBe('Smart Auto: USB Microphone. Verified recently; preferred approved microphone.');
     expect(status?.getAttribute('aria-live')).toBe('polite');
     expect(status?.textContent).not.toContain('usb-device-id');
   });
 
   it('shows when Smart Auto needs verification while leaving higher-priority cues alone', async () => {
     await act(async () => root.render(
-      <CuePill indicator={{ kind: 'idle', dimmed: false }} smartAutoSummary={{ kind: 'blocked' }} />,
+      <CuePill indicator={{ kind: 'idle', dimmed: false }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: null }} />,
     ));
     expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
-      .toBe('Smart Auto next capture blocked. Open Settings to verify signal or pin an input.');
+      .toBe('Smart Auto next capture blocked. Open Settings to retry, verify signal, or pin an input.');
 
     await act(async () => root.render(
-      <CuePill indicator={{ kind: 'clipboardOnly' }} smartAutoSummary={{ kind: 'blocked' }} />,
+      <CuePill indicator={{ kind: 'clipboardOnly' }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: null }} />,
     ));
     expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
       .toBe('Text copied to clipboard. Paste manually.');
+  });
+
+  it('describes a background probe without presenting it as a manual preview', async () => {
+    await act(async () => root.render(
+      <CuePill
+        indicator={{ kind: 'idle', dimmed: false }}
+        smartAutoSummary={{ kind: 'probing', deviceName: 'USB Microphone', phase: 'checking signal' }}
+      />,
+    ));
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
+      .toBe('Smart Auto background check for USB Microphone: checking signal. Audio is not transcribed or saved.');
+    expect(container.textContent).not.toContain('preview');
+  });
+
+  it('describes a cooldown without promising that background probing is enabled', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'idle', dimmed: false }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: 60_000 }} />,
+    ));
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture blocked. Cooldown: about 60 seconds remaining.');
+    expect(status?.getAttribute('title')).toBe('Smart Auto blocked. Waiting for cooldown.');
+    expect(status?.getAttribute('aria-label')).not.toContain('scheduled');
   });
 
   it('keeps the wing on the waveform while recording — transcript text lives in the preview popover', async () => {

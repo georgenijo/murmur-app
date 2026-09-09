@@ -84,6 +84,12 @@ pub(crate) enum SmartAutoStatus {
         valid_for_ms: u64,
     },
     #[serde(rename_all = "camelCase")]
+    Probing {
+        device_id: String,
+        phase: &'static str,
+        remaining_ms: u64,
+    },
+    #[serde(rename_all = "camelCase")]
     Blocked {
         message: String,
         retry_after_ms: Option<u64>,
@@ -103,6 +109,9 @@ pub(crate) struct SmartAutoHealth {
 }
 
 impl SmartAutoHealth {
+    pub(crate) fn current_device_id(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
     pub(crate) fn invalidate_topology(&mut self) {
         self.verified.clear();
     }
@@ -230,7 +239,7 @@ fn valid_stable_id(value: &str) -> bool {
     !value.is_empty() && !value.contains('\0') && value.len() <= MAX_STABLE_ID_BYTES
 }
 
-fn validate(request: &SmartAutoRequest) -> Result<HashSet<&str>, &'static str> {
+pub(crate) fn validate(request: &SmartAutoRequest) -> Result<HashSet<&str>, &'static str> {
     if request.approved_device_ids.is_empty()
         || request.approved_device_ids.len() > MAX_APPROVED_DEVICES
         || request.preferred_device_ids.len() > MAX_APPROVED_DEVICES

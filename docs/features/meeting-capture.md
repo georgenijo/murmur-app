@@ -76,7 +76,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 ## Capture boundary
 
-`murmur-capture-worker --production-v9` owns both native streams:
+`murmur-capture-worker --production-v10` owns both native streams:
 
 1. A private, unmuted stereo `CATap` captures global system output and the
    realtime callback downmixes it to mono without allocation.
@@ -89,7 +89,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 
 The protocol carries `channel`, per-channel `sequence` and `sample_offset`, and
 a best-effort worker monotonic timestamp. The host rejects gaps, duplicates,
-rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v9
+rate changes, wrong capture identity, wrong nonce, unknown channels, and non-v10
 frames. It never mixes the streams.
 
 The production protocol freezes echo cancellation at meeting start. The worker reports
@@ -105,7 +105,7 @@ episode. Initialization and processor failures bypass immediately. The worker
 retains each raw 10 ms microphone frame until processing succeeds, so every
 transition to raw PCM preserves the near-end samples without duplication.
 
-Protocol v9 also carries bounded `InputResolution` evidence before the live
+Protocol v10 also carries bounded `InputResolution` evidence before the live
 microphone backend opens: backend, enumeration outcome, knowable pinned-input
 presence, a count capped at 256, and default-input availability. It contains no
 device ID, display name, raw error, path, or audio content.

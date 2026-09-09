@@ -102,6 +102,7 @@ const meetingFixture = {
 };
 
 mockIPC((command) => {
+  if (command === 'configure_smart_auto_probe' || command === 'retry_smart_auto_probe') return 1;
   if (command === 'get_meeting_status') {
     return {
       phase: 'idle',
@@ -241,6 +242,7 @@ const entries: HistoryEntry[] = [
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
   smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
+  smartAutoProbeEnabled: requestedState === 'settings-smart-auto',
   smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
     ? ['fixture-built-in', 'fixture-anker']
     : [],

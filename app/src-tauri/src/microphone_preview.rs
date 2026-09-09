@@ -47,6 +47,7 @@ struct PreviewError {
 
 struct ActivePreview {
     id: u64,
+    automatic: bool,
     capture_key: Option<crate::audio_inventory::SignalEvidenceKey>,
     verification_key: Option<crate::audio_inventory::SignalEvidenceKey>,
     phase: PreviewPhase,
@@ -101,6 +102,14 @@ impl MicrophonePreviewState {
     }
 
     pub(crate) fn claim(&self, vad_sensitivity: u32) -> Result<u64, String> {
+        self.claim_for(vad_sensitivity, false)
+    }
+
+    pub(crate) fn claim_automatic(&self) -> Result<u64, String> {
+        self.claim_for(0, true)
+    }
+
+    fn claim_for(&self, vad_sensitivity: u32, automatic: bool) -> Result<u64, String> {
         let mut inner = self.inner();
         if inner.active.is_some() {
             return Err("A microphone test is already active".to_string());
@@ -109,6 +118,7 @@ impl MicrophonePreviewState {
         inner.terminal_error = None;
         inner.active = Some(ActivePreview {
             id,
+            automatic,
             capture_key: None,
             verification_key: None,
             phase: PreviewPhase::Connecting,
@@ -129,6 +139,21 @@ impl MicrophonePreviewState {
 
     pub(crate) fn current_id(&self) -> Option<u64> {
         self.inner().active.as_ref().map(|preview| preview.id)
+    }
+
+    pub(crate) fn is_automatic(&self, preview_id: u64) -> bool {
+        self.inner()
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id == preview_id && active.automatic)
+    }
+
+    pub(crate) fn automatic_id(&self) -> Option<u64> {
+        self.inner()
+            .active
+            .as_ref()
+            .filter(|active| active.automatic)
+            .map(|active| active.id)
     }
 
     pub(crate) fn bind_signal_evidence(
@@ -201,26 +226,39 @@ impl MicrophonePreviewState {
     }
 
     pub(crate) fn finish_signal_verification(&self, preview_id: u64) -> SignalVerificationResult {
+        let (result, key) = self.take_signal_verification(preview_id);
+        if let Some(key) = key {
+            crate::audio_inventory::record_signal_evidence(&key, result);
+        }
+        result
+    }
+
+    /// Automatic probes publish evidence only after confirmed teardown and
+    /// policy revalidation. Taking the result does not renew its freshness.
+    pub(crate) fn take_signal_verification(
+        &self,
+        preview_id: u64,
+    ) -> (
+        SignalVerificationResult,
+        Option<crate::audio_inventory::SignalEvidenceKey>,
+    ) {
         let mut inner = self.inner();
         let Some(active) = inner
             .active
             .as_mut()
             .filter(|active| active.id == preview_id)
         else {
-            return SignalVerificationResult::Interrupted;
+            return (SignalVerificationResult::Interrupted, None);
         };
         let verification = active.verification.take();
         let key = active.verification_key.take();
         if active.phase != PreviewPhase::Active || active.error.is_some() {
-            return SignalVerificationResult::Interrupted;
+            return (SignalVerificationResult::Interrupted, None);
         }
         let result = verification.map_or(SignalVerificationResult::Interrupted, |verification| {
             verification.result()
         });
-        if let Some(key) = key {
-            crate::audio_inventory::record_signal_evidence(&key, result);
-        }
-        result
+        (result, key)
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -259,7 +297,8 @@ impl MicrophonePreviewState {
     }
 
     fn vad_analysis_is_eligible(active: &ActivePreview, now: Instant) -> bool {
-        active.phase == PreviewPhase::Active
+        !active.automatic
+            && active.phase == PreviewPhase::Active
             && active.vad_sensitivity > 0
             && !active.vad_analysis_in_flight
             && active
@@ -386,8 +425,9 @@ impl MicrophonePreviewState {
             kind: kind.into(),
             message: message.into(),
         };
+        let automatic = inner.active.as_ref().is_some_and(|active| active.automatic);
         inner.active = None;
-        inner.terminal_error = Some((preview_id, error));
+        inner.terminal_error = (!automatic).then_some((preview_id, error));
         drop(inner);
         self.changed.notify_waiters();
         true
@@ -399,7 +439,10 @@ impl MicrophonePreviewState {
             return false;
         }
         let active = inner.active.take().expect("preview id was checked above");
-        inner.terminal_error = active.error.map(|error| (preview_id, error));
+        inner.terminal_error = active
+            .error
+            .filter(|_| !active.automatic)
+            .map(|error| (preview_id, error));
         drop(inner);
         self.changed.notify_waiters();
         true
@@ -418,7 +461,7 @@ impl MicrophonePreviewState {
     }
 
     fn status_from(inner: &PreviewInner) -> MicrophonePreviewStatus {
-        if let Some(active) = inner.active.as_ref() {
+        if let Some(active) = inner.active.as_ref().filter(|active| !active.automatic) {
             let error = active.error.as_ref();
             return MicrophonePreviewStatus {
                 preview_id: Some(active.id),
@@ -464,6 +507,33 @@ impl MicrophonePreviewState {
         })
         .await
         .is_ok()
+    }
+
+    pub(crate) async fn wait_until_ready(&self, preview_id: u64, deadline: Instant) -> bool {
+        tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+            loop {
+                let changed = self.changed.notified();
+                {
+                    let inner = self.inner();
+                    let Some(active) = inner
+                        .active
+                        .as_ref()
+                        .filter(|active| active.id == preview_id)
+                    else {
+                        return false;
+                    };
+                    if active.error.is_some() || active.phase == PreviewPhase::Stopping {
+                        return false;
+                    }
+                    if active.phase == PreviewPhase::Active {
+                        return true;
+                    }
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 
@@ -763,6 +833,71 @@ impl PreviewLevelTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn automatic_preview_keeps_exact_owner_until_teardown_and_hides_interactive_meter() {
+        let state = MicrophonePreviewState::default();
+        let id = state.claim_automatic().unwrap();
+        assert_eq!(state.automatic_id(), Some(id));
+        assert!(state.is_active());
+        assert!(state.claim(60).is_err());
+        assert_eq!(state.status().state, "idle");
+        assert_eq!(state.status().preview_id, None);
+        assert!(!state.wait_until_ready(id, Instant::now()).await);
+        state.set_phase_if(id, PreviewPhase::Active);
+        assert!(
+            state
+                .wait_until_ready(id, Instant::now() + Duration::from_secs(1))
+                .await
+        );
+        assert!(!state.can_begin_vad_analysis(id));
+        state.set_phase_if(id, PreviewPhase::Stopping);
+        assert!(!state.wait_until_inactive(id, Duration::ZERO).await);
+        assert!(state.claim_automatic().is_err());
+        state.set_error_if(id, "stop_timeout", "Waiting for cleanup.");
+        assert_eq!(state.status().state, "idle");
+        state.clear_if(id);
+        assert!(state.wait_until_inactive(id, Duration::ZERO).await);
+        assert_eq!(state.status().state, "idle");
+        let next = state.claim(60).unwrap();
+        assert_ne!(next, id);
+        assert!(!state.clear_if(id));
+        assert_eq!(state.current_id(), Some(next));
+    }
+
+    #[test]
+    fn automatic_signal_result_is_taken_once_and_cancellation_discards_it() {
+        let state = MicrophonePreviewState::default();
+        let now = Instant::now();
+        let id = state.claim_automatic().unwrap();
+        state.set_phase_if(id, PreviewPhase::Active);
+        state.begin_signal_verification(id, now).unwrap();
+        for frame in 0..100 {
+            state.observe_signal_verification(
+                id,
+                &[0.1; 320],
+                16_000,
+                now + Duration::from_millis(frame * 20),
+            );
+        }
+        assert_eq!(
+            state.take_signal_verification(id).0,
+            SignalVerificationResult::Verified
+        );
+        assert_eq!(
+            state.take_signal_verification(id).0,
+            SignalVerificationResult::Interrupted
+        );
+        state.clear_if(id);
+        let next = state.claim_automatic().unwrap();
+        state.set_phase_if(next, PreviewPhase::Active);
+        state.begin_signal_verification(next, now).unwrap();
+        state.set_phase_if(next, PreviewPhase::Stopping);
+        assert_eq!(
+            state.take_signal_verification(next).0,
+            SignalVerificationResult::Interrupted
+        );
+    }
 
     #[test]
     fn signal_checks_require_the_active_generation_and_enforce_cooldown() {

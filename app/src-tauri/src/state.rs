@@ -644,6 +644,7 @@ impl AppState {
         let mut current = self.transform_status.lock_or_recover();
         let from = *current;
         *current = status;
+        crate::smart_auto_probe::wake();
         if let Some(pass_id) = self.active_transform_pass_id() {
             crate::transform_trace::transition(pass_id, from.as_str(), status.as_str(), true);
         }
@@ -666,6 +667,7 @@ impl AppState {
         let won = actual == from;
         if won {
             *status = to;
+            crate::smart_auto_probe::wake();
         }
         if let Some(pass_id) = self.active_transform_pass_id() {
             crate::transform_trace::transition(pass_id, actual.as_str(), to.as_str(), won);
