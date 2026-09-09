@@ -1,5 +1,6 @@
 import { useLayoutEffect, useSyncExternalStore } from 'react';
 import packageMetadata from '../../package.json';
+import { percentile } from './numeric';
 
 export const UI_LATENCY_SCHEMA_VERSION = 1 as const;
 export const UI_LATENCY_SAMPLE_LIMIT = 500;
@@ -158,13 +159,6 @@ function cancelFrame(frame: number) {
   } else {
     window.clearTimeout(frame);
   }
-}
-
-function percentile(values: number[], percentileValue: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  const index = Math.max(0, Math.ceil(percentileValue * sorted.length) - 1);
-  return sorted[index];
 }
 
 export function summarizeUiLatency(samples: UiLatencySampleV1[]): UiLatencyEdgeSummary[] {

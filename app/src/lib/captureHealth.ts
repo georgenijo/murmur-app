@@ -1,4 +1,5 @@
 import { isRecord } from './typeGuards';
+import { median } from './numeric';
 
 export const CAPTURE_HEALTH_WINDOW = 5;
 export const SLOW_CAPTURE_STARTUP_MS = 2_000;
@@ -62,20 +63,10 @@ export function parseCaptureHealthHistory(value: unknown): CaptureHealthHistoryV
   return value as unknown as CaptureHealthHistoryV1;
 }
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((left, right) => left - right);
-  const midpoint = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1
-    ? sorted[midpoint]
-    : (sorted[midpoint - 1] + sorted[midpoint]) / 2;
-}
-
 export function deriveCaptureHealth(observations: CaptureHealthObservationV1[]): CaptureHealth {
   const recent = observations.slice(-CAPTURE_HEALTH_WINDOW);
   const sampleCount = recent.length;
-  const medianStartupMs = sampleCount > 0
-    ? median(recent.map(observation => observation.startupMs))
-    : null;
+  const medianStartupMs = median(recent.map(observation => observation.startupMs));
   const fallbacks = recent.filter(observation => observation.usedFallback);
   const fallbackCount = fallbacks.length;
   const enoughData = sampleCount === CAPTURE_HEALTH_WINDOW;
