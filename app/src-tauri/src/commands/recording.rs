@@ -6921,4 +6921,185 @@ mod tests {
         assert_eq!(sanitized[0].id, "first");
         assert_eq!(sanitized[0].host, "github.com");
     }
+
+    #[test]
+    fn build_code_vocab_prompt_empty_or_blank_folder_is_empty() {
+        assert_eq!(build_code_vocab_prompt(""), "");
+        assert_eq!(build_code_vocab_prompt("   "), "");
+        assert_eq!(build_code_vocab_prompt("\t\n"), "");
+    }
+
+    #[test]
+    fn build_code_vocab_prompt_scans_source_files_in_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("widget.rs");
+        std::fs::write(
+            &file_path,
+            "fn renderWidgetSurface() { let widgetSurfaceHandle = 1; widgetSurfaceHandle; }",
+        )
+        .expect("write fixture source file");
+
+        let prompt = build_code_vocab_prompt(dir.path().to_str().expect("utf8 path"));
+
+        assert!(
+            prompt.to_lowercase().contains("widgetsurface")
+                || prompt.contains("renderWidgetSurface")
+                || prompt.contains("widgetSurfaceHandle"),
+            "expected scanned identifiers in prompt, got: {prompt:?}"
+        );
+    }
+
+    #[test]
+    fn parse_vocab_terms_splits_on_commas_and_newlines_and_drops_blanks() {
+        assert_eq!(
+            parse_vocab_terms("API Gateway, useEffect\n\nkubectl\r\n , "),
+            vec![
+                "API Gateway".to_string(),
+                "useEffect".to_string(),
+                "kubectl".to_string(),
+            ]
+        );
+        assert!(parse_vocab_terms("").is_empty());
+        assert!(parse_vocab_terms("   ,\n\r,  ").is_empty());
+    }
+
+    #[test]
+    fn parse_vocab_terms_preserves_internal_spaces() {
+        assert_eq!(
+            parse_vocab_terms("multi word term"),
+            vec!["multi word term".to_string()]
+        );
+    }
+
+    #[test]
+    fn legacy_vocabulary_entries_assigns_stable_ids_and_defaults() {
+        let entries = legacy_vocabulary_entries("foo, bar\nbaz");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].id, "legacy-0");
+        assert_eq!(entries[0].written, "foo");
+        assert_eq!(entries[1].id, "legacy-1");
+        assert_eq!(entries[1].written, "bar");
+        assert_eq!(entries[2].id, "legacy-2");
+        assert_eq!(entries[2].written, "baz");
+        for entry in &entries {
+            assert!(entry.aliases.is_empty());
+            assert!(entry.enabled);
+            assert_eq!(entry.scope, crate::state::VocabularyScope::Global);
+        }
+    }
+
+    #[test]
+    fn legacy_vocabulary_entries_empty_input_yields_no_entries() {
+        assert!(legacy_vocabulary_entries("").is_empty());
+        assert!(legacy_vocabulary_entries("   \n\r  ").is_empty());
+    }
+
+    fn stage_report(
+        stage: &'static str,
+        outcome: crate::transcript_transform::StageOutcome,
+        duration_us: u64,
+    ) -> crate::transcript_transform::StageReport {
+        crate::transcript_transform::StageReport {
+            stage,
+            duration_us,
+            changed: false,
+            outcome,
+            failure_policy: crate::transcript_transform::StageFailurePolicy::OptionalFallback,
+        }
+    }
+
+    #[test]
+    fn transcript_stage_timing_maps_known_stage_and_outcome() {
+        use crate::transcript_transform::{StageOutcome, CLEANUP_STAGE};
+
+        let timing =
+            transcript_stage_timing(&stage_report(CLEANUP_STAGE, StageOutcome::Applied, 4_000))
+                .expect("cleanup stage recognized");
+        assert_eq!(timing.stage, PerformanceStageV1::Cleanup);
+        assert_eq!(timing.outcome, StageOutcomeV1::Completed);
+        assert_eq!(
+            timing.duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(4)
+        );
+    }
+
+    #[test]
+    fn transcript_stage_timing_skipped_outcome_reports_not_applicable() {
+        use crate::transcript_transform::{StageOutcome, VOICE_COMMANDS_STAGE};
+
+        let timing = transcript_stage_timing(&stage_report(
+            VOICE_COMMANDS_STAGE,
+            StageOutcome::Skipped,
+            999,
+        ))
+        .expect("voice commands stage recognized");
+        assert_eq!(timing.outcome, StageOutcomeV1::Skipped);
+        assert_eq!(
+            timing.duration_ms,
+            crate::performance_metrics::MeasurementV1::NotApplicable
+        );
+    }
+
+    #[test]
+    fn transcript_stage_timing_unknown_stage_returns_none() {
+        use crate::transcript_transform::StageOutcome;
+
+        assert!(transcript_stage_timing(&stage_report(
+            "not-a-real-stage",
+            StageOutcome::Applied,
+            1
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn pipeline_stages_marks_zero_file_output_as_not_applicable() {
+        let timings = PipelineTimings {
+            vad_ms: 10,
+            model_queue_ms: 20,
+            model_load_ms: 30,
+            decode_ms: 40,
+            transform_ms: 50,
+            file_output_ms: 0,
+            paste_ms: 60,
+            ..PipelineTimings::default()
+        };
+        let stages = pipeline_stages(&timings, 500);
+        let file_output = stages
+            .iter()
+            .find(|stage| stage.stage == PerformanceStageV1::FileOutput)
+            .expect("file output stage present");
+        assert_eq!(
+            file_output.duration_ms,
+            crate::performance_metrics::MeasurementV1::NotApplicable
+        );
+    }
+
+    #[test]
+    fn pipeline_stages_measures_nonzero_file_output_and_includes_transform_stages() {
+        let extra = StageTimingV1::measured(PerformanceStageV1::Cleanup, 7);
+        let timings = PipelineTimings {
+            file_output_ms: 15,
+            transform_stages: vec![extra.clone()],
+            ..PipelineTimings::default()
+        };
+        let stages = pipeline_stages(&timings, 100);
+        let file_output = stages
+            .iter()
+            .find(|stage| stage.stage == PerformanceStageV1::FileOutput)
+            .expect("file output stage present");
+        assert_eq!(
+            file_output.duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(15)
+        );
+        assert!(stages.contains(&extra));
+        assert_eq!(
+            stages
+                .iter()
+                .find(|stage| stage.stage == PerformanceStageV1::TotalProcessing)
+                .expect("total processing stage present")
+                .duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(100)
+        );
+    }
 }

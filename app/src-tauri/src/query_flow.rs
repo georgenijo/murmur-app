@@ -4450,4 +4450,61 @@ mod tests {
         query.finish_partial(second);
         assert!(query.try_begin_partial(second));
     }
+
+    #[test]
+    fn readable_byte_count_formats_sub_kilobyte_as_bytes() {
+        assert_eq!(readable_byte_count(0), "0 B");
+        assert_eq!(readable_byte_count(1), "1 B");
+        assert_eq!(readable_byte_count(1023), "1023 B");
+    }
+
+    #[test]
+    fn readable_byte_count_formats_kilobyte_and_above_with_one_decimal() {
+        assert_eq!(readable_byte_count(1024), "1.0 KB");
+        assert_eq!(readable_byte_count(1536), "1.5 KB");
+        assert_eq!(readable_byte_count(10 * 1024), "10.0 KB");
+    }
+
+    #[test]
+    fn elapsed_ms_reports_at_least_zero_for_a_fresh_instant() {
+        let start = Instant::now();
+        // No sleep: just confirms the conversion path doesn't panic or
+        // underflow, and returns a sane (small) value for an instant just
+        // taken.
+        let elapsed = elapsed_ms(start);
+        assert!(elapsed < 5_000, "unexpectedly large elapsed_ms: {elapsed}");
+    }
+
+    #[test]
+    fn stable_query_error_maps_audio_and_inference_codes() {
+        for code in [
+            "audio_start_failed",
+            "audio_not_ready",
+            "audio_recovering",
+            "audio_recovery_stalled",
+            "audio_capture_failed",
+        ] {
+            assert_eq!(
+                stable_query_error(code),
+                StableRunErrorV1::AudioCaptureFailed
+            );
+        }
+        for code in [
+            "no_speech",
+            "transcription_failed",
+            "empty_query",
+            "query_too_large",
+        ] {
+            assert_eq!(stable_query_error(code), StableRunErrorV1::InferenceFailed);
+        }
+    }
+
+    #[test]
+    fn stable_query_error_unknown_code_falls_back_to_query_failed() {
+        assert_eq!(
+            stable_query_error("some_unmapped_code"),
+            StableRunErrorV1::QueryFailed
+        );
+        assert_eq!(stable_query_error(""), StableRunErrorV1::QueryFailed);
+    }
 }

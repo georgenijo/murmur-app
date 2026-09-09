@@ -37,6 +37,29 @@ fn default_max_sessions() -> u32 {
     100
 }
 
+/// Retention window bounds shared by `start_meeting` and `prune_meetings`:
+/// at least a day, at most roughly ten years.
+const MIN_RETENTION_DAYS: u32 = 1;
+const MAX_RETENTION_DAYS: u32 = 3650;
+
+/// Session-count bounds shared by `start_meeting` and `prune_meetings`: keep
+/// at least one session, cap unreasonably large requests.
+const MIN_KEPT_SESSIONS: u32 = 1;
+const MAX_KEPT_SESSIONS: u32 = 10_000;
+
+/// Clamp a caller-supplied retention window to `[MIN_RETENTION_DAYS,
+/// MAX_RETENTION_DAYS]`. `None` (no retention limit) passes through
+/// unchanged.
+fn clamp_retention_days(retention_days: Option<u32>) -> Option<u32> {
+    retention_days.map(|days| days.clamp(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS))
+}
+
+/// Clamp a caller-supplied session cap to `[MIN_KEPT_SESSIONS,
+/// MAX_KEPT_SESSIONS]`.
+fn clamp_max_sessions(max_sessions: u32) -> u32 {
+    max_sessions.clamp(MIN_KEPT_SESSIONS, MAX_KEPT_SESSIONS)
+}
+
 fn meeting_conflict(state: &State) -> Option<&'static str> {
     if state
         .app_state
@@ -112,8 +135,8 @@ pub async fn start_meeting(
 
     let repository = state.meeting_store.repository()?;
     let _ = repository.prune(
-        request.retention_days.map(|days| days.clamp(1, 3650)),
-        request.max_sessions.clamp(1, 10_000),
+        clamp_retention_days(request.retention_days),
+        clamp_max_sessions(request.max_sessions),
     );
     let generation = state.app_state.next_meeting_generation();
     let session_id = Uuid::new_v4().to_string();
@@ -341,8 +364,8 @@ pub fn prune_meetings(
     state: tauri::State<'_, State>,
 ) -> Result<u64, String> {
     state.meeting_store.repository()?.prune(
-        retention_days.map(|days| days.clamp(1, 3650)),
-        max_sessions.clamp(1, 10_000),
+        clamp_retention_days(retention_days),
+        clamp_max_sessions(max_sessions),
     )
 }
 
@@ -357,4 +380,47 @@ pub fn rename_meeting_remote_speaker(
         .meeting_store
         .repository()?
         .rename_remote_speaker(&session_id, speaker_id, &label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_retention_days_table() {
+        let cases: &[(Option<u32>, Option<u32>)] = &[
+            (None, None),
+            (Some(0), Some(MIN_RETENTION_DAYS)),
+            (Some(1), Some(1)),
+            (Some(3650), Some(3650)),
+            (Some(3651), Some(MAX_RETENTION_DAYS)),
+            (Some(u32::MAX), Some(MAX_RETENTION_DAYS)),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                clamp_retention_days(*input),
+                *expected,
+                "clamp_retention_days({input:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_max_sessions_table() {
+        let cases: &[(u32, u32)] = &[
+            (0, MIN_KEPT_SESSIONS),
+            (1, 1),
+            (100, 100),
+            (10_000, 10_000),
+            (10_001, MAX_KEPT_SESSIONS),
+            (u32::MAX, MAX_KEPT_SESSIONS),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                clamp_max_sessions(*input),
+                *expected,
+                "clamp_max_sessions({input})"
+            );
+        }
+    }
 }

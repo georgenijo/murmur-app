@@ -8,12 +8,20 @@
 //! non-activating window, and Escape is delivered by the global rdev listener
 //! rather than the webview's own key handler, so nothing needed focus.
 
+use crate::commands::native_window::PopoverSpec;
 use tauri::Manager;
 
 const WIDTH: f64 = 440.0;
 const COMPACT_HEIGHT: f64 = 92.0;
 const EXPANDED_HEIGHT: f64 = 340.0;
 const TOP_INSET: f64 = 72.0;
+
+const POPOVER: PopoverSpec = PopoverSpec {
+    label: "query-review",
+    // The user interacts with this popover (clicks, selects text), so
+    // cursor events must not pass through to whatever's underneath.
+    ignore_cursor_events: false,
+};
 
 fn frame(app: &tauri::AppHandle, expanded: bool) -> (f64, f64, f64, f64) {
     let height = if expanded {
@@ -37,61 +45,18 @@ fn frame(app: &tauri::AppHandle, expanded: bool) -> (f64, f64, f64, f64) {
     }
 }
 
-fn apply_treatment(window: &tauri::WebviewWindow, prevents_activation: bool) {
-    crate::commands::native_window::set_window_level_and_activation(
-        window,
-        crate::commands::native_window::ABOVE_MENU_BAR_LEVEL,
-        prevents_activation,
-    );
-}
-
 pub(crate) fn show_internal(app: &tauri::AppHandle, expanded: bool) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("query-review") else {
-        return Err("query-review window is unavailable".to_string());
-    };
-    let (x, y, width, height) = frame(app, expanded);
-    window
-        .set_size(tauri::LogicalSize::new(width, height))
-        .map_err(|_| "query-review window could not be sized".to_string())?;
-    window
-        .set_position(tauri::LogicalPosition::new(x, y))
-        .map_err(|_| "query-review window could not be positioned".to_string())?;
-    apply_treatment(&window, true);
-    window
-        .set_focusable(false)
-        .map_err(|_| "query-review focus mode could not be set".to_string())?;
-    window
-        .set_ignore_cursor_events(false)
-        .map_err(|_| "query-review pointer events could not be enabled".to_string())?;
-    window
-        .show()
-        .map_err(|_| "query-review window could not be shown".to_string())
+    POPOVER.show(app, frame(app, expanded))
 }
 
 pub(crate) fn set_expanded_internal(app: &tauri::AppHandle, expanded: bool) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("query-review") else {
-        return Err("query-review window is unavailable".to_string());
-    };
-    let (x, y, width, height) = frame(app, expanded);
-    window
-        .set_size(tauri::LogicalSize::new(width, height))
-        .map_err(|_| "query-review window could not be sized".to_string())?;
-    window
-        .set_position(tauri::LogicalPosition::new(x, y))
-        .map_err(|_| "query-review window could not be positioned".to_string())
+    POPOVER.reposition(app, frame(app, expanded))
 }
 
 pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
-    match app.get_webview_window("query-review") {
-        Some(window) => window
-            .hide()
-            .map_err(|_| "query-review window could not be hidden".to_string()),
-        None => Ok(()),
-    }
+    POPOVER.hide(app)
 }
 
 pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("query-review") {
-        let _ = window.set_size(tauri::LogicalSize::new(WIDTH, COMPACT_HEIGHT));
-    }
+    POPOVER.apply_initial_size(app, WIDTH, COMPACT_HEIGHT);
 }
