@@ -68,10 +68,40 @@ impl MeetingSummaryCoordinator {
         let _ = app.emit("meeting-summary-status-changed", self.status());
     }
 
-    fn update(&self, app: &tauri::AppHandle, update: impl FnOnce(&mut MeetingSummaryStatus)) {
-        update(&mut self.inner.lock_or_recover().status);
-        self.publish(app);
+    /// Applies `update` only if `status.generation` still equals
+    /// `generation`, then publishes when it does. Every mutation on the
+    /// `run_summary` async path must go through this so a stale continuation
+    /// from a superseded run can never clobber a newer run's status. Returns
+    /// whether the update was applied.
+    fn update_if_current(
+        &self,
+        app: &tauri::AppHandle,
+        generation: u64,
+        update: impl FnOnce(&mut MeetingSummaryStatus),
+    ) -> bool {
+        let applied = apply_if_current(&self.inner, generation, update);
+        if applied {
+            self.publish(app);
+        }
+        applied
     }
+}
+
+/// Pure helper behind [`MeetingSummaryCoordinator::update_if_current`]: locks
+/// `inner` and applies `update` only if the stored status generation still
+/// matches `generation`. Kept as a free function (no `AppHandle`) so it is
+/// directly unit-testable.
+fn apply_if_current(
+    inner: &Mutex<SummaryInner>,
+    generation: u64,
+    update: impl FnOnce(&mut MeetingSummaryStatus),
+) -> bool {
+    let mut guard = inner.lock_or_recover();
+    if guard.status.generation != generation {
+        return false;
+    }
+    update(&mut guard.status);
+    true
 }
 
 fn stable_error(error: TransformError) -> &'static str {
@@ -88,12 +118,31 @@ fn stable_error(error: TransformError) -> &'static str {
 
 struct SummaryOwnershipGuard {
     app: tauri::AppHandle,
+    generation: u64,
 }
 
 impl Drop for SummaryOwnershipGuard {
     fn drop(&mut self) {
-        self.app
-            .state::<State>()
+        let state = self.app.state::<State>();
+        let current_generation = state.meeting_summaries.status().generation;
+        if current_generation != self.generation {
+            // Should be unreachable today: `start_meeting_summary` only ever
+            // lets one run be active at a time (serialized by
+            // `recording_transition` plus the `meeting_summary_active`
+            // busy flag this guard itself owns), so no other generation can
+            // become current while this guard is alive. Fail safe rather
+            // than trusting that invariant silently: still clear the busy
+            // flag below (leaving it set would wedge every future summary
+            // run), but leave a trace since this would mean the invariant
+            // broke.
+            tracing::warn!(
+                target: "meeting",
+                guard_generation = self.generation,
+                current_generation,
+                "meeting summary ownership guard dropped for a superseded generation"
+            );
+        }
+        state
             .app_state
             .meeting_summary_active
             .store(false, Ordering::SeqCst);
@@ -101,13 +150,16 @@ impl Drop for SummaryOwnershipGuard {
 }
 
 async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64) {
-    let _ownership = SummaryOwnershipGuard { app: app.clone() };
+    let _ownership = SummaryOwnershipGuard {
+        app: app.clone(),
+        generation,
+    };
     let started = Instant::now();
     let state = app.state::<State>();
     let repository = match state.meeting_store.repository() {
         Ok(repository) => repository,
         Err(_) => {
-            state.meeting_summaries.update(&app, |status| {
+            state.meeting_summaries.update_if_current(&app, generation, |status| {
                 status.phase = MeetingSummaryPhase::Failed;
                 status.error_code = Some("store_unavailable".into());
             });
@@ -117,7 +169,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
     let detail = match repository.detail(&session_id) {
         Ok(detail) => detail,
         Err(_) => {
-            state.meeting_summaries.update(&app, |status| {
+            state.meeting_summaries.update_if_current(&app, generation, |status| {
                 status.phase = MeetingSummaryPhase::Failed;
                 status.error_code = Some("meeting_unavailable".into());
             });
@@ -126,7 +178,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
     };
     let chunks = chunk_segments(&detail.segments);
     let total_chunks = chunks.len().min(u32::MAX as usize) as u32;
-    state.meeting_summaries.update(&app, |status| {
+    state.meeting_summaries.update_if_current(&app, generation, |status| {
         status.total_chunks = total_chunks;
     });
     let cancel = state
@@ -140,7 +192,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
     let mut peak_rss_mb = 0;
     for chunk in chunks {
         if cancel.is_cancelled() {
-            state.meeting_summaries.update(&app, |status| {
+            state.meeting_summaries.update_if_current(&app, generation, |status| {
                 status.phase = MeetingSummaryPhase::Cancelled;
                 status.error_code = None;
             });
@@ -166,7 +218,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
             Ok(output) => parse_artifact(&output.output, &allowed),
             Err(error) => {
                 let code = stable_error(error);
-                state.meeting_summaries.update(&app, |status| {
+                state.meeting_summaries.update_if_current(&app, generation, |status| {
                     status.phase = if code == "cancelled" {
                         MeetingSummaryPhase::Cancelled
                     } else {
@@ -180,7 +232,7 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
             }
         };
         let Some(artifact) = artifact else {
-            state.meeting_summaries.update(&app, |status| {
+            state.meeting_summaries.update_if_current(&app, generation, |status| {
                 status.phase = MeetingSummaryPhase::Failed;
                 status.error_code = Some("artifact_invalid".into());
                 status.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -189,14 +241,14 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
             return;
         };
         artifacts.push(artifact);
-        state.meeting_summaries.update(&app, |status| {
+        state.meeting_summaries.update_if_current(&app, generation, |status| {
             status.completed_chunks = status.completed_chunks.saturating_add(1);
             status.elapsed_ms = started.elapsed().as_millis() as u64;
             status.peak_rss_mb = peak_rss_mb;
         });
     }
     let Some(artifact) = merge_artifacts(artifacts) else {
-        state.meeting_summaries.update(&app, |status| {
+        state.meeting_summaries.update_if_current(&app, generation, |status| {
             status.phase = MeetingSummaryPhase::Failed;
             status.error_code = Some("no_transcript".into());
         });
@@ -207,19 +259,17 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
         .save_artifact(&session_id, &artifact, runtime_ms, peak_rss_mb)
         .is_err()
     {
-        state.meeting_summaries.update(&app, |status| {
+        state.meeting_summaries.update_if_current(&app, generation, |status| {
             status.phase = MeetingSummaryPhase::Failed;
             status.error_code = Some("store_unavailable".into());
         });
         return;
     }
-    state.meeting_summaries.update(&app, |status| {
-        if status.generation == generation {
-            status.phase = MeetingSummaryPhase::Complete;
-            status.elapsed_ms = runtime_ms;
-            status.peak_rss_mb = peak_rss_mb;
-            status.error_code = None;
-        }
+    state.meeting_summaries.update_if_current(&app, generation, |status| {
+        status.phase = MeetingSummaryPhase::Complete;
+        status.elapsed_ms = runtime_ms;
+        status.peak_rss_mb = peak_rss_mb;
+        status.error_code = None;
     });
     tracing::info!(target: "meeting", generation, runtime_ms, peak_rss_mb, total_chunks, "meeting summary completed");
 }
@@ -293,4 +343,92 @@ pub fn cancel_meeting_summary(app: tauri::AppHandle, state: tauri::State<'_, Sta
     state.transform_runtime.cancel_inflight_request();
     state.meeting_summaries.publish(&app);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_with_generation(generation: u64) -> MeetingSummaryStatus {
+        MeetingSummaryStatus {
+            generation,
+            ..MeetingSummaryStatus::default()
+        }
+    }
+
+    #[test]
+    fn apply_if_current_applies_when_generation_matches() {
+        let inner = Mutex::new(SummaryInner {
+            status: status_with_generation(3),
+            cancel: None,
+        });
+        let applied = apply_if_current(&inner, 3, |status| status.completed_chunks = 5);
+        assert!(applied);
+        assert_eq!(inner.lock_or_recover().status.completed_chunks, 5);
+    }
+
+    #[test]
+    fn apply_if_current_rejects_a_stale_generation() {
+        let inner = Mutex::new(SummaryInner {
+            status: status_with_generation(3),
+            cancel: None,
+        });
+        let applied = apply_if_current(&inner, 2, |status| status.completed_chunks = 5);
+        assert!(!applied);
+        assert_eq!(inner.lock_or_recover().status.completed_chunks, 0);
+    }
+
+    #[test]
+    fn a_stale_generation_cannot_overwrite_a_newer_runs_status() {
+        // Models a slow `run_summary` continuation from generation 1 landing
+        // after a newer run (generation 2) has already superseded it and
+        // recorded its own progress. The stale write must be dropped rather
+        // than clobbering the current run's status.
+        let inner = Mutex::new(SummaryInner {
+            status: status_with_generation(1),
+            cancel: None,
+        });
+
+        // Generation 2 supersedes generation 1 and records progress.
+        {
+            let mut guard = inner.lock_or_recover();
+            guard.status.generation = 2;
+            guard.status.completed_chunks = 1;
+            guard.status.phase = MeetingSummaryPhase::Running;
+        }
+
+        // Generation 1's stale continuation tries to mark itself Complete.
+        let applied = apply_if_current(&inner, 1, |status| {
+            status.phase = MeetingSummaryPhase::Complete;
+            status.completed_chunks = 99;
+            status.error_code = None;
+        });
+
+        assert!(
+            !applied,
+            "a stale generation's update must not be applied"
+        );
+        let status = inner.lock_or_recover().status.clone();
+        assert_eq!(status.generation, 2);
+        assert_eq!(status.completed_chunks, 1);
+        assert_eq!(status.phase, MeetingSummaryPhase::Running);
+    }
+
+    #[test]
+    fn apply_if_current_matches_the_current_generation_after_it_moves_on() {
+        // The mirror case: generation 2's own updates must still land once
+        // it becomes current.
+        let inner = Mutex::new(SummaryInner {
+            status: status_with_generation(2),
+            cancel: None,
+        });
+        let applied = apply_if_current(&inner, 2, |status| {
+            status.phase = MeetingSummaryPhase::Complete;
+        });
+        assert!(applied);
+        assert_eq!(
+            inner.lock_or_recover().status.phase,
+            MeetingSummaryPhase::Complete
+        );
+    }
 }
