@@ -1,4 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
+import {
+  isNonNegativeInteger as isNonNegativeSafeInteger,
+  isPositiveInteger as isPositiveSafeInteger,
+  isRecord,
+} from './typeGuards';
 
 export const MICROPHONE_STARTUP_BENCHMARK_CYCLES = 5;
 export const MAX_SAVED_MICROPHONE_STARTUP_REPORTS = 10;
@@ -154,10 +159,6 @@ const SETUP_STEPS = new Set([
   'io_proc_create', 'io_proc_start',
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -251,14 +252,6 @@ function parseRfc3339Nanoseconds(value: unknown): bigint | null {
   return BigInt(local.getTime() - offsetMinutes * 60_000) * 1_000_000n
     + fractionNanoseconds
     + leapSecondNanoseconds;
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0;
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function isBackend(value: unknown): value is MicrophoneStartupBackend {

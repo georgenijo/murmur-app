@@ -1,4 +1,5 @@
 import { mirrorDurableBlob, THEME_LIBRARY_STORE } from '../durableUserData';
+import { isRecord } from '../typeGuards';
 import { DEFAULT_THEME } from './palettes';
 import { resolveTheme } from './resolve';
 import { sanitizeRevision, sanitizeTheme } from './sanitize';
@@ -28,10 +29,6 @@ export interface ThemeLibraryStorageLike {
 export type ThemeLibraryLoadResult =
   | { status: 'ready'; document: ThemeLibraryDocumentV1; needsRepair: boolean }
   | { status: 'unavailable'; document: ThemeLibraryDocumentV1; error: string };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function byteLength(value: string): number {
   return typeof TextEncoder === 'undefined' ? value.length : new TextEncoder().encode(value).byteLength;

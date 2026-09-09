@@ -1,3 +1,5 @@
+import { isRecord } from './typeGuards';
+
 export const CAPTURE_HEALTH_WINDOW = 5;
 export const SLOW_CAPTURE_STARTUP_MS = 2_000;
 
@@ -23,10 +25,6 @@ export interface CaptureHealth {
   chronicFallback: boolean;
   slowStartup: boolean;
   degradedBackend: CaptureBackendName | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {

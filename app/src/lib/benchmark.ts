@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getModelRuntimeCatalog } from './modelRuntime';
+import { isFiniteNumber as isNumber, isRecord } from './typeGuards';
 
 export type BenchmarkPreset = 'quick' | 'standard' | 'thorough';
 export type BenchmarkCorpusSource = 'bundled' | 'personal';
@@ -134,14 +135,6 @@ export interface BenchmarkReport {
 export const MAX_SAVED_BENCHMARK_REPORTS = 10;
 const REPORT_KEY = 'murmur-benchmark-report';
 const REPORTS_KEY = 'murmur-benchmark-reports';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
 
 function isNullableNumber(value: unknown): value is number | null {
   return value === null || isNumber(value);

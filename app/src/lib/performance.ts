@@ -1,5 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import {
+  isFiniteNumber,
+  isNonNegativeInteger as isNonNegativeSafeInteger,
+  isPositiveInteger as isPositiveSafeInteger,
+  isRecord,
+} from './typeGuards';
 
 export type UnavailableReasonV1 =
   | 'unsupportedPlatform'
@@ -337,31 +343,11 @@ const productionCaptureFailureKinds = new Set<string>([
   'signature_invalid',
 ]);
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   return actual.length === expected.length
     && actual.every((key, index) => key === expected[index]);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value > 0;
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value >= 0;
 }
 
 export function isPerformanceStoreHealthV1(
