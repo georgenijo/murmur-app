@@ -27,7 +27,6 @@ type StageMetricKey = Extract<PerformanceStageV1,
     | 'transcriptTransform'
     | 'clipboardPaste'
     | 'totalProcessing'>;
-export type ProductionMetricKey = CaptureMetricKey | StageMetricKey;
 
 export type ProductionMetricDefinition = {
   key: CaptureMetricKey;

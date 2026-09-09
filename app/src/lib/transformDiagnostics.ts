@@ -27,11 +27,6 @@ export interface TransformAttemptV1 {
   phases: TransformPhaseV1[];
 }
 
-export interface TransformAttemptListV1 {
-  schemaVersion: 1;
-  attempts: TransformAttemptV1[];
-}
-
 export interface CaptureArmStatusV1 {
   armed: boolean;
   expiresAtMs: number | null;
