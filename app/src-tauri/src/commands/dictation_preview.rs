@@ -11,6 +11,7 @@
 //! 36pt wing, which could only ever show ~4 head-anchored characters ("Oka…")
 //! no matter how long the speaker talked.
 
+use crate::commands::native_window::PopoverSpec;
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use std::sync::atomic::Ordering;
@@ -18,6 +19,14 @@ use tauri::Manager;
 
 const WIDTH: f64 = 460.0;
 const HEIGHT: f64 = 104.0;
+
+const POPOVER: PopoverSpec = PopoverSpec {
+    label: "dictation-preview",
+    // Purely informational while the user is dictating into another app:
+    // never swallow a click meant for whatever is underneath.
+    ignore_cursor_events: true,
+};
+
 /// Breathing room between the bottom of the notch/menu bar and the card. The
 /// window is transparent and taller than the card, so this is the gap to the
 /// card's top edge, not to the window frame.
@@ -67,32 +76,7 @@ fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
 /// Show the preview under the notch. Idempotent: repositioning a window that is
 /// already visible is how a display change is absorbed.
 pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("dictation-preview") else {
-        return Err("dictation-preview window is unavailable".to_string());
-    };
-    let (x, y, width, height) = frame(app, notch_height(app));
-    window
-        .set_size(tauri::LogicalSize::new(width, height))
-        .map_err(|_| "dictation-preview window could not be sized".to_string())?;
-    window
-        .set_position(tauri::LogicalPosition::new(x, y))
-        .map_err(|_| "dictation-preview window could not be positioned".to_string())?;
-    crate::commands::native_window::set_window_level_and_activation(
-        &window,
-        crate::commands::native_window::ABOVE_MENU_BAR_LEVEL,
-        true,
-    );
-    window
-        .set_focusable(false)
-        .map_err(|_| "dictation-preview focus mode could not be set".to_string())?;
-    // Purely informational while the user is dictating into another app: never
-    // swallow a click meant for whatever is underneath.
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|_| "dictation-preview pointer events could not be disabled".to_string())?;
-    window
-        .show()
-        .map_err(|_| "dictation-preview window could not be shown".to_string())
+    POPOVER.show(app, frame(app, notch_height(app)))
 }
 
 #[derive(Clone, Copy)]
@@ -156,12 +140,7 @@ pub fn show_dictation_preview(
 }
 
 pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
-    match app.get_webview_window("dictation-preview") {
-        Some(window) => window
-            .hide()
-            .map_err(|_| "dictation-preview window could not be hidden".to_string()),
-        None => Ok(()),
-    }
+    POPOVER.hide(app)
 }
 
 pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
@@ -177,9 +156,7 @@ pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
 }
 
 pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("dictation-preview") {
-        let _ = window.set_size(tauri::LogicalSize::new(WIDTH, HEIGHT));
-    }
+    POPOVER.apply_initial_size(app, WIDTH, HEIGHT);
 }
 
 #[cfg(test)]

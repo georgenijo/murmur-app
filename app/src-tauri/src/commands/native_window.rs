@@ -117,3 +117,98 @@ pub(crate) fn set_window_level_and_activation(
 /// NSMainMenuWindowLevel = 24, so +1 = 25 puts a window just above the menu
 /// bar. This is what boring.notch, mew-notch, and Murmur's own overlay use.
 pub(crate) const ABOVE_MENU_BAR_LEVEL: isize = 25;
+
+/// Shared show/hide/reposition transport for the small, non-activating
+/// notch-anchored popovers (`commands/query_popover.rs`,
+/// `commands/dictation_preview.rs`). Both windows need the exact same
+/// treatment — raised above the menu bar via
+/// [`set_window_level_and_activation`], never focusable, shown/hidden by
+/// window label — so this holds it once instead of twice. Geometry (the
+/// `(x, y, width, height)` frame) stays the caller's responsibility: each
+/// popover has its own anchor and sizing rules.
+pub(crate) struct PopoverSpec {
+    /// The Tauri window label, e.g. `"query-review"` or `"dictation-preview"`.
+    pub label: &'static str,
+    /// Whether the window should let clicks/text-selection pass through to
+    /// whatever is underneath instead of capturing them. `true` for a purely
+    /// informational overlay (dictation preview); `false` for a popover the
+    /// user interacts with (voice-query answer).
+    pub ignore_cursor_events: bool,
+}
+
+impl PopoverSpec {
+    fn window(&self, app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+        use tauri::Manager;
+        app.get_webview_window(self.label)
+            .ok_or_else(|| format!("{} window is unavailable", self.label))
+    }
+
+    /// Resize and reposition `window` to `frame` without touching level,
+    /// activation, focus, or visibility.
+    fn resize_and_position(
+        &self,
+        window: &tauri::WebviewWindow,
+        frame: (f64, f64, f64, f64),
+    ) -> Result<(), String> {
+        let (x, y, width, height) = frame;
+        window
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|_| format!("{} window could not be sized", self.label))?;
+        window
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|_| format!("{} window could not be positioned", self.label))
+    }
+
+    /// Resize and reposition to `frame` without touching level, activation,
+    /// focus, or visibility. Used by popovers that reposition while already
+    /// visible (voice-query's compact/expanded transition).
+    pub(crate) fn reposition(
+        &self,
+        app: &tauri::AppHandle,
+        frame: (f64, f64, f64, f64),
+    ) -> Result<(), String> {
+        let window = self.window(app)?;
+        self.resize_and_position(&window, frame)
+    }
+
+    /// Full show sequence: resize/reposition to `frame`, raise above the menu
+    /// bar as non-activating (see `set_window_level_and_activation`),
+    /// disable focus, apply this spec's cursor-event pass-through, then show.
+    pub(crate) fn show(&self, app: &tauri::AppHandle, frame: (f64, f64, f64, f64)) -> Result<(), String> {
+        let window = self.window(app)?;
+        self.resize_and_position(&window, frame)?;
+        set_window_level_and_activation(&window, ABOVE_MENU_BAR_LEVEL, true);
+        window
+            .set_focusable(false)
+            .map_err(|_| format!("{} focus mode could not be set", self.label))?;
+        window
+            .set_ignore_cursor_events(self.ignore_cursor_events)
+            .map_err(|_| format!("{} pointer events could not be set", self.label))?;
+        window
+            .show()
+            .map_err(|_| format!("{} window could not be shown", self.label))
+    }
+
+    /// Hide the window if it exists. Missing window is not an error — both
+    /// callers treat "already gone" as already hidden.
+    pub(crate) fn hide(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        use tauri::Manager;
+        match app.get_webview_window(self.label) {
+            Some(window) => window
+                .hide()
+                .map_err(|_| format!("{} window could not be hidden", self.label)),
+            None => Ok(()),
+        }
+    }
+
+    /// Set the window's size without positioning, level, or visibility
+    /// changes — used once at startup so the window has a sane size before
+    /// its first `show`. Errors are ignored, matching prior behavior: an
+    /// initial-size failure is not worth surfacing since `show` sizes again.
+    pub(crate) fn apply_initial_size(&self, app: &tauri::AppHandle, width: f64, height: f64) {
+        use tauri::Manager;
+        if let Some(window) = app.get_webview_window(self.label) {
+            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+        }
+    }
+}
