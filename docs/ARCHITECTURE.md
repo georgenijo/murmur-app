@@ -90,12 +90,20 @@ signed murmur-capture-worker --production-v9
 bounded protocol reader (channel/sequence/rate/offset validation)
     |
 per-channel streaming resampler + VAD chunker
+    |                                      |
+fsynced spool WAV --> pending SQLite row   +-- opted-in Them PCM --> bounded private session WAV
+    |                                                                          |
+shared ModelRuntimeManager (one chunk at a time)                               |
+    |                                                                          |
+final segment + FTS transaction --> optional WAV deletion                      |
+                                                                               |
+capture completes --> idle-only diarization coordinator <---------------------+
     |
-fsynced spool WAV --> pending SQLite row
+network-denied worker + SHA-256-pinned Core ML speaker model
     |
-shared ModelRuntimeManager (one chunk at a time)
+bounded speaker turns --> conservative assignment to complete Them segments
     |
-final segment + FTS transaction --> optional WAV deletion
+session-scoped Speaker N labels + meeting-speakers-updated --> temporary WAV deleted
 ```
 
 Meeting capture is mutually exclusive with dictation, transforms, imported-file
@@ -139,21 +147,22 @@ Dictation and transform are mutually exclusive in both directions (status guards
 
 ---
 
-## Four-Window Architecture
+## Six-window architecture
 
-Each window is a separate webview with its own Tauri capability set, following least privilege.
+Each window is a separate webview with its own Tauri capability set.
 
-| Window | Label | Entry Point | Size | Purpose |
+| Window | Label | Entry point | Size | Purpose |
 |--------|-------|-------------|------|---------|
-| Main | `main` | `index.html` | 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, modals |
+| Main | `main` | `index.html` | 880×720, minimum 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, and modals |
 | Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons, and transform traces |
-| Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always-on-top, transparent, non-activating |
-| Transform Review | `transform-review` | popover entry | 320×76 (compact) | Transform proposal review. Non-focusable until `ready`/`failed` |
-| Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML transcript preview under the notch. Always-on-top, transparent, non-activating, click-through |
+| Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always on top, transparent, and non-activating |
+| Transform Review | `transform-review` | `transform-review.html` | 320×76 compact | Transform proposal review. Non-focusable until `ready` or `failed` |
+| Query Review | `query-review` | `query-review.html` | 440×92 compact, 440×340 expanded | Voice Query answer review. Always on top, transparent, and non-activating |
+| Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML transcript preview under the notch. Always on top, transparent, non-activating, and click-through |
 
-Main and Diagnostics hide on close instead of being destroyed. The overlay and transform popover both use the shared non-activating window treatment in `commands/native_window.rs`, and **all** of their raw `NSWindow` mutation is dispatched to the main thread via `run_on_main_thread` — macOS 26 hard-traps on off-main `NSWindow` mutation (#325).
+Main and Diagnostics hide on close instead of being destroyed. Overlay and Transform Review call the shared non-activating window treatment in `commands/native_window.rs`. Query Review and Dictation Preview use its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
 
-Rust is the sole author of every overlay and popover pixel: `geometry_for()` and `popover_geometry_for()` are pure functions asserted by checked-in fixtures on both sides (cargo test + vitest). The frontend never hardcodes dimensions.
+Rust owns the native frame for each overlay or popover. `geometry_for()` and `popover_geometry_for()` calculate the Overlay and Transform Review frames. The `frame()` functions in `commands/query_popover.rs` and `commands/dictation_preview.rs` calculate the other two frames. Checked-in Rust and frontend fixtures cover the shared geometry contracts.
 
 Main owns appearance writes, the durable saved-theme library, Open VSX
 discovery, and application-level native `setTheme`. Main and Diagnostics resolve System mode to a concrete `data-appearance` with a
@@ -218,19 +227,42 @@ stay local and never reach logs or telemetry. See
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
 | `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
+| `audio_graph_snapshot.rs` | Deadline-bounded Core Audio HAL snapshots for armed capture-hang reports, plus content-free graph counts and Murmur audio-owner state |
 | `capture_helper_probe.rs` | Probe-only capture-helper handshake, callback-health observation, cancel, and confirmed termination evidence |
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
+| `browser_site.rs` | Allowlisted browser-host discovery and exact host-rule matching for site-bound modes |
+| `capture_agent_probe.rs` | Opt-in LaunchAgent service and recovery probe CLI. Production dictation does not use this path |
+| `capture_health.rs` | Bounded capture startup and fallback history derived from telemetry, persisted in `capture-health-v1.json` |
 | `commands/microphone_startup_benchmark.rs` | Main-window-gated production capture startup cycles, exact-owner progress/cancel, and typed privacy-safe export |
 | `cleanup.rs` | Filler removal and capitalization |
 | `cli_command.rs` | Spoken CLI command grammar and lexicon |
 | `correct_and_teach.rs` | Bounded local diff proposals from a user's edit; never writes without confirmation |
 | `correction.rs` | Smart Correction matcher (exact + fuzzy tiers) |
+| `correction_shortcut.rs` | Command-Shift-E chord state and dispatch for correcting the latest delivered dictation |
+| `delivery_recovery.rs` | Generation-bound last-delivery memory and one-at-a-time clipboard or paste retry |
+| `diarization_assignment.rs` | Validation of bounded speaker turns and conservative assignment to complete remote meeting segments |
+| `diarization_audio.rs` | Private temporary owner for up to two hours of 16 kHz remote meeting audio. Drop deletes the WAV |
+| `diarization_model.rs` | Locked download, SHA-256 validation, status, and removal for the pinned Core ML speaker model |
 | `dictation_context.rs` | Immutable per-recording context snapshot resolution |
+| `dictation_correction.rs` | Spoken correction parsing, local-model edit instructions, and validation of corrected text |
+| `dictation_diagnostics.rs` | Explicit one-shot private dictation capture store with bounded text, retention, deletion, and upload |
+| `dictation_diagnostics_contract.rs` | Cross-path tests for diagnostic arming, exact recording ownership, content bounds, revocation, and corrupt-data removal |
+| `dictation_telemetry.rs` | Stable content-free lifecycle telemetry and error classification for accepted live dictations |
 | `commands/export.rs` | `save_text_export`: validated, atomic sink for user-chosen text exports |
+| `commands/corpus.rs` | Guided capture-only personal corpus recording, WAV integrity checks, quality reports, and benchmark fixture loading |
+| `commands/dictation_diagnostics.rs` | Window-gated arm, status, list, read, delete, and upload commands for private dictation captures |
+| `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
+| `commands/meeting_summary.rs` | Generation-gated, cancellable local meeting summary flow with source-backed artifact publication |
+| `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
+| `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
+| `commands/query_history.rs` | Main-window paging, provider filtering, and purge commands for opt-in Voice Query history |
+| `commands/query_popover.rs` | Non-activating Voice Query review geometry and show, resize, and hide transport |
+| `commands/updater.rs` | App-translocation status and opt-in updater canary file transport |
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
+| `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
 | `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout/stderr streaming, immutable provider configuration, and exact-pass cancellation |
 | `query_adapter.rs` | Incremental Claude/Codex JSONL answer, typed failure, and pass-scoped usage extraction with non-duplicating raw fallback |
 | `query_provider.rs` | Voice Query preset/discovery data, bounded auth preflight, known auth repair, and Rust-owned declared config-directory environment values |
@@ -241,8 +273,16 @@ stay local and never reach logs or telemetry. See
 | `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
+| `meeting_artifact.rs` | Bounded, source-segment-backed summary artifact parsing, validation, chunking, and merge |
+| `meeting_diarization.rs` | Idle-only speaker worker ownership, foreground preemption, bounded retries, turn validation, and assignment publication |
+| `meeting_diarization_probe.rs` | Debug-only hardware proof for diarization preemption and seeded meeting-review fixtures |
+| `meeting_review.rs` | Meeting review validation, edits, export rendering, and session-scoped speaker-label resolution |
 | `llm_sidecar.rs` | Host supervisor for the signed local-LLM helper: spawn, handshake, RSS ceilings, idle unload, circuit breaker |
+| `log_shipper.rs` | Tails privacy-stripped telemetry JSONL to bounded NDJSON batches and advances its durable offset only after acknowledgment |
 | `model_runtime.rs` | Model catalog + lifecycle manager (load/warm/readiness/unload, generation-ordered status events) |
+| `microphone_auto.rs` | Cached-only Smart Auto input policy that freezes an eligible stable microphone ID for one recording |
+| `microphone_preview.rs` | Capture-only microphone-test state, VAD analysis, level accumulation, and quiet or clipping classification |
+| `model_artifact.rs` | Size and prefix validation that rejects HTML, JSON, and Git LFS responses masquerading as downloaded model binaries |
 | `coreml_installer.rs` | Same-signed killable Core ML install worker/supervisor: bounded phases, hard deadline, confirmed process-group cleanup |
 | `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
 | `platform/` | macOS CPU/resource metrics seam |
@@ -251,6 +291,7 @@ stay local and never reach logs or telemetry. See
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
 | `spoken_numbers.rs` | Deterministic English spoken-cardinal rendering |
 | `spoken_structure.rs` | Single owner for spoken punctuation, layout, symbols, arbitration, and `scratch that` |
+| `sqlite_support.rs` | Shared SQLite pragma, integrity, schema-version, sidecar quarantine, timestamp, and newest-first file helpers |
 | `state.rs` | `DictationStatus`, `TransformStatus`, `DictationState`, `AppState` |
 | `telemetry.rs` | Structured event system: `TauriEmitterLayer`, ring buffer, JSONL, privacy stripping |
 | `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml implementations |
@@ -264,7 +305,7 @@ stay local and never reach logs or telemetry. See
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands live under `commands/` (`recording`, `meeting`, `permissions`, `keyboard`, `export`, `settings_store`, `logging`, `models`, `knowledge`, `correct_and_teach`, `benchmark`, `microphone_startup_benchmark`, `performance`, `theme`, `transform_model`, `transform_popover`, `transform_diagnostics`, `overlay`, `dictation_preview`, `native_window`, `tray`). Theme resolution remains frontend-only; `commands/theme.rs` is a main-window-gated UTF-8 file-transport boundary with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `meeting_summary`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `query_history`, `query_popover`, `recording`, `settings_store`, `theme`, `transform_diagnostics`, `transform_model`, `transform_popover`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
