@@ -13,7 +13,41 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 9;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 10;
+pub const MAX_AUTOMATIC_PROBE_NS: u64 = 8_000_000_000;
+
+/// Cross-process, sleep-inclusive monotonic clock for automatic capture leases.
+pub fn capture_monotonic_ns() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Timebase {
+            numer: u32,
+            denom: u32,
+        }
+        unsafe extern "C" {
+            fn mach_continuous_time() -> u64;
+            fn mach_timebase_info(info: *mut Timebase) -> i32;
+        }
+        let mut info = Timebase::default();
+        if unsafe { mach_timebase_info(&mut info) } != 0 || info.denom == 0 {
+            return None;
+        }
+        let ticks = unsafe { mach_continuous_time() };
+        u64::try_from(u128::from(ticks) * u128::from(info.numer) / u128::from(info.denom)).ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+pub fn automatic_probe_remaining_ns(deadline: u64, now: u64) -> Option<u64> {
+    deadline
+        .checked_sub(now)
+        .filter(|remaining| *remaining > 0 && *remaining <= MAX_AUTOMATIC_PROBE_NS)
+}
 pub const PRODUCTION_MAGIC: [u8; 4] = *b"MRMR";
 pub const PRODUCTION_HEADER_BYTES: usize = 36;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
@@ -154,6 +188,13 @@ pub enum ProductionHostMessage {
     Start {
         device_id: Option<String>,
         backend: CaptureBackend,
+    },
+    /// Requires an existing microphone grant and never requests authorization.
+    /// The absolute deadline includes IPC, HAL setup, and streaming time.
+    StartAutomaticProbe {
+        device_id: String,
+        backend: CaptureBackend,
+        deadline_ns: u64,
     },
     StartMeeting {
         device_id: Option<String>,
@@ -758,6 +799,53 @@ pub fn read_production_frame<T: DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automatic_probe_deadline_is_absolute_and_bounded() {
+        use super::*;
+        assert_eq!(
+            automatic_probe_remaining_ns(9_000_000_000, 1_000_000_000),
+            Some(MAX_AUTOMATIC_PROBE_NS)
+        );
+        assert_eq!(
+            automatic_probe_remaining_ns(9_000_000_001, 1_000_000_000),
+            None
+        );
+        assert_eq!(automatic_probe_remaining_ns(9, 9), None);
+        assert_eq!(automatic_probe_remaining_ns(9, 10), None);
+        assert_eq!(
+            automatic_probe_remaining_ns(9_000_000_000, 8_000_000_000),
+            Some(1_000_000_000)
+        );
+    }
+
+    #[test]
+    fn automatic_probe_start_round_trips_without_weakening_interactive_start() {
+        use super::*;
+        let message = ProductionHostMessage::StartAutomaticProbe {
+            device_id: "test-input".into(),
+            backend: CaptureBackend::Cpal,
+            deadline_ns: 42,
+        };
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ProductionHostMessage>(&encoded).unwrap(),
+            message
+        );
+        assert!(serde_json::from_str::<ProductionHostMessage>(
+            r#"{"type":"startAutomaticProbe","deviceId":"test","backend":"cpal"}"#
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::from_str::<ProductionHostMessage>(
+                r#"{"type":"start","deviceId":null,"backend":"cpal"}"#
+            )
+            .unwrap(),
+            ProductionHostMessage::Start {
+                device_id: None,
+                backend: CaptureBackend::Cpal
+            }
+        );
+    }
     use super::*;
 
     #[test]

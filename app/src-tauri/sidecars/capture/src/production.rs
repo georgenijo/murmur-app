@@ -75,6 +75,62 @@ static INPUT_TOPOLOGY_CHANGED: ProcessAtomicBool = ProcessAtomicBool::new(false)
 const LEGACY_CONTINUITY_CAPTURE_TRANSPORT: u32 = 0x6363_6170;
 const MAX_STREAM_CONFIGURATION_BYTES: usize = 64 * 1024;
 
+#[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {}
+
+fn microphone_authorization_granted() -> bool {
+    use objc2::{msg_send, runtime::AnyClass};
+    use objc2_foundation::NSString;
+    let Some(class) = AnyClass::get(c"AVCaptureDevice") else {
+        return false;
+    };
+    let media = NSString::from_str("soun");
+    let status: isize = unsafe { msg_send![class, authorizationStatusForMediaType: &*media] };
+    status == 3
+}
+
+fn automatic_probe_allowed(deadline_ns: u64, now_ns: Option<u64>, authorized: bool) -> bool {
+    authorized
+        && now_ns
+            .and_then(|now| {
+                murmur_capture_helper_protocol::automatic_probe_remaining_ns(deadline_ns, now)
+            })
+            .is_some()
+}
+
+fn check_automatic_probe(deadline: Option<u64>) -> Result<(), FailureCode> {
+    if deadline.is_some_and(|deadline| {
+        !automatic_probe_allowed(
+            deadline,
+            murmur_capture_helper_protocol::capture_monotonic_ns(),
+            microphone_authorization_granted(),
+        )
+    }) {
+        Err(FailureCode::PermissionDenied)
+    } else {
+        Ok(())
+    }
+}
+
+fn spawn_automatic_probe_watchdog(deadline_ns: u64) -> Result<(), ()> {
+    std::thread::Builder::new()
+        .name("automatic-probe-deadline".into())
+        .spawn(move || loop {
+            let remaining =
+                murmur_capture_helper_protocol::capture_monotonic_ns().and_then(|now| {
+                    murmur_capture_helper_protocol::automatic_probe_remaining_ns(deadline_ns, now)
+                });
+            let Some(remaining) = remaining else {
+                // Exit also closes a stream blocked inside HAL. The host retains
+                // ownership until it confirms this process exit and joins.
+                std::process::exit(0);
+            };
+            std::thread::sleep(Duration::from_nanos(remaining).min(Duration::from_millis(5)));
+        })
+        .map(|_| ())
+        .map_err(|_| ())
+}
+
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
     head: AtomicUsize,
@@ -2201,6 +2257,47 @@ fn run_meeting(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
+    #[test]
+    fn automatic_probe_watchdog_exits_even_when_worker_thread_is_blocked() {
+        use super::*;
+        const CHILD: &str = "MURMUR_TEST_AUTOMATIC_PROBE_WATCHDOG";
+        if std::env::var_os(CHILD).is_some() {
+            let now = murmur_capture_helper_protocol::capture_monotonic_ns().unwrap();
+            spawn_automatic_probe_watchdog(now + 100_000_000).unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let started = Instant::now();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "production::tests::automatic_probe_watchdog_exits_even_when_worker_thread_is_blocked"])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::null())
+            .spawn().unwrap();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if started.elapsed() >= Duration::from_secs(2) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("automatic watchdog failed to terminate blocked worker");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn automatic_probe_requires_grant_and_unexpired_bounded_lease() {
+        use super::*;
+        assert!(automatic_probe_allowed(10, Some(1), true));
+        assert!(!automatic_probe_allowed(10, Some(1), false));
+        assert!(!automatic_probe_allowed(10, Some(10), true));
+        assert!(!automatic_probe_allowed(10, Some(11), true));
+        assert!(!automatic_probe_allowed(10, None, true));
+        assert!(!automatic_probe_allowed(u64::MAX, Some(1), true));
+    }
 
     #[test]
     fn a_started_tap_with_no_audio_is_granted_not_a_stall() {
@@ -2847,7 +2944,26 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
         &ProductionHelperMessage::HelloAck,
     )
     .map_err(|_| ())?;
-    match read_control(&mut stdin, capture_id, nonce)? {
+    let command = read_control(&mut stdin, capture_id, nonce)?;
+    let (command, automatic_deadline) = match command {
+        ProductionHostMessage::StartAutomaticProbe {
+            device_id,
+            backend,
+            deadline_ns,
+        } => {
+            check_automatic_probe(Some(deadline_ns)).map_err(|_| ())?;
+            spawn_automatic_probe_watchdog(deadline_ns)?;
+            (
+                ProductionHostMessage::Start {
+                    device_id: Some(device_id),
+                    backend,
+                },
+                Some(deadline_ns),
+            )
+        }
+        command => (command, None),
+    };
+    match command {
         ProductionHostMessage::Enumerate => {
             let (devices, default_input_id, lid_state) = enumerate().map_err(|_| ())?;
             write_production_control(
@@ -2889,6 +3005,20 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
         }
         ProductionHostMessage::Start { device_id, backend } => {
             drop(stdin);
+            let (control_tx, control_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut input = std::io::stdin().lock();
+                let message = read_control(&mut input, capture_id, nonce);
+                if automatic_deadline.is_some() {
+                    // A revoke must work while native setup or stream.stop is
+                    // blocked. This helper owns no durable capture state.
+                    std::process::exit(0);
+                }
+                if let Ok(message) = message {
+                    let _ = control_tx.send(message);
+                }
+            });
+            check_automatic_probe(automatic_deadline).map_err(|_| ())?;
             write_production_control(
                 &mut stdout,
                 capture_id,
@@ -2908,6 +3038,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let failed = Arc::new(AtomicBool::new(false));
             let started = {
                 let mut emit_setup = |observation: MicrophoneSetupObservation| {
+                    check_automatic_probe(automatic_deadline)?;
                     let message = match observation {
                         MicrophoneSetupObservation::Step(step, transition) => {
                             ProductionHelperMessage::SetupStep {
@@ -2994,13 +3125,6 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 },
             )
             .map_err(|_| ())?;
-            let (control_tx, control_rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let mut input = std::io::stdin().lock();
-                if let Ok(message) = read_control(&mut input, capture_id, nonce) {
-                    let _ = control_tx.send(message);
-                }
-            });
             let mut sequence = 0_u64;
             let mut retained = 0_u64;
             let mut scratch = [0_f32; 4096];
@@ -3008,7 +3132,14 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let mut last_producer_position = ring.producer_position();
             let mut last_callback_progress = Instant::now();
             let mut starvation_injected = false;
+            let mut last_automatic_permission_check = Instant::now();
             loop {
+                if automatic_deadline.is_some()
+                    && last_automatic_permission_check.elapsed() >= Duration::from_millis(250)
+                {
+                    check_automatic_probe(automatic_deadline).map_err(|_| ())?;
+                    last_automatic_permission_check = Instant::now();
+                }
                 if fault == Some("hang-before-first-buffer") && retained == 0 {
                     std::thread::sleep(Duration::from_millis(20));
                     continue;

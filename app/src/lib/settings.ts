@@ -319,6 +319,8 @@ export interface Settings {
   microphoneIdMigrationComplete: boolean;
   /** Opt-in cached-inventory routing for the next dictation recording. */
   smartAutoMicrophoneEnabled: boolean;
+  /** Separate consent for bounded idle-time signal checks of approved inputs. */
+  smartAutoProbeEnabled: boolean;
   /** Stable Core Audio UIDs the user has explicitly allowed Smart Auto to use. */
   smartAutoApprovedDeviceIds: string[];
   /** Optional ordered stable-ID preferences, evaluated before the macOS default. */
@@ -560,6 +562,7 @@ export const DEFAULT_SETTINGS: Settings = {
   microphone: 'system_default',
   microphoneIdMigrationComplete: true,
   smartAutoMicrophoneEnabled: false,
+  smartAutoProbeEnabled: false,
   smartAutoApprovedDeviceIds: [],
   smartAutoPreferredDeviceIds: [],
   smartAutoAllowContinuity: false,
@@ -921,6 +924,9 @@ export function loadSettings(): Settings {
       }
 
       parsed.smartAutoMicrophoneEnabled = parsed.smartAutoMicrophoneEnabled === true;
+      // Background microphone access is a separate consent. Existing Smart Auto
+      // users and malformed persisted values remain off after upgrade.
+      parsed.smartAutoProbeEnabled = parsed.smartAutoProbeEnabled === true;
       const smartAutoApprovedDeviceIds = sanitizeSmartAutoDeviceIds(parsed.smartAutoApprovedDeviceIds);
       parsed.smartAutoApprovedDeviceIds = smartAutoApprovedDeviceIds;
       parsed.smartAutoPreferredDeviceIds = sanitizeSmartAutoDeviceIds(parsed.smartAutoPreferredDeviceIds)

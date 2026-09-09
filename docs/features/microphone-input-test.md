@@ -33,7 +33,7 @@ the input is too quiet or clipping.
 `AudioOwner::Preview(preview_id)` is a first-class owner of the production
 capture supervisor. Preview IDs are monotonic and every lifecycle event is
 generation-checked. Preview is lower priority than real pipeline work:
-dictation, Transform, Voice Query, corpus capture, and benchmark startup stop
+dictation, Meeting Capture, meeting summary, Transform, Voice Query, corpus capture, and benchmark startup stop
 the exact Preview owner, wait for confirmed worker teardown, and claim their
 work under the same short `recording_transition` lock. Preview startup still
 refuses while any real pipeline owns audio.
@@ -72,6 +72,16 @@ and meter ARIA values directly from refs.
 
 ## Implementation map
 
+Auto routing also offers separate **Background checks** consent, disabled by
+default. These checks use the same Preview owner and verifier but do not open
+the interactive meter, run VAD, save audio, or update the durable backend memo.
+Opening the visible Settings preview preempts an automatic check and waits for
+confirmed teardown. The status row and overlay show connecting, checking signal,
+finishing, recently verified, or an actionable block. Failed rounds have bounded
+backoff and eventually require Retry; they do not leave a microphone open.
+See [bounded automatic checks](transcription.md#bounded-automatic-checks) for
+permission, timing, ownership, and hardware-acceptance limits.
+
 The **Verify signal for 5 seconds** button runs a bounded check on the same
 active preview. It keeps no audio and does not open, stop, or switch inputs.
 For an explicit stable input, a successful check authorizes Smart Auto to
@@ -88,6 +98,7 @@ promise that signal is still arriving now.
 
 - Rust state/classification: `app/src-tauri/src/microphone_preview.rs`
 - Bounded signal verification: `app/src-tauri/src/microphone_signal.rs`
+- Automatic scheduling and consent: `app/src-tauri/src/smart_auto_probe.rs`
 - Rust commands/lifecycle bridge: `app/src-tauri/src/commands/microphone_preview.rs`
 - Capture routing: `app/src-tauri/src/audio.rs`, `audio_lifecycle.rs`
 - UI: `app/src/components/settings/MicrophoneInputTest.tsx`

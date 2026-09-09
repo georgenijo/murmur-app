@@ -43,6 +43,7 @@ fn stop_owned(control: &mut Control) -> Result<(), String> {
         }
         control.child.take();
         control.interrupted = true;
+        crate::smart_auto_probe::wake();
     }
     Ok(())
 }
@@ -60,6 +61,10 @@ impl Drop for JobOwner {
 /// Call under recording_transition before a foreground capture begins.
 pub fn preempt() -> Result<(), String> {
     stop_owned(&mut CONTROL.lock_or_recover())
+}
+
+pub(crate) fn is_active() -> bool {
+    CONTROL.lock_or_recover().child.is_some()
 }
 
 pub fn cancel_session(session_id: &str) -> Result<(), String> {
@@ -95,6 +100,7 @@ impl Drop for ForegroundReservation {
 
 fn app_idle(state: &State) -> bool {
     !state.app_state.meeting_blocks_asr()
+        && !state.app_state.microphone_preview.is_active()
         && !crate::audio_lifecycle::is_audio_active()
         && !state.app_state.file_transcribing.load(Ordering::SeqCst)
         && !state.benchmark.is_running()

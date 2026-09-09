@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { Settings, loadSettings, saveSettings } from '../settings';
 import { configure, buildConfigureOptions } from '../dictation';
@@ -9,18 +9,64 @@ import {
 } from '../audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../buildFlavor';
 import { useAudioInputInventory } from './useAudioInputInventory';
+import {
+  configureSmartAutoProbe,
+  smartAutoProbePolicy,
+  type SmartAutoProbePolicy,
+} from '../smartAutoMicrophone';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [configureError, setConfigureError] = useState<string | null>(null);
+  const [probeConfigureError, setProbeConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const configureVersionRef = useRef(0);
+  const desiredProbePolicyRef = useRef<SmartAutoProbePolicy>(smartAutoProbePolicy(settings));
+  const desiredProbePolicyVersionRef = useRef(0);
+  const attemptedProbePolicyVersionRef = useRef(-1);
+  const probeWriterRunningRef = useRef(false);
   const [microphoneMigrationPending, setMicrophoneMigrationPending] = useState(
     () => !settings.microphoneIdMigrationComplete,
   );
   const audioInventory = useAudioInputInventory(microphoneMigrationPending);
+
+  const scheduleProbePolicyWrite = useCallback(() => {
+    if (!isTauri() || probeWriterRunningRef.current) return;
+    probeWriterRunningRef.current = true;
+    void (async () => {
+      while (attemptedProbePolicyVersionRef.current !== desiredProbePolicyVersionRef.current) {
+        const version = desiredProbePolicyVersionRef.current;
+        const policy = desiredProbePolicyRef.current;
+        try {
+          await configureSmartAutoProbe(policy);
+        } catch {
+          if (version === desiredProbePolicyVersionRef.current) {
+            const current = settingsRef.current;
+            if (policy.enabled && current.smartAutoProbeEnabled) {
+              const disabled = { ...current, smartAutoProbeEnabled: false };
+              settingsRef.current = disabled;
+              setSettings(disabled);
+              saveSettings(disabled);
+              desiredProbePolicyRef.current = { enabled: false };
+              desiredProbePolicyVersionRef.current += 1;
+              void emit('settings-changed');
+              setProbeConfigureError('Background microphone checks could not be enabled. Review approved microphones and try again.');
+            } else {
+              setProbeConfigureError('Background microphone checks could not be stopped. Quit Murmur before changing microphones.');
+            }
+          }
+        }
+        attemptedProbePolicyVersionRef.current = version;
+      }
+      probeWriterRunningRef.current = false;
+    })();
+  }, []);
+
+  useEffect(() => {
+    scheduleProbePolicyWrite();
+  }, [scheduleProbePolicyWrite]);
 
   // Migrate pre-CPAL-0.18 display-name selections during app settings
   // initialization, not when Settings happens to be opened. Only a unique
@@ -105,6 +151,17 @@ export function useSettings() {
       ...('microphone' in updates ? { microphoneIdMigrationComplete: true } : {}),
     };
     settingsRef.current = newSettings;
+    const probePolicyChanged = 'microphone' in updates
+      || 'smartAutoMicrophoneEnabled' in updates
+      || 'smartAutoProbeEnabled' in updates
+      || 'smartAutoApprovedDeviceIds' in updates
+      || 'smartAutoPreferredDeviceIds' in updates
+      || 'smartAutoAllowContinuity' in updates;
+    if (probePolicyChanged) {
+      desiredProbePolicyRef.current = smartAutoProbePolicy(newSettings);
+      desiredProbePolicyVersionRef.current += 1;
+      setProbeConfigureError(null);
+    }
     setSettings(newSettings);
     saveSettings(newSettings);
 
@@ -136,12 +193,14 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates) {
+    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || probePolicyChanged) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
       emit('settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
     }
+
+    if (probePolicyChanged) scheduleProbePolicyWrite();
 
     if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
@@ -189,7 +248,7 @@ export function useSettings() {
           }
         });
     }
-  }, []);
+  }, [scheduleProbePolicyWrite]);
 
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a
@@ -200,9 +259,12 @@ export function useSettings() {
     const autoPasteChanged = fresh.autoPaste !== prev.autoPaste;
     if (!disabledChanged && !autoPasteChanged) return;
 
-    settingsRef.current = fresh;
-    setSettings(fresh);
-    saveSettings(fresh);
+    // Overlay quick controls own these two fields only. Its cached approvals
+    // must never replace a newer main-window microphone policy.
+    const next = { ...prev, disabled: fresh.disabled, autoPaste: fresh.autoPaste };
+    settingsRef.current = next;
+    setSettings(next);
+    saveSettings(next);
 
     if (disabledChanged) {
       // Idempotent: the overlay also calls this directly for a snappy gate.
@@ -211,12 +273,17 @@ export function useSettings() {
       });
     }
     if (autoPasteChanged) {
-      configure(buildConfigureOptions(fresh)).catch(() => {
+      configure(buildConfigureOptions(next)).catch(() => {
         console.error('Failed to configure externally changed settings.');
         setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
       });
     }
   }, []);
 
-  return { settings, updateSettings, applyExternalSettings, configureError };
+  return {
+    settings,
+    updateSettings,
+    applyExternalSettings,
+    configureError: probeConfigureError ?? configureError,
+  };
 }

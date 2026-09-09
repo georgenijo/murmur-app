@@ -13,7 +13,8 @@ interface OverlayPillProps {
 
 export type OverlaySmartAutoSummary =
   | { kind: 'ready'; deviceName: string; reason: string }
-  | { kind: 'blocked' };
+  | { kind: 'probing'; deviceName: string; phase: string }
+  | { kind: 'blocked'; retryAfterMs: number | null };
 
 /**
  * Top-bar content: status indicator (left wing) + waveform (right wing). Purely
@@ -154,17 +155,27 @@ export function OverlayPill({
               role={smartAutoSummary ? 'status' : undefined}
               aria-live={smartAutoSummary ? 'polite' : undefined}
               aria-label={smartAutoSummary?.kind === 'ready'
-                ? `Smart Auto next capture ready with ${smartAutoSummary.deviceName}. Recent signal verified; ${smartAutoSummary.reason}.`
+                ? `Smart Auto next capture ready with ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
+                : smartAutoSummary?.kind === 'probing'
+                  ? `Smart Auto background check for ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}. Audio is not transcribed or saved.`
                 : smartAutoSummary?.kind === 'blocked'
-                  ? 'Smart Auto next capture blocked. Open Settings to verify signal or pin an input.'
+                  ? smartAutoSummary.retryAfterMs === null
+                    ? 'Smart Auto next capture blocked. Open Settings to retry, verify signal, or pin an input.'
+                    : `Smart Auto next capture blocked. A bounded retry is scheduled within ${Math.max(1, Math.ceil(smartAutoSummary.retryAfterMs / 1000))} seconds.`
                   : undefined}
               title={smartAutoSummary?.kind === 'ready'
-                ? `Smart Auto: ${smartAutoSummary.deviceName}. Recent signal verified; ${smartAutoSummary.reason}.`
+                ? `Smart Auto: ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
+                : smartAutoSummary?.kind === 'probing'
+                  ? `Smart Auto checking ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}`
                 : smartAutoSummary?.kind === 'blocked'
-                  ? 'Smart Auto blocked. Open Settings to verify signal or pin an input.'
+                  ? smartAutoSummary.retryAfterMs === null
+                    ? 'Smart Auto blocked. Open Settings to retry, verify signal, or pin an input.'
+                    : 'Smart Auto blocked. A bounded retry is scheduled.'
                   : undefined}
               className={smartAutoSummary?.kind === 'ready'
                 ? 'text-emerald-300'
+                : smartAutoSummary?.kind === 'probing'
+                  ? 'text-sky-300 animate-pulse'
                 : smartAutoSummary?.kind === 'blocked'
                   ? 'text-amber-300'
                   : 'text-white/40'}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the final signed capture worker's production-v9 startup protocol."""
+"""Exercise the final signed capture worker's production-v10 startup protocol."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import BinaryIO
 
 
 MAGIC = b"MRMR"
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 10
 HEADER_BYTES = 36
 MAX_CONTROL_BYTES = 16 * 1024
 MAX_PCM_SAMPLES = 16 * 1024
@@ -159,7 +159,7 @@ def smoke_test(worker: Path, timeout_seconds: float = 5.0) -> None:
     capture_id = secrets.randbits(63) or 1
     nonce = os.urandom(16)
     process = subprocess.Popen(
-        [str(worker), "--production-v9", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v10", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -204,7 +204,7 @@ def smoke_test_meeting(worker: Path, timeout_seconds: float = 20.0) -> None:
     capture_id = secrets.randbits(63) or 1
     nonce = os.urandom(16)
     process = subprocess.Popen(
-        [str(worker), "--production-v9", str(capture_id), nonce.hex()],
+        [str(worker), "--production-v10", str(capture_id), nonce.hex()],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -289,9 +289,9 @@ def main() -> int:
     except SmokeError as error:
         raise SystemExit(f"ERROR: {error}") from error
     if arguments.meeting:
-        print("signed capture worker production-v9 meeting smoke passed")
+        print("signed capture worker production-v10 meeting smoke passed")
     else:
-        print("signed capture worker production-v9 startup smoke passed")
+        print("signed capture worker production-v10 startup smoke passed")
     return 0
 
 

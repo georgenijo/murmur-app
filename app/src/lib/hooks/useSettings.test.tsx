@@ -7,10 +7,11 @@ const mocks = vi.hoisted(() => ({
   configure: vi.fn(),
   emit: vi.fn(async () => {}),
   listen: vi.fn(async () => () => {}),
-  invoke: vi.fn(async (_command?: string): Promise<unknown> => undefined),
+  invoke: vi.fn<(command?: string, args?: unknown) => Promise<unknown>>(async () => undefined),
   isEnabled: vi.fn(async () => false),
   enable: vi.fn(async () => {}),
   disable: vi.fn(async () => {}),
+  isTauri: vi.fn(() => false),
 }));
 
 vi.mock('../dictation', () => ({
@@ -18,7 +19,7 @@ vi.mock('../dictation', () => ({
   buildConfigureOptions: vi.fn((settings) => settings),
 }));
 vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: () => false }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: mocks.isTauri }));
 vi.mock('@tauri-apps/plugin-autostart', () => ({
   isEnabled: mocks.isEnabled,
   enable: mocks.enable,
@@ -39,6 +40,7 @@ describe('useSettings configure rollback privacy', () => {
     localStorage.clear();
     mocks.configure.mockResolvedValue(undefined);
     mocks.invoke.mockResolvedValue(undefined);
+    mocks.isTauri.mockReturnValue(false);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -61,6 +63,25 @@ describe('useSettings configure rollback privacy', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it('does not restore stale microphone approvals from overlay quick controls', async () => {
+    await mountHarness();
+    await act(async () => current.updateSettings({
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+      smartAutoApprovedDeviceIds: ['new-approved'],
+      smartAutoPreferredDeviceIds: ['new-approved'],
+    }));
+    await act(async () => current.applyExternalSettings({
+      ...DEFAULT_SETTINGS,
+      disabled: true,
+      smartAutoApprovedDeviceIds: ['removed-approved'],
+    }));
+    expect(current.settings.disabled).toBe(true);
+    expect(current.settings.smartAutoProbeEnabled).toBe(true);
+    expect(current.settings.smartAutoApprovedDeviceIds).toEqual(['new-approved']);
+    expect(current.settings.smartAutoPreferredDeviceIds).toEqual(['new-approved']);
   });
 
   it('restores UI state and never logs alias-bearing backend validation text', async () => {
@@ -212,5 +233,92 @@ describe('useSettings configure rollback privacy', () => {
     const calls = mocks.configure.mock.calls;
     const lastArg = calls[calls.length - 1]?.[0];
     expect(lastArg).toMatchObject({ mirrorToNotchPill: true });
+  });
+
+  it('serializes probe policy writes and reads the latest desired policy after a pending enable', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue(1);
+    await mountHarness();
+    mocks.invoke.mockClear();
+
+    let finishEnable: (() => void) | null = null;
+    mocks.invoke.mockImplementation((command?: string) => {
+      if (command === 'configure_smart_auto_probe' && finishEnable === null) {
+        return new Promise<number>((resolve) => {
+          finishEnable = () => resolve(2);
+        });
+      }
+      if (command === 'cancel_audio_initialization') return Promise.resolve(undefined);
+      return Promise.resolve(3);
+    });
+
+    await act(async () => {
+      current.updateSettings({
+        smartAutoMicrophoneEnabled: true,
+        smartAutoProbeEnabled: true,
+        smartAutoApprovedDeviceIds: ['usb-a'],
+        smartAutoPreferredDeviceIds: ['usb-a'],
+      });
+      await Promise.resolve();
+    });
+    current.updateSettings({
+      smartAutoApprovedDeviceIds: ['usb-b'],
+      smartAutoPreferredDeviceIds: ['usb-b'],
+    });
+    current.updateSettings({
+      microphone: 'usb-b',
+      smartAutoMicrophoneEnabled: false,
+      smartAutoProbeEnabled: false,
+    });
+
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe')).toHaveLength(1);
+    await act(async () => {
+      finishEnable?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const writes = mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe');
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.[1]).toEqual({
+      policy: {
+        enabled: true,
+        request: {
+          approvedDeviceIds: ['usb-a'],
+          preferredDeviceIds: ['usb-a'],
+          allowContinuity: false,
+        },
+      },
+    });
+    expect(writes[1]?.[1]).toEqual({ policy: { enabled: false } });
+    expect(mocks.emit).toHaveBeenCalledWith('settings-changed');
+  });
+
+  it('fails closed and clears consent when probe configuration cannot be enabled', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue(1);
+    await mountHarness();
+    mocks.invoke.mockImplementation((command?: string, args?: unknown) => (
+      command === 'configure_smart_auto_probe' && JSON.stringify(args).includes('"enabled":true')
+        ? Promise.reject(new Error('invalid probe policy'))
+        : Promise.resolve(2)
+    ));
+
+    await act(async () => {
+      current.updateSettings({
+        smartAutoMicrophoneEnabled: true,
+        smartAutoProbeEnabled: true,
+        smartAutoApprovedDeviceIds: ['usb'],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.smartAutoProbeEnabled).toBe(false);
+    expect(current.configureError).toContain('could not be enabled');
+    const writes = mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe');
+    expect(writes[writes.length - 1]?.[1]).toEqual({ policy: { enabled: false } });
   });
 });

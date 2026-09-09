@@ -245,6 +245,9 @@ impl Default for MicrophoneStartupBenchmarkState {
 }
 
 impl MicrophoneStartupBenchmarkState {
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.lock_or_recover().is_some()
+    }
     fn claim(&self, external_run_id: String) -> Result<u64, String> {
         let mut active = self.active.lock_or_recover();
         if active.is_some() {
@@ -321,6 +324,7 @@ impl MicrophoneStartupBenchmarkState {
         {
             *active = None;
         }
+        crate::smart_auto_probe::wake();
     }
 }
 

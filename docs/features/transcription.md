@@ -61,8 +61,9 @@ afresh at recording start.
 Smart Auto is an opt-in capture policy. Dictation, Meeting Capture, Voice
 Query, selected-text Transform (including Retry), and the Settings microphone
 preview each resolve it only as their capture owner is accepted from idle and
-read the existing authoritative inventory. Auto never enumerates, probes, opens,
-or monitors a microphone in the background.
+read the existing authoritative inventory. Auto never requests enumeration.
+Background signal checks require separate consent and are off by default,
+including for existing Auto users.
 The user explicitly approves stable IDs, can place approved IDs in a preference
 order, and may separately allow approved Continuity Capture devices. A newly
 connected input is never trusted automatically.
@@ -128,17 +129,64 @@ or uploaded. Content-free telemetry records decision reasons and whether a
 bounded check verified signal. The local Settings and overlay status command
 returns a device ID for display, a decision reason, and remaining freshness;
 reading it neither selects an input nor extends evidence.
-The UI rereads this cached status once at evidence expiry or cooldown completion
-so a different verified candidate can become ready without a background probe.
+The UI rereads this cached status once at evidence expiry or cooldown completion.
+It distinguishes availability, a background check, recent verification, and
+blocked capture. A stopping check stays visible until teardown is confirmed.
 
-Remaining #525 work is explicit automatic multi-input probe scheduling.
-This implementation adds no background microphone opens, timers, enumeration,
-or helper spawning. Verification remains a user-initiated five-second check on
-the visible Settings preview. Auto fails closed when evidence expires, so a
-manual pin is the continuous-use alternative until bounded scheduling is proven.
+#### Bounded automatic checks
+
+`smartAutoProbeEnabled` is separate from Auto routing and defaults to `false`.
+The main window synchronizes consent and approvals through
+`configure_smart_auto_probe` after settings hydration. The backend starts
+disabled. Overlay quick controls cannot replace the main window's approvals.
+Manual pinning disables the probe policy even if a stale Auto flag remains set.
+Invalid policy disables checks before returning an error.
+
+The scheduler in `smart_auto_probe.rs` wakes for cached topology/default changes,
+evidence invalidity, a one-shot evidence-expiry deadline, explicit retry, or
+completion of work that deferred a pending check. It never enumerates. It uses
+only approved, eligible IDs from the current authoritative inventory. It checks
+the current input first, then follows the availability preference order.
+
+Each round admits at most three candidates and has a 75-second total budget,
+including teardown. Each candidate has three seconds to become ready and five
+seconds for signal verification, within an absolute eight-second capture lease.
+Candidates are separated by at least ten seconds after teardown. Failed rounds
+back off for 60 seconds, then 300 seconds. After three failed rounds, checks
+park until the policy/topology changes or the user requests Retry. Candidate
+order rotates across failed rounds so a silent preferred input cannot consume
+every attempt. A context change or Retry preserves the existing cooldown.
+Fresh evidence ends the round and schedules one wake at its 120-second expiry.
+
+The scheduler reuses `AudioOwner::Preview` and the production AUHAL/CPAL path.
+It never overlaps another preview, capture, processing task, meeting, speaker
+refinement, transform, query, benchmark, corpus recording, or audio recovery.
+Real work first revokes the permit, stops that exact Preview generation, and
+waits for worker exit and thread join before claiming ownership. Unconfirmed
+teardown retains the owner and blocks another microphone open.
+
+Host and signed worker require microphone permission already granted. A probe
+never enters the interactive TCC prompt path. Protocol v10 carries an absolute,
+sleep-inclusive deadline stamped when the permit is created. A worker watchdog
+exits at that deadline even if native setup or stop is blocked. Revocation uses
+the existing bounded cancellation path; it does not promise instantaneous
+cross-process cancellation of work already in flight.
+
+Policy, approval, topology, failure, and preemption generations guard admission
+and completion. Automatic verification publishes evidence only after confirmed
+teardown and revalidation. Freshness begins when verification completed, not
+when cleanup finished. It never commits a device choice; the next accepted
+capture alone freezes selection. Background PCM feeds only the existing
+aggregate verifier, with no live meter, VAD window, transcript, saved audio,
+per-device diagnostic record, or durable backend-memo update.
+
+Without background consent, or after its failure budget is exhausted, Auto
+still fails closed when evidence expires. Manual verification and pinning remain
+available.
 Physical acceptance still requires two approved inputs, active-input removal,
 default changes, Bluetooth transitions, silent/zombie input, and recording
-after a routing decision. This implementation does not claim those hardware gates.
+after a routing decision. Issue #525 remains open until those hardware gates
+are observed; deterministic scheduler and lifecycle tests do not replace them.
 
 Direct AUHAL is the primary backend and CPAL is the independent fallback. Each
 resolution pass allows one fallback only before any audio is retained and must

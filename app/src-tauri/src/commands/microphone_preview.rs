@@ -70,6 +70,7 @@ pub(crate) fn handle_audio_lifecycle(
     };
     if changed {
         emit_status(&app_handle);
+        crate::smart_auto_probe::wake();
     }
 }
 
@@ -97,6 +98,9 @@ pub async fn verify_microphone_preview_signal(
 ) -> Result<crate::microphone_signal::SignalVerificationResult, String> {
     require_main_window(&window)?;
     let preview = &state.app_state.microphone_preview;
+    if preview.is_automatic(preview_id) {
+        return Err("Automatic checks own their verification lifecycle.".into());
+    }
     let deadline = preview.begin_signal_verification(preview_id, Instant::now())?;
     tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
     Ok(preview.finish_signal_verification(preview_id))
@@ -113,6 +117,10 @@ pub async fn start_microphone_preview(
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
     let device_id = normalized_device_id(device_id)?;
+    crate::smart_auto_probe::preempt();
+    if let Some(id) = state.app_state.microphone_preview.automatic_id() {
+        stop_exact_preview(&app_handle, state.inner(), id).await?;
+    }
     let transition = state.app_state.recording_transition.lock().await;
     {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -248,7 +256,7 @@ pub async fn stop_microphone_preview(
     stop_exact_preview(&app_handle, state.inner(), preview_id).await
 }
 
-async fn stop_exact_preview(
+pub(crate) async fn stop_exact_preview(
     app_handle: &tauri::AppHandle,
     state: &State,
     preview_id: u64,
@@ -315,6 +323,7 @@ pub(crate) async fn transition_after_stopping_preview<'a>(
     app_handle: &tauri::AppHandle,
     state: &'a State,
 ) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    crate::smart_auto_probe::preempt();
     loop {
         let transition = state.app_state.recording_transition.lock().await;
         let Some(preview_id) = state.app_state.microphone_preview.current_id() else {
@@ -371,6 +380,15 @@ pub async fn cancel_microphone_preview(
 
 pub(crate) fn cancel_for_window_close(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        if app_handle
+            .state::<State>()
+            .app_state
+            .microphone_preview
+            .automatic_id()
+            .is_some()
+        {
+            return;
+        }
         let _ = cancel_exact_preview(app_handle, None).await;
     });
 }

@@ -7,7 +7,11 @@ import {
   previewSmartAutoSelection,
 } from '../../lib/audioDevices';
 import type { Settings } from '../../lib/settings';
-import { smartAutoMicrophoneReasonLabel } from '../../lib/smartAutoMicrophone';
+import {
+  retrySmartAutoProbe,
+  smartAutoMicrophoneReasonLabel,
+  smartAutoProbePhaseLabel,
+} from '../../lib/smartAutoMicrophone';
 import { useSmartAutoMicrophoneStatus } from '../../lib/hooks/useSmartAutoMicrophoneStatus';
 import {
   cancelMicrophonePreview,
@@ -46,6 +50,7 @@ interface MicrophoneInputTestProps {
   onChange: (microphone: string) => void;
   smartAuto?: Pick<Settings,
     'smartAutoMicrophoneEnabled'
+    | 'smartAutoProbeEnabled'
     | 'smartAutoApprovedDeviceIds'
     | 'smartAutoPreferredDeviceIds'
     | 'smartAutoAllowContinuity'>;
@@ -228,6 +233,13 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
                 <AnimatedSwitch size="sm" aria-label="Allow approved iPhone Continuity Camera microphones" checked={smartAuto.smartAutoAllowContinuity} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })} />
                 <span><span className="block font-medium">Allow iPhone microphones</span><span className="block text-xs text-on-surface-variant">Only approved Continuity Camera inputs</span></span>
               </label>
+              <label className="settings-microphone-choice">
+                <AnimatedSwitch size="sm" aria-label="Check approved microphones in the background" checked={smartAuto.smartAutoProbeEnabled} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoProbeEnabled: checked })} />
+                <span>
+                  <span className="block font-medium">Background signal checks</span>
+                  <span className="block text-xs text-on-surface-variant">Briefly checks approved inputs while Murmur is idle. Audio is never transcribed or saved.</span>
+                </span>
+              </label>
             </fieldset>
           )}
         </div>
@@ -261,6 +273,7 @@ export function MicrophoneInputTest({
   const [autoStartSuspended, setAutoStartSuspended] = useState(false);
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [probeRetryError, setProbeRetryError] = useState<string | null>(null);
   const [verification, setVerification] = useState<{
     previewId: number;
     configurationKey: string;
@@ -720,9 +733,16 @@ export function MicrophoneInputTest({
   const verifiedStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready'
     ? smartAutoStatus.status
     : null;
+  const probingStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'probing'
+    ? smartAutoStatus.status
+    : null;
   const verifiedDeviceLabel = verifiedStatus
     ? deviceOptions.find((device) => device.value === verifiedStatus.deviceId)?.label
       ?? 'verified microphone'
+    : null;
+  const probingDeviceLabel = probingStatus
+    ? deviceOptions.find((device) => device.value === probingStatus.deviceId)?.label
+      ?? 'approved microphone'
     : null;
   const automaticHelperText = smartAutoActive
     ? null
@@ -785,17 +805,41 @@ export function MicrophoneInputTest({
           {previewDeviceLabel && (
             <p className="mt-1"><span className="font-medium text-on-surface">Previewing now: </span>{previewDeviceLabel}.</p>
           )}
+          <p className="mt-1">Background checks are {smartAuto?.smartAutoProbeEnabled ? 'on' : 'off'}.</p>
           {smartAutoStatus.kind === 'loading' ? (
             <p className="mt-1">Checking recent signal evidence for the next capture…</p>
+          ) : probingStatus ? (
+            <p className="mt-1 text-primary">
+              <span className="font-medium">Background check: </span>
+              {probingDeviceLabel}, {smartAutoProbePhaseLabel(probingStatus.phase)}. This brief signal check is not transcribed or saved.
+            </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready' ? (
             <p className="mt-1 text-success">
               <span className="font-medium">Next capture ready: </span>
-              {verifiedDeviceLabel}. Recent signal verified, {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
+              {verifiedDeviceLabel}. Verified recently, {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
             </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'blocked' ? (
             <>
               <p className="mt-1 text-warning"><span className="font-medium">Next capture blocked: </span>{smartAutoStatus.status.message}</p>
+              {smartAutoStatus.status.retryAfterMs !== null && (
+                <p className="mt-1">A bounded retry is scheduled within {Math.max(1, Math.ceil(smartAutoStatus.status.retryAfterMs / 1000))} seconds.</p>
+              )}
               <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
+              {smartAuto?.smartAutoProbeEnabled && (
+                <button
+                  type="button"
+                  className="mt-2 rounded border border-outline-variant px-2 py-1 text-on-surface"
+                  onClick={() => {
+                    setProbeRetryError(null);
+                    void retrySmartAutoProbe()
+                      .then(() => refreshSmartAutoStatusRef.current())
+                      .catch(() => setProbeRetryError('Could not request another background check. Try again after the current cooldown.'));
+                  }}
+                >
+                  Retry background checks
+                </button>
+              )}
+              {probeRetryError && <p className="mt-1 text-error" role="alert">{probeRetryError}</p>}
             </>
           ) : smartAutoStatus.kind === 'unavailable' ? (
             <>

@@ -116,6 +116,32 @@ describe('loadSettings', () => {
     });
   });
 
+  it('does not grant background-probe consent to existing Smart Auto users', () => {
+    const existing = {
+      ...DEFAULT_SETTINGS,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb'],
+    } as Record<string, unknown>;
+    delete existing.smartAutoProbeEnabled;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+    expect(loadSettings().smartAutoProbeEnabled).toBe(false);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...existing,
+      smartAutoProbeEnabled: 'yes',
+    }));
+    expect(loadSettings().smartAutoProbeEnabled).toBe(false);
+  });
+
+  it('keeps explicit background-probe consent', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+    }));
+    expect(loadSettings().smartAutoProbeEnabled).toBe(true);
+  });
+
   it('marks an old System Default selection migration-complete without inventory proof', () => {
     const old = { ...DEFAULT_SETTINGS, settingsVersion: 2 } as Record<string, unknown>;
     delete old.microphoneIdMigrationComplete;

@@ -12,26 +12,26 @@ from scripts.smoke_test_capture_first_pcm import SmokeError, run_backend, select
 WORKER = r'''#!/usr/bin/env python3
 import json, os, signal, struct, sys, time
 capture_id, nonce = int(sys.argv[2]), bytes.fromhex(sys.argv[3])
-assert sys.argv[1] == '--production-v9'
+assert sys.argv[1] == '--production-v10'
 scenario = SCENARIO
 
 def read():
     h = sys.stdin.buffer.read(36)
     magic, version, kind, channel, size, cid, n = struct.unpack('<4sHBBIQ16s', h)
-    assert (magic, version, kind, channel, cid, n) == (b'MRMR', 9, 0, 0, capture_id, nonce)
+    assert (magic, version, kind, channel, cid, n) == (b'MRMR', 10, 0, 0, capture_id, nonce)
     return json.loads(sys.stdin.buffer.read(size))
 
 def emit(payload, kind=0, channel=0):
     if kind == 0:
         payload = json.dumps(payload).encode()
-    sys.stdout.buffer.write(struct.pack('<4sHBBIQ16s', b'MRMR', 9, kind, channel, len(payload), capture_id, nonce) + payload)
+    sys.stdout.buffer.write(struct.pack('<4sHBBIQ16s', b'MRMR', 10, kind, channel, len(payload), capture_id, nonce) + payload)
     sys.stdout.buffer.flush()
 
 assert read() == {'type': 'hello'}
 if scenario == 'partial_header':
     sys.stdout.buffer.write(b'MRM'); sys.stdout.buffer.flush(); time.sleep(30)
 if scenario == 'oversize':
-    sys.stdout.buffer.write(struct.pack('<4sHBBIQ16s', b'MRMR', 9, 0, 0, 1000000, capture_id, nonce)); sys.stdout.buffer.flush(); time.sleep(30)
+    sys.stdout.buffer.write(struct.pack('<4sHBBIQ16s', b'MRMR', 10, 0, 0, 1000000, capture_id, nonce)); sys.stdout.buffer.flush(); time.sleep(30)
 emit({'type':'helloAck'})
 command = read()
 if command['type'] == 'enumerate':

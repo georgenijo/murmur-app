@@ -401,6 +401,7 @@ impl BenchmarkCoordinator {
             .activity
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = CoordinatorActivity::Idle;
+        crate::smart_auto_probe::wake();
     }
 
     pub fn finish_shared_backend_change(&self) {

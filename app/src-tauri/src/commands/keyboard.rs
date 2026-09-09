@@ -50,6 +50,9 @@ pub fn set_keyboard_recording(recording: bool) {
 
 #[tauri::command]
 pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
+    if disabled {
+        crate::smart_auto_probe::preempt();
+    }
     keyboard::set_app_disabled(disabled);
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
     sync_tray_disabled_item(disabled);

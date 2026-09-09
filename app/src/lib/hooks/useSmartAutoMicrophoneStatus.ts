@@ -57,7 +57,7 @@ export function useSmartAutoMicrophoneStatus(
           } else {
             setView({ kind: 'resolved', status: { ...status, validForMs } });
           }
-        } else {
+        } else if (status.state === 'blocked') {
           const retryAfterMs = status.retryAfterMs === null
             ? null
             : cause === 'deadline'
@@ -67,6 +67,14 @@ export function useSmartAutoMicrophoneStatus(
             void refreshWithCause('deadline');
           } else {
             setView({ kind: 'resolved', status: { ...status, retryAfterMs } });
+          }
+        } else {
+          const remainingMs = Math.max(0, status.remainingMs - elapsedMs);
+          if (remainingMs === 0 && status.phase !== 'stopping') {
+            if (cause === 'external') void refreshWithCause('deadline');
+            else setView({ kind: 'unavailable', message: 'The background microphone check ended before Murmur could confirm its result.' });
+          } else {
+            setView({ kind: 'resolved', status: { ...status, remainingMs } });
           }
         }
       }
@@ -113,8 +121,10 @@ export function useSmartAutoMicrophoneStatus(
     if (view.kind !== 'resolved') return;
     const deadlineMs = view.status.state === 'ready'
       ? view.status.validForMs
-      : view.status.retryAfterMs;
-    if (deadlineMs === null) return;
+      : view.status.state === 'blocked'
+        ? view.status.retryAfterMs
+        : view.status.remainingMs;
+    if (deadlineMs === null || deadlineMs === 0) return;
     const timeout = window.setTimeout(() => {
       if (mountedRef.current) void refreshWithCause('deadline');
     }, deadlineMs);

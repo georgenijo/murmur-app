@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  listen: vi.fn(async () => () => {}),
+  handlers: new Map<string, () => void>(),
+  listen: vi.fn(async (event: string, handler: () => void) => {
+    mocks.handlers.set(event, handler);
+    return () => { mocks.handlers.delete(event); };
+  }),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -20,11 +24,12 @@ const smartAuto = {
 
 function StatusProbe() {
   const { view } = useSmartAutoMicrophoneStatus(smartAuto);
-  return <span>{view.kind === 'resolved'
-    ? view.status.state === 'ready'
-      ? `ready:${view.status.deviceId}`
-      : `blocked:${view.status.retryAfterMs ?? 'none'}`
-    : view.kind}</span>;
+  if (view.kind !== 'resolved') return <span>{view.kind}</span>;
+  switch (view.status.state) {
+    case 'ready': return <span>{`ready:${view.status.deviceId}`}</span>;
+    case 'blocked': return <span>{`blocked:${view.status.retryAfterMs ?? 'none'}`}</span>;
+    case 'probing': return <span>{`probing:${view.status.deviceId}:${view.status.phase}`}</span>;
+  }
 }
 
 describe('useSmartAutoMicrophoneStatus', () => {
@@ -34,6 +39,7 @@ describe('useSmartAutoMicrophoneStatus', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.invoke.mockReset();
+    mocks.handlers.clear();
     mocks.listen.mockClear();
     mocks.listen.mockImplementation(async () => () => {});
     container = document.createElement('div');
@@ -141,5 +147,42 @@ describe('useSmartAutoMicrophoneStatus', () => {
     });
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(container.textContent).toBe('blocked:none');
+  });
+
+  it('drops an older probing snapshot after a newer status refresh wins', async () => {
+    mocks.listen.mockImplementation(async (event: string, handler: () => void) => {
+      mocks.handlers.set(event, handler);
+      return () => { mocks.handlers.delete(event); };
+    });
+    mocks.invoke.mockResolvedValueOnce({ state: 'blocked', message: 'Waiting.', retryAfterMs: null });
+    await act(async () => root.render(<StatusProbe />));
+
+    let finishOld: ((value: unknown) => void) | null = null;
+    mocks.invoke.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    await act(async () => mocks.handlers.get('smart-auto-microphone-changed')?.());
+    mocks.invoke.mockResolvedValueOnce({
+      state: 'ready', deviceId: 'new', reason: 'preferred_approved', validForMs: 5_000,
+    });
+    await act(async () => {
+      mocks.handlers.get('smart-auto-microphone-changed')?.();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toBe('ready:new');
+
+    await act(async () => finishOld?.({
+      state: 'probing', deviceId: 'old', phase: 'verifying', remainingMs: 4_000,
+    }));
+    expect(container.textContent).toBe('ready:new');
+  });
+
+  it('keeps teardown visible after the audio budget expires without polling', async () => {
+    mocks.invoke.mockResolvedValue({
+      state: 'probing', deviceId: 'usb', phase: 'stopping', remainingMs: 0,
+    });
+    await act(async () => root.render(<StatusProbe />));
+    expect(container.textContent).toBe('probing:usb:stopping');
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toBe('probing:usb:stopping');
   });
 });
