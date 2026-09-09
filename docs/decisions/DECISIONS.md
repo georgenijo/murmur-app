@@ -1,5 +1,16 @@
 # Decisions Log
 
+## 2026-09-09: Session-only read access for Voice Query (#573)
+
+Keep Restricted as the launch and migration default. Support only Claude's
+CLI-enforced read-only folder profile, verified against 2.1.263, with a native
+chooser and second confirmation. Keep grants in Rust memory and freeze them
+per query. Do not offer equivalent-looking flags for other providers whose
+file scope and extension boundaries have not been proven. No web, commands,
+writes, MCP or plugins are granted. Reject malformed expanded output instead
+of retaining raw tool frames. Restart or explicit revocation removes consent;
+cancellation stops an already-running query's frozen access.
+
 ## 2026-09-07: Compare production versions only with explicit cohort evidence (#430)
 
 Persist a versioned content-free production companion within each native

@@ -288,6 +288,14 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 
 ## Persistence and Migration
 
+Voice Query capability consent is intentionally not a Settings field. The
+native chooser and explicit confirmation store the canonical folder and exact
+Claude command in Rust memory only. Every launch starts Restricted. Settings
+reads the session status through `get_query_capabilities`; paths never enter
+`settings.json` or localStorage. Revocation affects subsequent queries; cancel
+an active query to stop its frozen grant. Only Claude trusted read-only is
+supported; web, command execution, writes, MCP and plugins remain disabled.
+
 ### Storage
 
 - **Durable copy:** `settings.json` in the per-bundle app data directory, owned by `commands/settings_store.rs`. This is the source of truth: it survives a manual reinstall and WebKit storage eviction, which `localStorage` does not.
