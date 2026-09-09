@@ -157,7 +157,10 @@ mockIPC((command) => {
   }
   if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_smart_auto_microphone_status') {
-    return { state: 'blocked', message: 'No approved microphone has recent verified signal.' };
+    if (requestedState === 'settings-smart-auto') {
+      return { state: 'ready', deviceId: 'fixture-built-in', reason: 'preferred_approved', validForMs: 90_000 };
+    }
+    return { state: 'blocked', message: 'No included microphone has recent signal.' };
   }
   if (command === 'get_audio_input_inventory') {
     return {
@@ -167,6 +170,7 @@ mockIPC((command) => {
       devices: [
         { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
         { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
+        { id: 'fixture-desk', name: 'Desk Microphone', kind: 'external', connected: false, hasInput: true },
       ],
       defaultInputId: 'fixture-built-in',
       lidState: 'open',
@@ -241,10 +245,10 @@ const entries: HistoryEntry[] = [
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
-  smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
-  smartAutoProbeEnabled: requestedState === 'settings-smart-auto',
+  smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
+  smartAutoProbeEnabled: requestedState.startsWith('settings-smart-auto'),
   smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
-    ? ['fixture-built-in', 'fixture-anker']
+    ? ['fixture-built-in', 'fixture-anker', 'fixture-desk']
     : [],
   smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
     ? ['fixture-built-in']
@@ -320,7 +324,7 @@ function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-site-modes'
-    || requestedState === 'settings-smart-auto';
+    || requestedState.startsWith('settings-smart-auto');
   const meetings = useMeetings(fixtureSettings);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(

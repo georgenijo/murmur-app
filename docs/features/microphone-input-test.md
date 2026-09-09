@@ -83,13 +83,21 @@ backoff and eventually require Retry; they do not leave a microphone open.
 See [bounded automatic checks](transcription.md#bounded-automatic-checks) for
 permission, timing, ownership, and hardware-acceptance limits.
 
-The **Verify signal for 5 seconds** button runs a bounded check on the same
-active preview. It keeps no audio and does not open, stop, or switch inputs.
-For an explicit stable input, a successful check authorizes Smart Auto to
-consider that device for 120 seconds, subject to approval and capture health.
-The Auto preview candidate is availability-only. Settings separately shows
-the verified next-capture choice or an actionable refusal. A check on Follow
-macOS Default does not authorize a physical device for Auto.
+Selecting **Smart Auto** reveals its microphone inclusion submenu below the
+picker. Each detected input shows an Included or Excluded state. Disconnected
+included inputs keep a generic local entry until the user removes the saved
+preference. Inclusion changes do not pin the input as a fixed microphone.
+
+The live meter shows Smart Auto's current availability candidate. Consented
+background checks use the same Preview owner to provide the signal evidence
+that Smart Auto requires. Settings names the verified next-capture choice and
+its selection reason, or explains why no included microphone is eligible. The
+UI has no separate manual signal-check action.
+
+An automatic check keeps no audio and does not switch the saved input. For an
+explicit stable input, a successful check authorizes Smart Auto to consider
+that device for 120 seconds, subject to approval and capture health. A live
+macOS-default preview does not authorize a physical device for Smart Auto.
 See the [signal verification contract](transcription.md#smart-auto-microphone-selection)
 for thresholds, deadlines, cooldown, result meanings, and the remaining Auto
 routing gates. A result applies only to that preview generation; changing the

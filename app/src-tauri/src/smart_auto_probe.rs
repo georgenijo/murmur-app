@@ -289,7 +289,7 @@ fn apply_policy(inner: &mut Inner, policy: serde_json::Value) -> Result<u64, &'s
             if policy.enabled {
                 policy
                     .request
-                    .ok_or("Choose approved microphones before enabling automatic checks.")
+                    .ok_or("Include at least one microphone before enabling automatic checks.")
                     .and_then(|request| {
                         crate::microphone_auto::validate(&request)?;
                         Ok(request)
@@ -490,7 +490,7 @@ async fn run(app: tauri::AppHandle) {
                     inner.blocked = Some(if inner.budget.failed_rounds >= 3 {
                         "Automatic checks stopped after three unsuccessful rounds. Retry in Settings or pin a microphone."
                     } else if candidates.is_empty() {
-                        "No approved microphone is available in the current inventory."
+                        "No included microphone is available in the current inventory."
                     } else {
                         "No recently verified input. Automatic checks are waiting for their cooldown."
                     });

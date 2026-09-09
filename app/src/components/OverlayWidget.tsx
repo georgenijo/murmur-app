@@ -68,7 +68,7 @@ export function OverlayWidget() {
         kind: 'probing' as const,
         deviceName: smartAutoInventory.inventory?.devices.find(
           (device) => device.id === smartAutoProbing.deviceId,
-        )?.name ?? 'approved microphone',
+        )?.name ?? 'included microphone',
         phase: smartAutoProbePhaseLabel(smartAutoProbing.phase),
       }
       : smartAutoBlocked

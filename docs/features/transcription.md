@@ -103,17 +103,22 @@ Meeting startup resolves Auto before pruning or creating a session or claiming
 meeting ownership. A failed meeting supervisor also revokes its input evidence
 before releasing the meeting's active flags.
 
-Settings offers **Verify signal for 5 seconds** on the active live meter. This
-feeds the Auto resolver only when the preview opened an explicit stable ID.
-The Auto preview uses the availability policy so the user can verify an
-unverified approved candidate. This preview candidate can differ from Auto's
-verified next-capture choice. A live macOS-default preview does not grant
-per-device evidence because its physical resolution can change during startup.
-The check uses the existing Preview owner and opens no additional input.
-The backend accepts one check at a time, limits observations to five seconds,
-and allows another check ten seconds after the prior check began. Closing the
-preview, changing its generation, or a lifecycle error invalidates its result.
-The ordinary visible Settings meter continues after the check.
+Selecting **Smart Auto** reveals an inline microphone submenu. Each detected
+input has an Included or Excluded state. Saved IDs remain in the submenu when
+their microphones disconnect, and reconnecting a microphone restores its
+saved state. The submenu also controls automatic signal checks. The live meter
+shows the current availability candidate, while the status row names the
+verified next-capture choice and its selection reason. If no included input is
+eligible, Smart Auto waits instead of selecting a different microphone.
+
+The Settings UI does not ask the user to run a separate signal check.
+Consented automatic checks provide the evidence that Smart Auto requires. A
+live macOS-default preview does not grant per-device evidence because its
+physical resolution can change during startup. The backend accepts one check
+at a time, limits observations to five seconds, and allows another check ten
+seconds after the prior check began. Closing the preview, changing its
+generation, or a lifecycle error invalidates its result. The visible Settings
+meter continues throughout the automatic check.
 
 Verification requires at least one second of consecutive 20 ms PCM frames
 classified as usable signal, plus at least one second of wall time. Each frame

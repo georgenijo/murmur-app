@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Smart Auto now shows an inline microphone inclusion menu, keeps disconnected
+  choices, and uses automatic signal checks instead of a separate verification
+  button (#700).
+
+### Fixed
+
+- The microphone picker now closes with the same transition after mode changes,
+  current-row clicks, trigger clicks, outside clicks, and Escape (#699).
+
 ## [0.43.0] - 2026-09-09
 
 ### Added
