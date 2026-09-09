@@ -158,7 +158,9 @@ def numeric_audio_seconds(event):
     value = event_data(event).get("audio_secs")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if not math.isfinite(value) or value < 0 or value > 24 * 60 * 60:
+    if value < 0 or value > 24 * 60 * 60:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     return float(value)
 
@@ -571,7 +573,8 @@ def regression_alerts(cohort_rows):
         latency_rows = [
             row
             for row in rows
-            if row["post_stop_target_sample_count"] > 0 and row["last_event_at"]
+            if row["post_stop_target_sample_count"] >= MIN_POST_STOP_TARGET_SAMPLES
+            and row["last_event_at"]
         ]
         if latency_rows:
             latest_latency = max(

@@ -1172,6 +1172,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             float("inf"),
             -1,
             86_401,
+            10**400,
         ]
         for index, audio_secs in enumerate(invalid_durations):
             events.append(
@@ -1312,6 +1313,108 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                 for item in report["alerts"]
             )
         )
+
+    def test_post_stop_alert_uses_the_newest_cohort_with_enough_samples(
+        self,
+    ) -> None:
+        def completions(
+            version: str,
+            minute: int,
+            count: int,
+            total_ms: int,
+            start_index: int = 0,
+        ):
+            return [
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:{minute:02d}:{index + start_index + 1:02d}Z",
+                    version=version,
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": minute * 100 + index + start_index + 1,
+                        "char_count": 10,
+                        "total_ms": total_ms,
+                        "audio_secs": 5,
+                    },
+                )
+                for index in range(count)
+            ]
+
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.0.0",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            *completions("1.0.0", 0, watch.MIN_POST_STOP_TARGET_SAMPLES, 2_000),
+            event(
+                "startup_baseline",
+                "2026-08-01T00:01:00Z",
+                version="1.1.0",
+                data={"event_code": "system.startup_baseline"},
+            ),
+            *completions("1.1.0", 1, 1, 100),
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        latency_alerts = [
+            item
+            for item in report["alerts"]
+            if item["kind"] == "post_stop_latency_target_missed"
+        ]
+        self.assertEqual(len(latency_alerts), 1)
+        self.assertEqual(latency_alerts[0]["app_version"], "1.0.0")
+
+        events.extend(
+            completions(
+                "1.1.0",
+                1,
+                watch.MIN_POST_STOP_TARGET_SAMPLES - 1,
+                100,
+                1,
+            )
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        self.assertFalse(
+            any(
+                item["kind"] == "post_stop_latency_target_missed"
+                for item in report["alerts"]
+            )
+        )
+
+        events.extend(
+            [
+                event(
+                    "startup_baseline",
+                    "2026-08-01T00:02:00Z",
+                    version="1.2.0",
+                    data={"event_code": "system.startup_baseline"},
+                ),
+                *completions(
+                    "1.2.0",
+                    2,
+                    watch.MIN_POST_STOP_TARGET_SAMPLES,
+                    2_000,
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        latency_alerts = [
+            item
+            for item in report["alerts"]
+            if item["kind"] == "post_stop_latency_target_missed"
+        ]
+        self.assertEqual(len(latency_alerts), 1)
+        self.assertEqual(latency_alerts[0]["app_version"], "1.2.0")
 
     def test_post_stop_latency_ignores_malformed_negative_and_out_of_range_values(
         self,
