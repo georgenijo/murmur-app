@@ -3,7 +3,7 @@ use crate::query_provider::{QueryEnvironmentVariable, QueryProviderId};
 use crate::MutexExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri_plugin_dialog::DialogExt;
 
 const UNSUPPORTED: &str = "Trusted workspace requires Claude with the unchanged recommended arguments. Select the Claude preset or revoke workspace access.";
@@ -12,7 +12,7 @@ const INVALID_DIRECTORY: &str =
 
 #[derive(Clone)]
 struct Grant {
-    directory: PathBuf,
+    directory: TrustedDirectory,
     executable: PathBuf,
     arguments: Vec<String>,
 }
@@ -20,7 +20,7 @@ struct Grant {
 #[derive(Default)]
 struct Consent {
     generation: u64,
-    pending: Option<PathBuf>,
+    pending: Option<TrustedDirectory>,
     grant: Option<Grant>,
 }
 
@@ -47,7 +47,7 @@ fn status(consent: &Consent) -> CapabilityStatus {
         directory: consent
             .grant
             .as_ref()
-            .map(|grant| grant.directory.to_string_lossy().into_owned()),
+            .map(|grant| grant.directory.path.to_string_lossy().into_owned()),
     }
 }
 
@@ -75,6 +75,70 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, &'static str> {
         return Err(INVALID_DIRECTORY);
     }
     Ok(canonical)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TrustedDirectory {
+    pub(crate) path: PathBuf,
+    pub(crate) handle: Arc<std::fs::File>,
+}
+
+impl TrustedDirectory {
+    fn open(path: &Path) -> Result<Self, &'static str> {
+        let path = canonical_directory(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            use std::os::unix::ffi::OsStrExt;
+            let mut directory = std::fs::File::open("/").map_err(|_| INVALID_DIRECTORY)?;
+            for component in path.components() {
+                if let std::path::Component::Normal(name) = component {
+                    let name =
+                        std::ffi::CString::new(name.as_bytes()).map_err(|_| INVALID_DIRECTORY)?;
+                    // Walk from a pinned parent, refusing symlinks at every component.
+                    let fd = unsafe {
+                        libc::openat(
+                            directory.as_raw_fd(),
+                            name.as_ptr(),
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if fd < 0 {
+                        return Err(INVALID_DIRECTORY);
+                    }
+                    directory = unsafe { std::fs::File::from_raw_fd(fd) };
+                }
+            }
+            let trusted = Self {
+                path,
+                handle: Arc::new(directory),
+            };
+            trusted.revalidate()?;
+            Ok(trusted)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Err("unsupported_capabilities")
+        }
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), &'static str> {
+        let error = "trusted_workspace_unavailable";
+        if canonical_directory(&self.path).map_err(|_| error)? != self.path {
+            return Err(error);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let current = std::fs::metadata(&self.path).map_err(|_| error)?;
+            let pinned = self.handle.metadata().map_err(|_| error)?;
+            if current.dev() != pinned.dev() || current.ino() != pinned.ino() {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -121,7 +185,7 @@ pub(crate) async fn choose_query_workspace(
         .map(|path| {
             path.into_path()
                 .map_err(|_| INVALID_DIRECTORY)
-                .and_then(|path| canonical_directory(&path))
+                .and_then(|path| TrustedDirectory::open(&path))
         })
         .transpose()?;
     let mut consent = CONSENT.lock_or_recover();
@@ -129,7 +193,7 @@ pub(crate) async fn choose_query_workspace(
         return Err("Folder selection was revoked. Choose again.".into());
     }
     consent.pending = directory.clone();
-    Ok(directory.map(|path| path.to_string_lossy().into_owned()))
+    Ok(directory.map(|directory| directory.path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -155,7 +219,7 @@ pub(crate) async fn confirm_query_workspace(
         )
     };
     let environment = crate::query_provider::load_environment(&app, command.provider)?;
-    if directory.to_str() != Some(expected_directory.as_str()) {
+    if directory.path.to_str() != Some(expected_directory.as_str()) {
         return Err("Folder selection changed. Choose and confirm the folder again.".into());
     }
     let scratch = crate::query_provider::query_working_directory(&app)?;
@@ -163,11 +227,14 @@ pub(crate) async fn confirm_query_workspace(
     tokio::task::spawn_blocking(move || verify_cli(&probe_executable, &environment, &scratch))
         .await
         .map_err(|_| "Claude capability check failed.")??;
-    if canonical_directory(&directory)? != directory {
-        return Err("The chosen directory changed. Choose it again.".into());
-    }
+    directory.revalidate()?;
     let mut consent = CONSENT.lock_or_recover();
-    if consent.generation != generation || consent.pending.as_ref() != Some(&directory) {
+    if consent.generation != generation
+        || consent
+            .pending
+            .as_ref()
+            .is_none_or(|pending| !Arc::ptr_eq(&pending.handle, &directory.handle))
+    {
         return Err("Workspace confirmation was revoked. Choose again.".into());
     }
     consent.grant = Some(Grant {
@@ -218,7 +285,7 @@ pub(crate) fn resolve(
     provider: QueryProviderId,
     executable: &Path,
     arguments: &[String],
-) -> Result<Option<(PathBuf, Vec<String>)>, &'static str> {
+) -> Result<Option<(TrustedDirectory, Vec<String>)>, &'static str> {
     let grant = CONSENT.lock_or_recover().grant.clone();
     let Some(grant) = grant else {
         return Ok(None);
@@ -227,11 +294,7 @@ pub(crate) fn resolve(
     if grant.executable != executable || grant.arguments != arguments {
         return Err("unsupported_capabilities");
     }
-    if canonical_directory(&grant.directory).map_err(|_| "trusted_workspace_unavailable")?
-        != grant.directory
-    {
-        return Err("trusted_workspace_unavailable");
-    }
+    grant.directory.revalidate()?;
     Ok(Some((grant.directory, trusted_arguments())))
 }
 
@@ -246,6 +309,63 @@ fn trusted_arguments() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn replacement_after_snapshot_is_refused_and_spawn_cannot_follow_the_replacement() {
+        use std::io::Read;
+        let temp = tempfile::tempdir().unwrap();
+        let approved = temp.path().join("approved");
+        let outside = temp.path().join("outside");
+        let retained = temp.path().join("original");
+        std::fs::create_dir(&approved).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let selected = TrustedDirectory::open(&approved).unwrap();
+        let snapshot = selected.clone();
+        drop(selected);
+        assert!(snapshot.revalidate().is_ok());
+        std::fs::rename(&approved, &retained).unwrap();
+        std::os::unix::fs::symlink(&outside, &approved).unwrap();
+        assert_eq!(snapshot.revalidate(), Err("trusted_workspace_unavailable"));
+
+        // Simulate replacement immediately after the last check. fchdir still
+        // uses the approved inode, never the replacement path's destination.
+        let (mut child, stdin, mut stdout, stderr) =
+            crate::managed_child::ManagedChild::spawn_user_cli_with_directory(
+                Path::new("/bin/pwd"),
+                &[],
+                &[],
+                &snapshot.path,
+                Some(&snapshot.handle),
+            )
+            .unwrap();
+        drop(stdin);
+        drop(stderr);
+        let mut actual = String::new();
+        stdout.read_to_string(&mut actual).unwrap();
+        assert_eq!(
+            actual.trim(),
+            retained.canonicalize().unwrap().to_str().unwrap()
+        );
+        assert!(child
+            .wait_for_exit(std::time::Instant::now() + std::time::Duration::from_secs(2))
+            .is_some());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ancestor_symlink_replacement_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let original = temp.path().join("original");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(parent.join("project")).unwrap();
+        std::fs::create_dir_all(outside.join("project")).unwrap();
+        let snapshot = TrustedDirectory::open(&parent.join("project")).unwrap();
+        std::fs::rename(&parent, &original).unwrap();
+        std::os::unix::fs::symlink(&outside, &parent).unwrap();
+        assert_eq!(snapshot.revalidate(), Err("trusted_workspace_unavailable"));
+    }
 
     #[test]
     fn rejects_unsupported_providers_and_argument_overrides() {

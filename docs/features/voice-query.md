@@ -67,6 +67,13 @@ queries reject malformed/truncated structured output instead of exposing raw
 tool results through the legacy raw fallback. A deliberately retained answer
 can still quote files the user authorized Claude to read.
 
+The chooser pins the canonical directory with an open descriptor, opening each
+path component without following symlinks. Confirmation and pre-spawn validation
+check the path and inode against that descriptor. The child uses `fchdir` on the
+retained descriptor before closing inherited file descriptors. Replacing the
+folder or an ancestor during capture is refused; even a replacement after the
+last check cannot redirect the process to another folder.
+
 The provider remains responsible for inference network use and file-tool
 confinement. Murmur does not claim to confine a hostile executable. See the
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference) and the

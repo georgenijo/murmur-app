@@ -281,7 +281,7 @@ struct ValidatedQueryCommand {
     timeout: Duration,
     environment: Vec<QueryEnvironmentVariable>,
     working_directory: PathBuf,
-    trusted_workspace: bool,
+    trusted_workspace: Option<crate::query_capabilities::TrustedDirectory>,
     context_level: QueryContextLevel,
 }
 
@@ -1314,7 +1314,7 @@ fn validate_command(
         timeout: Duration::from_secs(config.timeout_seconds),
         environment,
         working_directory,
-        trusted_workspace: false,
+        trusted_workspace: None,
         context_level: config.context_level,
     })
 }
@@ -1330,9 +1330,9 @@ fn validate_command_for_app(
     if let Some((directory, arguments)) =
         crate::query_capabilities::resolve(command.provider, &command.executable, &saved_arguments)?
     {
-        command.working_directory = directory;
+        command.working_directory = directory.path.clone();
         command.arguments = arguments;
-        command.trusted_workspace = true;
+        command.trusted_workspace = Some(directory);
     }
     Ok(command)
 }
@@ -2482,6 +2482,9 @@ fn run_cli(
         .iter()
         .map(|variable| (variable.name.clone(), variable.value.clone()))
         .collect();
+    if let Some(directory) = &command.trusted_workspace {
+        directory.revalidate().map_err(QueryRunError::code)?;
+    }
     {
         let state = app.state::<crate::State>();
         if !state.query.reserve_child_start(pass_id) {
@@ -2489,11 +2492,15 @@ fn run_cli(
         }
     }
     let spawn_started_at = Instant::now();
-    let spawned = ManagedChild::spawn_user_cli(
+    let spawned = ManagedChild::spawn_user_cli_with_directory(
         &command.executable,
         &arguments,
         &environment,
         &command.working_directory,
+        command
+            .trusted_workspace
+            .as_ref()
+            .map(|directory| directory.handle.as_ref()),
     );
     app.state::<crate::State>().query.mark_spawn_finished(
         pass_id,
@@ -2628,7 +2635,7 @@ fn run_cli(
 
     let deadline = Instant::now() + command.timeout;
     let mut adapter = VoiceQueryAdapter::new(command.provider, MAX_ANSWER_BYTES);
-    if command.trusted_workspace {
+    if command.trusted_workspace.is_some() {
         adapter.require_structured_output();
     }
     let mut sequence = 0_u64;
@@ -3159,7 +3166,7 @@ pub(crate) fn get_query_review_content(
             .as_ref()
             .and_then(|session| session.query_context.summary()),
         capability_summary: session.map(|session| {
-            if session.command.trusted_workspace {
+            if session.command.trusted_workspace.is_some() {
                 format!(
                     "Trusted read-only · {} · web, commands, MCP and plugins off",
                     session.command.working_directory.display()
@@ -3219,7 +3226,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: std::env::temp_dir(),
-                    trusted_workspace: false,
+                    trusted_workspace: None,
                     context_level: QueryContextLevel::None,
                 },
                 automatically_copy_answer,
@@ -3662,7 +3669,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: temp.path().to_path_buf(),
-                    trusted_workspace: false,
+                    trusted_workspace: None,
                     context_level: QueryContextLevel::Selection,
                 },
                 automatically_copy_answer: true,
@@ -3783,7 +3790,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: temp.path().to_path_buf(),
-                    trusted_workspace: false,
+                    trusted_workspace: None,
                     context_level: QueryContextLevel::Selection,
                 },
                 automatically_copy_answer: true,
@@ -3841,7 +3848,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: temp.path().to_path_buf(),
-                    trusted_workspace: false,
+                    trusted_workspace: None,
                     context_level: QueryContextLevel::Application,
                 },
                 automatically_copy_answer: true,
@@ -4202,7 +4209,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: std::env::temp_dir(),
-                    trusted_workspace: false,
+                    trusted_workspace: None,
                     context_level: QueryContextLevel::None,
                 },
                 automatically_copy_answer: true,
