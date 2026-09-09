@@ -1,4 +1,4 @@
-# CLAUDE.md
+# Murmur — agent guide (CLAUDE.md / AGENTS.md)
 
 Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React). Local transcription on the ANE (Core ML), Metal (whisper.cpp), or CPU (sherpa-onnx); local selected-text rewriting through a signed LLM sidecar. Clipboard-first output. No cloud services.
 
@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (193 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (191 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 193 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 191 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -155,12 +155,12 @@ Read these before working on a feature:
 | `injector.rs` | Clipboard (arboard) + auto-paste (CGEvent, osascript fallback) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Frontmost-app query + running-application list |
+| `sqlite_support.rs` | Shared low-level SQLite helpers (pragma configuration, quick_check, schema_version, sidecar/quarantine handling, newest-first listing) used by `knowledge_store`, `query_history`, `meeting_store`, and `performance_metrics` |
 | `state.rs` | `DictationState`, `TransformStatus`, `AppState`, generation counters |
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |
 | `vad.rs` | Silero VAD speech filtering via whisper-rs (thread-local context cache) |
 | `benchmark.rs` / `evaluation.rs` | Performance Lab scoring and the `murmur-eval` fixture harness |
 | `performance_metrics/` (`repository.rs`, `types.rs`) | SQLite run history, typed stage/resource records, retention |
-| `sqlite_support.rs` | Shared low-level SQLite helpers (pragma configuration, quick_check, schema_version, sidecar/quarantine handling, newest-first listing) used by `knowledge_store`, `query_history`, `meeting_store`, and `performance_metrics` |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `alloc.rs` | Custom malloc zone separating Rust heap from whisper.cpp's FFI heap |
 | `platform/` | macOS CPU/resource metrics seam |
