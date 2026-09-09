@@ -4,22 +4,12 @@ import { listen } from '@tauri-apps/api/event';
 import { DEFAULT_SETTINGS, type QueryKey, type SmartAutoMicrophoneRequest } from '../settings';
 import { validateQueryCommand, type QueryCommandConfig } from '../queryProviders';
 import { isQueryUsage } from '../queryUsage';
+import { isHiddenPayload, isQueryStatePayload, isValidPassId } from '../queryReview';
 import type { QueryCompletion } from '../stats';
 import { flog } from '../log';
 interface QueryTogglePayload {
   queryPassId: number;
   action: 'start' | 'stop';
-}
-
-interface QueryStatePayload {
-  queryPassId: number;
-  state: 'idle' | 'connecting' | 'listening' | 'transcribing' | 'running' | 'ready' | 'failed';
-  errorCode: string | null;
-  usage?: unknown;
-}
-
-interface QueryHiddenPayload {
-  queryPassId: number;
 }
 
 interface TrackedQueryPass {
@@ -42,30 +32,8 @@ interface UseQueryFlowProps {
 function isTogglePayload(value: unknown): value is QueryTogglePayload {
   if (!value || typeof value !== 'object') return false;
   const payload = value as Record<string, unknown>;
-  return typeof payload.queryPassId === 'number'
-    && Number.isSafeInteger(payload.queryPassId)
-    && payload.queryPassId > 0
+  return isValidPassId(payload.queryPassId)
     && (payload.action === 'start' || payload.action === 'stop');
-}
-
-function isStatePayload(value: unknown): value is QueryStatePayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Record<string, unknown>;
-  return typeof payload.queryPassId === 'number'
-    && Number.isSafeInteger(payload.queryPassId)
-    && payload.queryPassId > 0
-    && typeof payload.state === 'string'
-    && ['idle', 'connecting', 'listening', 'transcribing', 'running', 'ready', 'failed'].includes(payload.state)
-    && (payload.errorCode === null || typeof payload.errorCode === 'string');
-}
-
-function isHiddenPayload(value: unknown): value is QueryHiddenPayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Record<string, unknown>;
-  return Object.keys(payload).length === 1
-    && typeof payload.queryPassId === 'number'
-    && Number.isSafeInteger(payload.queryPassId)
-    && payload.queryPassId > 0;
 }
 
 export function useQueryFlow({
@@ -121,7 +89,7 @@ export function useQueryFlow({
 
     terminalListenersReadyRef.current = (async () => {
       unlistenState = await listen<unknown>('query-state-changed', (event) => {
-        if (disposed || !isStatePayload(event.payload)) return;
+        if (disposed || !isQueryStatePayload(event.payload)) return;
         const payload = event.payload;
         if (payload.state !== 'ready' && payload.state !== 'failed') return;
         const completed = completeTrackedPass(payload.queryPassId, {

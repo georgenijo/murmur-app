@@ -75,7 +75,7 @@ export function isReviewState(v: unknown): v is ReviewState {
   return typeof v === 'string' && (REVIEW_STATES as readonly string[]).includes(v);
 }
 
-export function isReviewErrorCode(v: unknown): v is ReviewErrorCode {
+function isReviewErrorCode(v: unknown): v is ReviewErrorCode {
   return typeof v === 'string' && (REVIEW_ERROR_CODES as readonly string[]).includes(v);
 }
 

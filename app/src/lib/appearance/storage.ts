@@ -1,6 +1,7 @@
 import { DEFAULT_THEME } from './palettes';
 import { parse, type ParseError } from 'jsonc-parser';
 import { resolveTheme } from './resolve';
+import { isRecord } from '../typeGuards';
 import {
   sanitizeAppearanceSelection,
   sanitizeMode,
@@ -41,7 +42,7 @@ function byteLength(value: string): number {
   return value.length;
 }
 
-export function resolvedCache(theme: ThemeConfigV1): ResolvedThemeCacheV1 {
+function resolvedCache(theme: ThemeConfigV1): ResolvedThemeCacheV1 {
   return {
     version: 1,
     light: resolveTheme(theme, 'light').tokens,
@@ -177,10 +178,6 @@ interface ThemeFileV2 {
   name: string;
   modes: Array<'light' | 'dark'>;
   theme: ThemeConfigV1;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function exportAppearanceText(document: AppearanceDocumentV1): string {

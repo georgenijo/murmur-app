@@ -1,11 +1,9 @@
 import { useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
-import {
-  useQueryReviewDriver,
-  type QueryReviewState,
-} from '../../lib/hooks/useQueryReviewDriver';
+import { useQueryReviewDriver } from '../../lib/hooks/useQueryReviewDriver';
 import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
+import type { QueryReviewState } from '../../lib/queryReview';
 
 const ERROR_MESSAGES: Record<string, string> = {
   not_configured: 'Choose a CLI executable in Voice Query settings.',

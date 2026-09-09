@@ -13,7 +13,7 @@
 /** Width/height transition duration for the island element (ms). */
 export const OVERLAY_HEIGHT_MS = 360;
 /** Spring easing for the width/height transition. */
-export const OVERLAY_SPRING = 'cubic-bezier(0.34,1.56,0.64,1)';
+const OVERLAY_SPRING = 'cubic-bezier(0.34,1.56,0.64,1)';
 
 /** Sustained hover (ms) required on the island before the card opens. */
 export const HOVER_OPEN_DWELL_MS = 150;
@@ -47,13 +47,13 @@ export const OVERLAY_ISLAND_TRANSITION =
 // component-local constants.
 
 /** Entrance: scale 0.96 -> 1 + fade, on popover show. */
-export const REVIEW_ENTRANCE_MS = 160;
-export const REVIEW_ENTRANCE_EASE = 'ease-out';
+const REVIEW_ENTRANCE_MS = 160;
+const REVIEW_ENTRANCE_EASE = 'ease-out';
 export const REVIEW_ENTRANCE_FROM_SCALE = 0.96;
 
 /** Dismiss: fade + scale down slightly, on cancel/fail-clear/auto-dismiss. */
 export const REVIEW_DISMISS_MS = 120;
-export const REVIEW_DISMISS_EASE = 'ease-in';
+const REVIEW_DISMISS_EASE = 'ease-in';
 export const REVIEW_DISMISS_TO_SCALE = 0.98;
 
 /** Short commit pulse on the diff area when Approve is pressed. */

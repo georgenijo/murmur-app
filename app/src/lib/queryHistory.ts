@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { QueryProviderId } from './settings';
 import { isQueryProviderId } from './queryUsage';
+import { isNonNegativeInteger as isSafeNonNegativeInteger, isRecord } from './typeGuards';
 
 export interface QueryHistoryTokenCountsV1 {
   inputTokens: number;
@@ -80,16 +81,6 @@ const MAX_QUESTION_BYTES = 32 * 1024;
 const MAX_ANSWER_BYTES = 256 * 1024;
 const ECMASCRIPT_DATE_MAX_MS = 8_640_000_000_000_000;
 const queryHistoryErrorCodes = new Set<string>(QUERY_HISTORY_ERROR_CODES);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isSafeNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value >= 0;
-}
 
 function utf8LengthWithin(value: string, maximum: number): boolean {
   return new TextEncoder().encode(value).length <= maximum;

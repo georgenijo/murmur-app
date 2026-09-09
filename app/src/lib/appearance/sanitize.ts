@@ -1,5 +1,6 @@
 import { isHexColor, normalizeHex } from './color';
 import { DEFAULT_THEME } from './palettes';
+import { isRecord } from '../typeGuards';
 import {
   APPEARANCE_CACHE_VERSION,
   APPEARANCE_VERSION,
@@ -14,10 +15,6 @@ import {
   type ResolvedThemeCacheV1,
   type ThemeConfigV1,
 } from './types';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 export function sanitizeMode(value: unknown): AppearanceMode {
   return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';

@@ -30,7 +30,7 @@ export function isQueryHistorySurfaceActive({
     && modelReady === true;
 }
 
-export function mergeQueryHistoryEntries(
+function mergeQueryHistoryEntries(
   current: QueryHistoryEntryV1[],
   additions: QueryHistoryEntryV1[],
 ): QueryHistoryEntryV1[] {

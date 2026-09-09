@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { isRecord } from './typeGuards';
 
 export interface TransformPhaseV1 {
   phase: string;
@@ -46,10 +47,6 @@ export interface DiagnosticCaptureV1 extends DiagnosticCaptureSummaryV1 {
   instruction: string | null;
   output: string | null;
   phases: TransformPhaseV1[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNullable<T>(value: unknown, check: (candidate: unknown) => candidate is T): value is T | null {

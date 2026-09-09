@@ -5,6 +5,7 @@ import type {
   RuntimeIdentityV1,
   SizeBucketV1,
 } from './performance';
+import { median } from './numeric';
 
 export const PRODUCTION_COMPARISON_THRESHOLDS = {
   median: { absoluteMs: 20, relativePercent: 15, minimumSamples: 1 },
@@ -74,7 +75,7 @@ export type ProductionExclusionReason =
   | 'audioDurationUnknown'
   | 'outputSizeUnknown';
 
-export const PRODUCTION_EXCLUSION_LABELS: Record<ProductionExclusionReason, string> = {
+const PRODUCTION_EXCLUSION_LABELS: Record<ProductionExclusionReason, string> = {
   historicalMetadataMissing: 'Historical run without production cohort metadata',
   developmentBuild: 'Development build',
   osVersionUnknown: 'Operating-system version unavailable',
@@ -300,15 +301,6 @@ function eligibleRun(run: PerformanceRunV1): EligibleRun | null {
     outputSizeBucket: run.input.outputSizeBucket.value,
   };
   return { run, identity, key: JSON.stringify(identity) };
-}
-
-function median(values: readonly number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[middle - 1] + sorted[middle]) / 2
-    : sorted[middle];
 }
 
 function nearestRankP95(values: readonly number[]): number | null {

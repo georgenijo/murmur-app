@@ -97,7 +97,7 @@ export interface FluidTooltipGroupProps {
   className?: string;
 }
 
-export function FluidTooltipGroup({
+function FluidTooltipGroup({
   children,
   orientation = "auto",
   openDelay = 350,
@@ -236,7 +236,7 @@ export interface FluidTooltipRootProps {
   disabled?: boolean;
 }
 
-export function FluidTooltipRoot({
+function FluidTooltipRoot({
   id,
   children,
   side,
@@ -276,7 +276,7 @@ export interface FluidTooltipTriggerProps
   keepOpenOnClick?: boolean;
 }
 
-export const FluidTooltipTrigger = forwardRef<
+const FluidTooltipTrigger = forwardRef<
   HTMLElement,
   FluidTooltipTriggerProps
 >(function FluidTooltipTrigger(
@@ -346,7 +346,7 @@ export interface FluidTooltipContentProps {
   showArrow?: boolean;
 }
 
-export function FluidTooltipContent({
+function FluidTooltipContent({
   children,
   className,
   showArrow = true,
