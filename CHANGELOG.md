@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The weekly dictation startup SLO now treats a user cancellation before its
+  400 ms deadline as a censored observation instead of a capture miss, while
+  preserving late cancellations and genuine startup failures in the denominator
+  (#486).
 - Private dictation captures on the Fleet dashboard now show their capture and
   expiry times and keep transcript text collapsed until the operator reveals it
   (#461).

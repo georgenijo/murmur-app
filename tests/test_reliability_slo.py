@@ -176,6 +176,72 @@ class ReliabilitySloContractTests(unittest.TestCase):
         self.assertEqual(current["counts"]["eligible_requests"], 0)
         self.assertEqual(current["startup_ms"]["sample_count"], 0)
 
+    def test_user_cancellation_before_target_deadline_is_censored_not_failed(self) -> None:
+        start = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+        items = [baseline(start - timedelta(minutes=1))]
+        items.extend(
+            [
+                request(start, 1),
+                audio("audio.capture_started", start + timedelta(milliseconds=10), 1),
+                terminal(
+                    start + timedelta(milliseconds=399),
+                    1,
+                    "user_cancelled_starting",
+                ),
+                request(start + timedelta(seconds=1), 2),
+                audio(
+                    "audio.capture_started",
+                    start + timedelta(seconds=1, milliseconds=10),
+                    2,
+                ),
+                terminal(
+                    start + timedelta(seconds=1, milliseconds=400),
+                    2,
+                    "user_cancelled_starting",
+                ),
+                *complete_attempt(start + timedelta(seconds=2), 3),
+            ]
+        )
+
+        previous = week(feed(items), 1)
+
+        self.assertEqual(previous["counts"]["requested"], 3)
+        self.assertEqual(previous["counts"]["eligible_requests"], 2)
+        self.assertEqual(
+            previous["counts"]["excluded_user_cancellations_before_target"], 1
+        )
+        self.assertEqual(previous["counts"]["cancelled"], 2)
+        self.assertEqual(previous["counts"]["within_400"], 1)
+        self.assertEqual(previous["startup_ms"]["within_400_fraction"], 0.5)
+
+    def test_permission_exclusion_takes_precedence_over_early_user_cancellation(self) -> None:
+        start = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+        items = [
+            baseline(start - timedelta(minutes=1)),
+            request(start, 1),
+            audio("audio.capture_started", start + timedelta(milliseconds=10), 1),
+            audio(
+                "audio.permission_prompt_changed",
+                start + timedelta(milliseconds=20),
+                1,
+                state="pending",
+            ),
+            terminal(
+                start + timedelta(milliseconds=100),
+                1,
+                "user_cancelled_starting",
+            ),
+        ]
+
+        previous = week(feed(items), 1)
+
+        self.assertEqual(previous["counts"]["requested"], 1)
+        self.assertEqual(previous["counts"]["eligible_requests"], 0)
+        self.assertEqual(previous["counts"]["excluded_permission_prompts"], 1)
+        self.assertEqual(
+            previous["counts"]["excluded_user_cancellations_before_target"], 0
+        )
+
     def test_prompted_stuck_failure_still_fails_state_and_presentation_slos(self) -> None:
         start = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
         items = [
@@ -1006,8 +1072,8 @@ class ReliabilitySloPrivacyAndApiTests(unittest.TestCase):
         )
         rendered = json.dumps(report, sort_keys=True)
 
-        self.assertEqual(report["schema_version"], 1)
-        self.assertEqual(report["report"], "murmur-reliability-slo/v1")
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["report"], "murmur-reliability-slo/v2")
         self.assertEqual(report["privacy"], "aggregate_only")
         self.assertNotIn(secret_install, rendered)
         self.assertNotIn(secret_summary, rendered)

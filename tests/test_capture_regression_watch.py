@@ -880,7 +880,8 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             )
 
         slo = report["reliability_slo"]
-        self.assertEqual(slo["report"], "murmur-reliability-slo/v1")
+        self.assertEqual(slo["schema_version"], 2)
+        self.assertEqual(slo["report"], "murmur-reliability-slo/v2")
         self.assertEqual(slo["privacy"], "aggregate_only")
         self.assertFalse(slo["two_consecutive_complete_weeks_pass"])
         self.assertTrue(all(week["verdict"] == "insufficient" for week in slo["weeks"]))
