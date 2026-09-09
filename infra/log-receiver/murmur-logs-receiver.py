@@ -846,6 +846,18 @@ def render_capture_watch(report):
                     html.escape(str(alert.get("error_class", "unknown"))[:32]),
                 )
             )
+        elif alert.get("kind") == "post_stop_latency_target_missed":
+            rows.append(
+                "<li><code>%s</code> v%s: stop-to-delivery target missed "
+                "with %s samples, p50 %s and p95 %s</li>"
+                % (
+                    install,
+                    html.escape(str(alert.get("app_version", ""))[:40]),
+                    html.escape(str(alert.get("sample_count", ""))[:20]),
+                    _slo_milliseconds(alert.get("p50_ms")),
+                    _slo_milliseconds(alert.get("p95_ms")),
+                )
+            )
     return (
         "<div class='watch-banner alert'><strong>Capture regression watch · "
         "%d alert%s</strong><span>Last run %s</span><ul>%s</ul></div>"
@@ -874,26 +886,61 @@ def render_post_stop_latency(report):
         rows.append(cohort)
     if not rows:
         return (
-            "<div class='watch-banner diagnostic'><strong>Post-stop latency</strong>"
-            "<span>No post-stop latency samples yet.</span></div>"
+            "<div class='watch-banner diagnostic'><strong>Stop-to-delivery attempt</strong>"
+            "<span>No stop-to-delivery samples yet.</span></div>"
         )
     rows.sort(key=lambda row: str(row.get("last_event_at", "")), reverse=True)
-    items = "".join(
-        "<li><code>%s</code> v%s: %s sample%s, p50 %s, p95 %s</li>"
-        % (
-            html.escape(str(row.get("install_id", ""))[:8]),
-            html.escape(str(row.get("app_version", ""))[:40]),
-            html.escape(str(row.get("post_stop_latency_sample_count", ""))[:20]),
-            "" if row.get("post_stop_latency_sample_count") == 1 else "s",
-            _slo_milliseconds(row.get("post_stop_latency_p50_ms")),
-            _slo_milliseconds(row.get("post_stop_latency_p95_ms")),
+    policy = report.get("policy") if isinstance(report.get("policy"), dict) else {}
+    target_p50 = _slo_milliseconds(policy.get("post_stop_target_p50_ms"))
+    target_p95 = _slo_milliseconds(policy.get("post_stop_target_p95_ms"))
+    minimum_audio = _slo_number(policy.get("post_stop_target_min_audio_seconds"))
+    maximum_audio = _slo_number(policy.get("post_stop_target_max_audio_seconds"))
+
+    items = []
+    for row in rows[:20]:
+        target_count = row.get("post_stop_target_sample_count")
+        verdict = row.get("post_stop_target_verdict")
+        if (
+            isinstance(target_count, bool)
+            or not isinstance(target_count, int)
+            or target_count < 0
+            or verdict not in ("met", "missed", "insufficient_data")
+        ):
+            target_text = "target unavailable"
+        else:
+            verdict_text = {
+                "met": "target met",
+                "missed": "target missed",
+                "insufficient_data": "preliminary",
+            }[verdict]
+            target_text = "%s target sample%s, p50 %s, p95 %s, %s" % (
+                html.escape(str(target_count)[:20]),
+                "" if target_count == 1 else "s",
+                _slo_milliseconds(row.get("post_stop_target_p50_ms")),
+                _slo_milliseconds(row.get("post_stop_target_p95_ms")),
+                verdict_text,
+            )
+        items.append(
+            "<li><code>%s</code> v%s: %s; all successful attempts: %s "
+            "sample%s, p50 %s, p95 %s</li>"
+            % (
+                html.escape(str(row.get("install_id", ""))[:8]),
+                html.escape(str(row.get("app_version", ""))[:40]),
+                target_text,
+                html.escape(str(row.get("post_stop_latency_sample_count", ""))[:20]),
+                "" if row.get("post_stop_latency_sample_count") == 1 else "s",
+                _slo_milliseconds(row.get("post_stop_latency_p50_ms")),
+                _slo_milliseconds(row.get("post_stop_latency_p95_ms")),
+            )
         )
-        for row in rows[:20]
+    target_contract = (
+        "Target cohort %s–%s s · p50 &lt; %s · p95 &lt; %s"
+        % (minimum_audio, maximum_audio, target_p50, target_p95)
     )
     return (
-        "<div class='watch-banner diagnostic'><strong>Post-stop latency · "
-        "%d cohort%s</strong><ul>%s</ul></div>"
-        % (len(rows), "" if len(rows) == 1 else "s", items)
+        "<div class='watch-banner diagnostic'><strong>Stop-to-delivery attempt · "
+        "%d cohort%s</strong><span>%s</span><ul>%s</ul></div>"
+        % (len(rows), "" if len(rows) == 1 else "s", target_contract, "".join(items))
     )
 
 
@@ -911,6 +958,12 @@ def _slo_milliseconds(value):
     # than a capture-start latency sample.
     maximum_duration_ms = 31 * 24 * 60 * 60 * 1_000
     return ("%g ms" % value) if 0 <= value <= maximum_duration_ms else "—"
+
+
+def _slo_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return "%g" % value if 0 <= value <= 1_000_000_000 else "—"
 
 
 def _slo_fraction(value):

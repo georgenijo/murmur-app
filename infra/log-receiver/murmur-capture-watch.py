@@ -29,9 +29,15 @@ SCHEMA_VERSION = 1
 REPORT_NAME = "capture-watch.json"
 MAX_STARTUP_SAMPLES = 500
 MAX_POST_STOP_LATENCY_SAMPLES = 500
+MAX_POST_STOP_TARGET_SAMPLES = 500
 MAX_VERSIONS_PER_INSTALL = 64
 MIN_COMPARISON_SAMPLES = 5
 STARTUP_REGRESSION_RATIO = 2.0
+MIN_POST_STOP_TARGET_SAMPLES = 20
+POST_STOP_TARGET_MIN_AUDIO_SECONDS = 1.0
+POST_STOP_TARGET_MAX_AUDIO_SECONDS = 15.0
+POST_STOP_TARGET_P50_MS = 1_000
+POST_STOP_TARGET_P95_MS = 2_000
 REPEATED_ZERO_READY_SESSIONS = 2
 RECENT_ATTEMPTED_SESSION_WINDOW = 5
 MAX_READY_RECORDINGS_PER_SESSION = 20
@@ -148,6 +154,17 @@ def numeric_post_stop_latency(event):
     return float(value)
 
 
+def numeric_audio_seconds(event):
+    value = event_data(event).get("audio_secs")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0 or value > 24 * 60 * 60:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return float(value)
+
+
 def valid_recording_id(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return False
@@ -171,6 +188,8 @@ def new_cohort(install_id, version):
         "startup_sample_total": 0,
         "post_stop_latency_samples": deque(maxlen=MAX_POST_STOP_LATENCY_SAMPLES),
         "post_stop_latency_sample_total": 0,
+        "post_stop_target_samples": deque(maxlen=MAX_POST_STOP_TARGET_SAMPLES),
+        "post_stop_target_sample_total": 0,
         "timeouts": Counter(),
         "fallback_count": 0,
         "both_backends_failed_count": 0,
@@ -300,6 +319,15 @@ def scan_install(path, install_id, cohorts, reliability_slo):
                     if latency_ms is not None:
                         cohort["post_stop_latency_samples"].append(latency_ms)
                         cohort["post_stop_latency_sample_total"] += 1
+                        audio_seconds = numeric_audio_seconds(event)
+                        if (
+                            audio_seconds is not None
+                            and POST_STOP_TARGET_MIN_AUDIO_SECONDS
+                            <= audio_seconds
+                            <= POST_STOP_TARGET_MAX_AUDIO_SECONDS
+                        ):
+                            cohort["post_stop_target_samples"].append(latency_ms)
+                            cohort["post_stop_target_sample_total"] += 1
                 continue
             if code == "audio.capture_started":
                 if (
@@ -357,6 +385,21 @@ def scan_install(path, install_id, cohorts, reliability_slo):
 def serialize_cohort(cohort):
     samples = list(cohort["startup_samples"])
     post_stop_latency_samples = list(cohort["post_stop_latency_samples"])
+    post_stop_target_samples = list(cohort["post_stop_target_samples"])
+    post_stop_target_p50_ms = percentile(post_stop_target_samples, 50)
+    post_stop_target_p95_ms = percentile(post_stop_target_samples, 95)
+    if (
+        cohort["app_version"] in ("unknown", "overflow")
+        or len(post_stop_target_samples) < MIN_POST_STOP_TARGET_SAMPLES
+    ):
+        post_stop_target_verdict = "insufficient_data"
+    elif (
+        post_stop_target_p50_ms < POST_STOP_TARGET_P50_MS
+        and post_stop_target_p95_ms < POST_STOP_TARGET_P95_MS
+    ):
+        post_stop_target_verdict = "met"
+    else:
+        post_stop_target_verdict = "missed"
     recent_session_ready_counts = list(cohort["recent_session_ready_counts"])
     session_ready_histogram = Counter(recent_session_ready_counts)
     timeout_rows = [
@@ -398,6 +441,14 @@ def serialize_cohort(cohort):
         ),
         "post_stop_latency_p50_ms": percentile(post_stop_latency_samples, 50),
         "post_stop_latency_p95_ms": percentile(post_stop_latency_samples, 95),
+        "post_stop_target_sample_count": len(post_stop_target_samples),
+        "post_stop_target_sample_total": cohort["post_stop_target_sample_total"],
+        "post_stop_target_samples_truncated": (
+            cohort["post_stop_target_sample_total"] > len(post_stop_target_samples)
+        ),
+        "post_stop_target_p50_ms": post_stop_target_p50_ms,
+        "post_stop_target_p95_ms": post_stop_target_p95_ms,
+        "post_stop_target_verdict": post_stop_target_verdict,
         "capture_backend_timeouts": timeout_rows,
         "fallback_count": cohort["fallback_count"],
         "both_backends_failed_count": cohort["both_backends_failed_count"],
@@ -519,6 +570,31 @@ def regression_alerts(cohort_rows):
                 }
             )
 
+        latency_rows = [
+            row
+            for row in rows
+            if row["post_stop_target_sample_count"] >= MIN_POST_STOP_TARGET_SAMPLES
+            and row["last_event_at"]
+        ]
+        if latency_rows:
+            latest_latency = max(
+                latency_rows,
+                key=lambda row: (row["last_event_at"], row["app_version"]),
+            )
+            if latest_latency["post_stop_target_verdict"] == "missed":
+                alerts.append(
+                    {
+                        "kind": "post_stop_latency_target_missed",
+                        "install_id": latest_latency["install_id"],
+                        "app_version": latest_latency["app_version"],
+                        "sample_count": latest_latency[
+                            "post_stop_target_sample_count"
+                        ],
+                        "p50_ms": latest_latency["post_stop_target_p50_ms"],
+                        "p95_ms": latest_latency["post_stop_target_p95_ms"],
+                    }
+                )
+
         eligible = [
             row
             for row in rows
@@ -631,6 +707,18 @@ def build_report(root, now=None):
             "maximum_post_stop_latency_samples_per_cohort": (
                 MAX_POST_STOP_LATENCY_SAMPLES
             ),
+            "maximum_post_stop_target_samples_per_cohort": (
+                MAX_POST_STOP_TARGET_SAMPLES
+            ),
+            "minimum_post_stop_target_samples": MIN_POST_STOP_TARGET_SAMPLES,
+            "post_stop_target_min_audio_seconds": (
+                POST_STOP_TARGET_MIN_AUDIO_SECONDS
+            ),
+            "post_stop_target_max_audio_seconds": (
+                POST_STOP_TARGET_MAX_AUDIO_SECONDS
+            ),
+            "post_stop_target_p50_ms": POST_STOP_TARGET_P50_MS,
+            "post_stop_target_p95_ms": POST_STOP_TARGET_P95_MS,
             "maximum_versions_per_install": MAX_VERSIONS_PER_INSTALL,
         },
         "alerts": alerts,

@@ -267,6 +267,9 @@ cohorts per install. Further versions collapse into a non-comparable
 `overflow` cohort. It reports:
 
 - dictation `startup_ms` p50 and p95;
+- successful stop-to-delivery-attempt p50 and p95, plus a 1 to 15 second
+  target cohort with a 20-sample floor, p50 below 1,000 ms, and p95 below
+  2,000 ms;
 - active-budget timeouts split by stable backend and native setup step;
 - fallback and both-backends-failed counts;
 - exhausted diagnostics-store operations split by stable operation and safe
@@ -333,6 +336,13 @@ least two of its five most recent attempts had no ready recording; a newer
 healthy cohort supersedes stale failures and later healthy attempts age them
 out. Thresholds live in the watch script and are fixture-tested. The allowlist
 preserves `last_setup_step: "none"` as the explicit pre-native-call state.
+
+The watch also alerts when the newest stop-to-delivery target cohort on an
+install has at least 20 eligible samples and misses either strict percentile
+target. Eligible samples are successful, non-empty native dictations with 1 to
+15 seconds of audio. The metric ends after Murmur's configured clipboard or
+paste attempt. It does not prove that another application consumed a posted
+paste event.
 
 ## Tests
 
