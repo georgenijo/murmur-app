@@ -7,7 +7,7 @@ export interface AudioDeviceDescriptor {
   kind: 'builtIn' | 'external' | 'continuity' | 'unknown';
   /** Core Audio's device-alive property at the cached inventory read. */
   connected: boolean;
-  /** Native input-scope enumeration found an input stream. */
+  /** Native input stream configuration reported at least one channel. */
   hasInput: boolean;
 }
 
