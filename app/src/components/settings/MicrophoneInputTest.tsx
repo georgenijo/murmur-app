@@ -822,7 +822,7 @@ export function MicrophoneInputTest({
             <>
               <p className="mt-1 text-warning"><span className="font-medium">Next capture blocked: </span>{smartAutoStatus.status.message}</p>
               {smartAutoStatus.status.retryAfterMs !== null && (
-                <p className="mt-1">A bounded retry is scheduled within {Math.max(1, Math.ceil(smartAutoStatus.status.retryAfterMs / 1000))} seconds.</p>
+                <p className="mt-1">Auto cooldown: about {Math.max(1, Math.ceil(smartAutoStatus.status.retryAfterMs / 1000))} seconds remaining. Another check also requires Murmur to be idle.</p>
               )}
               <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
               {smartAuto?.smartAutoProbeEnabled && (

@@ -145,6 +145,16 @@ describe('OverlayPill transient cues', () => {
     expect(container.textContent).not.toContain('preview');
   });
 
+  it('describes a cooldown without promising that background probing is enabled', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'idle', dimmed: false }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: 60_000 }} />,
+    ));
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture blocked. Cooldown: about 60 seconds remaining.');
+    expect(status?.getAttribute('title')).toBe('Smart Auto blocked. Waiting for cooldown.');
+    expect(status?.getAttribute('aria-label')).not.toContain('scheduled');
+  });
+
   it('keeps the wing on the waveform while recording — transcript text lives in the preview popover', async () => {
     function LivePill() {
       const barRefs = useRef<(HTMLDivElement | null)[]>([]);

@@ -161,7 +161,7 @@ export function OverlayPill({
                 : smartAutoSummary?.kind === 'blocked'
                   ? smartAutoSummary.retryAfterMs === null
                     ? 'Smart Auto next capture blocked. Open Settings to retry, verify signal, or pin an input.'
-                    : `Smart Auto next capture blocked. A bounded retry is scheduled within ${Math.max(1, Math.ceil(smartAutoSummary.retryAfterMs / 1000))} seconds.`
+                    : `Smart Auto next capture blocked. Cooldown: about ${Math.max(1, Math.ceil(smartAutoSummary.retryAfterMs / 1000))} seconds remaining.`
                   : undefined}
               title={smartAutoSummary?.kind === 'ready'
                 ? `Smart Auto: ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
@@ -170,7 +170,7 @@ export function OverlayPill({
                 : smartAutoSummary?.kind === 'blocked'
                   ? smartAutoSummary.retryAfterMs === null
                     ? 'Smart Auto blocked. Open Settings to retry, verify signal, or pin an input.'
-                    : 'Smart Auto blocked. A bounded retry is scheduled.'
+                    : 'Smart Auto blocked. Waiting for cooldown.'
                   : undefined}
               className={smartAutoSummary?.kind === 'ready'
                 ? 'text-emerald-300'
