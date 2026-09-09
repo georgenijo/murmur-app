@@ -7191,7 +7191,7 @@ mod tests {
             file_output.duration_ms,
             crate::performance_metrics::MeasurementV1::measured(15)
         );
-        assert!(stages.iter().any(|stage| *stage == extra));
+        assert!(stages.contains(&extra));
         assert_eq!(
             stages
                 .iter()
