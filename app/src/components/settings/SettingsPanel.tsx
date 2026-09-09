@@ -15,32 +15,13 @@ import {
   LANGUAGE_OPTIONS,
   PASTE_LAST_SHORTCUT_OPTIONS,
   RECORDING_MODE_OPTIONS,
-  QUERY_CONTEXT_LEVEL_OPTIONS,
-  QUERY_KEY_OPTIONS,
-  TRANSFORM_KEY_OPTIONS,
   pasteLastShortcutConflict,
   pasteLastShortcutLabel,
   type PasteLastShortcut,
-  type QueryKey,
-  type QueryProviderId,
   type RecordingMode,
   type Settings,
-  type TransformKey,
 } from '../../lib/settings';
 import { setPasteLastShortcut } from '../../lib/deliveryRecovery';
-import {
-  CUSTOM_QUERY_PRESET,
-  launchQueryProviderSignIn,
-  listQueryProviderPresets,
-  loadQueryEnvironment,
-  saveQueryEnvironment,
-  testQueryProvider,
-  validateQueryCommand,
-  type QueryCommandConfig,
-  type QueryEnvironmentVariable,
-  type QueryProviderPreset,
-  type QueryProviderTestResult,
-} from '../../lib/queryProviders';
 import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
@@ -50,20 +31,17 @@ import {
   modelDownloadPercent,
   type ModelDownloadProgress,
 } from '../../lib/modelDownload';
-import {
-  downloadTransformModel,
-  removeTransformModel,
-  resetTransformRuntime,
-  setTransformKey,
-  startTransformListener,
-  stopTransformListener,
-  TRANSFORM_MODEL_SIZE_LABEL,
-  transformModelStatus,
-  type TransformModelStatus,
-} from '../../lib/transformSettings';
+import { useVoiceQuerySettings } from '../../lib/hooks/useVoiceQuerySettings';
+import { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
+import { VoiceQuerySettings } from './VoiceQuerySettings';
+import { TransformModelSettings } from './TransformModelSettings';
 import type { DictationStatus } from '../../lib/types';
 import type { UpdateStatus } from '../../lib/updater';
-import { isNotchPillInstalled } from '../../lib/dictation';
+import {
+  downloadModel as downloadModelCommand,
+  isNotchPillInstalled,
+  requestAccessibilityPermission,
+} from '../../lib/dictation';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
@@ -84,47 +62,7 @@ import {
   DiagnosticsWorkspace,
   type DiagnosticsTab,
 } from '../log-viewer/DiagnosticsWorkspace';
-import AnimatedSwitch from '../ui/animated-switch/animated-switch';
-
-function Toggle({ label, checked, onChange, disabled = false }: {
-  label: string;
-  checked: boolean;
-  onChange: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <AnimatedSwitch
-      size="md"
-      checked={checked}
-      disabled={disabled}
-      aria-label={label}
-      onCheckedChange={() => onChange()}
-    />
-  );
-}
-
-function SettingToggle({ title, description, label = title, checked, onChange, disabled = false, targetId }: {
-  title: string;
-  description: string;
-  label?: string;
-  checked: boolean;
-  onChange: () => void;
-  disabled?: boolean;
-  targetId?: string;
-}) {
-  return (
-    <div
-      data-setting-target={targetId}
-      className="flex min-h-[52px] items-center justify-between gap-6 rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40"
-    >
-      <div>
-        <p className="text-sm font-medium text-on-surface">{title}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">{description}</p>
-      </div>
-      <Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />
-    </div>
-  );
-}
+import { SettingToggle } from './SettingToggle';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
   const [draft, setDraft] = useState(value);
@@ -343,76 +281,6 @@ export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPast
     : 'Clipboard copying stays on; auto-paste remains off.';
 }
 
-function queryConfigurationMessage(error: unknown): string {
-  const code = String(error);
-  if (code.includes('invalid_executable')) return 'The CLI executable is missing, is not executable, or is not an absolute path.';
-  if (code.includes('invalid_arguments')) return 'Fixed arguments exceed the Voice Query safety limits.';
-  if (code.includes('invalid_timeout')) return 'Choose a timeout between 5 seconds and 5 minutes.';
-  if (code.includes('invalid_environment')) return 'Declared environment values must be absolute config-directory paths.';
-  if (code.includes('environment_unavailable')) return 'Murmur could not read the protected Voice Query environment file.';
-  return 'Murmur could not validate this Voice Query configuration.';
-}
-
-function queryProviderTestMessage(
-  provider: QueryProviderId,
-  result: QueryProviderTestResult,
-): string {
-  if (isIncompleteCodexProbe(provider, result)) {
-    return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then choose Test again.';
-  }
-  if (result.authenticated === null) {
-    return 'Executable validated. Custom providers do not have a built-in authentication probe.';
-  }
-  if (result.ok) return 'Authenticated and ready.';
-  if (result.errorCode === 'provider_not_authenticated') {
-    return result.signInFix ?? 'The provider is not authenticated.';
-  }
-  return 'The provider probe failed. Review its output below.';
-}
-
-function isIncompleteCodexProbe(
-  provider: QueryProviderId,
-  result: QueryProviderTestResult,
-): boolean {
-  if (provider !== 'codex' || result.errorCode !== 'probe_failed') return false;
-  const detail = `${result.stdout}\n${result.stderr}`;
-  return detail.includes('The Codex CLI installation is incomplete')
-    || (
-      /ENOENT/i.test(detail)
-      && /@openai\/codex-darwin-/i.test(detail)
-      && /\/vendor\//i.test(detail)
-      && /\/codex\/codex/i.test(detail)
-    );
-}
-
-function queryCommand(settings: Settings): QueryCommandConfig {
-  return {
-    provider: settings.queryProvider,
-    executable: settings.queryExecutable,
-    arguments: settings.queryArguments,
-    timeoutSeconds: settings.queryTimeoutSeconds,
-    contextLevel: settings.queryContextLevel,
-    retainQueryHistory: settings.retainQueryHistory,
-  };
-}
-
-const QUERY_SWITCH_INTERRUPTED_NOTICE =
-  'Configuration changed during provider preflight. Voice Query remains off.';
-
-function queryCommandFingerprintFor(
-  command: QueryCommandConfig,
-  transformHoldKey: TransformKey | null,
-): string {
-  return JSON.stringify([
-    command.provider,
-    command.executable,
-    command.arguments,
-    command.timeoutSeconds,
-    command.contextLevel,
-    transformHoldKey,
-  ]);
-}
-
 export const SettingsPanel = memo(function SettingsPanel({
   settings,
   onUpdateSettings,
@@ -494,7 +362,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
   }, []);
 
-  const requestAccessibility = () => { void invoke('request_accessibility_permission'); };
+  const requestAccessibility = () => { void requestAccessibilityPermission(); };
   const chooseOutputFolder = async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
@@ -613,7 +481,7 @@ export const SettingsPanel = memo(function SettingsPanel({
         setModelDownload({ phase: 'downloading', progress });
       });
       downloadUnlistenRef.current = unlisten;
-      await invoke('download_model', { modelName });
+      await downloadModelCommand(modelName);
       unlisten();
       downloadUnlistenRef.current = null;
       if (downloadModelRef.current === modelName) setModelDownload({ phase: 'idle' });
@@ -649,188 +517,27 @@ export const SettingsPanel = memo(function SettingsPanel({
         });
     };
     refresh();
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
+    const onFocus = () => {
       if (activeRef && !activeRef.current) return;
-      isNotchPillInstalled()
-        .then((installed) => {
-          if (!cancelled) setNotchPillInstalled(installed);
-        })
-        .catch(() => {
-          if (!cancelled) setNotchPillInstalled(false);
-        });
+      refresh();
     };
-    window.addEventListener('focus', refresh);
+    window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;
-      window.removeEventListener('focus', refresh);
+      window.removeEventListener('focus', onFocus);
     };
   }, [activeRef]);
 
-  // ---- Transform model block (#312 D1) ------------------------------------
-  const [transformModel, setTransformModel] = useState<TransformModelStatus | null>(null);
-  const [transformModelBusy, setTransformModelBusy] = useState(false);
-  const [transformModelError, setTransformModelError] = useState<string | null>(null);
-  const [confirmRemoveTransform, setConfirmRemoveTransform] = useState(false);
-  // Shortcut-picker failures get their own error line, separate from the model
-  // block's error slot (#312 D1 round-2 finding 8).
-  const [transformKeyError, setTransformKeyError] = useState<string | null>(null);
+  // ---- Transform model & Voice Query settings (extracted; see
+  // lib/hooks/useTransformModelSettings.ts and lib/hooks/useVoiceQuerySettings.ts) ----
+  const transformVm = useTransformModelSettings({
+    settings,
+    onUpdateSettings,
+    active: activeCat === 'ai' || activeCat === 'ai-transform',
+  });
+
   const [pasteLastShortcutError, setPasteLastShortcutError] = useState<string | null>(null);
   const [pasteLastShortcutBusy, setPasteLastShortcutBusy] = useState(false);
-  const [transformDownloadPct, setTransformDownloadPct] = useState<number | null>(null);
-  const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
-  const [queryConfigNotice, setQueryConfigNotice] = useState<string | null>(null);
-  const [queryPresets, setQueryPresets] = useState<QueryProviderPreset[]>([CUSTOM_QUERY_PRESET]);
-  const [queryEnvironment, setQueryEnvironment] = useState<QueryEnvironmentVariable[]>([]);
-  const [configuredQueryEnvironment, setConfiguredQueryEnvironment] = useState<string[]>([]);
-  const [queryEnvironmentStatus, setQueryEnvironmentStatus] = useState<string | null>(null);
-  const [queryEnvironmentNeedsRepair, setQueryEnvironmentNeedsRepair] = useState(false);
-  const [queryConfigBusy, setQueryConfigBusy] = useState(false);
-  const [queryTestResult, setQueryTestResult] = useState<QueryProviderTestResult | null>(null);
-  const [queryTestBusy, setQueryTestBusy] = useState(false);
-  const [querySignInStatus, setQuerySignInStatus] = useState<string | null>(null);
-  const signInPollRef = useRef(0);
-  const queryConfigGenerationRef = useRef(0);
-  const queryProviderSwitchRef = useRef<{ generation: number; hotkey: QueryKey } | null>(null);
-  const queryCommandFingerprint = queryCommandFingerprintFor(
-    queryCommand(settings),
-    settings.transformHoldKey,
-  );
-  const queryCommandFingerprintRef = useRef(queryCommandFingerprint);
-
-  const invalidateQueryRequests = () => {
-    const interruptedProviderSwitch = queryProviderSwitchRef.current !== null;
-    queryConfigGenerationRef.current += 1;
-    signInPollRef.current += 1;
-    queryProviderSwitchRef.current = null;
-    setQueryConfigBusy(false);
-    setQueryTestBusy(false);
-    setQueryTestResult(null);
-    setQuerySignInStatus(null);
-    if (interruptedProviderSwitch) {
-      setQueryConfigNotice(QUERY_SWITCH_INTERRUPTED_NOTICE);
-    }
-    return queryConfigGenerationRef.current;
-  };
-
-  const queryRequestIsCurrent = (generation: number) => (
-    queryConfigGenerationRef.current === generation
-  );
-
-  useEffect(() => () => {
-    signInPollRef.current += 1;
-    queryConfigGenerationRef.current += 1;
-    queryProviderSwitchRef.current = null;
-  }, []);
-
-  useLayoutEffect(() => {
-    if (queryCommandFingerprintRef.current === queryCommandFingerprint) return;
-    const interruptedProviderSwitch = queryProviderSwitchRef.current !== null;
-    queryCommandFingerprintRef.current = queryCommandFingerprint;
-    queryConfigGenerationRef.current += 1;
-    signInPollRef.current += 1;
-    queryProviderSwitchRef.current = null;
-    setQueryConfigBusy(false);
-    setQueryTestBusy(false);
-    setQueryTestResult(null);
-    setQuerySignInStatus(null);
-    if (interruptedProviderSwitch) {
-      setQueryConfigError(null);
-      setQueryConfigNotice(QUERY_SWITCH_INTERRUPTED_NOTICE);
-    }
-  }, [queryCommandFingerprint]);
-
-  useEffect(() => {
-    if (activeCat !== 'ai-query') return;
-    let cancelled = false;
-    void listQueryProviderPresets()
-      .then((presets) => {
-        if (!cancelled) setQueryPresets(presets);
-      })
-      .catch(() => {
-        if (!cancelled) setQueryPresets([CUSTOM_QUERY_PRESET]);
-      });
-    return () => { cancelled = true; };
-  }, [activeCat]);
-
-  useEffect(() => {
-    if (activeCat !== 'ai-query') return;
-    let cancelled = false;
-    setQueryEnvironmentStatus(null);
-    setQueryEnvironmentNeedsRepair(false);
-    void loadQueryEnvironment(settings.queryProvider)
-      .then((names) => {
-        if (!cancelled) {
-          setConfiguredQueryEnvironment(Array.isArray(names) ? names : []);
-          setQueryEnvironment([]);
-          setQueryEnvironmentNeedsRepair(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setQueryEnvironment([]);
-          setConfiguredQueryEnvironment([]);
-          setQueryEnvironmentNeedsRepair(true);
-          setQueryEnvironmentStatus('Could not load the protected environment file. Clear saved values to repair it.');
-        }
-      });
-    return () => { cancelled = true; };
-  }, [activeCat, settings.queryProvider]);
-
-  const refreshTransformModel = useCallback(async () => {
-    try {
-      setTransformModel(await transformModelStatus());
-    } catch {
-      setTransformModel(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeCat !== 'ai' && activeCat !== 'ai-transform') return;
-    void refreshTransformModel();
-  }, [activeCat, refreshTransformModel]);
-
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    listen<{ received?: number; total?: number }>(
-      'transform-model-download-progress',
-      (event) => {
-        const { received = 0, total = 0 } = event.payload;
-        if (total > 0) setTransformDownloadPct(Math.min(100, Math.round((received / total) * 100)));
-        else setTransformDownloadPct(null);
-      },
-    )
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch(() => {});
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
-  const updateTransformHoldKey = async (next: TransformKey | null) => {
-    setTransformKeyError(null);
-    if (next !== null && next === settings.queryHotkey) {
-      setTransformKeyError('That key is already assigned to Voice Query.');
-      return;
-    }
-    try {
-      if (next === null) {
-        await stopTransformListener();
-        onUpdateSettings({ transformHoldKey: null });
-        return;
-      }
-      await setTransformKey(next);
-      await startTransformListener(next);
-      onUpdateSettings({ transformHoldKey: next });
-    } catch (e) {
-      setTransformKeyError(String(e));
-    }
-  };
 
   const updatePasteLastShortcut = async (next: PasteLastShortcut | null) => {
     setPasteLastShortcutError(null);
@@ -853,51 +560,11 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   };
 
-  const downloadTransform = async () => {
-    setTransformModelBusy(true);
-    setTransformModelError(null);
-    setTransformDownloadPct(0);
-    try {
-      await downloadTransformModel();
-      await refreshTransformModel();
-    } catch (e) {
-      setTransformModelError(String(e));
-    } finally {
-      setTransformModelBusy(false);
-      setTransformDownloadPct(null);
-    }
-  };
-
-  const removeTransform = async () => {
-    if (!confirmRemoveTransform) {
-      setConfirmRemoveTransform(true);
-      return;
-    }
-    setConfirmRemoveTransform(false);
-    setTransformModelBusy(true);
-    setTransformModelError(null);
-    try {
-      await removeTransformModel();
-      await refreshTransformModel();
-    } catch (e) {
-      setTransformModelError(String(e));
-    } finally {
-      setTransformModelBusy(false);
-    }
-  };
-
-  const resetTransform = async () => {
-    setTransformModelBusy(true);
-    setTransformModelError(null);
-    try {
-      await resetTransformRuntime();
-      await refreshTransformModel();
-    } catch (e) {
-      setTransformModelError(String(e));
-    } finally {
-      setTransformModelBusy(false);
-    }
-  };
+  const voiceQueryVm = useVoiceQuerySettings({
+    settings,
+    onUpdateSettings,
+    active: activeCat === 'ai-query',
+  });
 
   const isRecording = status !== 'idle';
   const isDoubleTap = settings.recordingMode === 'double_tap';
@@ -907,258 +574,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     ? 'Hold to record, or double-tap to start and single-tap to stop.'
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
 
-  const toggleVoiceQuery = async () => {
-    setQueryConfigError(null);
-    if (settings.queryHotkey !== null) {
-      invalidateQueryRequests();
-      setQueryConfigNotice(null);
-      onUpdateSettings({ queryHotkey: null });
-      return;
-    }
-    if (!settings.queryExecutable.trim()) {
-      setQueryConfigError('Choose the absolute path to a CLI executable before enabling Voice Query.');
-      return;
-    }
-    const key = QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value;
-    if (!key) {
-      setQueryConfigError('No dedicated shortcut is available.');
-      return;
-    }
-    const command = queryCommand(settings);
-    const generation = invalidateQueryRequests();
-    setQueryConfigBusy(true);
-    try {
-      await validateQueryCommand(command);
-      if (queryRequestIsCurrent(generation)) {
-        setQueryConfigNotice(null);
-        onUpdateSettings({ queryHotkey: key });
-      }
-    } catch (error) {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryConfigError(queryConfigurationMessage(error));
-      }
-    } finally {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryConfigBusy(false);
-      }
-    }
-  };
-
-  const selectQueryProvider = async (provider: QueryProviderId) => {
-    const selected = queryPresets.find((preset) => preset.id === provider)
-      ?? (provider === 'custom' ? CUSTOM_QUERY_PRESET : null);
-    if (!selected) return;
-    // A rapid second selection sees the hotkey carried by the still-current
-    // switch transaction even though Settings has already persisted the
-    // fail-closed temporary `null`. No completed or failed transaction keeps
-    // this ref alive.
-    const hotkeyToPreserve = settings.queryHotkey
-      ?? queryProviderSwitchRef.current?.hotkey
-      ?? null;
-    const command: QueryCommandConfig = {
-      provider,
-      executable: selected.discoveredExecutable ?? '',
-      arguments: [...selected.recommendedArguments],
-      timeoutSeconds: settings.queryTimeoutSeconds,
-      contextLevel: settings.queryContextLevel,
-      retainQueryHistory: settings.retainQueryHistory,
-    };
-    const generation = invalidateQueryRequests();
-    if (hotkeyToPreserve !== null) {
-      queryProviderSwitchRef.current = { generation, hotkey: hotkeyToPreserve };
-    }
-    // This is the exact command being committed below. Priming the ref keeps
-    // the controlled-settings layout effect from invalidating its own switch;
-    // any different edit still changes the fingerprint and wins the race.
-    queryCommandFingerprintRef.current = queryCommandFingerprintFor(
-      command,
-      settings.transformHoldKey,
-    );
-    setQueryConfigError(null);
-    setQueryConfigNotice(hotkeyToPreserve !== null
-      ? `Checking ${selected.label} before keeping Voice Query enabled…`
-      : null);
-    setQueryTestResult(null);
-    setQuerySignInStatus(null);
-    setQueryEnvironmentStatus(null);
-    setQueryEnvironmentNeedsRepair(false);
-    setQueryEnvironment([]);
-    setConfiguredQueryEnvironment([]);
-    onUpdateSettings({
-      queryProvider: provider,
-      queryExecutable: command.executable,
-      queryArguments: command.arguments,
-      queryHotkey: null,
-    });
-    if (hotkeyToPreserve === null) return;
-
-    setQueryConfigBusy(true);
-    setQueryTestBusy(true);
-    try {
-      await validateQueryCommand(command);
-      if (!queryRequestIsCurrent(generation)) return;
-      const result = await testQueryProvider(command);
-      if (!queryRequestIsCurrent(generation)) return;
-      setQueryTestResult(result);
-      if (!result.ok) {
-        queryProviderSwitchRef.current = null;
-        setQueryConfigNotice(null);
-        setQueryConfigError(
-          `Voice Query remains off. ${queryProviderTestMessage(provider, result)}`,
-        );
-        return;
-      }
-      const pending = queryProviderSwitchRef.current;
-      if (!pending || pending.generation !== generation || pending.hotkey !== hotkeyToPreserve) {
-        return;
-      }
-      queryProviderSwitchRef.current = null;
-      setQueryConfigNotice(
-        `Provider changed to ${selected.label}. Voice Query stayed enabled after validation and preflight.`,
-      );
-      onUpdateSettings({ queryHotkey: hotkeyToPreserve });
-    } catch (error) {
-      if (queryRequestIsCurrent(generation)) {
-        queryProviderSwitchRef.current = null;
-        setQueryConfigNotice(null);
-        setQueryConfigError(`Voice Query remains off. ${queryConfigurationMessage(error)}`);
-      }
-    } finally {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryConfigBusy(false);
-        setQueryTestBusy(false);
-      }
-    }
-  };
-
-  const saveDeclaredEnvironment = async () => {
-    setQueryEnvironmentStatus(null);
-    const entered = queryEnvironment.filter((variable) => variable.value.length > 0);
-    if (entered.length === 0) {
-      setQueryEnvironmentStatus('Enter an absolute config-directory path to save.');
-      return;
-    }
-    const provider = settings.queryProvider;
-    const generation = invalidateQueryRequests();
-    try {
-      await saveQueryEnvironment(provider, entered);
-      if (!queryRequestIsCurrent(generation)) return;
-      setConfiguredQueryEnvironment((current) => [
-        ...new Set([...current, ...entered.map((variable) => variable.name)]),
-      ]);
-      setQueryEnvironment([]);
-      setQueryEnvironmentStatus('Saved in Murmur’s protected app-data directory.');
-      setQueryEnvironmentNeedsRepair(false);
-      setQueryTestResult(null);
-      setQuerySignInStatus(null);
-    } catch (error) {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryEnvironmentStatus(queryConfigurationMessage(error));
-      }
-    }
-  };
-
-  const clearDeclaredEnvironment = async () => {
-    setQueryEnvironmentStatus(null);
-    const provider = settings.queryProvider;
-    const generation = invalidateQueryRequests();
-    try {
-      await saveQueryEnvironment(provider, []);
-      if (!queryRequestIsCurrent(generation)) return;
-      setQueryEnvironment([]);
-      setConfiguredQueryEnvironment([]);
-      setQueryEnvironmentStatus('Saved config-directory values cleared.');
-      setQueryEnvironmentNeedsRepair(false);
-      setQueryTestResult(null);
-      setQuerySignInStatus(null);
-    } catch (error) {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryEnvironmentStatus(queryConfigurationMessage(error));
-      }
-    }
-  };
-
-  const runQueryTest = async (): Promise<QueryProviderTestResult | null> => {
-    setQueryConfigError(null);
-    setQuerySignInStatus(null);
-    const command = queryCommand(settings);
-    const generation = invalidateQueryRequests();
-    setQueryTestBusy(true);
-    try {
-      const result = await testQueryProvider(command);
-      if (!queryRequestIsCurrent(generation)) return null;
-      setQueryTestResult(result);
-      return result;
-    } catch (error) {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryConfigError(queryConfigurationMessage(error));
-        setQueryTestResult(null);
-      }
-      return null;
-    } finally {
-      if (queryRequestIsCurrent(generation)) {
-        setQueryTestBusy(false);
-      }
-    }
-  };
-
-  const signInQueryProvider = async () => {
-    const poll = signInPollRef.current + 1;
-    signInPollRef.current = poll;
-    const command = queryCommand(settings);
-    const generation = queryConfigGenerationRef.current;
-    const ownsRequest = () => (
-      signInPollRef.current === poll && queryRequestIsCurrent(generation)
-    );
-    setQueryConfigError(null);
-    setQuerySignInStatus('Opening Terminal…');
-    try {
-      await launchQueryProviderSignIn(command);
-      if (!ownsRequest()) return;
-      setQuerySignInStatus('Terminal opened. Waiting for sign-in…');
-      const deadline = Date.now() + 60_000;
-      while (ownsRequest() && Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        if (!ownsRequest()) return;
-        const result = await testQueryProvider(command);
-        if (!ownsRequest()) return;
-        setQueryTestResult(result);
-        if (result.ok) {
-          setQuerySignInStatus('Signed in and ready.');
-          return;
-        }
-      }
-      if (ownsRequest()) {
-        setQuerySignInStatus('Sign-in is still pending. Finish in Terminal, then choose Test.');
-      }
-    } catch (error) {
-      if (ownsRequest()) {
-        setQuerySignInStatus(null);
-        setQueryConfigError(String(error).includes('sign_in')
-          ? 'Murmur could not open the provider sign-in in Terminal.'
-          : queryConfigurationMessage(error));
-      }
-    }
-  };
-
-  const chooseQueryExecutable = async () => {
-    const generation = queryConfigGenerationRef.current;
-    try {
-      const selected = await open({ directory: false, multiple: false });
-      if (typeof selected === 'string' && queryRequestIsCurrent(generation)) {
-        setQueryConfigError(null);
-        setQueryConfigNotice(settings.queryHotkey !== null
-          ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
-          : null);
-        setQueryTestResult(null);
-        setQuerySignInStatus(null);
-        invalidateQueryRequests();
-        onUpdateSettings({ queryExecutable: selected, queryHotkey: null });
-      }
-    } catch {
-      // Cancellation leaves the configured executable untouched.
-    }
-  };
   const missingDevice = !settings.smartAutoMicrophoneEnabled
     && settings.microphone !== DEFAULT_SETTINGS.microphone
     && audioInventory?.status === 'available'
@@ -1169,14 +584,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     : null;
   const saveToFile = settings.saveTranscript || settings.saveAudio;
   const autoPasteOn = effectiveAutoPaste(settings);
-  const selectedQueryPreset = queryPresets.find((preset) => preset.id === settings.queryProvider)
-    ?? (settings.queryProvider === 'custom' ? CUSTOM_QUERY_PRESET : null);
-  const queryProviderItems = queryPresets.map((preset) => ({
-    value: preset.id,
-    label: preset.discoveredExecutable || preset.id === 'custom'
-      ? preset.label
-      : `${preset.label} — not found`,
-  }));
 
   const resetStats = () => {
     if (confirmReset) {
@@ -1520,472 +927,30 @@ export const SettingsPanel = memo(function SettingsPanel({
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="text" /></span>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-semibold text-on-surface">Selected-Text Rewrite</span>
-                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">Qwen2.5 1.5B · {transformModel?.state === 'ready' ? 'Ready on-device' : 'Model setup required'}</span>
+                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">Qwen2.5 1.5B · {transformVm.transformModel?.state === 'ready' ? 'Ready on-device' : 'Model setup required'}</span>
               </span>
               <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
             </button>
           </SettingsSection>
 
-          <SettingsSection pageId="ai-query" activePage={activeCat} title="Voice Query" subtitle="Provider, privacy, shortcut, and response behavior">
-            <div className="rounded-xl border border-warning bg-warning/10 p-3">
-              <p className="text-sm font-medium text-on-surface">You control where the question goes</p>
-              <p className="mt-1 text-xs leading-relaxed text-on-surface">
-                Murmur transcribes your question locally, then gives it to the exact CLI executable below.
-                That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.
-                Murmur cannot verify or prevent that network egress.
-              </p>
-            </div>
+          <VoiceQuerySettings
+            settings={settings}
+            onUpdateSettings={onUpdateSettings}
+            activePage={activeCat}
+            accessibilityGranted={accessibilityGranted}
+            onRequestAccessibility={requestAccessibility}
+            vm={voiceQueryVm}
+          />
 
-            <div data-setting-target="voice-query-provider" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="mb-1.5 block text-sm font-medium text-on-surface">Provider</label>
-              <Select
-                value={settings.queryProvider}
-                onChange={(value) => void selectQueryProvider(value as QueryProviderId)}
-                items={queryProviderItems.length > 0
-                  ? queryProviderItems
-                  : [{ value: 'custom', label: 'Custom' }]}
-              />
-              {selectedQueryPreset && settings.queryProvider !== 'custom' && (
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  {selectedQueryPreset.discoveredExecutable
-                    ? `Found ${selectedQueryPreset.discoveredExecutable}`
-                    : `Not found in ${selectedQueryPreset.discoveryPaths.join(', ')}`}
-                </p>
-              )}
-              {settings.queryProvider === 'custom' && (
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Choose an absolute executable and its fixed arguments below. For a local smoke test,
-                  use <code>/usr/bin/printf</code> with one fixed argument: <code>%s</code>.
-                </p>
-              )}
-            </div>
-
-            <SettingToggle
-              title="Enable Voice Query"
-              description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."
-              checked={settings.queryHotkey !== null}
-              disabled={queryConfigBusy}
-              onChange={() => void toggleVoiceQuery()}
-            />
-            <SettingToggle
-              targetId="voice-query-copy"
-              title="Automatically copy answers"
-              description="Copy successful final answers to the clipboard. Voice Query never auto-pastes."
-              checked={settings.queryAutomaticallyCopyAnswers}
-              onChange={() => onUpdateSettings({
-                queryAutomaticallyCopyAnswers: !settings.queryAutomaticallyCopyAnswers,
-              })}
-            />
-            {queryConfigError && <p role="alert" className="text-xs text-error">{queryConfigError}</p>}
-            {queryConfigNotice && (
-              <p role="status" className="text-xs text-on-surface-variant">{queryConfigNotice}</p>
-            )}
-
-            <div className="space-y-4">
-              <div>
-                <label htmlFor="query-executable" className="mb-1.5 block text-sm font-medium text-on-surface">CLI executable</label>
-                <div className="flex gap-2">
-                  <input
-                    id="query-executable"
-                    type="text"
-                    value={settings.queryExecutable}
-                    onChange={(event) => {
-                      setQueryConfigError(null);
-                      setQueryConfigNotice(settings.queryHotkey !== null
-                        ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
-                        : null);
-                      setQueryTestResult(null);
-                      setQuerySignInStatus(null);
-                      invalidateQueryRequests();
-                      onUpdateSettings({ queryExecutable: event.target.value, queryHotkey: null });
-                    }}
-                    placeholder="/absolute/path/to/agent"
-                    spellCheck={false}
-                    className="min-w-0 flex-1 rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
-                  />
-                  <button type="button" onClick={() => void chooseQueryExecutable()} className="rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container">
-                    Browse…
-                  </button>
-                </div>
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Must be an absolute path to an executable file. No shell is ever invoked.
-                </p>
-              </div>
-
-              <div>
-                <label htmlFor="query-arguments" className="mb-1.5 block text-sm font-medium text-on-surface">Fixed arguments</label>
-                <textarea
-                  id="query-arguments"
-                  rows={3}
-                  value={settings.queryArguments.join('\n')}
-                  onChange={(event) => {
-                    setQueryConfigError(null);
-                    setQueryConfigNotice(settings.queryHotkey !== null
-                      ? 'Command changed. Voice Query was turned off so the new command can be tested before use.'
-                      : null);
-                    setQueryTestResult(null);
-                    setQuerySignInStatus(null);
-                    invalidateQueryRequests();
-                    onUpdateSettings({
-                      queryArguments: event.target.value.split('\n').filter((argument) => argument.length > 0),
-                      queryHotkey: null,
-                    });
-                  }}
-                  placeholder={'One argument per line\n--print'}
-                  spellCheck={false}
-                  className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
-                />
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
-                </p>
-              </div>
-
-              <div className="settings-card p-3">
-                <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-on-surface">Provider preflight</p>
-                    <p className="mt-1 text-xs text-on-surface-variant">
-                      Runs the preset’s bounded authentication probe through the same direct-spawn and cleared-environment path as a query.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={queryTestBusy || !settings.queryExecutable.trim()}
-                    onClick={() => void runQueryTest()}
-                    className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {queryTestBusy ? 'Testing…' : 'Test'}
-                  </button>
-                </div>
-                {queryTestResult && (
-                  <div className="mt-3 space-y-2 text-xs">
-                    <p className={queryTestResult.ok ? 'text-primary' : 'text-error'}>
-                      {queryProviderTestMessage(settings.queryProvider, queryTestResult)}
-                    </p>
-                    {queryTestResult.stdout && !isIncompleteCodexProbe(settings.queryProvider, queryTestResult) && (
-                      <div>
-                        <p className="font-semibold text-on-surface-variant">stdout{queryTestResult.stdoutTruncated ? ' · tail only' : ''}</p>
-                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
-                          {queryTestResult.stdout}
-                        </pre>
-                      </div>
-                    )}
-                    {queryTestResult.stderr && !isIncompleteCodexProbe(settings.queryProvider, queryTestResult) && (
-                      <div>
-                        <p className="font-semibold text-on-surface-variant">stderr{queryTestResult.stderrTruncated ? ' · tail only' : ''}</p>
-                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-container-lowest p-2 font-mono text-[11px] text-on-surface">
-                          {queryTestResult.stderr}
-                        </pre>
-                      </div>
-                    )}
-                    {!queryTestResult.ok && queryTestResult.signInFix && (
-                      <button
-                        type="button"
-                        onClick={() => void signInQueryProvider()}
-                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 font-semibold text-on-surface hover:bg-surface-container"
-                      >
-                        Sign in…
-                      </button>
-                    )}
-                  </div>
-                )}
-                {querySignInStatus && (
-                  <p aria-live="polite" className="mt-2 text-xs text-on-surface-variant">
-                    {querySignInStatus}
-                  </p>
-                )}
-              </div>
-
-              {selectedQueryPreset && (
-                selectedQueryPreset.permittedEnvironmentVariables.length > 0
-                || queryEnvironmentNeedsRepair
-                || queryEnvironmentStatus !== null
-              ) && (
-                <div className="settings-card p-3">
-                  <p className="text-sm font-medium text-on-surface">
-                    {selectedQueryPreset.permittedEnvironmentVariables.length > 0
-                      ? 'Declared config directories'
-                      : 'Voice Query environment'}
-                  </p>
-                  {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
-                    <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
-                      Optional absolute directory paths are added to the cleared child environment.
-                      HOME and the base allowlist cannot be overridden. API keys, tokens, and other
-                      secret variables are not accepted. Values live only in Rust-owned app data,
-                      never localStorage.
-                    </p>
-                  )}
-                  {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
-                    <div className="mt-3 space-y-3">
-                      {selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
-                        <div key={name}>
-                          <label htmlFor={`query-env-${name}`} className="mb-1 block font-mono text-xs font-medium text-on-surface">
-                            {name}{configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
-                          </label>
-                          <input
-                            id={`query-env-${name}`}
-                            type="text"
-                            value={queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              invalidateQueryRequests();
-                              setQueryEnvironment((current) => [
-                                ...current.filter((variable) => variable.name !== name),
-                                ...(value ? [{ name, value }] : []),
-                              ]);
-                              setQueryEnvironmentStatus(null);
-                            }}
-                            placeholder={configuredQueryEnvironment.includes(name)
-                              ? 'Enter a replacement path'
-                              : '/absolute/path/to/config'}
-                            spellCheck={false}
-                            className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="mt-3 flex items-center gap-3">
-                    {selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => void saveDeclaredEnvironment()}
-                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
-                      >
-                        Save environment
-                      </button>
-                    )}
-                    {(configuredQueryEnvironment.length > 0 || queryEnvironmentNeedsRepair) && (
-                      <button
-                        type="button"
-                        onClick={() => void clearDeclaredEnvironment()}
-                        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-surface-container"
-                      >
-                        Clear saved values
-                      </button>
-                    )}
-                    {queryEnvironmentStatus && (
-                      <span className="text-xs text-on-surface-variant">{queryEnvironmentStatus}</span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-on-surface">Context shared with the CLI</label>
-                <Select
-                  value={settings.queryContextLevel}
-                  onChange={(queryContextLevel) => {
-                    invalidateQueryRequests();
-                    onUpdateSettings({ queryContextLevel });
-                  }}
-                  items={QUERY_CONTEXT_LEVEL_OPTIONS}
-                />
-                <p className="mt-1 text-xs text-on-surface-variant">
-                  Off by default. App &amp; window adds only the frontmost app name and window title.
-                  Choose App, window &amp; selection (the third option) to also add up to 8 KiB of
-                  selected text after secure-field checks. The popover always shows what kind of
-                  context was included, and per-app exclusions take precedence.
-                </p>
-              </div>
-
-              <SettingToggle
-                title="Keep Voice Query history on this Mac"
-                description="Off by default. When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
-                checked={settings.retainQueryHistory}
-                onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
-              />
-              <p className="text-xs text-on-surface-variant">
-                Voice Query counters and token usage appear under Insights in the main-window footer.
-              </p>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-on-surface">Query shortcut</label>
-                  <Select
-                    value={settings.queryHotkey ?? QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value ?? 'shift_r'}
-                    disabled={settings.queryHotkey === null}
-                    onChange={(value) => {
-                      const queryHotkey = value as QueryKey;
-                      if (queryHotkey === settings.transformHoldKey) {
-                        setQueryConfigError('That key is already assigned to Selected-text Transform.');
-                        return;
-                      }
-                      setQueryConfigError(null);
-                      onUpdateSettings({ queryHotkey });
-                    }}
-                    items={QUERY_KEY_OPTIONS}
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-on-surface">Timeout</label>
-                  <Select
-                    value={String(settings.queryTimeoutSeconds)}
-                    onChange={(value) => {
-                      invalidateQueryRequests();
-                      onUpdateSettings({ queryTimeoutSeconds: Number(value) });
-                    }}
-                    items={[
-                      { value: '30', label: '30 seconds' },
-                      { value: '60', label: '1 minute' },
-                      { value: '120', label: '2 minutes' },
-                      { value: '300', label: '5 minutes' },
-                    ]}
-                  />
-                </div>
-              </div>
-
-              {accessibilityGranted === false && settings.queryHotkey !== null && (
-                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span>Accessibility permission is required for the global query shortcut.</span>
-                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
-                </div>
-              )}
-            </div>
-
-            <div className="border-t border-outline-variant/20 pt-4 text-xs leading-relaxed text-on-surface-variant">
-              Answers stream into a popover. Successful final answers are copied to the clipboard when automatic
-              copying is enabled; otherwise, use Copy in the popover. They are never auto-pasted. Question and answer content enters only the separate local query store when you explicitly enable it.
-              Context is never stored as a separate history field, but a saved answer may quote context shared with the CLI.
-              Context content never enters saved files, usage stats, diagnostics, logs, or telemetry.
-            </div>
-          </SettingsSection>
-
-          <SettingsSection pageId="ai-transform" activePage={activeCat} title="Selected-Text Rewrite" subtitle="On-device rewriting, shortcut, and saved instructions">
-            <div data-setting-target="rewrite-model" className="rounded-xl border border-primary/20 bg-primary/5 p-3 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <p className="text-sm font-medium text-on-surface">Local only · Apple Silicon</p>
-              <p className="mt-1 text-xs text-on-surface">
-                Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
-                anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).
-                Never auto-applies.
-              </p>
-            </div>
-            <SettingToggle
-              title="Correct last dictation shortcut"
-              description="Press ⌘⇧E to speak a correction to your latest dictation. Press again to finish, then review and copy or replace a matching selection. Uses the local model below."
-              checked={settings.correctionShortcutEnabled}
-              onChange={() => onUpdateSettings({ correctionShortcutEnabled: !settings.correctionShortcutEnabled })}
-            />
-            {settings.correctionShortcutEnabled && accessibilityGranted === false && (
-              <p className="text-xs text-on-surface-variant">Accessibility access is required for ⌘⇧E. You can also start correction from the ⌘K command palette.</p>
-            )}
-            <SettingToggle
-              title="Enable Transform Shortcut"
-              description="Hold the transform key while text is selected to capture a rewrite instruction."
-              checked={settings.transformHoldKey !== null}
-              onChange={() => {
-                void updateTransformHoldKey(
-                  settings.transformHoldKey === null ? 'alt_r' : null,
-                );
-              }}
-            />
-            <SettingsBranch open={settings.transformHoldKey !== null}>
-              <div className="space-y-2">
-                <label className="mb-1 block text-sm font-medium text-on-surface">Hold key</label>
-                <Select
-                  value={settings.transformHoldKey ?? 'alt_r'}
-                  onChange={(value) => {
-                    void updateTransformHoldKey(value as TransformKey);
-                  }}
-                  items={TRANSFORM_KEY_OPTIONS}
-                />
-                <p className="text-xs text-on-surface-variant">
-                  Dictation hold keys are rejected. Right Option / Left Control / Right Shift only.
-                </p>
-                {transformKeyError && (
-                  <p className="text-xs text-error">{transformKeyError}</p>
-                )}
-                {accessibilityGranted === false && (
-                  <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                    <span>Accessibility permission is required for transform capture and apply.</span>
-                    <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
-                  </div>
-                )}
-              </div>
-            </SettingsBranch>
-            <div className="border-t border-outline-variant/20 pt-4">
-              <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
-              <p className="mt-1 mb-3 text-xs text-on-surface-variant">
-                Qwen2.5-1.5B Instruct (Q4_K_M), {TRANSFORM_MODEL_SIZE_LABEL}. Downloaded to
-                Application Support; verified by size and SHA-256. Apple Silicon only.
-              </p>
-              {transformModel && (
-                <p className="mb-2 text-xs text-on-surface-variant" data-testid="transform-model-status">
-                  Status:{' '}
-                  {transformModel.state === 'ready'
-                    ? 'Ready'
-                    : transformModel.state === 'downloading'
-                      ? 'Downloading…'
-                      : 'Not downloaded'}
-                </p>
-              )}
-              {transformDownloadPct !== null && (
-                <div className="mb-2">
-                  <div className="mb-1 flex justify-between text-xs text-on-surface-variant">
-                    <span>Downloading transform model</span>
-                    <span>{transformDownloadPct}%</span>
-                  </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest">
-                    <div
-                      className="h-full rounded-full bg-primary transition-all duration-200"
-                      style={{ width: `${transformDownloadPct}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-              {transformModelError && (
-                <p className="mb-2 text-xs text-error">{transformModelError}</p>
-              )}
-              <div className="flex flex-wrap gap-2">
-                {transformModel?.state !== 'ready' && (
-                  <button
-                    type="button"
-                    disabled={transformModelBusy || transformModel?.state === 'downloading'}
-                    onClick={() => void downloadTransform()}
-                    className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
-                  >
-                    {transformModelBusy || transformModel?.state === 'downloading' ? 'Working…' : 'Download'}
-                  </button>
-                )}
-                {transformModel?.state === 'ready' && (
-                  <button
-                    type="button"
-                    disabled={transformModelBusy}
-                    onClick={() => void removeTransform()}
-                    onBlur={() => setConfirmRemoveTransform(false)}
-                    className="settings-quiet-btn px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
-                  >
-                    {confirmRemoveTransform ? 'Confirm remove' : 'Remove'}
-                  </button>
-                )}
-                {transformModel?.runtimeDisabled && (
-                  <button
-                    type="button"
-                    disabled={transformModelBusy}
-                    onClick={() => void resetTransform()}
-                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
-                    title="Clear the circuit breaker if the transform runtime was disabled after repeated faults"
-                  >
-                    Reset runtime
-                  </button>
-                )}
-              </div>
-              {transformModel?.runtimeDisabled && (
-                <p className="mt-2 text-xs text-primary">
-                  The transform runtime was disabled after repeated faults. Reset it to try again.
-                </p>
-              )}
-            </div>
-            <div className="border-t border-outline-variant/20 pt-4">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-sm font-medium text-on-surface">Saved transforms</h2>
-                  <p className="mt-1 text-xs text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
-                </div>
-                <button type="button" onClick={() => openEditor('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
-              </div>
-            </div>
-          </SettingsSection>
+          <TransformModelSettings
+            settings={settings}
+            onUpdateSettings={onUpdateSettings}
+            activePage={activeCat}
+            accessibilityGranted={accessibilityGranted}
+            onRequestAccessibility={requestAccessibility}
+            onOpenEditor={openEditor}
+            vm={transformVm}
+          />
 
           <SettingsSection pageId="ai-transcription" activePage={activeCat} title="Speech-to-Text" subtitle="Recognition model, language, and memory lifecycle">
             <div data-setting-target="transcription-model" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">

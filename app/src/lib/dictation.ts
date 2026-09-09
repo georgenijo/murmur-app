@@ -240,3 +240,27 @@ export async function checkMicrophonePermissionStatus(): Promise<MicPermissionSt
 export async function resetMicrophonePermission(): Promise<void> {
   return await invoke('reset_microphone_permission');
 }
+
+/**
+ * Enable or disable the global "correct last dictation" shortcut listener
+ * (main window only; see Rust `correction_shortcut::set_correction_shortcut`).
+ */
+export async function setCorrectionShortcut(
+  enabled: boolean,
+  deviceName: string | null,
+  smartAuto: SmartAutoMicrophoneRequest | null,
+): Promise<void> {
+  return await invoke('set_correction_shortcut', { enabled, deviceName, smartAuto });
+}
+
+/**
+ * Start a dictation-correction pass on demand (⌘K command palette), reusing
+ * the same device/smart-auto selection as a normal recording (see Rust
+ * `transform_flow::start_dictation_correction`).
+ */
+export async function startDictationCorrection(
+  deviceName: string | null,
+  smartAuto: SmartAutoMicrophoneRequest | null,
+): Promise<void> {
+  return await invoke('start_dictation_correction', { deviceName, smartAuto });
+}

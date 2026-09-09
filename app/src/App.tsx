@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
 import {
@@ -44,20 +43,28 @@ import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
 import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useSoundCues } from './lib/hooks/useSoundCues';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
+import { useDevUpdaterMock } from './lib/hooks/useDevUpdaterMock';
+import { useDeliveryRecoveryListeners } from './lib/hooks/useDeliveryRecoveryListeners';
 import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
-import type { CompletedUpdate, UpdateStatus } from './lib/updater';
+import { setTrayUpdateAvailable } from './lib/updater';
 import { resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
-import { checkAccessibilityPermission, checkMicrophonePermissionStatus, checkModelExists } from './lib/dictation';
+import {
+  checkAccessibilityPermission,
+  checkMicrophonePermissionStatus,
+  checkModelExists,
+  setCorrectionShortcut,
+  startDictationCorrection,
+} from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
-import { retryLastDelivery, setPasteLastShortcut, type DeliveryRetryResult } from './lib/deliveryRecovery';
+import { retryLastDelivery, setPasteLastShortcut } from './lib/deliveryRecovery';
 import { microphoneDeviceNameArg, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
@@ -170,11 +177,11 @@ function App() {
 
   useEffect(() => {
     const smartAuto = smartAutoMicrophoneRequest(settings);
-    void invoke('set_correction_shortcut', {
-      enabled: settings.correctionShortcutEnabled === true && !settings.disabled,
-      deviceName: smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
+    void setCorrectionShortcut(
+      settings.correctionShortcutEnabled === true && !settings.disabled,
+      smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
       smartAuto,
-    }).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
+    ).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
   }, [
     settings.correctionShortcutEnabled,
     settings.disabled,
@@ -202,23 +209,7 @@ function App() {
       });
   }, [settings.pasteLastShortcut, updateSettings]);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<DeliveryRetryResult>('delivery-retry-feedback', ({ payload }) => {
-      setDeliveryRecoveryMessage(payload.message);
-      window.setTimeout(() => setDeliveryRecoveryMessage(''), 5000);
-    }).then((fn) => { unlisten = fn; }).catch(() => {});
-    return () => unlisten?.();
-  }, []);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<unknown>('correction-start-failed', ({ payload }) => {
-      setDeliveryRecoveryMessage(typeof payload === 'string' ? payload : 'Could not start correction. Try Correct last dictation from ⌘K.');
-    }).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch(() => {});
-    return () => { disposed = true; unlisten?.(); };
-  }, []);
+  useDeliveryRecoveryListeners(setDeliveryRecoveryMessage);
 
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
@@ -226,7 +217,7 @@ function App() {
   const [accessibilityGranted, setAccessibilityGranted] = useState<boolean | null>(null);
   useEffect(() => {
     const check = () => {
-      invoke<boolean>('check_accessibility_permission')
+      checkAccessibilityPermission()
         .then(setAccessibilityGranted)
         .catch(() => {});
     };
@@ -307,80 +298,17 @@ function App() {
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
 
-  // DEV ONLY: cycle through updater and post-update modal states for visual testing
-  const devUpdateIndex = useRef(-1);
-  const devMockStates: UpdateStatus[] = import.meta.env.DEV ? [
-    {
-      phase: 'error',
-      stage: 'install',
-      message: 'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.',
-      isForced: false,
-      recovery: 'reinstall',
-    },
-    { phase: 'available', version: '0.7.0', notes: '## What\'s New\n- OTA auto-updater\n- Bug fixes\n- Performance improvements', isForced: false },
-    { phase: 'available', version: '0.7.0', notes: 'Critical security fix.', isForced: true },
-    { phase: 'preparing', version: '0.7.0' },
-    { phase: 'downloading', version: '0.7.0', progress: 65 },
-  ] : [];
-  const [devUpdateStatus, setDevUpdateStatus] = useState<UpdateStatus | null>(null);
-  const [devCompletedUpdate, setDevCompletedUpdate] = useState<CompletedUpdate | null>(null);
-  const [devUpdateDialogOpen, setDevUpdateDialogOpen] = useState(false);
-
-  const checkForUpdate = useCallback(async () => {
-    if (import.meta.env.DEV) {
-      devUpdateIndex.current = (devUpdateIndex.current + 1) % (devMockStates.length + 1);
-      if (devUpdateIndex.current === 0) {
-        setDevUpdateStatus(null);
-        setDevUpdateDialogOpen(false);
-        setDevCompletedUpdate({
-          version: '0.22.0',
-          notes: '## New Features\n\n- Faster local transcription\n- Selected-text transforms\n\n## Bug Fixes\n\n- More reliable microphone startup\n- Smoother overlay behavior',
-        });
-      } else {
-        setDevCompletedUpdate(null);
-        setDevUpdateStatus(devMockStates[devUpdateIndex.current - 1]);
-        setDevUpdateDialogOpen(true);
-      }
-      return;
-    }
-    return updater.checkForUpdate();
-  }, [updater.checkForUpdate]);
-
-  const updateStatus = devUpdateStatus ?? updater.updateStatus;
-  const isUpdateDialogOpen = devUpdateStatus
-    ? devUpdateDialogOpen
-    : updater.isUpdateDialogOpen;
-  const showAvailableUpdate = useCallback(() => {
-    if (
-      devUpdateStatus?.phase === 'available' ||
-      (devUpdateStatus?.phase === 'error' && devUpdateStatus.stage === 'install')
-    ) {
-      setDevUpdateDialogOpen(true);
-      return;
-    }
-    updater.showAvailableUpdate();
-  }, [devUpdateStatus, updater.showAvailableUpdate]);
-  const dismissUpdate = useCallback(() => {
-    if (devUpdateStatus) { setDevUpdateDialogOpen(false); return; }
-    updater.dismissUpdate();
-  }, [devUpdateStatus, updater.dismissUpdate]);
-  const skipVersion = useCallback(() => {
-    if (devUpdateStatus) {
-      setDevUpdateDialogOpen(false);
-      setDevUpdateStatus(null);
-      return;
-    }
-    updater.skipVersion();
-  }, [devUpdateStatus, updater.skipVersion]);
-  const startDownload = updater.startDownload;
-  const completedUpdate = devCompletedUpdate ?? updater.completedUpdate;
-  const dismissCompletedUpdate = useCallback(() => {
-    if (devCompletedUpdate) {
-      setDevCompletedUpdate(null);
-      return;
-    }
-    updater.dismissCompletedUpdate();
-  }, [devCompletedUpdate, updater.dismissCompletedUpdate]);
+  const {
+    checkForUpdate,
+    updateStatus,
+    isUpdateDialogOpen,
+    showAvailableUpdate,
+    dismissUpdate,
+    skipVersion,
+    startDownload,
+    completedUpdate,
+    dismissCompletedUpdate,
+  } = useDevUpdaterMock(updater);
 
   // The native menu-bar item brings the main window forward and asks the same
   // updater used by Settings and the command palette to perform a manual check.
@@ -408,7 +336,7 @@ function App() {
   // Keep the native menu label in sync with the passive in-app indicator.
   useEffect(() => {
     const version = updateStatus.phase === 'available' ? updateStatus.version : null;
-    invoke('set_tray_update_available', { version }).catch((err: unknown) => {
+    setTrayUpdateAvailable(version).catch((err: unknown) => {
       flog.warn('updater', 'could not update menu-bar update item', {
         error: String(err),
       });
@@ -587,10 +515,10 @@ function App() {
         keywords: ['fix', 'spelling', 'voice', 'correction'],
         run: () => {
           const smartAuto = smartAutoMicrophoneRequest(settings);
-          void invoke('start_dictation_correction', {
-            deviceName: smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
+          void startDictationCorrection(
+            smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
             smartAuto,
-          }).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+          ).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
         },
       },
       {
