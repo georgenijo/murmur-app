@@ -141,10 +141,6 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
   };
 }
 
-export async function countVocabTokens(text: string): Promise<number | null> {
-  return await invoke('count_vocab_tokens', { text });
-}
-
 export async function previewVocabularyAliases(
   entries: VocabularyEntry[],
   voiceCommands: VoiceCommand[],
