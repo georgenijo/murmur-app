@@ -33,6 +33,7 @@ import {
   launchQueryProviderSignIn,
   listQueryProviderPresets,
   loadQueryEnvironment,
+  pollQuerySignIn,
   saveQueryEnvironment,
   testQueryProvider,
   validateQueryCommand,
@@ -1113,24 +1114,16 @@ export const SettingsPanel = memo(function SettingsPanel({
     setQueryConfigError(null);
     setQuerySignInStatus('Opening Terminal…');
     try {
-      await launchQueryProviderSignIn(command);
-      if (!ownsRequest()) return;
-      setQuerySignInStatus('Terminal opened. Waiting for sign-in…');
-      const deadline = Date.now() + 60_000;
-      while (ownsRequest() && Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        if (!ownsRequest()) return;
-        const result = await testQueryProvider(command);
-        if (!ownsRequest()) return;
-        setQueryTestResult(result);
-        if (result.ok) {
-          setQuerySignInStatus('Signed in and ready.');
-          return;
-        }
-      }
-      if (ownsRequest()) {
-        setQuerySignInStatus('Sign-in is still pending. Finish in Terminal, then choose Test.');
-      }
+      await pollQuerySignIn({
+        launch: () => launchQueryProviderSignIn(command),
+        onLaunched: () => setQuerySignInStatus('Terminal opened. Waiting for sign-in…'),
+        probe: () => testQueryProvider(command),
+        isSignedIn: (result) => result.ok,
+        onProbeResult: (result) => setQueryTestResult(result),
+        onSignedIn: () => setQuerySignInStatus('Signed in and ready.'),
+        onPending: () => setQuerySignInStatus('Sign-in is still pending. Finish in Terminal, then choose Test.'),
+        ownsAttempt: ownsRequest,
+      });
     } catch (error) {
       if (ownsRequest()) {
         setQuerySignInStatus(null);
