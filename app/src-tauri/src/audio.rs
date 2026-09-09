@@ -20,7 +20,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 pub fn compute_rms(samples: &[f32]) -> f32 {
@@ -2372,6 +2372,18 @@ fn run_backend(
                         .extend_from_slice(&pcm.samples);
                 }
                 if let Some(preview_id) = owner.preview_id() {
+                    if let Some(handle) = app_handle.as_ref() {
+                        handle
+                            .state::<crate::State>()
+                            .app_state
+                            .microphone_preview
+                            .observe_signal_verification(
+                                preview_id,
+                                &pcm.samples,
+                                pcm.sample_rate,
+                                Instant::now(),
+                            );
+                    }
                     // Accumulate every callback between paint-rate emissions;
                     // otherwise a short peak could disappear in the throttle.
                     preview_levels.observe(&pcm.samples);

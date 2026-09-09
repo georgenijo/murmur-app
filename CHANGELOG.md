@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Settings can verify five seconds of microphone signal using the existing live
+  preview, with clear results for sustained sound, silence, and interruption
+  (#525). Automatic signal-based routing remains a follow-up.
+
 ### Fixed
 
 - Private dictation captures on the Fleet dashboard now show their capture and
