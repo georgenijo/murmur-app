@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
+import { QueryCapabilities } from './QueryCapabilities';
 import {
   selectedDeviceExists,
 } from '../../lib/audioDevices';
@@ -1560,6 +1561,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
             </div>
 
+            <QueryCapabilities command={queryCommand(settings)} />
             <SettingToggle
               title="Enable Voice Query"
               description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."

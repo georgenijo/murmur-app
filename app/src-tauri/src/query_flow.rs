@@ -281,6 +281,7 @@ struct ValidatedQueryCommand {
     timeout: Duration,
     environment: Vec<QueryEnvironmentVariable>,
     working_directory: PathBuf,
+    trusted_workspace: bool,
     context_level: QueryContextLevel,
 }
 
@@ -1252,6 +1253,7 @@ pub(crate) struct QueryReviewContent {
     usage: Option<QueryUsage>,
     sign_in_fix: Option<&'static str>,
     context_summary: Option<String>,
+    capability_summary: Option<String>,
 }
 
 fn validate_command(
@@ -1312,6 +1314,7 @@ fn validate_command(
         timeout: Duration::from_secs(config.timeout_seconds),
         environment,
         working_directory,
+        trusted_workspace: false,
         context_level: config.context_level,
     })
 }
@@ -1322,7 +1325,16 @@ fn validate_command_for_app(
 ) -> Result<ValidatedQueryCommand, &'static str> {
     let environment = crate::query_provider::load_environment(app, config.provider)?;
     let working_directory = crate::query_provider::query_working_directory(app)?;
-    validate_command(config, environment, working_directory)
+    let saved_arguments = config.arguments.clone();
+    let mut command = validate_command(config, environment, working_directory)?;
+    if let Some((directory, arguments)) =
+        crate::query_capabilities::resolve(command.provider, &command.executable, &saved_arguments)?
+    {
+        command.working_directory = directory;
+        command.arguments = arguments;
+        command.trusted_workspace = true;
+    }
+    Ok(command)
 }
 
 fn require_window_label(actual: &str, expected: &str) -> Result<(), String> {
@@ -1393,12 +1405,13 @@ pub(crate) async fn test_query_provider(
 ) -> Result<QueryProviderTestResult, String> {
     require_window(&window, "main")?;
     let command = validate_command_for_app(&app_handle, command).map_err(str::to_string)?;
+    let scratch = crate::query_provider::query_working_directory(&app_handle)?;
     tokio::task::spawn_blocking(move || {
         crate::query_provider::run_auth_probe(
             command.provider,
             &command.executable,
             &command.environment,
-            &command.working_directory,
+            &scratch,
         )
     })
     .await
@@ -1442,6 +1455,7 @@ pub(crate) fn launch_query_sign_in_for_pass(
 
 #[tauri::command]
 pub(crate) async fn probe_query_sign_in_for_pass(
+    app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::State>,
     query_pass_id: u64,
@@ -1451,12 +1465,13 @@ pub(crate) async fn probe_query_sign_in_for_pass(
         .query
         .session(query_pass_id)
         .ok_or_else(|| "That query is no longer available.".to_string())?;
+    let scratch = crate::query_provider::query_working_directory(&app_handle)?;
     let result = tokio::task::spawn_blocking(move || {
         crate::query_provider::run_auth_probe(
             session.command.provider,
             &session.command.executable,
             &session.command.environment,
-            &session.command.working_directory,
+            &scratch,
         )
     })
     .await
@@ -2613,6 +2628,9 @@ fn run_cli(
 
     let deadline = Instant::now() + command.timeout;
     let mut adapter = VoiceQueryAdapter::new(command.provider, MAX_ANSWER_BYTES);
+    if command.trusted_workspace {
+        adapter.require_structured_output();
+    }
     let mut sequence = 0_u64;
     let mut stderr_tail = StderrTail::new();
     let exit_status = loop {
@@ -3137,7 +3155,19 @@ pub(crate) fn get_query_review_content(
         sign_in_fix: session
             .as_ref()
             .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),
-        context_summary: session.and_then(|session| session.query_context.summary()),
+        context_summary: session
+            .as_ref()
+            .and_then(|session| session.query_context.summary()),
+        capability_summary: session.map(|session| {
+            if session.command.trusted_workspace {
+                format!(
+                    "Trusted read-only · {} · web, commands, MCP and plugins off",
+                    session.command.working_directory.display()
+                )
+            } else {
+                "Restricted · no trusted workspace · CLI inference may use network".to_string()
+            }
+        }),
     }
 }
 
@@ -3189,6 +3219,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: std::env::temp_dir(),
+                    trusted_workspace: false,
                     context_level: QueryContextLevel::None,
                 },
                 automatically_copy_answer,
@@ -3631,6 +3662,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: temp.path().to_path_buf(),
+                    trusted_workspace: false,
                     context_level: QueryContextLevel::Selection,
                 },
                 automatically_copy_answer: true,
@@ -3751,6 +3783,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: temp.path().to_path_buf(),
+                    trusted_workspace: false,
                     context_level: QueryContextLevel::Selection,
                 },
                 automatically_copy_answer: true,
@@ -3808,6 +3841,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: temp.path().to_path_buf(),
+                    trusted_workspace: false,
                     context_level: QueryContextLevel::Application,
                 },
                 automatically_copy_answer: true,
@@ -4168,6 +4202,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     environment: vec![],
                     working_directory: std::env::temp_dir(),
+                    trusted_workspace: false,
                     context_level: QueryContextLevel::None,
                 },
                 automatically_copy_answer: true,

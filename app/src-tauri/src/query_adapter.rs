@@ -64,6 +64,12 @@ enum AdapterKind {
 }
 
 impl VoiceQueryAdapter {
+    pub(crate) fn require_structured_output(&mut self) {
+        if let AdapterKind::JsonLines(adapter) = &mut self.inner {
+            adapter.strict = true;
+        }
+    }
+
     pub(crate) fn new(provider: QueryProviderId, max_output_bytes: usize) -> Self {
         let inner = match provider {
             QueryProviderId::Claude => AdapterKind::JsonLines(JsonLinesAdapter::new(
@@ -96,6 +102,24 @@ impl VoiceQueryAdapter {
             }),
             AdapterKind::JsonLines(adapter) => adapter.finish(),
         }
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn trusted_queries_never_fall_back_to_raw_tool_or_context_output() {
+        let mut adapter = VoiceQueryAdapter::new(QueryProviderId::Claude, 4096);
+        adapter.require_structured_output();
+        assert_eq!(
+            adapter.push_stdout(b"private tool output\n"),
+            Err("provider_error")
+        );
+        let mut truncated = VoiceQueryAdapter::new(QueryProviderId::Claude, 4096);
+        truncated.require_structured_output();
+        assert_eq!(truncated.finish().unwrap_err(), "provider_error");
     }
 }
 
@@ -165,6 +189,7 @@ enum StructuredProvider {
 }
 
 struct JsonLinesAdapter {
+    strict: bool,
     provider: StructuredProvider,
     max_output_bytes: usize,
     total_output_bytes: usize,
@@ -184,6 +209,7 @@ const MAX_PROVIDER_DETAIL_BYTES: usize = MAX_STDERR_BYTES;
 impl JsonLinesAdapter {
     fn new(provider: StructuredProvider, max_output_bytes: usize) -> Self {
         Self {
+            strict: false,
             provider,
             max_output_bytes,
             total_output_bytes: 0,
@@ -218,6 +244,9 @@ impl JsonLinesAdapter {
             match self.parse_line(&line) {
                 Some(mut parsed) => updates.append(&mut parsed),
                 None => {
+                    if self.strict {
+                        return Err("provider_error");
+                    }
                     updates.push(self.enable_raw_fallback());
                     break;
                 }
@@ -241,6 +270,9 @@ impl JsonLinesAdapter {
             match self.parse_line(&line) {
                 Some(mut parsed) => updates.append(&mut parsed),
                 None => {
+                    if self.strict {
+                        return Err("provider_error");
+                    }
                     updates.push(self.enable_raw_fallback());
                     if let Some(raw) = &mut self.raw_fallback {
                         updates.extend(raw.finish());
@@ -258,6 +290,9 @@ impl JsonLinesAdapter {
         // replace any optimistic deltas with the exact raw stream. This keeps
         // truncation and wrapper/version mismatches on the legacy-safe path.
         if !self.terminal_seen {
+            if self.strict {
+                return Err("provider_error");
+            }
             return Ok(self.finish_as_raw_fallback());
         }
 
