@@ -49,6 +49,7 @@ mod meeting_review;
 mod meeting_store;
 mod microphone_auto;
 mod microphone_preview;
+mod microphone_signal;
 mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
@@ -334,6 +335,7 @@ pub fn run() {
             commands::permissions::list_audio_devices,
             commands::permissions::get_audio_input_inventory,
             commands::microphone_preview::get_microphone_preview_status,
+            commands::microphone_preview::verify_microphone_preview_signal,
             commands::microphone_preview::start_microphone_preview,
             commands::microphone_preview::update_microphone_preview_vad_sensitivity,
             commands::microphone_preview::stop_microphone_preview,

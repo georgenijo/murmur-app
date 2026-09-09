@@ -160,7 +160,11 @@ build:
   `recording_id`/`owner`, `owner_kind: "dictation"`, `state: "pending"` or
   `"resolved"`, and `prompt_pending_ms` only for `resolved`. A pending prompt
   excludes only startup latency; its attempt remains in every other reliability
-  count.
+  count. The evaluator separately excludes a non-prompt
+  `user_cancelled_starting` terminal that arrives before the 400 ms target
+  deadline. This records that the user ended the observation before the SLO
+  could determine its outcome. Later cancellations and all other missing-ready
+  attempts remain startup misses.
 - `pipeline.dictation_state_changed` carries a positive `recording_id` plus
   unequal `from`/`to` values from `idle`, `starting`, `recording`,
   `recovering`, and `processing`. The accepted request record is emitted

@@ -14,10 +14,12 @@ import {
   microphoneClassificationLabel,
   microphoneLevelPercent,
   microphonePeakPercent,
+  microphoneSignalVerificationLabel,
   smoothMicrophoneMeterValue,
   startMicrophonePreview,
   stopMicrophonePreview,
   updateMicrophonePreviewVadSensitivity,
+  verifyMicrophonePreviewSignal,
   type MicrophonePreviewLevel,
   type MicrophonePreviewStatus,
   type MicrophonePreviewVad,
@@ -255,6 +257,8 @@ export function MicrophoneInputTest({
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [verification, setVerification] = useState<{ previewId: number; message: string; pending: boolean } | null>(null);
+  const verificationPendingRef = useRef(false);
   const [vadDecision, setVadDecision] = useState<MicrophonePreviewVadDecision | 'listening'>('listening');
   const statusRef = useRef(status);
   const mountedRef = useRef(true);
@@ -518,6 +522,27 @@ export function MicrophoneInputTest({
   }, [applyStatus, onChange, runExclusive]);
 
   const ownsPreview = status.previewId !== null;
+  const verifySignal = async () => {
+    const previewId = statusRef.current.previewId;
+    if (previewId === null || verificationPendingRef.current) return;
+    verificationPendingRef.current = true;
+    setVerification({ previewId, pending: true, message: 'Speak normally for five seconds. Checking for one second of sustained signal…' });
+    try {
+      const result = await verifyMicrophonePreviewSignal(previewId);
+      if (mountedRef.current && statusRef.current.previewId === previewId) {
+        setVerification({ previewId, pending: false, message: microphoneSignalVerificationLabel(result) });
+      }
+    } catch (error) {
+      if (mountedRef.current && statusRef.current.previewId === previewId) {
+        setVerification({ previewId, pending: false, message: String(error) });
+      }
+    } finally {
+      verificationPendingRef.current = false;
+      if (mountedRef.current) {
+        setVerification((current) => current?.previewId === previewId && current.pending ? null : current);
+      }
+    }
+  };
   const busy = operation !== 'idle';
   const vadLabel = dictationBusy
     ? 'Paused while recording'
@@ -650,6 +675,13 @@ export function MicrophoneInputTest({
         <p className={`mt-2 text-xs ${actionError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
+        <div className="mt-2 text-xs text-on-surface-variant">
+          <button type="button" className="rounded border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50" disabled={status.state !== 'active' || busy || dictationBusy || verification?.pending === true} onClick={() => void verifySignal()}>
+            Verify signal for 5 seconds
+          </button>
+          {smartAutoActive && <p className="mt-2">Smart Auto still chooses by availability. This check tests its current preview input.</p>}
+          {verification?.previewId === status.previewId && <p className="mt-2" role="status">{verification.message}</p>}
+        </div>
         <div className="mt-2 flex items-center justify-between gap-3 border-t border-outline-variant/15 pt-2 text-xs">
           <span className="text-on-surface-variant">
             Voice detection · {vadSensitivity === 0 ? 'Off' : `${vadSensitivity}%`}

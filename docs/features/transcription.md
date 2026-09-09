@@ -79,6 +79,32 @@ immutable for that recording; a later device or lid change only affects the
 next capture. This narrower policy does not complete issue #525's
 verified-signal routing work.
 
+Settings offers **Verify signal for 5 seconds** on the active live meter. This
+is the bounded evidence primitive for #525, and does not yet feed the Auto
+resolver. It uses the existing Preview owner and opens no additional input.
+The backend accepts one check at a time, limits observations to five seconds,
+and allows another check ten seconds after the prior check began. Closing the
+preview, changing its generation, or a lifecycle error invalidates its result.
+The ordinary visible Settings meter continues after the check.
+
+Verification requires at least one second of consecutive 20 ms PCM frames
+classified as usable signal, plus at least one second of wall time. Each frame
+requires RMS >= 0.01, peak >= 0.05, and peak < 0.99. Silence, quiet input,
+clipping, non-finite samples, sample-rate changes, and callback gaps longer
+than 250 ms reset the consecutive-signal hold. No PCM during the window returns
+`no_pcm`; PCM without the hold returns `insufficient_signal`. A verified result
+means that sustained sound arrived during the check. It does not identify
+speech, the intended speaker, the room, or current health after the window.
+Only aggregate counters are kept. No verification PCM, IDs, labels, or result
+is persisted or uploaded.
+
+Remaining #525 gates are explicit automatic multi-input probe scheduling,
+per-device evidence freshness, retention of the current healthy input,
+switch cooldown and rollback after candidate startup/first-PCM failure.
+Physical acceptance still requires two approved inputs, active-input removal,
+default changes, Bluetooth transitions, silent/zombie input, and recording
+after a routing decision. This signal check does not claim those gates.
+
 Direct AUHAL is the primary backend and CPAL is the independent fallback. Each
 resolution pass allows one fallback only before any audio is retained and must
 target the same raw device UID. The fallback starts only after the primary process group is
@@ -248,10 +274,11 @@ capture cannot enter dictation reports.
 The reliability SLO uses only native hotkey/input requests carrying
 `slo_contract: 1` on `pipeline.dictation_requested`. That marker defines the
 contract-v1 population and keeps historical records from being mistaken for
-complete evidence after the contract is deployed. Prompted requests are split
-out of the startup-latency denominator as described below. Historical requests
-remain available to the legacy funnel, but the weekly evaluator labels windows
-that contain only pre-contract data as insufficient.
+complete evidence after the contract is deployed. Prompted requests and
+non-prompt attempts that the user cancels while still starting before the
+400 ms target deadline are split out of the startup-latency denominator.
+Historical requests remain available to the legacy funnel, but the weekly
+evaluator labels windows that contain only pre-contract data as insufficient.
 
 Three additional exact-schema records make the SLO clauses measurable:
 

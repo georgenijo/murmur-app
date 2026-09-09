@@ -72,7 +72,15 @@ and meter ARIA values directly from refs.
 
 ## Implementation map
 
+The **Verify signal for 5 seconds** button runs a bounded check on the same
+active preview. It keeps no audio and does not open, stop, or switch inputs.
+See the [signal verification contract](transcription.md#smart-auto-microphone-selection)
+for thresholds, deadlines, cooldown, result meanings, and the remaining Auto
+routing gates. A result applies only to that preview generation; changing the
+input discards a pending result.
+
 - Rust state/classification: `app/src-tauri/src/microphone_preview.rs`
+- Bounded signal verification: `app/src-tauri/src/microphone_signal.rs`
 - Rust commands/lifecycle bridge: `app/src-tauri/src/commands/microphone_preview.rs`
 - Capture routing: `app/src-tauri/src/audio.rs`, `audio_lifecycle.rs`
 - UI: `app/src/components/settings/MicrophoneInputTest.tsx`

@@ -3,7 +3,7 @@ use crate::microphone_auto::SmartAutoRequest;
 use crate::microphone_preview::{MicrophonePreviewStatus, PreviewPhase};
 use crate::state::DictationStatus;
 use crate::{keyboard, MutexExt, State};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 const CONFIRMED_STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -80,6 +80,19 @@ pub fn get_microphone_preview_status(
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
     Ok(state.app_state.microphone_preview.status())
+}
+
+#[tauri::command]
+pub async fn verify_microphone_preview_signal(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, State>,
+    preview_id: u64,
+) -> Result<crate::microphone_signal::SignalVerificationResult, String> {
+    require_main_window(&window)?;
+    let preview = &state.app_state.microphone_preview;
+    let deadline = preview.begin_signal_verification(preview_id, Instant::now())?;
+    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    Ok(preview.finish_signal_verification(preview_id))
 }
 
 #[tauri::command]
