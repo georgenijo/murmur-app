@@ -274,10 +274,11 @@ capture cannot enter dictation reports.
 The reliability SLO uses only native hotkey/input requests carrying
 `slo_contract: 1` on `pipeline.dictation_requested`. That marker defines the
 contract-v1 population and keeps historical records from being mistaken for
-complete evidence after the contract is deployed. Prompted requests are split
-out of the startup-latency denominator as described below. Historical requests
-remain available to the legacy funnel, but the weekly evaluator labels windows
-that contain only pre-contract data as insufficient.
+complete evidence after the contract is deployed. Prompted requests and
+non-prompt attempts that the user cancels while still starting before the
+400 ms target deadline are split out of the startup-latency denominator.
+Historical requests remain available to the legacy funnel, but the weekly
+evaluator labels windows that contain only pre-contract data as insufficient.
 
 Three additional exact-schema records make the SLO clauses measurable:
 

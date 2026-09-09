@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The weekly dictation startup SLO now treats a user cancellation before its
+  400 ms deadline as a censored observation instead of a capture miss, while
+  preserving late cancellations and genuine startup failures in the denominator
+  (#486).
 - Fleet diagnostics now judge 1 to 15 second production dictations against the
   stop-to-delivery target, show an explicit p50 and p95 verdict, and alert on a
   missed target without claiming that another app consumed a paste (#487).

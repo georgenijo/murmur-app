@@ -130,6 +130,7 @@ SLO_COUNT_KEYS = {
     "requested",
     "eligible_requests",
     "excluded_permission_prompts",
+    "excluded_user_cancellations_before_target",
     "accepted",
     "ready",
     "ready_without_accepted",
@@ -1114,13 +1115,17 @@ def _valid_slo_week(week, index, expected_start):
         return False
     if (
         counts["requested"]
-        != counts["eligible_requests"] + counts["excluded_permission_prompts"]
+        != counts["eligible_requests"]
+        + counts["excluded_permission_prompts"]
+        + counts["excluded_user_cancellations_before_target"]
         or counts["accepted"] > counts["requested"]
         or counts["ready"] > counts["requested"]
         or counts["ready_without_accepted"] > counts["ready"]
         or counts["ready"] - counts["ready_without_accepted"]
         > counts["accepted"]
         or counts["failed"] + counts["cancelled"] > counts["requested"]
+        or counts["excluded_user_cancellations_before_target"]
+        > counts["cancelled"]
         or counts["failures_with_actionable_presentation"]
         + counts["failures_without_actionable_presentation"]
         != counts["failed"]
@@ -1225,8 +1230,8 @@ def _valid_reliability_slo(slo):
             "two_consecutive_complete_weeks_pass",
             "weeks",
         }
-        or slo.get("schema_version") != 1
-        or slo.get("report") != "murmur-reliability-slo/v1"
+        or slo.get("schema_version") != 2
+        or slo.get("report") != "murmur-reliability-slo/v2"
         or slo.get("contract_version") != 1
         or slo.get("privacy") != "aggregate_only"
         or not isinstance(slo.get("two_consecutive_complete_weeks_pass"), bool)
@@ -1385,7 +1390,7 @@ def render_reliability_slo(report):
         completeness = "complete" if week.get("complete") is True else "partial"
         rows.append(
             "<li><strong>%s · %s</strong> <span class='slo-window'>%s (%s; %s sample)</span>"
-            "<div class='slo-metrics'>requests %s total · latency denominator %s eligible / %s prompt-excluded · "
+            "<div class='slo-metrics'>requests %s total · latency denominator %s eligible / %s prompt-excluded / %s early-user-cancel-excluded · "
             "accepted %s · ready %s · failed %s · cancelled %s · missing terminal %s · "
             "startup ≤400 ms %s (%s samples; p50 %s, p95 %s, max %s) · "
             "failure presentation %s covered / %s missing · "
@@ -1402,6 +1407,9 @@ def render_reliability_slo(report):
                 _slo_count(counts.get("requested")),
                 _slo_count(counts.get("eligible_requests")),
                 _slo_count(counts.get("excluded_permission_prompts")),
+                _slo_count(
+                    counts.get("excluded_user_cancellations_before_target")
+                ),
                 _slo_count(counts.get("accepted")),
                 _slo_count(counts.get("ready")),
                 _slo_count(counts.get("failed")),

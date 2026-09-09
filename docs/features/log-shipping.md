@@ -365,10 +365,10 @@ all-successful p50/p95 plus the target cohort's sample count, percentiles, and
 independent of the existing startup p50 regression threshold.
 
 The same line-by-line pass also evaluates the versioned
-`murmur-reliability-slo/v1` contract. Only native dictation requests with exact
-numeric `slo_contract: 1` are eligible. Historical requests without the marker
-remain useful to the legacy capture funnel but cannot enter a weekly SLO or
-make a pre-contract week pass.
+`murmur-reliability-slo/v2` report from contract-v1 events. Only native
+dictation requests with exact numeric `slo_contract: 1` can enter the report.
+Historical requests without the marker remain useful to the legacy capture
+funnel but cannot enter a weekly SLO or make a pre-contract week pass.
 
 The evaluator recomputes the current partial ISO week and the previous eight
 complete Monday-to-Monday UTC weeks from the full retained log on every run.
@@ -378,13 +378,19 @@ result. Its policy is:
 
 - at least 200 eligible requests are required for a complete week's sufficient
   sample;
-- at least 99.5% of all eligible requests—including missing-ready and failed
-  attempts—must reach the first matching retained-PCM readiness event within
+- at least 99.5% of eligible requests, including missing-ready and failed
+  attempts, must reach the first matching retained-PCM readiness event within
   400 ms of the request timestamp;
 - a stable microphone-permission-prompt record excludes that attempt from the
   startup denominator. It remains in requested/accepted/ready/terminal,
   state, and actionable-presentation counts, so a prompt cannot hide a stuck
   state or unpresented failure;
+- a non-prompt `user_cancelled_starting` terminal before 400 ms excludes that
+  attempt from the startup denominator because the user ended the observation
+  before the target deadline. The evaluator reports this exclusion separately
+  and still includes the attempt in requested, accepted, terminal, state, and
+  cancellation counts. A cancellation at or after 400 ms remains an SLO miss,
+  as do capture failures, missing readiness, and readiness after 400 ms;
 - a `Recovering` or `Processing` interval that exits before the next startup is
   `self_recovered`; one still open at the next `system.startup_baseline` is
   `restart_required`; an interval still open at the end of the full scan, or

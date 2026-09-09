@@ -338,7 +338,7 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("2026-08-03T00:00:00Z → 2026-08-10T00:00:00Z", page)
         self.assertIn("(complete; sufficient sample)", page)
         self.assertIn(
-            "requests 200 total · latency denominator 200 eligible / 0 prompt-excluded",
+            "requests 200 total · latency denominator 200 eligible / 0 prompt-excluded / 0 early-user-cancel-excluded",
             page,
         )
         self.assertIn("startup ≤400 ms 99.50%", page)
@@ -359,16 +359,11 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("Historical pre-contract data is insufficient", rendered)
 
     def test_dashboard_never_trusts_a_contradictory_two_week_pass_flag(self) -> None:
-        report = {
-            "reliability_slo": {
-                "schema_version": 1,
-                "report": "murmur-reliability-slo/v1",
-                "contract_version": 1,
-                "privacy": "aggregate_only",
-                "two_consecutive_complete_weeks_pass": True,
-                "weeks": [],
-            }
-        }
+        slo = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        ).report()
+        slo["two_consecutive_complete_weeks_pass"] = True
+        report = {"reliability_slo": slo}
 
         rendered = receiver.render_reliability_slo(report)
 
@@ -383,6 +378,9 @@ class LogReceiverHealthTests(unittest.TestCase):
         contradictory["weeks"][0]["counts"]["requested"] = 1
         contradictory["weeks"][0]["counts"]["eligible_requests"] = 0
         contradictory["weeks"][0]["counts"]["excluded_permission_prompts"] = 0
+        contradictory["weeks"][0]["counts"][
+            "excluded_user_cancellations_before_target"
+        ] = 0
         rendered = receiver.render_reliability_slo(
             {"reliability_slo": contradictory}
         )
