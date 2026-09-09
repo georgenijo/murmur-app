@@ -34,6 +34,7 @@ dictation_log.jsonl
 
 # Audio files
 *.wav
+!bench/audio/*.wav
 
 # Build artifacts
 app/dist/
@@ -57,11 +58,17 @@ CONTEXT_NEXT_SESSION.md
 PROJECT_SUMMARY.md
 
 # Claude Code generated session files
-.claude/
+.claude/*
+!.claude/skills/
 
 # Omen MCP cache
 .omen/
 
 # Scripts
 agents.sh
-bench/audio/*.wav
+
+# Playwright MCP session artifacts
+.playwright-mcp/
+
+# Root-level scratch screenshots (icon PNGs elsewhere stay tracked)
+/*.png
