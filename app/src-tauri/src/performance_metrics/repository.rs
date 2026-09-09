@@ -12,6 +12,13 @@ const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
+const PRAGMAS: crate::sqlite_support::PragmaOptions = crate::sqlite_support::PragmaOptions {
+    journal_mode: "WAL",
+    synchronous: "NORMAL",
+    foreign_keys: true,
+    secure_delete: None,
+    busy_timeout: BUSY_TIMEOUT,
+};
 const RETRY_BACKOFFS: [Duration; 2] = [Duration::from_millis(5), Duration::from_millis(15)];
 const MAX_OPERATION_ATTEMPTS: u8 = 3;
 
@@ -141,14 +148,7 @@ impl PerformanceRepository {
 
     fn open(&self) -> StoreResult<Connection> {
         let connection = Connection::open(&self.db_path).map_err(db_error)?;
-        connection.busy_timeout(BUSY_TIMEOUT).map_err(db_error)?;
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=NORMAL;
-                 PRAGMA foreign_keys=ON;",
-            )
-            .map_err(db_error)?;
+        crate::sqlite_support::configure_connection(&connection, &PRAGMAS).map_err(db_error)?;
         Ok(connection)
     }
 
@@ -613,9 +613,7 @@ impl PerformanceRepository {
 }
 
 fn migrate(connection: &mut Connection) -> StoreResult<()> {
-    let current: u32 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(db_error)?;
+    let current: u32 = crate::sqlite_support::schema_version(connection).map_err(db_error)?;
     if current > LATEST_DB_SCHEMA_VERSION {
         return Err(PerformanceStoreError::new(
             PerformanceStoreOperationV1::Initialize,
@@ -1003,16 +1001,12 @@ fn unique_quarantine_path(root: &Path, stamp: i64, suffix: &str) -> PathBuf {
 }
 
 fn sqlite_sidecar_path(database: &Path, suffix: &str) -> PathBuf {
-    let mut path = database.as_os_str().to_os_string();
-    path.push(suffix);
-    PathBuf::from(path)
+    crate::sqlite_support::sidecar_path(database, suffix)
 }
 
 fn quick_check(connection: &Connection) -> StoreResult<()> {
-    let result: String = connection
-        .pragma_query_value(None, "quick_check", |row| row.get(0))
-        .map_err(db_error)?;
-    if result == "ok" {
+    let ok = crate::sqlite_support::quick_check(connection).map_err(db_error)?;
+    if ok {
         Ok(())
     } else {
         Err(PerformanceStoreError::new(
@@ -1071,7 +1065,7 @@ fn validate_records(connection: &Connection) -> StoreResult<()> {
 }
 
 fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    crate::sqlite_support::now_ms()
 }
 
 fn to_i64(value: u64) -> StoreResult<i64> {
@@ -1156,6 +1150,28 @@ mod tests {
             .unwrap()
             .0;
         (temp, repository)
+    }
+
+    #[test]
+    fn primary_connection_uses_expected_pragmas() {
+        let (_temp, repository) = repository();
+        let connection = repository.open().unwrap();
+        let journal_mode: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        let foreign_keys: i64 = connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 1);
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(busy_timeout, 25);
     }
 
     fn correlation(id: u64) -> RunCorrelationV1 {
