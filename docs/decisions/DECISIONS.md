@@ -1,5 +1,13 @@
 # Decisions Log
 
+## 2026-09-09: AGENTS.md is a symlink to CLAUDE.md
+
+**Decision:** AGENTS.md and CLAUDE.md were two hand-maintained copies of the
+same agent guide and had drifted (stale file references, mismatched File Map
+rows). AGENTS.md is now a symlink to CLAUDE.md so there is exactly one agent
+guide; edit CLAUDE.md only. The H1 was changed to `# Murmur — agent guide
+(CLAUDE.md / AGENTS.md)` to reflect that it now serves both entry points.
+
 ## 2026-09-07: Compare production versions only with explicit cohort evidence (#430)
 
 Persist a versioned content-free production companion within each native

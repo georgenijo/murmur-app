@@ -1,4 +1,4 @@
-# CLAUDE.md
+# Murmur — agent guide (CLAUDE.md / AGENTS.md)
 
 Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React). Local transcription on the ANE (Core ML), Metal (whisper.cpp), or CPU (sherpa-onnx); local selected-text rewriting through a signed LLM sidecar. Clipboard-first output. No cloud services.
 
@@ -228,6 +228,7 @@ Read these before working on a feature:
 | `components/CommandPalette.tsx` | ⌘K command palette dialog |
 | `components/history/HistoryPanel.tsx` | History workspace: search, filters, export menu |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
+| `components/settings/AppearanceSettings.tsx` | Appearance editor, local import preview, saved library, and community-theme dialog |
 | `components/settings/MicrophoneInputTest.tsx` | Live capture-only microphone meter and safe input switching |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
 | `components/transform-review/` | Review popover UI (diff, actions, mock driver) |
