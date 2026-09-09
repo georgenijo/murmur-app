@@ -54,6 +54,7 @@ mod model_runtime;
 mod performance_metrics;
 mod platform;
 mod query_adapter;
+mod query_capabilities;
 mod query_flow;
 mod query_history;
 mod query_provider;
@@ -368,6 +369,10 @@ pub fn run() {
             query_flow::cancel_query,
             query_flow::copy_query_answer,
             query_flow::get_query_review_content,
+            query_capabilities::get_query_capabilities,
+            query_capabilities::choose_query_workspace,
+            query_capabilities::confirm_query_workspace,
+            query_capabilities::revoke_query_capabilities,
             query_flow::list_query_provider_presets,
             query_flow::load_query_environment,
             query_flow::save_query_environment,

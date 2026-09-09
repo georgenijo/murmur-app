@@ -111,6 +111,22 @@ impl ManagedChild {
         declared_environment: &[(String, String)],
         working_directory: &Path,
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        Self::spawn_user_cli_with_directory(
+            executable,
+            arguments,
+            declared_environment,
+            working_directory,
+            None,
+        )
+    }
+
+    pub(crate) fn spawn_user_cli_with_directory(
+        executable: &Path,
+        arguments: &[String],
+        declared_environment: &[(String, String)],
+        working_directory: &Path,
+        directory_handle: Option<&std::fs::File>,
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
         const DECLARED_ENVIRONMENT: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
         let mut seen = std::collections::HashSet::new();
         for (key, value) in declared_environment {
@@ -135,25 +151,42 @@ impl ManagedChild {
         let mut command = Command::new(executable);
         command
             .args(arguments)
-            .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if directory_handle.is_none() {
+            command.current_dir(working_directory);
+        }
+        #[cfg(not(unix))]
+        if directory_handle.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "pinned working directories require Unix",
+            ));
+        }
         apply_user_cli_base_environment(&mut command);
         for (key, value) in declared_environment {
             command.env(key, value);
         }
-        Self::spawn_user_cli_command(command)
+        Self::spawn_user_cli_command(command, directory_handle)
     }
 
     fn spawn_user_cli_command(
         mut command: Command,
+        directory_handle: Option<&std::fs::File>,
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
         #[cfg(unix)]
         {
+            use std::os::fd::AsRawFd;
             use std::os::unix::process::CommandExt;
+            let directory_fd = directory_handle.map(AsRawFd::as_raw_fd);
             unsafe {
-                command.pre_exec(|| {
+                command.pre_exec(move || {
+                    if let Some(fd) = directory_fd {
+                        if libc::fchdir(fd) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
                     if libc::setpgid(0, 0) < 0 {
                         return Err(std::io::Error::last_os_error());
                     }

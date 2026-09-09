@@ -321,6 +321,22 @@ pub(crate) fn pinned_query_arguments(provider: QueryProviderId) -> &'static [&'s
     preset(provider).pinned_query_arguments
 }
 
+pub(crate) fn is_recommended_arguments(provider: QueryProviderId, arguments: &[String]) -> bool {
+    arguments == preset(provider).recommended_arguments
+}
+
+pub(crate) fn capability_help(
+    executable: &Path,
+    environment: &[QueryEnvironmentVariable],
+    scratch: &Path,
+) -> Result<String, &'static str> {
+    let output = run_bounded_command(executable, &["--help".into()], environment, scratch)?;
+    if !output.success {
+        return Err("Claude capability check failed. Update the CLI and try again.");
+    }
+    Ok(output.stdout)
+}
+
 pub(crate) fn is_auth_failure(provider: QueryProviderId, stdout: &str, stderr: &str) -> bool {
     let data = preset(provider);
     if data.auth_failure_signatures.is_empty() {

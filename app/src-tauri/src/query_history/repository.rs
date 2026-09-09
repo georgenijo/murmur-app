@@ -340,6 +340,8 @@ fn valid_error_code(code: &str) -> bool {
             | "invalid_arguments"
             | "invalid_timeout"
             | "invalid_environment"
+            | "unsupported_capabilities"
+            | "trusted_workspace_unavailable"
             | "environment_unavailable"
             | "busy"
             | "audio_start_failed"
