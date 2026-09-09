@@ -155,6 +155,7 @@ Read these before working on a feature:
 | `injector.rs` | Clipboard (arboard) + auto-paste (CGEvent, osascript fallback) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Frontmost-app query + running-application list |
+| `sqlite_support.rs` | Shared low-level SQLite helpers (pragma configuration, quick_check, schema_version, sidecar/quarantine handling, newest-first listing) used by `knowledge_store`, `query_history`, `meeting_store`, and `performance_metrics` |
 | `state.rs` | `DictationState`, `TransformStatus`, `AppState`, generation counters |
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |
 | `vad.rs` | Silero VAD speech filtering via whisper-rs (thread-local context cache) |
