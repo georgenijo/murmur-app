@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const invoke = vi.hoisted(() => vi.fn());
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
+
 import {
   microphoneClassificationLabel,
   microphoneLevelPercent,
   microphonePeakPercent,
+  startMicrophonePreview,
   smoothMicrophoneMeterValue,
 } from './microphonePreview';
 
@@ -37,5 +42,22 @@ describe('microphone preview presentation', () => {
     expect(smoothMicrophoneMeterValue(Number.NaN, 200, 16)).toBeGreaterThan(0);
     expect(smoothMicrophoneMeterValue(50, Number.NaN, Number.NaN)).toBe(50);
     expect(smoothMicrophoneMeterValue(-20, 0, 16)).toBe(0);
+  });
+
+  it('lets the Smart Auto request own preview selection instead of sending a fixed device too', async () => {
+    invoke.mockResolvedValue({});
+    const smartAuto = {
+      approvedDeviceIds: ['usb'],
+      preferredDeviceIds: ['usb'],
+      allowContinuity: false,
+    };
+
+    await startMicrophonePreview('usb', 60, smartAuto);
+
+    expect(invoke).toHaveBeenCalledWith('start_microphone_preview', {
+      deviceId: 'system_default',
+      vadSensitivity: 60,
+      smartAuto,
+    });
   });
 });

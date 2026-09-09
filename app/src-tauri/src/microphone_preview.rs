@@ -47,6 +47,8 @@ struct PreviewError {
 
 struct ActivePreview {
     id: u64,
+    capture_key: Option<crate::audio_inventory::SignalEvidenceKey>,
+    verification_key: Option<crate::audio_inventory::SignalEvidenceKey>,
     phase: PreviewPhase,
     still_connecting: bool,
     error: Option<PreviewError>,
@@ -107,6 +109,8 @@ impl MicrophonePreviewState {
         inner.terminal_error = None;
         inner.active = Some(ActivePreview {
             id,
+            capture_key: None,
+            verification_key: None,
             phase: PreviewPhase::Connecting,
             still_connecting: false,
             error: None,
@@ -125,6 +129,20 @@ impl MicrophonePreviewState {
 
     pub(crate) fn current_id(&self) -> Option<u64> {
         self.inner().active.as_ref().map(|preview| preview.id)
+    }
+
+    pub(crate) fn bind_signal_evidence(
+        &self,
+        preview_id: u64,
+        key: Option<crate::audio_inventory::SignalEvidenceKey>,
+    ) {
+        if let Some(active) =
+            self.inner().active.as_mut().filter(|active| {
+                active.id == preview_id && active.phase == PreviewPhase::Connecting
+            })
+        {
+            active.capture_key = key;
+        }
     }
 
     pub(crate) fn begin_signal_verification(
@@ -150,6 +168,10 @@ impl MicrophonePreviewState {
             return Err("Wait ten seconds between microphone signal checks.".to_string());
         }
         let verification = SignalVerification::new(now);
+        active.verification_key = active
+            .capture_key
+            .as_ref()
+            .and_then(crate::audio_inventory::renew_signal_evidence_key);
         let deadline = verification.deadline;
         active.verification = Some(verification);
         active.verification_retry_after = Some(now + VERIFICATION_COOLDOWN);
@@ -188,12 +210,17 @@ impl MicrophonePreviewState {
             return SignalVerificationResult::Interrupted;
         };
         let verification = active.verification.take();
+        let key = active.verification_key.take();
         if active.phase != PreviewPhase::Active || active.error.is_some() {
             return SignalVerificationResult::Interrupted;
         }
-        verification.map_or(SignalVerificationResult::Interrupted, |verification| {
+        let result = verification.map_or(SignalVerificationResult::Interrupted, |verification| {
             verification.result()
-        })
+        });
+        if let Some(key) = key {
+            crate::audio_inventory::record_signal_evidence(&key, result);
+        }
+        result
     }
 
     pub(crate) fn is_active(&self) -> bool {

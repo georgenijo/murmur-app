@@ -2,7 +2,7 @@ import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
-import { OverlayPill } from './OverlayPill';
+import { OverlayPill, type OverlaySmartAutoSummary } from './OverlayPill';
 import { BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayIndicator } from './deriveVisual';
 
@@ -18,7 +18,7 @@ const geometry: OverlayGeometry = {
   wingW: 36,
 };
 
-function CuePill({ indicator }: { indicator: OverlayIndicator }) {
+function CuePill({ indicator, smartAutoSummary }: { indicator: OverlayIndicator; smartAutoSummary?: OverlaySmartAutoSummary }) {
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   return (
     <OverlayPill
@@ -30,6 +30,7 @@ function CuePill({ indicator }: { indicator: OverlayIndicator }) {
       }}
       status="idle"
       barRefs={barRefs}
+      smartAutoSummary={smartAutoSummary}
     />
   );
 }
@@ -101,6 +102,35 @@ describe('OverlayPill transient cues', () => {
     ));
     expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
       .toBe('Microphone capture was interrupted. Waiting for the partial transcription.');
+  });
+
+  it('identifies a verified Smart Auto route without exposing its device ID', async () => {
+    await act(async () => root.render(
+      <CuePill
+        indicator={{ kind: 'idle', dimmed: false }}
+        smartAutoSummary={{ kind: 'ready', deviceName: 'USB Microphone', reason: 'preferred approved microphone' }}
+      />,
+    ));
+
+    const status = container.querySelector<HTMLElement>('[role="status"]');
+    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture ready with USB Microphone. Recent signal verified; preferred approved microphone.');
+    expect(status?.getAttribute('title')).toBe('Smart Auto: USB Microphone. Recent signal verified; preferred approved microphone.');
+    expect(status?.getAttribute('aria-live')).toBe('polite');
+    expect(status?.textContent).not.toContain('usb-device-id');
+  });
+
+  it('shows when Smart Auto needs verification while leaving higher-priority cues alone', async () => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'idle', dimmed: false }} smartAutoSummary={{ kind: 'blocked' }} />,
+    ));
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
+      .toBe('Smart Auto next capture blocked. Open Settings to verify signal or pin an input.');
+
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'clipboardOnly' }} smartAutoSummary={{ kind: 'blocked' }} />,
+    ));
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
+      .toBe('Text copied to clipboard. Paste manually.');
   });
 
   it('keeps the wing on the waveform while recording — transcript text lives in the preview popover', async () => {

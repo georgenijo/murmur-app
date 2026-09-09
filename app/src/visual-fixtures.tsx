@@ -155,6 +155,9 @@ mockIPC((command) => {
     };
   }
   if (command === 'cancel_microphone_preview') return false;
+  if (command === 'get_smart_auto_microphone_status') {
+    return { state: 'blocked', message: 'No approved microphone has recent verified signal.' };
+  }
   if (command === 'get_audio_input_inventory') {
     return {
       schemaVersion: 2,

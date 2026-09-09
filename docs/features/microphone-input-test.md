@@ -74,10 +74,17 @@ and meter ARIA values directly from refs.
 
 The **Verify signal for 5 seconds** button runs a bounded check on the same
 active preview. It keeps no audio and does not open, stop, or switch inputs.
+For an explicit stable input, a successful check authorizes Smart Auto to
+consider that device for 120 seconds, subject to approval and capture health.
+The Auto preview candidate is availability-only. Settings separately shows
+the verified next-capture choice or an actionable refusal. A check on Follow
+macOS Default does not authorize a physical device for Auto.
 See the [signal verification contract](transcription.md#smart-auto-microphone-selection)
 for thresholds, deadlines, cooldown, result meanings, and the remaining Auto
 routing gates. A result applies only to that preview generation; changing the
-input discards a pending result.
+input discards a pending result. Topology changes and capture failures revoke
+the corresponding routing evidence. A previously successful check cannot
+promise that signal is still arriving now.
 
 - Rust state/classification: `app/src-tauri/src/microphone_preview.rs`
 - Bounded signal verification: `app/src-tauri/src/microphone_signal.rs`
