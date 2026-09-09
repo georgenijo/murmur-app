@@ -49,6 +49,17 @@ const NOT_DOWNLOADED = {
   runtimeDisabled: false,
 } satisfies TransformModelStatus;
 
+const onUpdateSettings = vi.fn();
+
+function Harness({ page }: { page: TransformModelSettingsPage }) {
+  const model = useTransformModelSettings({
+    settings: DEFAULT_SETTINGS,
+    onUpdateSettings,
+    activePage: page,
+  }).transformModel;
+  return <p>{model ? `${model.state}:${model.runtimeDisabled}` : ''}</p>;
+}
+
 describe('useTransformModelSettings', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -67,15 +78,6 @@ describe('useTransformModelSettings', () => {
   });
 
   async function render(activePage: TransformModelSettingsPage) {
-    function Harness({ page }: { page: TransformModelSettingsPage }) {
-      const model = useTransformModelSettings({
-        settings: DEFAULT_SETTINGS,
-        onUpdateSettings: vi.fn(),
-        activePage: page,
-      }).transformModel;
-      return <p>{model ? `${model.state}:${model.runtimeDisabled}` : ''}</p>;
-    }
-
     await act(async () => {
       root.render(<Harness page={activePage} />);
       await Promise.resolve();
@@ -87,7 +89,8 @@ describe('useTransformModelSettings', () => {
     mocks.transformModelStatus
       .mockResolvedValueOnce(DOWNLOADING)
       .mockResolvedValueOnce(READY_DISABLED)
-      .mockResolvedValueOnce(NOT_DOWNLOADED);
+      .mockResolvedValueOnce(NOT_DOWNLOADED)
+      .mockResolvedValueOnce(DOWNLOADING);
 
     await render(null);
     expect(mocks.transformModelStatus).not.toHaveBeenCalled();
@@ -96,12 +99,25 @@ describe('useTransformModelSettings', () => {
     expect(mocks.transformModelStatus).toHaveBeenCalledTimes(1);
     expect(container.textContent).toBe('downloading:false');
 
+    await render('ai');
+    expect(mocks.transformModelStatus).toHaveBeenCalledTimes(1);
+
     await render('ai-transform');
     expect(mocks.transformModelStatus).toHaveBeenCalledTimes(2);
     expect(container.textContent).toBe('ready:true');
 
-    await render('ai');
+    await render('ai-transform');
+    expect(mocks.transformModelStatus).toHaveBeenCalledTimes(2);
+
+    await render(null);
+    expect(mocks.transformModelStatus).toHaveBeenCalledTimes(2);
+
+    await render('ai-transform');
     expect(mocks.transformModelStatus).toHaveBeenCalledTimes(3);
     expect(container.textContent).toBe('notDownloaded:false');
+
+    await render('ai');
+    expect(mocks.transformModelStatus).toHaveBeenCalledTimes(4);
+    expect(container.textContent).toBe('downloading:false');
   });
 });
