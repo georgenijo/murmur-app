@@ -268,6 +268,8 @@ capture metrics by install and receiver-observed app version:
 - dictation readiness `startup_ms` p50/p95;
 - post-stop latency: the `pipeline.dictation_completed` `total_ms` p50/p95,
   covering Murmur's processing interval after it accepts the stop;
+- the stop-to-delivery target verdict for successful 1 to 15 second
+  dictations, with p50 below 1,000 ms and p95 below 2,000 ms;
 - active initialization timeouts split by stable backend and
   `last_setup_step`;
 - fallback and both-backends-failed counts;
@@ -312,27 +314,52 @@ retained. Samples are bounded to the newest 500 per cohort, matching the
 startup-sample retention window; the report also carries the total observed
 count so silent truncation stays visible.
 
+The target cohort is a subset of those successful samples. `audio_secs` must
+be between 1 and 15 seconds, inclusive. A cohort needs at least 20 target
+samples before the watch reports a verdict because nearest-rank p95 is not
+useful below that count. The target is strict: p50 must be below 1,000 ms and
+p95 must be below 2,000 ms. The latest eligible app-version cohort on an
+install raises `post_stop_latency_target_missed` when either percentile misses.
+Shorter, longer, missing, malformed, and non-finite durations remain visible
+in the all-successful metric but cannot decide the target.
+
+The cohort deliberately includes every shipped local transcription model and
+both clipboard-only and automatic-paste delivery. Release telemetry does not
+retain model names or classify the delivery setting. Mixing those settings
+makes this a broad product target, not a model comparison. Use the local
+production comparison in Diagnostics for exact model, runtime, microphone,
+and configuration cohorts.
+
 The `total_ms` timer starts after Murmur accepts the stop and enters processing,
 immediately before capture teardown and 16 kHz resampling. It ends after the
 transcription pipeline and the configured clipboard or paste delivery attempt.
 It excludes earlier UI or hotkey dispatch and the delivery-target snapshot.
-The metric records Murmur's delivery attempt; it does not prove that the target
-application accepted a paste.
+The metric records Murmur's delivery attempt. For automatic paste it ends after
+Murmur posts the native paste event, but it does not prove that the target
+application consumed the paste.
+
+The target was adopted from the retained v0.42.0 production baseline on
+2026-09-09. The 51 eligible dictations across two installs ran from
+2026-09-08T17:01:35Z through 2026-09-09T07:54:24Z. Their combined nearest-rank
+p50 was 112 ms and p95 was 140 ms. The per-install cohorts were 33 samples at
+112/145 ms and 18 samples at 112/140 ms. The first cohort meets the 20-sample
+verdict floor and the second remains preliminary. The combined result meets
+both targets. The watch continues to judge each install and version separately
+so one machine cannot hide another machine's regression.
 
 Reports contain no raw event summaries, device fields, content, paths, or free
 form errors. Backend/setup-step values are allowlisted (including the explicit
 pre-native-call `none` setup step) and unknown values collapse to `unknown`.
-Memory is bounded to the newest 500 startup samples, 500 post-stop-latency
-samples, and five attempted-session outcomes per cohort, with ready counts at
-or above 20 combined into one capped tail bucket. Each install has at most 64
-explicit versions; excess versions collapse into a non-comparable `overflow`
-cohort. The report is atomically replaced at `~/murmur-logs/capture-watch.json`;
-an alert also makes the one-shot exit nonzero for systemd/journal visibility
-and appears on the protected dashboard, which also lists each cohort's
-post-stop-latency sample count and p50/p95 alongside the existing capture
-regression watch banner. Post-stop latency does not participate in the
-existing startup p50 regression alert or its threshold — this task only adds
-visibility, not a new alert.
+Memory is bounded to the newest 500 startup samples, 500 all-successful
+post-stop samples, 500 target-cohort samples, and five attempted-session
+outcomes per cohort. Ready counts at or above 20 share one capped tail bucket.
+Each install has at most 64 explicit versions; excess versions collapse into a
+non-comparable `overflow` cohort. The report is atomically replaced at
+`~/murmur-logs/capture-watch.json`. An alert also makes the one-shot exit
+nonzero for systemd and journal visibility. The protected dashboard lists the
+all-successful p50/p95 plus the target cohort's sample count, percentiles, and
+`met`, `missed`, or `insufficient_data` verdict. The post-stop target is
+independent of the existing startup p50 regression threshold.
 
 The same line-by-line pass also evaluates the versioned
 `murmur-reliability-slo/v1` contract. Only native dictation requests with exact

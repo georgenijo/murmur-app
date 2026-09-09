@@ -1118,6 +1118,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                         "recording_id": index + 1,
                         "char_count": 10,
                         "total_ms": value,
+                        "audio_secs": 5,
                     },
                 )
             )
@@ -1131,6 +1132,146 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertFalse(cohort["post_stop_latency_samples_truncated"])
         self.assertEqual(cohort["post_stop_latency_p50_ms"], 300)
         self.assertEqual(cohort["post_stop_latency_p95_ms"], 500)
+        self.assertEqual(cohort["post_stop_target_sample_count"], 5)
+        self.assertEqual(cohort["post_stop_target_verdict"], "insufficient_data")
+
+    def test_post_stop_target_uses_typical_utterances_and_strict_thresholds(
+        self,
+    ) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        values = [100] * 18 + [999, 1_999]
+        for index, value in enumerate(values):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:00:{index + 1:02d}Z",
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": value,
+                        "audio_secs": 1 if index == 0 else 15,
+                    },
+                )
+            )
+        invalid_durations = [
+            0.999,
+            15.001,
+            None,
+            "5",
+            True,
+            float("nan"),
+            float("inf"),
+            -1,
+            86_401,
+        ]
+        for index, audio_secs in enumerate(invalid_durations):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:01:{index + 1:02d}Z",
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": 100 + index,
+                        "char_count": 10,
+                        "total_ms": 5_000,
+                        "audio_secs": audio_secs,
+                    },
+                )
+            )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(
+            cohort["post_stop_latency_sample_count"], 20 + len(invalid_durations)
+        )
+        self.assertEqual(cohort["post_stop_target_sample_count"], 20)
+        self.assertEqual(cohort["post_stop_target_p50_ms"], 100)
+        self.assertEqual(cohort["post_stop_target_p95_ms"], 999)
+        self.assertEqual(cohort["post_stop_target_verdict"], "met")
+        self.assertEqual(
+            report["policy"]["minimum_post_stop_target_samples"], 20
+        )
+        self.assertEqual(report["policy"]["post_stop_target_p50_ms"], 1_000)
+        self.assertEqual(report["policy"]["post_stop_target_p95_ms"], 2_000)
+
+    def test_post_stop_target_miss_alerts_only_after_minimum_sample(self) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                version="1.2.3",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        for index in range(watch.MIN_POST_STOP_TARGET_SAMPLES - 1):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:00:{index + 1:02d}Z",
+                    version="1.2.3",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": 2_000,
+                        "audio_secs": 5,
+                    },
+                )
+            )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["post_stop_target_verdict"], "insufficient_data")
+        self.assertFalse(
+            any(
+                item["kind"] == "post_stop_latency_target_missed"
+                for item in report["alerts"]
+            )
+        )
+
+        events.append(
+            event(
+                "dictation completed",
+                "2026-08-01T00:00:20Z",
+                version="1.2.3",
+                data={
+                    "event_code": "pipeline.dictation_completed",
+                    "recording_id": watch.MIN_POST_STOP_TARGET_SAMPLES,
+                    "char_count": 10,
+                    "total_ms": 2_000,
+                    "audio_secs": 5,
+                },
+            )
+        )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["post_stop_target_verdict"], "missed")
+        alert = next(
+            item
+            for item in report["alerts"]
+            if item["kind"] == "post_stop_latency_target_missed"
+        )
+        self.assertEqual(alert["sample_count"], watch.MIN_POST_STOP_TARGET_SAMPLES)
+        self.assertEqual(alert["p50_ms"], 2_000)
+        self.assertEqual(alert["p95_ms"], 2_000)
+        self.assertEqual(report["status"], "alert")
 
     def test_post_stop_latency_ignores_malformed_negative_and_out_of_range_values(
         self,
@@ -1301,6 +1442,7 @@ class CaptureRegressionWatchTests(unittest.TestCase):
                         "recording_id": index + 1,
                         "char_count": 10,
                         "total_ms": index,
+                        "audio_secs": 5,
                     },
                 )
             )
@@ -1317,6 +1459,12 @@ class CaptureRegressionWatchTests(unittest.TestCase):
             cohort["post_stop_latency_sample_total"], total_events
         )
         self.assertTrue(cohort["post_stop_latency_samples_truncated"])
+        self.assertEqual(
+            cohort["post_stop_target_sample_count"],
+            watch.MAX_POST_STOP_TARGET_SAMPLES,
+        )
+        self.assertEqual(cohort["post_stop_target_sample_total"], total_events)
+        self.assertTrue(cohort["post_stop_target_samples_truncated"])
 
 
 if __name__ == "__main__":
