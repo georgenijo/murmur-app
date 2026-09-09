@@ -170,7 +170,9 @@ mockIPC((command) => {
       devices: [
         { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
         { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
-        { id: 'fixture-desk', name: 'Desk Microphone', kind: 'external', connected: false, hasInput: true },
+        ...(requestedState.startsWith('settings-smart-auto')
+          ? [{ id: 'fixture-desk', name: 'Desk Microphone', kind: 'external', connected: false, hasInput: true }]
+          : []),
       ],
       defaultInputId: 'fixture-built-in',
       lidState: 'open',
