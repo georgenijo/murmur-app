@@ -7,7 +7,7 @@
 
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
 use crate::microphone_preview::{
-    classify_level, PreviewLevelClassification, CLIPPING_SAMPLE_THRESHOLD,
+    CLIPPING_SAMPLE_THRESHOLD, QUIET_PEAK_THRESHOLD, QUIET_RMS_THRESHOLD,
 };
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
@@ -318,11 +318,22 @@ pub(crate) fn load_benchmark_fixtures() -> Result<Vec<CorpusBenchmarkFixture>, S
 
 fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
     let peak = crate::audio::compute_peak(samples);
-    let rms = crate::audio::compute_rms(samples);
+    // Corpus manifests historically accumulate squared samples in f64. Keep
+    // that precision here because long recordings can otherwise cross the
+    // quiet threshold solely from f32 accumulation error.
+    let rms = if samples.is_empty() {
+        0.0
+    } else {
+        (samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>()
+            / samples.len() as f64)
+            .sqrt() as f32
+    };
     // `clipping_percent` is a reported field on `CorpusRecordingEntry` (a
     // fraction of samples, not just a yes/no), so it stays a direct
-    // computation here — `classify_level` below only exposes a category, not
-    // a percentage.
+    // computation here and drives the recording-level warning threshold.
     let clipping_percent = if samples.is_empty() {
         0.0
     } else {
@@ -338,20 +349,11 @@ fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
     if duration_ms < 1_000 {
         warnings.push("Recording is shorter than one second".to_string());
     }
-    // Reuse the same quiet/clipping classification the microphone preview
-    // meter uses instead of re-deriving it from the raw thresholds. This
-    // folds the old independent "quiet" and "clipping" checks into
-    // `classify_level`'s single, mutually exclusive category — a very quiet
-    // recording that also contains one clipped sample now reports only the
-    // clipping warning, which is the more actionable of the two.
-    match classify_level(rms, peak) {
-        PreviewLevelClassification::Clipping => {
-            warnings.push("Input is clipping; lower microphone gain".to_string());
-        }
-        PreviewLevelClassification::NoSignal | PreviewLevelClassification::TooQuiet => {
-            warnings.push("Input is very quiet; move closer or raise microphone gain".to_string());
-        }
-        PreviewLevelClassification::SignalDetected => {}
+    if rms < QUIET_RMS_THRESHOLD || peak < QUIET_PEAK_THRESHOLD {
+        warnings.push("Input is very quiet; move closer or raise microphone gain".to_string());
+    }
+    if clipping_percent > 0.1 {
+        warnings.push("Input is clipping; lower microphone gain".to_string());
     }
     (peak, rms, clipping_percent, warnings)
 }
@@ -1061,14 +1063,40 @@ mod tests {
     }
 
     #[test]
-    fn audio_quality_flags_clipping_over_quiet() {
-        // A mostly-quiet buffer with one clipped sample: `classify_level`
-        // reports `Clipping`, so only the clipping warning should fire, not
-        // both.
+    fn one_clipped_sample_does_not_trigger_a_clipping_warning() {
+        let mut samples = vec![0.1_f32; 16_000];
+        samples[0] = 1.0;
+        let (_, _, clipping_percent, warnings) = audio_quality(&samples);
+        assert_eq!(clipping_percent, 0.00625);
+        assert!(!warnings.iter().any(|warning| warning.contains("clipping")));
+        assert!(!warnings
+            .iter()
+            .any(|warning| warning.contains("very quiet")));
+    }
+
+    #[test]
+    fn quiet_and_clipping_warnings_are_independent() {
         let mut samples = vec![0.0_f32; 16_000];
         samples[0] = 1.0;
-        let (_, _, _, warnings) = audio_quality(&samples);
-        assert!(warnings.iter().any(|warning| warning.contains("clipping")));
+        let (_, _, clipping_percent, warnings) = audio_quality(&samples);
+        assert_eq!(clipping_percent, 0.00625);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("very quiet")));
+        assert!(!warnings.iter().any(|warning| warning.contains("clipping")));
+    }
+
+    #[test]
+    fn long_recording_rms_retains_f64_accumulation_precision() {
+        let mut samples = vec![0.01_f32; 480_000];
+        samples[0] = 0.05;
+        let (peak, rms, _, warnings) = audio_quality(&samples);
+        assert_eq!(peak, QUIET_PEAK_THRESHOLD);
+        assert_eq!(rms, 0.010000249);
+        assert!(
+            rms >= QUIET_RMS_THRESHOLD,
+            "f32 accumulation drifts below the quiet threshold"
+        );
         assert!(!warnings
             .iter()
             .any(|warning| warning.contains("very quiet")));
