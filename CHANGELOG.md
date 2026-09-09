@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Private dictation captures on the Fleet dashboard now show their capture and
+  expiry times and keep transcript text collapsed until the operator reveals it
+  (#461).
 - Smart Auto now excludes output-only audio devices, exposes per-microphone approvals in one unified picker, explains why an allowed input is unavailable, and keeps Settings branch and row spacing aligned (#688).
 
 ## [0.42.0] - 2026-09-08

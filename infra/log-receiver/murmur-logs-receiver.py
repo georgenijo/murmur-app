@@ -628,6 +628,15 @@ def _private_capture_csrf(install_id, capture_id):
     return hmac.new(_DASHBOARD_CSRF_SECRET, message, hashlib.sha256).hexdigest()
 
 
+def _private_capture_time(epoch_ms):
+    try:
+        return datetime.fromtimestamp(epoch_ms / 1000, timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
+    except (OSError, OverflowError, ValueError):
+        return "invalid timestamp"
+
+
 def render_private_capture_index(install_id):
     captures = _private_capture_documents(install_id, prune=True)
     if not captures:
@@ -639,12 +648,15 @@ def render_private_capture_index(install_id):
         outcome = "success" if result["kind"] == "success" else result["outcome"]
         capture_id = capture["captureId"]
         rows.append(
-            "<div class='private-capture-index'><span>Recording %s · %s · %s</span>"
+            "<div class='private-capture-index'><span>Recording %s · %s · %s<br>"
+            "Captured %s · server copy expires %s</span>"
             "<a class='download-link' href='/install/%s/private-captures/%s'>Review private capture</a></div>"
             % (
                 capture["recordingId"],
                 html.escape(outcome),
                 html.escape(document["appVersion"]),
+                _private_capture_time(capture["capturedAtMs"]),
+                _private_capture_time(document["serverExpiresAtMs"]),
                 html.escape(install_id, quote=True),
                 html.escape(capture_id, quote=True),
             )
@@ -667,8 +679,10 @@ def render_private_capture_review(install_id, capture_id):
             final = html.escape(result["finalText"]["text"])
             outcome = "success"
             content = (
+                "<details class='private-capture-content'>"
+                "<summary>Reveal captured transcript text</summary>"
                 "<h2>Raw recognition</h2><pre>%s</pre>"
-                "<h2>Final delivery</h2><pre>%s</pre>" % (raw, final)
+                "<h2>Final delivery</h2><pre>%s</pre></details>" % (raw, final)
             )
         else:
             outcome = result["outcome"]
@@ -678,6 +692,7 @@ def render_private_capture_review(install_id, capture_id):
             "<p class='back'><a href='/install/%s'>&larr; device diagnostics</a></p>"
             "<h1>Private diagnostic capture</h1>"
             "<p class='sub'>Recording %s · %s · v%s. This page contains transcript text.</p>"
+            "<p class='sub'>Captured %s · uploaded %s · server copy expires %s.</p>"
             "%s<form method='post' action='/install/%s/private-captures/%s/delete'>"
             "<input type='hidden' name='csrf' value='%s'>"
             "<button class='private-delete' type='submit'>Delete now</button></form>"
@@ -686,6 +701,9 @@ def render_private_capture_review(install_id, capture_id):
                 capture["recordingId"],
                 html.escape(outcome),
                 html.escape(document["appVersion"]),
+                _private_capture_time(capture["capturedAtMs"]),
+                _private_capture_time(document["receivedAtMs"]),
+                _private_capture_time(document["serverExpiresAtMs"]),
                 content,
                 html.escape(install_id, quote=True),
                 html.escape(capture_id, quote=True),
@@ -3311,6 +3329,7 @@ tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .search-results{margin-top:1rem}.search-results .install-link{font-family:ui-monospace,monospace;font-size:.75rem}.pagination{margin:1rem 0}
 .private-captures{border:1px solid #7f1d1d;border-radius:12px;background:#1f1118;margin:1.4rem 0;padding:.2rem .9rem 1rem}
 .private-capture-index{align-items:center;border-top:1px solid #3f1d2a;display:flex;font-size:.82rem;gap:1rem;justify-content:space-between;padding:.7rem 0}
+.private-capture-content{border:1px solid #7f1d1d;border-radius:8px;margin:1rem 0;padding:.65rem .8rem}.private-capture-content>summary{color:#fecaca;cursor:pointer;font-weight:700}
 .private-delete{background:#7f1d1d;border:0;border-radius:6px;color:#fecaca;cursor:pointer;padding:.5rem .75rem}
 pre{background:#0b1120;border-radius:8px;max-height:22rem;overflow:auto;padding:.8rem;white-space:pre-wrap}
 .raw-timeline{border-top:1px solid #1e293b;margin-top:1.8rem;padding-top:.6rem}
