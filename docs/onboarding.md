@@ -19,12 +19,13 @@ permission guidance, recording state, retained PCM, and transcription.
 # cargo check/test fail on a fresh clone until this binary exists.
 python3 scripts/build_local_llm_sidecar.py
 
-cd app && npm install
+cd app && npm ci
 ```
 
 The helpers land under `app/src-tauri/binaries/` as target-triple-suffixed
-`murmur-llm-sidecar` and `murmur-capture-helper` executables. They are
-gitignored and rebuilt by release CI. The script is a no-op on non-arm64-macOS.
+`murmur-llm-sidecar`, `murmur-capture-helper`, `murmur-capture-worker`, and
+`murmur-capture-agent` executables. They are gitignored and rebuilt by release
+CI. The script is a no-op on non-arm64-macOS.
 
 ## Development
 
