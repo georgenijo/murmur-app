@@ -77,6 +77,65 @@ describe('UpdateModal', () => {
     expect(mocks.openUrl).toHaveBeenCalledWith(LATEST_RELEASES_URL);
   });
 
+  it('gives release notes the flexible reading area and keeps secondary actions together', async () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    await act(async () => {
+      root.render(
+        <UpdateModal
+          status={{
+            phase: 'available',
+            version: '0.43.1',
+            notes: '## New Features\n\n- A useful change.\n- Another useful change.',
+            isForced: false,
+          }}
+          onDownload={vi.fn()}
+          onRetryCheck={vi.fn()}
+          onSkip={vi.fn()}
+          onDismiss={onDismiss}
+        />,
+      );
+    });
+    await act(async () => vi.advanceTimersByTime(60));
+
+    const dialog = container.querySelector('[role="dialog"]') as HTMLDivElement;
+    const notes = dialog.querySelector('.flex-1.overflow-y-auto');
+    const skip = Array.from(dialog.querySelectorAll('button')).find((button) =>
+      button.textContent === 'Skip This Version');
+    const secondaryActions = skip?.parentElement;
+
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.className).toContain('max-w-[560px]');
+    expect(dialog.className).toContain('h-[min(620px,calc(100vh-2.5rem))]');
+    expect(notes?.textContent).toContain('A useful change.');
+    expect(secondaryActions?.classList.contains('grid-cols-2')).toBe(true);
+    expect(document.activeElement?.textContent).toBe('Update Now');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onDismiss).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it('keeps short progress states compact', async () => {
+    await act(async () => {
+      root.render(
+        <UpdateModal
+          status={{ phase: 'downloading', version: '0.43.1', progress: 50 }}
+          onDownload={vi.fn()}
+          onRetryCheck={vi.fn()}
+          onSkip={vi.fn()}
+          onDismiss={vi.fn()}
+        />,
+      );
+    });
+
+    const dialog = container.querySelector('[role="dialog"]') as HTMLDivElement;
+    expect(dialog.className).toContain('max-h-[calc(100vh-2.5rem)]');
+    expect(dialog.className).not.toContain('h-[min(620px,calc(100vh-2.5rem))]');
+  });
+
   it.each([
     ['idle', { phase: 'idle' }],
     ['checking', { phase: 'checking' }],
