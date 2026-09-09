@@ -6,7 +6,7 @@ use crate::meeting_store::MeetingSessionStatus;
 use crate::{MutexExt, State};
 use serde::Serialize;
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -104,6 +104,24 @@ fn apply_if_current(
     true
 }
 
+/// Release the summary ownership flag only when it still belongs to
+/// `generation`. The generation comparison and flag mutation share the
+/// coordinator lock, which is also held when a new generation claims
+/// ownership.
+fn release_if_current(
+    inner: &Mutex<SummaryInner>,
+    active: &AtomicBool,
+    generation: u64,
+) -> Result<(), u64> {
+    let guard = inner.lock_or_recover();
+    let current_generation = guard.status.generation;
+    if current_generation != generation {
+        return Err(current_generation);
+    }
+    active.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
 fn stable_error(error: TransformError) -> &'static str {
     match error {
         TransformError::Cancelled => "cancelled",
@@ -124,17 +142,11 @@ struct SummaryOwnershipGuard {
 impl Drop for SummaryOwnershipGuard {
     fn drop(&mut self) {
         let state = self.app.state::<State>();
-        let current_generation = state.meeting_summaries.status().generation;
-        if current_generation != self.generation {
-            // Should be unreachable today: `start_meeting_summary` only ever
-            // lets one run be active at a time (serialized by
-            // `recording_transition` plus the `meeting_summary_active`
-            // busy flag this guard itself owns), so no other generation can
-            // become current while this guard is alive. Fail safe rather
-            // than trusting that invariant silently: still clear the busy
-            // flag below (leaving it set would wedge every future summary
-            // run), but leave a trace since this would mean the invariant
-            // broke.
+        if let Err(current_generation) = release_if_current(
+            &state.meeting_summaries.inner,
+            &state.app_state.meeting_summary_active,
+            self.generation,
+        ) {
             tracing::warn!(
                 target: "meeting",
                 guard_generation = self.generation,
@@ -142,10 +154,6 @@ impl Drop for SummaryOwnershipGuard {
                 "meeting summary ownership guard dropped for a superseded generation"
             );
         }
-        state
-            .app_state
-            .meeting_summary_active
-            .store(false, Ordering::SeqCst);
     }
 }
 
@@ -322,12 +330,12 @@ pub async fn start_meeting_summary(
     {
         return Err("This meeting does not have a completed transcript to summarize.".into());
     }
+    let mut inner = state.meeting_summaries.inner.lock_or_recover();
     state
         .app_state
         .meeting_summary_active
         .store(true, Ordering::SeqCst);
     state.transform_runtime.shutdown();
-    let mut inner = state.meeting_summaries.inner.lock_or_recover();
     let generation = inner.status.generation.saturating_add(1);
     let cancel = CancelToken::new();
     inner.cancel = Some(cancel);
@@ -446,6 +454,40 @@ mod tests {
         assert_eq!(
             inner.lock_or_recover().status.phase,
             MeetingSummaryPhase::Complete
+        );
+    }
+
+    #[test]
+    fn stale_generation_cannot_release_newer_ownership() {
+        let inner = Mutex::new(SummaryInner {
+            status: status_with_generation(2),
+            cancel: None,
+        });
+        let active = AtomicBool::new(true);
+
+        let released = release_if_current(&inner, &active, 1);
+
+        assert_eq!(released, Err(2));
+        assert!(
+            active.load(Ordering::SeqCst),
+            "stale cleanup must leave the newer run's ownership active"
+        );
+    }
+
+    #[test]
+    fn current_generation_releases_its_ownership() {
+        let inner = Mutex::new(SummaryInner {
+            status: status_with_generation(2),
+            cancel: None,
+        });
+        let active = AtomicBool::new(true);
+
+        let released = release_if_current(&inner, &active, 2);
+
+        assert_eq!(released, Ok(()));
+        assert!(
+            !active.load(Ordering::SeqCst),
+            "current cleanup must release its ownership"
         );
     }
 }
