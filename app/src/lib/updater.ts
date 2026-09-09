@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+
 const SKIPPED_VERSION_KEY = 'skipped-update-version';
 const LAST_CHECK_KEY = 'updater-last-check';
 const PENDING_UPDATE_KEY = 'pending-update-release-notes';
@@ -37,6 +39,11 @@ export function isBelowMinVersion(currentVersion: string, minVersion: string): b
   const result = compareSemver(currentVersion, minVersion);
   if (result === null) return true; // unparseable → force update
   return result < 0;
+}
+
+/** Mirror the passive update-available state onto the native tray menu item. */
+export async function setTrayUpdateAvailable(version: string | null): Promise<void> {
+  return await invoke('set_tray_update_available', { version });
 }
 
 // --- Skipped version management ---

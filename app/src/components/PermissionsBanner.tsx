@@ -3,11 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
   checkMicrophonePermissionStatus,
+  openMicrophoneSettings,
+  requestAccessibilityPermission,
   resetAccessibilityPermission,
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../lib/dictation';
-import type { SystemAudioPermissionState } from '../lib/meetings';
+import { openSystemAudioPreferences, type SystemAudioPermissionState } from '../lib/meetings';
 
 interface PermissionStatus {
   microphone: MicPermissionStatus;
@@ -95,11 +97,11 @@ export function PermissionsBanner() {
   }, []);
 
   const handleOpenAccessibility = async () => {
-    await invoke('request_accessibility_permission');
+    await requestAccessibilityPermission();
   };
 
   const handleOpenMicrophone = async () => {
-    await invoke('request_microphone_permission');
+    await openMicrophoneSettings();
   };
 
   const handleResetAccessibility = async () => {
@@ -165,7 +167,7 @@ export function PermissionsBanner() {
       <button
         type="button"
         onClick={() => void (systemAudioDenied
-          ? invoke('open_system_audio_preferences')
+          ? openSystemAudioPreferences()
           : micDenied
             ? handleOpenMicrophone()
             : handleOpenAccessibility())}

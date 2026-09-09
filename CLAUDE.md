@@ -1,4 +1,4 @@
-# Murmur — agent guide (CLAUDE.md / AGENTS.md)
+# CLAUDE.md
 
 Privacy-first macOS voice-to-text app. Tauri 2 (Rust + React). Local transcription on the ANE (Core ML), Metal (whisper.cpp), or CPU (sherpa-onnx); local selected-text rewriting through a signed LLM sidecar. Clipboard-first output. No cloud services.
 
@@ -59,7 +59,7 @@ Start here for orientation:
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System structure: module map, data flows, windows, threads, design decisions
 - **[docs/FEATURES.md](docs/FEATURES.md)** — What ships, breadth-first, with links into each feature doc
-- **[docs/reference/](docs/reference/)** — `commands.md` (191 Tauri commands), `events.md`, `hooks.md`, `settings.md`
+- **[docs/reference/](docs/reference/)** — `commands.md` (193 Tauri commands), `events.md`, `hooks.md`, `settings.md`
 
 Read these before working on a feature:
 
@@ -100,7 +100,7 @@ Read these before working on a feature:
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 191 registered commands, setup, tray, `run()` |
+| `lib.rs` | App wiring: mod declarations, `State`, `MutexExt`, 193 registered commands, setup, tray, `run()` |
 | `commands/mod.rs` | Re-exports command sub-modules |
 | `commands/integrations.rs` | Local availability probes for optional companion apps |
 | `commands/recording.rs` | `IdleGuard`, dictation pipeline, file transcription, vocab scan, IDE context commands |
@@ -155,12 +155,12 @@ Read these before working on a feature:
 | `injector.rs` | Clipboard (arboard) + auto-paste (CGEvent, osascript fallback) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Frontmost-app query + running-application list |
-| `sqlite_support.rs` | Shared low-level SQLite helpers (pragma configuration, quick_check, schema_version, sidecar/quarantine handling, newest-first listing) used by `knowledge_store`, `query_history`, `meeting_store`, and `performance_metrics` |
 | `state.rs` | `DictationState`, `TransformStatus`, `AppState`, generation counters |
 | `telemetry.rs` | Structured event system: TauriEmitterLayer, ring buffer, JSONL, privacy stripping |
 | `vad.rs` | Silero VAD speech filtering via whisper-rs (thread-local context cache) |
 | `benchmark.rs` / `evaluation.rs` | Performance Lab scoring and the `murmur-eval` fixture harness |
 | `performance_metrics/` (`repository.rs`, `types.rs`) | SQLite run history, typed stage/resource records, retention |
+| `sqlite_support.rs` | Shared low-level SQLite helpers (pragma configuration, quick_check, schema_version, sidecar/quarantine handling, newest-first listing) used by `knowledge_store`, `query_history`, `meeting_store`, and `performance_metrics` |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `alloc.rs` | Custom malloc zone separating Rust heap from whisper.cpp's FFI heap |
 | `platform/` | macOS CPU/resource metrics seam |
@@ -184,6 +184,8 @@ Read these before working on a feature:
 | `lib/historyExport.ts` | Clipboard and save-dialog wrappers for history exports |
 | `lib/commandPalette.ts` | Palette command type, tiered scoring, filtering, selection movement |
 | `lib/keyboardShortcuts.ts` | Pure main-window keydown → action mapping (⌘K/⌘F/⌘,/⌘L) |
+| `lib/voiceQuerySettings.ts` | Pure Voice Query configuration, probe-result, and request-fingerprint helpers |
+| `lib/voiceQuerySettings.test.ts` | Unit coverage for Voice Query configuration and probe presentation helpers |
 | `lib/silenceAutoStop.ts` | Deterministic trailing-silence detector (pure per-sample fold) |
 | `lib/stats.ts` | Usage metrics: words, WPM, recordings, tokens |
 | `lib/dictation.ts` | Tauri command wrappers for dictation pipeline |
@@ -198,6 +200,10 @@ Read these before working on a feature:
 | `lib/hooks/useHistoryManagement.ts` | Transcription history: add/update/clear with durable write-through persistence |
 | `lib/hooks/useSilenceAutoStop.ts` | Ends a hands-free (not hold-started) recording after trailing silence |
 | `lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold- or toggle-started |
+| `lib/hooks/useVoiceQuerySettings.ts` | Voice Query settings state, effects, validation, and provider handlers |
+| `lib/hooks/useTransformModelSettings.ts` | Selected-text model status, download, shortcut, removal, and reset controller |
+| `lib/hooks/useDevUpdaterMock.ts` | Always-called development updater-state driver with production passthrough |
+| `lib/hooks/useDeliveryRecoveryListeners.ts` | Delivery retry and correction-start failure event listeners |
 | `lib/hooks/useInitialization.ts` | One-time init sequence (initDictation + configure) |
 | `lib/hooks/useShowAboutListener.ts` | Listens for show-about tray event |
 | `lib/hooks/useEventStore.ts` | Structured event log buffer with live streaming |
@@ -229,6 +235,9 @@ Read these before working on a feature:
 | `components/CommandPalette.tsx` | ⌘K command palette dialog |
 | `components/history/HistoryPanel.tsx` | History workspace: search, filters, export menu |
 | `components/settings/SettingsPanel.tsx` | Settings UI with mode switching (incl. Transform page) |
+| `components/settings/VoiceQuerySettings.tsx` | Voice Query provider, privacy, shortcut, and response settings page |
+| `components/settings/TransformModelSettings.tsx` | Selected-text rewrite model, shortcut, and saved-transform settings page |
+| `components/settings/SettingToggle.tsx` | Shared labeled settings-row toggle control |
 | `components/settings/AppearanceSettings.tsx` | Appearance editor, local import preview, saved library, and community-theme dialog |
 | `components/settings/MicrophoneInputTest.tsx` | Live capture-only microphone meter and safe input switching |
 | `components/settings/TransformsManager.tsx` | Saved transform CRUD UI |
