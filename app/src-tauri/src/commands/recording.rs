@@ -7111,8 +7111,9 @@ mod tests {
     fn transcript_stage_timing_maps_known_stage_and_outcome() {
         use crate::transcript_transform::{StageOutcome, CLEANUP_STAGE};
 
-        let timing = transcript_stage_timing(&stage_report(CLEANUP_STAGE, StageOutcome::Applied, 4_000))
-            .expect("cleanup stage recognized");
+        let timing =
+            transcript_stage_timing(&stage_report(CLEANUP_STAGE, StageOutcome::Applied, 4_000))
+                .expect("cleanup stage recognized");
         assert_eq!(timing.stage, PerformanceStageV1::Cleanup);
         assert_eq!(timing.outcome, StageOutcomeV1::Completed);
         assert_eq!(
@@ -7125,9 +7126,12 @@ mod tests {
     fn transcript_stage_timing_skipped_outcome_reports_not_applicable() {
         use crate::transcript_transform::{StageOutcome, VOICE_COMMANDS_STAGE};
 
-        let timing =
-            transcript_stage_timing(&stage_report(VOICE_COMMANDS_STAGE, StageOutcome::Skipped, 999))
-                .expect("voice commands stage recognized");
+        let timing = transcript_stage_timing(&stage_report(
+            VOICE_COMMANDS_STAGE,
+            StageOutcome::Skipped,
+            999,
+        ))
+        .expect("voice commands stage recognized");
         assert_eq!(timing.outcome, StageOutcomeV1::Skipped);
         assert_eq!(
             timing.duration_ms,
@@ -7139,7 +7143,12 @@ mod tests {
     fn transcript_stage_timing_unknown_stage_returns_none() {
         use crate::transcript_transform::StageOutcome;
 
-        assert!(transcript_stage_timing(&stage_report("not-a-real-stage", StageOutcome::Applied, 1)).is_none());
+        assert!(transcript_stage_timing(&stage_report(
+            "not-a-real-stage",
+            StageOutcome::Applied,
+            1
+        ))
+        .is_none());
     }
 
     #[test]

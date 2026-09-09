@@ -159,28 +159,34 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
     let repository = match state.meeting_store.repository() {
         Ok(repository) => repository,
         Err(_) => {
-            state.meeting_summaries.update_if_current(&app, generation, |status| {
-                status.phase = MeetingSummaryPhase::Failed;
-                status.error_code = Some("store_unavailable".into());
-            });
+            state
+                .meeting_summaries
+                .update_if_current(&app, generation, |status| {
+                    status.phase = MeetingSummaryPhase::Failed;
+                    status.error_code = Some("store_unavailable".into());
+                });
             return;
         }
     };
     let detail = match repository.detail(&session_id) {
         Ok(detail) => detail,
         Err(_) => {
-            state.meeting_summaries.update_if_current(&app, generation, |status| {
-                status.phase = MeetingSummaryPhase::Failed;
-                status.error_code = Some("meeting_unavailable".into());
-            });
+            state
+                .meeting_summaries
+                .update_if_current(&app, generation, |status| {
+                    status.phase = MeetingSummaryPhase::Failed;
+                    status.error_code = Some("meeting_unavailable".into());
+                });
             return;
         }
     };
     let chunks = chunk_segments(&detail.segments);
     let total_chunks = chunks.len().min(u32::MAX as usize) as u32;
-    state.meeting_summaries.update_if_current(&app, generation, |status| {
-        status.total_chunks = total_chunks;
-    });
+    state
+        .meeting_summaries
+        .update_if_current(&app, generation, |status| {
+            status.total_chunks = total_chunks;
+        });
     let cancel = state
         .meeting_summaries
         .inner
@@ -192,10 +198,12 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
     let mut peak_rss_mb = 0;
     for chunk in chunks {
         if cancel.is_cancelled() {
-            state.meeting_summaries.update_if_current(&app, generation, |status| {
-                status.phase = MeetingSummaryPhase::Cancelled;
-                status.error_code = None;
-            });
+            state
+                .meeting_summaries
+                .update_if_current(&app, generation, |status| {
+                    status.phase = MeetingSummaryPhase::Cancelled;
+                    status.error_code = None;
+                });
             return;
         }
         let allowed = chunk
@@ -218,40 +226,48 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
             Ok(output) => parse_artifact(&output.output, &allowed),
             Err(error) => {
                 let code = stable_error(error);
-                state.meeting_summaries.update_if_current(&app, generation, |status| {
-                    status.phase = if code == "cancelled" {
-                        MeetingSummaryPhase::Cancelled
-                    } else {
-                        MeetingSummaryPhase::Failed
-                    };
-                    status.error_code = (code != "cancelled").then(|| code.to_string());
-                    status.elapsed_ms = started.elapsed().as_millis() as u64;
-                    status.peak_rss_mb = peak_rss_mb;
-                });
+                state
+                    .meeting_summaries
+                    .update_if_current(&app, generation, |status| {
+                        status.phase = if code == "cancelled" {
+                            MeetingSummaryPhase::Cancelled
+                        } else {
+                            MeetingSummaryPhase::Failed
+                        };
+                        status.error_code = (code != "cancelled").then(|| code.to_string());
+                        status.elapsed_ms = started.elapsed().as_millis() as u64;
+                        status.peak_rss_mb = peak_rss_mb;
+                    });
                 return;
             }
         };
         let Some(artifact) = artifact else {
-            state.meeting_summaries.update_if_current(&app, generation, |status| {
-                status.phase = MeetingSummaryPhase::Failed;
-                status.error_code = Some("artifact_invalid".into());
-                status.elapsed_ms = started.elapsed().as_millis() as u64;
-                status.peak_rss_mb = peak_rss_mb;
-            });
+            state
+                .meeting_summaries
+                .update_if_current(&app, generation, |status| {
+                    status.phase = MeetingSummaryPhase::Failed;
+                    status.error_code = Some("artifact_invalid".into());
+                    status.elapsed_ms = started.elapsed().as_millis() as u64;
+                    status.peak_rss_mb = peak_rss_mb;
+                });
             return;
         };
         artifacts.push(artifact);
-        state.meeting_summaries.update_if_current(&app, generation, |status| {
-            status.completed_chunks = status.completed_chunks.saturating_add(1);
-            status.elapsed_ms = started.elapsed().as_millis() as u64;
-            status.peak_rss_mb = peak_rss_mb;
-        });
+        state
+            .meeting_summaries
+            .update_if_current(&app, generation, |status| {
+                status.completed_chunks = status.completed_chunks.saturating_add(1);
+                status.elapsed_ms = started.elapsed().as_millis() as u64;
+                status.peak_rss_mb = peak_rss_mb;
+            });
     }
     let Some(artifact) = merge_artifacts(artifacts) else {
-        state.meeting_summaries.update_if_current(&app, generation, |status| {
-            status.phase = MeetingSummaryPhase::Failed;
-            status.error_code = Some("no_transcript".into());
-        });
+        state
+            .meeting_summaries
+            .update_if_current(&app, generation, |status| {
+                status.phase = MeetingSummaryPhase::Failed;
+                status.error_code = Some("no_transcript".into());
+            });
         return;
     };
     let runtime_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -259,18 +275,22 @@ async fn run_summary(app: tauri::AppHandle, session_id: String, generation: u64)
         .save_artifact(&session_id, &artifact, runtime_ms, peak_rss_mb)
         .is_err()
     {
-        state.meeting_summaries.update_if_current(&app, generation, |status| {
-            status.phase = MeetingSummaryPhase::Failed;
-            status.error_code = Some("store_unavailable".into());
-        });
+        state
+            .meeting_summaries
+            .update_if_current(&app, generation, |status| {
+                status.phase = MeetingSummaryPhase::Failed;
+                status.error_code = Some("store_unavailable".into());
+            });
         return;
     }
-    state.meeting_summaries.update_if_current(&app, generation, |status| {
-        status.phase = MeetingSummaryPhase::Complete;
-        status.elapsed_ms = runtime_ms;
-        status.peak_rss_mb = peak_rss_mb;
-        status.error_code = None;
-    });
+    state
+        .meeting_summaries
+        .update_if_current(&app, generation, |status| {
+            status.phase = MeetingSummaryPhase::Complete;
+            status.elapsed_ms = runtime_ms;
+            status.peak_rss_mb = peak_rss_mb;
+            status.error_code = None;
+        });
     tracing::info!(target: "meeting", generation, runtime_ms, peak_rss_mb, total_chunks, "meeting summary completed");
 }
 
@@ -404,10 +424,7 @@ mod tests {
             status.error_code = None;
         });
 
-        assert!(
-            !applied,
-            "a stale generation's update must not be applied"
-        );
+        assert!(!applied, "a stale generation's update must not be applied");
         let status = inner.lock_or_recover().status.clone();
         assert_eq!(status.generation, 2);
         assert_eq!(status.completed_chunks, 1);

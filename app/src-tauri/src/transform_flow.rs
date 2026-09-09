@@ -2228,13 +2228,7 @@ async fn start_capture_inner(
         // must not stay live.
         if crate::audio::is_recording() {
             let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
-            crate::transform_trace::audio(
-                transform_pass_id,
-                "stopped",
-                "capture_aborted",
-                0,
-                0,
-            );
+            crate::transform_trace::audio(transform_pass_id, "stopped", "capture_aborted", 0, 0);
         }
         if !cancellation_won && state.app_state.transform_status() == TransformStatus::Idle {
             state.app_state.clear_transform_pass(transform_pass_id);
@@ -2283,13 +2277,7 @@ async fn start_capture_inner(
             if crate::audio::is_recording() {
                 let _ =
                     crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
-                crate::transform_trace::audio(
-                    transform_pass_id,
-                    "stopped",
-                    "cancelled",
-                    0,
-                    0,
-                );
+                crate::transform_trace::audio(transform_pass_id, "stopped", "cancelled", 0, 0);
             }
             // cancel_transform already cleared the session / hid the popover;
             // repeat the teardown idempotently so no half-state survives.
@@ -2822,13 +2810,7 @@ pub(crate) async fn retry_transform_instruction(
     ) {
         if crate::audio::is_recording() {
             let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
-            crate::transform_trace::audio(
-                transform_pass_id,
-                "stopped",
-                "cancelled",
-                0,
-                0,
-            );
+            crate::transform_trace::audio(transform_pass_id, "stopped", "cancelled", 0, 0);
         }
         transform_apply::clear_session(&state.app_state);
         let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
@@ -3044,13 +3026,7 @@ pub(crate) fn cancel_transform(
     ) && crate::audio::is_recording()
     {
         let _ = crate::audio::cancel_recording(crate::audio_lifecycle::AudioCancelReason::User);
-        crate::transform_trace::audio(
-            transform_pass_id,
-            "stopped",
-            "cancelled",
-            0,
-            0,
-        );
+        crate::transform_trace::audio(transform_pass_id, "stopped", "cancelled", 0, 0);
         if transform_pass_id != 0 {
             // The user cancelled before capture finished — there is no
             // captured duration to report, and reporting `Completed` would

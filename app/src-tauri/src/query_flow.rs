@@ -4484,9 +4484,17 @@ mod tests {
             "audio_recovery_stalled",
             "audio_capture_failed",
         ] {
-            assert_eq!(stable_query_error(code), StableRunErrorV1::AudioCaptureFailed);
+            assert_eq!(
+                stable_query_error(code),
+                StableRunErrorV1::AudioCaptureFailed
+            );
         }
-        for code in ["no_speech", "transcription_failed", "empty_query", "query_too_large"] {
+        for code in [
+            "no_speech",
+            "transcription_failed",
+            "empty_query",
+            "query_too_large",
+        ] {
             assert_eq!(stable_query_error(code), StableRunErrorV1::InferenceFailed);
         }
     }

@@ -6,7 +6,9 @@
 //! fixed local Application Support directory and are never logged.
 
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
-use crate::microphone_preview::{classify_level, PreviewLevelClassification, CLIPPING_SAMPLE_THRESHOLD};
+use crate::microphone_preview::{
+    classify_level, PreviewLevelClassification, CLIPPING_SAMPLE_THRESHOLD,
+};
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use chrono::Utc;
@@ -347,8 +349,7 @@ fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
             warnings.push("Input is clipping; lower microphone gain".to_string());
         }
         PreviewLevelClassification::NoSignal | PreviewLevelClassification::TooQuiet => {
-            warnings
-                .push("Input is very quiet; move closer or raise microphone gain".to_string());
+            warnings.push("Input is very quiet; move closer or raise microphone gain".to_string());
         }
         PreviewLevelClassification::SignalDetected => {}
     }
@@ -816,7 +817,12 @@ mod tests {
         std::fs::write(root.join("manifest.json"), bytes).unwrap();
     }
 
-    fn recording_entry(prompt_index: u32, prompt_id: &str, file_name: &str, sha256: &str) -> CorpusRecordingEntry {
+    fn recording_entry(
+        prompt_index: u32,
+        prompt_id: &str,
+        file_name: &str,
+        sha256: &str,
+    ) -> CorpusRecordingEntry {
         CorpusRecordingEntry {
             entry_id: format!("{prompt_id}-take-01"),
             prompt_index,
@@ -900,9 +906,12 @@ mod tests {
                 // the raw selected count matches.
                 let file_name = format!("{index:03}-prompt-00-take-01.wav");
                 let sha256 = write_audio_fixture(root, &file_name);
-                manifest
-                    .recordings
-                    .push(recording_entry(index as u32 + 1, "prompt-00", &file_name, &sha256));
+                manifest.recordings.push(recording_entry(
+                    index as u32 + 1,
+                    "prompt-00",
+                    &file_name,
+                    &sha256,
+                ));
             }
             write_manifest(root, &manifest);
 
@@ -992,11 +1001,14 @@ mod tests {
         with_corpus_root(|root| {
             let request = valid_request();
             let samples = vec![0.1_f32; 16_000];
-            let response = persist_recording(1, request.clone(), samples)
-                .expect("persist should succeed");
+            let response =
+                persist_recording(1, request.clone(), samples).expect("persist should succeed");
             assert_eq!(response.recording.prompt_id, request.prompt_id);
             assert_eq!(response.recording.take, 1);
-            assert!(root.join("audio").join(&response.recording.file_name).exists());
+            assert!(root
+                .join("audio")
+                .join(&response.recording.file_name)
+                .exists());
             assert!(root.join("manifest.json").exists());
         });
     }
@@ -1043,7 +1055,9 @@ mod tests {
     fn audio_quality_flags_a_short_recording() {
         let samples = vec![0.5_f32; 100]; // well under 1s at 16kHz
         let (_, _, _, warnings) = audio_quality(&samples);
-        assert!(warnings.iter().any(|warning| warning.contains("shorter than one second")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("shorter than one second")));
     }
 
     #[test]
@@ -1055,6 +1069,8 @@ mod tests {
         samples[0] = 1.0;
         let (_, _, _, warnings) = audio_quality(&samples);
         assert!(warnings.iter().any(|warning| warning.contains("clipping")));
-        assert!(!warnings.iter().any(|warning| warning.contains("very quiet")));
+        assert!(!warnings
+            .iter()
+            .any(|warning| warning.contains("very quiet")));
     }
 }

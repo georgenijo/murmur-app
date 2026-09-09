@@ -174,7 +174,11 @@ impl PopoverSpec {
     /// Full show sequence: resize/reposition to `frame`, raise above the menu
     /// bar as non-activating (see `set_window_level_and_activation`),
     /// disable focus, apply this spec's cursor-event pass-through, then show.
-    pub(crate) fn show(&self, app: &tauri::AppHandle, frame: (f64, f64, f64, f64)) -> Result<(), String> {
+    pub(crate) fn show(
+        &self,
+        app: &tauri::AppHandle,
+        frame: (f64, f64, f64, f64),
+    ) -> Result<(), String> {
         let window = self.window(app)?;
         self.resize_and_position(&window, frame)?;
         set_window_level_and_activation(&window, ABOVE_MENU_BAR_LEVEL, true);
