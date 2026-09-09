@@ -76,7 +76,7 @@ export type ProductionExclusionReason =
   | 'audioDurationUnknown'
   | 'outputSizeUnknown';
 
-export const PRODUCTION_EXCLUSION_LABELS: Record<ProductionExclusionReason, string> = {
+const PRODUCTION_EXCLUSION_LABELS: Record<ProductionExclusionReason, string> = {
   historicalMetadataMissing: 'Historical run without production cohort metadata',
   developmentBuild: 'Development build',
   osVersionUnknown: 'Operating-system version unavailable',

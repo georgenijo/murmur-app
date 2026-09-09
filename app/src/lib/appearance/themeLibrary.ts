@@ -306,7 +306,7 @@ export function removeThemeLibraryEntries(
   return publishMutation(current, themes, storage);
 }
 
-export function themeIdFromLabel(label: string): string {
+function themeIdFromLabel(label: string): string {
   return label
     .trim()
     .toLowerCase()

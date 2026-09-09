@@ -211,7 +211,7 @@ export function clearUiLatencySamples() {
   publish([]);
 }
 
-export function subscribeUiLatency(listener: () => void): () => void {
+function subscribeUiLatency(listener: () => void): () => void {
   if (!storageListenerRegistered && typeof window !== 'undefined') {
     storageListenerRegistered = true;
     window.addEventListener('storage', (event) => {

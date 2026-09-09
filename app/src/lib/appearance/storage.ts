@@ -42,7 +42,7 @@ function byteLength(value: string): number {
   return value.length;
 }
 
-export function resolvedCache(theme: ThemeConfigV1): ResolvedThemeCacheV1 {
+function resolvedCache(theme: ThemeConfigV1): ResolvedThemeCacheV1 {
   return {
     version: 1,
     light: resolveTheme(theme, 'light').tokens,
