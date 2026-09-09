@@ -533,7 +533,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const transformVm = useTransformModelSettings({
     settings,
     onUpdateSettings,
-    active: activeCat === 'ai' || activeCat === 'ai-transform',
+    activePage: activeCat === 'ai' || activeCat === 'ai-transform' ? activeCat : null,
   });
 
   const [pasteLastShortcutError, setPasteLastShortcutError] = useState<string | null>(null);

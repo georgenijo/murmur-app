@@ -13,19 +13,21 @@ import {
   type TransformModelStatus,
 } from '../transformSettings';
 
+export type TransformModelSettingsPage = 'ai' | 'ai-transform' | null;
+
 export interface UseTransformModelSettingsParams {
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
-  /** True while the AI overview or Selected-Text Rewrite page is active —
-   *  gates the status-refresh effect the same way `activeCat` used to. */
-  active: boolean;
+  /** Preserves the active settings page identity so navigating between the AI
+   *  overview and rewrite page refreshes backend model state. */
+  activePage: TransformModelSettingsPage;
 }
 
 /**
  * State, effects, and handlers for the Selected-Text Rewrite (transform)
  * model block (F7), extracted from `SettingsPanel.tsx`. Behavior-preserving.
  */
-export function useTransformModelSettings({ settings, onUpdateSettings, active }: UseTransformModelSettingsParams) {
+export function useTransformModelSettings({ settings, onUpdateSettings, activePage }: UseTransformModelSettingsParams) {
   const [transformModel, setTransformModel] = useState<TransformModelStatus | null>(null);
   const [transformModelBusy, setTransformModelBusy] = useState(false);
   const [transformModelError, setTransformModelError] = useState<string | null>(null);
@@ -44,9 +46,9 @@ export function useTransformModelSettings({ settings, onUpdateSettings, active }
   }, []);
 
   useEffect(() => {
-    if (!active) return;
+    if (activePage === null) return;
     void refreshTransformModel();
-  }, [active, refreshTransformModel]);
+  }, [activePage, refreshTransformModel]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
