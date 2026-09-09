@@ -33,7 +33,8 @@ the input is too quiet or clipping.
 `AudioOwner::Preview(preview_id)` is a first-class owner of the production
 capture supervisor. Preview IDs are monotonic and every lifecycle event is
 generation-checked. Preview is lower priority than real pipeline work:
-dictation, Meeting Capture, meeting summary, Transform, Voice Query, corpus capture, and benchmark startup stop
+dictation, file/base64 processing, Meeting Capture, meeting summary, Transform,
+Voice Query, corpus capture, and benchmark startup stop
 the exact Preview owner, wait for confirmed worker teardown, and claim their
 work under the same short `recording_transition` lock. Preview startup still
 refuses while any real pipeline owns audio.

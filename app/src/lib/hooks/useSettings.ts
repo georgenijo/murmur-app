@@ -68,6 +68,18 @@ export function useSettings() {
     scheduleProbePolicyWrite();
   }, [scheduleProbePolicyWrite]);
 
+  // Native tray and overlay changes also mirror disabled state. On initial
+  // launch the persisted disabled flag must gate consent before backend init;
+  // on re-enable this effect restores only the current main-window policy.
+  useEffect(() => {
+    const policy = smartAutoProbePolicy(settingsRef.current);
+    if (JSON.stringify(policy) !== JSON.stringify(desiredProbePolicyRef.current)) {
+      desiredProbePolicyRef.current = policy;
+      desiredProbePolicyVersionRef.current += 1;
+      scheduleProbePolicyWrite();
+    }
+  }, [settings.disabled, scheduleProbePolicyWrite]);
+
   // Migrate pre-CPAL-0.18 display-name selections during app settings
   // initialization, not when Settings happens to be opened. Only a unique
   // display-name match is persisted as the backend-native stable ID;
@@ -151,7 +163,8 @@ export function useSettings() {
       ...('microphone' in updates ? { microphoneIdMigrationComplete: true } : {}),
     };
     settingsRef.current = newSettings;
-    const probePolicyChanged = 'microphone' in updates
+    const probePolicyChanged = 'disabled' in updates
+      || 'microphone' in updates
       || 'smartAutoMicrophoneEnabled' in updates
       || 'smartAutoProbeEnabled' in updates
       || 'smartAutoApprovedDeviceIds' in updates

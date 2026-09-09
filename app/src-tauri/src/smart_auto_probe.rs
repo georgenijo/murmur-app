@@ -219,6 +219,11 @@ pub(crate) fn wake() {
     controller().changed.notify_one();
 }
 
+#[cfg(test)]
+pub(crate) async fn notified_for_test() {
+    controller().changed.notified().await;
+}
+
 fn emit() {
     if let Some(app) = controller().app.get() {
         let _ = app.emit("smart-auto-microphone-changed", ());

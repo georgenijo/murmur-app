@@ -294,6 +294,28 @@ describe('useSettings configure rollback privacy', () => {
     expect(mocks.emit).toHaveBeenCalledWith('settings-changed');
   });
 
+  it('keeps saved disabled consent inert at boot and synchronizes a native re-enable', async () => {
+    localStorage.setItem('dictation-settings', JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      disabled: true,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+    }));
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue(1);
+    await mountHarness();
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe').map(([, args]) => args))
+      .toEqual([{ policy: { enabled: false } }]);
+    await act(async () => current.applyExternalSettings({ ...current.settings, disabled: false }));
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe').slice(-1)[0]?.[1])
+      .toEqual({ policy: { enabled: true, request: { approvedDeviceIds: ['usb'], preferredDeviceIds: ['usb'], allowContinuity: false } } });
+    await act(async () => current.updateSettings({ disabled: true }));
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe').slice(-1)[0]?.[1])
+      .toEqual({ policy: { enabled: false } });
+  });
+
   it('fails closed and clears consent when probe configuration cannot be enabled', async () => {
     mocks.isTauri.mockReturnValue(true);
     mocks.invoke.mockResolvedValue(1);

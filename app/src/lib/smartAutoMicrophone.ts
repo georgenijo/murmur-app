@@ -109,7 +109,8 @@ export async function getSmartAutoMicrophoneStatus(
 
 export function smartAutoProbePolicy(
   settings: Pick<Settings,
-    'microphone'
+    'disabled'
+    | 'microphone'
     | 'smartAutoMicrophoneEnabled'
     | 'smartAutoProbeEnabled'
     | 'smartAutoApprovedDeviceIds'
@@ -117,7 +118,7 @@ export function smartAutoProbePolicy(
     | 'smartAutoAllowContinuity'>,
 ): SmartAutoProbePolicy {
   const request = smartAutoMicrophoneRequest(settings);
-  return settings.microphone === 'system_default' && settings.smartAutoProbeEnabled && request
+  return !settings.disabled && settings.microphone === 'system_default' && settings.smartAutoProbeEnabled && request
     ? { enabled: true, request }
     : { enabled: false };
 }

@@ -74,6 +74,7 @@ describe('Smart Auto microphone status boundary', () => {
   it('requires separate probe consent in addition to Smart Auto', () => {
     expect(smartAutoProbePolicy({
       microphone: 'system_default',
+      disabled: false,
       smartAutoMicrophoneEnabled: true,
       smartAutoProbeEnabled: false,
       smartAutoApprovedDeviceIds: ['usb'],
@@ -82,6 +83,7 @@ describe('Smart Auto microphone status boundary', () => {
     })).toEqual({ enabled: false });
     expect(smartAutoProbePolicy({
       microphone: 'system_default',
+      disabled: false,
       smartAutoMicrophoneEnabled: true,
       smartAutoProbeEnabled: true,
       smartAutoApprovedDeviceIds: ['usb'],
@@ -96,6 +98,19 @@ describe('Smart Auto microphone status boundary', () => {
   it('does not authorize background checks alongside a pinned microphone', () => {
     expect(smartAutoProbePolicy({
       microphone: 'pinned',
+      disabled: false,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoProbeEnabled: true,
+      smartAutoApprovedDeviceIds: ['usb'],
+      smartAutoPreferredDeviceIds: ['usb'],
+      smartAutoAllowContinuity: false,
+    })).toEqual({ enabled: false });
+  });
+
+  it('never enables probes before a saved disabled state reaches backend initialization', () => {
+    expect(smartAutoProbePolicy({
+      disabled: true,
+      microphone: 'system_default',
       smartAutoMicrophoneEnabled: true,
       smartAutoProbeEnabled: true,
       smartAutoApprovedDeviceIds: ['usb'],

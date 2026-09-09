@@ -323,15 +323,31 @@ pub(crate) async fn transition_after_stopping_preview<'a>(
     app_handle: &tauri::AppHandle,
     state: &'a State,
 ) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    transition_after_preview_cleanup(&state.app_state, |preview_id| async move {
+        stop_exact_preview(app_handle, state, preview_id)
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
+async fn transition_after_preview_cleanup<'a, Stop, Stopped>(
+    app_state: &'a crate::state::AppState,
+    mut stop: Stop,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, String>
+where
+    Stop: FnMut(u64) -> Stopped,
+    Stopped: std::future::Future<Output = Result<(), String>>,
+{
     crate::smart_auto_probe::preempt();
     loop {
-        let transition = state.app_state.recording_transition.lock().await;
-        let Some(preview_id) = state.app_state.microphone_preview.current_id() else {
+        let transition = app_state.recording_transition.lock().await;
+        let Some(preview_id) = app_state.microphone_preview.current_id() else {
             crate::meeting_diarization::preempt()?;
             return Ok(transition);
         };
         drop(transition);
-        stop_exact_preview(app_handle, state, preview_id).await?;
+        stop(preview_id).await?;
     }
 }
 
@@ -396,6 +412,77 @@ pub(crate) fn cancel_for_window_close(app_handle: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_and_base64_processing_claims_wait_for_exact_preview_teardown() {
+        use std::sync::{atomic::Ordering, Arc};
+        for file in [true, false] {
+            let app_state = Arc::new(crate::state::AppState::default());
+            let id = app_state.microphone_preview.claim_automatic().unwrap();
+            let stop_seen = Arc::new(tokio::sync::Notify::new());
+            let teardown = Arc::new(tokio::sync::Notify::new());
+            let owned = app_state.clone();
+            let task_seen = stop_seen.clone();
+            let task_teardown = teardown.clone();
+            let task = tokio::spawn(async move {
+                let _transition = transition_after_preview_cleanup(&owned, |actual| {
+                    let owned = owned.clone();
+                    let seen = task_seen.clone();
+                    let teardown = task_teardown.clone();
+                    async move {
+                        assert_eq!(actual, id);
+                        seen.notify_one();
+                        teardown.notified().await;
+                        owned.microphone_preview.clear_if(actual);
+                        Ok(())
+                    }
+                })
+                .await
+                .unwrap();
+                if file {
+                    owned.file_transcribing.store(true, Ordering::SeqCst);
+                } else {
+                    owned.dictation.lock_or_recover().status = DictationStatus::Processing;
+                }
+            });
+            stop_seen.notified().await;
+            assert!(app_state.microphone_preview.is_current(id));
+            assert!(!app_state.file_transcribing.load(Ordering::SeqCst));
+            assert_eq!(
+                app_state.dictation.lock_or_recover().status,
+                DictationStatus::Idle
+            );
+            assert!(!task.is_finished());
+            teardown.notify_one();
+            task.await.unwrap();
+            assert!(!app_state.microphone_preview.is_active());
+            assert_eq!(app_state.file_transcribing.load(Ordering::SeqCst), file);
+            assert_eq!(
+                app_state.dictation.lock_or_recover().status,
+                if file {
+                    DictationStatus::Idle
+                } else {
+                    DictationStatus::Processing
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_preview_teardown_does_not_release_a_processing_transition() {
+        let app_state = crate::state::AppState::default();
+        let id = app_state.microphone_preview.claim_automatic().unwrap();
+        let result = transition_after_preview_cleanup(&app_state, |_| async {
+            Err("still recovering".into())
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(app_state.microphone_preview.is_current(id));
+        assert_eq!(
+            app_state.dictation.lock_or_recover().status,
+            DictationStatus::Idle
+        );
+    }
 
     #[test]
     fn optional_cleanup_never_becomes_an_ownerless_audio_cancel() {

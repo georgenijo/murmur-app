@@ -139,7 +139,9 @@ blocked capture. A stopping check stays visible until teardown is confirmed.
 The main window synchronizes consent and approvals through
 `configure_smart_auto_probe` after settings hydration. The backend starts
 disabled. Overlay quick controls cannot replace the main window's approvals.
-Manual pinning disables the probe policy even if a stale Auto flag remains set.
+Manual pinning and a persisted disabled state block the probe policy even if
+a stale Auto flag remains set. Disabling and re-enabling Murmur synchronizes
+only the current main-window policy.
 Invalid policy disables checks before returning an error.
 
 The scheduler in `smart_auto_probe.rs` wakes for cached topology/default changes,
