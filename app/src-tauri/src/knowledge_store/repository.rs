@@ -1,6 +1,5 @@
 use super::migrations::{self, db_error, LATEST_SCHEMA_VERSION};
 use super::types::*;
-use chrono::Utc;
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, MAIN_DB};
 use std::cmp::Ordering;
@@ -657,7 +656,7 @@ impl KnowledgeRepository {
     }
 
     fn open_raw(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path).map_err(|_| storage_error())
+        crate::sqlite_support::open_raw(&self.db_path).map_err(|_| storage_error())
     }
 
     fn open_checked(&self) -> Result<Connection, String> {
@@ -680,9 +679,18 @@ impl KnowledgeRepository {
         let name = format!("knowledge-v{version}-{}.sqlite3", now_ms());
         let path = self.root.join("backups").join(name);
         source.backup(MAIN_DB, &path, None).map_err(db_error)?;
-        let check = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|_| storage_error())?;
+        let check = Connection::open(&path).map_err(|_| storage_error())?;
+        check
+            .pragma_update(None, "journal_mode", "DELETE")
+            .map_err(db_error)?;
         migrations::quick_check(&check)?;
+        drop(check);
+        fs::File::open(&path)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| storage_error())?;
+        fs::File::open(self.root.join("backups"))
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| storage_error())?;
         retain_newest(&self.root.join("backups"), MAX_BACKUPS)?;
         Ok(())
     }
@@ -692,8 +700,8 @@ impl KnowledgeRepository {
             .root
             .join("quarantine")
             .join(format!("knowledge-corrupt-{}.sqlite3", now_ms()));
-        fs::rename(&self.db_path, quarantine).map_err(|_| storage_error())?;
-        remove_sidecars(&self.db_path);
+        crate::sqlite_support::quarantine_with_sidecars(&self.db_path, &quarantine)
+            .map_err(|_| storage_error())?;
 
         let mut backups = backup_files_newest_first(&self.root.join("backups"))?;
         for backup in backups.drain(..) {
@@ -726,21 +734,11 @@ impl KnowledgeRepository {
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), String> {
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .map_err(db_error)?;
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(db_error)?;
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(db_error)?;
-    connection
-        .pragma_update(None, "secure_delete", "ON")
-        .map_err(db_error)?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(db_error)
+    crate::sqlite_support::configure_connection(
+        connection,
+        &crate::sqlite_support::PragmaOptions::STANDARD,
+    )
+    .map_err(db_error)
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
@@ -1264,23 +1262,14 @@ fn insert_imported(
 }
 
 fn files_newest_first(directory: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = fs::read_dir(directory)
-        .map_err(|_| storage_error())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
-    Ok(files)
+    crate::sqlite_support::newest_first(directory).map_err(|_| storage_error())
 }
 
 fn backup_files_newest_first(directory: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = files_newest_first(directory)?
+    Ok(files_newest_first(directory)?
         .into_iter()
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("sqlite3"))
-        .collect::<Vec<_>>();
-    files.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
-    Ok(files)
+        .collect())
 }
 
 fn retain_newest(directory: &Path, keep: usize) -> Result<(), String> {
@@ -1299,13 +1288,11 @@ fn remove_files_in(directory: &Path) -> Result<(), String> {
 }
 
 fn remove_sidecars(db_path: &Path) {
-    let path = db_path.to_string_lossy();
-    let _ = fs::remove_file(format!("{path}-wal"));
-    let _ = fs::remove_file(format!("{path}-shm"));
+    crate::sqlite_support::remove_sidecars_best_effort(db_path);
 }
 
 fn now_ms() -> i64 {
-    Utc::now().timestamp_millis()
+    crate::sqlite_support::now_ms()
 }
 
 fn storage_error() -> String {
@@ -1314,4 +1301,106 @@ fn storage_error() -> String {
 
 fn validation_error() -> String {
     "Knowledge record validation failed.".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repository() -> (tempfile::TempDir, KnowledgeRepository) {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, _) =
+            KnowledgeRepository::initialize(temp.path().join("knowledge")).unwrap();
+        (temp, repository)
+    }
+
+    #[test]
+    fn primary_connection_uses_expected_pragmas() {
+        let (_temp, repository) = repository();
+        let connection = repository.open_checked().unwrap();
+        let journal_mode: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        let foreign_keys: i64 = connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        let secure_delete: i64 = connection
+            .pragma_query_value(None, "secure_delete", |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 2);
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(secure_delete, 1);
+        assert_eq!(busy_timeout, 2000);
+    }
+
+    #[test]
+    fn quarantine_preserves_main_and_sidecar_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("knowledge");
+        fs::create_dir_all(root.join("backups")).unwrap();
+        fs::create_dir_all(root.join("quarantine")).unwrap();
+        let db_path = root.join(DB_FILE);
+        for (suffix, bytes) in [
+            ("", b"main evidence".as_slice()),
+            ("-wal", b"wal evidence"),
+            ("-shm", b"shm evidence"),
+        ] {
+            fs::write(format!("{}{suffix}", db_path.display()), bytes).unwrap();
+        }
+
+        let repository = KnowledgeRepository {
+            root: root.clone(),
+            db_path: db_path.clone(),
+        };
+        let outcome = repository.recover_corrupt_database().unwrap();
+        assert_eq!(outcome, InitializationOutcome::Reinitialized);
+        assert!(!db_path.exists());
+
+        let files = fs::read_dir(root.join("quarantine"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 3);
+        for (suffix, bytes) in [
+            (".sqlite3", b"main evidence".as_slice()),
+            (".sqlite3-wal", b"wal evidence"),
+            (".sqlite3-shm", b"shm evidence"),
+        ] {
+            let path = files
+                .iter()
+                .find(|path| path.to_string_lossy().ends_with(suffix))
+                .unwrap();
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn backup_listing_orders_by_mtime_before_filename() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("backups");
+        fs::create_dir_all(&dir).unwrap();
+        // Filename-only descending sort would put "z-old" before "a-new".
+        // The correct mtime-first order must put the newer file first
+        // regardless of its name.
+        let older_name_newer_mtime = dir.join("a-new.sqlite3");
+        let newer_name_older_mtime = dir.join("z-old.sqlite3");
+        fs::write(&newer_name_older_mtime, b"old").unwrap();
+        fs::write(&older_name_newer_mtime, b"new").unwrap();
+
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::open(&newer_name_older_mtime)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
+
+        let files = backup_files_newest_first(&dir).unwrap();
+        assert_eq!(files, vec![older_name_newer_mtime, newer_name_older_mtime]);
+    }
 }
