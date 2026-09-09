@@ -1589,10 +1589,20 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "private, no-store")
         self.assertIn("Private diagnostic captures", page)
         self.assertIn("Review private capture", page)
+        self.assertIn("Captured 2026-08-29T10:40:00Z", page)
+        self.assertIn("server copy expires", page)
         self.assertNotIn(sentinel, page)
         self.assertNotIn("PRIVATE &lt;script&gt;alert(1)&lt;/script&gt;", page)
         self.assertEqual(review_status, 200)
         self.assertEqual(review_headers["Cache-Control"], "private, no-store")
+        self.assertIn(
+            "<details class='private-capture-content'>"
+            "<summary>Reveal captured transcript text</summary>",
+            review,
+        )
+        self.assertNotIn("<details class='private-capture-content' open", review)
+        self.assertIn("Captured 2026-08-29T10:40:00Z", review)
+        self.assertIn("server copy expires", review)
         self.assertIn("PRIVATE &lt;script&gt;alert(1)&lt;/script&gt; raw", review)
         self.assertNotIn("<script>alert(1)</script>", review)
         self.assertIsNotNone(csrf)
@@ -1622,6 +1632,8 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         )
         self.assertEqual(delete_status, 303)
         self.assertFalse(capture_path.exists())
+
+        self.assertEqual(receiver._private_capture_time(10**30), "invalid timestamp")
 
     def test_private_capture_rejects_dev_malformed_and_oversized_content(self) -> None:
         headers = self.private_capture_headers()

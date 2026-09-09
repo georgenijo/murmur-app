@@ -46,9 +46,11 @@ or logs. A failed upload leaves only the existing local copy. The receiver uses
 its receipt time for a seven-day expiry, keeps at most three per install, and
 stores the file separately from raw events and SQLite. Ordinary install pages
 show metadata and a link only. Exact text appears only on a separate no-store
-review page behind Cloudflare Access, where deletion is CSRF-protected and
-durably synced. The public nginx host exposes the exact upload route only, not
-review or deletion.
+review page behind Cloudflare Access. The page shows the device capture time,
+upload time, and server expiry time, and keeps both transcript fields collapsed
+until the operator reveals them. Deletion is CSRF-protected and durably synced.
+The public nginx host exposes the exact upload route only, not review or
+deletion.
 
 ## Server-armed hang diagnostics (`hang_diagnostics.rs`)
 

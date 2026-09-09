@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Fleet diagnostics now judge 1 to 15 second production dictations against the
   stop-to-delivery target, show an explicit p50 and p95 verdict, and alert on a
   missed target without claiming that another app consumed a paste (#487).
+- Private dictation captures on the Fleet dashboard now show their capture and
+  expiry times and keep transcript text collapsed until the operator reveals it
+  (#461).
 - Smart Auto now excludes output-only audio devices, exposes per-microphone approvals in one unified picker, explains why an allowed input is unavailable, and keeps Settings branch and row spacing aligned (#688).
 
 ## [0.42.0] - 2026-09-08
