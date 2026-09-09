@@ -27,7 +27,6 @@ pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 /// Abstraction over transcription engines (whisper, etc.)
 pub trait TranscriptionBackend: Send + Sync {
     /// Human-readable backend name (e.g., "whisper")
-    #[allow(dead_code)]
     fn name(&self) -> &str;
 
     /// Load model by name. Called lazily on first transcription.

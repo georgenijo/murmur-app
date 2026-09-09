@@ -42,11 +42,8 @@ pub enum TransformStatus {
 }
 
 impl TransformStatus {
-    /// Human-readable event/telemetry string (see `log_capture_outcome`-style
-    /// callers in `selection.rs`). Not called from production code yet — the
-    /// transform pipeline that would log these phase transitions lands in a
-    /// later PR in the #312 series; exercised directly by tests until then.
-    #[allow(dead_code)]
+    /// Human-readable event/telemetry string, used for transform-trace
+    /// transitions (see `transform_trace::transition` callers).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
