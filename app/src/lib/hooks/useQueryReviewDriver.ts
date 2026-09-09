@@ -3,21 +3,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
 import { isQueryUsage, type QueryUsage } from '../queryUsage';
-
-export type QueryReviewState =
-  | 'idle'
-  | 'connecting'
-  | 'listening'
-  | 'transcribing'
-  | 'running'
-  | 'ready'
-  | 'failed';
-
-interface QueryStatePayload {
-  queryPassId: number;
-  state: QueryReviewState;
-  errorCode: string | null;
-}
+import { pollQuerySignIn } from '../queryProviders';
+import {
+  isHiddenPayload,
+  isQueryStatePayload,
+  isValidPassId,
+  type QueryContent,
+  type QueryReviewState,
+} from '../queryReview';
 
 interface QueryChunkPayload {
   queryPassId: number;
@@ -31,33 +24,10 @@ interface QueryPartialPayload {
   text: string;
 }
 
-interface QueryContent {
-  queryPassId: number | null;
-  answer: string;
-  errorDetail: string | null;
-  provider: 'claude' | 'codex' | 'grok' | 'cursor' | 'custom' | null;
-  usage: QueryUsage | null;
-  signInFix: string | null;
-  contextSummary: string | null;
-}
-
-function validPassId(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function isStatePayload(value: unknown): value is QueryStatePayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Record<string, unknown>;
-  return validPassId(payload.queryPassId)
-    && typeof payload.state === 'string'
-    && ['idle', 'connecting', 'listening', 'transcribing', 'running', 'ready', 'failed'].includes(payload.state)
-    && (payload.errorCode === null || typeof payload.errorCode === 'string');
-}
-
 function isChunkPayload(value: unknown): value is QueryChunkPayload {
   if (!value || typeof value !== 'object') return false;
   const payload = value as Record<string, unknown>;
-  return validPassId(payload.queryPassId)
+  return isValidPassId(payload.queryPassId)
     && typeof payload.sequence === 'number'
     && Number.isSafeInteger(payload.sequence)
     && payload.sequence >= 0
@@ -68,7 +38,7 @@ function isChunkPayload(value: unknown): value is QueryChunkPayload {
 function isPartialPayload(value: unknown): value is QueryPartialPayload {
   if (!value || typeof value !== 'object') return false;
   const payload = value as Record<string, unknown>;
-  return validPassId(payload.queryPassId) && typeof payload.text === 'string';
+  return isValidPassId(payload.queryPassId) && typeof payload.text === 'string';
 }
 
 export function useQueryReviewDriver() {
@@ -146,7 +116,7 @@ export function useQueryReviewDriver() {
 
     const setup = async () => {
       unlistenState = await listen<unknown>('query-state-changed', (event) => {
-        if (disposed || !isStatePayload(event.payload)) return;
+        if (disposed || !isQueryStatePayload(event.payload)) return;
         const payload = event.payload;
         if (passIdRef.current !== payload.queryPassId) {
           passIdRef.current = payload.queryPassId;
@@ -238,17 +208,15 @@ export function useQueryReviewDriver() {
       unlistenContext = await listen<unknown>('query-context-resolved', (event) => {
         if (disposed || !event.payload || typeof event.payload !== 'object') return;
         const queryPassId = (event.payload as Record<string, unknown>).queryPassId;
-        if (!validPassId(queryPassId) || queryPassId !== passIdRef.current) return;
+        if (!isValidPassId(queryPassId) || queryPassId !== passIdRef.current) return;
         void refreshContext(queryPassId);
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenContext(); return; }
 
       unlistenHidden = await listen<unknown>('query-review-hidden', (event) => {
-        if (disposed || !event.payload || typeof event.payload !== 'object') return;
-        const payload = event.payload as Record<string, unknown>;
-        if (Object.keys(payload).length !== 1
-          || !validPassId(payload.queryPassId)
-          || payload.queryPassId !== passIdRef.current) return;
+        if (disposed || !isHiddenPayload(event.payload)) return;
+        const payload = event.payload;
+        if (payload.queryPassId !== passIdRef.current) return;
         passIdRef.current = null;
         nextSequenceRef.current = 0;
         contentRefreshTicketRef.current += 1;
@@ -322,25 +290,15 @@ export function useQueryReviewDriver() {
     setSignInBusy(true);
     setSignInStatus('Opening Terminal…');
     try {
-      await invoke('launch_query_sign_in_for_pass', { queryPassId });
-      if (!ownsAttempt()) return;
-      setSignInStatus('Terminal opened. Waiting for sign-in…');
-      const deadline = Date.now() + 60_000;
-      while (ownsAttempt() && Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
-        if (!ownsAttempt()) return;
-        const authenticated = await invoke<boolean>('probe_query_sign_in_for_pass', {
-          queryPassId,
-        });
-        if (!ownsAttempt()) return;
-        if (authenticated) {
-          setSignInStatus('Signed in. Ask the query again.');
-          return;
-        }
-      }
-      if (ownsAttempt()) {
-        setSignInStatus('Sign-in is still pending. Finish in Terminal, then try again.');
-      }
+      await pollQuerySignIn({
+        launch: () => invoke('launch_query_sign_in_for_pass', { queryPassId }),
+        onLaunched: () => setSignInStatus('Terminal opened. Waiting for sign-in…'),
+        probe: () => invoke<boolean>('probe_query_sign_in_for_pass', { queryPassId }),
+        isSignedIn: (authenticated) => authenticated,
+        onSignedIn: () => setSignInStatus('Signed in. Ask the query again.'),
+        onPending: () => setSignInStatus('Sign-in is still pending. Finish in Terminal, then try again.'),
+        ownsAttempt,
+      });
     } catch {
       if (ownsAttempt()) {
         setSignInStatus('Murmur could not complete provider sign-in.');
