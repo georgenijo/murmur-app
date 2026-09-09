@@ -261,7 +261,12 @@ export function MicrophoneInputTest({
   const [autoStartSuspended, setAutoStartSuspended] = useState(false);
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [verification, setVerification] = useState<{ previewId: number; message: string; pending: boolean } | null>(null);
+  const [verification, setVerification] = useState<{
+    previewId: number;
+    configurationKey: string;
+    message: string;
+    pending: boolean;
+  } | null>(null);
   const verificationPendingRef = useRef(false);
   const [vadDecision, setVadDecision] = useState<MicrophonePreviewVadDecision | 'listening'>('listening');
   const statusRef = useRef(status);
@@ -523,6 +528,10 @@ export function MicrophoneInputTest({
     previewMicrophone,
     smartAuto: smartAutoRequest,
   }), [defaultInputId, microphone, previewMicrophone, smartAutoRequest]);
+  const previewConfigurationKeyRef = useRef(previewConfigurationKey);
+  const smartAutoActiveRef = useRef(smartAutoActive);
+  previewConfigurationKeyRef.current = previewConfigurationKey;
+  smartAutoActiveRef.current = smartAutoActive;
   const previousPreviewConfigurationRef = useRef(previewConfigurationKey);
   const previousMonitoringActiveRef = useRef(monitoringActive);
 
@@ -612,22 +621,32 @@ export function MicrophoneInputTest({
   const verifySignal = async () => {
     const previewId = statusRef.current.previewId;
     if (previewId === null || verificationPendingRef.current) return;
+    const configurationKey = previewConfigurationKeyRef.current;
+    const stillOwnsVerification = () => mountedRef.current
+      && statusRef.current.previewId === previewId
+      && previewConfigurationKeyRef.current === configurationKey;
     verificationPendingRef.current = true;
-    setVerification({ previewId, pending: true, message: 'Speak normally for five seconds. Checking for one second of sustained signal…' });
+    setVerification({ previewId, configurationKey, pending: true, message: 'Speak normally for five seconds. Checking for one second of sustained signal…' });
     try {
       const result = await verifyMicrophonePreviewSignal(previewId);
-      if (mountedRef.current && statusRef.current.previewId === previewId) {
-        setVerification({ previewId, pending: false, message: microphoneSignalVerificationLabel(result) });
+      if (stillOwnsVerification()) {
+        setVerification({ previewId, configurationKey, pending: false, message: microphoneSignalVerificationLabel(result) });
       }
     } catch (error) {
-      if (mountedRef.current && statusRef.current.previewId === previewId) {
-        setVerification({ previewId, pending: false, message: String(error) });
+      if (stillOwnsVerification()) {
+        setVerification({ previewId, configurationKey, pending: false, message: String(error) });
       }
     } finally {
       verificationPendingRef.current = false;
-      if (smartAutoActive) await refreshSmartAutoStatus();
       if (mountedRef.current) {
-        setVerification((current) => current?.previewId === previewId && current.pending ? null : current);
+        setVerification((current) => current?.previewId === previewId
+          && current.configurationKey === configurationKey
+          && current.pending
+          ? null
+          : current);
+      }
+      if (stillOwnsVerification() && smartAutoActiveRef.current) {
+        await refreshSmartAutoStatusRef.current();
       }
     }
   };
@@ -778,11 +797,6 @@ export function MicrophoneInputTest({
               <p className="mt-1 text-warning"><span className="font-medium">Next capture blocked: </span>{smartAutoStatus.status.message}</p>
               <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
             </>
-          ) : smartAutoStatus.kind === 'expired' ? (
-            <>
-              <p className="mt-1 text-warning"><span className="font-medium">Next capture blocked: </span>The previous signal check has expired.</p>
-              <p className="mt-1">Verify the preview candidate again, or choose a fixed microphone.</p>
-            </>
           ) : smartAutoStatus.kind === 'unavailable' ? (
             <>
               <p className="mt-1 text-warning">Murmur could not confirm a safe microphone for the next capture.</p>
@@ -848,7 +862,9 @@ export function MicrophoneInputTest({
             {smartAutoActive ? 'Verify preview candidate for 5 seconds' : 'Verify signal for 5 seconds'}
           </button>
           {smartAutoActive && <p className="mt-2">The preview follows availability. Smart Auto requires a recent successful check before it can use this candidate.</p>}
-          {verification?.previewId === status.previewId && <p className="mt-2" role="status">{verification.message}</p>}
+          {verification?.previewId === status.previewId
+            && verification.configurationKey === previewConfigurationKey
+            && <p className="mt-2" role="status">{verification.message}</p>}
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 border-t border-outline-variant/15 pt-2 text-xs">
           <span className="text-on-surface-variant">

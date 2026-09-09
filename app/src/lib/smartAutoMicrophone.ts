@@ -19,6 +19,7 @@ export type SmartAutoMicrophoneStatus =
   | {
     state: 'blocked';
     message: string;
+    retryAfterMs: number | null;
   };
 
 const READY_REASONS = new Set<string>([
@@ -59,7 +60,14 @@ export function parseSmartAutoMicrophoneStatus(value: unknown): SmartAutoMicroph
     };
   }
   if (value.state === 'blocked' && isBoundedText(value.message, 1024)) {
-    return { state: 'blocked', message: value.message };
+    const retryAfterMs = value.retryAfterMs ?? null;
+    if (retryAfterMs !== null && (
+      typeof retryAfterMs !== 'number'
+      || !Number.isSafeInteger(retryAfterMs)
+      || retryAfterMs < 1
+      || retryAfterMs > 10_000
+    )) return null;
+    return { state: 'blocked', message: value.message, retryAfterMs };
   }
   return null;
 }

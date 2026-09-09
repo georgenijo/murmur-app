@@ -56,7 +56,6 @@ export function OverlayWidget() {
       reason: smartAutoMicrophoneReasonLabel(smartAutoReady.reason),
     }
     : smartAutoStatus.view.kind === 'resolved'
-      || smartAutoStatus.view.kind === 'expired'
       || smartAutoStatus.view.kind === 'unavailable'
       ? { kind: 'blocked' as const }
       : null;

@@ -294,16 +294,20 @@ describe('MicrophoneInputTest', () => {
     expect(selected).toBe('usb');
   });
 
-  it('shows the backend-confirmed route only while recent signal evidence remains valid', async () => {
+  it('rereads the backend when evidence expires and shows a different fresh candidate', async () => {
     vi.useFakeTimers();
     includeSmartAuto = true;
+    let statusCalls = 0;
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_microphone_preview_status') return idle;
       if (command === 'start_microphone_preview') return active;
       if (command === 'update_microphone_preview_vad_sensitivity') return true;
       if (command === 'cancel_microphone_preview') return true;
       if (command === 'get_smart_auto_microphone_status') {
-        return { state: 'ready', deviceId: 'built-in', reason: 'previous_verified_rollback', validForMs: 1_000 };
+        statusCalls += 1;
+        return statusCalls === 1
+          ? { state: 'ready', deviceId: 'built-in', reason: 'previous_verified_rollback', validForMs: 1_000 }
+          : { state: 'ready', deviceId: 'usb', reason: 'preferred_approved', validForMs: 5_000 };
       }
       throw new Error(`unexpected command: ${command}`);
     });
@@ -314,9 +318,9 @@ describe('MicrophoneInputTest', () => {
     expect(container.textContent).toContain('previous verified microphone restored');
 
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(container.textContent).toContain('Next capture blocked: The previous signal check has expired.');
-    expect(container.textContent).not.toContain('Next capture ready');
-    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_smart_auto_microphone_status')).toHaveLength(1);
+    expect(container.textContent).toContain('Next capture ready: USB Microphone');
+    expect(container.textContent).toContain('preferred approved microphone');
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_smart_auto_microphone_status')).toHaveLength(2);
     vi.useRealTimers();
   });
 
@@ -348,6 +352,63 @@ describe('MicrophoneInputTest', () => {
     expect(container.textContent).toContain('Sustained input signal verified');
     expect(container.textContent).toContain('Next capture ready: USB Microphone');
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_smart_auto_microphone_status')).toHaveLength(2);
+  });
+
+  it('does not let an old verification completion refresh removed approvals', async () => {
+    includeSmartAuto = true;
+    let verified = false;
+    let finishVerification: (() => void) | null = null;
+    mocks.invoke.mockImplementation(async (command: string, args?: { smartAuto?: { approvedDeviceIds: string[] } }) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') return active;
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
+      if (command === 'stop_microphone_preview') return idle;
+      if (command === 'cancel_microphone_preview') return true;
+      if (command === 'verify_microphone_preview_signal') {
+        return new Promise<string>((resolve) => {
+          finishVerification = () => {
+            verified = true;
+            resolve('verified');
+          };
+        });
+      }
+      if (command === 'get_smart_auto_microphone_status') {
+        const stillApprovesUsb = args?.smartAuto?.approvedDeviceIds.includes('usb') === true;
+        return verified && stillApprovesUsb
+          ? { state: 'ready', deviceId: 'usb', reason: 'preferred_approved', validForMs: 120_000 }
+          : { state: 'blocked', message: 'A recent signal check is required.', retryAfterMs: null };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    const verify = Array.from(container.querySelectorAll('button'))
+      .find((element) => element.textContent === 'Verify preview candidate for 5 seconds');
+    await act(async () => verify?.click());
+
+    smartAuto = {
+      ...smartAuto,
+      smartAutoApprovedDeviceIds: ['built-in'],
+      smartAutoPreferredDeviceIds: ['built-in'],
+    };
+    await render();
+    await act(async () => {
+      finishVerification?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const statusRequests = mocks.invoke.mock.calls
+      .filter(([command]) => command === 'get_smart_auto_microphone_status');
+    expect(statusRequests.filter(([, args]) => args.smartAuto.approvedDeviceIds.includes('usb'))).toHaveLength(1);
+    expect(statusRequests[statusRequests.length - 1]?.[1]).toEqual({
+      smartAuto: {
+        approvedDeviceIds: ['built-in'],
+        preferredDeviceIds: ['built-in'],
+        allowContinuity: false,
+      },
+    });
+    expect(container.textContent).not.toContain('Next capture ready: USB Microphone');
+    expect(container.textContent).not.toContain('Sustained input signal verified');
   });
 
   it('refreshes Smart Auto status after inventory, preview, and configuration changes', async () => {

@@ -10,7 +10,6 @@ export type SmartAutoMicrophoneStatusView =
   | { kind: 'inactive' }
   | { kind: 'loading' }
   | { kind: 'resolved'; status: SmartAutoMicrophoneStatus }
-  | { kind: 'expired' }
   | { kind: 'unavailable'; message: string };
 
 const REFRESH_EVENTS = [
@@ -33,7 +32,7 @@ export function useSmartAutoMicrophoneStatus(
   const preferredDeviceIds = smartAuto?.preferredDeviceIds;
   const allowContinuity = smartAuto?.allowContinuity;
 
-  const refresh = useCallback(async () => {
+  const refreshWithCause = useCallback(async (cause: 'external' | 'deadline') => {
     const generation = ++requestGenerationRef.current;
     if (!enabled || !approvedDeviceIds || !preferredDeviceIds || allowContinuity === undefined) {
       if (mountedRef.current) setView({ kind: 'inactive' });
@@ -45,17 +44,30 @@ export function useSmartAutoMicrophoneStatus(
       allowContinuity,
     };
     setView({ kind: 'loading' });
-    const requestedAt = Date.now();
+    const requestedAt = performance.now();
     try {
       const status = await getSmartAutoMicrophoneStatus(request);
       if (mountedRef.current && requestGenerationRef.current === generation) {
+        const elapsedMs = Math.max(0, performance.now() - requestedAt);
         if (status.state === 'ready') {
-          const validForMs = Math.max(0, status.validForMs - (Date.now() - requestedAt));
-          setView(validForMs > 0
-            ? { kind: 'resolved', status: { ...status, validForMs } }
-            : { kind: 'expired' });
+          const validForMs = Math.max(0, status.validForMs - elapsedMs);
+          if (validForMs === 0) {
+            if (cause === 'external') void refreshWithCause('deadline');
+            else setView({ kind: 'unavailable', message: 'Smart Auto status expired before Murmur could confirm it.' });
+          } else {
+            setView({ kind: 'resolved', status: { ...status, validForMs } });
+          }
         } else {
-          setView({ kind: 'resolved', status });
+          const retryAfterMs = status.retryAfterMs === null
+            ? null
+            : cause === 'deadline'
+              ? status.retryAfterMs
+              : Math.max(0, status.retryAfterMs - elapsedMs);
+          if (retryAfterMs === 0) {
+            void refreshWithCause('deadline');
+          } else {
+            setView({ kind: 'resolved', status: { ...status, retryAfterMs } });
+          }
         }
       }
     } catch (error) {
@@ -64,6 +76,7 @@ export function useSmartAutoMicrophoneStatus(
       }
     }
   }, [allowContinuity, approvedDeviceIds, enabled, preferredDeviceIds]);
+  const refresh = useCallback(() => refreshWithCause('external'), [refreshWithCause]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -97,12 +110,16 @@ export function useSmartAutoMicrophoneStatus(
   }, [allowContinuity, approvedDeviceIds, enabled, preferredDeviceIds, refresh]);
 
   useEffect(() => {
-    if (view.kind !== 'resolved' || view.status.state !== 'ready') return;
+    if (view.kind !== 'resolved') return;
+    const deadlineMs = view.status.state === 'ready'
+      ? view.status.validForMs
+      : view.status.retryAfterMs;
+    if (deadlineMs === null) return;
     const timeout = window.setTimeout(() => {
-      if (mountedRef.current) setView({ kind: 'expired' });
-    }, view.status.validForMs);
+      if (mountedRef.current) void refreshWithCause('deadline');
+    }, deadlineMs);
     return () => window.clearTimeout(timeout);
-  }, [view]);
+  }, [refreshWithCause, view]);
 
   useEffect(() => () => {
     mountedRef.current = false;

@@ -98,6 +98,9 @@ evidence because that boundary cannot prove a physical ID. Failure and topology
 epochs reject verification results that race those events. No input changes
 within the failed capture; rollback applies to the next capture request.
 Sleep and wake revoke all evidence even when no capture is active.
+Meeting startup resolves Auto before pruning or creating a session or claiming
+meeting ownership. A failed meeting supervisor also revokes its input evidence
+before releasing the meeting's active flags.
 
 Settings offers **Verify signal for 5 seconds** on the active live meter. This
 feeds the Auto resolver only when the preview opened an explicit stable ID.
@@ -125,6 +128,8 @@ or uploaded. Content-free telemetry records decision reasons and whether a
 bounded check verified signal. The local Settings and overlay status command
 returns a device ID for display, a decision reason, and remaining freshness;
 reading it neither selects an input nor extends evidence.
+The UI rereads this cached status once at evidence expiry or cooldown completion
+so a different verified candidate can become ready without a background probe.
 
 Remaining #525 work is explicit automatic multi-input probe scheduling.
 This implementation adds no background microphone opens, timers, enumeration,

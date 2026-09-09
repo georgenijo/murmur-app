@@ -42,6 +42,20 @@ describe('Smart Auto microphone status boundary', () => {
       state: 'ready', deviceId: 'usb', reason: 'not_a_reason', validForMs: 100,
     })).toBeNull();
     expect(parseSmartAutoMicrophoneStatus({ state: 'blocked', message: '' })).toBeNull();
+    expect(parseSmartAutoMicrophoneStatus({
+      state: 'blocked', message: 'Cooling down.', retryAfterMs: 0,
+    })).toBeNull();
+    expect(parseSmartAutoMicrophoneStatus({
+      state: 'blocked', message: 'Cooling down.', retryAfterMs: 10_001,
+    })).toBeNull();
+  });
+
+  it('normalizes untimed blocked responses and preserves valid cooldowns', () => {
+    expect(parseSmartAutoMicrophoneStatus({ state: 'blocked', message: 'Verify a microphone.' }))
+      .toEqual({ state: 'blocked', message: 'Verify a microphone.', retryAfterMs: null });
+    expect(parseSmartAutoMicrophoneStatus({
+      state: 'blocked', message: 'Switch cooldown.', retryAfterMs: 10_000,
+    })).toEqual({ state: 'blocked', message: 'Switch cooldown.', retryAfterMs: 10_000 });
   });
 
   it('gives each backend decision reason a user-facing label', () => {

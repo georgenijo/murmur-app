@@ -52,6 +52,28 @@ pub(crate) struct SmartAutoSelection {
     pub(crate) reason: SmartAutoReason,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SmartAutoBlock {
+    Unavailable(&'static str),
+    Cooldown(Duration),
+}
+
+impl SmartAutoBlock {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable(message) => message,
+            Self::Cooldown(_) => "Smart Auto is waiting ten seconds between microphone changes. Try again shortly or pin a microphone manually.",
+        }
+    }
+
+    fn retry_after_ms(self) -> Option<u64> {
+        match self {
+            Self::Unavailable(_) => None,
+            Self::Cooldown(remaining) => Some(remaining.as_nanos().div_ceil(1_000_000) as u64),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub(crate) enum SmartAutoStatus {
@@ -61,8 +83,10 @@ pub(crate) enum SmartAutoStatus {
         reason: &'static str,
         valid_for_ms: u64,
     },
+    #[serde(rename_all = "camelCase")]
     Blocked {
         message: String,
+        retry_after_ms: Option<u64>,
     },
 }
 
@@ -134,8 +158,8 @@ impl SmartAutoHealth {
         default_input_id: Option<&str>,
         lid_state: ProductionLidState,
         now: Instant,
-    ) -> Result<SmartAutoSelection, &'static str> {
-        let approved = validate(request)?;
+    ) -> Result<SmartAutoSelection, SmartAutoBlock> {
+        let approved = validate(request).map_err(SmartAutoBlock::Unavailable)?;
         let verified: Vec<_> = devices
             .iter()
             .filter(|device| {
@@ -156,7 +180,7 @@ impl SmartAutoHealth {
             return Ok(current);
         }
         if verified.is_empty() {
-            return Err("Smart Auto needs a recent signal check. Open Settings, choose an approved input, and verify its signal, or pin a microphone manually.");
+            return Err(SmartAutoBlock::Unavailable("Smart Auto needs a recent signal check. Open Settings, choose an approved input, and verify its signal, or pin a microphone manually."));
         }
         // A failed replacement may return immediately to the last verified
         // choice. Other changes wait out the switch cooldown, without capture.
@@ -165,13 +189,14 @@ impl SmartAutoHealth {
                 return Ok(previous);
             }
         }
-        if self
+        if let Some(remaining) = self
             .last_switch
-            .is_some_and(|switched| now.saturating_duration_since(switched) < SWITCH_COOLDOWN)
+            .map(|switched| SWITCH_COOLDOWN.saturating_sub(now.saturating_duration_since(switched)))
+            .filter(|remaining| !remaining.is_zero())
         {
-            return Err("Smart Auto is waiting ten seconds between microphone changes. Try again shortly or pin a microphone manually.");
+            return Err(SmartAutoBlock::Cooldown(remaining));
         }
-        select(request, &verified, default_input_id, lid_state)
+        select(request, &verified, default_input_id, lid_state).map_err(SmartAutoBlock::Unavailable)
     }
 
     pub(crate) fn commit(&mut self, selection: &SmartAutoSelection, now: Instant) {
@@ -184,7 +209,7 @@ impl SmartAutoHealth {
 
     pub(crate) fn status(
         &self,
-        selection: Result<SmartAutoSelection, &'static str>,
+        selection: Result<SmartAutoSelection, SmartAutoBlock>,
         now: Instant,
     ) -> SmartAutoStatus {
         match selection {
@@ -193,8 +218,9 @@ impl SmartAutoHealth {
                 device_id: selection.device_id,
                 reason: selection.reason.as_str(),
             },
-            Err(message) => SmartAutoStatus::Blocked {
-                message: message.to_string(),
+            Err(block) => SmartAutoStatus::Blocked {
+                message: block.message().to_string(),
+                retry_after_ms: block.retry_after_ms(),
             },
         }
     }
@@ -411,7 +437,7 @@ mod tests {
         health: &SmartAutoHealth,
         request: &SmartAutoRequest,
         now: Instant,
-    ) -> Result<SmartAutoSelection, &'static str> {
+    ) -> Result<SmartAutoSelection, SmartAutoBlock> {
         health.select(
             request,
             &[
@@ -487,6 +513,26 @@ mod tests {
                 .device_id,
             "b"
         );
+        let last_fraction = now + SWITCH_COOLDOWN - Duration::from_micros(1);
+        let cooldown = health.status(
+            routed(&health, &request(&["b"], &[]), last_fraction),
+            last_fraction,
+        );
+        assert!(matches!(
+            cooldown,
+            SmartAutoStatus::Blocked {
+                retry_after_ms: Some(1),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(cooldown).unwrap()["retryAfterMs"], 1);
+        assert!(matches!(
+            health.status(routed(&health, &request(&["c"], &[]), now), now),
+            SmartAutoStatus::Blocked {
+                retry_after_ms: None,
+                ..
+            }
+        ));
     }
 
     #[test]

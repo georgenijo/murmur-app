@@ -11,7 +11,7 @@
 
 use crate::audio::{AudioDeviceDescriptor, EnumeratedAudioInputInventory};
 use crate::microphone_auto::{
-    self, SmartAutoHealth, SmartAutoRequest, SmartAutoSelection, SmartAutoStatus,
+    self, SmartAutoBlock, SmartAutoHealth, SmartAutoRequest, SmartAutoSelection, SmartAutoStatus,
 };
 use crate::microphone_signal::SignalVerificationResult;
 use crate::MutexExt;
@@ -672,8 +672,8 @@ fn verified_selection(
     state: &InventoryState,
     request: &SmartAutoRequest,
     now: Instant,
-) -> Result<SmartAutoSelection, &'static str> {
-    let topology = current_topology(state)?;
+) -> Result<SmartAutoSelection, SmartAutoBlock> {
+    let topology = current_topology(state).map_err(SmartAutoBlock::Unavailable)?;
     state.routing.select(
         request,
         &topology.devices,
@@ -686,7 +686,8 @@ fn verified_selection(
 pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAutoSelection, String> {
     let mut state = coordinator().state.lock_or_recover();
     let now = Instant::now();
-    let selection = verified_selection(&state, request, now).map_err(|reason| {
+    let selection = verified_selection(&state, request, now).map_err(|block| {
+        let reason = block.message();
         tracing::warn!(target: "audio", event_code = "audio.auto_input_refused", reason, "Smart Auto capture refused");
         reason.to_string()
     })?;
