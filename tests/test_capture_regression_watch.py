@@ -1273,6 +1273,46 @@ class CaptureRegressionWatchTests(unittest.TestCase):
         self.assertEqual(alert["p95_ms"], 2_000)
         self.assertEqual(report["status"], "alert")
 
+    def test_post_stop_target_never_judges_an_unknown_version(self) -> None:
+        events = [
+            event(
+                "startup_baseline",
+                "2026-08-01T00:00:00Z",
+                data={"event_code": "system.startup_baseline"},
+            ),
+        ]
+        for index in range(watch.MIN_POST_STOP_TARGET_SAMPLES):
+            events.append(
+                event(
+                    "dictation completed",
+                    f"2026-08-01T00:00:{index + 1:02d}Z",
+                    data={
+                        "event_code": "pipeline.dictation_completed",
+                        "recording_id": index + 1,
+                        "char_count": 10,
+                        "total_ms": 100,
+                        "audio_secs": 5,
+                    },
+                )
+            )
+        with tempfile.TemporaryDirectory() as root:
+            self.write_install(root, "12345678-abcd", events)
+            report = watch.build_report(root)
+
+        cohort = report["cohorts"][0]
+        self.assertEqual(cohort["app_version"], "unknown")
+        self.assertEqual(
+            cohort["post_stop_target_sample_count"],
+            watch.MIN_POST_STOP_TARGET_SAMPLES,
+        )
+        self.assertEqual(cohort["post_stop_target_verdict"], "insufficient_data")
+        self.assertFalse(
+            any(
+                item["kind"] == "post_stop_latency_target_missed"
+                for item in report["alerts"]
+            )
+        )
+
     def test_post_stop_latency_ignores_malformed_negative_and_out_of_range_values(
         self,
     ) -> None:

@@ -386,7 +386,10 @@ def serialize_cohort(cohort):
     post_stop_target_samples = list(cohort["post_stop_target_samples"])
     post_stop_target_p50_ms = percentile(post_stop_target_samples, 50)
     post_stop_target_p95_ms = percentile(post_stop_target_samples, 95)
-    if len(post_stop_target_samples) < MIN_POST_STOP_TARGET_SAMPLES:
+    if (
+        cohort["app_version"] in ("unknown", "overflow")
+        or len(post_stop_target_samples) < MIN_POST_STOP_TARGET_SAMPLES
+    ):
         post_stop_target_verdict = "insufficient_data"
     elif (
         post_stop_target_p50_ms < POST_STOP_TARGET_P50_MS

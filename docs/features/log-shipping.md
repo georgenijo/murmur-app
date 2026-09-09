@@ -322,6 +322,7 @@ samples before the watch reports a verdict because nearest-rank p95 is not
 useful below that count. The target is strict: p50 must be below 1,000 ms and
 p95 must be below 2,000 ms. The latest eligible app-version cohort on an
 install raises `post_stop_latency_target_missed` when either percentile misses.
+The `unknown` and `overflow` version cohorts never receive a target verdict.
 Shorter, longer, missing, malformed, and non-finite durations remain visible
 in the all-successful metric but cannot decide the target.
 
