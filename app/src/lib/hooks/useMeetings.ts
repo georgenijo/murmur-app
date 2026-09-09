@@ -178,7 +178,19 @@ export function useMeetings(settings: Settings) {
     } catch (cause) {
       setError(String(cause));
     }
-  }, [select, settings.meetingDiarization, settings.meetingEchoCancellationEnabled, settings.meetingMaxSessions, settings.meetingRetainAudio, settings.meetingRetentionDays, settings.microphone]);
+  }, [
+    select,
+    settings.meetingDiarization,
+    settings.meetingEchoCancellationEnabled,
+    settings.meetingMaxSessions,
+    settings.meetingRetainAudio,
+    settings.meetingRetentionDays,
+    settings.microphone,
+    settings.smartAutoAllowContinuity,
+    settings.smartAutoApprovedDeviceIds,
+    settings.smartAutoMicrophoneEnabled,
+    settings.smartAutoPreferredDeviceIds,
+  ]);
 
   const stop = useCallback(async () => {
     setError(null);

@@ -83,6 +83,13 @@ pub fn get_microphone_preview_status(
 }
 
 #[tauri::command]
+pub fn get_smart_auto_microphone_status(
+    smart_auto: SmartAutoRequest,
+) -> crate::microphone_auto::SmartAutoStatus {
+    crate::audio_inventory::smart_auto_status(&smart_auto)
+}
+
+#[tauri::command]
 pub async fn verify_microphone_preview_signal(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, State>,
@@ -150,8 +157,20 @@ pub async fn start_microphone_preview(
             );
         }
     }
-    let device_id = crate::microphone_auto::resolve_capture_device(device_id, smart_auto.as_ref())?;
+    let device_id = match smart_auto.as_ref() {
+        Some(request) => {
+            if device_id.is_some() {
+                return Err("Smart Auto cannot be combined with a fixed microphone.".to_string());
+            }
+            Some(crate::audio_inventory::resolve_smart_auto_preview(request)?.device_id)
+        }
+        None => device_id,
+    };
     let preview_id = state.app_state.microphone_preview.claim(vad_sensitivity)?;
+    state.app_state.microphone_preview.bind_signal_evidence(
+        preview_id,
+        crate::audio_inventory::signal_evidence_key(device_id.as_deref()),
+    );
     tracing::info!(
         target: "audio",
         event_code = "audio.preview_started",

@@ -8,7 +8,12 @@ interface OverlayPillProps {
   visual: OverlayVisual;
   status: DictationStatus;
   barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
+  smartAutoSummary?: OverlaySmartAutoSummary | null;
 }
+
+export type OverlaySmartAutoSummary =
+  | { kind: 'ready'; deviceName: string; reason: string }
+  | { kind: 'blocked' };
 
 /**
  * Top-bar content: status indicator (left wing) + waveform (right wing). Purely
@@ -26,6 +31,7 @@ export function OverlayPill({
   visual,
   status,
   barRefs,
+  smartAutoSummary = null,
 }: OverlayPillProps) {
   const topH = geometry.collapsedH;
   const wingW = geometry.wingW;
@@ -144,11 +150,32 @@ export function OverlayPill({
             // "Transforming…" — local LLM is thinking (issue #312).
             <span className="w-2.5 h-2.5 rounded-full bg-violet-400 block" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: indicator.dimmed ? 0.15 : 1 }}>
-              <rect x="9" y="1" width="6" height="12" rx="3" />
-              <path d="M5 10a7 7 0 0 0 14 0" />
-              <line x1="12" y1="17" x2="12" y2="21" />
-            </svg>
+            <span
+              role={smartAutoSummary ? 'status' : undefined}
+              aria-live={smartAutoSummary ? 'polite' : undefined}
+              aria-label={smartAutoSummary?.kind === 'ready'
+                ? `Smart Auto next capture ready with ${smartAutoSummary.deviceName}. Recent signal verified; ${smartAutoSummary.reason}.`
+                : smartAutoSummary?.kind === 'blocked'
+                  ? 'Smart Auto next capture blocked. Open Settings to verify signal or pin an input.'
+                  : undefined}
+              title={smartAutoSummary?.kind === 'ready'
+                ? `Smart Auto: ${smartAutoSummary.deviceName}. Recent signal verified; ${smartAutoSummary.reason}.`
+                : smartAutoSummary?.kind === 'blocked'
+                  ? 'Smart Auto blocked. Open Settings to verify signal or pin an input.'
+                  : undefined}
+              className={smartAutoSummary?.kind === 'ready'
+                ? 'text-emerald-300'
+                : smartAutoSummary?.kind === 'blocked'
+                  ? 'text-amber-300'
+                  : 'text-white/40'}
+              style={{ opacity: indicator.dimmed ? 0.15 : 1 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="9" y="1" width="6" height="12" rx="3" />
+                <path d="M5 10a7 7 0 0 0 14 0" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </span>
           )}
         </div>
 

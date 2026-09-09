@@ -64,7 +64,7 @@ export function startMicrophonePreview(
   smartAuto: SmartAutoMicrophoneRequest | null = null,
 ): Promise<MicrophonePreviewStatus> {
   return invoke('start_microphone_preview', {
-    deviceId,
+    deviceId: smartAuto ? 'system_default' : deviceId,
     vadSensitivity,
     ...(smartAuto ? { smartAuto } : {}),
   });

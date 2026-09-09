@@ -314,6 +314,7 @@ impl WorkerFactory for ProductionWorkerFactory {
 }
 
 trait LifecycleSink: Send + Sync + 'static {
+    fn invalidate_input_health(&self, device_id: Option<&str>);
     fn notify(
         &self,
         app_handle: Option<&tauri::AppHandle>,
@@ -325,6 +326,10 @@ trait LifecycleSink: Send + Sync + 'static {
 struct ProductionLifecycleSink;
 
 impl LifecycleSink for ProductionLifecycleSink {
+    fn invalidate_input_health(&self, device_id: Option<&str>) {
+        crate::audio_inventory::invalidate_signal_evidence(device_id);
+    }
+
     fn notify(
         &self,
         app_handle: Option<&tauri::AppHandle>,
@@ -419,6 +424,7 @@ enum SupervisorMessage {
 
 struct Attempt {
     owner: AudioOwner,
+    device_id: Option<String>,
     app_handle: Option<tauri::AppHandle>,
     origin: String,
     phase: AttemptPhase,
@@ -709,7 +715,7 @@ fn handle_start(
         shared: Arc::clone(&shared),
         active: Arc::clone(&active),
         app_handle: request.app_handle.clone(),
-        device_id: request.device_id,
+        device_id: request.device_id.clone(),
     };
     // Serialize the transition into capture ownership with any idle-only
     // diagnostic enumeration. Once Starting is published below, the
@@ -726,6 +732,7 @@ fn handle_start(
     let thread_handle = match factory.spawn(spec, worker_event_sender.clone()) {
         Ok(handle) => handle,
         Err(error) => {
+            sink.invalidate_input_health(request.device_id.as_deref());
             public.clear_owner(request.owner);
             public.set_phase(PublicPhase::Idle);
             crate::audio_inventory::lifecycle_became_idle();
@@ -742,6 +749,7 @@ fn handle_start(
     let origin = request.origin;
     *attempt = Some(Attempt {
         owner,
+        device_id: request.device_id,
         app_handle,
         origin,
         phase: AttemptPhase::Starting,
@@ -1016,6 +1024,7 @@ fn handle_worker_event(
             }
         },
         AudioWorkerEvent::InitFailed { failure, .. } => {
+            sink.invalidate_input_health(current.device_id.as_deref());
             current.failure = Some(failure.clone());
             if let Some(response) = current.start_response.take() {
                 let _ = response.send(Err(AudioStartError::InitializationFailed(failure)));
@@ -1269,6 +1278,9 @@ fn begin_recovery(
         return;
     }
     current.active.store(false, Ordering::SeqCst);
+    if reason != AudioCancelReason::User {
+        sink.invalidate_input_health(current.device_id.as_deref());
+    }
     let _ = current.command_sender.send(AudioCommand::Stop);
     current.phase = AttemptPhase::Recovering;
     current.recovery_reason = Some(reason);
@@ -1321,6 +1333,7 @@ fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure:
         return;
     }
     attempt.failure_reported = true;
+    sink.invalidate_input_health(attempt.device_id.as_deref());
     tracing::error!(
         target: "audio",
         event_code = "audio.lifecycle_failed",
@@ -1421,6 +1434,7 @@ fn handle_deadlines_at(
                 }) =>
         {
             current.stopping_guidance_emitted = true;
+            sink.invalidate_input_health(current.device_id.as_deref());
             tracing::warn!(
                 target: "audio",
                 owner = current.owner.telemetry_id(),
@@ -1818,6 +1832,7 @@ pub(crate) fn register_sleep_wake_observer() {
     ) {
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+                crate::audio_inventory::invalidate_signal_evidence(None);
                 if reason == AudioCancelReason::SystemSleep {
                     cancel_preview_for_environment_change(reason);
                 }
@@ -2115,9 +2130,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<(AudioOwner, AudioLifecycleEvent)>>,
+        invalidated_inputs: Mutex<Vec<Option<String>>>,
     }
 
     impl LifecycleSink for RecordingSink {
+        fn invalidate_input_health(&self, device_id: Option<&str>) {
+            self.invalidated_inputs
+                .lock()
+                .unwrap()
+                .push(device_id.map(str::to_string));
+        }
+
         fn notify(
             &self,
             _app_handle: Option<&tauri::AppHandle>,
@@ -2974,7 +2997,16 @@ mod tests {
             SupervisorConfig::default(),
         );
         let owner = AudioOwner::Preview(82);
-        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        assert_eq!(
+            start_with_device(
+                &supervisor,
+                owner,
+                Some("verified-preview-input".to_string())
+            )
+            .recv()
+            .unwrap(),
+            Ok(())
+        );
         wait_until(
             "preview runtime failure did not reach lifecycle sink",
             || {
@@ -2995,6 +3027,102 @@ mod tests {
             },
         );
         wait_until("runtime-failed preview worker did not exit", || {
+            !supervisor.public.is_active()
+        });
+        let invalidations = sink.invalidated_inputs.lock().unwrap();
+        assert!(!invalidations.is_empty());
+        assert!(invalidations
+            .iter()
+            .all(|id| id.as_deref() == Some("verified-preview-input")));
+        drop(invalidations);
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn stale_failure_and_user_cancel_preserve_input_health() {
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(SpecCaptureFactory {
+                specs: Arc::new(Mutex::new(Vec::new())),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Preview(800);
+        assert_eq!(
+            start_with_device(&supervisor, owner, Some("current-input".to_string()))
+                .recv()
+                .unwrap(),
+            Ok(())
+        );
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::InitFailed {
+                owner: AudioOwner::Preview(799),
+                failure: AudioFailure::new(
+                    AudioFailureKind::FirstBufferTimeout,
+                    AudioInitPhase::FirstBufferWait,
+                ),
+            }))
+            .unwrap();
+        check_deadlines(&supervisor, Duration::ZERO);
+        assert!(sink.invalidated_inputs.lock().unwrap().is_empty());
+        assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
+        wait_until("cancelled preview did not close", || {
+            !supervisor.public.is_active()
+        });
+        assert!(sink.invalidated_inputs.lock().unwrap().is_empty());
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn first_pcm_deadline_revokes_only_the_frozen_input_and_keeps_ownership() {
+        let gate = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let (phase_sender, phase_receiver) = mpsc::channel();
+        let supervisor = spawn_supervisor(
+            Arc::new(BlockingFactory {
+                gate: gate.clone(),
+                retry_gate: None,
+                spawn_count: Arc::new(AtomicUsize::new(0)),
+                active_flags: Arc::new(Mutex::new(Vec::new())),
+                phase: AudioInitPhase::FirstBufferWait,
+                phase_entered: Some(phase_sender),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(801);
+        assert_eq!(
+            start_with_device(&supervisor, owner, Some("frozen-input".to_string()))
+                .recv()
+                .unwrap(),
+            Ok(())
+        );
+        phase_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+        );
+        assert!(supervisor.public.is_active());
+        let invalidations = sink.invalidated_inputs.lock().unwrap();
+        assert!(!invalidations.is_empty());
+        assert!(invalidations
+            .iter()
+            .all(|id| id.as_deref() == Some("frozen-input")));
+        drop(invalidations);
+        assert_eq!(
+            start_with_device(
+                &supervisor,
+                AudioOwner::Dictation(802),
+                Some("replacement".to_string())
+            )
+            .recv()
+            .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        gate.open();
+        wait_until("timed-out worker did not close", || {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);

@@ -61,27 +61,54 @@ afresh at recording start.
 Smart Auto is an opt-in capture policy. Dictation, Meeting Capture, Voice
 Query, selected-text Transform (including Retry), and the Settings microphone
 preview each resolve it only as their capture owner is accepted from idle and
-read the existing authoritative inventory; it never enumerates, probes, opens,
+read the existing authoritative inventory. Auto never enumerates, probes, opens,
 or monitors a microphone in the background.
 The user explicitly approves stable IDs, can place approved IDs in a preference
 order, and may separately allow approved Continuity Capture devices. A newly
 connected input is never trusted automatically.
 
-The resolver chooses the first eligible preferred input, then an eligible
-approved macOS default, then the lexicographically stable eligible external
-fallback. It requires native input capability and a live connection, excludes
+Real capture requires a successful bounded signal check from the past 120
+seconds. The resolver retains the current verified input even when preferences
+change. Otherwise it chooses the first verified eligible preferred input, then
+a verified approved macOS default, then the lexicographically stable verified
+external fallback. An approved Continuity input is the last fallback when
+separately enabled. It requires native input capability and a live connection, excludes
 unknown transport classes and output-only sources, and reads
 `AppleClamshellState` from the macOS IORegistry at the selection boundary.
 Built-in microphones are rejected when that state is closed or unavailable,
 including when closing the lid did not trigger a Core Audio topology change.
 The selected stable ID is passed into the ordinary capture lifecycle and is
 immutable for that recording; a later device or lid change only affects the
-next capture. This narrower policy does not complete issue #525's
-verified-signal routing work.
+next capture. Manual pinning and Follow macOS Default retain their existing
+behavior and do not require Auto evidence.
+
+Evidence expires exactly 120 seconds after the five-second check completes.
+Selection and ordinary first PCM do not refresh it. A ten-second cooldown
+starts when a different input is selected. If that candidate fails, Auto can
+return immediately to the previous choice only while its evidence remains
+fresh, approved, and available. Other switches wait for the cooldown. An expired
+or unavailable current input is never reused to satisfy the cooldown.
+
+Every topology invalidation, changed inventory, or failed inventory refresh
+revokes all signal evidence. This conservative rule covers Bluetooth and
+disconnect/reconnect transitions that can reuse a stable ID. Capture startup,
+first-PCM timeout, runtime failure, and non-user recovery revoke evidence for
+the frozen physical input. Failures of a live system-default capture revoke all
+evidence because that boundary cannot prove a physical ID. Failure and topology
+epochs reject verification results that race those events. No input changes
+within the failed capture; rollback applies to the next capture request.
+Sleep and wake revoke all evidence even when no capture is active.
+Meeting startup resolves Auto before pruning or creating a session or claiming
+meeting ownership. A failed meeting supervisor also revokes its input evidence
+before releasing the meeting's active flags.
 
 Settings offers **Verify signal for 5 seconds** on the active live meter. This
-is the bounded evidence primitive for #525, and does not yet feed the Auto
-resolver. It uses the existing Preview owner and opens no additional input.
+feeds the Auto resolver only when the preview opened an explicit stable ID.
+The Auto preview uses the availability policy so the user can verify an
+unverified approved candidate. This preview candidate can differ from Auto's
+verified next-capture choice. A live macOS-default preview does not grant
+per-device evidence because its physical resolution can change during startup.
+The check uses the existing Preview owner and opens no additional input.
 The backend accepts one check at a time, limits observations to five seconds,
 and allows another check ten seconds after the prior check began. Closing the
 preview, changing its generation, or a lifecycle error invalidates its result.
@@ -95,15 +122,23 @@ than 250 ms reset the consecutive-signal hold. No PCM during the window returns
 `no_pcm`; PCM without the hold returns `insufficient_signal`. A verified result
 means that sustained sound arrived during the check. It does not identify
 speech, the intended speaker, the room, or current health after the window.
-Only aggregate counters are kept. No verification PCM, IDs, labels, or result
-is persisted or uploaded.
+Only aggregate counters and at most 32 stable-ID freshness entries are kept in
+memory. No verification PCM, IDs, labels, or per-device results are persisted
+or uploaded. Content-free telemetry records decision reasons and whether a
+bounded check verified signal. The local Settings and overlay status command
+returns a device ID for display, a decision reason, and remaining freshness;
+reading it neither selects an input nor extends evidence.
+The UI rereads this cached status once at evidence expiry or cooldown completion
+so a different verified candidate can become ready without a background probe.
 
-Remaining #525 gates are explicit automatic multi-input probe scheduling,
-per-device evidence freshness, retention of the current healthy input,
-switch cooldown and rollback after candidate startup/first-PCM failure.
+Remaining #525 work is explicit automatic multi-input probe scheduling.
+This implementation adds no background microphone opens, timers, enumeration,
+or helper spawning. Verification remains a user-initiated five-second check on
+the visible Settings preview. Auto fails closed when evidence expires, so a
+manual pin is the continuous-use alternative until bounded scheduling is proven.
 Physical acceptance still requires two approved inputs, active-input removal,
 default changes, Bluetooth transitions, silent/zombie input, and recording
-after a routing decision. This signal check does not claim those gates.
+after a routing decision. This implementation does not claim those hardware gates.
 
 Direct AUHAL is the primary backend and CPAL is the independent fallback. Each
 resolution pass allows one fallback only before any audio is retained and must

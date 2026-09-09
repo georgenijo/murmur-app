@@ -281,18 +281,22 @@ test('recording settings unify Smart Auto mode and per-microphone approval', asy
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const picker = page.getByRole('button', { name: 'Microphone input' });
-  await expect(picker).toContainText('Smart Auto · MacBook Pro Microphone');
-  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone (preferred approved).')).toBeVisible();
+  await expect(picker).toContainText('Smart Auto · Available: MacBook Pro Microphone');
+  await expect(page.getByText('Availability candidate: MacBook Pro Microphone. Chosen from current availability.')).toBeVisible();
+  await expect(page.getByText('Next capture blocked: No approved microphone has recent verified signal.')).toBeVisible();
   await picker.click();
   const pickerDialog = page.getByRole('dialog', { name: 'Choose microphone mode and Smart Auto microphones' });
   await expect(pickerDialog.getByRole('radio', { name: /Smart Auto/ })).toBeChecked();
   await expect(pickerDialog.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
   await expect(pickerDialog.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
-  await expect(pickerDialog.getByText('Next capture')).toBeVisible();
+  await expect(pickerDialog.getByText('Available')).toBeVisible();
   await expect(pickerDialog.getByRole('button', { name: 'Prefer MacBook Pro Microphone for Smart Auto' })).toHaveText('Preferred');
   await expect(pickerDialog.getByRole('button', { name: 'Prefer Anker USB Microphone for Smart Auto' })).toHaveText('Prefer');
   await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
+  await picker.click();
+  await expect(pickerDialog).toHaveCount(0);
+  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-status.png');
 });
 
 test('recording setting rows and dependent rails keep the shared spacing contract', async ({ page }) => {

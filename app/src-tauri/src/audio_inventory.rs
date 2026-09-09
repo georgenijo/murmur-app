@@ -10,16 +10,17 @@
 //! try to spawn the macOS helper or its reaper service.
 
 use crate::audio::{AudioDeviceDescriptor, EnumeratedAudioInputInventory};
-use crate::microphone_auto::{self, SmartAutoRequest, SmartAutoSelection};
+use crate::microphone_auto::{
+    self, SmartAutoBlock, SmartAutoHealth, SmartAutoRequest, SmartAutoSelection, SmartAutoStatus,
+};
+use crate::microphone_signal::SignalVerificationResult;
 use crate::MutexExt;
 use murmur_capture_helper_protocol::ProductionLidState;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Duration;
-#[cfg(target_os = "macos")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 const INVENTORY_SCHEMA_VERSION: u8 = 2;
@@ -80,6 +81,7 @@ struct AudioInputTopology {
 
 #[derive(Default)]
 struct InventoryState {
+    routing: SmartAutoHealth,
     revision: u64,
     topology: Option<AudioInputTopology>,
     latest_error: Option<AudioInputInventoryErrorCode>,
@@ -180,6 +182,7 @@ impl AudioInputInventoryCoordinator {
         }
         let before = Self::snapshot_locked(&state);
         state.invalidation_epoch = state.invalidation_epoch.wrapping_add(1);
+        state.routing.invalidate_topology();
         state.invalidated = true;
         state.pending = true;
         let after_without_revision = Self::snapshot_locked(&state);
@@ -235,11 +238,17 @@ impl AudioInputInventoryCoordinator {
         let invalidated_during_refresh = state.claimed_epoch != state.invalidation_epoch;
         match result.and_then(normalize_inventory) {
             Ok(topology) => {
+                if state.topology.as_ref() != Some(&topology) {
+                    state.invalidation_epoch = state.invalidation_epoch.wrapping_add(1);
+                    state.routing.invalidate_topology();
+                }
                 state.topology = Some(topology);
                 state.latest_error = None;
                 state.invalidated = invalidated_during_refresh;
             }
             Err(_) => {
+                state.invalidation_epoch = state.invalidation_epoch.wrapping_add(1);
+                state.routing.invalidate_topology();
                 // Retain the last topology only as explicitly stale display
                 // data. Consumers cannot treat it as authoritative presence.
                 state.latest_error = Some(AudioInputInventoryErrorCode::EnumerationFailed);
@@ -350,6 +359,14 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     let app_handle = app_handle_slot().lock_or_recover().clone();
     if let Some(app_handle) = app_handle {
         let _ = app_handle.emit_to("main", INVENTORY_EVENT, snapshot.clone());
+        let _ = app_handle.emit_to("overlay", INVENTORY_EVENT, snapshot.clone());
+        let _ = app_handle.emit("smart-auto-microphone-changed", ());
+    }
+}
+
+fn emit_routing_changed() {
+    if let Some(app_handle) = app_handle_slot().lock_or_recover().clone() {
+        let _ = app_handle.emit("smart-auto-microphone-changed", ());
     }
 }
 
@@ -641,14 +658,61 @@ pub(crate) fn available_devices() -> Result<Vec<AudioDeviceDescriptor>, String> 
 /// Resolve only from the current authoritative cache. This never asks Core
 /// Audio for a fresh list or opens a device, so a Smart Auto choice is bounded
 /// to the same idle-only inventory contract as every other consumer.
-pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAutoSelection, String> {
-    let state = coordinator().state.lock_or_recover();
+fn current_topology(state: &InventoryState) -> Result<&AudioInputTopology, &'static str> {
     if state.invalidated || state.latest_error.is_some() || !state.attempted {
-        return Err("Smart Auto needs a current microphone inventory.".to_string());
+        return Err("Smart Auto needs a current microphone inventory.");
     }
     let Some(topology) = state.topology.as_ref() else {
-        return Err("Smart Auto needs a current microphone inventory.".to_string());
+        return Err("Smart Auto needs a current microphone inventory.");
     };
+    Ok(topology)
+}
+
+fn verified_selection(
+    state: &InventoryState,
+    request: &SmartAutoRequest,
+    now: Instant,
+) -> Result<SmartAutoSelection, SmartAutoBlock> {
+    let topology = current_topology(state).map_err(SmartAutoBlock::Unavailable)?;
+    state.routing.select(
+        request,
+        &topology.devices,
+        topology.default_input_id.as_deref(),
+        microphone_auto::current_lid_state(),
+        now,
+    )
+}
+
+pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAutoSelection, String> {
+    let mut state = coordinator().state.lock_or_recover();
+    let now = Instant::now();
+    let selection = verified_selection(&state, request, now).map_err(|block| {
+        let reason = block.message();
+        tracing::warn!(target: "audio", event_code = "audio.auto_input_refused", reason, "Smart Auto capture refused");
+        reason.to_string()
+    })?;
+    state.routing.commit(&selection, now);
+    drop(state);
+    emit_routing_changed();
+    tracing::info!(target: "audio", event_code = "audio.auto_input_selected", reason = selection.reason.as_str(), "verified microphone selected for next capture");
+    Ok(selection)
+}
+
+pub(crate) fn smart_auto_status(request: &SmartAutoRequest) -> SmartAutoStatus {
+    let state = coordinator().state.lock_or_recover();
+    let now = Instant::now();
+    state
+        .routing
+        .status(verified_selection(&state, request, now), now)
+}
+
+/// The visible Settings preview must be able to test an unverified candidate.
+/// This availability result is never accepted by a real recording resolver.
+pub(crate) fn resolve_smart_auto_preview(
+    request: &SmartAutoRequest,
+) -> Result<SmartAutoSelection, String> {
+    let state = coordinator().state.lock_or_recover();
+    let topology = current_topology(&state).map_err(str::to_string)?;
     microphone_auto::select(
         request,
         &topology.devices,
@@ -658,6 +722,82 @@ pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAuto
         microphone_auto::current_lid_state(),
     )
     .map_err(str::to_string)
+}
+
+#[derive(Clone)]
+pub(crate) struct SignalEvidenceKey {
+    device_id: String,
+    topology_epoch: u64,
+    failure_epoch: u64,
+}
+
+pub(crate) fn signal_evidence_key(device_id: Option<&str>) -> Option<SignalEvidenceKey> {
+    let state = coordinator().state.lock_or_recover();
+    signal_evidence_key_for_state(&state, device_id)
+}
+
+fn signal_evidence_key_for_state(
+    state: &InventoryState,
+    device_id: Option<&str>,
+) -> Option<SignalEvidenceKey> {
+    let topology = current_topology(state).ok()?;
+    // A live macOS default may resolve to a different physical device when
+    // the helper opens it. Only explicit stable IDs can receive evidence.
+    let device_id = device_id?;
+    topology
+        .devices
+        .iter()
+        .find(|device| device.id == device_id && device.connected && device.has_input)?;
+    Some(SignalEvidenceKey {
+        device_id: device_id.to_string(),
+        topology_epoch: state.invalidation_epoch,
+        failure_epoch: state.routing.failure_epoch,
+    })
+}
+
+pub(crate) fn record_signal_evidence(key: &SignalEvidenceKey, result: SignalVerificationResult) {
+    let mut state = coordinator().state.lock_or_recover();
+    if apply_signal_evidence(&mut state, key, result, Instant::now()) {
+        drop(state);
+        emit_routing_changed();
+        tracing::info!(target: "audio", event_code = "audio.auto_signal_evidence", verified = result == SignalVerificationResult::Verified, "bounded microphone signal evidence updated");
+    }
+}
+
+fn apply_signal_evidence(
+    state: &mut InventoryState,
+    key: &SignalEvidenceKey,
+    result: SignalVerificationResult,
+    now: Instant,
+) -> bool {
+    if current_topology(state).is_err()
+        || key.topology_epoch != state.invalidation_epoch
+        || key.failure_epoch != state.routing.failure_epoch
+    {
+        return false;
+    }
+    match result {
+        SignalVerificationResult::Verified => state.routing.verify(&key.device_id, now),
+        SignalVerificationResult::NoPcm | SignalVerificationResult::InsufficientSignal => {
+            state.routing.fail(Some(&key.device_id))
+        }
+        SignalVerificationResult::Interrupted => return false,
+    }
+    true
+}
+
+pub(crate) fn renew_signal_evidence_key(key: &SignalEvidenceKey) -> Option<SignalEvidenceKey> {
+    signal_evidence_key(Some(&key.device_id))
+        .filter(|current| current.topology_epoch == key.topology_epoch)
+}
+
+pub(crate) fn invalidate_signal_evidence(device_id: Option<&str>) {
+    coordinator()
+        .state
+        .lock_or_recover()
+        .routing
+        .fail(device_id);
+    emit_routing_changed();
 }
 
 pub(crate) fn production_device_kind(
@@ -835,6 +975,139 @@ mod tests {
             coordinator.snapshot().status,
             AudioInputInventoryStatus::Available
         );
+    }
+
+    #[test]
+    fn signal_evidence_requires_an_explicit_authoritative_device_and_matching_epochs() {
+        let coordinator = AudioInputInventoryCoordinator::default();
+        let now = Instant::now();
+        let mut state = coordinator.state.lock_or_recover();
+        assert!(signal_evidence_key_for_state(&state, Some("uid-a")).is_none());
+        state.attempted = true;
+        state.topology =
+            Some(normalize_inventory(topology(&[("uid-a", "A")], Some("uid-a"))).unwrap());
+        assert!(signal_evidence_key_for_state(&state, None).is_none());
+        assert!(signal_evidence_key_for_state(&state, Some("unknown")).is_none());
+        let key = signal_evidence_key_for_state(&state, Some("uid-a")).unwrap();
+        assert!(apply_signal_evidence(
+            &mut state,
+            &key,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        state.routing.fail(Some("uid-a"));
+        assert!(!apply_signal_evidence(
+            &mut state,
+            &key,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        let new_check = signal_evidence_key_for_state(&state, Some("uid-a")).unwrap();
+        assert!(apply_signal_evidence(
+            &mut state,
+            &new_check,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        drop(state);
+        coordinator.invalidate();
+        let mut state = coordinator.state.lock_or_recover();
+        assert!(!apply_signal_evidence(
+            &mut state,
+            &new_check,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        state.invalidated = false;
+        assert!(!apply_signal_evidence(
+            &mut state,
+            &new_check,
+            SignalVerificationResult::Verified,
+            now
+        ));
+    }
+
+    #[test]
+    fn unchanged_inventory_refresh_preserves_evidence_but_reconnect_or_error_revokes_it() {
+        let coordinator = AudioInputInventoryCoordinator::default();
+        let now = Instant::now();
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(&[("uid-a", "A")], Some("uid-a"))));
+        let key =
+            signal_evidence_key_for_state(&coordinator.state.lock_or_recover(), Some("uid-a"))
+                .unwrap();
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(&[("uid-a", "A")], Some("uid-a"))));
+        assert!(apply_signal_evidence(
+            &mut coordinator.state.lock_or_recover(),
+            &key,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(&[], None)));
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(&[("uid-a", "A")], Some("uid-a"))));
+        assert!(!apply_signal_evidence(
+            &mut coordinator.state.lock_or_recover(),
+            &key,
+            SignalVerificationResult::Verified,
+            now
+        ));
+        let key =
+            signal_evidence_key_for_state(&coordinator.state.lock_or_recover(), Some("uid-a"))
+                .unwrap();
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Err("unavailable".to_string()));
+        assert!(!apply_signal_evidence(
+            &mut coordinator.state.lock_or_recover(),
+            &key,
+            SignalVerificationResult::Verified,
+            now
+        ));
+    }
+
+    #[test]
+    fn negative_signal_revokes_health_and_interrupted_check_cannot_authorize_it() {
+        let coordinator = AudioInputInventoryCoordinator::default();
+        let now = Instant::now();
+        coordinator.request_refresh();
+        coordinator.claim_refresh(false);
+        coordinator.finish_refresh(Ok(topology(&[("uid-a", "A")], Some("uid-a"))));
+        let mut state = coordinator.state.lock_or_recover();
+        let request = SmartAutoRequest {
+            approved_device_ids: vec!["uid-a".to_string()],
+            preferred_device_ids: vec![],
+            allow_continuity: false,
+        };
+        for negative in [
+            SignalVerificationResult::NoPcm,
+            SignalVerificationResult::InsufficientSignal,
+        ] {
+            let key = signal_evidence_key_for_state(&state, Some("uid-a")).unwrap();
+            assert!(apply_signal_evidence(
+                &mut state,
+                &key,
+                SignalVerificationResult::Verified,
+                now
+            ));
+            assert!(verified_selection(&state, &request, now).is_ok());
+            assert!(apply_signal_evidence(&mut state, &key, negative, now));
+            assert!(verified_selection(&state, &request, now).is_err());
+        }
+        let key = signal_evidence_key_for_state(&state, Some("uid-a")).unwrap();
+        assert!(!apply_signal_evidence(
+            &mut state,
+            &key,
+            SignalVerificationResult::Interrupted,
+            now
+        ));
+        assert!(verified_selection(&state, &request, now).is_err());
     }
 
     #[test]

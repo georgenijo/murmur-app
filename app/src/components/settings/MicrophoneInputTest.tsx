@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDeviceDescriptor, AudioInputLidState } from '../../lib/audioDevices';
 import {
@@ -7,6 +7,8 @@ import {
   previewSmartAutoSelection,
 } from '../../lib/audioDevices';
 import type { Settings } from '../../lib/settings';
+import { smartAutoMicrophoneReasonLabel } from '../../lib/smartAutoMicrophone';
+import { useSmartAutoMicrophoneStatus } from '../../lib/hooks/useSmartAutoMicrophoneStatus';
 import {
   cancelMicrophonePreview,
   getMicrophonePreviewStatus,
@@ -99,7 +101,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
   const knownIds = new Set(approvalDevices.map((device) => device.id));
   const unavailableApprovedIds = smartAuto.smartAutoApprovedDeviceIds.filter((id) => !knownIds.has(id));
   const selectedLabel = smartAutoActive
-    ? smartAutoSelection ? `Smart Auto · ${smartAutoSelection.device.name}` : 'Smart Auto · No usable microphone'
+    ? smartAutoSelection ? `Smart Auto · Available: ${smartAutoSelection.device.name}` : 'Smart Auto · No preview candidate'
     : microphone === 'system_default'
       ? followSystemDefaultOptionLabel(manualDevices, defaultInputId)
       : manualOptions.find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
@@ -199,14 +201,14 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
               <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Allowed for Smart Auto</legend>
               {approvalDevices.map((device) => {
                 const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
-                const active = smartAutoSelection?.device.id === device.id;
+                const previewCandidate = smartAutoSelection?.device.id === device.id;
                 const preferred = smartAuto.smartAutoPreferredDeviceIds[0] === device.id;
                 return (
                   <div key={`approved-${device.id}`} className="settings-microphone-choice">
                     <label className="settings-microphone-choice-main">
                       <input type="checkbox" checked={approved} disabled={disabled} onChange={(event) => setApproved(device.id, event.target.checked)} />
                       <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2"><span className="truncate font-medium">{deviceLabel(device)}</span>{active && <span className="settings-microphone-active-badge">Next capture</span>}</span>
+                        <span className="flex items-center gap-2"><span className="truncate font-medium">{deviceLabel(device)}</span>{previewCandidate && <span className="settings-microphone-active-badge">Available</span>}</span>
                         <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
                       </span>
                     </label>
@@ -255,9 +257,16 @@ export function MicrophoneInputTest({
   const monitoringActive = active && surfaceActive;
   const [status, setStatus] = useState<MicrophonePreviewStatus>(IDLE_MICROPHONE_PREVIEW);
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
+  const [previewDevice, setPreviewDevice] = useState<string | null>(null);
+  const [autoStartSuspended, setAutoStartSuspended] = useState(false);
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [verification, setVerification] = useState<{ previewId: number; message: string; pending: boolean } | null>(null);
+  const [verification, setVerification] = useState<{
+    previewId: number;
+    configurationKey: string;
+    message: string;
+    pending: boolean;
+  } | null>(null);
   const verificationPendingRef = useRef(false);
   const [vadDecision, setVadDecision] = useState<MicrophonePreviewVadDecision | 'listening'>('listening');
   const statusRef = useRef(status);
@@ -265,6 +274,7 @@ export function MicrophoneInputTest({
   const operationRef = useRef<Promise<void> | null>(null);
   const vadUpdateRef = useRef<Promise<void>>(Promise.resolve());
   const eventVersionRef = useRef(0);
+  const refreshSmartAutoStatusRef = useRef<() => Promise<void>>(async () => {});
   const latestLevelRef = useRef<MicrophonePreviewLevel | null>(null);
   const vadSensitivityRef = useRef(vadSensitivity);
   vadSensitivityRef.current = vadSensitivity;
@@ -284,6 +294,11 @@ export function MicrophoneInputTest({
     if (currentId !== null && next.previewId !== null && next.previewId < currentId) return;
     statusRef.current = next;
     setStatus(next);
+    if (next.state === 'error') {
+      setAutoStartSuspended(true);
+      setActionError(next.message ?? 'Microphone preview stopped.');
+    }
+    if (next.previewId === null) setPreviewDevice(null);
   }, []);
 
   const syncVadSensitivity = useCallback((previewId: number, sensitivity: number) => {
@@ -324,6 +339,7 @@ export function MicrophoneInputTest({
           if (disposed) return;
           eventVersionRef.current += 1;
           applyStatus(event.payload);
+          void refreshSmartAutoStatusRef.current();
         },
       );
       unlistenLevel = await listen<MicrophonePreviewLevel>(
@@ -352,7 +368,10 @@ export function MicrophoneInputTest({
         const snapshot = await getMicrophonePreviewStatus();
         if (!disposed && eventVersionRef.current === versionBeforeSnapshot) applyStatus(snapshot);
       } catch (error) {
-        if (!disposed) setActionError(String(error));
+        if (!disposed) {
+          setAutoStartSuspended(true);
+          setActionError(String(error));
+        }
       } finally {
         if (!disposed) setSubscriptionsReady(true);
       }
@@ -462,20 +481,32 @@ export function MicrophoneInputTest({
       allowContinuity: smartAuto.smartAutoAllowContinuity,
     }, devices, defaultInputId, lidState)
     : null;
+  const smartAutoRequest = useMemo(() => smartAutoActive && smartAuto ? {
+    approvedDeviceIds: smartAuto.smartAutoApprovedDeviceIds,
+    preferredDeviceIds: smartAuto.smartAutoPreferredDeviceIds,
+    allowContinuity: smartAuto.smartAutoAllowContinuity,
+  } : null, [
+    smartAutoActive,
+    smartAuto?.smartAutoAllowContinuity,
+    smartAuto?.smartAutoApprovedDeviceIds,
+    smartAuto?.smartAutoPreferredDeviceIds,
+  ]);
+  const { view: smartAutoStatus, refresh: refreshSmartAutoStatus } = useSmartAutoMicrophoneStatus(
+    smartAutoRequest,
+    monitoringActive,
+  );
+  refreshSmartAutoStatusRef.current = refreshSmartAutoStatus;
   const previewMicrophone = smartAutoSelection?.device.id ?? microphone;
   const smartAutoUnavailable = smartAutoActive && smartAutoSelection === null;
   const start = useCallback(() => runExclusive(async () => {
     setOperation('starting');
     setActionError(null);
+    setPreviewDevice(previewMicrophone);
     try {
       const next = await startMicrophonePreview(
         previewMicrophone,
         vadSensitivity,
-        smartAutoActive && smartAuto ? {
-          approvedDeviceIds: smartAuto.smartAutoApprovedDeviceIds,
-          preferredDeviceIds: smartAuto.smartAutoPreferredDeviceIds,
-          allowContinuity: smartAuto.smartAutoAllowContinuity,
-        } : null,
+        smartAutoRequest,
       );
       if (!mountedRef.current) {
         if (next.previewId !== null) void cancelMicrophonePreview(next.previewId).catch(() => {});
@@ -483,9 +514,37 @@ export function MicrophoneInputTest({
       }
       applyStatus(next);
     } catch (error) {
-      if (mountedRef.current) setActionError(String(error));
+      if (mountedRef.current) {
+        setPreviewDevice(null);
+        setAutoStartSuspended(true);
+        setActionError(String(error));
+      }
     }
-  }), [applyStatus, previewMicrophone, runExclusive, smartAuto, smartAutoActive, vadSensitivity]);
+  }), [applyStatus, previewMicrophone, runExclusive, smartAutoRequest, vadSensitivity]);
+
+  const previewConfigurationKey = useMemo(() => JSON.stringify({
+    defaultInputId,
+    microphone,
+    previewMicrophone,
+    smartAuto: smartAutoRequest,
+  }), [defaultInputId, microphone, previewMicrophone, smartAutoRequest]);
+  const previewConfigurationKeyRef = useRef(previewConfigurationKey);
+  const smartAutoActiveRef = useRef(smartAutoActive);
+  previewConfigurationKeyRef.current = previewConfigurationKey;
+  smartAutoActiveRef.current = smartAutoActive;
+  const previousPreviewConfigurationRef = useRef(previewConfigurationKey);
+  const previousMonitoringActiveRef = useRef(monitoringActive);
+
+  useEffect(() => {
+    const configurationChanged = previousPreviewConfigurationRef.current !== previewConfigurationKey;
+    const monitoringReentered = monitoringActive && !previousMonitoringActiveRef.current;
+    previousPreviewConfigurationRef.current = previewConfigurationKey;
+    previousMonitoringActiveRef.current = monitoringActive;
+    if (configurationChanged || monitoringReentered) {
+      setAutoStartSuspended(false);
+      setActionError(null);
+    }
+  }, [monitoringActive, previewConfigurationKey]);
 
   useEffect(() => {
     if (!subscriptionsReady) return;
@@ -494,8 +553,42 @@ export function MicrophoneInputTest({
       if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
       return;
     }
-    if (statusRef.current.previewId === null) void start();
-  }, [dictationBusy, inventoryAvailable, microphone, missingDevice, monitoringActive, ready, smartAutoUnavailable, start, subscriptionsReady]);
+    const previewId = statusRef.current.previewId;
+    if (previewId === null) {
+      if (!autoStartSuspended) void start();
+      return;
+    }
+    if (previewDevice !== null && previewDevice !== previewMicrophone) {
+      void runExclusive(async () => {
+        setOperation('switching');
+        setActionError(null);
+        try {
+          applyStatus(await stopMicrophonePreview(previewId));
+        } catch (error) {
+          if (mountedRef.current) {
+            setAutoStartSuspended(true);
+            setActionError(String(error));
+          }
+        }
+      });
+    }
+  }, [
+    applyStatus,
+    autoStartSuspended,
+    dictationBusy,
+    inventoryAvailable,
+    microphone,
+    missingDevice,
+    monitoringActive,
+    previewDevice,
+    previewMicrophone,
+    ready,
+    runExclusive,
+    smartAutoUnavailable,
+    start,
+    status.previewId,
+    subscriptionsReady,
+  ]);
 
   const switchDevice = useCallback((nextMicrophone: string) => {
     void runExclusive(async () => {
@@ -514,7 +607,10 @@ export function MicrophoneInputTest({
         // Keep the user's selection, but never open another device until the
         // previous worker has confirmed teardown.
         onChange(nextMicrophone);
-        if (mountedRef.current) setActionError(String(error));
+        if (mountedRef.current) {
+          setAutoStartSuspended(true);
+          setActionError(String(error));
+        }
         return;
       }
       onChange(nextMicrophone);
@@ -525,25 +621,42 @@ export function MicrophoneInputTest({
   const verifySignal = async () => {
     const previewId = statusRef.current.previewId;
     if (previewId === null || verificationPendingRef.current) return;
+    const configurationKey = previewConfigurationKeyRef.current;
+    const stillOwnsVerification = () => mountedRef.current
+      && statusRef.current.previewId === previewId
+      && previewConfigurationKeyRef.current === configurationKey;
     verificationPendingRef.current = true;
-    setVerification({ previewId, pending: true, message: 'Speak normally for five seconds. Checking for one second of sustained signal…' });
+    setVerification({ previewId, configurationKey, pending: true, message: 'Speak normally for five seconds. Checking for one second of sustained signal…' });
     try {
       const result = await verifyMicrophonePreviewSignal(previewId);
-      if (mountedRef.current && statusRef.current.previewId === previewId) {
-        setVerification({ previewId, pending: false, message: microphoneSignalVerificationLabel(result) });
+      if (stillOwnsVerification()) {
+        setVerification({ previewId, configurationKey, pending: false, message: microphoneSignalVerificationLabel(result) });
       }
     } catch (error) {
-      if (mountedRef.current && statusRef.current.previewId === previewId) {
-        setVerification({ previewId, pending: false, message: String(error) });
+      if (stillOwnsVerification()) {
+        setVerification({ previewId, configurationKey, pending: false, message: String(error) });
       }
     } finally {
       verificationPendingRef.current = false;
       if (mountedRef.current) {
-        setVerification((current) => current?.previewId === previewId && current.pending ? null : current);
+        setVerification((current) => current?.previewId === previewId
+          && current.configurationKey === configurationKey
+          && current.pending
+          ? null
+          : current);
+      }
+      if (stillOwnsVerification() && smartAutoActiveRef.current) {
+        await refreshSmartAutoStatusRef.current();
       }
     }
   };
   const busy = operation !== 'idle';
+  const retryPreview = () => {
+    if (statusRef.current.previewId !== null) return;
+    setActionError(null);
+    applyStatus(IDLE_MICROPHONE_PREVIEW);
+    setAutoStartSuspended(false);
+  };
   const vadLabel = dictationBusy
     ? 'Paused while recording'
     : vadSensitivity === 0
@@ -595,16 +708,32 @@ export function MicrophoneInputTest({
       ? 'Selected device not found — choose an available microphone or Follow macOS Default.'
       : null;
   const defaultDevice = devices.find((device) => device.id === defaultInputId) ?? null;
+  const deviceOptions = audioDeviceSelectOptions(devices);
+  const previewCandidateLabel = smartAutoSelection
+    ? deviceOptions.find((device) => device.value === smartAutoSelection.device.id)?.label
+      ?? smartAutoSelection.device.name
+    : null;
+  const previewDeviceLabel = previewDevice
+    ? deviceOptions.find((device) => device.value === previewDevice)?.label
+      ?? (previewDevice === 'system_default' ? 'macOS default' : 'selected microphone')
+    : null;
+  const verifiedStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready'
+    ? smartAutoStatus.status
+    : null;
+  const verifiedDeviceLabel = verifiedStatus
+    ? deviceOptions.find((device) => device.value === verifiedStatus.deviceId)?.label
+      ?? 'verified microphone'
+    : null;
   const automaticHelperText = smartAutoActive
-    ? smartAutoSelection
-      ? `Smart Auto will use ${smartAutoSelection.device.name} (${smartAutoSelection.reason.replace(/_/g, ' ')}). This choice is frozen when recording starts.`
-      : 'Smart Auto has no approved, usable microphone. Approve an available microphone or choose another mode.'
+    ? null
     : microphone === 'system_default' && inventoryAvailable
     ? defaultDevice
       ? `Following macOS: ${defaultDevice.name}. Docking, undocking, or changing the system input applies automatically to the next recording.`
       : 'macOS does not currently report a default microphone. Murmur will follow one when it becomes available.'
     : null;
-  const describedBy = selectorHelperText || automaticHelperText ? selectorHelperId : undefined;
+  const describedBy = selectorHelperText || automaticHelperText || smartAutoActive
+    ? selectorHelperId
+    : undefined;
 
   return (
     <div>
@@ -645,6 +774,49 @@ export function MicrophoneInputTest({
         >
           {selectorHelperText}
         </p>
+      ) : smartAutoActive ? (
+        <div id={selectorHelperId} className="mt-2 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant" aria-live="polite">
+          <p>
+            <span className="font-medium text-on-surface">Availability candidate: </span>
+            {previewCandidateLabel
+              ? `${previewCandidateLabel}. Chosen from current availability.`
+              : 'None. Approve an available microphone or choose a fixed input.'}
+          </p>
+          {previewDeviceLabel && (
+            <p className="mt-1"><span className="font-medium text-on-surface">Previewing now: </span>{previewDeviceLabel}.</p>
+          )}
+          {smartAutoStatus.kind === 'loading' ? (
+            <p className="mt-1">Checking recent signal evidence for the next capture…</p>
+          ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready' ? (
+            <p className="mt-1 text-success">
+              <span className="font-medium">Next capture ready: </span>
+              {verifiedDeviceLabel}. Recent signal verified, {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
+            </p>
+          ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'blocked' ? (
+            <>
+              <p className="mt-1 text-warning"><span className="font-medium">Next capture blocked: </span>{smartAutoStatus.status.message}</p>
+              <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
+            </>
+          ) : smartAutoStatus.kind === 'unavailable' ? (
+            <>
+              <p className="mt-1 text-warning">Murmur could not confirm a safe microphone for the next capture.</p>
+              <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
+            </>
+          ) : null}
+          {previewCandidateLabel && (
+            <button
+              type="button"
+              className="mt-2 rounded border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50"
+              disabled={busy}
+              onClick={() => {
+                onSmartAutoChange?.({ smartAutoMicrophoneEnabled: false });
+                switchDevice(previewMicrophone);
+              }}
+            >
+              Use {previewCandidateLabel} only
+            </button>
+          )}
+        </div>
       ) : selectorHelperText || automaticHelperText ? (
         <p id={selectorHelperId} className="mt-2 text-xs text-on-surface-variant">
           {selectorHelperText ?? automaticHelperText}
@@ -675,12 +847,24 @@ export function MicrophoneInputTest({
         <p className={`mt-2 text-xs ${actionError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
+        {autoStartSuspended && status.previewId === null && monitoringActive && (
+          <button
+            type="button"
+            className="mt-2 rounded border border-outline-variant px-2 py-1 text-xs text-on-surface disabled:opacity-50"
+            disabled={busy || dictationBusy || !ready || !inventoryAvailable}
+            onClick={retryPreview}
+          >
+            Retry microphone preview
+          </button>
+        )}
         <div className="mt-2 text-xs text-on-surface-variant">
           <button type="button" className="rounded border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50" disabled={status.state !== 'active' || busy || dictationBusy || verification?.pending === true} onClick={() => void verifySignal()}>
-            Verify signal for 5 seconds
+            {smartAutoActive ? 'Verify preview candidate for 5 seconds' : 'Verify signal for 5 seconds'}
           </button>
-          {smartAutoActive && <p className="mt-2">Smart Auto still chooses by availability. This check tests its current preview input.</p>}
-          {verification?.previewId === status.previewId && <p className="mt-2" role="status">{verification.message}</p>}
+          {smartAutoActive && <p className="mt-2">The preview follows availability. Smart Auto requires a recent successful check before it can use this candidate.</p>}
+          {verification?.previewId === status.previewId
+            && verification.configurationKey === previewConfigurationKey
+            && <p className="mt-2" role="status">{verification.message}</p>}
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 border-t border-outline-variant/15 pt-2 text-xs">
           <span className="text-on-surface-variant">
