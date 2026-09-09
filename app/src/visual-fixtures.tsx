@@ -11,6 +11,7 @@ import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
+import { UpdateModal } from './components/UpdateModal';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
@@ -81,6 +82,31 @@ const importedTheme = importedThemeFixture
 if (importedTheme) applyResolvedTheme(resolveTheme(importedTheme, appearance));
 else if (appearance === 'dark') applyResolvedTheme(resolveTheme(DEFAULT_THEME, appearance));
 else document.documentElement.dataset.appearance = appearance;
+
+const shortUpdateNotes = `## What's Changed
+
+- Faster local transcription.
+- More reliable microphone startup.
+- Clearer recording controls.`;
+
+const longUpdateNotes = `## New Features
+
+- Smart Auto can select from approved microphones with recent signal.
+- Voice Query can read an explicitly approved workspace for the current session.
+- Meeting review can assign local names to remote speakers.
+
+## Bug Fixes
+
+- Microphone inventory excludes output-only devices.
+- Recording diagnostics report post-stop delivery latency accurately.
+- Private capture review keeps transcript text collapsed by default.
+- The notch restores its active state after a webview reload.
+- Markdown links follow CommonMark heading rules.
+
+## Other Changes
+
+- Settings use consistent row spacing and branch alignment.
+- Long-session echo-cancellation checks support thirty-minute captures.`;
 
 const meetingFixture = {
   session: {
@@ -463,6 +489,17 @@ function VisualFixture() {
         ]}
       />
       <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
+      <UpdateModal
+        status={requestedState === 'update-dialog-short'
+          ? { phase: 'available', version: '0.43.1', notes: shortUpdateNotes, isForced: false }
+          : requestedState === 'update-dialog-long'
+            ? { phase: 'available', version: '0.43.1', notes: longUpdateNotes, isForced: false }
+            : { phase: 'idle' }}
+        onDownload={() => {}}
+        onRetryCheck={() => {}}
+        onSkip={() => {}}
+        onDismiss={() => {}}
+      />
     </div>
   );
 }

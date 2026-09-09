@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The update dialog gives release notes most of the available space and keeps
+  its three actions in a compact two-row footer (#698).
 - The weekly dictation startup SLO now treats a user cancellation before its
   400 ms deadline as a censored observation instead of a capture miss, while
   preserving late cancellations and genuine startup failures in the denominator

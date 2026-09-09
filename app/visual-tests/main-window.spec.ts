@@ -226,6 +226,39 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   expect(headerBox?.height).toBe(42);
 });
 
+for (const notes of ['short', 'long'] as const) {
+  test(`update dialog gives ${notes} release notes the main reading area`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=update-dialog-${notes}&appearance=light`);
+
+    const fixture = page.locator('[data-visual-ready="true"]');
+    const dialog = page.getByRole('dialog', { name: 'Update Available' });
+    const notesArea = dialog.locator('.overflow-y-auto');
+    const actions = dialog.getByRole('button', { name: 'Update Now' }).locator('..');
+    const [notesBox, actionsBox] = await Promise.all([
+      notesArea.boundingBox(),
+      actions.boundingBox(),
+    ]);
+
+    expect(notesBox?.height).toBeGreaterThan(actionsBox?.height ?? 0);
+    await expect(dialog.getByRole('button', { name: 'Update Now' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Later' })).toBeVisible();
+    await expect(fixture).toHaveScreenshot(`light-update-dialog-${notes}.png`);
+  });
+}
+
+test('update dialog keeps every action visible in a smaller window', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.goto('/visual-fixtures.html?state=update-dialog-long&appearance=light');
+
+  const dialog = page.getByRole('dialog', { name: 'Update Available' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Update Now' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Later' })).toBeInViewport();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-update-dialog-long-small.png');
+});
+
 test('customization hub stays legible and restores focus at native and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
 
