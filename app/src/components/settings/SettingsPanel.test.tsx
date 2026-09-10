@@ -133,11 +133,11 @@ describe('SettingsPanel information architecture', () => {
   const scrollTo = vi.fn();
   const onUpdateSettings = vi.fn();
 
-  function renderPanel(isOpen = true) {
+  function renderPanel(isOpen = true, settings: Settings = DEFAULT_SETTINGS) {
     void isOpen;
     return root.render(
       <SettingsPanel
-        settings={DEFAULT_SETTINGS}
+        settings={settings}
         onUpdateSettings={onUpdateSettings}
         initialized
         status="idle"
@@ -227,6 +227,30 @@ describe('SettingsPanel information architecture', () => {
     });
 
     expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 75 });
+  });
+
+  it('groups function keys in a compact keyboard-operable trigger picker', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, doubleTapKey: 'f12' }));
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
+
+    const picker = container.querySelector<HTMLButtonElement>('[aria-label="Dictation trigger key"]');
+    expect(picker?.textContent).toContain('F12');
+    await act(async () => picker?.click());
+    expect(Array.from(container.querySelectorAll('[role="group"] > span')).map((group) => group.textContent))
+      .toEqual(expect.arrayContaining(['Modifier keys', 'Function keys']));
+
+    await act(async () => {
+      picker?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    });
+    await act(async () => {
+      picker?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onUpdateSettings).toHaveBeenCalledWith({ doubleTapKey: 'f20' });
+    expect(container.textContent).toContain('F1–F12 may require Fn');
+    expect(container.textContent).toContain('without suppressing its normal system or app action');
   });
 
   it('updates and previews recording sound cues', async () => {

@@ -1,4 +1,8 @@
-import type { DoubleTapKey, RecordingMode } from '../lib/settings';
+import {
+  recordingShortcutHint,
+  type DictationKey,
+  type RecordingMode,
+} from '../lib/settings';
 import type { DictationStatus } from '../lib/types';
 import type { ReactNode } from 'react';
 import { WindowHeader } from './ui/WindowHeader';
@@ -9,7 +13,7 @@ interface MainHeaderProps {
   initialized: boolean;
   recordingDuration: number;
   audioLevel?: number;
-  triggerKey: DoubleTapKey;
+  triggerKey: DictationKey;
   recordingMode: RecordingMode;
   onRecord: () => void;
   onStop: () => void;
@@ -25,12 +29,6 @@ interface MainHeaderProps {
   showStatusChip?: boolean;
 }
 
-const KEY_LABELS: Record<DoubleTapKey, string> = {
-  shift_l: '⇧ Shift',
-  alt_l: '⌥ Option',
-  ctrl_r: '⌃ Control',
-};
-
 function statusLabel(status: DictationStatus, initialized: boolean): string {
   if (status === 'starting') return 'Connecting';
   if (status === 'recovering') return 'Recovering';
@@ -39,11 +37,9 @@ function statusLabel(status: DictationStatus, initialized: boolean): string {
   return initialized ? 'Ready' : 'Initializing';
 }
 
-function hotkeyHint(mode: RecordingMode, key: DoubleTapKey): string {
-  const label = KEY_LABELS[key];
-  if (mode === 'double_tap') return `Double-tap ${label} to dictate`;
-  if (mode === 'both') return `Hold or double-tap ${label}`;
-  return `Hold ${label} to dictate`;
+function hotkeyHint(mode: RecordingMode, key: DictationKey): string {
+  const hint = recordingShortcutHint(mode, key);
+  return mode === 'both' ? hint : `${hint} to dictate`;
 }
 
 function formatTimer(seconds: number): string {

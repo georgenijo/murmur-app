@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { DictationKey } from '../settings';
 import type { DictationStatus } from '../types';
 
 interface UseDoubleTapToggleProps {
   enabled: boolean;
   initialized: boolean;
   accessibilityGranted: boolean | null;
-  doubleTapKey: string;
+  doubleTapKey: DictationKey;
   status: DictationStatus;
   onToggle: () => void;
 }

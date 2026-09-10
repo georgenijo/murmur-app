@@ -3,14 +3,24 @@ import { isQueryProviderId } from './queryUsage';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
-export type DoubleTapKey = 'shift_l' | 'alt_l' | 'ctrl_r';
+const MODIFIER_DICTATION_KEY_IDS = ['shift_l', 'alt_l', 'ctrl_r'] as const;
+const FUNCTION_DICTATION_KEY_IDS = [
+  'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+  'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'f19', 'f20',
+] as const;
+const DICTATION_KEY_IDS = [
+  ...MODIFIER_DICTATION_KEY_IDS,
+  ...FUNCTION_DICTATION_KEY_IDS,
+] as const;
+
+export type DictationKey = (typeof DICTATION_KEY_IDS)[number];
+export type FunctionDictationKey = (typeof FUNCTION_DICTATION_KEY_IDS)[number];
 
 /**
  * Independent hotkey for the AX-selection transform shortcut (issue #312).
- * Deliberately a distinct id set from `DoubleTapKey` (same `<modifier>_<side>`
- * naming style) rather than reusing it verbatim: the transform key is meant
- * to coexist with whichever dictation hotkey is configured, so the default
- * options live on the opposite side of the keyboard.
+ * Deliberately a distinct id set from `DictationKey`: the transform key is
+ * meant to coexist with whichever dictation hotkey is configured, so its
+ * modifier options live on the opposite side of the keyboard.
  */
 export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type QueryKey = TransformKey;
@@ -281,7 +291,7 @@ const MAX_SAMPLE_TERMS = 50;
 
 export interface Settings {
   model: ModelOption;
-  doubleTapKey: DoubleTapKey;
+  doubleTapKey: DictationKey;
   /** Independent transform-shortcut hotkey (issue #312). `null` = disabled;
    * no settings UI exposes this yet. */
   transformHoldKey: TransformKey | null;
@@ -434,15 +444,58 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; b
 
 export const AVAILABLE_MODEL_OPTIONS = MODEL_OPTIONS;
 
-export const DOUBLE_TAP_KEY_OPTIONS: { value: DoubleTapKey; label: string }[] = [
-  { value: 'shift_l', label: 'Shift' },
-  { value: 'alt_l', label: 'Option' },
-  { value: 'ctrl_r', label: 'Control' },
+export interface DictationKeyOption {
+  value: DictationKey;
+  label: string;
+}
+
+const MODIFIER_DICTATION_KEY_OPTIONS: DictationKeyOption[] =
+  MODIFIER_DICTATION_KEY_IDS.map((value) => ({ value, label: dictationKeyLabel(value) }));
+
+const FUNCTION_DICTATION_KEY_OPTIONS: DictationKeyOption[] =
+  FUNCTION_DICTATION_KEY_IDS.map((value) => ({ value, label: dictationKeyLabel(value) }));
+
+export const DICTATION_KEY_OPTION_GROUPS: { label: string; options: DictationKeyOption[] }[] = [
+  { label: 'Modifier keys', options: MODIFIER_DICTATION_KEY_OPTIONS },
+  { label: 'Function keys', options: FUNCTION_DICTATION_KEY_OPTIONS },
 ];
+
+export const DICTATION_KEY_OPTIONS: DictationKeyOption[] =
+  DICTATION_KEY_OPTION_GROUPS.flatMap((group) => group.options);
+
+const DICTATION_KEY_ID_SET: ReadonlySet<string> = new Set(DICTATION_KEY_IDS);
+
+export function isDictationKey(value: unknown): value is DictationKey {
+  return typeof value === 'string' && DICTATION_KEY_ID_SET.has(value);
+}
+
+export function dictationKeyLabel(key: DictationKey): string {
+  if (isFunctionDictationKey(key)) return key.toUpperCase();
+  switch (key) {
+    case 'shift_l': return '⇧ Left Shift';
+    case 'alt_l': return '⌥ Left Option';
+    case 'ctrl_r': return '⌃ Right Control';
+    default: {
+      const exhaustive: never = key;
+      return exhaustive;
+    }
+  }
+}
+
+export function isFunctionDictationKey(key: DictationKey): key is FunctionDictationKey {
+  return key.startsWith('f');
+}
+
+export function recordingShortcutHint(mode: RecordingMode, key: DictationKey): string {
+  const label = dictationKeyLabel(key);
+  if (mode === 'double_tap') return `Double-tap ${label}`;
+  if (mode === 'both') return `Hold or double-tap ${label}`;
+  return `Hold ${label}`;
+}
 
 /** Allow-list of transform hold-key options, shared by the Settings Transform
  * section's picker (issue #312 D1) and migration/validation, so both draw from
- * a single source of truth. Kept alongside `DOUBLE_TAP_KEY_OPTIONS`. */
+ * a single source of truth. Kept alongside `DICTATION_KEY_OPTIONS`. */
 export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
   { value: 'alt_r', label: 'Right Option' },
   { value: 'ctrl_l', label: 'Left Control' },
@@ -913,6 +966,14 @@ export function loadSettings(): Settings {
       const validModes: RecordingMode[] = ['hold_down', 'double_tap', 'both'];
       if (!parsed.recordingMode || !validModes.includes(parsed.recordingMode as RecordingMode)) {
         parsed.recordingMode = DEFAULT_SETTINGS.recordingMode;
+      }
+
+      // The trigger crosses localStorage and the durable settings file before
+      // reaching the native listener. Only install keys represented by the
+      // shared picker catalog; malformed or future values return to the safe
+      // default instead of silently disabling keyboard recording.
+      if (!isDictationKey(parsed.doubleTapKey)) {
+        parsed.doubleTapKey = DEFAULT_SETTINGS.doubleTapKey;
       }
 
       // Remove legacy hotkey field if present

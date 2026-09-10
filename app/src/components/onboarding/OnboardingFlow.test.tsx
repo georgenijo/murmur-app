@@ -339,6 +339,33 @@ describe('OnboardingFlow', () => {
     expect(onComplete).toHaveBeenCalledWith('base.en', 'double_tap', 'alt_l');
   });
 
+  it('offers F1 through F20 and carries a function key into the final hint', async () => {
+    const onComplete = vi.fn();
+    await renderFlow({ onComplete });
+    await clickButton('Get Started');
+    await clickButton('Continue');
+    await clickButton('Continue');
+    await clickButton('Skip Meetings for now');
+    await clickButton('Continue');
+
+    const triggerKey = container.querySelector<HTMLSelectElement>('#onboarding-trigger-key')!;
+    const functionOptions = Array.from(triggerKey.querySelectorAll('optgroup[label="Function keys"] option'));
+    expect(functionOptions.map((option) => option.textContent)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `F${index + 1}`),
+    );
+    await act(async () => {
+      triggerKey.value = 'f12';
+      triggerKey.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('F1–F12 may require Fn');
+    expect(container.textContent).toContain("does not suppress the key's normal system or app action");
+
+    await clickButton('Continue');
+    expect(container.querySelector('kbd')?.textContent).toBe('F12');
+    await clickButton('Start Using Murmur');
+    expect(onComplete).toHaveBeenCalledWith('base.en', 'hold_down', 'f12');
+  });
+
   it('treats an authorized tap with no audio playing as granted (#638)', async () => {
     mocks.requestSystemAudioPermission.mockResolvedValue({
       permission: 'granted',

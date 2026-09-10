@@ -12,7 +12,15 @@ import {
 import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
 import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
-import type { DoubleTapKey, ModelOption, RecordingMode } from '../../lib/settings';
+import {
+  DICTATION_KEY_OPTION_GROUPS,
+  dictationKeyLabel,
+  isDictationKey,
+  isFunctionDictationKey,
+  type DictationKey,
+  type ModelOption,
+  type RecordingMode,
+} from '../../lib/settings';
 import {
   getSystemAudioPermissionStatus,
   openSystemAudioPreferences,
@@ -24,19 +32,13 @@ type Step = 'welcome' | 'microphone' | 'accessibility' | 'systemAudio' | 'model'
 
 const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'systemAudio', 'model', 'hotkey', 'done'];
 
-const KEY_LABELS: Record<DoubleTapKey, string> = {
-  shift_l: 'Left Shift',
-  alt_l: 'Left Option',
-  ctrl_r: 'Right Control',
-};
-
 interface Props {
   initialModel: ModelOption;
   /** Configured recording trigger, so the final tip shows the real binding. */
   recordingMode: RecordingMode;
-  triggerKey: DoubleTapKey;
+  triggerKey: DictationKey;
   /** Called when the user finishes the wizard with the selected local setup. */
-  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DoubleTapKey) => void;
+  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DictationKey) => void;
 }
 
 /**
@@ -553,13 +555,26 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 <select
                   id="onboarding-trigger-key"
                   value={selectedTriggerKey}
-                  onChange={(event) => setSelectedTriggerKey(event.target.value as DoubleTapKey)}
+                  onChange={(event) => {
+                    if (isDictationKey(event.target.value)) {
+                      setSelectedTriggerKey(event.target.value);
+                    }
+                  }}
                   className="h-10 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-high px-3 text-sm text-on-surface"
                 >
-                  <option value="shift_l">⇧ Left Shift</option>
-                  <option value="alt_l">⌥ Left Option</option>
-                  <option value="ctrl_r">⌃ Right Control</option>
+                  {DICTATION_KEY_OPTION_GROUPS.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
+                {isFunctionDictationKey(selectedTriggerKey) && (
+                  <p className="mt-2 text-xs text-on-surface-variant">
+                    On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur does not suppress the key's normal system or app action.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -594,7 +609,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </p>
               <p className="text-xs text-on-surface-variant">
                 {selectedRecordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}
-                <kbd className="dialog-kbd font-mono text-[10px]">{KEY_LABELS[selectedTriggerKey]}</kbd>
+                <kbd className="dialog-kbd font-mono text-[10px]">{dictationKeyLabel(selectedTriggerKey)}</kbd>
                 {selectedRecordingMode === 'double_tap'
                   ? ' to start recording and tap it once to stop'
                   : selectedRecordingMode === 'both'

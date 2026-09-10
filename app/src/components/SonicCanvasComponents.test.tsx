@@ -27,9 +27,11 @@ describe('Sonic Canvas component details', () => {
   });
 
   it.each([
-    ['shift_l', '⇧ Shift'],
-    ['alt_l', '⌥ Option'],
-    ['ctrl_r', '⌃ Control'],
+    ['shift_l', '⇧ Left Shift'],
+    ['alt_l', '⌥ Left Option'],
+    ['ctrl_r', '⌃ Right Control'],
+    ['f1', 'F1'],
+    ['f20', 'F20'],
   ] as const)('shows the configured %s hotkey hint', async (triggerKey, label) => {
     await act(async () => {
       root.render(

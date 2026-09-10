@@ -1,6 +1,22 @@
 use crate::{injector, keyboard};
 use tauri::Emitter;
 
+fn validate_dictation_key(hotkey: &str) -> Result<(), String> {
+    if keyboard::is_dictation_key_id(hotkey) {
+        Ok(())
+    } else {
+        Err("Unsupported dictation key. Choose one from Settings.".to_string())
+    }
+}
+
+fn validate_transform_or_query_key(hotkey: &str) -> Result<(), String> {
+    if keyboard::is_transform_or_query_key_id(hotkey) {
+        Ok(())
+    } else {
+        Err("Unsupported shortcut key. Choose one from Settings.".to_string())
+    }
+}
+
 #[tauri::command]
 pub fn start_keyboard_listener(
     app_handle: tauri::AppHandle,
@@ -16,6 +32,7 @@ pub fn start_keyboard_listener(
             VALID_MODES.join(", ")
         ));
     }
+    validate_dictation_key(&hotkey)?;
     if !injector::is_accessibility_enabled() {
         return Err(
             "Accessibility permission is required. Please grant it in System Settings.".to_string(),
@@ -33,7 +50,8 @@ pub fn stop_keyboard_listener() {
 }
 
 #[tauri::command]
-pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
+pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+    validate_dictation_key(&hotkey)?;
     let should_stop = keyboard::set_target_key(&hotkey);
     if should_stop {
         let _ = app_handle.emit("hold-down-stop", ());
@@ -41,6 +59,7 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) {
     } else {
         tracing::info!(target: "keyboard", "Keyboard key updated to: {}", hotkey);
     }
+    Ok(())
 }
 
 #[tauri::command]
@@ -138,6 +157,7 @@ pub fn start_transform_listener(
             hotkey
         ));
     }
+    validate_transform_or_query_key(&hotkey)?;
     if keyboard::transform_key_conflicts_with_query(&hotkey) {
         return Err("That key is already assigned to Voice Query.".to_string());
     }
@@ -166,6 +186,7 @@ pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) -> Result
             hotkey
         ));
     }
+    validate_transform_or_query_key(&hotkey)?;
     if keyboard::transform_key_conflicts_with_query(&hotkey) {
         return Err("That key is already assigned to Voice Query.".to_string());
     }
@@ -195,6 +216,7 @@ pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: String) -> Res
     if keyboard::query_key_conflicts_with_transform(&hotkey) {
         return Err("That key is already assigned to Selected-text Transform.".to_string());
     }
+    validate_transform_or_query_key(&hotkey)?;
     if !injector::is_accessibility_enabled() {
         return Err(
             "Accessibility permission is required. Please grant it in System Settings.".to_string(),
@@ -203,6 +225,31 @@ pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: String) -> Res
     keyboard::start_query_listener(app_handle, &hotkey);
     tracing::info!(target: "keyboard", "Voice-query listener started");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_dictation_key, validate_transform_or_query_key};
+
+    #[test]
+    fn dictation_ipc_accepts_only_picker_keys() {
+        for key in ["shift_l", "alt_l", "ctrl_r", "f1", "f10", "f20"] {
+            assert!(validate_dictation_key(key).is_ok(), "{key}");
+        }
+        for key in ["", "f0", "f21", "shift_r", "space", "mouse_4"] {
+            assert!(validate_dictation_key(key).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn transform_and_query_keep_their_opposite_side_modifier_set() {
+        for key in ["shift_r", "alt_r", "ctrl_l"] {
+            assert!(validate_transform_or_query_key(key).is_ok(), "{key}");
+        }
+        for key in ["shift_l", "alt_l", "ctrl_r", "f1", "f20", "mouse_4"] {
+            assert!(validate_transform_or_query_key(key).is_err(), "{key}");
+        }
+    }
 }
 
 #[tauri::command]

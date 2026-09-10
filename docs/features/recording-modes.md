@@ -8,9 +8,9 @@ Separate from dictation modes: a dedicated **transform hold key** (`transformHol
 
 ## Hold-Down Mode (default)
 
-Hold a modifier key to record, release to stop and transcribe.
+Hold the configured trigger key to record, then release it to stop and transcribe.
 
-**Behavior:** Press and hold modifier to start recording. Release to stop recording and begin transcription.
+**Behavior:** Press and hold the trigger key to start recording. Release it to stop recording and begin transcription.
 
 **Available keys:**
 
@@ -19,6 +19,12 @@ Hold a modifier key to record, release to stop and transcribe.
 | `shift_l` | Left Shift |
 | `alt_l` | Left Option |
 | `ctrl_r` | Right Control |
+| `f1` through `f20` | F1 through F20 |
+
+On Apple keyboards, F1 through F12 can control brightness, audio, and other
+system features. Those keys may require holding Fn or enabling "Use F1, F2,
+etc. keys as standard function keys" in macOS Keyboard settings. Murmur observes
+global key events and does not suppress the key's normal system or app action.
 
 **Requires Accessibility permission** (rdev needs it for global keyboard events).
 
@@ -39,7 +45,8 @@ Held → KeyRelease(target) → Idle (emit hold-down-stop)
 ### Rejection Rules
 
 - **Key repeat** while held: Ignored (stays in Held state)
-- **Modifier + letter** (e.g. Shift+A): Cancels hold, emits stop
+- **Trigger key + another non-modifier** (for example Shift+A or F8+A): Cancels hold, emits stop
+- **Shortcut modifier held before a function key** (for example Command, then F8): Ignored while idle; Fn remains allowed for Apple function-key rows
 - **Cooldown**: 300ms after stop before re-trigger is allowed
 
 ### Code Path
@@ -52,11 +59,11 @@ Held → KeyRelease(target) → Idle (emit hold-down-stop)
 
 ## Double-Tap Mode
 
-Uses `rdev` for low-level keyboard event listening. Detects quick double-taps on bare modifier keys.
+Uses `rdev` for low-level keyboard event listening. Detects quick double-taps on the configured trigger key.
 
-**Behavior:** Double-tap modifier to start recording, single tap to stop.
+**Behavior:** Double-tap the trigger key to start recording, then tap it once to stop.
 
-**Available keys:** Same as Hold-Down mode (Left Shift, Left Option, Right Control).
+**Available keys:** Same as Hold-Down mode (Left Shift, Left Option, Right Control, and F1 through F20).
 
 **Requires Accessibility permission** (rdev needs it for global keyboard events).
 
@@ -81,7 +88,8 @@ WaitingFirstUp → KeyUp(target) within 200ms → FIRE
 ### Rejection Rules
 
 - **Held key** (>200ms): Resets to Idle
-- **Modifier + letter** (e.g. Shift+A): Resets on non-modifier KeyPress
+- **Trigger key + another key** (for example Shift+A or F8+A): Resets on the other KeyPress
+- **Shortcut modifier held before a function key** (for example Control, then F8): Does not begin or stop a recording; Fn remains allowed
 - **Slow gap** between taps (>400ms): A timer resets to Idle at expiry, without waiting for another keyboard event
 - **Triple-tap spam**: 50ms cooldown after firing
 - **Key repeat events**: Ignored while within hold duration
@@ -98,7 +106,7 @@ WaitingFirstUp → KeyUp(target) within 200ms → FIRE
 
 The `hotkeyMissFeedback` setting is off by default. When enabled, expiration of the 400ms second-tap window in Double-Tap or Both mode emits `hotkey-tap-rejected` with `{ reason: "second_tap_expired", mode }`. The overlay shows a distinct amber `Tap missed` flash for 500ms.
 
-Only the expired second-tap window is surfaced. Existing structured diagnostics still record other rejection reasons, but the UI stays silent for long holds, modifier+letter combinations, processing skips, Both mode's first short tap, and valid double-taps. This prevents ordinary modifier use from producing feedback noise.
+Only the expired second-tap window is surfaced. Existing structured diagnostics still record other rejection reasons, but the UI stays silent for long holds, key combinations, processing skips, Both mode's first short tap, and valid double-taps. This prevents ordinary key use from producing feedback noise.
 
 ## Shared Infrastructure
 
@@ -133,7 +141,7 @@ The shared rdev listener emits `escape-cancel` before mode-specific handling and
 
 ### Tests
 
-46 unit tests in `keyboard.rs` (`#[cfg(test)] mod tests`). Run with:
+The detector unit tests live in `keyboard.rs` (`#[cfg(test)] mod tests`). Run with:
 ```bash
 cd app/src-tauri && cargo test -- --test-threads=1
 ```
@@ -142,7 +150,15 @@ Single-threaded because timing tests use `sleep()`.
 
 ## Settings Integration
 
-All modes share the `doubleTapKey` setting (`shift_l`, `alt_l`, `ctrl_r`). The `recordingMode` setting (`'hold_down' | 'double_tap' | 'both'`) determines which hook is active.
+All modes share the `doubleTapKey` setting. Its allow-list contains `shift_l`,
+`alt_l`, `ctrl_r`, and `f1` through `f20`. Loading settings validates this value,
+and the native listener commands reject values outside the same list. The
+`recordingMode` setting (`'hold_down' | 'double_tap' | 'both'`) determines which
+hook is active.
+
+Settings and onboarding present one grouped picker with modifier keys first and
+function keys second. Home, the main header, onboarding's final tip, and the
+expanded overlay derive their labels from the same catalog.
 
 All three hooks are always called (React Rules of Hooks) but only the active one registers listeners, via the `enabled` prop.
 

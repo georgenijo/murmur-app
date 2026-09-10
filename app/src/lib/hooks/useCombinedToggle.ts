@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { DictationKey } from '../settings';
 import type { DictationStatus } from '../types';
 
 interface UseCombinedToggleProps {
   enabled: boolean;
   initialized: boolean;
   accessibilityGranted: boolean | null;
-  triggerKey: string;
+  triggerKey: DictationKey;
   status: DictationStatus;
   onStart: () => void;
   onStop: () => void;

@@ -45,16 +45,16 @@ describe('home dashboard interactions', () => {
     await renderBar('idle');
     expect(container.querySelectorAll('button')).toHaveLength(1);
     expect(container.textContent).toContain('Click to start talking');
-    expect(container.textContent).toContain('or hold ⇧ Shift in any app');
+    expect(container.textContent).toContain('or hold ⇧ Left Shift in any app');
     const startLabel = container.querySelector<HTMLElement>('.home-talk-title strong');
     expect(startLabel?.closest('button')?.dataset.testid).toBe('home-record-button');
     await act(async () => startLabel?.click());
     expect(onRecord).toHaveBeenCalledOnce();
 
     await renderBar('idle', 'double_tap');
-    expect(container.textContent).toContain('or double-tap ⇧ Shift in any app');
+    expect(container.textContent).toContain('or double-tap ⇧ Left Shift in any app');
     await renderBar('idle', 'both');
-    expect(container.textContent).toContain('or hold or double-tap ⇧ Shift in any app');
+    expect(container.textContent).toContain('or hold or double-tap ⇧ Left Shift in any app');
 
     await renderBar('recording');
     const record = container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement;

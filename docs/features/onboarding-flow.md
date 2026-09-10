@@ -27,7 +27,10 @@ active, because leaving the step cannot cancel the underlying download safely:
    shared runtime catalog and shows "already installed" on re-runs. Core ML
    setup reports bounded phases from a killable worker; terminal failure
    restores Back, Retry, and one-click Whisper Base / CPU Parakeet fallbacks.
-6. **Hotkey** — chooses Hold / Double-tap / Both and the trigger key.
+6. **Hotkey** — chooses Hold / Double-tap / Both and a trigger key. The grouped
+   picker contains Left Shift, Left Option, Right Control, and F1 through F20.
+   Selecting a function key explains the macOS Fn and standard-function-key
+   setting and notes that Murmur does not suppress the key's normal action.
 7. **Done** — live summary of the checks plus a quick-start card derived from
    the selected recording mode and trigger key.
 

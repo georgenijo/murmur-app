@@ -36,8 +36,10 @@ describe('overlay settings write ownership', () => {
       hotkeyMissFeedbackRef,
     });
     return <>
+      <output>{mirror.recordingShortcutHint}</output>
       <button onClick={mirror.handleToggleAutoPaste}>Paste</button>
       <button onClick={mirror.handleToggleDisabled}>Disable</button>
+      <button onClick={mirror.refresh}>Refresh</button>
     </>;
   }
 
@@ -107,5 +109,12 @@ describe('overlay settings write ownership', () => {
     expect(stored.disabled).toBe(false);
     expectRevocationPreserved();
     expect(mocks.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the overlay with the persisted function-key label', async () => {
+    stored = { ...stored, doubleTapKey: 'f14', recordingMode: 'double_tap' };
+    await act(async () => container.querySelectorAll('button')[2]?.click());
+
+    expect(container.querySelector('output')?.textContent).toBe('Double-tap F14');
   });
 });

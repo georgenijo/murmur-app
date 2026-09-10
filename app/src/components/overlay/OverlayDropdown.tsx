@@ -52,6 +52,7 @@ interface OverlayDropdownProps {
   disabled: boolean;
   autoPaste: boolean;
   fileOutputEnabled: boolean;
+  recordingShortcutHint: string;
   mode?: ModeRuntimeStatus;
   onCycleMode?: (e: React.MouseEvent) => void;
   onToggleDisabled: (e: React.MouseEvent) => void;
@@ -75,6 +76,7 @@ export function OverlayDropdown({
   disabled,
   autoPaste,
   fileOutputEnabled,
+  recordingShortcutHint,
   mode = { id: 'builtin.everyday', name: 'Everyday', source: 'manual' },
   onCycleMode = () => {},
   onToggleDisabled,
@@ -147,9 +149,9 @@ export function OverlayDropdown({
           notch. Recording timer takes precedence; the "Tap missed" label shows
           during a hotkey-miss flash. Absolutely positioned so the buttons stay
           centered. */}
-      {(status === 'recording' || status === 'starting' || status === 'recovering' || showTapMissed) && (
+      {(status === 'idle' || status === 'recording' || status === 'starting' || status === 'recovering' || showTapMissed) && (
         <span
-          className="absolute left-[10px] top-0 bottom-[6px] flex items-center pointer-events-none"
+          className="absolute left-[10px] top-0 bottom-[6px] flex max-w-[82px] items-center pointer-events-none"
           aria-live={showTapMissed ? 'polite' : undefined}
         >
           {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}
@@ -165,9 +167,17 @@ export function OverlayDropdown({
             <span className={stillConnecting ? 'text-amber-300 font-medium' : 'text-sky-300 font-medium'} style={{ fontSize: 11 }}>
               {stillConnecting ? 'Still connecting' : 'Connecting'}
             </span>
-          ) : (
+          ) : status === 'recovering' ? (
             <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
               Audio recovering
+            </span>
+          ) : (
+            <span
+              className="truncate text-white/55"
+              style={{ fontSize: 10 }}
+              title={recordingShortcutHint}
+            >
+              {recordingShortcutHint}
             </span>
           )}
         </span>
