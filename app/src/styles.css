@@ -970,17 +970,24 @@ textarea {
 }
 
 .home-talk {
-  display: flex;
   flex-shrink: 0;
-  align-items: center;
-  gap: var(--ui-space-5);
   border: 1px solid var(--ui-hairline);
   border-radius: var(--ui-radius-card);
-  padding: var(--ui-space-4) var(--ui-space-6) var(--ui-space-4) var(--ui-space-4);
   background: var(--ui-tint-raised);
   box-shadow: var(--ui-shadow-1);
   transition: border-color var(--ui-motion-standard);
 }
+.home-talk-action {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--ui-space-5);
+  border-radius: inherit;
+  padding: var(--ui-space-4) var(--ui-space-6) var(--ui-space-4) var(--ui-space-4);
+  text-align: left;
+}
+.home-talk-action:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.home-talk-action:disabled { cursor: not-allowed; }
 .home-talk[data-state="capturing"] { border-color: color-mix(in srgb, var(--murmur-error) 35%, transparent); }
 
 .home-talk-button {
@@ -995,14 +1002,12 @@ textarea {
   box-shadow: var(--ui-shadow-accent);
   transition: transform 120ms var(--ui-ease-out), background var(--ui-motion-standard), box-shadow var(--ui-motion-standard);
 }
-.home-talk-button:hover:not(:disabled) { transform: scale(1.05); }
-.home-talk-button:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.home-talk-action:hover:not(:disabled) .home-talk-button { transform: scale(1.05); }
 .home-talk[data-state="capturing"] .home-talk-button {
   background: var(--murmur-error);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--murmur-error) 16%, transparent);
 }
-.home-talk-button:disabled {
-  cursor: not-allowed;
+.home-talk-action:disabled .home-talk-button {
   background: var(--murmur-surface-container-high);
   color: var(--murmur-on-surface-variant);
   box-shadow: none;
@@ -1020,7 +1025,7 @@ textarea {
 @keyframes home-talk-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .home-talk-spinner { animation-duration: 2.4s; }
-  .home-talk-button:hover:not(:disabled) { transform: none; }
+  .home-talk-action:hover:not(:disabled) .home-talk-button { transform: none; }
 }
 
 .home-talk-text { display: flex; min-width: 0; flex-direction: column; gap: 0.0625rem; line-height: 1.3; }

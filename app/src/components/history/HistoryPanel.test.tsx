@@ -225,7 +225,7 @@ describe('HistoryPanel', () => {
     expect(filterTrigger().textContent).toBe('Files');
     await choose('Today');
     expect(filterTrigger().textContent).toBe('2 filters');
-    expect(filterTrigger().getAttribute('aria-label')).toBe('Filter transcripts: Files · Today');
+    expect(filterTrigger().getAttribute('aria-label')).toBe('Filter transcripts: 2 filters, Files · Today');
     await act(async () => byText('Clear filters')!.click());
     expect(filterTrigger().textContent).toBe('Filter');
     expect(cardText()).toHaveLength(3);

@@ -46,7 +46,9 @@ describe('home dashboard interactions', () => {
     expect(container.querySelectorAll('button')).toHaveLength(1);
     expect(container.textContent).toContain('Click to start talking');
     expect(container.textContent).toContain('or hold ⇧ Shift in any app');
-    await act(async () => (container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement).click());
+    const startLabel = container.querySelector<HTMLElement>('.home-talk-title strong');
+    expect(startLabel?.closest('button')?.dataset.testid).toBe('home-record-button');
+    await act(async () => startLabel?.click());
     expect(onRecord).toHaveBeenCalledOnce();
 
     await renderBar('idle', 'double_tap');
@@ -56,9 +58,9 @@ describe('home dashboard interactions', () => {
 
     await renderBar('recording');
     const record = container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement;
-    expect(record.getAttribute('aria-label')).toBe('Stop recording, 0:12');
+    expect(record.getAttribute('aria-label')).toBe('Click to stop recording, 0:12');
     expect(container.textContent).toContain('Listening · 0:12');
-    await act(async () => record.click());
+    await act(async () => container.querySelector<HTMLElement>('.home-talk-hint')?.click());
     expect(onStop).toHaveBeenCalledOnce();
     expect(container.querySelectorAll('.home-record-waveform span')).toHaveLength(5);
 

@@ -68,7 +68,7 @@ export function HistoryFilterMenu({
     <AnimatedDropdown>
       <AnimatedDropdownTrigger
         className={active ? 'history-filter-trigger history-filter-trigger-active' : 'history-filter-trigger'}
-        aria-label={active ? `Filter transcripts: ${names}` : 'Filter transcripts'}
+        aria-label={active ? `Filter transcripts: ${label}${label === names ? '' : `, ${names}`}` : 'Filter transcripts'}
       >
         <ListFilter aria-hidden="true" size={13} strokeWidth={2.2} />
         <span className="truncate">{label}</span>

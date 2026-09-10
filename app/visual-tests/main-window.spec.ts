@@ -61,8 +61,8 @@ test('one filter menu keeps its choice selected while hovered and names it on th
   await expect(page.locator('.history-filtered-note')).toContainText('Showing');
 });
 
-test('date filters compose with source filters and Markdown copy', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:1420' });
+test('date filters compose with source filters and Markdown copy', async ({ page, context, baseURL }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseURL });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const cards = page.locator('.home-history .transcript-card');
   await expect(cards).toHaveCount(16);
@@ -107,8 +107,8 @@ test('pins a transcript and filters it through the real history fixture', async 
   await expect(page.getByText('No matching transcripts', { exact: true })).toBeVisible();
 });
 
-test('copied transcripts keep their geometry and actions reachable', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-write'], { origin: 'http://127.0.0.1:1420' });
+test('copied transcripts keep their geometry and actions reachable', async ({ page, context, baseURL }) => {
+  await context.grantPermissions(['clipboard-write'], { origin: baseURL });
   await page.setViewportSize({ width: 880, height: 720 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   await page.evaluate(async () => {
@@ -247,7 +247,7 @@ for (const size of [{ width: 880, height: 720 }, { width: 800, height: 600 }, { 
     await page.getByRole('menuitemradio', { name: 'Past 30 days', exact: true }).click();
     await page.getByRole('menuitemcheckbox', { name: 'Pinned only', exact: true }).click();
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('button', { name: 'Filter transcripts: Spoken · Past 30 days · Pinned' })).toHaveText('3 filters');
+    await expect(page.getByRole('button', { name: 'Filter transcripts: 3 filters, Spoken · Past 30 days · Pinned' })).toHaveText('3 filters');
 
     const column = await page.locator('.home-history').boundingBox();
     const more = await page.getByRole('button', { name: 'More history actions' }).boundingBox();
@@ -309,7 +309,8 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
 
   expect(updateBox?.width).toBeLessThanOrEqual(28);
   expect(updateBox?.height).toBeLessThanOrEqual(28);
-  expect(recordBox?.height).toBe(36);
+  expect(recordBox?.height).toBeGreaterThanOrEqual(44);
+  expect(recordBox?.height).toBeLessThanOrEqual(56);
   expect(headerBox?.height).toBe(42);
 });
 
@@ -791,7 +792,7 @@ test('dashboard actions keep hover, focus, active, and disabled states in an imp
 test('the compact 720x560 home keeps actions and history reachable', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
-  await expect(page.getByRole('button', { name: 'Start recording' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');

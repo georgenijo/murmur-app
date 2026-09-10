@@ -81,31 +81,33 @@ export function HomeRecordingBar({
       <button
         type="button"
         data-testid="home-record-button"
-        className="home-talk-button"
+        className="home-talk-action"
         onClick={() => void (isCapturing ? onStop() : onRecord())}
         disabled={waiting}
-        aria-label={status === 'recording' ? `Stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Cancel recording' : waiting ? title : 'Start recording'}
+        aria-label={status === 'recording' ? `Click to stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Click to cancel recording' : title}
       >
-        {isCapturing
-          ? <Square aria-hidden="true" className="home-talk-icon" fill="currentColor" strokeWidth={0} />
-          : busy || !initialized
-            ? <span aria-hidden="true" className="home-talk-spinner" />
-            : <Mic aria-hidden="true" className="home-talk-icon" strokeWidth={2.2} />}
-      </button>
+        <span className="home-talk-button" aria-hidden="true">
+          {isCapturing
+            ? <Square aria-hidden="true" className="home-talk-icon" fill="currentColor" strokeWidth={0} />
+            : busy || !initialized
+              ? <span aria-hidden="true" className="home-talk-spinner" />
+              : <Mic aria-hidden="true" className="home-talk-icon" strokeWidth={2.2} />}
+        </span>
 
-      <div className="home-talk-text" aria-live="polite">
-        <div className="home-talk-title">
-          <strong>{title}</strong>
-          {status === 'recording' && (
-            <span className="home-record-waveform" aria-hidden="true">
-              {envelopes.map((envelope, index) => (
-                <span key={index} style={{ height: `${Math.max(3, Math.round((0.15 + normalized * envelope) * 16))}px` }} />
-              ))}
-            </span>
-          )}
-        </div>
-        <span className="home-talk-hint">{hint}</span>
-      </div>
+        <span className="home-talk-text" aria-live="polite">
+          <span className="home-talk-title">
+            <strong>{title}</strong>
+            {status === 'recording' && (
+              <span className="home-record-waveform" aria-hidden="true">
+                {envelopes.map((envelope, index) => (
+                  <span key={index} style={{ height: `${Math.max(3, Math.round((0.15 + normalized * envelope) * 16))}px` }} />
+                ))}
+              </span>
+            )}
+          </span>
+          <span className="home-talk-hint">{hint}</span>
+        </span>
+      </button>
     </section>
   );
 }
