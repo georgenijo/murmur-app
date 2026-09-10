@@ -620,12 +620,48 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Developing' })).toHaveCount(0);
   await expect(page.locator('.usage-analytics-section')).toHaveCount(4);
+  const sectionBottoms = await page.locator('.usage-analytics-section').evaluateAll((sections) => (
+    sections.map((section) => section.getBoundingClientRect().bottom)
+  ));
+  expect(sectionBottoms[0]).toBe(sectionBottoms[1]);
+  expect(sectionBottoms[2]).toBe(sectionBottoms[3]);
   const [workspaceBox, analyticsBox] = await Promise.all([
     page.locator('.main-dashboard-workspace').boundingBox(),
     page.locator('.usage-dashboard-content').boundingBox(),
   ]);
   expect(analyticsBox!.width).toBeGreaterThan(workspaceBox!.width * 0.9);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights.png');
+});
+
+test('populated Insights fits the default window with chart dates visible', async ({ page }) => {
+  await page.setViewportSize({ width: 1120, height: 820 });
+  await page.goto('/visual-fixtures.html?state=insights&appearance=light');
+
+  const view = page.locator('.insights-view');
+  const fit = await view.evaluate((element) => {
+    const viewBottom = element.getBoundingClientRect().bottom;
+    const dateLabels = Array.from(element.querySelectorAll('.ui-day-chart-axis span'));
+    const heatmapCell = element.querySelector('.ui-day-chart-heatmap button');
+    const sections = Array.from(element.querySelectorAll('.usage-analytics-section'));
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      datesVisible: dateLabels.every((label) => label.getBoundingClientRect().bottom <= viewBottom),
+      heatmapCellWidth: heatmapCell?.getBoundingClientRect().width ?? Number.POSITIVE_INFINITY,
+      sectionBottoms: sections.map((section) => section.getBoundingClientRect().bottom),
+    };
+  });
+
+  expect(fit.scrollHeight).toBeLessThanOrEqual(fit.clientHeight);
+  expect(fit.scrollWidth).toBe(fit.clientWidth);
+  expect(fit.datesVisible).toBe(true);
+  expect(fit.heatmapCellWidth).toBeLessThanOrEqual(32);
+  expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
+  expect(fit.sectionBottoms[2]).toBe(fit.sectionBottoms[3]);
+  await expect(page.locator('[data-query-note="failures"]')).toContainText('provider not authenticated 1');
+  await expect(page.locator('.usage-analytics-section').first()).toHaveCSS('border-top-width', '1px');
 });
 
 test('Voice Query provider columns stay aligned at normal and narrow widths', async ({ page }) => {
@@ -700,7 +736,13 @@ test('dashboard charts keep tooltip, plot, and seven weekday labels in stable re
   await marks.nth(2).focus();
   await expect(tooltip).toContainText('words');
   const after = await Promise.all([tooltip.boundingBox(), plot.boundingBox(), chart.boundingBox()]);
-  expect(after).toEqual(before);
+  const relativeGeometry = (boxes: typeof before) => boxes.map((box) => ({
+    x: box && boxes[2] ? box.x - boxes[2].x : null,
+    y: box && boxes[2] ? box.y - boxes[2].y : null,
+    width: box?.width ?? null,
+    height: box?.height ?? null,
+  }));
+  expect(relativeGeometry(after)).toEqual(relativeGeometry(before));
 
   const [plotBox, labelBoxes] = await Promise.all([
     plot.boundingBox(),

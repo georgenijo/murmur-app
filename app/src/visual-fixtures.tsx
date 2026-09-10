@@ -344,7 +344,14 @@ localStorage.setItem('dictation-stats', JSON.stringify({
         reportedCostUsd: 0.027,
       },
     },
-    failuresByErrorCode: { timed_out: 1, auth_failed: 1 },
+    failuresByErrorCode: {
+      no_speech: 5,
+      cancelled: 13,
+      audio_recovering: 5,
+      provider_not_authenticated: 1,
+      audio_start_failed: 1,
+      provider_error: 1,
+    },
   },
 }));
 
