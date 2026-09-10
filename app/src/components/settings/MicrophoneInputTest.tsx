@@ -202,7 +202,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
         </Popover.Portal>
       </Popover.Root>
       <SettingsBranch open={smartAutoActive} className="mt-2">
-        <fieldset aria-label="Smart Auto microphone inclusion" className="rounded-(--ui-radius-popover) border border-outline-variant/25 bg-surface-container-lowest p-2">
+        <fieldset aria-label="Smart Auto microphone inclusion" className="rounded-(--ui-radius-control) border border-outline-variant/25 bg-surface-container-lowest p-2">
           <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Smart Auto microphones</legend>
           {approvalDevices.map((device) => {
             const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
@@ -791,7 +791,7 @@ export function MicrophoneInputTest({
               {smartAuto?.smartAutoProbeEnabled && smartAutoSelection !== null && (
                 <button
                   type="button"
-                  className="mt-2 rounded border border-outline-variant px-2 py-1 text-on-surface"
+                  className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-on-surface"
                   onClick={() => {
                     setProbeRetryError(null);
                     void retrySmartAutoProbe()
@@ -810,7 +810,7 @@ export function MicrophoneInputTest({
           {previewCandidateLabel && (
             <button
               type="button"
-              className="mt-2 rounded border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50"
+              className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50"
               disabled={busy}
               onClick={() => {
                 onSmartAutoChange?.({ smartAutoMicrophoneEnabled: false });
@@ -853,7 +853,7 @@ export function MicrophoneInputTest({
         {autoStartSuspended && status.previewId === null && monitoringActive && (
           <button
             type="button"
-            className="mt-2 rounded border border-outline-variant px-2 py-1 text-xs text-on-surface disabled:opacity-50"
+            className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-xs text-on-surface disabled:opacity-50"
             disabled={busy || dictationBusy || !ready || !inventoryAvailable}
             onClick={retryPreview}
           >

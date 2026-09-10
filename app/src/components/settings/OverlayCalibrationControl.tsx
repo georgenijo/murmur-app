@@ -123,7 +123,7 @@ export function OverlayCalibrationControl({
   }, [announceCalibration]);
 
   return (
-    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-3">
+    <div className="rounded-(--ui-radius-control) border border-outline-variant/30 bg-surface-container-lowest p-3">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs font-medium text-on-surface">Overlay position</p>

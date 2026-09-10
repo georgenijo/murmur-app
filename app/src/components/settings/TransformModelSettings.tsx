@@ -5,6 +5,7 @@ import type { SettingsEditorTab } from './SettingsEditorsWindow';
 import { Select } from '../ui/Select';
 import { SettingToggle } from './SettingToggle';
 import { SettingsBranch } from './SettingsBranch';
+import { SettingsCallout } from './SettingsLayout';
 import { SettingsSection } from './SettingsSection';
 
 interface TransformModelSettingsProps {
@@ -31,14 +32,11 @@ export function TransformModelSettings({
 }: TransformModelSettingsProps) {
   return (
     <SettingsSection pageId="ai-transform" activePage={activePage} title="Selected-Text Rewrite" subtitle="On-device rewriting, shortcut, and saved instructions">
-      <div data-setting-target="rewrite-model" className="rounded-xl border border-primary/20 bg-primary/5 p-3 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-        <p className="text-sm font-medium text-on-surface">Local only · Apple Silicon</p>
-        <p className="mt-1 text-xs text-on-surface">
-          Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
-          anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).
-          Never auto-applies.
-        </p>
-      </div>
+      <SettingsCallout tone="accent" targetId="rewrite-model" title="Local only · Apple Silicon">
+        Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
+        anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).
+        Never auto-applies.
+      </SettingsCallout>
       <SettingToggle
         title="Correct last dictation shortcut"
         description="Press ⌘⇧E to speak a correction to your latest dictation. Press again to finish, then review and copy or replace a matching selection. Uses the local model below."
@@ -59,8 +57,8 @@ export function TransformModelSettings({
         }}
       />
       <SettingsBranch open={settings.transformHoldKey !== null}>
-        <div className="space-y-2">
-          <label className="mb-1 block text-sm font-medium text-on-surface">Hold key</label>
+        <div className="settings-field">
+          <label className="block text-sm font-medium text-on-surface">Hold key</label>
           <Select
             value={settings.transformHoldKey ?? 'alt_r'}
             onChange={(value) => {
@@ -75,21 +73,22 @@ export function TransformModelSettings({
             <p className="text-xs text-error">{vm.transformKeyError}</p>
           )}
           {accessibilityGranted === false && (
-            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+            <div className="settings-callout flex items-center gap-2 text-xs text-on-surface" data-tone="accent">
               <span>Accessibility permission is required for transform capture and apply.</span>
               <button type="button" onClick={onRequestAccessibility} className="ml-auto underline">Grant</button>
             </div>
           )}
         </div>
       </SettingsBranch>
-      <div className="border-t border-outline-variant/20 pt-4">
+      <div>
         <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
-        <p className="mt-1 mb-3 text-xs text-on-surface-variant">
+        <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
           Qwen2.5-1.5B Instruct (Q4_K_M), {TRANSFORM_MODEL_SIZE_LABEL}. Downloaded to
           Application Support; verified by size and SHA-256. Apple Silicon only.
         </p>
+        <div className="settings-field mt-3">
         {vm.transformModel && (
-          <p className="mb-2 text-xs text-on-surface-variant" data-testid="transform-model-status">
+          <p className="text-xs text-on-surface-variant" data-testid="transform-model-status">
             Status:{' '}
             {vm.transformModel.state === 'ready'
               ? 'Ready'
@@ -99,7 +98,7 @@ export function TransformModelSettings({
           </p>
         )}
         {vm.transformDownloadPct !== null && (
-          <div className="mb-2">
+          <div>
             <div className="mb-1 flex justify-between text-xs text-on-surface-variant">
               <span>Downloading transform model</span>
               <span>{vm.transformDownloadPct}%</span>
@@ -113,7 +112,7 @@ export function TransformModelSettings({
           </div>
         )}
         {vm.transformModelError && (
-          <p className="mb-2 text-xs text-error">{vm.transformModelError}</p>
+          <p className="text-xs text-error">{vm.transformModelError}</p>
         )}
         <div className="flex flex-wrap gap-2">
           {vm.transformModel?.state !== 'ready' && (
@@ -150,16 +149,17 @@ export function TransformModelSettings({
           )}
         </div>
         {vm.transformModel?.runtimeDisabled && (
-          <p className="mt-2 text-xs text-primary">
+          <p className="text-xs text-primary">
             The transform runtime was disabled after repeated faults. Reset it to try again.
           </p>
         )}
+        </div>
       </div>
-      <div className="border-t border-outline-variant/20 pt-4">
+      <div>
         <div className="flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-medium text-on-surface">Saved transforms</h2>
-            <p className="mt-1 text-xs text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
           </div>
           <button type="button" onClick={() => onOpenEditor('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
         </div>

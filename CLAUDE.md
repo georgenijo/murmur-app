@@ -427,6 +427,7 @@ Read these before working on a feature:
 - **Mutex poison recovery**: `MutexExt` trait recovers from panics
 - **rdev thread safety**: `set_is_main_thread(false)` before `listen()` — prevents macOS TIS/TSM segfault
 - **No in-process llama**: the app crate must never link `llama-cpp-2` (ggml ABI clash with whisper)
+- **Settings rhythm**: containers own spacing — card rows (`.settings-rows`), `.settings-stack`, and `.settings-field` in `styles/settings.css`; settings add no margin, padding, or border of their own. Notes use `SettingsCallout` (tint, no border), advanced groups use `SettingsDisclosure`, and nested boxes use the control radius. `visual-tests/settings-rhythm.spec.ts` fails CI on off-grid gaps or doubled lines
 
 ## MCP Tools
 

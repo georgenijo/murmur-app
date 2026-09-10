@@ -118,9 +118,9 @@ export function MeetingDiarizationSettings({
   const supported = status?.supported !== false;
 
   return (
-    <div data-setting-target="meeting-speakers" className="settings-setting-group space-y-3 rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <div className="settings-setting-row flex items-center justify-between gap-6 px-1">
-        <div>
+    <div data-setting-target="meeting-speakers" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+      <div className="flex items-center justify-between gap-6">
+        <div className="settings-title-description">
           <p className="text-sm font-medium text-on-surface">Label Remote Speakers</p>
           <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
             Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting.
@@ -135,7 +135,7 @@ export function MeetingDiarizationSettings({
         />
       </div>
 
-      <div className="rounded-[var(--ui-radius-control)] border border-outline-variant/30 bg-surface-container-lowest p-3 text-xs leading-relaxed text-on-surface-variant">
+      <div className="settings-callout text-xs leading-relaxed text-on-surface-variant">
         <p>
           Labels stay on this Mac and apply only within one meeting. Murmur temporarily saves up to two hours of system audio for labeling, then deletes the temporary copy. Keep Meeting Audio is a separate setting.
         </p>

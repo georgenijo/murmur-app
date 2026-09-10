@@ -21,6 +21,11 @@
   --settings-track-tight: var(--ui-track-tight, -0.012em);
   --settings-track-title: var(--ui-track-title, -0.022em);
   --settings-track-caps: var(--ui-track-caps, 0.07em);
+  /* Settings rhythm (see the unlayered block at the end of this file). */
+  --settings-row-pad: var(--ui-space-6, 0.75rem);
+  --settings-stack-gap: var(--ui-space-6, 0.75rem);
+  --settings-field-gap: var(--ui-space-4, 0.5rem);
+  --settings-divider: color-mix(in oklab, var(--murmur-outline-variant) 15%, transparent);
 }
 
 /* ---------- sidebar ------------------------------------------------------ */
@@ -124,6 +129,26 @@
   padding: 6px 20px;
 }
 
+/* A card inside a card steps down to the control radius so nested corners
+   stay concentric instead of repeating the outer 14px curve. */
+.settings-card .settings-card {
+  border-radius: var(--settings-radius-control);
+}
+
+.settings-callout {
+  border-radius: var(--settings-radius-control);
+  padding: 12px 14px;
+  background: var(--settings-tint-sunken);
+}
+
+.settings-callout[data-tone='accent'] {
+  background: var(--settings-tint-accent-subtle);
+}
+
+.settings-callout[data-tone='warning'] {
+  background: color-mix(in srgb, var(--murmur-warning) 10%, var(--murmur-surface-container-lowest));
+}
+
 .settings-eyebrow {
   font-size: 10px;
   font-weight: 700;
@@ -212,7 +237,7 @@
 
 .settings-meter-card {
   margin-top: 12px;
-  border-radius: var(--settings-radius-card);
+  border-radius: var(--settings-radius-control);
   border: 1px solid var(--settings-hairline);
   background: var(--settings-tint-raised);
   box-shadow: var(--settings-shadow-1);
@@ -374,7 +399,7 @@
 
 .settings-dependent-branch-content {
   position: relative;
-  margin: 0 0 2px 0.75rem;
+  margin: 0 0 0 0.75rem;
   padding: 0 0 0 0.75rem;
   transform: translateY(-0.375rem);
   transition: transform var(--ui-motion-standard) var(--ui-ease-out);
@@ -398,17 +423,6 @@
 
 .settings-dependent-branch-open .settings-dependent-branch-content::before {
   background: color-mix(in srgb, var(--murmur-primary) 24%, var(--murmur-outline-variant));
-}
-
-.settings-setting-row {
-  min-height: 3rem;
-  padding-block: 0.75rem;
-}
-
-/* A grouped row owns a dependent branch but must not receive the page's
-   direct-child padding in addition to the row's measured height. */
-.settings-setting-group {
-  padding-block: 0 !important;
 }
 
 .settings-microphone-choice {
@@ -509,4 +523,73 @@
   }
 }
 
+}
+
+/* ---------- settings rhythm ------------------------------------------------
+   One vertical spacing contract for every settings card. Containers own the
+   space; the settings inside them own none:
+
+     card edge  ─ 6 + 12 ─  first/last content   (.settings-card-body)
+     divider    ─ 12 ─ content ─ 12 ─  divider   (.settings-rows > *)
+     sub-setting ─ 12 ─ sub-setting               (.settings-stack, branches)
+     label ─ 8 ─ control ─ 8 ─ help               (.settings-field)
+     title ─ 2 ─ description                      (SettingToggle, callouts)
+
+   Unlayered on purpose: these rules beat stray Tailwind spacing on a child,
+   so a row cannot add its own padding, margin, or divider and drift off the
+   grid. visual-tests/settings-rhythm.spec.ts measures every page against it. */
+
+/* Square corners keep the divider straight: a rounded row would taper its
+   top border into the radius at both ends. */
+.settings-rows > * {
+  padding: var(--settings-row-pad) 0.25rem;
+  border-radius: 0;
+}
+
+.settings-rows > * + * {
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-rows > .settings-setting-row {
+  min-height: 3rem;
+}
+
+/* A branch belongs to the row above it: no divider and no row padding. Its
+   content closes with the row padding the next divider expects. */
+.settings-rows > .settings-dependent-branch {
+  border-top: 0;
+  padding-block: 0;
+}
+
+.settings-rows > .settings-dependent-branch > .settings-dependent-branch-clip > .settings-dependent-branch-content {
+  margin-bottom: var(--settings-row-pad);
+}
+
+/* Rows under a disclosure summary. The parent row already supplies the inset
+   and the bottom padding, so the last nested row takes over the latter. */
+.settings-rows-nested {
+  margin-top: var(--settings-row-pad);
+  margin-bottom: calc(-1 * var(--settings-row-pad));
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-rows-nested > * {
+  padding-inline: 0;
+}
+
+.settings-stack > * + * {
+  margin-top: var(--settings-stack-gap);
+}
+
+/* A collapsed branch is zero-height, so its gap lives inside the clip. */
+.settings-stack > .settings-dependent-branch {
+  margin-top: 0;
+}
+
+.settings-stack > .settings-dependent-branch > .settings-dependent-branch-clip > .settings-dependent-branch-content {
+  margin-top: var(--settings-stack-gap);
+}
+
+.settings-field > * + * {
+  margin-top: var(--settings-field-gap);
 }

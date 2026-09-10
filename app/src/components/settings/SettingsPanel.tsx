@@ -58,6 +58,7 @@ import { SettingsBranch } from './SettingsBranch';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
+import { SettingsCallout, SettingsDisclosure } from './SettingsLayout';
 import {
   DiagnosticsWorkspace,
   type DiagnosticsTab,
@@ -68,8 +69,8 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
+    <div className="settings-field">
+      <div className="flex items-center justify-between">
         <label className="text-xs text-on-surface-variant">Paste Delay</label>
         <span className="text-xs font-medium text-on-surface">{draft}ms</span>
       </div>
@@ -83,7 +84,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
         onPointerUp={() => onCommit(draft)}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="mt-1 text-xs text-on-surface-variant">Increase this only if paste lands in the wrong window.</p>
+      <p className="text-xs text-on-surface-variant">Increase this only if paste lands in the wrong window.</p>
     </div>
   );
 }
@@ -100,8 +101,8 @@ function VadSensitivitySlider({
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
+    <div className="settings-field">
+      <div className="flex items-center justify-between">
         <label className="text-xs text-on-surface-variant">Sensitivity</label>
         <span className="text-xs font-medium text-on-surface">{draft === 0 ? 'Off' : `${draft}%`}</span>
       </div>
@@ -120,7 +121,7 @@ function VadSensitivitySlider({
         onKeyUp={(event) => onCommit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="mt-1 text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
+      <p className="text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
     </div>
   );
 }
@@ -773,7 +774,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
           )}
           <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, shortcuts, and automatic stopping">
-            <div data-setting-target="microphone" className="rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="microphone" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <MicrophoneInputTest
                 microphone={settings.microphone}
                 devices={audioDevices}
@@ -791,39 +792,41 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onSmartAutoChange={onUpdateSettings}
               />
               {audioInventoryState.error && (
-                <p role="alert" className="mt-2 text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
+                <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
               )}
             </div>
-            <div data-setting-target="voice-detection" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <p className="mb-2 text-sm font-medium text-on-surface">Voice Detection</p>
+            <div data-setting-target="voice-detection" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <p className="text-sm font-medium text-on-surface">Voice Detection</p>
               <VadSensitivitySlider
                 value={settings.vadSensitivity}
                 onPreview={setPreviewVadSensitivity}
                 onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })}
               />
             </div>
-            <div data-setting-target="recording-trigger" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
+            <div data-setting-target="recording-trigger" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <p className="text-sm font-medium text-on-surface">Recording Trigger</p>
               <div className="settings-segmented">
                 {RECORDING_MODE_OPTIONS.map((option) => (
                   <button key={option.value} type="button" disabled={isRecording} data-selected={settings.recordingMode === option.value} onClick={() => onUpdateSettings({ recordingMode: option.value as RecordingMode })} className="settings-segmented-btn">{option.label}</button>
                 ))}
               </div>
-              {isRecording && <p className="mt-1 text-xs text-primary">Stop recording before changing mode.</p>}
+              {isRecording && <p className="text-xs text-primary">Stop recording before changing mode.</p>}
             </div>
             {accessibilityGranted === false && (
-              <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                <span>Accessibility permission is required for keyboard detection.</span>
-                <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+              <div>
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+                  <span>Accessibility permission is required for keyboard detection.</span>
+                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                </div>
               </div>
             )}
-            <div data-setting-target="trigger-key" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="mb-2 block text-sm font-medium text-on-surface">{keyLabel}</label>
+            <div data-setting-target="trigger-key" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <label className="block text-sm font-medium text-on-surface">{keyLabel}</label>
               <Select value={settings.doubleTapKey} onChange={(doubleTapKey) => onUpdateSettings({ doubleTapKey })} disabled={isRecording} items={DOUBLE_TAP_KEY_OPTIONS} />
-              <p className="mt-1 text-xs text-on-surface-variant">{keyHelp}</p>
+              <p className="text-xs text-on-surface-variant">{keyHelp}</p>
             </div>
             {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
-            <div data-setting-target="sound-cues" className="settings-setting-group rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="sound-cues" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <SettingToggle
                 title="Sound Cues"
                 description="Play local feedback when recording starts, stops, succeeds, or fails."
@@ -831,42 +834,40 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
               <SettingsBranch open={settings.soundCuesEnabled}>
-                <div className="space-y-3">
-                  <label className="block text-xs font-medium text-on-surface-variant">
-                    Volume · {settings.soundCueVolume}%
-                    <input
-                      className="mt-2 block w-full accent-primary"
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="5"
-                      value={settings.soundCueVolume}
-                      onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
-                    />
-                  </label>
-                  <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
-                    {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
-                      <button
-                        key={cue}
-                        type="button"
-                        onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                        className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
-                      >
-                        {cue}
-                      </button>
-                    ))}
-                  </div>
-                  <SettingToggle
-                    title="Meeting Cues"
-                    description="Also play cues during meeting capture. Off by default."
-                    checked={settings.meetingSoundCuesEnabled}
-                    onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
+                <label className="block text-xs font-medium text-on-surface-variant">
+                  Volume · {settings.soundCueVolume}%
+                  <input
+                    className="mt-2 block w-full accent-primary"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={settings.soundCueVolume}
+                    onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
                   />
+                </label>
+                <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
+                  {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
+                    <button
+                      key={cue}
+                      type="button"
+                      onClick={() => playSoundCue(cue, settings.soundCueVolume)}
+                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
+                    >
+                      {cue}
+                    </button>
+                  ))}
                 </div>
+                <SettingToggle
+                  title="Meeting Cues"
+                  description="Also play cues during meeting capture. Off by default."
+                  checked={settings.meetingSoundCuesEnabled}
+                  onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
+                />
               </SettingsBranch>
             </div>
-            <div data-setting-target="stop-on-silence" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="mb-2 block text-sm font-medium text-on-surface">Stop on Silence</label>
+            <div data-setting-target="stop-on-silence" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <label className="block text-sm font-medium text-on-surface">Stop on Silence</label>
               <div className="settings-segmented">
                 {AUTO_STOP_SILENCE_OPTIONS.map((option) => (
                   <button
@@ -885,7 +886,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   </button>
                 ))}
               </div>
-              <p className="mt-1 text-xs text-on-surface-variant">
+              <p className="text-xs text-on-surface-variant">
                 Finish a recording automatically after this much quiet. Applies when you didn't
                 start by holding the key — a held recording ends when you let go. It only arms
                 once Murmur has heard you speak, so a silent start never stops itself, and you
@@ -953,39 +954,39 @@ export const SettingsPanel = memo(function SettingsPanel({
           />
 
           <SettingsSection pageId="ai-transcription" activePage={activeCat} title="Speech-to-Text" subtitle="Recognition model, language, and memory lifecycle">
-            <div data-setting-target="transcription-model" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="mb-2 block text-sm font-medium text-on-surface">Transcription Model</label>
+            <div data-setting-target="transcription-model" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <label className="block text-sm font-medium text-on-surface">Transcription Model</label>
               <Select
                 value={settings.model}
                 onChange={(model) => onUpdateSettings({ model })}
                 disabled={isRecording}
                 items={AVAILABLE_MODEL_OPTIONS.map((model) => ({ value: model.value, label: `${model.label}${model.backend === 'coreml' ? ' — Recommended' : ''} (${model.size})` }))}
               />
-              <p className="mt-1 text-xs text-on-surface-variant">Parakeet Core ML is recommended on supported Macs. Larger models can be more accurate but use more storage and memory.</p>
-              {selectedRuntime && <p className="mt-1 text-xs text-on-surface-variant" data-testid="model-runtime-status">{selectedRuntime.label}: {selectedRuntime.backend} / {selectedRuntime.accelerator} / {selectedRuntime.size} · {selectedRuntime.installState} · {selectedRuntime.lifecycleState}</p>}
-              {isRecording && <p className="mt-1 text-xs text-primary">Stop recording before changing model.</p>}
+              <p className="text-xs text-on-surface-variant">Parakeet Core ML is recommended on supported Macs. Larger models can be more accurate but use more storage and memory.</p>
+              {selectedRuntime && <p className="text-xs text-on-surface-variant" data-testid="model-runtime-status">{selectedRuntime.label}: {selectedRuntime.backend} / {selectedRuntime.accelerator} / {selectedRuntime.size} · {selectedRuntime.installState} · {selectedRuntime.lifecycleState}</p>}
+              {isRecording && <p className="text-xs text-primary">Stop recording before changing model.</p>}
               {modelAvailable === false && modelDownload.phase === 'idle' && (
-                <div className="mt-2 flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+                <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
                   <span>Model not downloaded</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Download</button>
                 </div>
               )}
               {modelDownload.phase === 'downloading' && (
-                <div className="mt-2">
+                <div>
                   <div className="mb-1 flex justify-between text-xs text-on-surface-variant"><span>{modelDownloadLabel(modelDownload.progress)}</span><span>{downloadProgress === null ? 'Working…' : `${downloadProgress}%`}</span></div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest"><div role="progressbar" aria-valuenow={downloadProgress ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-valuetext={downloadProgress === null ? 'Model installation in progress' : `Download progress: ${downloadProgress} percent`} className={`h-full rounded-full bg-primary ${downloadProgress === null ? 'model-download-indeterminate' : 'transition-all duration-200'}`} style={downloadProgress === null ? undefined : { width: `${downloadProgress}%` }} /></div>
                 </div>
               )}
-              {modelDownload.phase === 'error' && <div className="mt-2 flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}
+              {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}
             </div>
-            <div data-setting-target="language" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="mb-2 block text-sm font-medium text-on-surface">Language</label>
+            <div data-setting-target="language" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <label className="block text-sm font-medium text-on-surface">Language</label>
               <Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />
-              <p className="mt-1 text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto Detect lets Whisper identify the language for each recording.'}</p>
+              <p className="text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto Detect lets Whisper identify the language for each recording.'}</p>
             </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-on-surface">Release Model After Inactivity</label>
+            <div className="settings-field">
+              <label className="block text-sm font-medium text-on-surface">Release Model After Inactivity</label>
               <Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />
-              <p className="mt-1 text-xs text-on-surface-variant">Free memory by unloading an idle model; choose Never to keep it ready.</p>
+              <p className="text-xs text-on-surface-variant">Free memory by unloading an idle model; choose Never to keep it ready.</p>
             </div>
           </SettingsSection>
 
@@ -993,10 +994,8 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingToggle targetId="punctuation" title="Automatic Punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions." checked={settings.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
             <SettingToggle targetId="cleanup" title="Transcript Cleanup" description="Remove filler and tidy spacing before delivery." checked={settings.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
             <SettingsBranch open={settings.cleanupEnabled}>
-              <div className="space-y-3">
-                <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh." checked={settings.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
-                <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts." checked={settings.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
-              </div>
+              <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh." checked={settings.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
+              <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts." checked={settings.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
             </SettingsBranch>
             <div data-setting-target="text-editors" className="grid gap-2 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               {([
@@ -1014,38 +1013,31 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </button>
               ))}
             </div>
-            <details className="group">
-              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                Advanced
-                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
-              </summary>
-              <div className="mt-3 space-y-4 border-t border-outline-variant/20 pt-3">
-                <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
-                <SettingsBranch open={settings.codeVocabEnabled}>
-                  <div className="space-y-2">
-                    <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
-                    <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
-                    <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
-                  </div>
-                </SettingsBranch>
-                <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
-                <SettingsBranch open={settings.correctionEnabled}>
-                  <SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
-                </SettingsBranch>
-                <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-                <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
-              </div>
-            </details>
+            <SettingsDisclosure title="Advanced" layout="rows">
+              <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+              <SettingsBranch open={settings.codeVocabEnabled}>
+                <div className="settings-field">
+                  <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
+                  <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
+                  <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
+                </div>
+              </SettingsBranch>
+              <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+              <SettingsBranch open={settings.correctionEnabled}>
+                <SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
+              </SettingsBranch>
+              <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
+              <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery" subtitle="Choose what happens after transcription finishes">
-            <div className="border-y border-outline-variant/20 px-1 py-3">
-              <h2 className="text-sm font-medium text-on-surface">Always copied to clipboard</h2>
-              <p className="mt-1 text-xs text-on-surface-variant">Auto-paste and file output happen afterward, so the finished text remains recoverable.</p>
-            </div>
+            <SettingsCallout title="Always copied to clipboard">
+              Auto-paste and file output happen afterward, so the finished text remains recoverable.
+            </SettingsCallout>
             <SettingToggle targetId="auto-paste" title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             <SettingsBranch open={settings.autoPaste}>
-              {saveToFile && <p role="status" className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
+              {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
               {!saveToFile && accessibilityGranted === false && (
                 <div className="flex items-center gap-2 text-xs text-primary">
                   <span>Accessibility permission is required to paste into the active app.</span>
@@ -1059,7 +1051,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />
               </div>
             </SettingsBranch>
-            <div data-setting-target="paste-last-shortcut" className="space-y-2 rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="paste-last-shortcut" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <p className="block text-sm font-medium text-on-surface">
                 Paste Last Shortcut
               </p>
@@ -1087,15 +1079,15 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               )}
             </div>
-            <div data-setting-target="file-output" className="space-y-3 rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="file-output" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <SettingToggle title="Save Transcript to File" description="Write each completed transcription to a .txt file." checked={settings.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
               <SettingToggle title="Save Audio to File" description="Write each recording to a .wav file." checked={settings.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
               <SettingsBranch open={saveToFile}>
-                <div>
-                  <p className="mb-1 text-xs text-on-surface-variant">Shared Output Folder</p>
+                <div className="settings-field">
+                  <p className="text-xs text-on-surface-variant">Shared Output Folder</p>
                   <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.outputDir || 'Documents/Murmur (default)'}</p>
-                  <div className="mt-2 flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
-                  <p className="mt-2 text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
+                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
+                  <p className="text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
             </div>
@@ -1107,12 +1099,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
             {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
-            <details data-setting-target="app-overrides" className="group rounded-lg border-t border-outline-variant/20 pt-4 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                Advanced
-                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
-              </summary>
-              <p className="mt-1 mb-3 text-xs text-on-surface-variant">Override delivery and writing behavior for the frontmost macOS app.</p>
+            <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app." layout="stack" targetId="app-overrides">
               <ModesManager
                 modes={settings.modes}
                 profiles={settings.appProfiles}
@@ -1121,14 +1108,13 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={onUpdateSettings}
               />
               <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
-            </details>
+            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection pageId="meetings" activePage={activeCat} title="Meetings" subtitle="Local meeting transcript and audio retention">
-            <div className="border-y border-outline-variant/20 px-1 py-3">
-              <h2 className="text-sm font-medium text-on-surface">Stored separately from dictation</h2>
-              <p className="mt-1 text-xs text-on-surface-variant">Meeting transcripts use the crash-safe local store and never appear in dictation history.</p>
-            </div>
+            <SettingsCallout title="Stored separately from dictation">
+              Meeting transcripts use the crash-safe local store and never appear in dictation history.
+            </SettingsCallout>
             <SettingToggle
               targetId="meeting-audio"
               title="Keep Meeting Audio"
@@ -1147,7 +1133,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               enabled={settings.meetingDiarization}
               onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
             />
-            <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg px-1 transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="text-sm font-medium text-on-surface">
                 Keep transcripts by age
                 <select
@@ -1202,27 +1188,23 @@ export const SettingsPanel = memo(function SettingsPanel({
 
           <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
             {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
-            <button data-setting-target="setup" type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">Run Setup Assistant</button>
-            <p className="-mt-3 text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
-            <details className="group">
-              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg py-1 text-sm font-semibold text-on-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                Advanced
-                <span aria-hidden="true" className="text-on-surface-variant transition-transform group-open:rotate-180">⌄</span>
-              </summary>
-              <div className="mt-3 space-y-2 border-t border-outline-variant/20 pt-3">
-                <OverlayCalibrationControl
-                  offset={settings.overlayVerticalOffset}
-                  onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
-                />
-                <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
-              </div>
-            </details>
-            {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="setup" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
+              <p className="text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
+            </div>
+            <SettingsDisclosure title="Advanced" layout="stack">
+              <OverlayCalibrationControl
+                offset={settings.overlayVerticalOffset}
+                onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
+              />
+              <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
+            </SettingsDisclosure>
+            {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'preparing' || updateStatus.phase === 'downloading' || updateStatus.phase === 'ready'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
-              {updateStatus.phase === 'up-to-date' && <p className="mt-1.5 text-xs text-success">You’re up to date.</p>}
-              {updateStatus.phase === 'available' && <p className="mt-1.5 text-xs text-primary">v{updateStatus.version} available</p>}
+              {updateStatus.phase === 'up-to-date' && <p className="text-xs text-success">You’re up to date.</p>}
+              {updateStatus.phase === 'available' && <p className="text-xs text-primary">v{updateStatus.version} available</p>}
               {updateStatus.phase === 'error' && (
-                <p className="mt-1.5 text-xs text-error">
+                <p className="text-xs text-error">
                   {updateStatus.stage === 'check'
                     ? 'Couldn\u2019t check for updates. Check your connection and try again.'
                     : 'Update installation needs attention.'}
@@ -1230,9 +1212,9 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
             </div>}
             {INTERNAL_BENCHMARK_BUILD && (
-              <p className="rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                Internal benchmark build. Automatic updates, launch at login, and diagnostic log shipping are disabled.
-              </p>
+              <SettingsCallout tone="accent" title="Internal benchmark build">
+                Automatic updates, launch at login, and diagnostic log shipping are disabled.
+              </SettingsCallout>
             )}
             {version && <p className="text-center text-xs text-on-surface-variant">Murmur v{version}</p>}
           </SettingsSection>
