@@ -1,29 +1,30 @@
 import { describe, it, expect } from 'vitest';
 import {
-  hasAudioExtension,
+  hasTranscribableExtension,
   baseName,
   buildQueueItems,
   updateItem,
   nextQueued,
   summarize,
-  hasAnyAudio,
+  hasAnyTranscribableFile,
   QueueItem,
 } from './fileQueue';
 
-describe('hasAudioExtension', () => {
-  it('accepts supported audio extensions (case-insensitive)', () => {
-    expect(hasAudioExtension('/a/b.wav')).toBe(true);
-    expect(hasAudioExtension('/a/b.mp3')).toBe(true);
-    expect(hasAudioExtension('/a/b.m4a')).toBe(true);
-    expect(hasAudioExtension('/a/b.M4A')).toBe(true);
-    expect(hasAudioExtension('CLIP.WAV')).toBe(true);
+describe('hasTranscribableExtension', () => {
+  it('accepts supported audio and video extensions (case-insensitive)', () => {
+    expect(hasTranscribableExtension('/a/b.wav')).toBe(true);
+    expect(hasTranscribableExtension('/a/b.mp3')).toBe(true);
+    expect(hasTranscribableExtension('/a/b.m4a')).toBe(true);
+    expect(hasTranscribableExtension('/a/b.mp4')).toBe(true);
+    expect(hasTranscribableExtension('/a/b.MOV')).toBe(true);
+    expect(hasTranscribableExtension('CLIP.WAV')).toBe(true);
   });
 
   it('rejects unsupported or extension-less paths', () => {
-    expect(hasAudioExtension('/a/b.txt')).toBe(false);
-    expect(hasAudioExtension('/a/b.flac')).toBe(false);
-    expect(hasAudioExtension('/a/noext')).toBe(false);
-    expect(hasAudioExtension('')).toBe(false);
+    expect(hasTranscribableExtension('/a/b.txt')).toBe(false);
+    expect(hasTranscribableExtension('/a/b.flac')).toBe(false);
+    expect(hasTranscribableExtension('/a/noext')).toBe(false);
+    expect(hasTranscribableExtension('')).toBe(false);
   });
 });
 
@@ -36,10 +37,16 @@ describe('baseName', () => {
 });
 
 describe('buildQueueItems', () => {
-  it('builds queued items only for supported audio files', () => {
-    const items = buildQueueItems(['/a/one.wav', '/a/note.txt', '/a/two.mp3']);
-    expect(items).toHaveLength(2);
-    expect(items.map((i) => i.name)).toEqual(['one.wav', 'two.mp3']);
+  it('builds queued items only for supported media files', () => {
+    const items = buildQueueItems([
+      '/a/one.wav',
+      '/a/note.txt',
+      '/a/two.mp3',
+      '/a/three.mp4',
+      '/a/four.mov',
+    ]);
+    expect(items).toHaveLength(4);
+    expect(items.map((i) => i.name)).toEqual(['one.wav', 'two.mp3', 'three.mp4', 'four.mov']);
     expect(items.every((i) => i.status === 'queued')).toBe(true);
   });
 
@@ -146,10 +153,11 @@ describe('summarize', () => {
   });
 });
 
-describe('hasAnyAudio', () => {
-  it('detects at least one audio path', () => {
-    expect(hasAnyAudio(['/a/note.txt', '/a/clip.mp3'])).toBe(true);
-    expect(hasAnyAudio(['/a/note.txt', '/a/img.png'])).toBe(false);
-    expect(hasAnyAudio([])).toBe(false);
+describe('hasAnyTranscribableFile', () => {
+  it('detects at least one supported media path', () => {
+    expect(hasAnyTranscribableFile(['/a/note.txt', '/a/clip.mp3'])).toBe(true);
+    expect(hasAnyTranscribableFile(['/a/note.txt', '/a/clip.mov'])).toBe(true);
+    expect(hasAnyTranscribableFile(['/a/note.txt', '/a/img.png'])).toBe(false);
+    expect(hasAnyTranscribableFile([])).toBe(false);
   });
 });

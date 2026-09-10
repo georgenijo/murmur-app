@@ -9,7 +9,7 @@ import {
   updateItem,
   nextQueued,
   summarize,
-  hasAnyAudio,
+  hasAnyTranscribableFile,
 } from '../fileQueue';
 
 export type { QueueItem, QueueItemStatus } from '../fileQueue';
@@ -20,7 +20,7 @@ interface UseFileTranscriptionProps {
 }
 
 /**
- * Manages the multi-file transcription flow: maintains a queue of audio files,
+ * Manages the multi-file transcription flow: maintains a queue of media files,
  * invokes the Rust `transcribe_file` command for each one **sequentially** (one
  * at a time keeps memory/CPU sane — the backend is shared with live dictation),
  * tracks per-file status, and appends each completed result to shared history.
@@ -95,12 +95,12 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
     }
   }, [publishQueue]);
 
-  // Add audio paths to the queue (deduped) and kick off the drain loop. Reports
+  // Add supported media paths to the queue (deduped) and kick off the drain loop. Reports
   // an unsupported-type error only when *none* of the dropped/picked files are
-  // audio, so a mixed selection still queues the valid files.
+  // transcribable, so a mixed selection still queues the valid files.
   const enqueue = useCallback((paths: string[]) => {
     if (paths.length === 0) return;
-    if (!hasAnyAudio(paths)) {
+    if (!hasAnyTranscribableFile(paths)) {
       setError(UNSUPPORTED_MESSAGE);
       return;
     }
