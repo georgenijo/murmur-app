@@ -38,17 +38,10 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
         .map_err(|e| format!("Unsupported or corrupt media file: {}", e))?;
     let mut format = probed.format;
 
-    // Symphonia exposes audio-specific sample-rate metadata on audio tracks.
-    // Video tracks do not have it, even if the container reports a codec id.
-    // Try every audio track so an unsupported first track cannot hide a later
-    // AAC, ALAC, MP3, or PCM track that the bundled decoder can read.
-    let mut saw_audio_track = false;
+    // The bundled registry contains only audio decoders. Missing sample-rate
+    // metadata alone cannot distinguish video from an unknown audio codec.
     let mut selected = None;
     for track in format.tracks() {
-        if track.codec_params.sample_rate.is_none() {
-            continue;
-        }
-        saw_audio_track = true;
         if let Ok(decoder) =
             symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())
         {
@@ -59,10 +52,9 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
 
     let (track_id, codec_params, mut decoder) = match selected {
         Some(selected) => selected,
-        None if !saw_audio_track => return Err("File contains no audio track".to_string()),
         None => {
             return Err(
-                "File contains audio in an unsupported codec. Supported audio codecs are PCM, MP3, AAC, and ALAC."
+                "No supported audio track found. Use a file with PCM, MP3, AAC, or ALAC audio."
                     .to_string(),
             )
         }
@@ -242,7 +234,7 @@ mod tests {
     #[test]
     fn rejects_video_without_audio() {
         let err = decode_to_mono_16k(&fixture("video-only.mp4")).unwrap_err();
-        assert_eq!(err, "File contains no audio track");
+        assert!(err.starts_with("No supported audio track found."));
     }
 
     #[test]
@@ -250,7 +242,16 @@ mod tests {
         let err = decode_to_mono_16k(&fixture("unsupported-opus.mp4")).unwrap_err();
         assert_eq!(
             err,
-            "File contains audio in an unsupported codec. Supported audio codecs are PCM, MP3, AAC, and ALAC."
+            "No supported audio track found. Use a file with PCM, MP3, AAC, or ALAC audio."
+        );
+    }
+
+    #[test]
+    fn unknown_audio_sample_entry_does_not_claim_the_file_has_no_audio() {
+        let err = decode_to_mono_16k(&fixture("unsupported-ac3.mp4")).unwrap_err();
+        assert_eq!(
+            err,
+            "No supported audio track found. Use a file with PCM, MP3, AAC, or ALAC audio."
         );
     }
 }

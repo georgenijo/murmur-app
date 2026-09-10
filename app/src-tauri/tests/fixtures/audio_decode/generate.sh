@@ -35,6 +35,12 @@ done
   "$fixture_dir/unsupported-opus.mp4"
 
 "$ffmpeg_bin" -hide_banner -loglevel error -y \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=0.25" \
+  -map 0:a -c:a ac3 -b:a 32k \
+  -metadata encoder= -movflags +faststart \
+  "$fixture_dir/unsupported-ac3.mp4"
+
+"$ffmpeg_bin" -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=330:sample_rate=16000:duration=0.25" \
   -f lavfi -i "sine=frequency=660:sample_rate=16000:duration=0.25" \
   -map 0:a -map 1:a \
