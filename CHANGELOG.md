@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-10
+
+### Added
+
+- Download available updates without immediately restarting Murmur, then install
+  and relaunch when ready from the update dialog or About page (#709).
+
+### Changed
+
+- Insights keeps its activity heatmap bounded and places analytics charts in
+  separate, aligned sections that fit the default window more cleanly (#710).
+
+### Fixed
+
+- Voice Query now keeps provider state current, reports startup and registration
+  failures with retry actions, preserves provider labels when discovery fails,
+  and resolves Homebrew CLI runtimes when Murmur starts from Finder (#711).
+- Query history shows readable failures and asks for confirmation before clearing
+  saved entries; microphone preview states and local-processing copy are clearer
+  across Settings and onboarding (#711).
+
 ## [0.44.1] - 2026-09-10
 
 ### Changed
