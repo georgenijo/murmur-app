@@ -402,29 +402,37 @@ test('recording settings explain Smart Auto with no eligible microphones', async
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-empty.png');
 });
 
-test('recording setting rows and dependent rails keep the shared spacing contract', async ({ page }) => {
+test('settings rows keep the shared spacing contract and aligned controls', async ({ page }) => {
+  // Page-wide gaps are measured by settings-rhythm.spec.ts; this pins the row
+  // geometry that rhythm relies on: one row padding, one inset, and switches
+  // and titles that line up whether a toggle is a row or sits inside a group.
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  const rowGeometry = (target: string) => page.locator(`[data-setting-target="${target}"]`).evaluate((row) => {
+    const style = getComputedStyle(row);
+    const box = row.getBoundingClientRect();
+    const title = row.querySelector('p')!.getBoundingClientRect();
+    const toggle = row.querySelector('[role="switch"]')!.getBoundingClientRect();
+    return {
+      left: box.left,
+      right: box.right,
+      padding: [style.paddingTop, style.paddingBottom],
+      titleLeft: title.left,
+      switchRight: toggle.right,
+    };
+  });
+  const expectAligned = async (targets: [string, string]) => {
+    const [first, second] = await Promise.all(targets.map(rowGeometry));
+    expect(first.padding).toEqual(['12px', '12px']);
+    expect(second.padding).toEqual(['12px', '12px']);
+    expect(second.left).toBe(first.left);
+    expect(second.right).toBe(first.right);
+    expect(second.titleLeft).toBe(first.titleLeft);
+    expect(second.switchRight).toBe(first.switchRight);
+  };
+
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
   await page.getByRole('button', { name: 'Double-Tap', exact: true }).click();
-
-  const hotkeyRow = page.locator('[data-setting-target="hotkey-feedback"]');
-  const soundGroup = page.locator('[data-setting-target="sound-cues"]');
-  const soundRow = page.locator('[data-setting-target="sound-cues"] > .settings-setting-row');
-  const dimensions = await Promise.all([hotkeyRow, soundRow].map((row) => row.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    return { height: box.height, left: box.left, right: box.right };
-  })));
-  expect(Math.abs(dimensions[0].height - dimensions[1].height)).toBeLessThanOrEqual(1);
-  expect(dimensions[0].height).toBeGreaterThanOrEqual(48);
-  expect(dimensions[0].left).toBe(dimensions[1].left);
-  expect(dimensions[0].right).toBe(dimensions[1].right);
-  const groupAndRow = await Promise.all([soundGroup, soundRow].map((item) => item.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    return { top: box.top, left: box.left, right: box.right };
-  })));
-  expect(Math.abs(groupAndRow[0].top - groupAndRow[1].top)).toBeLessThanOrEqual(1);
-  expect(groupAndRow[0].left).toBe(groupAndRow[1].left);
-  expect(groupAndRow[0].right).toBe(groupAndRow[1].right);
+  await expectAligned(['hotkey-feedback', 'sound-cues']);
 
   const rail = page.locator('[data-setting-target="sound-cues"] .settings-dependent-branch-content');
   const railInsets = await rail.evaluate((element) => {
@@ -436,26 +444,10 @@ test('recording setting rows and dependent rails keep the shared spacing contrac
   expect(Math.abs(railInsets.top - railInsets.bottom)).toBeLessThan(0.1);
 
   await page.getByRole('button', { name: 'Meetings', exact: true }).click();
-  const meetingAudioRow = page.locator('[data-setting-target="meeting-audio"]');
-  const speakerGroup = page.locator('[data-setting-target="meeting-speakers"]');
-  const speakerRow = speakerGroup.locator('> .settings-setting-row');
-  const meetingDimensions = await Promise.all([meetingAudioRow, speakerRow].map((row) => row.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    return { height: box.height, left: box.left, right: box.right, minHeight: getComputedStyle(element).minHeight };
-  })));
-  expect(meetingDimensions[0].minHeight).toBe('48px');
-  expect(meetingDimensions[1].minHeight).toBe('48px');
-  expect(meetingDimensions[0].height).toBeGreaterThanOrEqual(48);
-  expect(meetingDimensions[1].height).toBeGreaterThanOrEqual(48);
-  expect(meetingDimensions[0].left).toBe(meetingDimensions[1].left);
-  expect(meetingDimensions[0].right).toBe(meetingDimensions[1].right);
-  const speakerBounds = await Promise.all([speakerGroup, speakerRow].map((item) => item.evaluate((element) => {
-    const box = element.getBoundingClientRect();
-    return { top: box.top, left: box.left, right: box.right };
-  })));
-  expect(Math.abs(speakerBounds[0].top - speakerBounds[1].top)).toBeLessThanOrEqual(1);
-  expect(speakerBounds[0].left).toBe(speakerBounds[1].left);
-  expect(speakerBounds[0].right).toBe(speakerBounds[1].right);
+  await expectAligned(['meeting-audio', 'meeting-speakers']);
+
+  await page.getByRole('button', { name: 'Delivery', exact: true }).click();
+  await expectAligned(['auto-paste', 'file-output']);
 });
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {

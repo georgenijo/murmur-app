@@ -46,7 +46,7 @@ export function QueryCapabilities({ command }: { command: QueryCommandConfig }) 
     catch { setError('Could not revoke workspace access. Quit Murmur to revoke it.'); }
   };
 
-  return <div className="space-y-3 rounded-xl border border-outline-variant p-3">
+  return <div className="space-y-3 rounded-(--ui-radius-control) border border-outline-variant/30 p-3">
     <p className="text-sm font-medium text-on-surface">Capability profile: {status?.profile === 'trusted_read_only' ? 'Trusted read-only' : status ? 'Restricted' : 'Loading…'}</p>
     <p className="text-xs text-on-surface-variant">Inference may use the provider's network connection in every profile. Restricted grants no project folder or extra tools. Your chosen executable and its own configuration remain trusted software; an empty working directory is not an operating-system sandbox.</p>
     <table className="w-full text-left text-xs text-on-surface-variant">

@@ -26,12 +26,12 @@ export function SettingsBranch({ open, children, className = '' }: {
   return (
     <div
       ref={branchRef}
-      className={`settings-dependent-branch !border-t-0 !py-0 ${open ? 'settings-dependent-branch-open' : ''} ${className}`.trim()}
+      className={`settings-dependent-branch ${open ? 'settings-dependent-branch-open' : ''} ${className}`.trim()}
       data-expanded={open}
       aria-hidden={!open}
     >
       <div className="settings-dependent-branch-clip">
-        <div className="settings-dependent-branch-content">
+        <div className="settings-dependent-branch-content settings-stack">
           {children}
         </div>
       </div>

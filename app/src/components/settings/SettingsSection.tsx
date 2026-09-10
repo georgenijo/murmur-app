@@ -48,7 +48,7 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
         <div className={plain
           ? "mt-3"
           : card
-            ? "settings-card settings-card-body [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/15"
+            ? "settings-card settings-card-body settings-rows"
             : "mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20"}
         >{children}</div>
       </section>
