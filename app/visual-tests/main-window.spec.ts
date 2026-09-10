@@ -88,6 +88,22 @@ test('date filters compose with source filters and Markdown copy', async ({ page
   await expect(page.getByRole('tab', { name: 'Any date', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
+test('pins a transcript and filters it through the real history fixture', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  const cards = page.locator('.home-history .transcript-card');
+  const target = cards.first();
+  const targetText = await target.locator('.transcript-text').innerText();
+  await target.getByRole('button', { name: 'More transcript actions' }).click();
+  await page.getByRole('menuitem', { name: 'Pin transcript', exact: true }).click();
+  await expect(page.getByText('Transcript pinned.', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Pinned', exact: true }).click();
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first().locator('.transcript-text')).toHaveText(targetText);
+  await cards.first().getByRole('button', { name: 'More transcript actions' }).click();
+  await page.getByRole('menuitem', { name: 'Unpin transcript', exact: true }).click();
+  await expect(page.getByText('No matching transcripts', { exact: true })).toBeVisible();
+});
+
 test('copied transcripts keep their geometry and actions reachable', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-write'], { origin: 'http://127.0.0.1:1420' });
   await page.setViewportSize({ width: 880, height: 720 });
