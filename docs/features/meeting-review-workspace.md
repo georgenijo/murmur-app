@@ -127,6 +127,10 @@ whitespace to prevent embedded text from creating a new cue. Both formats use th
 same 8 MiB ceiling and atomic save path as document exports. Saving requires the
 extension that matches the selected format.
 
+Some SubRip readers display escaped `<`, `>`, and `&` as entity codes. Use
+WebVTT when the destination needs those characters literally; removing their
+escaping can cause subtitle readers to hide text or interpret it as formatting.
+
 ## Frontend ownership
 
 `useMeetings` owns a monotonically increasing selection ticket so a slow response
