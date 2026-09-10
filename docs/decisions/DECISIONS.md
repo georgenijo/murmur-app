@@ -1,5 +1,13 @@
 # Decisions Log
 
+## 2026-09-09: AGENTS.md is a symlink to CLAUDE.md
+
+**Decision:** AGENTS.md and CLAUDE.md were two hand-maintained copies of the
+same agent guide and had drifted (stale file references, mismatched File Map
+rows). AGENTS.md is now a symlink to CLAUDE.md so there is exactly one agent
+guide; edit CLAUDE.md only. The H1 was changed to `# Murmur — agent guide
+(CLAUDE.md / AGENTS.md)` to reflect that it now serves both entry points.
+
 ## 2026-09-09: Session-only read access for Voice Query (#573)
 
 Keep Restricted as the launch and migration default. Support only Claude's
@@ -10,6 +18,62 @@ file scope and extension boundaries have not been proven. No web, commands,
 writes, MCP or plugins are granted. Reject malformed expanded output instead
 of retaining raw tool frames. Restart or explicit revocation removes consent;
 cancellation stops an already-running query's frozen access.
+
+## 2026-09-07: Label remote meeting speakers locally with session-scoped names (#685)
+
+**Decision:** Add optional post-meeting speaker refinement for the remote
+`Them` channel. When enabled at capture start, Murmur writes that channel to
+a private temporary 16 kHz WAV capped at two hours. After transcription
+finishes, an idle-only child runs the pinned Core ML speaker model with network
+access denied. Murmur accepts only bounded turns and assigns a label when one
+speaker covers a complete final remote segment with sufficient confidence and
+coverage. Ambiguous segments remain `Them`.
+
+Speaker numbers and renamed labels belong to one meeting. Murmur stores no
+cross-meeting voice profile or embedding. Foreground transcription preempts the
+exact child process group and confirms its exit. Every terminal path deletes
+the temporary WAV.
+
+**Rationale:** Channel separation distinguishes the local speaker from remote
+audio but cannot distinguish several people on a call. Conservative local
+assignment makes clear passages easier to review without changing transcript
+text or guessing through overlap.
+
+**Status:** active
+
+**References:** PR #685 and issue #540, `docs/features/meeting-diarization.md`,
+`app/src-tauri/src/meeting_diarization.rs`, and
+`app/src-tauri/src/diarization_assignment.rs`
+
+---
+
+## 2026-09-07: Add private native capture smoke to first PCM (#687)
+
+**Decision:** Run physical-microphone capture checks in the private,
+owner-only `georgenijo/murmur-native-ci` controller repository. Do not attach
+its self-hosted Mac runner to the public repository. Each dispatch names an
+immutable Murmur commit and a trusted branch that contains it. The job builds
+the production-role worker and tests AUHAL and CPAL separately. Each backend
+must complete ordered setup, deliver at least three continuous PCM frames,
+reach first PCM within two seconds, acknowledge stop, and exit within the
+bounded deadline.
+
+The public repository keeps the probe, hardware-free parser tests, and the
+private controller template. A local Fleet poller may dispatch changed
+capture-path commits after the probe exists on `main`. The controller has
+read-only repository permission and no cross-repository publish credential.
+
+**Rationale:** Hosted CI can compile the capture boundary but cannot prove that
+either native backend reaches a real microphone callback. A separate private
+runner supplies that evidence without allowing public pull-request code to run
+on George's Mac.
+
+**Status:** active
+
+**References:** PR #687 and issue #448, `docs/testing/capture-first-pcm.md`,
+`scripts/smoke_test_capture_first_pcm.py`, and `infra/native-capture-ci/`
+
+---
 
 ## 2026-09-07: Compare production versions only with explicit cohort evidence (#430)
 

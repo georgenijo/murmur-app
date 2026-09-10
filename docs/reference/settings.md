@@ -58,9 +58,17 @@ but cannot prove an explicit device is available. Display names and stable IDs
 stay local, while shipped state receives only a count/default-available/success
 aggregate.
 
-**TypeScript interface** (full current shape — see `settings.ts` for the per-field comments):
+**TypeScript interface and defaults** (full current shape from `settings.ts`):
 
 ```typescript
+interface BrowserSiteRule {
+  id: string;
+  browserBundleId: string;
+  host: string;
+  modeId: string;
+  enabled: boolean;
+}
+
 interface Settings {
   // Transcription
   model: ModelOption;
@@ -75,6 +83,10 @@ interface Settings {
   autoStopSilenceMs: number;               // 0 = off (default)
   microphone: string;
   microphoneIdMigrationComplete: boolean;  // durable proof marker
+  smartAutoMicrophoneEnabled: boolean;
+  smartAutoApprovedDeviceIds: string[];
+  smartAutoPreferredDeviceIds: string[];
+  smartAutoAllowContinuity: boolean;
   disabled: boolean;
 
   // Transform (selected-text rewrite)
@@ -97,6 +109,7 @@ interface Settings {
   correctionShortcutEnabled: boolean;
   retainHistory: boolean;
   meetingRetainAudio: boolean;
+  meetingDiarization: boolean;
   meetingEchoCancellationEnabled: boolean;
   meetingRetentionDays: number;            // 0 = no age limit
   meetingMaxSessions: number;
@@ -128,6 +141,8 @@ interface Settings {
   modes: MurmurMode[];                     // user Modes; built-ins are code-owned
   activeModeId: string;                    // last native/manual Mode selection
   appProfiles: AppProfile[];
+  siteModeLookupEnabled: boolean;
+  browserSiteRules: BrowserSiteRule[];
 
   // Performance Lab
   benchmarkOutputDir: string;
@@ -137,6 +152,83 @@ interface Settings {
   launchAtLogin: boolean;
   overlayVerticalOffset: number;           // integer points, -12 through +12
 }
+
+export const DEFAULT_SETTINGS: Settings = {
+  // FluidAudio runs Parakeet v3 on the Apple Neural Engine. Existing persisted
+  // Whisper and sherpa selections remain valid and are never force-migrated.
+  model: 'parakeet-tdt-0.6b-v3-coreml',
+  doubleTapKey: 'shift_l',
+  // Disabled by default — no settings UI to configure it yet (Phase D).
+  transformHoldKey: null,
+  queryHotkey: null,
+  queryProvider: 'custom',
+  queryExecutable: '',
+  queryArguments: [],
+  queryTimeoutSeconds: 60,
+  queryContextLevel: 'none',
+  queryAutomaticallyCopyAnswers: true,
+  retainQueryHistory: false,
+  // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
+  // non-Whisper models may auto-detect or ignore this value.
+  language: 'auto',
+  autoPaste: false,
+  // Native CGEvents can paste immediately in the common case. Apps that move
+  // focus asynchronously can still opt into a settling delay in Settings.
+  autoPasteDelayMs: 0,
+  pasteLastShortcut: null,
+  correctionShortcutEnabled: false,
+  recordingMode: 'hold_down',
+  hotkeyMissFeedback: false,
+  soundCuesEnabled: true,
+  soundCueVolume: 45,
+  meetingSoundCuesEnabled: false,
+  // Opt-in: a recording that ends itself is a surprise until you ask for it.
+  autoStopSilenceMs: 0,
+  microphone: 'system_default',
+  microphoneIdMigrationComplete: true,
+  smartAutoMicrophoneEnabled: false,
+  smartAutoApprovedDeviceIds: [],
+  smartAutoPreferredDeviceIds: [],
+  smartAutoAllowContinuity: false,
+  launchAtLogin: false,
+  overlayVerticalOffset: 0,
+  vadSensitivity: 50,
+  idleTimeoutMinutes: 5,
+  customVocabulary: '',
+  vocabularyEntries: [],
+  disabled: false,
+  smartPunctuation: true,
+  retainHistory: true,
+  meetingRetainAudio: false,
+  meetingDiarization: false,
+  meetingEchoCancellationEnabled: false,
+  meetingRetentionDays: 0,
+  meetingMaxSessions: 100,
+  saveTranscript: false,
+  saveAudio: false,
+  mirrorToNotchPill: false,
+  outputDir: '',
+  benchmarkOutputDir: '',
+  benchmarkAutoSave: false,
+  appProfiles: [],
+  modes: [],
+  activeModeId: 'builtin.everyday',
+  siteModeLookupEnabled: false,
+  browserSiteRules: [],
+  voiceCommandsEnabled: false,
+  voiceCommands: [],
+  cleanupEnabled: false,
+  smartFormattingEnabled: false,
+  cleanupRemoveFiller: true,
+  cleanupCapitalize: true,
+  codeVocabEnabled: false,
+  codeVocabFolder: '',
+  codeVocabLastScan: null,
+  // Correction on by default: it's the fix that makes vocab actually apply on the
+  // non-Whisper engines. A no-op when there's no vocabulary configured.
+  correctionEnabled: true,
+  correctionFuzzy: true,
+};
 ```
 
 ---
@@ -146,7 +238,7 @@ interface Settings {
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
 | `model` | `ModelOption` | Core ML Parakeet v3 | Seven catalog identifiers listed below | The exact transcription model to use. Unknown identifiers fail closed; Murmur does not automatically choose another model. |
-| `language` | `string` | `'en'` | Any language code string | Transcription language. The runtime capability catalog disables language selection for English-only models. |
+| `language` | `string` | `'auto'` | Any language code string | Transcription language. `'auto'` lets multilingual models detect the language; the runtime capability catalog disables language selection for English-only models. |
 
 ### Model Options
 
@@ -181,6 +273,7 @@ model-selection side effects.
 | `disabled` | `boolean` | `false` | `true` / `false` | Global disable. Mirrors the tray "Disable Murmur" check item and the overlay's power button; the hover quick-settings card stays reachable while disabled so the overlay can turn Murmur back on. |
 | `idleTimeoutMinutes` | `number` | `5` | `5`, `15`, `0` (Never) | How long an idle loaded model stays resident before the runtime releases it. `0` keeps it loaded indefinitely. |
 | `meetingRetainAudio` | `boolean` | `false` | `true` / `false` | Keeps each meeting chunk WAV after its transcript commits. Off deletes the WAV only after the corresponding SQLite transaction succeeds. |
+| `meetingDiarization` | `boolean` | `false` | `true` / `false` | Captures a private bounded copy of the Them channel and runs local post-meeting speaker refinement when the auxiliary model is installed. The temporary WAV is independent of `meetingRetainAudio` and is removed after every terminal path. |
 | `meetingEchoCancellationEnabled` | `boolean` | `false` | `true` / `false` | Experimental helper-side speaker-echo reduction for the Me channel. Processing failures bypass to the original microphone stream; Them remains unchanged. |
 | `meetingRetentionDays` | `number` | `0` | `0` or 1–3650 days | Age cap applied before starting a meeting; `0` preserves completed sessions by age. |
 | `meetingMaxSessions` | `number` | `100` | 1–10,000 | Maximum completed/interrupted sessions retained when pruning before a new meeting. |
@@ -256,6 +349,12 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 `ideContextEnabled` defaults to `false` and must be enabled on the exact matching profile. `ideProjectRoots` persists only the explicit user-selected root strings, trimmed, deduplicated, and capped at four. Filenames, symbols, source snippets, and scan results are memory-only and are not settings fields. The roots therefore remain visible in Settings and in any direct inspection or backup of the existing settings JSON; there is no hidden export path.
 
 `queryContextExcluded` defaults to `false`. When true on the first matching profile, it forces Voice Query context off for that app even when the global or provider-preset level requests app/window or selection context. It is deny-only and cannot opt an app into context.
+
+`siteModeLookupEnabled` defaults to `false`. When enabled,
+`browserSiteRules` contains `BrowserSiteRule {id, browserBundleId, host,
+modeId, enabled}` records. Rust matches only an allowlisted browser bundle and
+an exact normalized host. The persisted rules contain no URL path or live
+browsing state.
 
 `smartFormattingEnabled` is a separate boolean setting, off by default. It enables deterministic list, email/URL, extended Spoken Structure, and bounded same-utterance correction rules for live prose. Missing or malformed persisted values migrate safely to `false`; it is independent of `smartPunctuation`. `smartFormattingOverride` gives profiles the same Default/On/Off choice.
 

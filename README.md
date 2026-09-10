@@ -285,6 +285,7 @@ murmur-app/
 ├── bench/                           Speech/accuracy fixtures
 ├── docs/                            Architecture, features, ADRs, references
 ├── infra/log-receiver/              Privacy-bounded diagnostics receiver
+├── infra/native-capture-ci/         Private physical-microphone CI controller template
 ├── scripts/                         Build, signing, release, and QA tooling
 ├── tests/                           Workflow/artifact policy tests
 └── tools/murmur-diag/               Local diagnostics inspection tool

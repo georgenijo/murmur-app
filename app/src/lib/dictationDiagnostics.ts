@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { isFiniteNumber as isNumber, isRecord } from './typeGuards';
 
 export type DictationCaptureArmStatusV1 =
   | { state: 'unarmed' }
@@ -38,16 +39,8 @@ export interface DictationCaptureV1 {
   result: DictationCaptureResultV1;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function isString(value: unknown): value is string {
   return typeof value === 'string';
-}
-
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function isBoundedText(value: unknown): value is BoundedPrivateTextV1 {

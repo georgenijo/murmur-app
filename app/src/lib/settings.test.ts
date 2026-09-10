@@ -23,6 +23,8 @@ import {
   MODEL_OPTIONS,
   pasteLastShortcutConflict,
   STORAGE_KEY,
+  WRITING_STYLE_OPTIONS,
+  WRITING_STYLE_VALUES,
 } from './settings';
 
 beforeEach(() => {
@@ -32,6 +34,25 @@ beforeEach(() => {
   // Default to "not running under Tauri" so the existing localStorage-only
   // expectations below are unaffected by the durable store.
   mocks.isTauri.mockReturnValue(false);
+});
+
+describe('WRITING_STYLE_VALUES', () => {
+  it('matches the concrete writing-style values, excluding the inherit sentinel', () => {
+    expect(WRITING_STYLE_VALUES).toEqual([
+      'conversational',
+      'polished',
+      'code_technical',
+      'verbatim',
+      'notes',
+    ]);
+  });
+
+  it('stays in sync with every non-inherit option in WRITING_STYLE_OPTIONS', () => {
+    const expected = WRITING_STYLE_OPTIONS
+      .map(option => option.value)
+      .filter(value => value !== 'inherit');
+    expect(WRITING_STYLE_VALUES).toEqual(expected);
+  });
 });
 
 describe('loadSettings', () => {

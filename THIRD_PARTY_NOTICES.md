@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Murmur's optional/default Core ML transcription backend uses the following projects and model. The model is downloaded only when the user chooses it and is not stored in this repository.
+Murmur's optional/default Core ML transcription backend and its optional realtime speaker-echo cancellation use the following projects, libraries, and model. The model is downloaded only when the user chooses it and is not stored in this repository.
 
 ## fluidaudio-rs 0.14.1
 

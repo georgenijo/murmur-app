@@ -1,5 +1,6 @@
 import { useLayoutEffect, useSyncExternalStore } from 'react';
 import packageMetadata from '../../package.json';
+import { percentile } from './numeric';
 
 export const UI_LATENCY_SCHEMA_VERSION = 1 as const;
 export const UI_LATENCY_SAMPLE_LIMIT = 500;
@@ -160,13 +161,6 @@ function cancelFrame(frame: number) {
   }
 }
 
-function percentile(values: number[], percentileValue: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  const index = Math.max(0, Math.ceil(percentileValue * sorted.length) - 1);
-  return sorted[index];
-}
-
 export function summarizeUiLatency(samples: UiLatencySampleV1[]): UiLatencyEdgeSummary[] {
   const groups = new Map<string, UiLatencySampleV1[]>();
   for (const sample of samples) {
@@ -217,7 +211,7 @@ export function clearUiLatencySamples() {
   publish([]);
 }
 
-export function subscribeUiLatency(listener: () => void): () => void {
+function subscribeUiLatency(listener: () => void): () => void {
   if (!storageListenerRegistered && typeof window !== 'undefined') {
     storageListenerRegistered = true;
     window.addEventListener('storage', (event) => {

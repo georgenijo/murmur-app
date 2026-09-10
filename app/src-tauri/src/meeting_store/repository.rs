@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior, MAIN_DB};
 
@@ -23,11 +22,7 @@ fn db_error(_: rusqlite::Error) -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
+    crate::sqlite_support::now_ms().try_into().unwrap_or(0)
 }
 
 fn to_i64(value: u64) -> Result<i64, String> {
@@ -1031,7 +1026,7 @@ impl MeetingRepository {
     }
 
     fn open_raw(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path).map_err(|_| storage_error())
+        crate::sqlite_support::open_raw(&self.db_path).map_err(|_| storage_error())
     }
 
     fn open_checked(&self) -> Result<Connection, String> {
@@ -1102,13 +1097,8 @@ impl MeetingRepository {
         ));
         // Move sidecars first so an interrupted quarantine still leaves the main
         // database present. Missing-main recovery also retries the same backups.
-        for suffix in ["-wal", "-shm", ""] {
-            let source = PathBuf::from(format!("{}{suffix}", self.db_path.display()));
-            if source.exists() {
-                let target = PathBuf::from(format!("{}{suffix}", quarantine.display()));
-                fs::rename(source, target).map_err(|_| storage_error())?;
-            }
-        }
+        crate::sqlite_support::quarantine_with_sidecars(&self.db_path, &quarantine)
+            .map_err(|_| storage_error())?;
         fs::File::open(self.root.join("quarantine"))
             .and_then(|directory| directory.sync_all())
             .map_err(|_| storage_error())?;
@@ -1145,11 +1135,10 @@ impl MeetingRepository {
 }
 
 fn configure_connection(connection: &Connection) -> rusqlite::Result<()> {
-    connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
-    connection.pragma_update(None, "secure_delete", "ON")?;
-    connection.busy_timeout(std::time::Duration::from_secs(2))
+    crate::sqlite_support::configure_connection(
+        connection,
+        &crate::sqlite_support::PragmaOptions::STANDARD,
+    )
 }
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSession> {
@@ -1232,9 +1221,7 @@ fn audio_paths_for_session(connection: &Connection, id: &str) -> Result<Vec<Stri
 }
 
 fn remove_sidecars(path: &Path) {
-    for suffix in ["-wal", "-shm"] {
-        let _ = fs::remove_file(format!("{}{}", path.display(), suffix));
-    }
+    crate::sqlite_support::remove_sidecars_best_effort(path);
 }
 
 fn backup_files_newest_first(path: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1248,20 +1235,7 @@ fn backup_files_newest_first(path: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn directory_files_newest_first(path: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = fs::read_dir(path)
-        .map_err(|_| storage_error())?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    files.sort_by_key(|path| {
-        std::cmp::Reverse(
-            path.metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(UNIX_EPOCH),
-        )
-    });
-    Ok(files)
+    crate::sqlite_support::newest_first(path).map_err(|_| storage_error())
 }
 
 fn walk_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1288,6 +1262,7 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::UNIX_EPOCH;
     use tempfile::TempDir;
 
     fn repository() -> (TempDir, MeetingRepository) {
@@ -1899,6 +1874,55 @@ mod tests {
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
         assert!(!repository.db_path.exists());
+    }
+
+    #[test]
+    fn primary_connection_uses_expected_pragmas() {
+        let (_root, repository) = repository();
+        let connection = repository.open_checked().unwrap();
+        let journal_mode: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        let foreign_keys: i64 = connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        let secure_delete: i64 = connection
+            .pragma_query_value(None, "secure_delete", |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 2);
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(secure_delete, 1);
+        assert_eq!(busy_timeout, 2000);
+    }
+
+    #[test]
+    fn backup_listing_orders_by_mtime_before_filename() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("backups");
+        fs::create_dir_all(&dir).unwrap();
+        // Filename-only descending sort would put "z-old" before "a-new".
+        // The correct mtime-first order must put the newer file first
+        // regardless of its name.
+        let older_name_newer_mtime = dir.join("a-new.sqlite3");
+        let newer_name_older_mtime = dir.join("z-old.sqlite3");
+        fs::write(&newer_name_older_mtime, b"old").unwrap();
+        fs::write(&older_name_newer_mtime, b"new").unwrap();
+
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::open(&newer_name_older_mtime)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
+
+        let files = backup_files_newest_first(&dir).unwrap();
+        assert_eq!(files, vec![older_name_newer_mtime, newer_name_older_mtime]);
     }
 
     #[test]

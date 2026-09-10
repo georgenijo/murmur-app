@@ -4,6 +4,7 @@ import { parse, type ParseError } from 'jsonc-parser';
 
 import { parseThemeLibraryEntry } from './themeLibrary';
 import type { ThemeLibraryEntryV1 } from './types';
+import { isRecord } from '../typeGuards';
 import {
   isVsCodeThemeFile,
   pairVsCodeThemes,
@@ -93,10 +94,6 @@ export interface OpenVsxThemeSearchOptions {
 }
 
 type ThemeContribution = { label?: unknown; uiTheme?: unknown; path?: unknown };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function shortHash(value: string): string {
   return [...sha256(new TextEncoder().encode(value))]

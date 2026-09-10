@@ -11,7 +11,7 @@
 //!
 //! Privacy: `TransformSnapshot.text` must NEVER be logged, sent over telemetry,
 //! or serialized wholesale to the frontend. Only `length_bucket(...)` and the
-//! `SelectionError`/outcome enums are safe to log — see `log_capture_outcome`.
+//! `SelectionError`/outcome enums are safe to log — see `log_capture_outcome_for_pass`.
 //!
 //! This duplicates a small amount of the raw AX FFI scaffolding already in
 //! `injector.rs` (CFString conversion, `AXUIElementCreateApplication`, the
@@ -21,12 +21,6 @@
 //! self-contained avoids any risk of regressing that already-reviewed code
 //! for this PR. A follow-up can consolidate if a third AX caller appears.
 //!
-//! No command wires `capture_selection` to the frontend yet — issue #312's
-//! transform *pipeline* (capture -> LLM -> review -> apply) is a later PR in
-//! the series. This module allows dead_code accordingly.
-
-#![allow(dead_code)]
-
 use std::time::Instant;
 
 /// Hard cap on captured selection size (UTF-8 bytes). Selections larger than
@@ -48,7 +42,7 @@ pub struct Rect {
 /// Immutable snapshot of a captured selection, owned app-side.
 ///
 /// NEVER serialize this wholesale to the frontend and NEVER log `text` — only
-/// length buckets and outcome enums (see `length_bucket`, `log_capture_outcome`).
+/// length buckets and outcome enums (see `length_bucket`, `log_capture_outcome_for_pass`).
 #[derive(Clone)]
 pub struct TransformSnapshot {
     pub bundle_id: Option<String>,
@@ -180,13 +174,9 @@ pub fn length_bucket(bytes: usize) -> &'static str {
     }
 }
 
-/// Log the outcome of a capture attempt. Only length buckets and outcome
-/// enums ever reach the log line — the selection text itself never does.
-pub fn log_capture_outcome(result: &Result<TransformSnapshot, SelectionError>) {
-    log_capture_outcome_for_pass(result, 0);
-}
-
-/// Correlated production variant of [`log_capture_outcome`].
+/// Log the outcome of a capture attempt, correlated to a transform pass.
+/// Only length buckets and outcome enums ever reach the log line — the
+/// selection text itself never does.
 pub fn log_capture_outcome_for_pass(
     result: &Result<TransformSnapshot, SelectionError>,
     transform_pass_id: u64,
