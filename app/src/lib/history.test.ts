@@ -71,6 +71,14 @@ describe('trimHistory', () => {
     expect(trimmed.find((item) => item.id === 'p0')?.pinned).toBe(false);
     expect(trimmed.find((item) => item.pinned)?.id).toBe('p2');
   });
+
+  it('keeps duplicate-id pin state positional and preserves both caps', () => {
+    const entries = Array.from({ length: 201 }, (_, i) => entry({ id: 'duplicate', timestamp: i, pinned: i % 2 === 0 }));
+    const trimmed = trimHistory(entries);
+    expect(trimmed).toHaveLength(200);
+    expect(trimmed.filter((item) => item.pinned)).toHaveLength(MAX_PINNED_ENTRIES);
+    expect(Math.min(...trimmed.filter((item) => item.pinned).map((item) => item.timestamp))).toBe(162);
+  });
 });
 
 describe('persistence', () => {
@@ -164,6 +172,12 @@ describe('toggleHistoryEntryPinned', () => {
     expect(result.changed).toBe(false);
     expect(result.limitReached).toBe(true);
     expect(result.entries).toBe(entries);
+  });
+
+  it('toggles only one row when duplicate ids are present', () => {
+    const entries = [entry({ id: 'duplicate' }), entry({ id: 'duplicate' })];
+    const result = toggleHistoryEntryPinned(entries, 'duplicate');
+    expect(result.entries.map((item) => item.pinned)).toEqual([true, false]);
   });
 });
 

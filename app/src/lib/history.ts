@@ -95,9 +95,16 @@ export const MAX_PINNED_ENTRIES = 20;
 
 /** Keep the pin set bounded and deterministic, retaining the newest pins. */
 function normalizePinned(entries: HistoryEntry[]): HistoryEntry[] {
-  const pinnedIds = new Set(entries.filter((entry) => entry.pinned).slice(-MAX_PINNED_ENTRIES).map((entry) => entry.id));
-  return entries.map((entry) => {
-    const pinned = pinnedIds.has(entry.id);
+  // Use positions rather than ids: legacy history explicitly permits duplicate
+  // ids, and a pin on one duplicate must not spread to every matching row.
+  const pinnedIndexes = new Set(
+    entries
+      .map((entry, index) => entry.pinned === true ? index : -1)
+      .filter((index) => index >= 0)
+      .slice(-MAX_PINNED_ENTRIES),
+  );
+  return entries.map((entry, index) => {
+    const pinned = pinnedIndexes.has(index);
     return entry.pinned === pinned ? entry : { ...entry, pinned };
   });
 }
@@ -187,7 +194,12 @@ export function toggleHistoryEntryPinned(entries: HistoryEntry[], id: string): T
   if (!target.pinned && entries.filter((entry) => entry.pinned).length >= MAX_PINNED_ENTRIES) {
     return { entries, changed: false, limitReached: true };
   }
-  const next = entries.map((entry) => entry.id === id ? { ...entry, pinned: !entry.pinned } : entry);
+  let toggled = false;
+  const next = entries.map((entry) => {
+    if (toggled || entry.id !== id) return entry;
+    toggled = true;
+    return { ...entry, pinned: !entry.pinned };
+  });
   return { entries: trimHistory(next), changed: true, limitReached: false };
 }
 
