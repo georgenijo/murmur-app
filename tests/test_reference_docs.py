@@ -14,8 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_FILES = (
     "app/src-tauri/src/lib.rs",
     "docs/reference/commands.md",
-    "CLAUDE.md",
-    "AGENTS.md",
     "docs/ARCHITECTURE.md",
     "docs/FEATURES.md",
 )

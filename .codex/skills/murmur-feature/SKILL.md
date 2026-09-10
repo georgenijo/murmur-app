@@ -10,9 +10,12 @@ description: >-
 
 # Murmur Feature — Plan → Ship → Merge
 
-Single Codex workflow combining **codex-work** (issue worktree + `PROMPT.md`) and **murmur-pr-test** (checks, native app, merge). Do not spawn another agent.
+Single Codex workflow combining **codex-work** (issue worktree + `PROMPT.md`) and **murmur-pr-test** (checks, native app, merge). Complete the independent review required by the working agreements.
 
 **Repo:** `georgenijo/murmur-app`
+
+Follow the repository [agent guide](../../../CLAUDE.md) for verification, optional
+work, and cleanup after a confirmed merge.
 
 ## Invocation
 
@@ -58,8 +61,7 @@ No scope creep beyond the issue.
 After approval, implement exactly the plan (PROMPT.md §5):
 
 - Match project patterns in `CLAUDE.md` / `AGENTS.md`.
-- **Settings UI:** Playwright MCP against `http://localhost:1420` only when dev server is running and the change is the settings webview — screenshot and iterate.
-- **Native Murmur behavior** (overlay, hotkeys, dictation, tray): do not treat Vite alone as sufficient; you will verify in Phase 5 with the real `.app`.
+- Verify all app UI and behavior in the native app, including settings. Follow the agent guide for Computer Use and allowed native UI tool fallbacks.
 
 Commit in focused chunks on the issue branch.
 
@@ -90,12 +92,13 @@ Fix blocking issues. Skip style nits linters already cover.
 
 ## Phase 5 — Verify (required checks)
 
-From the **worktree**, all must pass:
+Run the relevant checks from the **worktree**, plus required CI checks:
 
 ```bash
 cd app/src-tauri && cargo check
 cd app/src-tauri && cargo test -- --test-threads=1
 cd app && npx tsc --noEmit
+cd app && npm test
 ```
 
 If any fail, fix and re-run before a PR.
@@ -117,7 +120,7 @@ Launch:
 open -n app/src-tauri/target/debug/bundle/macos/Local\ Dictation\ Dev.app
 ```
 
-**Use Computer Use** (Codex desktop automation) to exercise the feature in the real app: hotkeys, overlay, transcription flow, settings that affect native behavior. Do not substitute browser-only testing for native Murmur behavior.
+Use Computer Use to click through the affected flow in the changed native app, including settings. If it is unavailable or prohibited, obtain an allowed native UI control tool as described in the agent guide. Confirm the running revision and observed result.
 
 Report what you exercised and what you observed.
 
@@ -136,9 +139,8 @@ gh pr create \
 <1-3 bullets>
 
 ## Test plan
-- [ ] cargo check / test / tsc
+- [ ] Relevant Rust / TypeScript / Vitest checks and required CI
 - [ ] native app smoke (if applicable)
-- [ ] Murmur Bench gate (quick/standard, or N/A with reason)
 - [ ] <issue-specific steps>
 
 Closes #<issue-number>
@@ -149,44 +151,6 @@ EOF
 
 Note the PR number and URL.
 
-### Phase 6.5 — Murmur Bench gate
-
-After the exact candidate branch is pushed, inspect the changed files and run
-the private Fleet benchmark when the PR can change recognition latency,
-accuracy, delivered-text output, or memory. This includes VAD, transcription
-backends, model runtime, transcript transforms, benchmarked execution paths,
-and performance-sensitive Rust dependencies.
-
-Run the normal gate from the worktree with all installed models:
-
-```bash
-PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
-python3 scripts/murmur_bench_fleet.py \
-  --baseline origin/main \
-  --candidate "$PR_HEAD_SHA" \
-  --preset quick
-```
-
-Before running, fetch `origin` on the trusted benchmark Mac and verify that it
-resolves `PR_HEAD_SHA`; do not substitute the local worktree branch or a moving
-branch name. Record this same candidate SHA in the benchmark receipt.
-
-Use `standard` for shared cross-model or pipeline changes. Do not pass
-`--no-fail`. If the comparison fails, rerun once with `--candidate-first`; a
-repeated regression blocks merge, while mixed results are inconclusive and
-require investigation or explicit user acceptance. Never upload raw reports or
-personal transcript content from the trusted Mac. Add only a content-free
-receipt containing the exact refs, candidate SHA, preset, model names,
-thresholds, aggregate deltas, and pass/fail to the PR. Any
-later push, rebase, merge from main, or conflict resolution invalidates the
-result and requires a rerun.
-
-For an unrelated PR, record `Murmur Bench: N/A — <reason>` in the PR instead of
-silently skipping the gate. This replay benchmark does not replace native smoke
-testing for live capture, device, clipboard, or paste behavior.
-
----
-
 ## Phase 7 — PR validation & merge (murmur-pr-test)
 
 Treat your PR like any other Murmur PR:
@@ -194,17 +158,13 @@ Treat your PR like any other Murmur PR:
 1. `gh pr view <number> --repo georgenijo/murmur-app`
 2. If not mergeable, merge `origin/main` into the worktree, resolve conflicts,
    re-run Phase 5 checks, and push the resolved candidate.
-3. After any candidate push, rerun the Phase 6.5 gate when applicable so the
-   receipt names the exact pushed commit.
-4. Re-read CI / checks on GitHub if present.
+3. Re-read CI and required reviews on GitHub for the current pushed commit.
 
 **Merge only when:**
 
 - Phase 5 checks passed (re-run after any merge-from-main).
 - Native smoke passed when the feature touched user-visible behavior.
-- Murmur Bench passed when applicable, or the PR records a justified N/A.
-- No unresolved/inconclusive benchmark regression remains unless the user
-  explicitly accepted the measured risk.
+- Required CI and reviews passed for the current pushed commit.
 - No known blockers in the PR or issue.
 - User has not said "stop before merge" — default for `/feature` is to **merge when green**.
 
@@ -216,6 +176,11 @@ Use `--admin` only if the user explicitly authorized bypassing branch protection
 
 ---
 
+## After merge
+
+Verify the remote merge, then follow the agent guide to remove this task's local
+worktree, branch, processes, and temporary test state. Preserve unrelated work.
+
 ## Final report
 
 Keep it short:
@@ -225,9 +190,9 @@ Keep it short:
 - Plan summary (one line)
 - Checks run (pass/fail)
 - Native smoke (what was tested, or N/A)
-- Murmur Bench result (preset and aggregate result, or N/A with reason)
 - PR URL
 - Merge result (commit SHA or "not merged" + why)
+- Cleanup result after a confirmed merge
 
 ---
 

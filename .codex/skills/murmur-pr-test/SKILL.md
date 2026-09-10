@@ -12,12 +12,15 @@ description: >-
 
 Use this skill when testing, validating, or merging Murmur pull requests, especially when the user asks to pick the next PR, test a PR in the real native app, merge it if it looks good, or continue through the PR queue.
 
+Follow the repository [agent guide](../../../CLAUDE.md) for verification, optional
+work, and cleanup after a confirmed merge.
+
 ## Goal
 
 Make PR validation repeatable, isolated, and merge-safe:
 
 - Test each PR in its own worktree.
-- Prefer the real native Tauri app for user-facing Murmur behavior.
+- Exercise user-facing Murmur behavior in the real native Tauri app.
 - Run the required compile and test checks before merge.
 - Merge only after the PR is verified and the user has asked to merge.
 - Skip and report PRs with clear blockers.
@@ -62,54 +65,19 @@ Use the narrowest useful smoke test first, but always run the required checks be
 - Overlay or app UI behavior: test the real native app with Computer Use.
 - Docs-only changes: no native app required unless behavior is unclear.
 - Workflow/CI changes: inspect YAML and run local checks that approximate the workflow.
-- Benchmark-sensitive changes (VAD, transcription backends, model runtime,
-  transcript transforms, benchmarked execution paths, or performance-sensitive
-  Rust dependencies): run the Murmur Bench gate after resolving the exact
-  pushed PR head ref.
 
 ## Required Checks Before Merge
 
-Run all of these from the PR worktree:
+Run the checks relevant to the diff from the PR worktree, plus required CI checks:
 
 ```bash
 cd app/src-tauri && cargo check
 cd app/src-tauri && cargo test -- --test-threads=1
 cd app && npx tsc --noEmit
+cd app && npm test
 ```
 
-All checks must pass before merging. Fix only issues required to make the PR mergeable and verified.
-
-## Murmur Bench Performance Gate
-
-When the PR can change recognition latency, accuracy, delivered-text output, or
-memory, resolve the immutable pushed PR-head commit and run the private
-benchmark from the PR worktree against that SHA:
-
-```bash
-PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
-python3 scripts/murmur_bench_fleet.py \
-  --baseline origin/main \
-  --candidate "$PR_HEAD_SHA" \
-  --preset quick
-```
-
-Before running, fetch `origin` on the trusted benchmark Mac and verify that it
-resolves `PR_HEAD_SHA`; do not substitute a moving branch name. Record this
-same candidate SHA in the validation receipt.
-
-Use `standard` for shared cross-model or pipeline changes. Do not use
-`--no-fail`. If the comparison fails, rerun once with `--candidate-first`; a
-repeated regression blocks merge, while mixed results are inconclusive and
-require investigation or explicit user acceptance. Raw reports can contain
-personal transcript text and must remain on the trusted benchmark Mac. Put only
-a content-free receipt containing the exact refs, candidate SHA, preset, model
-names, thresholds, aggregate deltas, and pass/fail in the PR. Any later push,
-rebase, merge from main, or conflict
-resolution invalidates the result and requires a rerun.
-
-For an unrelated PR, record `Murmur Bench: N/A — <reason>` rather than silently
-omitting the gate. Murmur Bench replays saved WAV files and does not replace a
-native smoke test for capture startup, device switching, clipboard, or paste.
+All applicable checks must pass before merging. Fix only issues required to make the PR mergeable and verified.
 
 ## Native App Testing
 
@@ -130,7 +98,7 @@ Launch the app:
 open -n app/src-tauri/target/debug/bundle/macos/Local\ Dictation\ Dev.app
 ```
 
-Use native-app automation to verify visible behavior. Do not substitute browser testing for native-app testing when the user asks for the real app.
+Codex uses Computer Use to click through the affected flow in the changed native app. If Computer Use is unavailable or prohibited, obtain an allowed native UI control tool as described in the agent guide. Verify the running revision and observed result. Other agents also use native UI interaction for app verification.
 
 ## Merge Preparation
 
@@ -153,21 +121,14 @@ Push to the PR head branch:
 git push origin HEAD:<headRefName>
 ```
 
-After pushing the changed candidate, rerun the Murmur Bench gate when
-applicable. Do not merge using a result from the pre-resolution commit.
-
 ## Merge
 
 Only merge when:
 
 - The user asked to merge passing PRs.
 - Native smoke testing passed when applicable.
-- `cargo check` passed.
-- `cargo test -- --test-threads=1` passed.
-- `npx tsc --noEmit` passed.
-- Murmur Bench passed when applicable, or the PR has a justified N/A receipt.
-- No unresolved/inconclusive benchmark regression remains unless the user
-  explicitly accepted the measured risk.
+- Relevant Rust, TypeScript, and Vitest checks passed.
+- Required CI and reviews passed for the current pushed commit.
 - There are no known blockers.
 
 Merge with:
@@ -178,6 +139,11 @@ gh pr merge <number> --repo georgenijo/murmur-app --merge
 
 Use `--admin` only when the user has authorized merging despite branch protection and the local verification is clean.
 
+## After merge
+
+Verify the remote merge, then follow the agent guide to remove this task's local
+worktree, branch, processes, and temporary test state. Preserve unrelated work.
+
 ## Reporting
 
 Report:
@@ -186,9 +152,9 @@ Report:
 - Worktree path.
 - What was tested in the native app.
 - Exact checks run and whether they passed.
-- Murmur Bench preset and aggregate result, or N/A with reason.
 - Any blockers, with the command error or file conflict.
 - Merge commit or PR URL if merged.
+- Cleanup result after a confirmed merge.
 
 Keep the report concise. If a PR is blocked, say why and move to the next PR only if the user asked to continue the queue.
 

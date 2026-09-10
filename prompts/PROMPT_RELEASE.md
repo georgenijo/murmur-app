@@ -5,6 +5,7 @@ You are starting a release session for the Murmur project. Work autonomously thr
 ## 1. Load Context
 
 Read silently:
+- `CLAUDE.md` — project verification and optional-work policy
 - `app/src-tauri/tauri.conf.json` — current version
 - `app/src-tauri/Cargo.toml` — current version (must stay in sync)
 - `app/package.json` — current frontend package version (must stay in sync)
@@ -60,44 +61,11 @@ Mac mini and do not announce the release unless it exits zero. The one-time
 canary installation setup and result schema are in
 `docs/features/auto-updater.md`.
 
-## 4. Run the Pre-Release Murmur Bench Gate
-
-Before asking for release authorization, compare the previous release tag with
-the exact `origin/main` release candidate on the trusted benchmark Mac:
-
-```bash
-python3 scripts/murmur_bench_fleet.py \
-  --baseline v{previous_version} \
-  --candidate origin/main \
-  --preset standard
-```
-
-Use `thorough` instead of `standard` when any commit since the tag can change
-recognition latency, accuracy, delivered-text output, or memory. This includes
-VAD, transcription backends, model runtime, transcript transforms, benchmarked
-execution paths, and performance-sensitive Rust dependencies.
-
-This gate is mandatory for every release. Do not use `--no-fail`. If the
-comparison fails, rerun once with `--candidate-first` to expose order/thermal
-bias. A repeated regression blocks the release. Mixed results are inconclusive
-and also block the release until investigated or explicitly accepted by the
-user. If the trusted Mac, corpus, or comparable baseline is unavailable, stop
-and report the missing prerequisite rather than silently skipping the gate.
-
-Raw reports can contain personal reference and recognized transcript text.
-Leave them on the trusted benchmark Mac. The release summary may contain only
-content-free provenance and results: exact refs, candidate SHA where applicable,
-preset, model names, configured thresholds, aggregate deltas, and pass/fail.
-Murmur Bench replays saved WAV files, so it does not replace the post-release
-production check for live Core Audio startup, first PCM, device behavior,
-clipboard, or paste.
-
-## 5. Summarise the Build Plan
+## 4. Summarise the Build Plan
 
 Present a concise release summary:
 - Current version → New version (and why: major/minor/patch)
 - Bullet list of what's included (one line per meaningful commit, skip chores/docs)
-- Murmur Bench preset, compared refs, and aggregate pass/fail result
 - Explain that pushing the version-bump commit starts the signed `Release Build`
   and that a successful build automatically creates `v{new_version}` and publishes
   its exact artifacts. A failed build never creates a tag or release.
@@ -106,7 +74,7 @@ Present a concise release summary:
 Stop and wait for confirmation. This is the release confirmation: it authorizes
 the version bump, main push, and automatic tag/publish after all gates pass.
 
-## 6. Build Trusted Artifacts
+## 5. Build Trusted Artifacts
 
 Run these steps in order:
 
@@ -128,7 +96,7 @@ Run these steps in order:
 If the build fails, use the cold fallback in `docs/release.md`. Automation will
 not create a tag or release for a failed build.
 
-## 7. Verify Automatic Promotion
+## 6. Verify Automatic Promotion
 
 Wait for the `Release` workflow started by the completed `Release Build`. Verify
 that it used the exact build run ID and commit SHA, created `v{new_version}` at
@@ -158,11 +126,17 @@ Then update its notes:
    ```
    Write the notes yourself from the commit list in Step 3 — use clear, user-facing language (not raw commit messages). Omit any section that has no entries. Skip `chore:`, `docs:`, `test:` commits.
 
-## 8. Validate Post-Release Production Latency
+## 7. Verify production behavior
 
-For any release that changes capture, transcription, delivery, model runtime,
-or performance-sensitive dependencies, the release is published but its
-performance validation remains pending until natural production use exists.
+Exercise the affected user flows in the installed native app using the agent
+guide's UI testing policy. Confirm the installed version and actual outcomes,
+such as capture starting, transcription completing, and clipboard/paste delivery.
+Keep the OTA canary checks above.
+
+### Production comparison, only on request
+
+Run the following comparison only when George explicitly requests performance
+measurement. Otherwise skip it without a reminder, question, or pending receipt.
 
 Use Diagnostics → Runs → Compare app versions first when both retained
 production versions contain the #430 companion metadata. Compare promptly:
@@ -217,12 +191,10 @@ Follow `docs/features/performance-diagnostics.md` for the local run contract and
 privacy boundaries. Never inspect or report transcript, clipboard, or audio
 content while doing this comparison.
 
-## 9. Hand Off
+## 8. Hand Off
 
 Tell the user:
 - Exact commit, build run, promotion run, tag, and release URLs
 - The signed build passed and GitHub automatically promoted its exact artifacts
 - The release is published at: `https://github.com/georgenijo/murmur-app/releases`
-- The pre-release Murmur Bench refs, preset, and aggregate result
-- The production-latency comparison result, or clearly state that it is pending
-  natural prompts on an explicitly authorized updated machine
+- The native functional verification result

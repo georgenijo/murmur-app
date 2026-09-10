@@ -94,7 +94,7 @@ The evaluator found the same canonical labels and boundaries on both passes. Its
 
 Issue #539 closed through merged PR #546, merge commit `53976984e0152933be0bcddf217b751c66a5aa74`, and that commit is an ancestor of current `main`. The current tree contains dual-channel capture, durable sessions and segments, recovery, review, export, and privacy filtering.
 
-The original PR body left two gates unresolved: production-bundle dual-channel smoke was unchecked, and its final-head standard Murmur Bench result was inconclusive. Later meeting fixes have also changed capture and storage. #540 can build on the merged code, but its final verification must run a current production dual-channel smoke and the required Murmur Bench gate instead of treating #546's old evidence as current.
+The original PR body left two gates unresolved: production-bundle dual-channel smoke was unchecked, and its final-head standard Murmur Bench result was inconclusive. Later meeting fixes have also changed capture and storage. #540 can build on the merged code, but its final verification must run a current production dual-channel smoke instead of treating #546's old evidence as current. Performance runs follow the request-only policy in [the agent guide](../../CLAUDE.md).
 
 ## Integration prerequisites
 
@@ -158,11 +158,11 @@ shasum -a 256 -c "$spike_root/SHA256SUMS"
 
 ## Autonomous next steps
 
-1. Run the prepared concurrent ASR probe in an exclusive measurement slot. Compare warm Core ML dictation latency and process RSS alone versus during a diarization pass.
+1. If George requests a performance comparison, run the prepared concurrent ASR probe in an exclusive measurement slot. Compare warm Core ML dictation latency and process RSS alone versus during a diarization pass.
 2. Freeze the exact model manifest and CC BY attribution in the implementation plan. Do not depend on Hugging Face `main` at runtime.
 3. Implement the auxiliary installer/status/remove contract and managed diarization worker before meeting UI work.
 4. Add bounded remote PCM staging and crash cleanup, then the schema migration and conservative assignment transaction.
 5. Add tests for absent model, worker failure, ambiguous chunks, mic exclusion, rename cascade, cross-session isolation, telemetry stripping, and transcript/order identity.
-6. Verify the final app with this pinned AMI fixture, a current production dual-channel smoke, concurrent dictation latency, and Murmur Bench `quick` on the immutable PR head.
+6. Verify the final app with this pinned AMI fixture and a current production dual-channel smoke. Run performance comparisons only when explicitly requested.
 
 Prepared spike worktree: `/Users/george-mac-mini/Documents/code/murmur-app-issue-540`, branch `issue/540-diarization-spike`. The spike crate and evaluator are uncommitted and separate from production integration.
