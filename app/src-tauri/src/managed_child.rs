@@ -61,11 +61,11 @@ pub(crate) fn user_cli_base_environment() -> Vec<(String, OsString)> {
             .into_iter()
             .map(PathBuf::from)
             .collect();
-        return build_user_cli_base_environment(
+        build_user_cli_base_environment(
             |key| std::env::var_os(key),
             &extensions,
             Some(OsStr::new(USER_CLI_MACOS_DEFAULT_PATH)),
-        );
+        )
     }
     #[cfg(not(target_os = "macos"))]
     build_user_cli_base_environment(|key| std::env::var_os(key), &[], None)
