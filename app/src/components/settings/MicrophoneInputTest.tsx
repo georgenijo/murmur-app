@@ -637,19 +637,32 @@ export function MicrophoneInputTest({
     applyStatus(IDLE_MICROPHONE_PREVIEW);
     setAutoStartSuspended(false);
   };
+  const vadUnavailable = !monitoringActive
+    || !ready
+    || missingDevice
+    || smartAutoUnavailable
+    || !inventoryAvailable
+    || status.state === 'error'
+    || (autoStartSuspended && !ownsPreview);
   const vadLabel = dictationBusy
     ? 'Paused while recording'
     : vadSensitivity === 0
       ? 'Off · all audio kept'
-      : status.state === 'connecting'
-        ? 'Starting…'
-        : vadDecision === 'speech_detected'
-          ? 'Speech detected · kept'
-          : vadDecision === 'no_speech'
-            ? 'No speech · filtered'
-            : vadDecision === 'unavailable'
-              ? 'Voice detection unavailable'
-              : 'Listening…';
+      : vadUnavailable
+        ? 'Unavailable'
+        : operation === 'switching' || status.state === 'stopping'
+          ? 'Stopping…'
+          : operation === 'starting' || status.state === 'connecting'
+            ? 'Starting…'
+            : status.state !== 'active'
+              ? 'Preview inactive'
+              : vadDecision === 'speech_detected'
+                ? 'Speech detected · kept'
+                : vadDecision === 'no_speech'
+                  ? 'No speech · filtered'
+                  : vadDecision === 'unavailable'
+                    ? 'Voice detection unavailable'
+                    : 'Listening…';
   const showVadDecision = !dictationBusy && vadSensitivity > 0 && status.state === 'active';
   const vadDotClass = showVadDecision && vadDecision === 'speech_detected'
     ? 'bg-success'
@@ -664,7 +677,9 @@ export function MicrophoneInputTest({
       ? 'text-warning'
       : showVadDecision && vadDecision === 'unavailable'
         ? 'text-error'
-        : 'text-on-surface-variant';
+        : vadUnavailable
+          ? 'text-error'
+          : 'text-on-surface-variant';
   const helperText = actionError ?? status.message ?? (
     dictationBusy
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'

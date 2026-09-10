@@ -34,7 +34,7 @@ import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useTransformFlow } from './lib/hooks/useTransformFlow';
-import { useQueryFlow } from './lib/hooks/useQueryFlow';
+import { useQueryFlow, type QuerySetupStatus } from './lib/hooks/useQueryFlow';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
@@ -98,6 +98,10 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
+  const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
+  useEffect(() => {
+    setQuerySetupStatus(null);
+  }, [settings.queryProvider, settings.queryExecutable, settings.queryArguments]);
   const [deliveryRecoveryMessage, setDeliveryRecoveryMessage] = useState('');
   const pasteLastShortcutGenerationRef = useRef(0);
   const lastWorkingPasteLastShortcutRef = useRef<typeof settings.pasteLastShortcut>(null);
@@ -246,6 +250,10 @@ function App() {
     updateQueryStats(completion);
     setQueryStatsVersion(v => v + 1);
   }, []);
+  const handleQuerySetupStatusChange = useCallback((next: QuerySetupStatus) => {
+    setQuerySetupStatus(next);
+    if (next.state === 'failed') updateSettings({ queryHotkey: null });
+  }, [updateSettings]);
   // Keep the global hotkeys disarmed until onboarding completes — accessibility
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
@@ -294,6 +302,7 @@ function App() {
       retainQueryHistory: settings.retainQueryHistory,
     },
     onQueryCompleted: handleQueryCompleted,
+    onSetupStatusChange: handleQuerySetupStatusChange,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
@@ -820,6 +829,7 @@ function App() {
               onOpenUpdate={showAvailableUpdate}
               updateStatus={updateStatus}
               configureError={configureError}
+              querySetupStatus={querySetupStatus}
               pageRequest={settingsPageRequest}
               onLatencyViewChange={trackSettingsView}
               activeRef={settingsActiveRef}

@@ -37,6 +37,14 @@ export interface UseVoiceQuerySettingsParams {
   active: boolean;
 }
 
+const QUERY_PROVIDER_LABELS: Record<QueryProviderId, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  grok: 'Grok',
+  cursor: 'Cursor',
+  custom: 'Custom',
+};
+
 /**
  * State, effects, and handlers for the Voice Query settings page (F6),
  * extracted from `SettingsPanel.tsx`. Behavior-preserving: every generation
@@ -47,6 +55,8 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
   const [queryConfigError, setQueryConfigError] = useState<string | null>(null);
   const [queryConfigNotice, setQueryConfigNotice] = useState<string | null>(null);
   const [queryPresets, setQueryPresets] = useState<QueryProviderPreset[]>([CUSTOM_QUERY_PRESET]);
+  const [queryPresetsError, setQueryPresetsError] = useState<string | null>(null);
+  const [queryPresetsLoadAttempt, setQueryPresetsLoadAttempt] = useState(0);
   const [queryEnvironment, setQueryEnvironment] = useState<QueryEnvironmentVariable[]>([]);
   const [configuredQueryEnvironment, setConfiguredQueryEnvironment] = useState<string[]>([]);
   const [queryEnvironmentStatus, setQueryEnvironmentStatus] = useState<string | null>(null);
@@ -109,15 +119,18 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
+    setQueryPresetsError(null);
     void listQueryProviderPresets()
       .then((presets) => {
         if (!cancelled) setQueryPresets(presets);
       })
       .catch(() => {
-        if (!cancelled) setQueryPresets([CUSTOM_QUERY_PRESET]);
+        if (!cancelled) {
+          setQueryPresetsError('Provider options could not be loaded. Your saved selection is unchanged.');
+        }
       });
     return () => { cancelled = true; };
-  }, [active]);
+  }, [active, queryPresetsLoadAttempt]);
 
   useEffect(() => {
     if (!active) return;
@@ -443,17 +456,24 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
 
   const selectedQueryPreset = queryPresets.find((preset) => preset.id === settings.queryProvider)
     ?? (settings.queryProvider === 'custom' ? CUSTOM_QUERY_PRESET : null);
-  const queryProviderItems = queryPresets.map((preset) => ({
+  const loadedQueryProviderItems = queryPresets.map((preset) => ({
     value: preset.id,
     label: preset.discoveredExecutable || preset.id === 'custom'
       ? preset.label
       : `${preset.label} — not found`,
   }));
+  const queryProviderItems = loadedQueryProviderItems.some((item) => item.value === settings.queryProvider)
+    ? loadedQueryProviderItems
+    : [
+      { value: settings.queryProvider, label: QUERY_PROVIDER_LABELS[settings.queryProvider] },
+      ...loadedQueryProviderItems,
+    ];
 
   return {
     queryConfigError,
     queryConfigNotice,
     queryPresets,
+    queryPresetsError,
     queryEnvironment,
     configuredQueryEnvironment,
     queryEnvironmentStatus,
@@ -464,6 +484,7 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
     querySignInStatus,
     selectedQueryPreset,
     queryProviderItems,
+    retryQueryPresets: () => setQueryPresetsLoadAttempt((attempt) => attempt + 1),
     queryCommand: queryCommand(settings),
     toggleVoiceQuery,
     selectQueryProvider,

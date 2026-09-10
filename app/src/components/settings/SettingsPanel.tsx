@@ -32,6 +32,7 @@ import {
   type ModelDownloadProgress,
 } from '../../lib/modelDownload';
 import { useVoiceQuerySettings } from '../../lib/hooks/useVoiceQuerySettings';
+import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
 import { VoiceQuerySettings } from './VoiceQuerySettings';
 import { TransformModelSettings } from './TransformModelSettings';
@@ -148,6 +149,7 @@ interface SettingsPanelProps {
   onOpenUpdate: () => void;
   updateStatus: UpdateStatus;
   configureError: string | null;
+  querySetupStatus?: QuerySetupStatus | null;
   /** External navigation request. The token makes a repeat request for the
    *  page you are already on still register. */
   pageRequest?: SettingsPageRequest | null;
@@ -300,6 +302,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   onOpenUpdate,
   updateStatus,
   configureError,
+  querySetupStatus = null,
   pageRequest = null,
   onLatencyViewChange,
   activeRef,
@@ -948,6 +951,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             accessibilityGranted={accessibilityGranted}
             onRequestAccessibility={requestAccessibility}
             vm={voiceQueryVm}
+            setupStatus={querySetupStatus}
           />
 
           <TransformModelSettings

@@ -9,6 +9,7 @@
 //! escapes with `setsid`/`setpgid`. The separately signed sandboxed capture helper
 //! is therefore forbidden from exposing any process-spawn surface.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -19,20 +20,62 @@ pub(crate) const USER_CLI_BASE_ENVIRONMENT: [&str; 8] = [
     "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME",
 ];
 
-pub(crate) fn apply_user_cli_base_environment(command: &mut Command) {
-    command.env_clear();
-    for key in USER_CLI_BASE_ENVIRONMENT {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-}
+#[cfg(target_os = "macos")]
+const USER_CLI_MACOS_DEFAULT_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+#[cfg(target_os = "macos")]
+const USER_CLI_MACOS_PATH_EXTENSIONS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 
-pub(crate) fn user_cli_base_environment() -> Vec<(String, std::ffi::OsString)> {
+fn build_user_cli_base_environment(
+    mut read_variable: impl FnMut(&str) -> Option<OsString>,
+    path_extensions: &[PathBuf],
+    default_path: Option<&OsStr>,
+) -> Vec<(String, OsString)> {
     USER_CLI_BASE_ENVIRONMENT
         .into_iter()
-        .filter_map(|key| std::env::var_os(key).map(|value| (key.to_string(), value)))
+        .filter_map(|key| {
+            let value = if key == "PATH" {
+                let path = read_variable(key).or_else(|| default_path.map(OsStr::to_os_string))?;
+                let mut entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
+                for extension in path_extensions {
+                    if extension.is_dir() && !entries.contains(extension) {
+                        entries.push(extension.clone());
+                    }
+                }
+                std::env::join_paths(entries).ok()?
+            } else {
+                read_variable(key)?
+            };
+            Some((key.to_string(), value))
+        })
         .collect()
+}
+
+pub(crate) fn apply_user_cli_base_environment(command: &mut Command) {
+    apply_user_cli_environment(command, &user_cli_base_environment());
+}
+
+pub(crate) fn user_cli_base_environment() -> Vec<(String, OsString)> {
+    #[cfg(target_os = "macos")]
+    {
+        let extensions: Vec<PathBuf> = USER_CLI_MACOS_PATH_EXTENSIONS
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        build_user_cli_base_environment(
+            |key| std::env::var_os(key),
+            &extensions,
+            Some(OsStr::new(USER_CLI_MACOS_DEFAULT_PATH)),
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    build_user_cli_base_environment(|key| std::env::var_os(key), &[], None)
+}
+
+fn apply_user_cli_environment(command: &mut Command, base_environment: &[(String, OsString)]) {
+    command.env_clear();
+    for (key, value) in base_environment {
+        command.env(key, value);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,8 +141,11 @@ impl ManagedChild {
     ///
     /// The child receives only the small environment needed by common CLI
     /// shims and credential stores plus the two explicitly declared config-dir
-    /// additions. Arbitrary parent variables (including API keys) are
-    /// deliberately not forwarded, and callers cannot override a base key.
+    /// additions. On macOS the inherited PATH order is preserved, then the
+    /// existing Homebrew install directories are appended so GUI-launched npm
+    /// shims can resolve their runtime. Arbitrary parent variables (including
+    /// API keys) are deliberately not forwarded, and callers cannot override a
+    /// base key.
     /// `USER`/`LOGNAME` carry no secret (the username is already visible in
     /// `HOME`) and are required on macOS: Claude Code derives its Keychain
     /// credential account name from `USER` and resolves to a nonexistent
@@ -126,6 +172,24 @@ impl ManagedChild {
         declared_environment: &[(String, String)],
         working_directory: &Path,
         directory_handle: Option<&std::fs::File>,
+    ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
+        Self::spawn_user_cli_with_directory_and_base_environment(
+            executable,
+            arguments,
+            declared_environment,
+            working_directory,
+            directory_handle,
+            &user_cli_base_environment(),
+        )
+    }
+
+    fn spawn_user_cli_with_directory_and_base_environment(
+        executable: &Path,
+        arguments: &[String],
+        declared_environment: &[(String, String)],
+        working_directory: &Path,
+        directory_handle: Option<&std::fs::File>,
+        base_environment: &[(String, OsString)],
     ) -> std::io::Result<(Self, ChildStdin, ChildStdout, ChildStderr)> {
         const DECLARED_ENVIRONMENT: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"];
         let mut seen = std::collections::HashSet::new();
@@ -164,7 +228,7 @@ impl ManagedChild {
                 "pinned working directories require Unix",
             ));
         }
-        apply_user_cli_base_environment(&mut command);
+        apply_user_cli_environment(&mut command, base_environment);
         for (key, value) in declared_environment {
             command.env(key, value);
         }
@@ -370,6 +434,7 @@ pub fn bundled_sibling(name: &str) -> Result<PathBuf, ()> {
 mod tests {
     use super::*;
     use std::io::Read;
+    use std::os::unix::fs::{symlink, PermissionsExt};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -431,6 +496,187 @@ mod tests {
             !marker.exists(),
             "question content must never be shell-evaluated"
         );
+    }
+
+    #[test]
+    fn user_cli_path_preserves_gui_order_and_appends_existing_install_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let already_present = directory.path().join("already-present");
+        let appended = directory.path().join("appended");
+        let unavailable = directory.path().join("unavailable");
+        std::fs::create_dir(&already_present).unwrap();
+        std::fs::create_dir(&appended).unwrap();
+        let gui_path = std::env::join_paths([
+            Path::new("/usr/bin"),
+            Path::new("/bin"),
+            already_present.as_path(),
+        ])
+        .unwrap();
+
+        let environment = build_user_cli_base_environment(
+            |key| (key == "PATH").then(|| gui_path.clone()),
+            &[
+                already_present.clone(),
+                unavailable,
+                appended.clone(),
+                appended.clone(),
+            ],
+            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+        );
+        let path = environment
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value)
+            .unwrap();
+
+        assert_eq!(
+            std::env::split_paths(path).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+                already_present,
+                appended,
+            ]
+        );
+    }
+
+    #[test]
+    fn user_cli_path_uses_the_system_default_when_gui_path_is_absent() {
+        let environment = build_user_cli_base_environment(
+            |_| None,
+            &[],
+            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+        );
+        let path = environment
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value)
+            .unwrap();
+
+        assert_eq!(path, "/usr/bin:/bin:/usr/sbin:/sbin");
+    }
+
+    #[test]
+    fn user_cli_path_distinguishes_an_explicit_empty_path_from_an_absent_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let appended = directory.path().join("appended");
+        std::fs::create_dir(&appended).unwrap();
+        let environment = build_user_cli_base_environment(
+            |key| (key == "PATH").then(OsString::new),
+            std::slice::from_ref(&appended),
+            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+        );
+        let path = environment
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value)
+            .unwrap();
+
+        assert_eq!(
+            std::env::split_paths(path).collect::<Vec<_>>(),
+            vec![PathBuf::new(), appended]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn user_cli_runs_an_env_node_wrapper_with_an_appended_interpreter_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let interpreter_directory = directory.path().join("interpreter-bin");
+        let wrapper_directory = directory.path().join("wrapper-bin");
+        let working_directory = directory.path().join("workspace");
+        std::fs::create_dir(&interpreter_directory).unwrap();
+        std::fs::create_dir(&wrapper_directory).unwrap();
+        std::fs::create_dir(&working_directory).unwrap();
+        symlink("/bin/sh", interpreter_directory.join("node")).unwrap();
+        let wrapper = wrapper_directory.join("codex-fixture");
+        std::fs::write(&wrapper, "#!/usr/bin/env node\nprintf 'fixture-ready'").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let base_environment = build_user_cli_base_environment(
+            |key| (key == "PATH").then(|| OsString::from("/usr/bin:/bin:/usr/sbin:/sbin")),
+            std::slice::from_ref(&interpreter_directory),
+            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+        );
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli_with_directory_and_base_environment(
+                &wrapper,
+                &[],
+                &[],
+                &working_directory,
+                None,
+                &base_environment,
+            )
+            .unwrap();
+        drop((stdin, stderr));
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        let termination = child
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("fixture wrapper must exit cleanly");
+
+        assert_eq!(termination.exit_code, Some(0));
+        assert_eq!(output, "fixture-ready");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn user_cli_keeps_an_inherited_interpreter_ahead_of_an_appended_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let inherited_directory = directory.path().join("inherited-bin");
+        let appended_directory = directory.path().join("appended-bin");
+        let wrapper_directory = directory.path().join("wrapper-bin");
+        let working_directory = directory.path().join("workspace");
+        for path in [
+            &inherited_directory,
+            &appended_directory,
+            &wrapper_directory,
+            &working_directory,
+        ] {
+            std::fs::create_dir(path).unwrap();
+        }
+        for (directory, marker) in [
+            (&inherited_directory, "inherited-node"),
+            (&appended_directory, "appended-node"),
+        ] {
+            let node = directory.join("node");
+            std::fs::write(&node, format!("#!/bin/sh\nprintf '{marker}'")).unwrap();
+            std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let wrapper = wrapper_directory.join("codex-fixture");
+        std::fs::write(&wrapper, "#!/usr/bin/env node\nexit 99").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let inherited_path = std::env::join_paths([
+            Path::new("/usr/bin"),
+            Path::new("/bin"),
+            inherited_directory.as_path(),
+        ])
+        .unwrap();
+        let base_environment = build_user_cli_base_environment(
+            |key| (key == "PATH").then(|| inherited_path.clone()),
+            std::slice::from_ref(&appended_directory),
+            Some(OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin")),
+        );
+
+        let (mut child, stdin, mut stdout, stderr) =
+            ManagedChild::spawn_user_cli_with_directory_and_base_environment(
+                &wrapper,
+                &[],
+                &[],
+                &working_directory,
+                None,
+                &base_environment,
+            )
+            .unwrap();
+        drop((stdin, stderr));
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        let termination = child
+            .wait_for_exit(Instant::now() + Duration::from_secs(1))
+            .expect("inherited fixture interpreter must exit cleanly");
+
+        assert_eq!(termination.exit_code, Some(0));
+        assert_eq!(output, "inherited-node");
     }
 
     #[test]

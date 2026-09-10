@@ -51,7 +51,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
           </p>
 
           <p className="text-sm text-on-surface mb-4">
-            Privacy-first voice-to-text powered by Whisper AI. All processing happens locally on your device — audio never leaves this Mac.
+            Privacy-first voice-to-text powered by local transcription models. Dictation is processed on this Mac, and audio never leaves it. Optional Voice Query providers may use their own network connection.
           </p>
 
           <p className="text-xs text-on-surface-variant">

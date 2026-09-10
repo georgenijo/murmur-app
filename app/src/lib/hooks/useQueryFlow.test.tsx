@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, StrictMode, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,17 +7,41 @@ type Listener = (event: { payload: unknown }) => void;
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(async (..._args: unknown[]) => undefined),
   listeners: new Map<string, Listener>(),
+  subscriptions: new Map<string, Map<number, Listener>>(),
+  nextSubscriptionId: 0,
+  listenFailures: new Map<string, number>(),
+  listenWaiters: new Map<string, Promise<void>[]>(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (event: string, listener: Listener) => {
+    const waiter = mocks.listenWaiters.get(event)?.shift();
+    if (waiter) await waiter;
+    const failures = mocks.listenFailures.get(event) ?? 0;
+    if (failures > 0) {
+      mocks.listenFailures.set(event, failures - 1);
+      throw new Error(`could not listen for ${event}`);
+    }
+    const subscriptionId = ++mocks.nextSubscriptionId;
+    const subscriptions = mocks.subscriptions.get(event) ?? new Map<number, Listener>();
+    subscriptions.set(subscriptionId, listener);
+    mocks.subscriptions.set(event, subscriptions);
     mocks.listeners.set(event, listener);
-    return () => mocks.listeners.delete(event);
+    return () => {
+      subscriptions.delete(subscriptionId);
+      if (subscriptions.size === 0) {
+        mocks.subscriptions.delete(event);
+        mocks.listeners.delete(event);
+        return;
+      }
+      const remaining = [...subscriptions.entries()].sort(([left], [right]) => right - left)[0];
+      if (remaining) mocks.listeners.set(event, remaining[1]);
+    };
   }),
 }));
 
-import { useQueryFlow } from './useQueryFlow';
+import { useQueryFlow, type QuerySetupStatus } from './useQueryFlow';
 import type { QueryCommandConfig } from '../queryProviders';
 import type { QueryCompletion } from '../stats';
 
@@ -35,11 +59,15 @@ function Harness({
   command,
   automaticallyCopyAnswers = true,
   onQueryCompleted,
+  onSetupStatusChange,
+  startPassOnLayout,
 }: {
   enabled?: boolean;
   command: QueryCommandConfig;
   automaticallyCopyAnswers?: boolean;
   onQueryCompleted?: (completion: QueryCompletion) => void;
+  onSetupStatusChange?: (status: QuerySetupStatus) => void;
+  startPassOnLayout?: number;
 }) {
   useQueryFlow({
     enabled,
@@ -50,7 +78,14 @@ function Harness({
     automaticallyCopyAnswers,
     command,
     onQueryCompleted,
+    onSetupStatusChange,
   });
+  useLayoutEffect(() => {
+    if (startPassOnLayout === undefined) return;
+    mocks.listeners.get('query-toggle')?.({
+      payload: { queryPassId: startPassOnLayout, action: 'start' },
+    });
+  }, [startPassOnLayout]);
   return null;
 }
 
@@ -62,6 +97,10 @@ describe('useQueryFlow', () => {
     mocks.invoke.mockReset();
     mocks.invoke.mockImplementation(async (..._args: unknown[]) => undefined);
     mocks.listeners.clear();
+    mocks.subscriptions.clear();
+    mocks.nextSubscriptionId = 0;
+    mocks.listenFailures.clear();
+    mocks.listenWaiters.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -171,6 +210,294 @@ describe('useQueryFlow', () => {
       automaticallyCopyAnswer: true,
       command: { ...DEFAULT_COMMAND, contextLevel: 'none' },
     });
+  });
+
+  it('uses the newly committed provider when a start arrives before passive effects', async () => {
+    const claudeCommand: QueryCommandConfig = {
+      ...DEFAULT_COMMAND,
+      provider: 'claude',
+      executable: '/usr/local/bin/claude',
+      arguments: ['--print'],
+    };
+    const codexCommand: QueryCommandConfig = {
+      ...DEFAULT_COMMAND,
+      provider: 'codex',
+      executable: '/opt/homebrew/bin/codex',
+      arguments: ['exec', '--json'],
+    };
+    await renderFlow(undefined, claudeCommand);
+    mocks.invoke.mockClear();
+
+    await act(async () => {
+      root.render(
+        <Harness
+          command={codexCommand}
+          startPassOnLayout={61}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({
+      queryPassId: 61,
+      command: codexCommand,
+    }));
+  });
+
+  it('ignores a queued start after Voice Query is synchronously disabled', async () => {
+    await renderFlow();
+    mocks.invoke.mockClear();
+
+    await act(async () => {
+      root.render(
+        <Harness
+          enabled={false}
+          command={DEFAULT_COMMAND}
+          startPassOnLayout={62}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      'start_query_capture',
+      expect.objectContaining({ queryPassId: 62 }),
+    );
+  });
+
+  it('reports a saved-command failure and becomes ready after an explicit retry', async () => {
+    const setupStatuses: QuerySetupStatus[] = [];
+    let validationAttempt = 0;
+    mocks.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'validate_query_command' && validationAttempt++ === 0) {
+        throw new Error('invalid_executable');
+      }
+    });
+
+    await act(async () => {
+      root.render(
+        <Harness
+          command={DEFAULT_COMMAND}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(setupStatuses).toEqual([expect.objectContaining({
+      state: 'failed',
+      phase: 'command_validation',
+    })]);
+    expect(setupStatuses[0]?.state === 'failed' ? setupStatuses[0].message : '').toContain(
+      'Review the provider, choose Test, then enable it again.',
+    );
+    expect(mocks.invoke).not.toHaveBeenCalledWith('start_query_listener', expect.anything());
+    expect(mocks.listeners.has('query-toggle')).toBe(false);
+
+    await act(async () => {
+      root.render(
+        <Harness
+          enabled={false}
+          command={DEFAULT_COMMAND}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(
+        <Harness
+          command={DEFAULT_COMMAND}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(setupStatuses[setupStatuses.length - 1]).toEqual({ state: 'ready' });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_listener', { hotkey: 'alt_r' });
+  });
+
+  it('reports a shortcut registration failure and removes its event callback', async () => {
+    const setupStatuses: QuerySetupStatus[] = [];
+    mocks.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'start_query_listener') throw new Error('listener unavailable');
+    });
+
+    await act(async () => {
+      root.render(
+        <Harness
+          command={DEFAULT_COMMAND}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(setupStatuses).toEqual([expect.objectContaining({
+      state: 'failed',
+      phase: 'listener_start',
+    })]);
+    expect(mocks.listeners.has('query-toggle')).toBe(false);
+  });
+
+  it.each(['query-state-changed', 'query-toggle'])(
+    'recovers when %s listener registration succeeds on retry',
+    async (eventName) => {
+      const setupStatuses: QuerySetupStatus[] = [];
+      mocks.listenFailures.set(eventName, 1);
+
+      await act(async () => {
+        root.render(
+          <Harness
+            command={DEFAULT_COMMAND}
+            onSetupStatusChange={(status) => setupStatuses.push(status)}
+          />,
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(setupStatuses).toEqual([expect.objectContaining({
+        state: 'failed',
+        phase: 'listener_start',
+      })]);
+
+      await act(async () => {
+        root.render(
+          <Harness
+            enabled={false}
+            command={DEFAULT_COMMAND}
+            onSetupStatusChange={(status) => setupStatuses.push(status)}
+          />,
+        );
+        await Promise.resolve();
+      });
+      await act(async () => {
+        root.render(
+          <Harness
+            command={DEFAULT_COMMAND}
+            onSetupStatusChange={(status) => setupStatuses.push(status)}
+          />,
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(setupStatuses[setupStatuses.length - 1]).toEqual({ state: 'ready' });
+      expect(mocks.listeners.has('query-state-changed')).toBe(true);
+      expect(mocks.listeners.has('query-review-hidden')).toBe(true);
+      expect(mocks.listeners.has('query-toggle')).toBe(true);
+    },
+  );
+
+  it('keeps one terminal subscription when StrictMode remounts during registration', async () => {
+    let releaseFirstRegistration!: () => void;
+    const firstRegistration = new Promise<void>((resolve) => {
+      releaseFirstRegistration = resolve;
+    });
+    mocks.listenWaiters.set('query-state-changed', [firstRegistration]);
+
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <Harness command={DEFAULT_COMMAND} />
+        </StrictMode>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      releaseFirstRegistration();
+      await firstRegistration;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.subscriptions.get('query-state-changed')?.size).toBe(1);
+    expect(mocks.subscriptions.get('query-review-hidden')?.size).toBe(1);
+    expect(mocks.subscriptions.get('query-toggle')?.size).toBe(1);
+
+    mocks.invoke.mockClear();
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({
+        payload: { queryPassId: 73, action: 'start' },
+      });
+      await Promise.resolve();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      'start_query_capture',
+      expect.objectContaining({ queryPassId: 73 }),
+    );
+  });
+
+  it('ignores an old validation failure after a newer provider replaces it', async () => {
+    let rejectClaude!: (error: Error) => void;
+    const claudeValidation = new Promise<undefined>((_resolve, reject) => { rejectClaude = reject; });
+    const setupStatuses: QuerySetupStatus[] = [];
+    mocks.invoke.mockImplementation(async (...args: unknown[]) => {
+      const [invokedCommand, payload] = args;
+      const command = payload && typeof payload === 'object' && 'command' in payload
+        ? payload.command
+        : null;
+      const provider = command && typeof command === 'object' && 'provider' in command
+        ? command.provider
+        : null;
+      if (invokedCommand === 'validate_query_command' && provider === 'claude') {
+        return claudeValidation;
+      }
+    });
+    const claudeCommand: QueryCommandConfig = {
+      ...DEFAULT_COMMAND,
+      provider: 'claude',
+      executable: '/usr/local/bin/claude',
+      arguments: ['--print'],
+    };
+    const codexCommand: QueryCommandConfig = {
+      ...DEFAULT_COMMAND,
+      provider: 'codex',
+      executable: '/opt/homebrew/bin/codex',
+      arguments: ['exec', '--json'],
+    };
+
+    await act(async () => {
+      root.render(
+        <Harness
+          command={claudeCommand}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(
+        <Harness
+          enabled={false}
+          command={codexCommand}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      rejectClaude(new Error('invalid_executable'));
+      await claudeValidation.catch(() => {});
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(
+        <Harness
+          command={codexCommand}
+          onSetupStatusChange={(status) => setupStatuses.push(status)}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(setupStatuses).toEqual([{ state: 'ready' }]);
   });
 
   it('keeps a running pass alive when timeout changes and applies it to the next pass', async () => {

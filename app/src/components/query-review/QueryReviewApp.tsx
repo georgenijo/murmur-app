@@ -2,52 +2,11 @@ import { useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useQueryReviewDriver } from '../../lib/hooks/useQueryReviewDriver';
+import { isIncompleteCodexDetail, queryErrorMessage } from '../../lib/queryErrorPresentation';
 import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
 import type { QueryReviewState } from '../../lib/queryReview';
 
-const ERROR_MESSAGES: Record<string, string> = {
-  not_configured: 'Choose a CLI executable in Voice Query settings.',
-  invalid_executable: 'The configured CLI executable is missing or cannot be run.',
-  invalid_arguments: 'The configured fixed arguments are invalid.',
-  invalid_timeout: 'Choose a timeout between 5 seconds and 5 minutes.',
-  invalid_environment: 'The saved Voice Query environment is invalid. Clear and re-enter it in Settings.',
-  environment_unavailable: 'Murmur could not read the protected Voice Query environment. Open Settings and clear or re-save it.',
-  busy: 'Murmur is already recording or running another local task.',
-  audio_start_failed: 'The microphone could not start. Check the selected input and permission.',
-  audio_capture_failed: 'Microphone capture failed while stopping. Check the selected input and try again.',
-  audio_not_ready: 'The microphone was not ready yet. Try the shortcut again.',
-  audio_recovering: 'Audio capture is recovering. Try again in a moment.',
-  audio_recovery_stalled: 'Audio capture recovery stalled. Reopen Murmur and try again.',
-  no_speech: 'No speech was detected. Try asking again.',
-  empty_query: 'The recording did not contain a question.',
-  query_too_large: 'The spoken query exceeded the safety limit.',
-  transcription_failed: 'Local transcription failed. Check the selected model.',
-  spawn_failed: 'The configured CLI could not be started. Check its path and permissions.',
-  timed_out: 'The configured CLI timed out and was stopped.',
-  termination_unconfirmed: 'Murmur could not confirm that the CLI process stopped.',
-  process_failed: 'The configured CLI process failed.',
-  exit_nonzero: 'The configured CLI exited with an error.',
-  provider_error: 'The configured provider reported an error.',
-  unsupported_capabilities: 'This command does not match the trusted Claude profile. Open Settings and revoke workspace access or reselect Claude.',
-  trusted_workspace_unavailable: 'The trusted folder changed or is unavailable. Open Settings, revoke access, and choose it again.',
-  provider_not_authenticated: 'The configured provider is not signed in.',
-  output_too_large: 'The answer exceeded the 256 KB safety limit and was stopped.',
-  empty_answer: 'The configured CLI returned no answer.',
-  clipboard_unavailable: 'The answer is ready, but the clipboard is unavailable. Use Copy to try again.',
-};
-
-const CODEX_INSTALL_INCOMPLETE = 'The Codex CLI installation is incomplete';
-
-function isIncompleteCodexDetail(errorDetail?: string | null): boolean {
-  if (!errorDetail) return false;
-  return errorDetail.includes(CODEX_INSTALL_INCOMPLETE)
-    || (
-      /ENOENT/i.test(errorDetail)
-      && /@openai\/codex-darwin-/i.test(errorDetail)
-      && /\/vendor\//i.test(errorDetail)
-      && /\/codex\/codex/i.test(errorDetail)
-    );
-}
+export { queryErrorMessage };
 
 export function statusLabel(state: QueryReviewState, errorCode: string | null): string {
   switch (state) {
@@ -63,26 +22,6 @@ export function statusLabel(state: QueryReviewState, errorCode: string | null): 
     case 'failed': return 'Voice query failed';
     default: return 'Voice Query';
   }
-}
-
-export function queryErrorMessage(errorCode: string | null, errorDetail?: string | null): string | null {
-  // These are successful answers whose clipboard delivery was intentionally
-  // skipped or deferred. They remain available through the explicit Copy action.
-  if (!errorCode || [
-    'audio_stalled',
-    'clipboard_superseded',
-    'auto_copy_disabled',
-    'auto_copy_unavailable',
-  ].includes(errorCode)) {
-    return null;
-  }
-  if (
-    errorCode === 'exit_nonzero'
-    && isIncompleteCodexDetail(errorDetail)
-  ) {
-    return 'The Codex CLI installation is incomplete. Reinstall or update Codex, then try again.';
-  }
-  return ERROR_MESSAGES[errorCode] ?? 'The voice query could not be completed.';
 }
 
 export function queryListeningPartial(state: QueryReviewState, partial: string): string | null {

@@ -84,7 +84,7 @@ describe('home dashboard interactions', () => {
       'Home', 'Notetaker', 'Queries', 'Insights',
     ]);
     expect(container.textContent).not.toContain('Customize');
-    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Everything stays on this Mac.');
+    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Dictation stays on this Mac.');
   });
 
   it('describes auditable milestones rather than an opaque score', async () => {

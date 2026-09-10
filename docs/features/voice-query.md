@@ -8,7 +8,7 @@ Issues [#538](https://github.com/georgenijo/murmur-app/issues/538), [#550](https
 - Murmur starts the exact absolute executable path directly. It never invokes a shell, builds a command string, expands variables, or interprets the transcript.
 - Queries and authentication probes run from an owner-only isolated workspace under Murmur's app-data directory. They never use `/`, the source checkout, or the user's frontmost working directory as ambient provider context.
 - Fixed arguments remain separate argv elements. The recognized question and any opted-in context are appended together as exactly one final argv element.
-- The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present. Arbitrary parent secrets are not inherited. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
+- The child receives a cleared environment with only `HOME`, `PATH`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` forwarded when present. On macOS, Murmur preserves the inherited `PATH` order, supplies the normal system path when it is absent, and appends existing `/opt/homebrew/bin` and `/usr/local/bin` entries. This lets GUI-launched npm wrappers find their installed runtime without loading shell profiles or inheriting arbitrary environment values. `USER` is required on macOS: Claude Code derives its Keychain credential account name from it and reports "Not logged in" without it.
 - A provider may add only its declared config-directory selector: `CLAUDE_CONFIG_DIR` for Claude and `CODEX_HOME` for Codex (Custom may use either). Base allowlist keys, undeclared names, API keys, and tokens are rejected. Values are owner-only Rust app data, never localStorage; Settings receives only the configured variable names after saving and never reads saved values back. Explicit **Clear saved values** also repairs a malformed or future-version store by replacing the untrusted file with an empty current-version store.
 - The configured CLI is outside Murmur's local-only trust boundary. It may send the question, enabled context, or answer to cloud services according to its own configuration; Settings states this before the user opts in. Murmur cannot verify or prevent that egress.
 - No executable is selected by default and the shortcut is disabled by default.
@@ -158,12 +158,15 @@ not appended. Context and query content remain excluded from telemetry,
 statistics, performance diagnostics, and logs.
 
 The store retains the newest 200 records and prunes in the same transaction as
-each insert. History → Queries reads it through main-window-only, paged IPC,
-offers a provider filter, and exposes a direct **Delete all query history**
-action. Turning retention off stops future inserts but does not silently delete
-existing records. Query content is never mirrored into localStorage, dictation
-history, Correct and Teach, exports, logs, telemetry, stats, or the performance
-database. Insert and purge notifications contain only `inserted` or `cleared`.
+each insert. History → Queries reads it through main-window-only, paged IPC and
+offers a provider filter. A failed record shows a readable explanation and a
+recovery step derived from its stable error code. Provider stderr remains
+ephemeral. A bounded partial answer remains available behind a disclosure. The
+**Delete all query history** action requires a second click within four seconds.
+Turning retention off stops future inserts but does not silently delete existing
+records. Query content is never mirrored into localStorage, dictation history,
+Correct and Teach, exports, logs, telemetry, stats, or the performance database.
+Insert and purge notifications contain only `inserted` or `cleared`.
 
 Every pass still writes a content-free record to the existing Performance
 diagnostics store, whether or not content retention is enabled. The Runs
