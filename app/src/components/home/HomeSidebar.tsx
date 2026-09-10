@@ -96,7 +96,7 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate }: HomeSidebarPr
       <div className="home-sidebar-bottom">
         <div className="home-privacy-note">
           <span className="home-privacy-dot" aria-hidden="true" />
-          <span className="home-nav-label">Everything stays on this Mac.</span>
+          <span className="home-nav-label">Dictation stays on this Mac.</span>
         </div>
       </div>
     </aside>

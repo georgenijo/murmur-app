@@ -158,12 +158,15 @@ not appended. Context and query content remain excluded from telemetry,
 statistics, performance diagnostics, and logs.
 
 The store retains the newest 200 records and prunes in the same transaction as
-each insert. History → Queries reads it through main-window-only, paged IPC,
-offers a provider filter, and exposes a direct **Delete all query history**
-action. Turning retention off stops future inserts but does not silently delete
-existing records. Query content is never mirrored into localStorage, dictation
-history, Correct and Teach, exports, logs, telemetry, stats, or the performance
-database. Insert and purge notifications contain only `inserted` or `cleared`.
+each insert. History → Queries reads it through main-window-only, paged IPC and
+offers a provider filter. A failed record shows a readable explanation and a
+recovery step derived from its stable error code. Provider stderr remains
+ephemeral. A bounded partial answer remains available behind a disclosure. The
+**Delete all query history** action requires a second click within four seconds.
+Turning retention off stops future inserts but does not silently delete existing
+records. Query content is never mirrored into localStorage, dictation history,
+Correct and Teach, exports, logs, telemetry, stats, or the performance database.
+Insert and purge notifications contain only `inserted` or `cleared`.
 
 Every pass still writes a content-free record to the existing Performance
 diagnostics store, whether or not content retention is enabled. The Runs

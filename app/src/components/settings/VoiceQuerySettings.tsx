@@ -7,6 +7,7 @@ import {
 } from '../../lib/settings';
 import { isIncompleteCodexProbe, queryProviderTestMessage } from '../../lib/voiceQuerySettings';
 import type { useVoiceQuerySettings } from '../../lib/hooks/useVoiceQuerySettings';
+import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import { Select } from '../ui/Select';
 import { QueryCapabilities } from './QueryCapabilities';
 import { SettingToggle } from './SettingToggle';
@@ -20,6 +21,7 @@ interface VoiceQuerySettingsProps {
   accessibilityGranted: boolean | null;
   onRequestAccessibility: () => void;
   vm: ReturnType<typeof useVoiceQuerySettings>;
+  setupStatus: QuerySetupStatus | null;
 }
 
 /** Voice Query settings page (F6): provider, privacy, shortcut, and response
@@ -32,6 +34,7 @@ export function VoiceQuerySettings({
   accessibilityGranted,
   onRequestAccessibility,
   vm,
+  setupStatus,
 }: VoiceQuerySettingsProps) {
   return (
     <SettingsSection pageId="ai-query" activePage={activePage} title="Voice Query" subtitle="Provider, privacy, shortcut, and response behavior">
@@ -50,6 +53,18 @@ export function VoiceQuerySettings({
             ? vm.queryProviderItems
             : [{ value: 'custom', label: 'Custom' }]}
         />
+        {vm.queryPresetsError && (
+          <div role="alert" className="flex items-center justify-between gap-3 text-xs text-error">
+            <span>{vm.queryPresetsError}</span>
+            <button
+              type="button"
+              className="shrink-0 font-semibold underline"
+              onClick={vm.retryQueryPresets}
+            >
+              Retry
+            </button>
+          </div>
+        )}
         {vm.selectedQueryPreset && settings.queryProvider !== 'custom' && (
           <p className="text-xs text-on-surface-variant">
             {vm.selectedQueryPreset.discoveredExecutable
@@ -74,6 +89,13 @@ export function VoiceQuerySettings({
         disabled={vm.queryConfigBusy}
         onChange={() => void vm.toggleVoiceQuery()}
       />
+      {setupStatus?.state === 'failed' && (
+        <div role="alert">
+          <SettingsCallout tone="warning" title="Voice Query could not start">
+            {setupStatus.message}
+          </SettingsCallout>
+        </div>
+      )}
       <SettingToggle
         targetId="voice-query-copy"
         title="Automatically copy answers"
@@ -84,7 +106,7 @@ export function VoiceQuerySettings({
         })}
       />
       {vm.queryConfigError && <p role="alert" className="text-xs text-error">{vm.queryConfigError}</p>}
-      {vm.queryConfigNotice && (
+      {setupStatus?.state !== 'failed' && vm.queryConfigNotice && (
         <p role="status" className="text-xs text-on-surface-variant">{vm.queryConfigNotice}</p>
       )}
 

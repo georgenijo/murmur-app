@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
 import { CUSTOM_QUERY_PRESET } from '../../lib/queryProviders';
+import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import type { TransformModelStatus } from '../../lib/transformSettings';
 import {
   SETTINGS_CATEGORIES,
@@ -777,7 +778,10 @@ describe('SettingsPanel Voice Query async ownership', () => {
     container.remove();
   });
 
-  async function renderVoiceQuery(overrides: Partial<Settings> = {}) {
+  async function renderVoiceQuery(
+    overrides: Partial<Settings> = {},
+    querySetupStatus: QuerySetupStatus | null = null,
+  ) {
     function Harness() {
       const [settings, setSettings] = useState<Settings>({
         ...DEFAULT_SETTINGS,
@@ -801,6 +805,7 @@ describe('SettingsPanel Voice Query async ownership', () => {
           onCheckForUpdate={vi.fn(async () => {})}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
+          querySetupStatus={querySetupStatus}
           pageRequest={{ page: 'voice-query', token: 1 }}
         />
       );
@@ -814,6 +819,71 @@ describe('SettingsPanel Voice Query async ownership', () => {
       await Promise.resolve();
     });
   }
+
+  it('shows why a saved enabled query was turned off after runtime setup failed', async () => {
+    await renderVoiceQuery({}, {
+      state: 'failed',
+      phase: 'command_validation',
+      message: 'The saved Codex command could not be validated. Choose Test, then enable it again.',
+    });
+
+    const alert = Array.from(container.querySelectorAll('[role="alert"]')).find(
+      (element) => element.textContent?.includes('Voice Query could not start'),
+    );
+    expect(alert?.textContent).toContain('The saved Codex command could not be validated.');
+    expect(alert?.textContent).toContain('Choose Test, then enable it again.');
+    expect(
+      container.querySelector('[role="switch"][aria-label="Enable Voice Query"]')?.getAttribute('aria-checked'),
+    ).toBe('false');
+  });
+
+  it('keeps a persisted provider visible and offers retry when presets fail to load', async () => {
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.reject(new Error('provider discovery unavailable'));
+      }
+      return idleInvoke(command);
+    });
+    await renderVoiceQuery({
+      queryProvider: 'codex',
+      queryExecutable: '/opt/homebrew/bin/codex',
+      queryArguments: ['exec', '--json'],
+    });
+
+    const provider = Array.from(container.querySelectorAll('[role="combobox"]')).find(
+      (element) => element.textContent?.trim() === 'Codex',
+    );
+    expect(provider).toBeDefined();
+    expect(container.textContent).toContain(
+      'Provider options could not be loaded. Your saved selection is unchanged.',
+    );
+
+    coreMocks.invoke.mockImplementation((command: string) => {
+      if (command === 'list_query_provider_presets') {
+        return Promise.resolve([
+          CUSTOM_QUERY_PRESET,
+          {
+            ...CUSTOM_QUERY_PRESET,
+            id: 'codex',
+            label: 'Codex',
+            discoveredExecutable: '/opt/homebrew/bin/codex',
+            recommendedArguments: ['exec', '--json'],
+          },
+        ]);
+      }
+      return idleInvoke(command);
+    });
+    const retry = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Retry',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      retry.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('Provider options could not be loaded.');
+  });
 
   async function chooseProvider(label: string) {
     const provider = Array.from(container.querySelectorAll('[role="combobox"]')).find(

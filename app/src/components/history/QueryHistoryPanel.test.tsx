@@ -85,7 +85,7 @@ describe('QueryHistoryPanel', () => {
     expect(notices.every((notice) => !notice.classList.contains('text-error'))).toBe(true);
   });
 
-  it('filters by provider and purges immediately without a modal confirmation', async () => {
+  it('filters by provider and requires a second click before purging', async () => {
     const state = history();
     const confirm = vi.spyOn(window, 'confirm');
     await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
@@ -103,6 +103,12 @@ describe('QueryHistoryPanel', () => {
     });
 
     expect(state.setProvider).toHaveBeenCalledWith('codex');
+    expect(state.clear).not.toHaveBeenCalled();
+    expect(purge.textContent).toBe('Confirm delete all');
+    await act(async () => {
+      purge.click();
+      await Promise.resolve();
+    });
     expect(state.clear).toHaveBeenCalledOnce();
     expect(confirm).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Voice Query history deleted from this Mac.');
@@ -126,6 +132,11 @@ describe('QueryHistoryPanel', () => {
       purge.click();
       await Promise.resolve();
     });
+    expect(state.clear).not.toHaveBeenCalled();
+    await act(async () => {
+      purge.click();
+      await Promise.resolve();
+    });
     expect(state.clear).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Voice Query history deleted from this Mac.');
   });
@@ -135,5 +146,33 @@ describe('QueryHistoryPanel', () => {
     await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
     expect(container.textContent).toContain('including queries that shared app context');
     expect(container.textContent).toContain('Saved answers can quote that context.');
+  });
+
+  it('turns a saved provider failure into an explanation and next step', async () => {
+    const failed = {
+      ...history().entries[0],
+      provider: 'codex' as const,
+      answer: '',
+      errorCode: 'exit_nonzero' as const,
+    };
+    await act(async () => root.render(
+      <QueryHistoryPanel history={history({ entries: [failed] })} retentionEnabled />,
+    ));
+
+    expect(container.textContent).toContain('Failed');
+    expect(container.textContent).toContain('The configured CLI exited with an error.');
+    expect(container.textContent).toContain('Open Settings > AI & Models > Voice Query and run Test');
+    expect(container.textContent).not.toContain('exit_nonzero');
+    expect(container.textContent).not.toContain('No answer was returned');
+  });
+
+  it('distinguishes an empty provider filter from an empty history store', async () => {
+    await act(async () => root.render(
+      <QueryHistoryPanel history={history({ entries: [], provider: 'codex', total: 0 })} retentionEnabled />,
+    ));
+
+    expect(container.textContent).toContain('No saved Codex queries');
+    expect(container.textContent).toContain('Choose All providers');
+    expect(container.textContent).not.toContain('No saved Voice Queries');
   });
 });

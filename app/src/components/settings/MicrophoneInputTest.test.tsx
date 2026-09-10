@@ -665,11 +665,29 @@ describe('MicrophoneInputTest', () => {
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'stop_microphone_preview')).toHaveLength(0);
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'cancel_microphone_preview')).toHaveLength(0);
     expect(container.textContent).toContain('The microphone format is unsupported.');
+    expect(container.textContent).toContain('Voice detection · 55%');
+    expect(container.textContent).toContain('Unavailable');
+    expect(container.textContent).not.toContain('Listening…');
 
     const retry = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent === 'Retry microphone preview');
     await act(async () => retry?.click());
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'start_microphone_preview')).toHaveLength(2);
+  });
+
+  it('labels a stopping preview without calling it started or active', async () => {
+    await render();
+    await emitStatus({
+      previewId: 7,
+      state: 'stopping',
+      stillConnecting: false,
+      errorKind: null,
+      message: null,
+    });
+
+    expect(container.textContent).toContain('Stopping…');
+    expect(container.textContent).not.toContain('Starting…');
+    expect(container.textContent).not.toContain('Listening…');
   });
 
   it('confirms teardown before persisting and reopening a switched device', async () => {

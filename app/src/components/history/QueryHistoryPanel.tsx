@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { useQueryHistory } from '../../lib/hooks/useQueryHistory';
+import { queryHistoryErrorMessage } from '../../lib/queryErrorPresentation';
 
 interface QueryHistoryPanelProps {
   history: ReturnType<typeof useQueryHistory>;
@@ -42,10 +43,32 @@ const READY_DELIVERY_LABELS: Record<string, string> = {
 
 export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPanelProps) {
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmPurge, setConfirmPurge] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+  }, []);
 
   const purge = async () => {
+    setConfirmPurge(false);
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    confirmTimerRef.current = null;
     setNotice(null);
     if (await history.clear()) setNotice('Voice Query history deleted from this Mac.');
+  };
+
+  const requestPurge = () => {
+    if (confirmPurge) {
+      void purge();
+      return;
+    }
+    setConfirmPurge(true);
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    confirmTimerRef.current = setTimeout(() => {
+      confirmTimerRef.current = null;
+      setConfirmPurge(false);
+    }, 4_000);
   };
 
   return (
@@ -83,11 +106,12 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
           </button>
           <button
             type="button"
-            onClick={() => void purge()}
+            onClick={requestPurge}
             disabled={history.clearing}
+            aria-label={confirmPurge ? 'Confirm deletion of all Voice Query history' : 'Delete all Voice Query history'}
             className="dialog-pill-btn border-error/25 px-2.5 py-1.5 text-xs text-error hover:bg-error/10 disabled:opacity-50"
           >
-            {history.clearing ? 'Deleting…' : 'Delete all query history'}
+            {history.clearing ? 'Deleting…' : confirmPurge ? 'Confirm delete all' : 'Delete all query history'}
           </button>
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-on-surface-variant">
@@ -111,9 +135,15 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
         ) : history.entries.length === 0 ? (
           <div className="grid min-h-full place-items-center text-center">
             <div className="max-w-sm rounded-[var(--ui-radius-popover)] border border-dashed border-[var(--ui-hairline)] bg-surface-container-low p-8">
-              <p className="text-sm font-medium text-on-surface">No saved Voice Queries</p>
+              <p className="text-sm font-medium text-on-surface">
+                {history.provider === 'all'
+                  ? 'No saved Voice Queries'
+                  : `No saved ${providerLabel(history.provider)} queries`}
+              </p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
-                {retentionEnabled
+                {history.provider !== 'all'
+                  ? 'Choose All providers to see queries saved with another provider.'
+                  : retentionEnabled
                   ? 'Recognized Voice Queries appear here, including queries that shared app context. Saved answers can quote that context.'
                   : 'Turn on “Keep Voice Query history on this Mac” in Settings to save future questions and answers.'}
               </p>
@@ -121,48 +151,57 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
           </div>
         ) : (
           <div className="space-y-3">
-            {history.entries.map((entry) => (
-              <article key={entry.id} className="dialog-card p-4">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-on-surface-variant">
-                  <span className="font-semibold text-on-surface">{providerLabel(entry.provider)}</span>
-                  <span aria-hidden="true">·</span>
-                  <time dateTime={new Date(entry.timestampMs).toISOString()}>
-                    {new Date(entry.timestampMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
-                  </time>
-                  <span aria-hidden="true">·</span>
-                  <span>{formatDuration(entry.durationMs)}</span>
-                  {entry.tokens && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span>{tokenSummary(entry.tokens)}</span>
-                    </>
-                  )}
-                  {entry.errorCode && (
-                    READY_DELIVERY_LABELS[entry.errorCode] ? (
-                      <span className="ml-auto rounded-full bg-surface-container px-2 py-0.5 font-medium text-on-surface-variant">
-                        {READY_DELIVERY_LABELS[entry.errorCode]}
-                      </span>
-                    ) : (
-                      <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 font-mono text-error">
-                        {entry.errorCode}
-                      </span>
-                    )
-                  )}
-                </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <section aria-label="Question" className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
-                    <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Question</h3>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">{entry.question}</p>
-                  </section>
-                  <section aria-label="Answer" className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
-                    <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Answer</h3>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">
-                      {entry.answer || (entry.errorCode ? 'No answer was returned.' : 'Empty answer')}
-                    </p>
-                  </section>
-                </div>
-              </article>
-            ))}
+            {history.entries.map((entry) => {
+              const failureMessage = queryHistoryErrorMessage(entry.errorCode);
+              return (
+                <article key={entry.id} className="dialog-card p-4">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-on-surface-variant">
+                    <span className="font-semibold text-on-surface">{providerLabel(entry.provider)}</span>
+                    <span aria-hidden="true">·</span>
+                    <time dateTime={new Date(entry.timestampMs).toISOString()}>
+                      {new Date(entry.timestampMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                    </time>
+                    <span aria-hidden="true">·</span>
+                    <span>{formatDuration(entry.durationMs)}</span>
+                    {entry.tokens && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>{tokenSummary(entry.tokens)}</span>
+                      </>
+                    )}
+                    {entry.errorCode && (
+                      READY_DELIVERY_LABELS[entry.errorCode] ? (
+                        <span className="ml-auto rounded-full bg-surface-container px-2 py-0.5 font-medium text-on-surface-variant">
+                          {READY_DELIVERY_LABELS[entry.errorCode]}
+                        </span>
+                      ) : (
+                        <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 font-medium text-error">
+                          Failed
+                        </span>
+                      )
+                    )}
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <section aria-label="Question" className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
+                      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Question</h3>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">{entry.question}</p>
+                    </section>
+                    <section aria-label={failureMessage ? 'Outcome' : 'Answer'} className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
+                      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">{failureMessage ? 'Outcome' : 'Answer'}</h3>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">
+                        {failureMessage ?? (entry.answer || 'Empty answer')}
+                      </p>
+                      {failureMessage && entry.answer && (
+                        <details className="mt-2 text-xs text-on-surface-variant">
+                          <summary className="cursor-pointer font-medium">Show partial answer</summary>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-on-surface">{entry.answer}</p>
+                        </details>
+                      )}
+                    </section>
+                  </div>
+                </article>
+              );
+            })}
             {history.hasMore && (
               <div className="flex justify-center pt-1">
                 <button
