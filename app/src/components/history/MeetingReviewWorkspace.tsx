@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import {
   formatMeetingTimestamp,
+  MEETING_EXPORT_FORMATS,
   meetingSegmentDisplayLabel,
   type EditableReviewDocument,
   type MeetingReviewDocumentV1,
@@ -86,6 +87,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
   const [labelDrafts, setLabelDrafts] = useState<Partial<MeetingSpeakerLabels>>({});
   const [remoteSpeakerDrafts, setRemoteSpeakerDrafts] = useState<Partial<Record<number, string>>>({});
   const [format, setFormat] = useState<MeetingReviewExportFormat>('markdown');
+  const captions = format === 'srt' || format === 'vtt';
   const [restoreConfirm, setRestoreConfirm] = useState(false);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
   const summaryBusy = summaryStatus?.phase === 'running' || summaryStatus?.phase === 'cancelling';
@@ -231,7 +233,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
     const activation = activeWorkspace.current;
     const sessionId = detail.session.id;
     if (await meetings.copy(sessionId, format) && isCurrentWorkspace(activation)) {
-      onNotice(`Meeting review copied as ${format}.`);
+      onNotice(`Meeting ${captions ? 'captions' : 'review'} copied as ${format}.`);
     }
   };
 
@@ -239,7 +241,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
     const activation = activeWorkspace.current;
     const sessionId = detail.session.id;
     const path = await meetings.exportReview(sessionId, detail.session.startedAtMs, format);
-    if (path && isCurrentWorkspace(activation)) onNotice(`Meeting review exported as ${format}.`);
+    if (path && isCurrentWorkspace(activation)) onNotice(`Meeting ${captions ? 'captions' : 'review'} exported as ${format}.`);
   };
 
   const renderTextItems = (title: string, items: MeetingReviewDocumentV1['decisions']) => (
@@ -315,14 +317,23 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
             {restoreConfirm ? 'Confirm replace review' : 'Use generated draft'}
           </button>
         )}
-        <label className="ml-auto text-[11px] font-semibold">Format
-          <select aria-label="Meeting review export format" value={format} onChange={(event) => setFormat(event.target.value as MeetingReviewExportFormat)} className="ml-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest px-2 py-1.5 text-xs">
-            <option value="markdown">Markdown</option><option value="text">Plain text</option><option value="json">JSON</option>
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <label className="text-[11px] font-semibold">Format
+          <select aria-label="Meeting review export format" value={format} onChange={(event) => {
+            const option = MEETING_EXPORT_FORMATS.find((candidate) => candidate.value === event.target.value);
+            if (option) setFormat(option.value);
+          }} className="ml-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest px-2 py-1.5 text-xs">
+            {MEETING_EXPORT_FORMATS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
-        <button type="button" onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary">Copy review</button>
-        <button type="button" onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary">Export…</button>
+        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{captions ? 'Copy captions' : 'Copy review'}</button>
+        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export…</button>
       </div>
+
+      {captions && <p className="mb-3 text-xs text-on-surface-variant" role="status">{detail.session.status === 'active'
+        ? 'Stop this meeting before exporting captions.'
+        : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
 
       {editing && draft ? (
         <form aria-label="Edit meeting review" aria-busy={false} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="mb-4 space-y-3 rounded-[var(--ui-radius-card)] border border-primary/25 bg-surface-container-low p-4">
