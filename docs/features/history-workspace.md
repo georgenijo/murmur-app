@@ -74,7 +74,7 @@ Search rests as a compact icon so it does not dominate the history toolbar. Hove
 
 ## Filters
 
-Three chips: **All**, **Mic**, **File**. Entries saved before the `source` field existed count as `Mic`. Filters compose with the search query.
+Three source chips: **All**, **Mic**, **File**. A second date filter offers **Any date**, **Today**, **Last 7 days**, and **Last 30 days**. Entries saved before the `source` field existed count as `Mic`; source, date, and search filters compose together.
 
 The counter on the right reads `N of M` while anything is filtered, and just the total otherwise.
 
@@ -85,8 +85,8 @@ the timestamp and source, without per-entry word counts, durations, or repeated
 mode controls. Clicking any non-interactive part of a row copies the entry's
 full stored text, including text hidden behind **Show more**. A focused row does
 the same with Enter or Space and briefly announces **Copied**. Nested actions
-such as **Show more** and **Correct & Teach** retain their own behavior and do
-not trigger a copy.
+such as **Show more**, **Copy as Markdown**, and **Correct & Teach** retain their
+own behavior and do not trigger a plain-text copy.
 
 The newest 30 matching transcript rows are mounted initially. **Show older**
 adds the next batch of at most 30 without changing sort order. Search and source

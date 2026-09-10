@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Filter transcription history by Today, Last 7 days, or Last 30 days together
+  with search and microphone/file filters; exports use the shown results.
+- Copy an individual transcript as Markdown from its actions menu.
+
 ### Changed
 
 - Smart Auto now shows an inline microphone inclusion menu, keeps disconnected
