@@ -213,8 +213,8 @@ describe('HistoryPanel', () => {
     await act(async () => byText('Pinned')!.click());
     expect(cardText()).toHaveLength(1);
     expect(cardText()[0]).toContain('keep this snippet');
-    const allFilters = buttons().filter((button) => button.textContent === 'All');
-    await act(async () => allFilters[allFilters.length - 1].click());
+    await act(async () => byText('Pinned')!.click());
+    expect(byText('Pinned')!.getAttribute('aria-pressed')).toBe('false');
     const otherCard = Array.from(container.querySelectorAll('article')).find((card) => card.textContent?.includes('temporary note'))!;
     await act(async () => (otherCard.querySelector('[aria-label="More transcript actions"]') as HTMLElement).click());
     await act(async () => byText('Pin transcript')!.click());
