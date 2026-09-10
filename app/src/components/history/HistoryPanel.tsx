@@ -187,7 +187,9 @@ function HistoryPanelComponent({
   };
 
   const visible = useMemo(
-    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, now: filterNow })),
+    // The clock state triggers rollover/resume refreshes; each new entry must
+    // still be compared with the current time, not the last refresh time.
+    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, now: Date.now() })),
     [entries, query, filter, dateFilter, filterNow],
   );
   const rendered = useMemo(

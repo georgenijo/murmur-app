@@ -66,6 +66,28 @@ test('selected history filters remain selected while hovered', async ({ page }) 
   })).toBe(true);
 });
 
+test('date filters compose with source filters and Markdown copy', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:1420' });
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  const cards = page.locator('.home-history .transcript-card');
+  await expect(cards).toHaveCount(16);
+  await page.getByRole('tab', { name: 'Today', exact: true }).click();
+  await expect(cards).toHaveCount(3);
+  await page.getByRole('tab', { name: 'File', exact: true }).click();
+  await expect(cards).toHaveCount(1);
+  await cards.first().getByRole('button', { name: 'More transcript actions' }).click();
+  await page.getByRole('menuitem', { name: 'Copy as Markdown', exact: true }).click();
+  await expect(page.getByText('Copied transcript as Markdown.', { exact: true })).toBeVisible();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain('# Murmur');
+  expect(copied).toContain('Imported audio uses the same spacing rhythm');
+  expect(copied).not.toContain('The compact transcript keeps its metadata');
+  await page.getByRole('searchbox', { name: 'Search transcripts' }).fill('no-matching-fixture');
+  await page.getByRole('button', { name: 'Reset filters' }).click();
+  await expect(cards).toHaveCount(16);
+  await expect(page.getByRole('tab', { name: 'Any date', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
 test('copied transcripts keep their geometry and actions reachable', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-write'], { origin: 'http://127.0.0.1:1420' });
   await page.setViewportSize({ width: 880, height: 720 });

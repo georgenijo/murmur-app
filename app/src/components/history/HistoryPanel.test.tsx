@@ -163,6 +163,20 @@ describe('HistoryPanel', () => {
     expect(container.textContent).toContain('No matching transcripts');
   });
 
+  it('includes new transcripts without waiting for focus or midnight', async () => {
+    const start = new Date(2026, 6, 18, 12).getTime();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    const first = entry({ id: 'first', timestamp: start, text: 'first transcript' });
+    await render({ entries: [first] });
+    await act(async () => byText('Today')!.click());
+    clock.mockReturnValue(start + 60_000);
+    await render({ entries: [first, entry({
+      id: 'new', timestamp: start + 60_000, text: 'new transcript',
+    })] });
+    expect(cardText()).toHaveLength(2);
+    expect(cardText()[0]).toContain('new transcript');
+  });
+
   it('shows an empty-result state that resets the filters', async () => {
     await render();
     await act(async () => byText('Today')!.click());
