@@ -46,24 +46,19 @@ for (const themeCase of dashboardThemeMatrix) {
   }
 }
 
-test('selected history filters remain selected while hovered', async ({ page }) => {
+test('one filter menu keeps its choice selected while hovered and names it on the trigger', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto('/visual-fixtures.html?state=idle&appearance=dark');
-  const mic = page.getByRole('tab', { name: 'Mic' });
-  await mic.click();
-  await mic.hover();
-  await expect(mic).toHaveAttribute('aria-selected', 'true');
-
-  const indicator = mic.locator('.history-filter-tab-indicator');
-  await expect(indicator).toHaveCount(1);
-  await expect.poll(() => indicator.evaluate((element) => {
-    const probe = document.createElement('span');
-    probe.style.color = 'var(--murmur-surface-container-lowest)';
-    document.body.appendChild(probe);
-    const expectedBackground = getComputedStyle(probe).color;
-    probe.remove();
-    return getComputedStyle(element).backgroundColor === expectedBackground;
-  })).toBe(true);
+  const trigger = page.getByRole('button', { name: /^Filter transcripts/ });
+  await expect(trigger).toHaveText('Filter');
+  await trigger.click();
+  const spoken = page.getByRole('menuitemradio', { name: 'Spoken', exact: true });
+  await spoken.click();
+  await spoken.hover();
+  await expect(spoken).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('menuitemradio', { name: 'Everything', exact: true })).toHaveAttribute('aria-checked', 'false');
+  await expect(trigger).toHaveText('Spoken');
+  await expect(page.locator('.history-filtered-note')).toContainText('Showing');
 });
 
 test('date filters compose with source filters and Markdown copy', async ({ page, context }) => {
@@ -71,10 +66,12 @@ test('date filters compose with source filters and Markdown copy', async ({ page
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const cards = page.locator('.home-history .transcript-card');
   await expect(cards).toHaveCount(16);
-  await page.getByRole('tab', { name: 'Today', exact: true }).click();
+  await page.getByRole('button', { name: /^Filter transcripts/ }).click();
+  await page.getByRole('menuitemradio', { name: 'Today', exact: true }).click();
   await expect(cards).toHaveCount(3);
-  await page.getByRole('tab', { name: 'File', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Files', exact: true }).click();
   await expect(cards).toHaveCount(1);
+  await page.keyboard.press('Escape');
   await cards.first().getByRole('button', { name: 'More transcript actions' }).click();
   await page.getByRole('menuitem', { name: 'Copy as Markdown', exact: true }).click();
   await expect(page.getByText('Copied transcript as Markdown.', { exact: true })).toBeVisible();
@@ -83,9 +80,10 @@ test('date filters compose with source filters and Markdown copy', async ({ page
   expect(copied).toContain('Imported audio uses the same spacing rhythm');
   expect(copied).not.toContain('The compact transcript keeps its metadata');
   await page.getByRole('searchbox', { name: 'Search transcripts' }).fill('no-matching-fixture');
-  await page.getByRole('button', { name: 'Reset filters' }).click();
+  await page.locator('.history-filtered-note').getByRole('button', { name: 'Show all' }).click();
   await expect(cards).toHaveCount(16);
-  await expect(page.getByRole('tab', { name: 'Any date', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('button', { name: 'Filter transcripts', exact: true })).toHaveText('Filter');
+  await expect(page.locator('.history-filtered-note')).toHaveCount(0);
 });
 
 test('pins a transcript and filters it through the real history fixture', async ({ page }) => {
@@ -96,8 +94,12 @@ test('pins a transcript and filters it through the real history fixture', async 
   await target.getByRole('button', { name: 'More transcript actions' }).click();
   await page.getByRole('menuitem', { name: 'Pin transcript', exact: true }).click();
   await expect(page.getByText('Transcript pinned.', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Pinned', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Pinned', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: /^Filter transcripts/ }).click();
+  const pinnedOnly = page.getByRole('menuitemcheckbox', { name: 'Pinned only', exact: true });
+  await pinnedOnly.click();
+  await expect(pinnedOnly).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Filter transcripts: Pinned', exact: true })).toBeVisible();
   await expect(cards).toHaveCount(1);
   await expect(cards.first().locator('.transcript-text')).toHaveText(targetText);
   await cards.first().getByRole('button', { name: 'More transcript actions' }).click();
@@ -190,7 +192,7 @@ test('the window header flows into the history toolbar without a divider', async
 });
 
 test('native default keeps the approved three-column dashboard geometry', async ({ page }) => {
-  await page.setViewportSize({ width: 880, height: 720 });
+  await page.setViewportSize({ width: 1120, height: 820 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
 
   const sidebar = page.locator('.home-sidebar');
@@ -203,17 +205,63 @@ test('native default keeps the approved three-column dashboard geometry', async 
   ]);
 
   expect(sidebarBox?.width).toBe(160);
-  expect(mainBox?.width).toBeGreaterThan(450);
+  expect(mainBox?.width).toBeGreaterThan(650);
   expect(railBox?.width).toBe(212);
   expect(railBox?.y).toBe(mainBox?.y);
   await expect(page.getByText('This month', { exact: true })).toBeVisible();
-  await expect(page.getByText('Voice profile', { exact: true })).toBeVisible();
+  await expect(page.getByText('Voice profile', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('main-status-chip')).toHaveCount(0);
   await expect(page.locator('.home-history .history-date-label')).toHaveCount(14);
 });
+
+for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] as const) {
+  test(`home talk card and history toolbar each fit on one line at ${size.width}x${size.height}`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+
+    const talk = page.locator('.home-talk');
+    await expect(talk).toContainText('Click to start talking');
+    const talkBox = await talk.boundingBox();
+    expect(talkBox?.height).toBeLessThanOrEqual(56);
+    for (const line of [page.locator('.home-talk-title strong'), page.locator('.home-talk-hint')]) {
+      expect(await line.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    }
+
+    const toolbar = page.locator('.home-history .history-toolbar');
+    const centers = await toolbar.evaluate((element) => Array.from(element.children).map((child) => {
+      const box = child.getBoundingClientRect();
+      return box.top + box.height / 2;
+    }));
+    expect(centers.length).toBe(4);
+    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+  });
+}
+
+for (const size of [{ width: 880, height: 720 }, { width: 800, height: 600 }, { width: 761, height: 600 }] as const) {
+  test(`combined history filters keep every toolbar action reachable at ${size.width}x${size.height}`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+
+    await page.getByRole('button', { name: 'Filter transcripts', exact: true }).click();
+    await page.getByRole('menuitemradio', { name: 'Spoken', exact: true }).click();
+    await page.getByRole('menuitemradio', { name: 'Past 30 days', exact: true }).click();
+    await page.getByRole('menuitemcheckbox', { name: 'Pinned only', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Filter transcripts: Spoken · Past 30 days · Pinned' })).toHaveText('3 filters');
+
+    const column = await page.locator('.home-history').boundingBox();
+    const more = await page.getByRole('button', { name: 'More history actions' }).boundingBox();
+    expect(more!.x + more!.width).toBeLessThanOrEqual(column!.x + column!.width + 0.5);
+    const title = page.getByRole('heading', { name: 'Your dictations' });
+    expect(await title.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(24);
+  });
+}
 
 for (const state of ['recording', 'update-recovering', 'settings'] as const) {
   test(`${state} title-bar controls share the native traffic-light centerline`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=${state}&appearance=light`);
+    // Home shows status in its talk card; the title-bar chip appears on the other pages.
+    if (state !== 'settings') await page.getByRole('button', { name: 'Insights', exact: true }).click();
 
     const header = page.locator('.ui-window-header');
     const items = state === 'settings'
@@ -249,7 +297,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
 
   await expect(header).toBeVisible();
   await expect(update).toHaveAccessibleName('Murmur v0.27.1 is available. View update');
-  await expect(record).toHaveAccessibleName('Recovering microphone');
+  await expect(record).toHaveAccessibleName('Reconnecting your microphone…');
   await expect(record).toBeDisabled();
 
   const geometry = await Promise.all([
@@ -261,7 +309,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
 
   expect(updateBox?.width).toBeLessThanOrEqual(28);
   expect(updateBox?.height).toBeLessThanOrEqual(28);
-  expect(recordBox?.height).toBe(30);
+  expect(recordBox?.height).toBe(36);
   expect(headerBox?.height).toBe(42);
 });
 
@@ -734,22 +782,18 @@ test('dashboard actions keep hover, focus, active, and disabled states in an imp
   await page.mouse.up();
 
   await page.goto('/visual-fixtures.html?state=processing&appearance=dark&theme=open-vsx-high-saturation');
-  for (const disabled of [
-    page.getByTestId('home-record-button'),
-    page.getByRole('button', { name: 'Transcribe file…', exact: true }),
-  ]) {
-    await expect(disabled).toBeDisabled();
-    await expect(disabled).toHaveCSS('cursor', 'not-allowed');
-    await expect(disabled).toHaveCSS('opacity', '1');
-  }
+  const disabled = page.getByTestId('home-record-button');
+  await expect(disabled).toBeDisabled();
+  await expect(disabled).toHaveCSS('cursor', 'not-allowed');
+  await expect(disabled).toHaveCSS('opacity', '1');
 });
 
 test('the compact 720x560 home keeps actions and history reachable', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   await expect(page.getByRole('button', { name: 'Start recording' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Transcribe file…' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Recent dictations' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });
 

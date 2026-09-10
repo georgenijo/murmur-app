@@ -1,7 +1,8 @@
+import type { ReactNode } from 'react';
+import { Mic, Square } from 'lucide-react';
 import type { DoubleTapKey, RecordingMode } from '../../lib/settings';
 import type { MeetingRuntimePhase } from '../../lib/meetings';
 import type { DictationStatus } from '../../lib/types';
-import { DashboardAction, DashboardSurface } from '../ui/DashboardPrimitives';
 
 interface HomeRecordingBarProps {
   status: DictationStatus;
@@ -13,7 +14,6 @@ interface HomeRecordingBarProps {
   meetingPhase: MeetingRuntimePhase;
   onRecord: () => void;
   onStop: () => void;
-  onTranscribeFile: () => void;
 }
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
@@ -22,15 +22,13 @@ const KEY_LABELS: Record<DoubleTapKey, string> = {
   ctrl_r: '⌃ Control',
 };
 
-function hotkeyHint(mode: RecordingMode, key: DoubleTapKey): string {
-  if (mode === 'double_tap') return `Double-tap ${KEY_LABELS[key]} anywhere to begin`;
-  if (mode === 'both') return `Hold or double-tap ${KEY_LABELS[key]} anywhere to begin`;
-  return `Hold ${KEY_LABELS[key]} anywhere to begin`;
-}
-
 function timer(seconds: number): string {
   const wholeSeconds = Math.max(0, Math.floor(seconds));
   return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, '0')}`;
+}
+
+function Shortcut({ triggerKey }: { triggerKey: DoubleTapKey }) {
+  return <kbd className="home-talk-key">{KEY_LABELS[triggerKey]}</kbd>;
 }
 
 export function HomeRecordingBar({
@@ -43,71 +41,71 @@ export function HomeRecordingBar({
   meetingPhase,
   onRecord,
   onStop,
-  onTranscribeFile,
 }: HomeRecordingBarProps) {
   const isCapturing = status === 'starting' || status === 'recording';
   const busy = status === 'processing' || status === 'recovering';
   const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
   const normalized = Math.min(1, Math.max(0, audioLevel) * 16);
   const envelopes = [0.52, 0.78, 1, 0.78, 0.52];
-  const statusTitle = status === 'starting'
-    ? 'Connecting to microphone'
-    : status === 'recording'
-      ? `Recording · ${timer(recordingDuration)}`
-      : status === 'processing'
-        ? 'Processing locally'
-        : status === 'recovering'
-          ? 'Recovering microphone'
-          : initialized
-            ? 'Ready to dictate'
-            : 'Initializing';
-  const actionLabel = status === 'starting'
-    ? 'Cancel'
-    : status === 'recording'
-      ? 'Stop Recording'
-      : status === 'processing'
-        ? 'Processing'
-        : status === 'recovering'
-          ? 'Recovering'
-          : 'Start Recording';
+
+  let title: string;
+  let hint: ReactNode;
+  if (status === 'starting') {
+    title = 'Connecting to your microphone…';
+    hint = 'Click to cancel';
+  } else if (status === 'recording') {
+    title = `Listening · ${timer(recordingDuration)}`;
+    hint = 'Click to stop';
+  } else if (status === 'processing') {
+    title = 'Writing it out…';
+    hint = 'Your text will be copied when it’s ready';
+  } else if (status === 'recovering') {
+    title = 'Reconnecting your microphone…';
+    hint = 'This can take a moment';
+  } else if (meetingBusy) {
+    title = 'Notetaker is running';
+    hint = 'Dictation is available when the meeting ends';
+  } else if (!initialized) {
+    title = 'Getting ready…';
+    hint = 'This takes a moment the first time';
+  } else {
+    title = 'Click to start talking';
+    const gesture = recordingMode === 'double_tap' ? 'double-tap' : recordingMode === 'both' ? 'hold or double-tap' : 'hold';
+    hint = <>or {gesture} <Shortcut triggerKey={triggerKey} /> in any app</>;
+  }
+
+  const waiting = busy || meetingBusy || !initialized;
 
   return (
-    <DashboardSurface as="section" variant="flat" ariaLabel="Dictation controls">
-      <div className="home-recording-bar">
-      <DashboardAction
-        testId="home-record-button"
-        variant="primary"
-        tone={isCapturing ? 'danger' : 'default'}
-        onActivate={() => void (isCapturing ? onStop() : onRecord())}
-        disabled={!initialized || busy || meetingBusy}
-        ariaLabel={status === 'recording' ? `Stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Cancel recording' : busy ? statusTitle : 'Start recording'}
+    <section className="home-talk" aria-label="Dictation controls" data-state={isCapturing ? 'capturing' : waiting ? 'waiting' : 'ready'}>
+      <button
+        type="button"
+        data-testid="home-record-button"
+        className="home-talk-button"
+        onClick={() => void (isCapturing ? onStop() : onRecord())}
+        disabled={waiting}
+        aria-label={status === 'recording' ? `Stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Cancel recording' : waiting ? title : 'Start recording'}
       >
-        <span className="home-record-dot" aria-hidden="true" />
-        <span>{actionLabel}</span>
-      </DashboardAction>
+        {isCapturing
+          ? <Square aria-hidden="true" className="home-talk-icon" fill="currentColor" strokeWidth={0} />
+          : busy || !initialized
+            ? <span aria-hidden="true" className="home-talk-spinner" />
+            : <Mic aria-hidden="true" className="home-talk-icon" strokeWidth={2.2} />}
+      </button>
 
-      <div className="home-record-state" aria-live="polite">
-        <div className="home-record-state-line">
-          <strong>{statusTitle}</strong>
+      <div className="home-talk-text" aria-live="polite">
+        <div className="home-talk-title">
+          <strong>{title}</strong>
           {status === 'recording' && (
             <span className="home-record-waveform" aria-hidden="true">
               {envelopes.map((envelope, index) => (
-                <span key={index} style={{ height: `${Math.max(3, Math.round((0.15 + normalized * envelope) * 18))}px` }} />
+                <span key={index} style={{ height: `${Math.max(3, Math.round((0.15 + normalized * envelope) * 16))}px` }} />
               ))}
             </span>
           )}
         </div>
-        <span className="home-record-hint">{hotkeyHint(recordingMode, triggerKey)}</span>
+        <span className="home-talk-hint">{hint}</span>
       </div>
-
-      <DashboardAction
-        variant="quiet"
-        onActivate={onTranscribeFile}
-        disabled={isCapturing || busy || meetingBusy}
-      >
-        Transcribe file…
-      </DashboardAction>
-      </div>
-    </DashboardSurface>
+    </section>
   );
 }

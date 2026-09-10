@@ -34,13 +34,21 @@ describe('HistoryPanel', () => {
   let root: Root;
   let writeText: ReturnType<typeof vi.fn>;
 
-  const buttons = () => Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]'));
+  const buttons = () => Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]'));
   const byText = (text: string) => buttons().find((b) => b.textContent === text);
   const cardText = () => Array.from(container.querySelectorAll('article')).map((a) => a.textContent ?? '');
   const searchShell = () => container.querySelector('[data-testid="history-search-shell"]') as HTMLDivElement;
   const searchInput = () => container.querySelector('input[type="search"]') as HTMLInputElement;
   const searchClose = () => container.querySelector('[aria-label="Clear transcript search"]') as HTMLButtonElement;
   const moreActions = () => container.querySelector('[aria-label="More history actions"]') as HTMLButtonElement;
+  const filterTrigger = () => container.querySelector('[aria-label^="Filter transcripts"]') as HTMLButtonElement;
+  const filterOption = (label: string) => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitemradio"], [role="menuitemcheckbox"]'))
+    .find((item) => item.textContent === label);
+  // The filter menu stays open between choices so several can be combined.
+  async function choose(label: string) {
+    if (!filterOption(label)) await act(async () => filterTrigger().click());
+    await act(async () => filterOption(label)!.click());
+  }
 
   async function render(props: Partial<Parameters<typeof HistoryPanel>[0]> = {}) {
     await act(async () => {
@@ -85,12 +93,15 @@ describe('HistoryPanel', () => {
     await render({ entries: [] });
     expect(container.textContent).toContain('No transcription history yet');
     expect(searchInput()).not.toBeNull();
-    expect(container.textContent).toContain('0 entries');
+    expect(container.textContent).not.toMatch(/\d+ entr/);
+    expect(container.querySelector('.history-filtered-note')).toBeNull();
   });
 
   it('orders entries newest first', async () => {
     await render();
     expect(cardText()[0]).toContain('remember the invariant');
+    expect(container.querySelector('.history-filtered-note')).toBeNull();
+    expect(container.textContent).not.toContain('3 entries');
   });
 
   it('renders long history in bounded batches without hiding older entries', async () => {
@@ -147,7 +158,17 @@ describe('HistoryPanel', () => {
     await type('tauri');
     expect(cardText()).toHaveLength(1);
     expect(container.querySelector('mark')?.textContent).toBe('Tauri');
-    expect(container.textContent).toContain('1 of 3');
+    expect(container.querySelector('.history-filtered-note')?.textContent).toBe('Showing 1 of 3Show all');
+    await act(async () => byText('Show all')!.click());
+    expect(cardText()).toHaveLength(3);
+    expect(document.activeElement).toBe(searchInput());
+  });
+
+  it('does not count a blank search as filtering', async () => {
+    await render();
+    await type('   ');
+    expect(cardText()).toHaveLength(3);
+    expect(container.querySelector('.history-filtered-note')).toBeNull();
   });
 
   it('refreshes date-filtered results when the window regains focus', async () => {
@@ -155,7 +176,7 @@ describe('HistoryPanel', () => {
     const nextDay = new Date(2026, 6, 19, 12).getTime();
     vi.spyOn(Date, 'now').mockReturnValue(firstDay);
     await render({ entries: [entry({ id: 'dated', timestamp: firstDay })] });
-    await act(async () => byText('Today')!.click());
+    await choose('Today');
     expect(cardText()).toHaveLength(1);
     vi.spyOn(Date, 'now').mockReturnValue(nextDay);
     await act(async () => window.dispatchEvent(new Event('focus')));
@@ -168,7 +189,7 @@ describe('HistoryPanel', () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
     const first = entry({ id: 'first', timestamp: start, text: 'first transcript' });
     await render({ entries: [first] });
-    await act(async () => byText('Today')!.click());
+    await choose('Today');
     clock.mockReturnValue(start + 60_000);
     await render({ entries: [first, entry({
       id: 'new', timestamp: start + 60_000, text: 'new transcript',
@@ -179,25 +200,42 @@ describe('HistoryPanel', () => {
 
   it('shows an empty-result state that resets the filters', async () => {
     await render();
-    await act(async () => byText('Today')!.click());
+    await choose('Today');
+    await act(async () => filterTrigger().click());
     await type('nothing matches this');
     expect(container.textContent).toContain('No matching transcripts');
-    await act(async () => byText('Reset filters')!.click());
+    await act(async () => byText('Show all')!.click());
     expect(cardText()).toHaveLength(3);
-    expect(byText('Any date')!.getAttribute('aria-selected')).toBe('true');
+    expect(searchInput().value).toBe('');
+    expect(filterTrigger().getAttribute('aria-label')).toBe('Filter transcripts');
+    expect(container.querySelector('.history-filtered-note')).toBeNull();
   });
 
-  it('filters by source', async () => {
+  it('filters by source from one menu and names the active filters on the trigger', async () => {
     await render();
-    const all = byText('All')!;
-    const file = byText('File')!;
-    expect(all.getAttribute('aria-selected')).toBe('true');
-    expect(file.getAttribute('aria-selected')).toBe('false');
-    await act(async () => file.click());
-    expect(all.getAttribute('aria-selected')).toBe('false');
-    expect(file.getAttribute('aria-selected')).toBe('true');
+    expect(filterTrigger().textContent).toBe('Filter');
+    await act(async () => filterTrigger().click());
+    expect(filterOption('Everything')!.getAttribute('aria-checked')).toBe('true');
+    expect(filterOption('Any time')!.getAttribute('aria-checked')).toBe('true');
+    await choose('Files');
+    expect(filterOption('Everything')!.getAttribute('aria-checked')).toBe('false');
+    expect(filterOption('Files')!.getAttribute('aria-checked')).toBe('true');
     expect(cardText()).toHaveLength(1);
     expect(cardText()[0]).toContain('standup.wav');
+    expect(filterTrigger().textContent).toBe('Files');
+    await choose('Today');
+    expect(filterTrigger().textContent).toBe('2 filters');
+    expect(filterTrigger().getAttribute('aria-label')).toBe('Filter transcripts: Files · Today');
+    await act(async () => byText('Clear filters')!.click());
+    expect(filterTrigger().textContent).toBe('Filter');
+    expect(cardText()).toHaveLength(3);
+  });
+
+  it('tags only file entries, not every spoken one', async () => {
+    await render();
+    const spoken = Array.from(container.querySelectorAll('article')).find((card) => card.textContent?.includes('ship the Tauri'))!;
+    expect(spoken.querySelector('.transcript-meta')?.textContent).not.toContain('Mic');
+    expect(cardText().find((text) => text.includes('imported meeting audio'))).toContain('standup.wav');
   });
 
   it('pins an entry and filters pinned results without changing export scope', async () => {
@@ -210,11 +248,14 @@ describe('HistoryPanel', () => {
       onTogglePinned,
       pinnedCount: 1,
     });
-    await act(async () => byText('Pinned')!.click());
+    await choose('Pinned only');
     expect(cardText()).toHaveLength(1);
     expect(cardText()[0]).toContain('keep this snippet');
-    await act(async () => byText('Pinned')!.click());
-    expect(byText('Pinned')!.getAttribute('aria-pressed')).toBe('false');
+    expect(filterOption('Pinned only')!.getAttribute('aria-checked')).toBe('true');
+    await choose('Pinned only');
+    expect(filterOption('Pinned only')!.getAttribute('aria-checked')).toBe('false');
+    expect(cardText()).toHaveLength(2);
+    await act(async () => filterTrigger().click());
     const otherCard = Array.from(container.querySelectorAll('article')).find((card) => card.textContent?.includes('temporary note'))!;
     await act(async () => (otherCard.querySelector('[aria-label="More transcript actions"]') as HTMLElement).click());
     await act(async () => byText('Pin transcript')!.click());
