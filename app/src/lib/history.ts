@@ -32,6 +32,8 @@ export interface HistoryEntry {
   /** Absent only on in-memory legacy fixtures before migration. */
   schemaVersion?: 2;
   id: string;
+  /** User-selected favorite, bounded to the newest 20 pinned entries. */
+  pinned?: boolean;
   /** Final text delivered to the clipboard and shown in History. */
   text: string;
   /** Exact backend recognition before transforms. Absent on migrated entries. */
@@ -62,7 +64,31 @@ const MAX_ENTRIES = 200;
  * in the same millisecond can collide.
  */
 export function trimHistory(entries: HistoryEntry[]): HistoryEntry[] {
-  return entries.slice(-MAX_ENTRIES);
+  const normalized = normalizePinned(entries);
+  if (normalized.length <= MAX_ENTRIES) return normalized;
+  const pinned = normalized.filter((entry) => entry.pinned);
+  const unpinned = normalized.filter((entry) => !entry.pinned);
+  const keepUnpinned = unpinned.slice(-(MAX_ENTRIES - pinned.length));
+  const keep = new Set([...pinned, ...keepUnpinned]);
+  return normalized.filter((entry) => keep.has(entry));
+}
+
+export const MAX_PINNED_ENTRIES = 20;
+
+/** Keep the pin set bounded and deterministic, retaining the newest pins. */
+function normalizePinned(entries: HistoryEntry[]): HistoryEntry[] {
+  // Use positions rather than ids: legacy history explicitly permits duplicate
+  // ids, and a pin on one duplicate must not spread to every matching row.
+  const pinnedIndexes = new Set(
+    entries
+      .map((entry, index) => entry.pinned === true ? index : -1)
+      .filter((index) => index >= 0)
+      .slice(-MAX_PINNED_ENTRIES),
+  );
+  return entries.map((entry, index) => {
+    const pinned = pinnedIndexes.has(index);
+    return entry.pinned === pinned ? entry : { ...entry, pinned };
+  });
 }
 
 export function loadHistory(): HistoryEntry[] {
@@ -79,10 +105,11 @@ export function loadHistory(): HistoryEntry[] {
 }
 
 function migrateHistoryEntry(value: Record<string, unknown>): HistoryEntry {
-  if (value.schemaVersion === 2) return value as unknown as HistoryEntry;
+  const pinned = value.pinned === true;
+  if (value.schemaVersion === 2) return { ...value, pinned } as unknown as HistoryEntry;
   // Deliberately do not copy legacy delivered `text` into `rawText`: that
   // relationship cannot be reconstructed after the fact.
-  return { ...value, schemaVersion: 2 } as unknown as HistoryEntry;
+  return { ...value, schemaVersion: 2, pinned } as unknown as HistoryEntry;
 }
 
 export function saveHistory(entries: HistoryEntry[]): void {
@@ -137,6 +164,22 @@ export function updateHistoryEntry(
   return entries.map((entry) => entry.id === id ? { ...entry, text } : entry);
 }
 
+export interface TogglePinnedResult {
+  entries: HistoryEntry[];
+  changed: boolean;
+  limitReached: boolean;
+}
+
+export function toggleHistoryEntryPinned(entries: HistoryEntry[], target: HistoryEntry): TogglePinnedResult {
+  const targetIndex = entries.indexOf(target);
+  if (targetIndex < 0) return { entries, changed: false, limitReached: false };
+  if (!target.pinned && entries.filter((entry) => entry.pinned).length >= MAX_PINNED_ENTRIES) {
+    return { entries, changed: false, limitReached: true };
+  }
+  const next = entries.map((entry, index) => index === targetIndex ? { ...entry, pinned: !entry.pinned } : entry);
+  return { entries: trimHistory(next), changed: true, limitReached: false };
+}
+
 export function clearHistory(): void {
   clearDurableBlob(HISTORY_STORE);
 }
@@ -148,6 +191,7 @@ export function clearHistory(): void {
 export type HistoryFilter = 'all' | 'recording' | 'file';
 
 export type HistoryDateFilter = 'all' | 'today' | 'week' | 'month';
+export type HistoryPinnedFilter = 'all' | 'pinned';
 
 export const HISTORY_FILTER_OPTIONS: { value: HistoryFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -183,11 +227,12 @@ function matchesTokens(entry: HistoryEntry, tokens: string[]): boolean {
  */
 export function filterHistory(
   entries: HistoryEntry[],
-  options: { query?: string; filter?: HistoryFilter; dateFilter?: HistoryDateFilter; now?: number } = {},
+  options: { query?: string; filter?: HistoryFilter; dateFilter?: HistoryDateFilter; pinnedFilter?: HistoryPinnedFilter; now?: number } = {},
 ): HistoryEntry[] {
   const tokens = searchTokens(options.query ?? '');
   const filter = options.filter ?? 'all';
   const dateFilter = options.dateFilter ?? 'all';
+  const pinnedFilter = options.pinnedFilter ?? 'all';
   const now = options.now ?? Date.now();
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
@@ -202,6 +247,7 @@ export function filterHistory(
       : null;
   return entries.filter((entry) => {
     if ((filter === 'recording' || filter === 'file') && entrySource(entry) !== filter) return false;
+    if (pinnedFilter === 'pinned' && entry.pinned !== true) return false;
     if (cutoff !== null && (entry.timestamp < cutoff || entry.timestamp > now)) return false;
     return matchesTokens(entry, tokens);
   });
@@ -351,6 +397,7 @@ export function formatHistoryExport(
       entries: ordered.map((entry) => ({
         schemaVersion: entry.schemaVersion ?? 2,
         id: entry.id,
+        pinned: entry.pinned === true,
         timestamp: entry.timestamp,
         durationSeconds: entry.duration,
         source: entrySource(entry),

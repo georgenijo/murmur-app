@@ -17,7 +17,7 @@ import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
-import type { HistoryEntry } from './lib/history';
+import { toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
@@ -354,6 +354,7 @@ function VisualFixture() {
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
   const meetings = useMeetings(fixtureSettings);
+  const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
@@ -456,9 +457,10 @@ function VisualFixture() {
               </section>
             ) : (
               <HomeDashboard
-                historyEntries={entries}
-                onClearHistory={() => {}}
+                historyEntries={historyEntries}
+                onClearHistory={() => setHistoryEntries([])}
                 onUpdateHistoryEntry={() => {}}
+                onToggleHistoryPinned={(entry) => setHistoryEntries((current) => toggleHistoryEntryPinned(current, entry).entries)}
                 onTranscribeFile={() => {}}
                 status={status}
                 initialized

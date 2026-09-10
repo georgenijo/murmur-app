@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Filter transcription history by Today, Last 7 days, or Last 30 days together
   with search and microphone/file filters; exports use the shown results.
 - Copy an individual transcript as Markdown from its actions menu.
+- Pin up to 20 useful transcripts and find them with the Pinned filter. Pins
+  stay within the 200-entry history limit and are removed by Clear History.
 
 ### Changed
 

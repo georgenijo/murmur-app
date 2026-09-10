@@ -200,6 +200,27 @@ describe('HistoryPanel', () => {
     expect(cardText()[0]).toContain('standup.wav');
   });
 
+  it('pins an entry and filters pinned results without changing export scope', async () => {
+    const onTogglePinned = vi.fn();
+    await render({
+      entries: [
+        entry({ id: 'pinned', text: 'keep this snippet', pinned: true }),
+        entry({ id: 'other', text: 'temporary note' }),
+      ],
+      onTogglePinned,
+      pinnedCount: 1,
+    });
+    await act(async () => byText('Pinned')!.click());
+    expect(cardText()).toHaveLength(1);
+    expect(cardText()[0]).toContain('keep this snippet');
+    await act(async () => byText('Pinned')!.click());
+    expect(byText('Pinned')!.getAttribute('aria-pressed')).toBe('false');
+    const otherCard = Array.from(container.querySelectorAll('article')).find((card) => card.textContent?.includes('temporary note'))!;
+    await act(async () => (otherCard.querySelector('[aria-label="More transcript actions"]') as HTMLElement).click());
+    await act(async () => byText('Pin transcript')!.click());
+    expect(onTogglePinned).toHaveBeenCalledWith(expect.objectContaining({ id: 'other' }));
+  });
+
   it('copies only the visible entries as markdown', async () => {
     await render();
     await type('tauri');

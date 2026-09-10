@@ -21,6 +21,7 @@ interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
   onClearHistory: () => void;
   onUpdateHistoryEntry: (id: string, text: string) => void;
+  onToggleHistoryPinned: (entry: HistoryEntry) => void;
   focusSearchToken?: number;
   onTranscribeFile: () => void;
   status: DictationStatus;
@@ -45,6 +46,7 @@ export function HomeDashboard({
   historyEntries,
   onClearHistory,
   onUpdateHistoryEntry,
+  onToggleHistoryPinned,
   focusSearchToken,
   onTranscribeFile,
   status,
@@ -120,6 +122,8 @@ export function HomeDashboard({
               entries={historyEntries}
               onClear={onClearHistory}
               onUpdateEntry={onUpdateHistoryEntry}
+              onTogglePinned={onToggleHistoryPinned}
+              pinnedCount={historyEntries.filter((entry) => entry.pinned === true).length}
               focusSearchToken={focusSearchToken}
               onTranscribeFile={onTranscribeFile}
             />

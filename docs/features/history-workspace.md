@@ -74,7 +74,13 @@ Search rests as a compact icon so it does not dominate the history toolbar. Hove
 
 ## Filters
 
-Three source chips: **All**, **Mic**, **File**. A second date filter offers **Any date**, **Today**, **Last 7 days**, and **Last 30 days**. Entries saved before the `source` field existed count as `Mic`; source, date, and search filters compose together.
+Three source chips: **All**, **Mic**, **File**. A second date filter offers **Any date**, **Today**, **Last 7 days**, and **Last 30 days**. A third filter narrows the list to **Pinned** transcripts. Entries saved before the `source` field existed count as `Mic`; source, date, pinned, and search filters compose together.
+
+Rows can be pinned for quick reuse. Pins are local history metadata, capped at 20
+entries. The 200-entry history cap remains global: when history rolls over,
+oldest unpinned entries leave first, while pins remain eligible for the same cap.
+If all retained entries are pinned, the oldest pins leave next. Clearing history
+clears pins too, and disabling transcript retention still rejects new entries.
 
 The counter on the right reads `N of M` while anything is filtered, and just the total otherwise.
 
@@ -106,7 +112,7 @@ The **Export** menu acts on **exactly what is currently shown** — filters and 
 |--------|-------|
 | Markdown | `# Murmur transcript history`, an export stamp, then one `##` section per entry with source and duration |
 | Plain text | `[timestamp · source · duration]` header line per entry, blank-line separated |
-| JSON | `{ schema: "murmur.history.v2", exportedAt, count, entries: [...] }`; v2 entries include raw recognition and recording metadata |
+| JSON | `{ schema: "murmur.history.v2", exportedAt, count, entries: [...] }`; v2 entries include pin state, raw recognition, and recording metadata |
 
 Each format can go to the clipboard or to a file. The two menu groups repeat the same format names, so each is a labelled `role="group"` and every item carries the verb in its accessible name ("Copy 5 shown as Markdown", "Save 5 shown as Markdown"). Entries are ordered exactly as displayed (newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
 
