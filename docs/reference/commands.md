@@ -116,9 +116,9 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Starts the rdev listener in `hold_down`, `double_tap`, or `both`. Validates mode; requires Accessibility. |
+| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Starts the rdev listener in `hold_down`, `double_tap`, or `both`. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
 | `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
-| `update_keyboard_key` | `hotkey: String` | `()` | Changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
+| `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
 | `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
