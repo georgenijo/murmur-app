@@ -47,6 +47,7 @@ Held → KeyRelease(target) → Idle (emit hold-down-stop)
 - **Key repeat** while held: Ignored (stays in Held state)
 - **Trigger key + another non-modifier** (for example Shift+A or F8+A): Cancels hold, emits stop
 - **Shortcut modifier held before a function key** (for example Command, then F8): Ignored while idle; Fn remains allowed for Apple function-key rows
+- **Shortcut modifier pressed during a function-key hold**: Cancels the hold and emits stop if recording already started
 - **Cooldown**: 300ms after stop before re-trigger is allowed
 
 ### Code Path
@@ -90,6 +91,7 @@ WaitingFirstUp → KeyUp(target) within 200ms → FIRE
 - **Held key** (>200ms): Resets to Idle
 - **Trigger key + another key** (for example Shift+A or F8+A): Resets on the other KeyPress
 - **Shortcut modifier held before a function key** (for example Control, then F8): Does not begin or stop a recording; Fn remains allowed
+- **Shortcut modifier pressed during either function-key tap**: Resets the tap sequence
 - **Slow gap** between taps (>400ms): A timer resets to Idle at expiry, without waiting for another keyboard event
 - **Triple-tap spam**: 50ms cooldown after firing
 - **Key repeat events**: Ignored while within hold duration

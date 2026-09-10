@@ -142,12 +142,18 @@ impl DoubleTapDetector {
             None => return false,
         };
 
-        if self.state == DetectorState::Idle
-            && shortcut_modifiers_held
+        let function_chord_rejected = shortcut_modifiers_held
             && is_function_key(target)
-            && matches!(event_type, EventType::KeyPress(key) if is_target_key(*key, target))
-        {
+            && match (self.state, event_type) {
+                (DetectorState::Idle, EventType::KeyPress(key)) => is_target_key(*key, target),
+                (DetectorState::WaitingFirstUp, EventType::KeyPress(_))
+                | (DetectorState::WaitingSecondDown, EventType::KeyPress(_))
+                | (DetectorState::WaitingSecondUp, EventType::KeyPress(_)) => true,
+                _ => false,
+            };
+        if function_chord_rejected {
             self.log_rejection(RejectionReason::ComboCancelled, event_type);
+            self.reset();
             return false;
         }
 
@@ -182,11 +188,6 @@ impl DoubleTapDetector {
                             self.reset();
                         }
                     }
-                    EventType::KeyPress(key) if !is_modifier(*key) => {
-                        // User is typing a combo like Shift+A
-                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.reset();
-                    }
                     EventType::KeyPress(key) if is_target_key(*key, target) => {
                         // Key repeat event — ignore, stay in same state
                         // But check if we've been held too long
@@ -194,6 +195,11 @@ impl DoubleTapDetector {
                             self.log_rejection(RejectionReason::HeldTooLong, event_type);
                             self.reset();
                         }
+                    }
+                    EventType::KeyPress(key) if !is_modifier(*key) => {
+                        // User is typing a combo like Shift+A
+                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
+                        self.reset();
                     }
                     _ => {
                         // Check timeout
@@ -239,17 +245,17 @@ impl DoubleTapDetector {
                             self.reset();
                         }
                     }
-                    EventType::KeyPress(key) if !is_modifier(*key) => {
-                        // Combo like Shift+A on second press
-                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.reset();
-                    }
                     EventType::KeyPress(key) if is_target_key(*key, target) => {
                         // Key repeat — check timeout
                         if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
                             self.log_rejection(RejectionReason::HeldTooLong, event_type);
                             self.reset();
                         }
+                    }
+                    EventType::KeyPress(key) if !is_modifier(*key) => {
+                        // Combo like Shift+A on second press
+                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
+                        self.reset();
                     }
                     _ => {
                         if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
@@ -449,13 +455,23 @@ impl HoldDownDetector {
             None => return HoldDownEvent::None,
         };
 
-        if self.state == HoldState::Idle
-            && shortcut_modifiers_held
+        let function_chord_rejected = shortcut_modifiers_held
             && is_function_key(target)
-            && matches!(event_type, EventType::KeyPress(key) if is_target_key(*key, target))
-        {
+            && match (self.state, event_type) {
+                (HoldState::Idle, EventType::KeyPress(key)) => is_target_key(*key, target),
+                (HoldState::Held, EventType::KeyPress(_)) => true,
+                _ => false,
+            };
+        if function_chord_rejected {
             self.log_rejection(RejectionReason::ComboCancelled, event_type);
-            return HoldDownEvent::None;
+            return match self.state {
+                HoldState::Idle => HoldDownEvent::None,
+                HoldState::Held => {
+                    self.state = HoldState::Idle;
+                    self.last_stopped_at = Some(Instant::now());
+                    HoldDownEvent::Stop
+                }
+            };
         }
 
         match self.state {
@@ -2680,6 +2696,49 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_modifier_during_function_hold_stops_once_and_clears_state() {
+        let mut hold = make_hold_detector(Key::F8);
+        assert_eq!(hold.handle_event(&press(Key::F8)), HoldDownEvent::Start);
+        assert_eq!(
+            hold.handle_event_with_shortcut_modifiers(&press(Key::MetaLeft), true),
+            HoldDownEvent::Stop
+        );
+        assert_eq!(hold.state, HoldState::Idle);
+        assert_eq!(hold.handle_event(&release(Key::F8)), HoldDownEvent::None);
+    }
+
+    #[test]
+    fn shortcut_modifier_cancels_each_function_double_tap_phase() {
+        let mut first_down = make_detector(Key::F8);
+        first_down.handle_event(&press(Key::F8));
+        assert_eq!(first_down.state, DetectorState::WaitingFirstUp);
+        assert!(!first_down.handle_event_with_shortcut_modifiers(&press(Key::MetaLeft), true,));
+        assert_eq!(first_down.state, DetectorState::Idle);
+
+        let mut between_taps = make_detector(Key::F8);
+        between_taps.handle_event(&press(Key::F8));
+        between_taps.handle_event(&release(Key::F8));
+        assert_eq!(between_taps.state, DetectorState::WaitingSecondDown);
+        assert!(!between_taps.handle_event_with_shortcut_modifiers(&press(Key::ControlLeft), true,));
+        assert_eq!(between_taps.state, DetectorState::Idle);
+
+        let mut second_down = make_detector(Key::F8);
+        second_down.handle_event(&press(Key::F8));
+        second_down.handle_event(&release(Key::F8));
+        second_down.handle_event(&press(Key::F8));
+        assert_eq!(second_down.state, DetectorState::WaitingSecondUp);
+        assert!(!second_down.handle_event_with_shortcut_modifiers(&press(Key::Alt), true,));
+        assert_eq!(second_down.state, DetectorState::Idle);
+
+        let mut stopping = make_detector(Key::F8);
+        stopping.recording = true;
+        stopping.handle_event(&press(Key::F8));
+        assert!(!stopping.handle_event_with_shortcut_modifiers(&press(Key::ShiftLeft), true,));
+        assert!(!stopping.handle_event(&release(Key::F8)));
+        assert_eq!(stopping.state, DetectorState::Idle);
+    }
+
+    #[test]
     fn function_key_double_tap_handles_repeats_and_combo_cancellation() {
         let mut d = make_detector(Key::F12);
 
@@ -2957,6 +3016,22 @@ mod tests {
             both_handle_event(&mut hold, &mut double_tap, &release(Key::F6), false),
             vec![BothEmit::DoubleTapToggle]
         );
+    }
+
+    #[test]
+    fn shortcut_modifier_cancels_both_mode_function_press_before_promotion() {
+        let mut hold = make_hold_detector(Key::F6);
+        let mut double_tap = make_detector(Key::F6);
+        assert_eq!(hold.handle_event(&press(Key::F6)), HoldDownEvent::Start);
+        assert!(!double_tap.handle_event(&press(Key::F6)));
+
+        assert_eq!(
+            hold.handle_event_with_shortcut_modifiers(&press(Key::MetaLeft), true),
+            HoldDownEvent::Stop
+        );
+        assert!(!double_tap.handle_event_with_shortcut_modifiers(&press(Key::MetaLeft), true,));
+        assert_eq!(hold.state, HoldState::Idle);
+        assert_eq!(double_tap.state, DetectorState::Idle);
     }
 
     #[test]
