@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-09-10
+
+### Changed
+
+- Home now centers on one compact recording card, with a single filter menu,
+  quieter summary information, and transcript text that is directly clickable
+  and reachable through voice control (#706).
+- Settings now uses a consistent spacing rhythm across sections, rows, fields,
+  callouts, and nested controls (#707).
+
 ## [0.44.0] - 2026-09-10
 
 ### Added
