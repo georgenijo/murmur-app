@@ -11,8 +11,6 @@ ROOT = Path(__file__).resolve().parents[1]
 LIB_RS = ROOT / "app/src-tauri/src/lib.rs"
 COMMANDS_DOC = ROOT / "docs/reference/commands.md"
 COUNT_DOCS = (
-    ROOT / "CLAUDE.md",
-    ROOT / "AGENTS.md",
     ROOT / "docs/ARCHITECTURE.md",
     ROOT / "docs/FEATURES.md",
 )

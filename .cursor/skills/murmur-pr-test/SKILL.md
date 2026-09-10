@@ -12,12 +12,15 @@ disable-model-invocation: true
 
 Use this skill when testing, validating, or merging Murmur pull requests, especially when the user asks to pick the next PR, test a PR in the real native app, merge it if it looks good, or continue through the PR queue.
 
+Follow the repository [agent guide](../../../CLAUDE.md) for verification, optional
+work, and cleanup after a confirmed merge.
+
 ## Goal
 
 Make PR validation repeatable, isolated, and merge-safe:
 
 - Test each PR in its own worktree.
-- Prefer the real native Tauri app for user-facing Murmur behavior.
+- Exercise user-facing Murmur behavior in the real native Tauri app.
 - Run the required compile and test checks before merge.
 - Merge only after the PR is verified and the user has asked to merge.
 - Skip and report PRs with clear blockers.
@@ -65,15 +68,16 @@ Use the narrowest useful smoke test first, but always run the required checks be
 
 ## Required Checks Before Merge
 
-Run all of these from the PR worktree:
+Run the checks relevant to the diff from the PR worktree, plus required CI checks:
 
 ```bash
 cd app/src-tauri && cargo check
 cd app/src-tauri && cargo test -- --test-threads=1
 cd app && npx tsc --noEmit
+cd app && npm test
 ```
 
-All checks must pass before merging. Fix only issues required to make the PR mergeable and verified.
+All applicable checks must pass before merging. Fix only issues required to make the PR mergeable and verified.
 
 ## Native App Testing
 
@@ -94,7 +98,7 @@ Launch the app:
 open -n app/src-tauri/target/debug/bundle/macos/Local\ Dictation\ Dev.app
 ```
 
-Use native-app automation to verify visible behavior. Do not substitute browser testing for native-app testing when the user asks for the real app.
+Codex uses Computer Use to click through the affected flow in the changed native app. If Computer Use is unavailable or prohibited, obtain an allowed native UI control tool as described in the agent guide. Verify the running revision and observed result. Other agents also use native UI interaction for app verification.
 
 ## Merge Preparation
 
@@ -123,9 +127,8 @@ Only merge when:
 
 - The user asked to merge passing PRs.
 - Native smoke testing passed when applicable.
-- `cargo check` passed.
-- `cargo test -- --test-threads=1` passed.
-- `npx tsc --noEmit` passed.
+- Relevant Rust, TypeScript, and Vitest checks passed.
+- Required CI and reviews passed for the current pushed commit.
 - There are no known blockers.
 
 Merge with:
@@ -135,6 +138,11 @@ gh pr merge <number> --repo georgenijo/murmur-app --merge
 ```
 
 Use `--admin` only when the user has authorized merging despite branch protection and the local verification is clean.
+
+## After merge
+
+Verify the remote merge, then follow the agent guide to remove this task's local
+worktree, branch, processes, and temporary test state. Preserve unrelated work.
 
 ## Reporting
 
@@ -146,5 +154,6 @@ Report:
 - Exact checks run and whether they passed.
 - Any blockers, with the command error or file conflict.
 - Merge commit or PR URL if merged.
+- Cleanup result after a confirmed merge.
 
 Keep the report concise. If a PR is blocked, say why and move to the next PR only if the user asked to continue the queue.

@@ -5,7 +5,7 @@ You are a product and engineering advisor onboarded to the Murmur project. Your 
 ## 1. Load Context (silent)
 
 Read these files to get fully up to speed:
-- `CLAUDE.md` — project overview, stack, architecture, file map
+- `CLAUDE.md` — project instructions and documentation links
 - `CHANGELOG.md` — version history, what shipped recently
 - `docs/archive/TICKETS_FEATURES_v1.md` — what's already been built (FEAT-001 through FEAT-004)
 - `docs/DEVELOPMENT.md` — local build workflow, known macOS permission quirks

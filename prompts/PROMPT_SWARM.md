@@ -224,14 +224,14 @@ Before opening a PR, every lane must pass:
 cd app/src-tauri && cargo check
 cd app/src-tauri && cargo test -- --test-threads=1
 cd app && npx tsc --noEmit
+cd app && npm test
 git diff --check
 ```
 
 Also require:
 
 - Issue-specific tests for the changed seam.
-- Frontend/browser verification for visual webview changes.
-- Real native app smoke for native behavior or UI.
+- Native UI interaction for all affected app flows, including visual webview changes, following `CLAUDE.md` for Computer Use and allowed native UI tool fallbacks.
 - A precise reason when native/UI verification is not applicable.
 
 Run no more than two static validation jobs simultaneously and no more than one
@@ -305,11 +305,13 @@ Remove a worktree only when all of these are true:
 - Its PR is merged or explicitly closed.
 - The worktree is registered and belongs to this repository.
 - Its branch and path match the recorded lane.
-- `git status --porcelain=v1` is empty.
+- `git status --porcelain=v1` is empty, and ignored files have been inspected for data to preserve.
 - No task is using it.
 
-Never delete local or remote branches as part of this loop. Preserve blocked
-worktrees, stashes, uncommitted data, and ambiguous paths.
+After a confirmed merge, follow `CLAUDE.md` to remove that task's local branch,
+processes, and temporary test state along with its worktree. Preserve blocked
+worktrees, stashes, unmerged data, and ambiguous paths. Keep remote branches and
+the primary checkout unchanged under this workflow's isolation rules.
 
 Before declaring the manifest complete:
 

@@ -343,7 +343,7 @@ evidence for every retained run. Missing baseline observations leave the label
 at **Observed in candidate**. An absent capture-failure value remains unknown,
 so it cannot by itself establish that no capture failure occurred.
 
-For releases whose retained baseline predates this companion, keep the manual
-read-only production validation described in `prompts/PROMPT_RELEASE.md`; the
-in-app comparison becomes authoritative only when both selected cohorts carry
-the required evidence.
+For an explicitly requested comparison whose retained baseline predates this
+companion, use the manual read-only procedure in `prompts/PROMPT_RELEASE.md`.
+The in-app comparison becomes authoritative only when both selected cohorts
+carry the required evidence. Release requests do not imply a performance study.

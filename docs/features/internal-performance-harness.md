@@ -164,60 +164,31 @@ Both refs must contain the internal harness, so the first completed run of this
 feature establishes the baseline for subsequent commits. Each ref incurs the
 discarded full-set Quick conditioning stage and two target-only Quick passes.
 Use Quick (5 clips × 1) for a fast candidate smoke run, Standard (20 × 1) for
-routine comparisons, and Thorough (20 × 3) before a release. Alternate
+requested routine comparisons, and Thorough (20 × 3) for a requested deeper
+comparison. Alternate
 `--candidate-first` between repeat comparisons when investigating small deltas
 to expose residual order/thermal bias.
 
-## Required PR and release gates
+## Requested comparisons
 
-For a PR that can change recognition latency, accuracy, delivered-text output,
-or memory, resolve the immutable PR-head SHA after pushing the exact candidate
-branch, then run the Fleet wrapper against that SHA:
+Run benchmarks only when George explicitly requests them. Follow the optional
+performance policy in [the agent guide](../../CLAUDE.md). Routine implementation,
+testing, PRs, and releases carry no benchmark gate or reporting requirement.
 
-```bash
-PR_HEAD_SHA="$(gh pr view --json headRefOid --jq .headRefOid)"
-python3 scripts/murmur_bench_fleet.py \
-  --baseline origin/main \
-  --candidate "$PR_HEAD_SHA" \
-  --preset quick
-```
+For a requested comparison, agree on or choose the relevant baseline, immutable
+candidate commit, models, and preset. Fetch the candidate on the trusted Mac and
+verify that it resolves before starting. Record the tested refs, preset, models,
+thresholds, aggregate deltas, and pass/fail. A result describes only the tested
+revision; do not present it as evidence for a later revision.
 
-Fetch `origin` on the trusted benchmark Mac first and verify that it resolves
-`PR_HEAD_SHA`; do not substitute a moving branch name. The same SHA must appear
-in the validation receipt.
+Use the normal failing exit status to interpret the result. If a requested
+comparison fails, one `--candidate-first` repeat can help expose order or thermal
+bias. Report mixed results as inconclusive. Benchmark results become a merge or
+release condition only when George explicitly requests that condition.
 
-The gate applies to VAD, transcription backends, model runtime, transcript
-transforms, benchmarked execution paths, and performance-sensitive Rust
-dependencies. Use Standard for shared cross-model or pipeline changes. A PR
-outside that surface records `Murmur Bench: N/A — <reason>` in its validation
-receipt instead of running an irrelevant benchmark.
-
-Record the tested candidate commit SHA in the receipt. Any later push, rebase,
-merge from main, or conflict resolution invalidates the result and requires a
-rerun against the new immutable candidate SHA before merge.
-
-Before every release, compare the previous release tag with the exact
-`origin/main` release candidate using Standard. Use Thorough when any commit
-since the tag touches the benchmark-sensitive surface:
-
-```bash
-python3 scripts/murmur_bench_fleet.py \
-  --baseline v<previous-version> \
-  --candidate origin/main \
-  --preset standard
-```
-
-Do not use `--no-fail` for either gate. On a failed comparison, repeat once
-with `--candidate-first`. A repeated regression blocks merge or release. Mixed
-results are inconclusive rather than a pass and require investigation or the
-user's explicit acceptance of the measured risk. Keep raw reports and personal
-transcript content on the trusted Mac. GitHub receipts may contain only
-content-free provenance and results: exact refs, candidate SHA where applicable,
-preset, model names, thresholds, aggregate deltas, and pass/fail.
-
-This replay gate does not exercise live Core Audio startup, device switching,
-first PCM, or real clipboard/paste delivery. Native smoke tests and the
-post-release production-latency check remain mandatory where applicable.
+Keep raw reports and personal transcript content on the trusted Mac. Shared
+results contain only content-free provenance and aggregate metrics. Saved-WAV
+replays do not verify live capture, device switching, or clipboard/paste delivery.
 
 ## CI policy
 

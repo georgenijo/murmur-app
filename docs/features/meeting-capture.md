@@ -220,8 +220,6 @@ Mac.
   independent rings under Loom, macOS gating, and typed permission failures.
 - The native gate exercises signed-app permission attribution, start → first
   PCM on both channels → stop, and confirmed tap destruction.
-- The implementing PR requires Murmur Bench `standard` against its immutable
-  pushed SHA; replay benchmarks do not replace the native tap smoke.
 
 ## Non-goals
 

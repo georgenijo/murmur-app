@@ -5,7 +5,7 @@ You are starting a new session on the Murmur project in bug-fix mode. Follow the
 ## 1. Load Context
 
 Read these files silently:
-- `CLAUDE.md` — project overview, file map, key patterns (may already be loaded)
+- `CLAUDE.md` — project instructions and documentation links (may already be loaded)
 - `CHANGELOG.md` — version history, recent changes
 - `docs/onboarding.md` — setup, permissions, models, logs
 
@@ -54,10 +54,13 @@ After confirmation, implement the fix. Stay focused — fix the bug, nothing els
 
 ## 7. Verify
 
-Run all of these before committing:
+Run the relevant checks before committing, plus required CI checks:
 - `cd app/src-tauri && cargo check` — no compile errors or warnings
 - `cd app/src-tauri && cargo test -- --test-threads=1` — all unit tests pass
 - `cd app && npx tsc --noEmit` — no TypeScript errors
+- `cd app && npm test` — frontend tests pass
+
+Exercise affected app flows using the native verification policy in `CLAUDE.md`.
 
 If any check fails, fix the issue before proceeding.
 
@@ -70,3 +73,6 @@ If any check fails, fix the issue before proceeding.
    gh pr create --title "fix: <concise description>" --body "Closes #<issue-number>" --repo georgenijo/murmur-app
    ```
 4. Report the PR URL.
+
+After an authorized merge is confirmed on GitHub, follow the task cleanup rules
+in `CLAUDE.md`.
