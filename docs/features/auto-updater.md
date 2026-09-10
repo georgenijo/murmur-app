@@ -5,7 +5,7 @@
 The app checks for updates on launch, every six hours while resident, and when
 the native app resumes or the main window becomes active after a due interval.
 Updates are downloaded from GitHub Releases, verified with ed25519 signatures,
-and installed with an automatic relaunch. A `min_version` field in the release
+and installed when the user chooses to restart. A `min_version` field in the release
 manifest enables forced updates that cannot be skipped or dismissed.
 
 ## Update Check Schedule
@@ -126,23 +126,31 @@ move it into `/Applications` or point the runner at the daily installation.
 When a new version is available and the current version is at or above a
 verified `min_version` (or no verifiable minimum policy is available):
 
-1. **Available** — Background discovery is passive: the main Record/File row
-   shows an update pill and the menu-bar action changes to the available
-   version. Manual checks open the modal immediately; clicking either passive
-   indicator opens it later. The modal shows version number and release notes
-   with three buttons:
-   - "Update Now" — begins download
-   - "Skip This Version" — stores the version in localStorage (`skipped-update-version`), suppresses future background checks for that version
-   - "Later" — dismisses the modal without skipping; the update pill remains
-2. **Preparing** — A single updater owner verifies that the app is installed
-   in a writable location. Repeated actions and manual, timer, focus,
-   visibility, or wake checks cannot enter while this owner is active.
-3. **Downloading** — Progress bar with percentage. Progress reported via Tauri's `downloadAndInstall` callback.
-4. **Ready** — "Installing and relaunching..." text displayed.
-5. **Relaunch** — App restarts automatically via `@tauri-apps/plugin-process`.
-6. **What's New** — After the relaunched binary confirms that it is the
-   downloaded version, a one-time modal shows that release's features, fixes,
-   and other changes.
+1. **Available** — Background discovery shows a download icon with an availability
+   dot in the header. Settings changes **Check for Updates** to **Download Update**.
+   Either control starts the download directly. Manual checks open the release
+   notes dialog with **Download Update** and **Later**. Later closes the dialog
+   and keeps both update controls available. Releases are no longer skippable.
+2. **Preparing** — A single updater owner verifies the install location. Duplicate
+   actions and background checks cannot enter while an update is downloading,
+   ready, or restarting.
+3. **Downloading** — A compact progress dialog shows a percentage and progress
+   bar. The header shows a progress ring. Unknown download sizes use indeterminate
+   progress. Tauri's `Update.download()` verifies and retains the downloaded bytes.
+4. **Ready** — The dialog offers **Restart Now** and **Later**. Later keeps Murmur
+   running and leaves the header and Settings restart controls available. The
+   download stays in memory for this app session. Quitting before installing
+   requires downloading again on a later launch.
+5. **Restarting** — **Restart Now** installs the retained download with
+   `Update.install()` and relaunches Murmur. Repeated clicks cannot duplicate
+   either operation. Installation failures retry installation using the retained
+   bytes; relaunch failures retry only the relaunch.
+6. **What's New** — After the relaunched binary confirms the downloaded version,
+   a one-time modal shows that release's features, fixes, and other changes.
+
+The opt-in OTA canary explicitly runs both download and restart steps to retain
+its unattended six-stage verification. Ordinary updates always wait for the
+user to choose **Restart Now**.
 
 Before download begins, the app stores a bounded `{ version, notes }` payload in
 localStorage under `pending-update-release-notes`. The payload is intentionally
@@ -157,17 +165,18 @@ When the current version is below the `min_version` field from the release manif
 
 1. The update modal shows "Required Update" instead of "Update Available"
 2. An amber warning reads "This update is required to continue using the app"
-3. Only two buttons are available: "Update Now" and "Quit" (calls `exit(0)`)
-4. No "Skip" or "Later" options
+3. The available dialog offers **Download Update** and **Quit**. After download,
+   it offers **Restart Now** and **Quit**. Quit calls `exit(0)`.
+4. No **Later** option at either step
 5. Backdrop click is disabled — the modal cannot be dismissed
 6. The close button (X) is hidden
 
 ### Error State
 
 If the update check fails, the modal shows a red error banner with the error
-message, a "Retry" button that runs the check again, and a secondary
-"Download latest version" button that opens the latest GitHub release page.
-This recovery button appears only for `stage: 'check'` errors; it is absent from
+message, a "Retry" button that runs the check again, and an inline
+"Download latest version" link that opens the latest GitHub release page.
+This recovery link appears only for `stage: 'check'` errors; it is absent from
 all normal states and from download/install errors. For forced updates in error
 state, the "Quit" button remains available.
 
@@ -248,11 +257,12 @@ type UpdateStatus =
   | { phase: 'up-to-date' }
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
   | { phase: 'preparing'; version: string }
-  | { phase: 'downloading'; version: string; progress: number }
-  | { phase: 'ready'; version: string }
+  | { phase: 'downloading'; version: string; progress: number | null }
+  | { phase: 'ready'; version: string; isForced: boolean }
+  | { phase: 'restarting'; version: string }
   | {
       phase: 'error';
-      stage: 'check' | 'install';
+      stage: 'check' | 'install' | 'restart';
       message: string;
       isForced: boolean;
       recovery?: 'reinstall';
@@ -260,7 +270,7 @@ type UpdateStatus =
 ```
 
 The update modal renders for `available`, `preparing`, `downloading`, `ready`,
-and `error` phases. The `idle`, `checking`, and `up-to-date` phases return null
+`restarting`, and `error` phases. The `idle`, `checking`, and `up-to-date` phases return null
 (no modal).
 
 Post-update notes use separate `CompletedUpdate` state rather than adding a
@@ -269,15 +279,14 @@ an already-installed release as an available update.
 
 ## Settings Integration
 
-- The "Check for Updates" button in the About section of settings triggers a manual check. It is disabled during `checking`, `preparing`, `downloading`, and `ready` phases.
-- Status text shows: "Checking...", "You're up to date", "vX.Y.Z available", or "Update check failed".
-- The macOS menu-bar menu exposes the same manual check. It brings the main
-  window forward, reports checking/up-to-date/error status beside the Record
-  tabs, and opens the existing update dialog when a release is available.
-- Optional background updates do not interrupt the user with a modal. A
-  persistent `Update available · vX.Y.Z` pill and versioned menu item remain
-  until the release is installed or explicitly skipped.
-- Skipped version is stored in localStorage under `skipped-update-version`.
+- General Settings and the header use the same `UpdateIndicator` component.
+  Settings shows text labels; the header uses an icon and accessible action name.
+- Settings changes from **Check for Updates** to **Download Update** and then
+  **Restart Now**. Busy states show progress and disable repeated actions.
+- The native menu brings the main window forward. It checks when there is no
+  pending update and reopens the current update dialog otherwise.
+- Optional background updates remain passive. **Later** never hides the update
+  controls. Legacy `skipped-update-version` values are ignored.
 - Pending post-update notes are stored under `pending-update-release-notes` and
   removed when dismissed or when the running version does not match.
 

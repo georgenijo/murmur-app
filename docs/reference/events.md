@@ -256,7 +256,7 @@ and safe error class.
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `check-for-updates-requested` | `()` | Native tray menu | The user selects `Check for Updates…` or the versioned update action. The main window is shown and focused first. | Main `App` → manual `checkForUpdate`. |
+| `check-for-updates-requested` | `()` | Native tray menu | The user selects `Check for Updates…` or the versioned update action. The main window is shown and focused first. | Main `App` → manual `checkForUpdate` or reopen the pending update dialog. |
 | `updater-background-check-requested` | `()` | `commands/tray.rs` | `NSWorkspaceDidWakeNotification` fires after macOS wakes. | `useAutoUpdater`; a local six-hour gate decides whether any network request is due. |
 
 ## Frontend-emitted (window to window)

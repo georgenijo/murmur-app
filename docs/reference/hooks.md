@@ -89,25 +89,22 @@ the outcome, without polling.
 One-time init sequence on mount: `init_dictation`, then `configure_dictation` with the loaded settings.
 
 ### `useAutoUpdater`
-OTA updates: due-gated background checks on launch, every six hours, foreground
-activation, and native macOS wake; semver comparison; min-version enforcement
-(forced updates drop Skip/Later); download progress, install, and auto-relaunch.
-Optional background discoveries stay passive as a persistent homepage pill and
-versioned menu-bar action; required or manual discoveries open the dialog. A
-native notification fires only on the first background discovery of a version
-during the process lifetime.
+Checks on launch and on due timer, focus, visibility, or wake signals. Optional
+background discoveries stay passive; manual checks and required updates open
+release notes. Returns update status, dialog state, `checkForUpdate`,
+`showAvailableUpdate`, `startDownload`, `restartUpdate`, `dismissUpdate`, and
+post-update notes with `dismissCompletedUpdate`.
 
-Returns `{updateStatus, isUpdateDialogOpen, checkForUpdate, showAvailableUpdate,
-startDownload, skipVersion, dismissUpdate}`. Uses a single-owner
-check/install operation guard, exposes a non-actionable `preparing` phase while
-verifying the install location, and reads a typed `min_version` policy result
-from the `latest-v2.json` channel. Policy absence permits an optional update;
-an unavailable or malformed policy fails the check without silently
-downgrading enforcement. Persists `skipped-update-version` and
-`updater-last-check` to localStorage.
+A single operation owner retains the signed download until the user chooses
+**Restart Now**. Checks cannot replace a ready download. Install and restart
+failures preserve their retry path. The opt-in canary explicitly runs both steps.
+The hook reads the minimum-version policy from Tauri's native manifest response
+and persists check timestamps and post-update notes in localStorage.
 
 ### `useDevUpdaterMock`
-Cycles through completed, failed, available, forced, preparing, and downloading update states in development builds. Production checks delegate to `useAutoUpdater`, and the hook order stays the same in both builds.
+Simulates discovery, download progress, ready, and completed update states in
+development builds without replacing the dev bundle. Production actions delegate
+to `useAutoUpdater`.
 
 ### `useOpenSettingsListener`
 Listens for `open-settings` from the overlay's gear button and opens the Settings panel — showing the main window isn't enough, since panel visibility is local React state.

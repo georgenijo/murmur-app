@@ -496,5 +496,4 @@ Other localStorage caches and browser-scoped state:
 | `murmur-appearance` | Versioned appearance mode/theme configuration plus a strictly validated derived light/dark token cache. Independent from `Settings`; imports discard and regenerate revision/cache data. | Main appearance controller (writer/native theme) |
 | `murmur-theme-library` | Versioned, revisioned saved-theme collection with stable IDs, supported appearance variants, and local or Open VSX provenance. Mirrored to main-window-only durable `theme-library.json`; bounded to 1 MiB and 128 entries. | Main appearance controller and Appearance Settings |
 | `dictation-stats` | Synchronous cache for durable `stats.json` usage aggregates | `lib/stats.ts` |
-| `skipped-update-version` | Version string the user chose to skip | `useAutoUpdater` |
 | `updater-last-check` | Timestamp of last update check | `useAutoUpdater` |

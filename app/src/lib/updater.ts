@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 
-const SKIPPED_VERSION_KEY = 'skipped-update-version';
 const LAST_CHECK_KEY = 'updater-last-check';
 const PENDING_UPDATE_KEY = 'pending-update-release-notes';
 const MAX_RELEASE_NOTES_LENGTH = 50_000;
@@ -44,28 +43,6 @@ export function isBelowMinVersion(currentVersion: string, minVersion: string): b
 /** Mirror the passive update-available state onto the native tray menu item. */
 export async function setTrayUpdateAvailable(version: string | null): Promise<void> {
   return await invoke('set_tray_update_available', { version });
-}
-
-// --- Skipped version management ---
-
-export function getSkippedVersion(): string | null {
-  try {
-    return localStorage.getItem(SKIPPED_VERSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setSkippedVersion(version: string): void {
-  try {
-    localStorage.setItem(SKIPPED_VERSION_KEY, version);
-  } catch { /* ignore */ }
-}
-
-export function clearSkippedVersion(): void {
-  try {
-    localStorage.removeItem(SKIPPED_VERSION_KEY);
-  } catch { /* ignore */ }
 }
 
 // --- Check interval management ---
@@ -192,11 +169,12 @@ export type UpdateStatus =
   | { phase: 'checking' }
   | { phase: 'available'; version: string; notes: string; isForced: boolean }
   | { phase: 'preparing'; version: string }
-  | { phase: 'downloading'; version: string; progress: number }
-  | { phase: 'ready'; version: string }
+  | { phase: 'downloading'; version: string; progress: number | null }
+  | { phase: 'ready'; version: string; isForced: boolean }
+  | { phase: 'restarting'; version: string }
   | {
       phase: 'error';
-      stage: 'check' | 'install';
+      stage: 'check' | 'install' | 'restart';
       message: string;
       isForced: boolean;
       recovery?: 'reinstall';

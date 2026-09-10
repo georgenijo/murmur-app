@@ -3,9 +3,6 @@ import {
   parseSemver,
   compareSemver,
   isBelowMinVersion,
-  getSkippedVersion,
-  setSkippedVersion,
-  clearSkippedVersion,
   getLastCheckTimestamp,
   setLastCheckTimestamp,
   isDueForCheck,
@@ -80,25 +77,6 @@ describe('isBelowMinVersion', () => {
     expect(isBelowMinVersion('bad', '0.7.0')).toBe(true);
     expect(isBelowMinVersion('0.7.0', 'bad')).toBe(true);
     expect(isBelowMinVersion('bad', 'bad')).toBe(true);
-  });
-});
-
-describe('skipped version storage', () => {
-  beforeEach(() => localStorage.clear());
-
-  it('returns null when nothing stored', () => {
-    expect(getSkippedVersion()).toBeNull();
-  });
-
-  it('round-trips a version string', () => {
-    setSkippedVersion('0.7.0');
-    expect(getSkippedVersion()).toBe('0.7.0');
-  });
-
-  it('clears the stored version', () => {
-    setSkippedVersion('0.7.0');
-    clearSkippedVersion();
-    expect(getSkippedVersion()).toBeNull();
   });
 });
 

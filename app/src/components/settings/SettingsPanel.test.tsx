@@ -144,6 +144,9 @@ describe('SettingsPanel information architecture', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
       />,
@@ -420,6 +423,9 @@ describe('SettingsPanel information architecture', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
         pageRequest={pageRequest}
@@ -566,6 +572,9 @@ describe('SettingsPanel information architecture', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
       />,
@@ -586,6 +595,9 @@ describe('SettingsPanel information architecture', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
       />,
@@ -626,6 +638,9 @@ describe('SettingsPanel information architecture', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
       />,
@@ -655,6 +670,9 @@ describe('SettingsPanel information architecture', () => {
           onRerunSetup={vi.fn()}
           accessibilityGranted={false}
           onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
         />
@@ -705,6 +723,9 @@ describe('SettingsPanel information architecture', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
       />,
@@ -799,6 +820,9 @@ describe('SettingsPanel Voice Query async ownership', () => {
           onRerunSetup={vi.fn()}
           accessibilityGranted
           onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
           pageRequest={{ page: 'voice-query', token: 1 }}
@@ -1335,6 +1359,9 @@ describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
         onRerunSetup={vi.fn()}
         accessibilityGranted
         onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
         pageRequest={{ page: 'transform', token: 1 }}

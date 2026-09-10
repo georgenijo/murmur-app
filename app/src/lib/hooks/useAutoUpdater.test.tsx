@@ -39,6 +39,7 @@ vi.mock('../log', () => ({
 }));
 
 import { useAutoUpdater, type UseAutoUpdaterReturn } from './useAutoUpdater';
+import type { DownloadEvent } from '@tauri-apps/plugin-updater';
 
 describe('useAutoUpdater presentation state', () => {
   let container: HTMLDivElement;
@@ -83,7 +84,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.23.0',
       body: 'Release notes',
       rawJson: {},
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await act(async () => current.checkForUpdate());
@@ -103,21 +105,24 @@ describe('useAutoUpdater presentation state', () => {
     expect(current.isUpdateDialogOpen).toBe(true);
   });
 
-  it('removes the passive indicator when the user skips that version', async () => {
+  it('does not suppress an available update from a legacy skipped-version value', async () => {
+    localStorage.setItem('skipped-update-version', '0.23.0');
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await act(async () => current.checkForUpdate());
-    await act(async () => current.skipVersion());
 
-    expect(current.updateStatus.phase).toBe('idle');
-    expect(current.isUpdateDialogOpen).toBe(false);
-    expect(localStorage.getItem('skipped-update-version')).toBe('0.23.0');
+    expect(current.updateStatus).toMatchObject({
+      phase: 'available',
+      version: '0.23.0',
+    });
+    expect(current.isUpdateDialogOpen).toBe(true);
   });
 
   it('logs the stable current-version event code when no update is available', async () => {
@@ -177,7 +182,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: true });
@@ -193,49 +199,53 @@ describe('useAutoUpdater presentation state', () => {
     });
   });
 
-  it('canary bypasses a skipped matching version and uses the real install path', async () => {
-    localStorage.setItem('skipped-update-version', '0.23.0');
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+  it('canary uses the real download, install, and relaunch path', async () => {
+    const download = vi.fn().mockResolvedValue(undefined);
+    const install = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install,
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
 
-    expect(downloadAndInstall).toHaveBeenCalledOnce();
+    expect(download).toHaveBeenCalledOnce();
+    expect(install).toHaveBeenCalledOnce();
     expect(mocks.relaunch).toHaveBeenCalledOnce();
   });
 
   it('canary dry-run launches discovery and policy but never downloads or relaunches', async () => {
-    const downloadAndInstall = vi.fn();
+    const download = vi.fn();
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: true });
 
-    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
     expect(mocks.relaunch).not.toHaveBeenCalled();
     const writes = canaryWrites();
     expect(writes[writes.length - 1]).toMatchObject({ status: 'dry-run', dryRun: true });
   });
 
   it('records production stages as pending until install evidence is available', async () => {
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const download = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
@@ -255,7 +265,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.23.0',
       body: '',
       rawJson: undefined,
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
@@ -272,7 +283,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall: vi.fn().mockRejectedValue(new Error('disk full')),
+      download: vi.fn().mockRejectedValue(new Error('disk full')),
+      install: vi.fn(),
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
@@ -290,7 +302,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.23.0',
       body: '',
       rawJson: {},
-      downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+      download: vi.fn().mockResolvedValue(undefined),
+      install: vi.fn(),
     });
 
     await launchCanary({ path: '/tmp/canary.json', result: null, dryRun: false });
@@ -349,7 +362,8 @@ describe('useAutoUpdater presentation state', () => {
         version: '0.23.0',
         body: 'Release notes',
         rawJson: {},
-        downloadAndInstall: vi.fn(),
+        download: vi.fn(),
+        install: vi.fn(),
       });
 
     await act(async () => current.checkForUpdate());
@@ -378,7 +392,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.24.2',
       body: 'Release notes',
       rawJson: undefined,
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await act(async () => current.checkForUpdate());
@@ -407,7 +422,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.24.2',
       body: 'Release notes',
       rawJson: { version: '0.24.2' },
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await act(async () => current.checkForUpdate());
@@ -427,7 +443,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.24.2',
       body: 'Required reliability update',
       rawJson: { min_version: '0.24.0' },
-      downloadAndInstall: vi.fn(),
+      download: vi.fn(),
+      install: vi.fn(),
     });
 
     await act(async () => current.checkForUpdate());
@@ -441,20 +458,21 @@ describe('useAutoUpdater presentation state', () => {
   });
 
   it('blocks installation before download when Gatekeeper translocated the app', async () => {
-    const downloadAndInstall = vi.fn();
+    const download = vi.fn();
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: 'Release notes',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
     mocks.getUpdateInstallEnvironment.mockResolvedValue({ appTranslocated: true });
 
     await act(async () => current.checkForUpdate());
     await act(async () => current.startDownload());
 
-    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
     expect(current.updateStatus).toMatchObject({
       phase: 'error',
       stage: 'install',
@@ -472,65 +490,282 @@ describe('useAutoUpdater presentation state', () => {
     );
   });
 
-  it('keeps the normal writable installation path unchanged', async () => {
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+  it('downloads to a ready state and waits for explicit restart before installing', async () => {
+    const download = vi.fn().mockImplementation(async (
+      onEvent?: (event: DownloadEvent) => void,
+    ) => {
+      onEvent?.({ event: 'Started', data: { contentLength: 100 } });
+      onEvent?.({ event: 'Progress', data: { chunkLength: 45 } });
+      onEvent?.({ event: 'Finished' });
+    });
+    const install = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: 'Release notes',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install,
     });
 
     await act(async () => current.checkForUpdate());
     await act(async () => current.startDownload());
 
-    expect(downloadAndInstall).toHaveBeenCalledOnce();
-    expect(mocks.relaunch).toHaveBeenCalledOnce();
-    expect(current.updateStatus).toEqual({ phase: 'ready', version: '0.24.2' });
+    expect(download).toHaveBeenCalledOnce();
+    expect(install).not.toHaveBeenCalled();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(current.updateStatus).toEqual({
+      phase: 'ready',
+      version: '0.24.2',
+      isForced: false,
+    });
     expect(mocks.flogInfo).toHaveBeenCalledWith(
       'updater',
-      'installed, relaunching',
-      { event_code: 'updater.install_ready' },
+      'download ready',
+      { event_code: 'updater.download_ready' },
     );
+
+    await act(async () => current.dismissUpdate());
+    expect(current.isUpdateDialogOpen).toBe(false);
+    await act(async () => current.showAvailableUpdate());
+    expect(current.isUpdateDialogOpen).toBe(true);
+
+    await act(async () => current.restartUpdate());
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'restarting', version: '0.24.2' });
   });
 
-  it('logs the stable install-failure event code when download fails', async () => {
-    const downloadAndInstall = vi.fn().mockRejectedValue(new Error('disk full'));
+  it('shows indeterminate progress and opens the modal for a direct download', async () => {
+    let finishDownload!: () => void;
+    const download = vi.fn().mockImplementation(async (
+      onEvent?: (event: DownloadEvent) => void,
+    ) => {
+      onEvent?.({ event: 'Started', data: {} });
+      onEvent?.({ event: 'Progress', data: { chunkLength: 64 } });
+      await new Promise<void>((resolve) => {
+        finishDownload = resolve;
+      });
+    });
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download,
+      install: vi.fn(),
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.dismissUpdate());
+    expect(current.isUpdateDialogOpen).toBe(false);
+
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = current.startDownload();
+      await Promise.resolve();
+    });
+
+    expect(current.isUpdateDialogOpen).toBe(true);
+    expect(current.updateStatus).toEqual({
+      phase: 'downloading',
+      version: '0.24.2',
+      progress: null,
+    });
+
+    finishDownload();
+    await act(async () => pending);
+  });
+
+  it('keeps a forced ready update open', async () => {
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: { min_version: '0.24.0' },
+      download: vi.fn().mockResolvedValue(undefined),
+      install: vi.fn(),
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+
+    expect(current.updateStatus).toEqual({
+      phase: 'ready',
+      version: '0.24.2',
+      isForced: true,
+    });
+    await act(async () => current.dismissUpdate());
+    expect(current.isUpdateDialogOpen).toBe(true);
+  });
+
+  it('keeps the downloaded resource stable when a manual check is requested', async () => {
+    const install = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download: vi.fn().mockResolvedValue(undefined),
+      install,
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.25.0',
+      body: '',
+      rawJson: {},
+      download: vi.fn(),
+      install: vi.fn(),
+    });
+
+    await act(async () => current.checkForUpdate());
+
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({
+      phase: 'ready',
+      version: '0.24.2',
+      isForced: false,
+    });
+    await act(async () => current.restartUpdate());
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it('reports a download failure and permits a retry', async () => {
+    const download = vi.fn()
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockResolvedValueOnce(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: 'Release notes',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
 
     await act(async () => current.checkForUpdate());
     await act(async () => current.startDownload());
 
     expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(current.updateStatus).toMatchObject({ phase: 'error', stage: 'install' });
     expect(mocks.flogError).toHaveBeenCalledWith(
       'updater',
-      'download/install failed',
+      'download failed',
       {
         event_code: 'updater.install_failed',
         error: 'Error: disk full',
       },
     );
+
+    await act(async () => current.startDownload());
+    expect(download).toHaveBeenCalledTimes(2);
+    expect(current.updateStatus).toEqual({
+      phase: 'ready',
+      version: '0.24.2',
+      isForced: false,
+    });
   });
 
-  it('allows only one install owner while environment verification is pending', async () => {
+  it('allows only one restart owner', async () => {
+    let finishInstall!: () => void;
+    const install = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    }));
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download: vi.fn().mockResolvedValue(undefined),
+      install,
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+    let first!: Promise<unknown>;
+    let second!: Promise<unknown>;
+    await act(async () => {
+      first = current.restartUpdate();
+      second = current.restartUpdate();
+      await Promise.resolve();
+    });
+
+    expect(install).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'restarting', version: '0.24.2' });
+    finishInstall();
+    await act(async () => Promise.all([first, second]));
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+  });
+
+  it('retries installation without downloading again', async () => {
+    const download = vi.fn().mockResolvedValue(undefined);
+    const install = vi.fn()
+      .mockRejectedValueOnce(new Error('install refused'))
+      .mockResolvedValueOnce(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download,
+      install,
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+    await act(async () => current.restartUpdate());
+    expect(current.updateStatus).toMatchObject({ phase: 'error', stage: 'restart' });
+
+    const retry = current.updateStatus.phase === 'error' && current.updateStatus.stage === 'restart'
+      ? current.restartUpdate
+      : current.startDownload;
+    await act(async () => retry());
+    expect(download).toHaveBeenCalledOnce();
+    expect(install).toHaveBeenCalledTimes(2);
+    expect(mocks.relaunch).toHaveBeenCalledOnce();
+  });
+
+  it('retries only relaunch after the update has installed', async () => {
+    const install = vi.fn().mockResolvedValue(undefined);
+    mocks.relaunch
+      .mockRejectedValueOnce(new Error('relaunch refused'))
+      .mockResolvedValueOnce(undefined);
+    mocks.check.mockResolvedValue({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download: vi.fn().mockResolvedValue(undefined),
+      install,
+    });
+
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+    await act(async () => current.restartUpdate());
+    expect(current.updateStatus).toMatchObject({ phase: 'error', stage: 'restart' });
+
+    await act(async () => current.restartUpdate());
+    expect(install).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows only one download owner while environment verification is pending', async () => {
     let resolveEnvironment!: (value: { appTranslocated: boolean }) => void;
     const environment = new Promise<{ appTranslocated: boolean }>((resolve) => {
       resolveEnvironment = resolve;
     });
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const download = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: 'Release notes',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
 
@@ -548,24 +783,25 @@ describe('useAutoUpdater presentation state', () => {
 
     resolveEnvironment({ appTranslocated: false });
     await act(async () => Promise.all([first, second]));
-    expect(downloadAndInstall).toHaveBeenCalledOnce();
-    expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(download).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
   });
 
-  it('waits out an in-flight check instead of dropping the install click', async () => {
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+  it('waits out an in-flight check instead of dropping the download click', async () => {
+    const download = vi.fn().mockResolvedValue(undefined);
     const update = {
       available: true,
       version: '0.24.2',
       body: '',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     };
     mocks.check.mockResolvedValue(update);
     await act(async () => current.checkForUpdate());
     expect(current.updateStatus).toMatchObject({ phase: 'available', version: '0.24.2' });
 
-    // A second (background-style) check is still in flight when Install is clicked.
+    // A second check is still in flight when Download is clicked.
     let resolveCheck!: (value: typeof update) => void;
     mocks.check.mockReturnValue(
       new Promise((resolve) => {
@@ -579,26 +815,71 @@ describe('useAutoUpdater presentation state', () => {
       install = current.startDownload();
       await Promise.resolve();
     });
-    expect(downloadAndInstall).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
 
     resolveCheck(update);
     await act(async () => Promise.all([pendingCheck, install]));
-    expect(downloadAndInstall).toHaveBeenCalledOnce();
-    expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(download).toHaveBeenCalledOnce();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
   });
 
-  it('ignores a manual check while install owns the updater', async () => {
+  it('keeps the download dialog open when a background check finishes first', async () => {
+    const download = vi.fn().mockResolvedValue(undefined);
+    const update = {
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download,
+      install: vi.fn(),
+    };
+    let resolveCheck!: (value: typeof update) => void;
+    mocks.check.mockReturnValue(new Promise((resolve) => {
+      resolveCheck = resolve;
+    }));
+
+    await act(async () => root.unmount());
+    automaticChecksEnabled = true;
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.check).toHaveBeenCalledOnce();
+
+    let pendingDownload!: Promise<unknown>;
+    await act(async () => {
+      pendingDownload = current.startDownload();
+      await Promise.resolve();
+    });
+    expect(current.isUpdateDialogOpen).toBe(true);
+
+    resolveCheck(update);
+    await act(async () => pendingDownload);
+
+    expect(download).toHaveBeenCalledOnce();
+    expect(current.isUpdateDialogOpen).toBe(true);
+    expect(current.updateStatus).toEqual({
+      phase: 'ready',
+      version: '0.24.2',
+      isForced: false,
+    });
+  });
+
+  it('ignores a manual check while download owns the updater', async () => {
     let resolveEnvironment!: (value: { appTranslocated: boolean }) => void;
     const environment = new Promise<{ appTranslocated: boolean }>((resolve) => {
       resolveEnvironment = resolve;
     });
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const download = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: '',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
     mocks.getUpdateInstallEnvironment.mockReturnValue(environment);
 
@@ -617,19 +898,20 @@ describe('useAutoUpdater presentation state', () => {
     await act(async () => install);
   });
 
-  it('ignores a due native wake check while install owns the updater', async () => {
+  it('ignores a due native wake check while download owns the updater', async () => {
     let wakeCheck: (() => void) | undefined;
     mocks.listen.mockImplementation(async (event: string, callback: () => void) => {
       if (event === 'updater-background-check-requested') wakeCheck = callback;
       return vi.fn();
     });
-    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const download = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValue({
       available: true,
       version: '0.24.2',
       body: '',
       rawJson: {},
-      downloadAndInstall,
+      download,
+      install: vi.fn(),
     });
 
     await act(async () => root.unmount());
@@ -662,5 +944,52 @@ describe('useAutoUpdater presentation state', () => {
 
     resolveEnvironment({ appTranslocated: false });
     await act(async () => install);
+
+    expect(current.updateStatus).toEqual({
+      phase: 'ready',
+      version: '0.24.2',
+      isForced: false,
+    });
+    localStorage.setItem('updater-last-check', '0');
+    await act(async () => wakeCheck?.());
+    expect(mocks.check).toHaveBeenCalledOnce();
+  });
+
+  it('removes withdrawn availability after an authoritative background check', async () => {
+    let wakeCheck: (() => void) | undefined;
+    mocks.listen.mockImplementation(async (event: string, callback: () => void) => {
+      if (event === 'updater-background-check-requested') wakeCheck = callback;
+      return vi.fn();
+    });
+    const download = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValueOnce({
+      available: true,
+      version: '0.24.2',
+      body: '',
+      rawJson: {},
+      download,
+      install: vi.fn(),
+    });
+
+    await act(async () => root.unmount());
+    automaticChecksEnabled = true;
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(current.updateStatus).toMatchObject({ phase: 'available', version: '0.24.2' });
+    expect(wakeCheck).toBeDefined();
+
+    await act(async () => current.showAvailableUpdate());
+    expect(current.isUpdateDialogOpen).toBe(true);
+    mocks.check.mockResolvedValueOnce({ available: false });
+    localStorage.setItem('updater-last-check', '0');
+    await act(async () => wakeCheck?.());
+
+    expect(current.updateStatus).toEqual({ phase: 'idle' });
+    expect(current.isUpdateDialogOpen).toBe(false);
+    await act(async () => current.startDownload());
+    expect(download).not.toHaveBeenCalled();
   });
 });
