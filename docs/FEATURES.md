@@ -9,7 +9,8 @@ speech. See [Transcription](features/transcription.md) and
 [remote-speaker labels](features/meeting-diarization.md) refine clear system-audio
 passages locally after the meeting.
 
-Current as of **v0.30.1**. This is the breadth-first inventory of what ships; each area links to its detailed feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
+This inventory tracks the current main branch; each area links to its detailed
+feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
@@ -23,6 +24,9 @@ Current as of **v0.30.1**. This is the breadth-first inventory of what ships; ea
 - One final-after-stop transcription path for every backend. Delivery happens exactly once.
 - Recordings under 0.3s are discarded as phantom triggers.
 - Imported-file transcription (`transcribe_file`) runs the same pipeline with live-only stages skipped.
+- Import WAV, MP3, M4A, MP4, or MOV files through the picker or drag and drop.
+  Video containers use the first audio track supported by the bundled decoder;
+  video-only files and unsupported audio codecs receive explicit errors.
 
 ### Voice activity detection — [features/vad.md](features/vad.md)
 
@@ -39,7 +43,7 @@ Current as of **v0.30.1**. This is the breadth-first inventory of what ships; ea
 | Double-Tap | Two taps (each <200ms, gap <400ms) start; single tap stops |
 | Both | Both at once, via 200ms deferred hold promotion |
 
-- Trigger keys: Left Shift, Left Option, Right Control.
+- Trigger keys: Left Shift, Left Option, Right Control, or F1–F20.
 - Modifier+letter combos are rejected so normal typing never triggers recording.
 - Optional amber overlay flash when a double-tap's second-tap window expires (`hotkeyMissFeedback`, off by default).
 - Global disable from the tray ("Disable Murmur") or the overlay's power button.
@@ -62,6 +66,9 @@ Current as of **v0.30.1**. This is the breadth-first inventory of what ships; ea
   audio retention is enabled.
 - Requires macOS 14.2+ and optional System Audio permission. The tap exists only
   during an explicit permission check or active meeting.
+- Copy or save speaker-labeled SRT/WebVTT captions using recorded segment times.
+  Overlapping speech keeps its original timing and untranscribed sections are
+  marked. Review summaries and audio are excluded from captions.
 
 ---
 
