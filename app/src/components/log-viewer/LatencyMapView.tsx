@@ -6,15 +6,10 @@ import {
   useUiLatencySamples,
   type UiLatencySampleV1,
 } from '../../lib/uiLatency';
+import { percentile } from '../../lib/numeric';
 
 interface LatencyMapViewProps {
   samples?: UiLatencySampleV1[];
-}
-
-function percentile(values: number[], fraction: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
 }
 
 function formatDuration(milliseconds: number): string {

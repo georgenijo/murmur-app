@@ -210,7 +210,7 @@ export function orderedStages(run: PerformanceRunV1): StageTimingV1[] {
   });
 }
 
-export function totalProcessingMeasurement(run: PerformanceRunV1): MeasurementV1<number> {
+function totalProcessingMeasurement(run: PerformanceRunV1): MeasurementV1<number> {
   return run.stages.find(stage => stage.stage === 'totalProcessing')?.durationMs
     ?? { status: 'unavailable', reason: 'noSamples' };
 }

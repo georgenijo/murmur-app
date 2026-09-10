@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { isQueryProviderId } from './queryUsage';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -37,6 +38,11 @@ export const WRITING_STYLE_OPTIONS: { value: WritingStyleChoice; label: string }
   { value: 'verbatim', label: 'Verbatim' },
   { value: 'notes', label: 'Notes' },
 ];
+
+/** Concrete (non-`'inherit'`) writing-style values, derived from `WRITING_STYLE_OPTIONS`. */
+export const WRITING_STYLE_VALUES: readonly WritingStyle[] = WRITING_STYLE_OPTIONS
+  .map(option => option.value)
+  .filter((value): value is WritingStyle => value !== 'inherit');
 
 /**
  * Per-app dictation profile. When the frontmost macOS app's bundle id matches
@@ -803,7 +809,7 @@ function sanitizeModes(raw: unknown): MurmurMode[] {
   if (!Array.isArray(raw)) return [];
   const models = new Set(AVAILABLE_MODEL_OPTIONS.map((option) => option.value));
   const languages = new Set(LANGUAGE_OPTIONS.map((option) => option.value));
-  const styles = new Set<WritingStyle>(['conversational', 'polished', 'code_technical', 'verbatim', 'notes']);
+  const styles = new Set<WritingStyle>(WRITING_STYLE_VALUES);
   const seen = new Set(BUILTIN_MODES.map((mode) => mode.id));
   const modes: MurmurMode[] = [];
   for (const value of raw.slice(0, 100)) {
@@ -1014,10 +1020,7 @@ export function loadSettings(): Settings {
       } else {
         parsed.queryExecutable = parsed.queryExecutable.slice(0, 4096);
       }
-      if (
-        typeof parsed.queryProvider !== 'string'
-        || !['claude', 'codex', 'grok', 'cursor', 'custom'].includes(parsed.queryProvider)
-      ) {
+      if (!isQueryProviderId(parsed.queryProvider)) {
         parsed.queryProvider = DEFAULT_SETTINGS.queryProvider;
       }
       if (!Array.isArray(parsed.queryArguments)) {
@@ -1118,7 +1121,7 @@ export function loadSettings(): Settings {
               typeof p.cliFormattingOverride === 'boolean' ? p.cliFormattingOverride : null,
             writingStyle:
               typeof p.writingStyle === 'string' &&
-              ['conversational', 'polished', 'code_technical', 'verbatim', 'notes'].includes(p.writingStyle)
+              (WRITING_STYLE_VALUES as readonly string[]).includes(p.writingStyle)
                 ? p.writingStyle as WritingStyle
                 : null,
             ideContextEnabled: typeof p.ideContextEnabled === 'boolean' ? p.ideContextEnabled : false,
@@ -1182,7 +1185,7 @@ export function loadSettings(): Settings {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
       if (typeof parsed.correctionShortcutEnabled !== 'boolean') {
-        parsed.correctionShortcutEnabled = false;
+        parsed.correctionShortcutEnabled = DEFAULT_SETTINGS.correctionShortcutEnabled;
       }
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;

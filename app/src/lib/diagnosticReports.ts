@@ -1,4 +1,5 @@
 import type { BenchmarkReport } from './benchmark';
+import { isFiniteNumber, isNonNegativeInteger, isRecord } from './typeGuards';
 
 export const MAX_DIAGNOSTIC_REPORT_BYTES = 8 * 1024 * 1024;
 
@@ -217,10 +218,6 @@ function failure(code: DiagnosticImportErrorCode): DiagnosticImportResult {
   return { ok: false, error: { code, message: ERROR_MESSAGES[code] } };
 }
 
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(
   value: JsonRecord,
   required: readonly string[],
@@ -239,20 +236,12 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || isString(value);
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
 function isNonNegativeNumber(value: unknown): value is number {
   return isFiniteNumber(value) && value >= 0;
 }
 
 function isInteger(value: unknown): value is number {
   return Number.isSafeInteger(value);
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return isInteger(value) && (value as number) >= 0;
 }
 
 function isNullableNonNegativeInteger(value: unknown): value is number | null {

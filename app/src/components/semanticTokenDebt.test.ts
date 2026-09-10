@@ -19,17 +19,12 @@ const alwaysDarkPrefixes = [
   "components/dictation-preview/",
 ] as const;
 const alwaysDarkFiles = new Set(["components/OverlayWidget.tsx"]);
-const scrimAllowlist = new Set([
-  "components/AboutModal.tsx",
-  "components/CommandPalette.tsx",
-  "components/UpdateModal.tsx",
-  "components/WhatsNewModal.tsx",
-  "components/history/CorrectAndTeachDialog.tsx",
-  "components/settings/KnowledgeEditorModal.tsx",
-  "components/settings/KnowledgeManager.tsx",
-  "components/settings/VocabTermsModal.tsx",
-  "components/settings/VoiceCommandsManager.tsx",
-]);
+// Files allowed a hardcoded `bg-black/50` or `bg-black/55` scrim. Kept empty
+// deliberately: the previous 9-entry list had rotted (none of those files
+// still had the debt). Re-add an entry only alongside real debt in that
+// file — the assertion below fails any entry that isn't actually load-bearing,
+// so the list can't silently rot again.
+const scrimAllowlist = new Set<string>([]);
 const chartColorAllowlist: Record<string, ReadonlySet<string>> = {
   "components/log-viewer/PerformanceView.tsx": new Set([
     "#d97706",
@@ -67,6 +62,7 @@ describe("semantic theme token debt gate", () => {
 
   it("limits hardcoded visual colors to documented glass, scrim, and chart exceptions", () => {
     const findings: string[] = [];
+    const usedScrimAllowances = new Set<string>();
     for (const path of sources) {
       const name = sourceName(path);
       const source = readFileSync(path, "utf8");
@@ -83,8 +79,10 @@ describe("semantic theme token debt gate", () => {
 
       for (const color of colors) {
         if (isGlass || chartColorAllowlist[name]?.has(color)) continue;
-        if (scrimAllowlist.has(name) && /^bg-black\/(?:50|55)$/.test(color))
+        if (scrimAllowlist.has(name) && /^bg-black\/(?:50|55)$/.test(color)) {
+          usedScrimAllowances.add(name);
           continue;
+        }
         if (name.startsWith("lib/appearance/")) continue;
         // Dev-only Playwright harness, deliberately excluded from packaged
         // builds (see vite.config.ts). Its stand-in desktop backdrop is not
@@ -96,6 +94,14 @@ describe("semantic theme token debt gate", () => {
         )
           continue;
         findings.push(`${name}: ${color}`);
+      }
+    }
+    // Self-shrinking: every scrimAllowlist entry must be load-bearing (its
+    // file must still contain the bg-black/50 or bg-black/55 debt it was
+    // added for), otherwise the entry has rotted and must be removed.
+    for (const name of scrimAllowlist) {
+      if (!usedScrimAllowances.has(name)) {
+        findings.push(`${name}: stale scrimAllowlist entry — no remaining bg-black/50 or bg-black/55 debt`);
       }
     }
     expect(findings).toEqual([]);

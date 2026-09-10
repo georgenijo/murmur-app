@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
+import { downloadModel } from '../lib/dictation';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 import {
   correlatedModelDownloadAttempt,
@@ -122,7 +122,7 @@ export function ModelDownloadPanel({
       );
       downloadUnlistenRef.current = unlisten;
 
-      await invoke('download_model', { modelName: requestedModel });
+      await downloadModel(requestedModel);
       unlisten();
       downloadUnlistenRef.current = null;
       activeAttemptRef.current = null;

@@ -20,6 +20,7 @@ export interface TransformModelStatus {
 export interface TransformModelDownloadProgress {
   received: number;
   total: number;
+  phase: 'downloading' | 'installed';
 }
 
 export async function transformModelStatus(): Promise<TransformModelStatus> {

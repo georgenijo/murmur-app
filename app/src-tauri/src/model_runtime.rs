@@ -308,8 +308,6 @@ impl PreparationReason {
 pub enum UnloadReason {
     ModelChanged,
     IdleTimeout,
-    #[allow(dead_code)]
-    // Public lifecycle seam; automatic pressure policy is intentionally out of scope.
     MemoryPressure,
 }
 
@@ -769,10 +767,6 @@ impl ModelRuntimeManager {
             reason.as_str(),
         )?;
         Ok(Some(backend_name))
-    }
-
-    pub fn token_count(&self, text: &str) -> Option<usize> {
-        self.inner.lock_or_recover().backend.token_count(text)
     }
 }
 

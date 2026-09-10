@@ -1,6 +1,7 @@
 import { normalizeHex } from './color';
 import { resolveTheme } from './resolve';
 import { sanitizeTheme } from './sanitize';
+import { isRecord } from '../typeGuards';
 import type {
   HexColor,
   MurmurTokenName,
@@ -24,10 +25,6 @@ export interface PairedVsCodeTheme {
   modes: ResolvedAppearance[];
   theme: ThemeConfigV1;
   sourceIdentities: string[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function decodeGamma(value: number): number {

@@ -14,6 +14,7 @@ COUNT_DOCS = (
     ROOT / "CLAUDE.md",
     ROOT / "AGENTS.md",
     ROOT / "docs/ARCHITECTURE.md",
+    ROOT / "docs/FEATURES.md",
 )
 
 

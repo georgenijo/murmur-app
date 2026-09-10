@@ -17,6 +17,7 @@ REFERENCE_FILES = (
     "CLAUDE.md",
     "AGENTS.md",
     "docs/ARCHITECTURE.md",
+    "docs/FEATURES.md",
 )
 
 
@@ -50,17 +51,23 @@ class ReferenceDocsTests(unittest.TestCase):
                 validate_reference_docs(root)
 
     def test_stale_human_facing_count_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            copy_reference_fixture(root)
-            architecture = root / "docs/ARCHITECTURE.md"
-            original = architecture.read_text()
-            stale = re.sub(r"\b\d+ registered commands\b", "0 registered commands", original, count=1)
-            self.assertNotEqual(original, stale)
-            architecture.write_text(stale)
+        for relative in ("docs/ARCHITECTURE.md", "docs/FEATURES.md"):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                copy_reference_fixture(root)
+                document = root / relative
+                original = document.read_text()
+                stale = re.sub(
+                    r"\b\d+ registered commands\b",
+                    "0 registered commands",
+                    original,
+                    count=1,
+                )
+                self.assertNotEqual(original, stale)
+                document.write_text(stale)
 
-            with self.assertRaisesRegex(AssertionError, r"stale command count"):
-                validate_reference_docs(root)
+                with self.assertRaisesRegex(AssertionError, r"stale command count"):
+                    validate_reference_docs(root)
 
     def test_duplicate_handler_or_documentation_entries_fail(self) -> None:
         lib_rs = (ROOT / "app/src-tauri/src/lib.rs").read_text()

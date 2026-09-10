@@ -317,10 +317,10 @@ pub(crate) fn load_benchmark_fixtures() -> Result<Vec<CorpusBenchmarkFixture>, S
 }
 
 fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
-    let peak = samples
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0_f32, f32::max);
+    let peak = crate::audio::compute_peak(samples);
+    // Corpus manifests historically accumulate squared samples in f64. Keep
+    // that precision here because long recordings can otherwise cross the
+    // quiet threshold solely from f32 accumulation error.
     let rms = if samples.is_empty() {
         0.0
     } else {
@@ -331,6 +331,9 @@ fn audio_quality(samples: &[f32]) -> (f32, f32, f32, Vec<String>) {
             / samples.len() as f64)
             .sqrt() as f32
     };
+    // `clipping_percent` is a reported field on `CorpusRecordingEntry` (a
+    // fraction of samples, not just a yes/no), so it stays a direct
+    // computation here and drives the recording-level warning threshold.
     let clipping_percent = if samples.is_empty() {
         0.0
     } else {
@@ -694,4 +697,409 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             open_corpus_folder,
         ])
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    /// `corpus_root()` reads the process-wide `MURMUR_BENCH_CORPUS_DIR` env
+    /// var. This repo's Mac verification lane runs `cargo test -- --test-threads=1`,
+    /// but guard the env var explicitly anyway so these tests stay correct
+    /// (rather than flaky) if that ever changes.
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    /// Points `corpus_root()` at a fresh tempdir for the duration of `f`,
+    /// then restores the environment.
+    fn with_corpus_root<T>(f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: serialized by `ENV_LOCK` above; no other thread reads or
+        // writes `MURMUR_BENCH_CORPUS_DIR` concurrently.
+        unsafe {
+            std::env::set_var("MURMUR_BENCH_CORPUS_DIR", dir.path());
+        }
+        let result = f(dir.path());
+        unsafe {
+            std::env::remove_var("MURMUR_BENCH_CORPUS_DIR");
+        }
+        result
+    }
+
+    fn valid_request() -> CorpusStartRequest {
+        CorpusStartRequest {
+            prompt_index: 1,
+            prompt_id: "prompt-one".to_string(),
+            label: "Prompt One".to_string(),
+            reference: "The quick brown fox".to_string(),
+            device_id: None,
+            device_label: "Built-in Microphone".to_string(),
+        }
+    }
+
+    // -- validate_request --
+
+    #[test]
+    fn validate_request_accepts_a_well_formed_request() {
+        assert!(validate_request(&valid_request()).is_ok());
+    }
+
+    #[test]
+    fn validate_request_rejects_an_empty_prompt_id() {
+        let mut request = valid_request();
+        request.prompt_id = String::new();
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_invalid_prompt_id_characters() {
+        let mut request = valid_request();
+        request.prompt_id = "Prompt_One".to_string();
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_an_overlong_prompt_id() {
+        let mut request = valid_request();
+        request.prompt_id = "a".repeat(MAX_PROMPT_ID_BYTES + 1);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_prompt_index_zero() {
+        let mut request = valid_request();
+        request.prompt_index = 0;
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_prompt_index_over_999() {
+        let mut request = valid_request();
+        request.prompt_index = 1_000;
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_a_blank_or_overlong_label() {
+        let mut request = valid_request();
+        request.label = "   ".to_string();
+        assert!(validate_request(&request).is_err());
+        request.label = "a".repeat(MAX_LABEL_BYTES + 1);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_a_blank_or_overlong_reference() {
+        let mut request = valid_request();
+        request.reference = "   ".to_string();
+        assert!(validate_request(&request).is_err());
+        request.reference = "a".repeat(MAX_REFERENCE_BYTES + 1);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_an_overlong_device_label() {
+        let mut request = valid_request();
+        request.device_label = "a".repeat(MAX_DEVICE_LABEL_BYTES + 1);
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn validate_request_rejects_an_overlong_device_id() {
+        let mut request = valid_request();
+        request.device_id = Some("a".repeat(1_025));
+        assert!(validate_request(&request).is_err());
+    }
+
+    // -- load_benchmark_fixtures --
+
+    fn write_manifest(root: &Path, manifest: &CorpusManifest) {
+        std::fs::create_dir_all(root).unwrap();
+        let bytes = serde_json::to_vec_pretty(manifest).unwrap();
+        std::fs::write(root.join("manifest.json"), bytes).unwrap();
+    }
+
+    fn recording_entry(
+        prompt_index: u32,
+        prompt_id: &str,
+        file_name: &str,
+        sha256: &str,
+    ) -> CorpusRecordingEntry {
+        CorpusRecordingEntry {
+            entry_id: format!("{prompt_id}-take-01"),
+            prompt_index,
+            prompt_id: prompt_id.to_string(),
+            label: "Label".to_string(),
+            reference: "Reference text".to_string(),
+            take: 1,
+            selected: true,
+            file_name: file_name.to_string(),
+            sha256: sha256.to_string(),
+            recorded_at: Utc::now().to_rfc3339(),
+            sample_rate: crate::state::WHISPER_SAMPLE_RATE,
+            duration_ms: 2_000,
+            peak: 0.5,
+            rms: 0.2,
+            clipping_percent: 0.0,
+            device_label: "Built-in Microphone".to_string(),
+            quality_warnings: Vec::new(),
+        }
+    }
+
+    /// Writes an audio fixture WAV (arbitrary bytes — `load_benchmark_fixtures`
+    /// only hashes and length-checks it, never decodes it) and returns its
+    /// sha256 hex digest.
+    fn write_audio_fixture(root: &Path, file_name: &str) -> String {
+        let audio_dir = root.join("audio");
+        std::fs::create_dir_all(&audio_dir).unwrap();
+        let bytes: Vec<u8> = (0..64).collect();
+        std::fs::write(audio_dir.join(file_name), &bytes).unwrap();
+        format!("{:x}", Sha256::digest(&bytes))
+    }
+
+    /// Builds a fully valid corpus (manifest + `EXPECTED_PROMPT_COUNT` audio
+    /// fixtures) at `root`.
+    fn write_complete_corpus(root: &Path) {
+        let mut manifest = CorpusManifest::new(Utc::now().to_rfc3339());
+        for index in 0..EXPECTED_PROMPT_COUNT {
+            let prompt_id = format!("prompt-{index:02}");
+            let file_name = format!("{index:03}-{prompt_id}-take-01.wav");
+            let sha256 = write_audio_fixture(root, &file_name);
+            manifest.recordings.push(recording_entry(
+                index as u32 + 1,
+                &prompt_id,
+                &file_name,
+                &sha256,
+            ));
+        }
+        write_manifest(root, &manifest);
+    }
+
+    #[test]
+    fn load_benchmark_fixtures_errors_when_the_corpus_is_empty() {
+        with_corpus_root(|_root| {
+            assert!(load_benchmark_fixtures().is_err());
+        });
+    }
+
+    #[test]
+    fn load_benchmark_fixtures_errors_when_fewer_than_expected_prompts_are_selected() {
+        with_corpus_root(|root| {
+            let mut manifest = CorpusManifest::new(Utc::now().to_rfc3339());
+            let file_name = "001-prompt-00-take-01.wav";
+            let sha256 = write_audio_fixture(root, file_name);
+            manifest
+                .recordings
+                .push(recording_entry(1, "prompt-00", file_name, &sha256));
+            write_manifest(root, &manifest);
+
+            let result = load_benchmark_fixtures();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn load_benchmark_fixtures_errors_on_duplicate_selected_prompt_ids() {
+        with_corpus_root(|root| {
+            let mut manifest = CorpusManifest::new(Utc::now().to_rfc3339());
+            for index in 0..EXPECTED_PROMPT_COUNT {
+                // Every entry reuses the same prompt id, so fewer than
+                // EXPECTED_PROMPT_COUNT *unique* ids are selected even though
+                // the raw selected count matches.
+                let file_name = format!("{index:03}-prompt-00-take-01.wav");
+                let sha256 = write_audio_fixture(root, &file_name);
+                manifest.recordings.push(recording_entry(
+                    index as u32 + 1,
+                    "prompt-00",
+                    &file_name,
+                    &sha256,
+                ));
+            }
+            write_manifest(root, &manifest);
+
+            let result = load_benchmark_fixtures();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn load_benchmark_fixtures_errors_when_a_selected_wav_is_missing() {
+        with_corpus_root(|root| {
+            let mut manifest = CorpusManifest::new(Utc::now().to_rfc3339());
+            for index in 0..EXPECTED_PROMPT_COUNT {
+                let prompt_id = format!("prompt-{index:02}");
+                let file_name = format!("{index:03}-{prompt_id}-take-01.wav");
+                let sha256 = if index == 0 {
+                    // Never written to disk — the fixture load must fail.
+                    "0".repeat(64)
+                } else {
+                    write_audio_fixture(root, &file_name)
+                };
+                manifest.recordings.push(recording_entry(
+                    index as u32 + 1,
+                    &prompt_id,
+                    &file_name,
+                    &sha256,
+                ));
+            }
+            write_manifest(root, &manifest);
+
+            let result = load_benchmark_fixtures();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn load_benchmark_fixtures_errors_on_a_sha256_mismatch() {
+        with_corpus_root(|root| {
+            let mut manifest = CorpusManifest::new(Utc::now().to_rfc3339());
+            for index in 0..EXPECTED_PROMPT_COUNT {
+                let prompt_id = format!("prompt-{index:02}");
+                let file_name = format!("{index:03}-{prompt_id}-take-01.wav");
+                let sha256 = write_audio_fixture(root, &file_name);
+                let sha256 = if index == 0 {
+                    // Corrupt the recorded digest for one entry.
+                    format!("{:x}", Sha256::digest(b"tampered"))
+                } else {
+                    sha256
+                };
+                manifest.recordings.push(recording_entry(
+                    index as u32 + 1,
+                    &prompt_id,
+                    &file_name,
+                    &sha256,
+                ));
+            }
+            write_manifest(root, &manifest);
+
+            let result = load_benchmark_fixtures();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn load_benchmark_fixtures_succeeds_for_a_complete_corpus() {
+        with_corpus_root(|root| {
+            write_complete_corpus(root);
+            let fixtures = load_benchmark_fixtures().expect("a complete corpus should load");
+            assert_eq!(fixtures.len(), EXPECTED_PROMPT_COUNT);
+            assert_eq!(fixtures[0].id, "prompt-00");
+            assert_eq!(fixtures[EXPECTED_PROMPT_COUNT - 1].id, "prompt-19");
+        });
+    }
+
+    // -- persist_recording --
+
+    #[test]
+    fn persist_recording_rejects_empty_samples() {
+        with_corpus_root(|_root| {
+            let result = persist_recording(1, valid_request(), Vec::new());
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn persist_recording_writes_the_wav_and_manifest() {
+        with_corpus_root(|root| {
+            let request = valid_request();
+            let samples = vec![0.1_f32; 16_000];
+            let response =
+                persist_recording(1, request.clone(), samples).expect("persist should succeed");
+            assert_eq!(response.recording.prompt_id, request.prompt_id);
+            assert_eq!(response.recording.take, 1);
+            assert!(root
+                .join("audio")
+                .join(&response.recording.file_name)
+                .exists());
+            assert!(root.join("manifest.json").exists());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_recording_rolls_back_the_wav_when_the_manifest_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        with_corpus_root(|root| {
+            std::fs::create_dir_all(root.join("audio")).unwrap();
+            std::fs::create_dir_all(root.join("reports")).unwrap();
+            // The WAV lives under `root/audio` (still writable below); the
+            // manifest's temp file lives directly in `root`. Making `root`
+            // itself read-only lets the WAV publish succeed and then fails
+            // only the manifest write, exercising the rollback path.
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let samples = vec![0.1_f32; 16_000];
+            let result = persist_recording(1, valid_request(), samples);
+
+            // Restore write permission before the tempdir's own Drop cleanup
+            // tries to remove `root`'s children.
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            assert!(
+                result.is_err(),
+                "a manifest write failure must surface as an error"
+            );
+            let audio_entries: Vec<_> = std::fs::read_dir(root.join("audio"))
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .collect();
+            assert!(
+                audio_entries.is_empty(),
+                "the published WAV must be rolled back when the manifest write fails"
+            );
+            assert!(!root.join("manifest.json").exists());
+        });
+    }
+
+    // -- audio_quality --
+
+    #[test]
+    fn audio_quality_flags_a_short_recording() {
+        let samples = vec![0.5_f32; 100]; // well under 1s at 16kHz
+        let (_, _, _, warnings) = audio_quality(&samples);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("shorter than one second")));
+    }
+
+    #[test]
+    fn one_clipped_sample_does_not_trigger_a_clipping_warning() {
+        let mut samples = vec![0.1_f32; 16_000];
+        samples[0] = 1.0;
+        let (_, _, clipping_percent, warnings) = audio_quality(&samples);
+        assert_eq!(clipping_percent, 0.00625);
+        assert!(!warnings.iter().any(|warning| warning.contains("clipping")));
+        assert!(!warnings
+            .iter()
+            .any(|warning| warning.contains("very quiet")));
+    }
+
+    #[test]
+    fn quiet_and_clipping_warnings_are_independent() {
+        let mut samples = vec![0.0_f32; 16_000];
+        samples[0] = 1.0;
+        let (_, _, clipping_percent, warnings) = audio_quality(&samples);
+        assert_eq!(clipping_percent, 0.00625);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("very quiet")));
+        assert!(!warnings.iter().any(|warning| warning.contains("clipping")));
+    }
+
+    #[test]
+    fn long_recording_rms_retains_f64_accumulation_precision() {
+        let mut samples = vec![0.01_f32; 480_000];
+        samples[0] = 0.05;
+        let (peak, rms, _, warnings) = audio_quality(&samples);
+        assert_eq!(peak, QUIET_PEAK_THRESHOLD);
+        assert_eq!(rms, 0.010000249);
+        assert!(
+            rms >= QUIET_RMS_THRESHOLD,
+            "f32 accumulation drifts below the quiet threshold"
+        );
+        assert!(!warnings
+            .iter()
+            .any(|warning| warning.contains("very quiet")));
+    }
 }
