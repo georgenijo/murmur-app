@@ -4,7 +4,6 @@ import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_DATE_FILTER_OPTIONS,
   HISTORY_FILTER_OPTIONS,
-  HISTORY_PINNED_FILTER_OPTIONS,
   entrySource,
   filterHistory,
   formatTimestamp,
@@ -332,19 +331,16 @@ function HistoryPanelComponent({
             activeIndicatorClassName="history-filter-tab-indicator"
           />
 
-          <FluidTabs
-            tabs={HISTORY_PINNED_FILTER_OPTIONS.map((option) => ({ value: option.value, title: option.label }))}
-            value={pinnedFilter}
-            onValueChange={(value) => {
-              if (value === 'all' || value === 'pinned') setPinnedFilter(value);
-            }}
-            variant="capsule"
-            size="sm"
-            ariaLabel="Filter pinned transcripts"
-            className="history-filter-tabs"
-            listClassName="history-filter-tabs-list"
-            activeIndicatorClassName="history-filter-tab-indicator"
-          />
+          <button
+            type="button"
+            aria-pressed={pinnedFilter === 'pinned'}
+            title="Show only pinned transcripts"
+            onClick={() => setPinnedFilter((current) => current === 'pinned' ? 'all' : 'pinned')}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-outline-variant/70 bg-surface-container-low px-3 py-1.5 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-high aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary"
+          >
+            <Star size={13} aria-hidden="true" className={pinnedFilter === 'pinned' ? 'fill-current' : undefined} />
+            Pinned
+          </button>
 
           <FluidTabs
             tabs={HISTORY_DATE_FILTER_OPTIONS.map((option) => ({ value: option.value, title: option.label }))}

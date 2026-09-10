@@ -229,11 +229,6 @@ export const HISTORY_DATE_FILTER_OPTIONS: { value: HistoryDateFilter; label: str
   { value: 'month', label: 'Last 30 days' },
 ];
 
-export const HISTORY_PINNED_FILTER_OPTIONS: { value: HistoryPinnedFilter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'pinned', label: 'Pinned' },
-];
-
 export function entrySource(entry: HistoryEntry): HistorySource {
   return entry.source ?? 'recording';
 }

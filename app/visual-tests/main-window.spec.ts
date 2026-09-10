@@ -96,7 +96,8 @@ test('pins a transcript and filters it through the real history fixture', async 
   await target.getByRole('button', { name: 'More transcript actions' }).click();
   await page.getByRole('menuitem', { name: 'Pin transcript', exact: true }).click();
   await expect(page.getByText('Transcript pinned.', { exact: true })).toBeVisible();
-  await page.getByRole('tab', { name: 'Pinned', exact: true }).click();
+  await page.getByRole('button', { name: 'Pinned', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Pinned', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(cards).toHaveCount(1);
   await expect(cards.first().locator('.transcript-text')).toHaveText(targetText);
   await cards.first().getByRole('button', { name: 'More transcript actions' }).click();
