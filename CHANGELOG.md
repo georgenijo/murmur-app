@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-10
+
 ### Added
 
 - Filter transcription history by Today, Last 7 days, or Last 30 days together
@@ -14,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Refactored settings, app orchestration, SQLite support, native popovers, and
+  shared frontend utilities while preserving existing behavior; removed two
+  unused Tauri commands and synchronized the reference documentation (#704).
 - Smart Auto now shows an inline microphone inclusion menu, keeps disconnected
   choices, and uses automatic signal checks instead of a separate verification
   button (#700).
