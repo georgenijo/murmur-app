@@ -14,9 +14,6 @@ import {
   type UpdateStatus,
   type CompletedUpdate,
   isBelowMinVersion,
-  getSkippedVersion,
-  setSkippedVersion,
-  clearSkippedVersion,
   setPendingUpdate,
   clearPendingUpdate,
   getPendingUpdateForVersion,
@@ -30,7 +27,7 @@ import { getUpdateInstallEnvironment } from '../updaterEnvironment';
 const APP_TRANSLOCATION_MESSAGE =
   'macOS opened Murmur from a read-only security location. Quit Murmur, then use Finder to move or reinstall it in Applications before reopening it and trying the update again.';
 
-type UpdaterOperation = 'idle' | 'checking' | 'installing';
+type UpdaterOperation = 'idle' | 'checking' | 'downloading' | 'ready' | 'restarting';
 type CanaryStage = 'pending' | 'passed' | 'failed';
 
 export interface UpdaterCanaryResult {
@@ -64,7 +61,11 @@ type CheckOutcome =
 
 type InstallOutcome =
   | { kind: 'installed'; version: string }
-  | { kind: 'failed'; version: string; stage: 'download' | 'install' | 'relaunch'; message: string };
+  | { kind: 'failed'; version: string; stage: 'install' | 'relaunch'; message: string };
+
+type DownloadOutcome =
+  | { kind: 'ready'; version: string }
+  | { kind: 'failed'; version: string; stage: 'download' | 'install'; message: string };
 
 interface InstallLifecycle {
   onInstalled?: () => Promise<void>;
@@ -82,8 +83,8 @@ export interface UseAutoUpdaterReturn {
   isUpdateDialogOpen: boolean;
   checkForUpdate: () => Promise<void>;
   showAvailableUpdate: () => void;
-  startDownload: (lifecycle?: InstallLifecycle) => Promise<InstallOutcome | undefined>;
-  skipVersion: () => void;
+  startDownload: () => Promise<DownloadOutcome | undefined>;
+  restartUpdate: (lifecycle?: InstallLifecycle) => Promise<InstallOutcome | undefined>;
   dismissUpdate: () => void;
   dismissCompletedUpdate: () => void;
 }
@@ -100,6 +101,8 @@ export function useAutoUpdater(
   // Resolves when the in-flight check settles, so an Install click that races
   // a background check waits instead of being silently dropped.
   const pendingCheckRef = useRef<Promise<void> | null>(null);
+  const hasDownloadedUpdateRef = useRef(false);
+  const hasInstalledUpdateRef = useRef(false);
   const isForcedRef = useRef(false);
   const manualPresentationRequestedRef = useRef(false);
   const automaticStartupRef = useRef(false);
@@ -131,12 +134,18 @@ export function useAutoUpdater(
   }, []);
 
   const performCheck = useCallback(async (opts: { isBackground: boolean; canary?: boolean }): Promise<CheckOutcome> => {
-    if (operationRef.current === 'installing') {
-      flog.info('updater', 'check ignored while install owns updater');
-      return { kind: 'failed', version: 'unknown', stage: 'discover', message: 'Updater is installing.' };
+    if (
+      operationRef.current === 'downloading' ||
+      operationRef.current === 'ready' ||
+      operationRef.current === 'restarting'
+    ) {
+      flog.info('updater', 'check ignored while update owns updater', {
+        operation: operationRef.current,
+      });
+      if (!opts.isBackground) setIsUpdateDialogOpen(true);
+      return { kind: 'failed', version: 'unknown', stage: 'discover', message: 'Updater is busy.' };
     }
     if (!opts.isBackground) {
-      clearSkippedVersion();
       manualPresentationRequestedRef.current = true;
       setUpdateStatus({ phase: 'checking' });
     }
@@ -148,8 +157,6 @@ export function useAutoUpdater(
     pendingCheckRef.current = new Promise<void>((resolve) => {
       settleCheck = resolve;
     });
-    isForcedRef.current = false;
-
     const shouldPresentManualResult = () =>
       !opts.isBackground || manualPresentationRequestedRef.current;
 
@@ -175,6 +182,11 @@ export function useAutoUpdater(
       if (!checkSucceeded) throw lastCheckError;
 
       if (!update?.available || !update.version) {
+        const hadKnownUpdate = updateRef.current !== null;
+        updateRef.current = null;
+        hasDownloadedUpdateRef.current = false;
+        hasInstalledUpdateRef.current = false;
+        isForcedRef.current = false;
         setLastCheckTimestamp(Date.now());
         flog.info('updater', 'no update available', {
           event_code: 'updater.check_current',
@@ -184,6 +196,9 @@ export function useAutoUpdater(
           setUpdateStatus({ phase: 'up-to-date' });
           // Reset back to idle after a brief display
           setTimeout(() => setUpdateStatus(s => s.phase === 'up-to-date' ? { phase: 'idle' } : s), 3000);
+        } else if (hadKnownUpdate) {
+          setIsUpdateDialogOpen(false);
+          setUpdateStatus({ phase: 'idle' });
         }
         return { kind: 'current', version: await getVersion() };
       }
@@ -208,17 +223,10 @@ export function useAutoUpdater(
       }
       setLastCheckTimestamp(Date.now());
 
-      // If not forced and user previously skipped this version, suppress
-      if (!opts.canary && !isForced && getSkippedVersion() === update.version) {
-        flog.info('updater', 'user skipped this version', { version: update.version });
-        if (shouldPresentManualResult()) {
-          setUpdateStatus({ phase: 'idle' });
-        }
-        return { kind: 'current', version: currentVersion };
-      }
-
       const wasAlreadyAvailable = updateRef.current?.version === update.version;
       updateRef.current = update;
+      hasDownloadedUpdateRef.current = false;
+      hasInstalledUpdateRef.current = false;
       isForcedRef.current = isForced;
       setUpdateStatus({
         phase: 'available',
@@ -285,19 +293,24 @@ export function useAutoUpdater(
   const showAvailableUpdate = useCallback(() => {
     if (
       updateStatus.phase === 'available' ||
-      (updateStatus.phase === 'error' && updateStatus.stage === 'install')
+      updateStatus.phase === 'preparing' ||
+      updateStatus.phase === 'downloading' ||
+      updateStatus.phase === 'ready' ||
+      updateStatus.phase === 'restarting' ||
+      updateStatus.phase === 'error'
     ) {
       setIsUpdateDialogOpen(true);
     }
   }, [updateStatus]);
 
-  const startDownload = useCallback(async (lifecycle?: InstallLifecycle): Promise<InstallOutcome | undefined> => {
+  const startDownload = useCallback(async (): Promise<DownloadOutcome | undefined> => {
+    setIsUpdateDialogOpen(true);
     if (operationRef.current === 'checking') {
-      flog.info('updater', 'install waiting for in-flight update check');
+      flog.info('updater', 'download waiting for in-flight update check');
       await pendingCheckRef.current;
     }
     if (operationRef.current !== 'idle') {
-      flog.info('updater', 'install ignored because updater is already busy', {
+      flog.info('updater', 'download ignored because updater is already busy', {
         operation: operationRef.current,
       });
       return undefined;
@@ -305,12 +318,10 @@ export function useAutoUpdater(
     const update = updateRef.current;
     if (!update) return undefined;
 
-    const version =
-      updateStatus.phase === 'available' ? updateStatus.version
-      : updateRef.current?.version ?? 'unknown';
-    let downloadFinished = false;
-    let relaunchStarted = false;
-    operationRef.current = 'installing';
+    const version = update.version;
+    const isForced = isForcedRef.current;
+    operationRef.current = 'downloading';
+    setIsUpdateDialogOpen(true);
     setUpdateStatus({ phase: 'preparing', version });
 
     try {
@@ -330,13 +341,13 @@ export function useAutoUpdater(
         return { kind: 'failed', version, stage: 'install', message: APP_TRANSLOCATION_MESSAGE };
       }
 
-      setUpdateStatus({ phase: 'downloading', version, progress: 0 });
+      setUpdateStatus({ phase: 'downloading', version, progress: null });
       flog.info('updater', 'starting download', { version });
       setPendingUpdate({ version, notes: update.body ?? '' });
 
       let totalContentLength = 0;
       let totalDownloaded = 0;
-      await update.downloadAndInstall((event) => {
+      await update.download((event) => {
         switch (event.event) {
           case 'Started':
             totalContentLength = event.data.contentLength ?? 0;
@@ -348,29 +359,27 @@ export function useAutoUpdater(
               phase: 'downloading',
               version,
               progress: totalContentLength > 0
-                ? Math.round((totalDownloaded / totalContentLength) * 100)
-                : 0,
+                ? Math.min(100, Math.round((totalDownloaded / totalContentLength) * 100))
+                : null,
             });
             break;
           case 'Finished':
             flog.info('updater', 'download finished');
-            downloadFinished = true;
             break;
         }
       });
 
-      setUpdateStatus({ phase: 'ready', version });
-      flog.info('updater', 'installed, relaunching', {
-        event_code: 'updater.install_ready',
+      hasDownloadedUpdateRef.current = true;
+      operationRef.current = 'ready';
+      setUpdateStatus({ phase: 'ready', version, isForced });
+      flog.info('updater', 'download ready', {
+        event_code: 'updater.download_ready',
       });
-      clearSkippedVersion();
-      await lifecycle?.onInstalled?.();
-      relaunchStarted = true;
-      await relaunch();
-      return { kind: 'installed', version };
+      return { kind: 'ready', version };
     } catch (err) {
       operationRef.current = 'idle';
-      flog.error('updater', 'download/install failed', {
+      hasDownloadedUpdateRef.current = false;
+      flog.error('updater', 'download failed', {
         event_code: 'updater.install_failed',
         error: String(err),
       });
@@ -383,11 +392,67 @@ export function useAutoUpdater(
       return {
         kind: 'failed',
         version,
-        stage: relaunchStarted ? 'relaunch' : downloadFinished ? 'install' : 'download',
+        stage: 'download',
         message: String(err),
       };
     }
-  }, [updateStatus]);
+  }, []);
+
+  const restartUpdate = useCallback(async (lifecycle?: InstallLifecycle): Promise<InstallOutcome | undefined> => {
+    if (operationRef.current === 'restarting') {
+      flog.info('updater', 'restart ignored because updater is already restarting');
+      return undefined;
+    }
+    if (operationRef.current !== 'ready') {
+      flog.info('updater', 'restart ignored because update is not ready', {
+        operation: operationRef.current,
+      });
+      return undefined;
+    }
+    const update = updateRef.current;
+    if (!update || (!hasDownloadedUpdateRef.current && !hasInstalledUpdateRef.current)) {
+      return undefined;
+    }
+
+    const version = update.version;
+    let relaunchStarted = false;
+    operationRef.current = 'restarting';
+    setIsUpdateDialogOpen(true);
+    setUpdateStatus({ phase: 'restarting', version });
+
+    try {
+      if (!hasInstalledUpdateRef.current) {
+        await update.install();
+        hasInstalledUpdateRef.current = true;
+        hasDownloadedUpdateRef.current = false;
+      }
+      await lifecycle?.onInstalled?.();
+      flog.info('updater', 'installed, relaunching', {
+        event_code: 'updater.install_ready',
+      });
+      relaunchStarted = true;
+      await relaunch();
+      return { kind: 'installed', version };
+    } catch (err) {
+      operationRef.current = 'ready';
+      flog.error('updater', relaunchStarted ? 'relaunch failed' : 'install failed', {
+        event_code: relaunchStarted ? 'updater.restart_failed' : 'updater.install_failed',
+        error: String(err),
+      });
+      setUpdateStatus({
+        phase: 'error',
+        stage: 'restart',
+        message: String(err),
+        isForced: isForcedRef.current,
+      });
+      return {
+        kind: 'failed',
+        version,
+        stage: relaunchStarted ? 'relaunch' : 'install',
+        message: String(err),
+      };
+    }
+  }, []);
 
   const writeCanary = useCallback(async (result: UpdaterCanaryResult) => {
     await invoke<UpdaterCanaryState>('updater_canary', {
@@ -495,7 +560,29 @@ export function useAutoUpdater(
       error: null,
     });
 
-    const install = await startDownload({
+    const download = await startDownload();
+    if (!download || download.kind === 'failed') {
+      await writeCanary({
+        schemaVersion: 1,
+        status: 'failed',
+        checkedVersion,
+        offeredVersion: outcome.version,
+        forced: outcome.forced,
+        dryRun: false,
+        stages: {
+          discover: 'passed',
+          policy: 'passed',
+          download: download?.stage === 'download' ? 'failed' : 'pending',
+          signatureVerify: 'pending',
+          install: download?.stage === 'install' ? 'failed' : 'pending',
+          relaunch: 'pending',
+        },
+        error: download?.message ?? 'Update download did not start.',
+      });
+      return;
+    }
+
+    const install = await restartUpdate({
       onInstalled: () => writeCanary({
         schemaVersion: 1,
         status: 'pending',
@@ -525,14 +612,14 @@ export function useAutoUpdater(
       stages: {
         discover: 'passed',
         policy: 'passed',
-        download: install.stage === 'download' ? 'failed' : 'passed',
-        signatureVerify: install.stage === 'download' ? 'pending' : 'passed',
-        install: install.stage === 'download' ? 'pending' : install.stage === 'install' ? 'failed' : 'passed',
+        download: 'passed',
+        signatureVerify: 'passed',
+        install: install.stage === 'install' ? 'failed' : 'passed',
         relaunch: install.stage === 'relaunch' ? 'failed' : 'pending',
       },
       error: install.message,
     });
-  }, [performCheck, startDownload, writeCanary]);
+  }, [performCheck, restartUpdate, startDownload, writeCanary]);
 
   // On mount, inspect the opt-in canary marker before the normal launch check.
   // An absent marker falls straight through to the existing updater behavior.
@@ -590,19 +677,15 @@ export function useAutoUpdater(
     };
   }, [automaticChecksEnabled, performCheck, runCanary]);
 
-  const skipVersion = useCallback(() => {
-    if (updateStatus.phase === 'available') {
-      setSkippedVersion(updateStatus.version);
-      flog.info('updater', 'version skipped', { version: updateStatus.version });
-    }
-    updateRef.current = null;
-    setIsUpdateDialogOpen(false);
-    setUpdateStatus({ phase: 'idle' });
-  }, [updateStatus]);
-
   const dismissUpdate = useCallback(() => {
-    setIsUpdateDialogOpen(false);
-  }, []);
+    if (
+      (updateStatus.phase === 'available' && !updateStatus.isForced) ||
+      (updateStatus.phase === 'ready' && !updateStatus.isForced) ||
+      (updateStatus.phase === 'error' && !updateStatus.isForced)
+    ) {
+      setIsUpdateDialogOpen(false);
+    }
+  }, [updateStatus]);
 
   const dismissCompletedUpdate = useCallback(() => {
     clearPendingUpdate();
@@ -616,7 +699,7 @@ export function useAutoUpdater(
     checkForUpdate,
     showAvailableUpdate,
     startDownload,
-    skipVersion,
+    restartUpdate,
     dismissUpdate,
     dismissCompletedUpdate,
   };

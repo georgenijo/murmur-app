@@ -304,7 +304,7 @@ function App() {
     isUpdateDialogOpen,
     showAvailableUpdate,
     dismissUpdate,
-    skipVersion,
+    restartUpdate,
     startDownload,
     completedUpdate,
     dismissCompletedUpdate,
@@ -316,7 +316,12 @@ function App() {
     let disposed = false;
     let unlistenCheck: (() => void) | undefined;
     listen<unknown>('check-for-updates-requested', () => {
-      void checkForUpdate();
+      if (updateStatus.phase === 'idle' || updateStatus.phase === 'up-to-date' ||
+          (updateStatus.phase === 'error' && updateStatus.stage === 'check')) {
+        void checkForUpdate();
+      } else {
+        showAvailableUpdate();
+      }
     })
       .then((unlisten) => {
         if (disposed) unlisten();
@@ -331,11 +336,11 @@ function App() {
       disposed = true;
       unlistenCheck?.();
     };
-  }, [checkForUpdate]);
+  }, [checkForUpdate, showAvailableUpdate, updateStatus]);
 
   // Keep the native menu label in sync with the passive in-app indicator.
   useEffect(() => {
-    const version = updateStatus.phase === 'available' ? updateStatus.version : null;
+    const version = 'version' in updateStatus ? updateStatus.version : null;
     setTrayUpdateAvailable(version).catch((err: unknown) => {
       flog.warn('updater', 'could not update menu-bar update item', {
         error: String(err),
@@ -697,6 +702,8 @@ function App() {
         updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
+            onDownload={startDownload}
+            onRestart={restartUpdate}
             onOpen={showAvailableUpdate}
             onRetryCheck={() => void checkForUpdate()}
           />
@@ -808,6 +815,9 @@ function App() {
               onRerunSetup={rerunSetup}
               accessibilityGranted={accessibilityGranted}
               onCheckForUpdate={checkForUpdate}
+              onDownloadUpdate={startDownload}
+              onRestartUpdate={restartUpdate}
+              onOpenUpdate={showAvailableUpdate}
               updateStatus={updateStatus}
               configureError={configureError}
               pageRequest={settingsPageRequest}
@@ -833,7 +843,7 @@ function App() {
           status={isUpdateDialogOpen ? updateStatus : { phase: 'idle' }}
           onDownload={startDownload}
           onRetryCheck={() => void checkForUpdate()}
-          onSkip={skipVersion}
+          onRestart={restartUpdate}
           onDismiss={dismissUpdate}
         />
       )}

@@ -36,6 +36,7 @@ import { useTransformModelSettings } from '../../lib/hooks/useTransformModelSett
 import { VoiceQuerySettings } from './VoiceQuerySettings';
 import { TransformModelSettings } from './TransformModelSettings';
 import type { DictationStatus } from '../../lib/types';
+import { UpdateIndicator } from '../UpdateIndicator';
 import type { UpdateStatus } from '../../lib/updater';
 import {
   downloadModel as downloadModelCommand,
@@ -142,6 +143,9 @@ interface SettingsPanelProps {
   onRerunSetup: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
+  onDownloadUpdate: () => void;
+  onRestartUpdate: () => void;
+  onOpenUpdate: () => void;
   updateStatus: UpdateStatus;
   configureError: string | null;
   /** External navigation request. The token makes a repeat request for the
@@ -291,6 +295,9 @@ export const SettingsPanel = memo(function SettingsPanel({
   onRerunSetup,
   accessibilityGranted,
   onCheckForUpdate,
+  onDownloadUpdate,
+  onRestartUpdate,
+  onOpenUpdate,
   updateStatus,
   configureError,
   pageRequest = null,
@@ -1200,16 +1207,14 @@ export const SettingsPanel = memo(function SettingsPanel({
               <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
             </SettingsDisclosure>
             {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <button type="button" onClick={() => void onCheckForUpdate()} disabled={updateStatus.phase === 'checking' || updateStatus.phase === 'preparing' || updateStatus.phase === 'downloading' || updateStatus.phase === 'ready'} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">{updateStatus.phase === 'checking' ? 'Checking…' : 'Check for Updates'}</button>
-              {updateStatus.phase === 'up-to-date' && <p className="text-xs text-success">You’re up to date.</p>}
-              {updateStatus.phase === 'available' && <p className="text-xs text-primary">v{updateStatus.version} available</p>}
-              {updateStatus.phase === 'error' && (
-                <p className="text-xs text-error">
-                  {updateStatus.stage === 'check'
-                    ? 'Couldn\u2019t check for updates. Check your connection and try again.'
-                    : 'Update installation needs attention.'}
-                </p>
-              )}
+              <UpdateIndicator
+                variant="settings"
+                status={updateStatus}
+                onRetryCheck={() => void onCheckForUpdate()}
+                onDownload={onDownloadUpdate}
+                onRestart={onRestartUpdate}
+                onOpen={onOpenUpdate}
+              />
             </div>}
             {INTERNAL_BENCHMARK_BUILD && (
               <SettingsCallout tone="accent" title="Internal benchmark build">

@@ -1,5 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { Channel } from '@tauri-apps/api/core';
+import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
 import { CommandPalette } from './components/CommandPalette';
@@ -127,7 +129,29 @@ const meetingFixture = {
   activeOrigin: 'reviewed',
 };
 
-mockIPC((command) => {
+mockIPC((command, payload) => {
+  if (requestedState === 'update-flow') {
+    if (command === 'plugin:app|version') return '0.44.1';
+    if (command === 'get_update_install_environment') return { appTranslocated: false };
+    if (command === 'plugin:updater|check') {
+      return { rid: 1, currentVersion: '0.44.1', version: '0.44.2', body: shortUpdateNotes, rawJson: {} };
+    }
+    if (command === 'plugin:updater|download') {
+      const channel = payload && 'onEvent' in payload ? payload.onEvent : null;
+      if (!(channel instanceof Channel)) throw new Error('Missing updater progress channel');
+      channel.onmessage({ event: 'Started', data: { contentLength: 100 } });
+      channel.onmessage({ event: 'Progress', data: { chunkLength: 65 } });
+      return new Promise<number>((resolve) => setTimeout(() => {
+        channel.onmessage({ event: 'Finished' });
+        resolve(2);
+      }, 1500));
+    }
+    if (command === 'plugin:updater|install' || command === 'plugin:process|restart') {
+      const key = command === 'plugin:updater|install' ? 'data-update-installs' : 'data-update-restarts';
+      document.documentElement.setAttribute(key, String(Number(document.documentElement.getAttribute(key) ?? 0) + 1));
+      return;
+    }
+  }
   if (command === 'configure_smart_auto_probe' || command === 'retry_smart_auto_probe') return 1;
   if (command === 'get_meeting_status') {
     return {
@@ -406,6 +430,8 @@ function VisualFixture() {
               notes: '',
               isForced: false,
             }}
+            onDownload={() => {}}
+            onRestart={() => {}}
             onOpen={() => {}}
             onRetryCheck={() => {}}
           />
@@ -421,6 +447,9 @@ function VisualFixture() {
           onRerunSetup={() => {}}
           accessibilityGranted
           onCheckForUpdate={async () => {}}
+          onDownloadUpdate={() => {}}
+          onRestartUpdate={() => {}}
+          onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
         />
@@ -496,12 +525,35 @@ function VisualFixture() {
           ? { phase: 'available', version: '0.43.1', notes: shortUpdateNotes, isForced: false }
           : requestedState === 'update-dialog-long'
             ? { phase: 'available', version: '0.43.1', notes: longUpdateNotes, isForced: false }
-            : { phase: 'idle' }}
+            : requestedState === 'update-downloading'
+              ? { phase: 'downloading', version: '0.44.2', progress: 65 }
+              : requestedState === 'update-ready'
+                ? { phase: 'ready', version: '0.44.2', isForced: false }
+                : { phase: 'idle' }}
         onDownload={() => {}}
         onRetryCheck={() => {}}
-        onSkip={() => {}}
+        onRestart={() => {}}
         onDismiss={() => {}}
       />
+    </div>
+  );
+}
+
+/** Real updater hook and controls, with only native IPC mocked. */
+function UpdateFlowFixture() {
+  const updater = useAutoUpdater({ automaticChecksEnabled: false });
+  const [settings, setSettings] = React.useState(DEFAULT_SETTINGS);
+  return (
+    <div data-visual-ready="true" className="flex h-screen flex-col bg-background text-on-surface">
+      <header className="flex h-[42px] shrink-0 items-center px-4">
+        <span className="text-sm font-semibold">Murmur</span>
+        <UpdateIndicator status={updater.updateStatus} onOpen={updater.showAvailableUpdate} onDownload={updater.startDownload} onRestart={updater.restartUpdate} onRetryCheck={updater.checkForUpdate} />
+      </header>
+      <SettingsPanel settings={settings} onUpdateSettings={(updates) => setSettings((current) => ({ ...current, ...updates }))} initialized status="idle" onResetStats={() => {}} onRerunSetup={() => {}} accessibilityGranted
+        onCheckForUpdate={updater.checkForUpdate} onDownloadUpdate={updater.startDownload} onRestartUpdate={updater.restartUpdate} onOpenUpdate={updater.showAvailableUpdate} updateStatus={updater.updateStatus} configureError={null}
+        pageRequest={{ page: 'general', token: 1 }}
+      />
+      <UpdateModal status={updater.isUpdateDialogOpen ? updater.updateStatus : { phase: 'idle' }} onDownload={updater.startDownload} onRestart={updater.restartUpdate} onRetryCheck={updater.checkForUpdate} onDismiss={updater.dismissUpdate} />
     </div>
   );
 }
@@ -522,7 +574,9 @@ function DictationPreviewFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'dictation-preview' ? (
+    {requestedState === 'update-flow' ? (
+      <UpdateFlowFixture />
+    ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />
     ) : requestedState === 'settings-appearance' ? (
       <AppearanceProvider>

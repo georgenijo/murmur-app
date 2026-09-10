@@ -296,7 +296,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   const record = page.getByTestId('home-record-button');
 
   await expect(header).toBeVisible();
-  await expect(update).toHaveAccessibleName('Murmur v0.27.1 is available. View update');
+  await expect(update).toHaveAccessibleName('Download Update. Murmur v0.27.1 is available');
   await expect(record).toHaveAccessibleName('Reconnecting your microphone…');
   await expect(record).toBeDisabled();
 
@@ -321,15 +321,15 @@ for (const notes of ['short', 'long'] as const) {
     const fixture = page.locator('[data-visual-ready="true"]');
     const dialog = page.getByRole('dialog', { name: 'Update Available' });
     const notesArea = dialog.locator('.overflow-y-auto');
-    const actions = dialog.getByRole('button', { name: 'Update Now' }).locator('..');
+    const actions = dialog.getByRole('button', { name: 'Download Update' }).locator('..');
     const [notesBox, actionsBox] = await Promise.all([
       notesArea.boundingBox(),
       actions.boundingBox(),
     ]);
 
     expect(notesBox?.height).toBeGreaterThan(actionsBox?.height ?? 0);
-    await expect(dialog.getByRole('button', { name: 'Update Now' })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Download Update' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Later' })).toBeVisible();
     await expect(fixture).toHaveScreenshot(`light-update-dialog-${notes}.png`);
   });
@@ -341,8 +341,8 @@ test('update dialog keeps every action visible in a smaller window', async ({ pa
 
   const dialog = page.getByRole('dialog', { name: 'Update Available' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Update Now' })).toBeInViewport();
-  await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Download Update' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Later' })).toBeInViewport();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-update-dialog-long-small.png');
 });
