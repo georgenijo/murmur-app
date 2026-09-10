@@ -21,7 +21,7 @@ interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
   onClearHistory: () => void;
   onUpdateHistoryEntry: (id: string, text: string) => void;
-  onToggleHistoryPinned: (id: string) => void;
+  onToggleHistoryPinned: (entry: HistoryEntry) => void;
   focusSearchToken?: number;
   onTranscribeFile: () => void;
   status: DictationStatus;

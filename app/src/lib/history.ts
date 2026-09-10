@@ -188,18 +188,13 @@ export interface TogglePinnedResult {
   limitReached: boolean;
 }
 
-export function toggleHistoryEntryPinned(entries: HistoryEntry[], id: string): TogglePinnedResult {
-  const target = entries.find((entry) => entry.id === id);
-  if (!target) return { entries, changed: false, limitReached: false };
+export function toggleHistoryEntryPinned(entries: HistoryEntry[], target: HistoryEntry): TogglePinnedResult {
+  const targetIndex = entries.indexOf(target);
+  if (targetIndex < 0) return { entries, changed: false, limitReached: false };
   if (!target.pinned && entries.filter((entry) => entry.pinned).length >= MAX_PINNED_ENTRIES) {
     return { entries, changed: false, limitReached: true };
   }
-  let toggled = false;
-  const next = entries.map((entry) => {
-    if (toggled || entry.id !== id) return entry;
-    toggled = true;
-    return { ...entry, pinned: !entry.pinned };
-  });
+  const next = entries.map((entry, index) => index === targetIndex ? { ...entry, pinned: !entry.pinned } : entry);
   return { entries: trimHistory(next), changed: true, limitReached: false };
 }
 

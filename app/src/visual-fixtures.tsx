@@ -460,7 +460,7 @@ function VisualFixture() {
                 historyEntries={historyEntries}
                 onClearHistory={() => setHistoryEntries([])}
                 onUpdateHistoryEntry={() => {}}
-                onToggleHistoryPinned={(id) => setHistoryEntries((current) => toggleHistoryEntryPinned(current, id).entries)}
+                onToggleHistoryPinned={(entry) => setHistoryEntries((current) => toggleHistoryEntryPinned(current, entry).entries)}
                 onTranscribeFile={() => {}}
                 status={status}
                 initialized

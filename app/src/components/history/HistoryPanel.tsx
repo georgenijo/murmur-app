@@ -35,7 +35,7 @@ interface HistoryPanelProps {
   /** Clear the whole history. */
   onClear: () => void;
   onUpdateEntry: (id: string, text: string) => void;
-  onTogglePinned?: (id: string) => void;
+  onTogglePinned?: (entry: HistoryEntry) => void;
   pinnedCount?: number;
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
@@ -225,7 +225,7 @@ function HistoryPanelComponent({
       showNotice('You can pin up to 20 transcripts. Unpin one to pin another.');
       return;
     }
-    onTogglePinned(entry.id);
+    onTogglePinned(entry);
     showNotice(entry.pinned ? 'Transcript unpinned.' : 'Transcript pinned.');
   };
 

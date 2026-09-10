@@ -57,7 +57,8 @@ describe('useHistoryManagement retention boundary', () => {
   it('persists pin changes across hook remounts and clears them with history', async () => {
     saveHistory([storedEntry('existing', 'keep me')]);
     await render(true);
-    await act(async () => current.togglePinned('existing'));
+    const target = current.historyEntries[0];
+    await act(async () => current.togglePinned(target));
     expect(current.historyEntries[0].pinned).toBe(true);
     expect(JSON.parse(localStorage.getItem('dictation-history') ?? '[]')[0].pinned).toBe(true);
 

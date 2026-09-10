@@ -37,9 +37,9 @@ export function useHistoryManagement(retainHistory = true) {
     });
   }, []);
 
-  const togglePinned = useCallback((id: string) => {
+  const togglePinned = useCallback((target: HistoryEntry) => {
     setHistoryEntries(prev => {
-      const result = toggleHistoryEntryPinned(prev, id);
+      const result = toggleHistoryEntryPinned(prev, target);
       if (!result.changed) return prev;
       saveHistory(result.entries);
       return result.entries;

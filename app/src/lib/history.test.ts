@@ -161,14 +161,15 @@ describe('updateHistoryEntry', () => {
 
 describe('toggleHistoryEntryPinned', () => {
   it('toggles an existing entry without changing history length', () => {
-    const result = toggleHistoryEntryPinned([entry({ id: 'one' })], 'one');
+    const target = entry({ id: 'one' });
+    const result = toggleHistoryEntryPinned([target], target);
     expect(result.changed).toBe(true);
     expect(result.entries).toEqual([expect.objectContaining({ id: 'one', pinned: true })]);
   });
 
   it('rejects a new pin at the bounded limit', () => {
     const entries = Array.from({ length: MAX_PINNED_ENTRIES + 1 }, (_, i) => entry({ id: `p${i}`, pinned: i < MAX_PINNED_ENTRIES }));
-    const result = toggleHistoryEntryPinned(entries, `p${MAX_PINNED_ENTRIES}`);
+    const result = toggleHistoryEntryPinned(entries, entries[MAX_PINNED_ENTRIES]);
     expect(result.changed).toBe(false);
     expect(result.limitReached).toBe(true);
     expect(result.entries).toBe(entries);
@@ -176,8 +177,17 @@ describe('toggleHistoryEntryPinned', () => {
 
   it('toggles only one row when duplicate ids are present', () => {
     const entries = [entry({ id: 'duplicate' }), entry({ id: 'duplicate' })];
-    const result = toggleHistoryEntryPinned(entries, 'duplicate');
-    expect(result.entries.map((item) => item.pinned)).toEqual([true, false]);
+    const result = toggleHistoryEntryPinned(entries, entries[1]);
+    expect(result.entries.map((item) => item.pinned)).toEqual([false, true]);
+    const unpinned = toggleHistoryEntryPinned(result.entries, result.entries[1]);
+    expect(unpinned.entries.map((item) => item.pinned)).toEqual([false, false]);
+  });
+
+  it('ignores a stale target object after the row is removed', () => {
+    const target = entry({ id: 'stale' });
+    const result = toggleHistoryEntryPinned([], target);
+    expect(result.changed).toBe(false);
+    expect(result.entries).toEqual([]);
   });
 });
 

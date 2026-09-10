@@ -218,7 +218,7 @@ describe('HistoryPanel', () => {
     const otherCard = Array.from(container.querySelectorAll('article')).find((card) => card.textContent?.includes('temporary note'))!;
     await act(async () => (otherCard.querySelector('[aria-label="More transcript actions"]') as HTMLElement).click());
     await act(async () => byText('Pin transcript')!.click());
-    expect(onTogglePinned).toHaveBeenCalledWith('other');
+    expect(onTogglePinned).toHaveBeenCalledWith(expect.objectContaining({ id: 'other' }));
   });
 
   it('copies only the visible entries as markdown', async () => {
