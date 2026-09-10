@@ -1,9 +1,10 @@
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
-import { Copy, GraduationCap } from 'lucide-react';
+import { Copy, GraduationCap, Star } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
   HISTORY_DATE_FILTER_OPTIONS,
   HISTORY_FILTER_OPTIONS,
+  HISTORY_PINNED_FILTER_OPTIONS,
   entrySource,
   filterHistory,
   formatTimestamp,
@@ -14,6 +15,7 @@ import {
   type HistoryExportFormat,
   type HistoryFilter,
   type HistoryDateFilter,
+  type HistoryPinnedFilter,
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { flog } from '../../lib/log';
@@ -34,6 +36,8 @@ interface HistoryPanelProps {
   /** Clear the whole history. */
   onClear: () => void;
   onUpdateEntry: (id: string, text: string) => void;
+  onTogglePinned?: (id: string) => void;
+  pinnedCount?: number;
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
@@ -131,6 +135,8 @@ function HistoryPanelComponent({
   entries,
   onClear,
   onUpdateEntry,
+  onTogglePinned = () => {},
+  pinnedCount = 0,
   focusSearchToken,
   onTranscribeFile = () => {},
 }: HistoryPanelProps) {
@@ -139,6 +145,7 @@ function HistoryPanelComponent({
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [dateFilter, setDateFilter] = useState<HistoryDateFilter>('all');
+  const [pinnedFilter, setPinnedFilter] = useState<HistoryPinnedFilter>('all');
   const [filterNow, setFilterNow] = useState(() => Date.now());
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -189,8 +196,8 @@ function HistoryPanelComponent({
   const visible = useMemo(
     // The clock state triggers rollover/resume refreshes; each new entry must
     // still be compared with the current time, not the last refresh time.
-    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, now: Date.now() })),
-    [entries, query, filter, dateFilter, filterNow],
+    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, pinnedFilter, now: Date.now() })),
+    [entries, query, filter, dateFilter, pinnedFilter, filterNow],
   );
   const rendered = useMemo(
     () => visible.slice(0, renderLimit),
@@ -212,6 +219,15 @@ function HistoryPanelComponent({
       showNotice('Could not copy to the clipboard.');
       flog.warn('main', 'History copy failed', { error: String(err) });
     }
+  };
+
+  const handleTogglePinned = (entry: HistoryEntry) => {
+    if (!entry.pinned && pinnedCount >= 20) {
+      showNotice('You can pin up to 20 transcripts. Unpin one to pin another.');
+      return;
+    }
+    onTogglePinned(entry.id);
+    showNotice(entry.pinned ? 'Transcript unpinned.' : 'Transcript pinned.');
   };
 
   const handleCopyMarkdown = async (entry: HistoryEntry) => {
@@ -317,6 +333,20 @@ function HistoryPanelComponent({
           />
 
           <FluidTabs
+            tabs={HISTORY_PINNED_FILTER_OPTIONS.map((option) => ({ value: option.value, title: option.label }))}
+            value={pinnedFilter}
+            onValueChange={(value) => {
+              if (value === 'all' || value === 'pinned') setPinnedFilter(value);
+            }}
+            variant="capsule"
+            size="sm"
+            ariaLabel="Filter pinned transcripts"
+            className="history-filter-tabs"
+            listClassName="history-filter-tabs-list"
+            activeIndicatorClassName="history-filter-tab-indicator"
+          />
+
+          <FluidTabs
             tabs={HISTORY_DATE_FILTER_OPTIONS.map((option) => ({ value: option.value, title: option.label }))}
             value={dateFilter}
             onValueChange={(value) => {
@@ -406,7 +436,7 @@ function HistoryPanelComponent({
         ) : visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-on-surface-variant">
             <p className="text-sm">No matching transcripts</p>
-            <button type="button" onClick={() => { setQuery(''); setFilter('all'); setDateFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
+            <button type="button" onClick={() => { setQuery(''); setFilter('all'); setDateFilter('all'); setPinnedFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
           </div>
         ) : rendered.map((entry, index) => {
           const isNewest = entry.id === newestId;
@@ -481,6 +511,14 @@ function HistoryPanelComponent({
                     onSelect={() => void handleCopyMarkdown(entry)}
                   >
                     Copy as Markdown
+                  </SmartOverflowAction>
+                  <SmartOverflowAction
+                    id="pin"
+                    priority="overflow"
+                    icon={<Star className={entry.pinned ? 'fill-current' : undefined} />}
+                    onSelect={() => handleTogglePinned(entry)}
+                  >
+                    {entry.pinned ? 'Unpin transcript' : 'Pin transcript'}
                   </SmartOverflowAction>
                   {isNewest && (
                     <SmartOverflowAction

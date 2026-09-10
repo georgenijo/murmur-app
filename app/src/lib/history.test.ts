@@ -15,6 +15,8 @@ import {
   searchTokens,
   sortForDisplay,
   trimHistory,
+  toggleHistoryEntryPinned,
+  MAX_PINNED_ENTRIES,
   updateHistoryEntry,
   type HistoryEntry,
 } from './history';
@@ -51,6 +53,23 @@ describe('trimHistory', () => {
       entry({ id: 'other', text: 'third' }),
     ];
     expect(trimHistory(entries).map((e) => e.text)).toEqual(['first', 'second', 'third']);
+  });
+
+  it('keeps pinned entries while evicting the oldest unpinned entries', () => {
+    const entries = Array.from({ length: 205 }, (_, i) => entry({ id: `e${i}`, pinned: i === 0 || i === 100 }));
+    const trimmed = trimHistory(entries);
+    expect(trimmed).toHaveLength(200);
+    expect(trimmed.map((item) => item.id)).toContain('e0');
+    expect(trimmed.map((item) => item.id)).toContain('e100');
+    expect(trimmed[0].id).toBe('e0');
+  });
+
+  it('normalizes persisted pins to the newest bounded set', () => {
+    const entries = Array.from({ length: MAX_PINNED_ENTRIES + 2 }, (_, i) => entry({ id: `p${i}`, pinned: true }));
+    const trimmed = trimHistory(entries);
+    expect(trimmed.filter((item) => item.pinned)).toHaveLength(MAX_PINNED_ENTRIES);
+    expect(trimmed.find((item) => item.id === 'p0')?.pinned).toBe(false);
+    expect(trimmed.find((item) => item.pinned)?.id).toBe('p2');
   });
 });
 
@@ -132,6 +151,22 @@ describe('updateHistoryEntry', () => {
   });
 });
 
+describe('toggleHistoryEntryPinned', () => {
+  it('toggles an existing entry without changing history length', () => {
+    const result = toggleHistoryEntryPinned([entry({ id: 'one' })], 'one');
+    expect(result.changed).toBe(true);
+    expect(result.entries).toEqual([expect.objectContaining({ id: 'one', pinned: true })]);
+  });
+
+  it('rejects a new pin at the bounded limit', () => {
+    const entries = Array.from({ length: MAX_PINNED_ENTRIES + 1 }, (_, i) => entry({ id: `p${i}`, pinned: i < MAX_PINNED_ENTRIES }));
+    const result = toggleHistoryEntryPinned(entries, `p${MAX_PINNED_ENTRIES}`);
+    expect(result.changed).toBe(false);
+    expect(result.limitReached).toBe(true);
+    expect(result.entries).toBe(entries);
+  });
+});
+
 describe('searchTokens', () => {
   it('lowercases and splits on whitespace', () => {
     expect(searchTokens('  Tauri   Rust ')).toEqual(['tauri', 'rust']);
@@ -172,6 +207,10 @@ describe('filterHistory', () => {
 
   it('combines a filter and a query', () => {
     expect(filterHistory(entries, { filter: 'file', query: 'tauri' })).toEqual([]);
+  });
+
+  it('filters pinned entries while preserving other filters', () => {
+    expect(filterHistory(entries.map((item) => ({ ...item, pinned: item.id === 'mic' })), { pinnedFilter: 'pinned', query: 'tauri' }).map((e) => e.id)).toEqual(['mic']);
   });
 
   it('filters by a local calendar date window and composes with search', () => {
@@ -349,6 +388,7 @@ describe('formatHistoryExport', () => {
     expect(parsed.entries[0].id).toBe('b');
     expect(parsed.entries[0].sourceName).toBe('notes.m4a');
     expect(parsed.entries[1].source).toBe('recording');
+    expect(parsed.entries[0].pinned).toBe(false);
   });
 
   it('exports v2 recognition metadata only in the explicit JSON export', () => {

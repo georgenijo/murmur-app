@@ -10,6 +10,7 @@ import {
   addHistoryEntry,
   updateHistoryEntry,
   clearHistory as clearPersistedHistory,
+  toggleHistoryEntryPinned,
 } from '../history';
 
 export function useHistoryManagement(retainHistory = true) {
@@ -36,10 +37,19 @@ export function useHistoryManagement(retainHistory = true) {
     });
   }, []);
 
+  const togglePinned = useCallback((id: string) => {
+    setHistoryEntries(prev => {
+      const result = toggleHistoryEntryPinned(prev, id);
+      if (!result.changed) return prev;
+      saveHistory(result.entries);
+      return result.entries;
+    });
+  }, []);
+
   const clearHistory = useCallback(() => {
     setHistoryEntries([]);
     clearPersistedHistory();
   }, []);
 
-  return { historyEntries, addEntry, updateEntry, clearHistory };
+  return { historyEntries, addEntry, updateEntry, togglePinned, clearHistory };
 }

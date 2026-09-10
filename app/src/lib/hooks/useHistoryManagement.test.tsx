@@ -53,4 +53,23 @@ describe('useHistoryManagement retention boundary', () => {
     expect(current.historyEntries.map((entry) => entry.text)).toEqual(['keep me']);
     expect(JSON.parse(localStorage.getItem('dictation-history') ?? '[]')).toHaveLength(1);
   });
+
+  it('persists pin changes across hook remounts and clears them with history', async () => {
+    saveHistory([storedEntry('existing', 'keep me')]);
+    await render(true);
+    await act(async () => current.togglePinned('existing'));
+    expect(current.historyEntries[0].pinned).toBe(true);
+    expect(JSON.parse(localStorage.getItem('dictation-history') ?? '[]')[0].pinned).toBe(true);
+
+    await act(async () => root.unmount());
+    container.remove();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await render(true);
+    expect(current.historyEntries[0].pinned).toBe(true);
+    await act(async () => current.clearHistory());
+    expect(current.historyEntries).toEqual([]);
+    expect(localStorage.getItem('dictation-history')).toBeNull();
+  });
 });
