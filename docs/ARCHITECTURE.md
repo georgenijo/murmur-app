@@ -153,7 +153,7 @@ Each window is a separate webview with its own Tauri capability set.
 
 | Window | Label | Entry point | Size | Purpose |
 |--------|-------|-------------|------|---------|
-| Main | `main` | `index.html` | 880×720, minimum 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, and modals |
+| Main | `main` | `index.html` | 1120×820, minimum 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, and modals |
 | Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons, and transform traces |
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always on top, transparent, and non-activating |
 | Transform Review | `transform-review` | `transform-review.html` | 320×76 compact | Transform proposal review. Non-focusable until `ready` or `failed` |

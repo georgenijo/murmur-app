@@ -74,7 +74,7 @@ Search rests as a compact icon so it does not dominate the history toolbar. Hove
 
 ## Filters
 
-Three source chips: **All**, **Mic**, **File**. A second date filter offers **Any date**, **Today**, **Last 7 days**, and **Last 30 days**. A third filter narrows the list to **Pinned** transcripts. Entries saved before the `source` field existed count as `Mic`; source, date, pinned, and search filters compose together.
+One **Filter** menu in the toolbar holds every narrowing choice, so a new user sees a single control instead of three rows of chips. **Show** offers **Everything**, **Spoken**, and **Files**; **From** offers **Any time**, **Today**, **Past 7 days**, and **Past 30 days**; **Pinned only** is a checkbox. Choices keep the menu open so several can be combined, and **Clear filters** appears once anything is narrowed. The trigger names a single active choice (for example `Files`) and switches to a count such as `2 filters` beyond that so the toolbar keeps its line; its accessible name always lists every choice (`Filter transcripts: Files · Today`). Entries saved before the `source` field existed count as spoken; source, date, pinned, and search filters compose together.
 
 Rows can be pinned for quick reuse. Pins are local history metadata, capped at 20
 entries. The 200-entry history cap remains global: when history rolls over,
@@ -82,12 +82,13 @@ oldest unpinned entries leave first, while pins remain eligible for the same cap
 If all retained entries are pinned, the oldest pins leave next. Clearing history
 clears pins too, and disabling transcript retention still rejects new entries.
 
-The counter on the right reads `N of M` while anything is filtered, and just the total otherwise.
+No entry count is shown at rest. While a filter or search is active, a line under the toolbar reads `Showing N of M` with a **Show all** action that clears both the filters and the query.
 
 ## Transcript rows
 
 Rows keep the transcript itself primary: their compact metadata contains only
-the timestamp and source, without per-entry word counts, durations, or repeated
+the timestamp, a file tag for imported audio (spoken entries carry no tag), and
+a star on pinned entries, without per-entry word counts, durations, or repeated
 mode controls. Clicking any non-interactive part of a row copies the entry's
 full stored text, including text hidden behind **Show more**. A focused row does
 the same with Enter or Space and briefly announces **Copied**. Nested actions
@@ -151,7 +152,8 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 | `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, update, clear |
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
-| `app/src/components/history/HistoryPanel.tsx` | Search, chips, cards, export menu, clear actions |
+| `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
+| `app/src/components/history/HistoryFilterMenu.tsx` | The single Filter menu and its trigger label |
 | `app/src/lib/hooks/useQueryHistory.ts` | Active-workspace-only paged query-history reads, provider filter, live refresh, and purge |
 | `app/src/components/history/QueryHistoryPanel.tsx` | Local question/answer cards and one-click purge; no export or edit path |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |

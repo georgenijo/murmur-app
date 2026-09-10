@@ -2,8 +2,6 @@ import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type Mouse
 import { Copy, GraduationCap, Star } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
-  HISTORY_DATE_FILTER_OPTIONS,
-  HISTORY_FILTER_OPTIONS,
   entrySource,
   filterHistory,
   formatTimestamp,
@@ -25,12 +23,15 @@ import {
   AnimatedDropdownSeparator,
   AnimatedDropdownTrigger,
 } from '@/components/ui/animated-dropdown/animated-dropdown';
-import FluidTabs from '@/components/ui/fluid-tabs/fluid-tabs';
 import HoldToDeleteButton from '@/components/ui/hold-to-delete-button/hold-to-delete-button';
 import SmartOverflow, { SmartOverflowAction } from '@/components/ui/smart-overflow/smart-overflow';
 import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
+import { HistoryFilterMenu } from './HistoryFilterMenu';
 
 interface HistoryPanelProps {
+  /** Optional heading rendered at the start of the toolbar row. */
+  title?: string;
+  titleId?: string;
   entries: HistoryEntry[];
   /** Clear the whole history. */
   onClear: () => void;
@@ -43,18 +44,6 @@ interface HistoryPanelProps {
 }
 
 const HISTORY_RENDER_BATCH = 30;
-const HISTORY_FILTER_TABS = HISTORY_FILTER_OPTIONS.map((option) => ({
-  value: option.value,
-  title: option.label,
-}));
-
-function isHistoryFilter(value: string): value is HistoryFilter {
-  return HISTORY_FILTER_OPTIONS.some((option) => option.value === value);
-}
-
-function isHistoryDateFilter(value: string): value is HistoryDateFilter {
-  return HISTORY_DATE_FILTER_OPTIONS.some((option) => option.value === value);
-}
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
   const segments = useMemo(() => matchSegments(text, query), [text, query]);
@@ -131,6 +120,8 @@ function ClampedTranscript({ text, query }: { text: string; query: string }) {
 }
 
 function HistoryPanelComponent({
+  title,
+  titleId,
   entries,
   onClear,
   onUpdateEntry,
@@ -204,7 +195,7 @@ function HistoryPanelComponent({
   );
   useEffect(() => {
     setRenderLimit(HISTORY_RENDER_BATCH);
-  }, [query, filter, dateFilter]);
+  }, [query, filter, dateFilter, pinnedFilter]);
   // Correct-and-Teach only ever targets the newest entry in the whole history,
   // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
@@ -273,10 +264,25 @@ function HistoryPanelComponent({
     setQuery('');
   };
 
+  const filtersActive = filter !== 'all' || dateFilter !== 'all' || pinnedFilter !== 'all';
+  const clearFilters = () => {
+    setFilter('all');
+    setDateFilter('all');
+    setPinnedFilter('all');
+  };
+  // Show all removes the note or empty state that holds its own button, so focus moves to search.
+  const showAll = () => {
+    setQuery('');
+    clearFilters();
+    searchRef.current?.focus();
+  };
+  const searching = query.trim() !== '';
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="shrink-0">
         <div className="history-toolbar">
+          {title && <h2 id={titleId} className="history-title">{title}</h2>}
           <div
             data-testid="history-search-shell"
             data-expanded="true"
@@ -299,7 +305,7 @@ function HistoryPanelComponent({
                 event.stopPropagation();
                 closeSearch();
               }}
-              placeholder="Search transcripts"
+              placeholder="Search"
               aria-label="Search transcripts"
               className="absolute inset-0 h-full w-full border-0 bg-transparent py-1 pl-7 pr-7 text-sm text-on-surface outline-none placeholder:text-on-surface-variant [&::-webkit-search-cancel-button]:appearance-none"
             />
@@ -317,50 +323,15 @@ function HistoryPanelComponent({
             )}
           </div>
 
-          <FluidTabs
-            tabs={HISTORY_FILTER_TABS}
-            value={filter}
-            onValueChange={(value) => {
-              if (isHistoryFilter(value)) setFilter(value);
-            }}
-            variant="capsule"
-            size="sm"
-            ariaLabel="Filter transcripts"
-            className="history-filter-tabs"
-            listClassName="history-filter-tabs-list"
-            activeIndicatorClassName="history-filter-tab-indicator"
+          <HistoryFilterMenu
+            filter={filter}
+            dateFilter={dateFilter}
+            pinnedFilter={pinnedFilter}
+            onFilterChange={setFilter}
+            onDateFilterChange={setDateFilter}
+            onPinnedFilterChange={setPinnedFilter}
+            onClear={clearFilters}
           />
-
-          <button
-            type="button"
-            aria-pressed={pinnedFilter === 'pinned'}
-            title="Show only pinned transcripts"
-            onClick={() => setPinnedFilter((current) => current === 'pinned' ? 'all' : 'pinned')}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-outline-variant/70 bg-surface-container-low px-3 py-1.5 text-xs font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-high aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary"
-          >
-            <Star size={13} aria-hidden="true" className={pinnedFilter === 'pinned' ? 'fill-current' : undefined} />
-            Pinned
-          </button>
-
-          <FluidTabs
-            tabs={HISTORY_DATE_FILTER_OPTIONS.map((option) => ({ value: option.value, title: option.label }))}
-            value={dateFilter}
-            onValueChange={(value) => {
-              if (isHistoryDateFilter(value)) setDateFilter(value);
-            }}
-            variant="capsule"
-            size="sm"
-            ariaLabel="Filter transcripts by date"
-            className="history-filter-tabs"
-            listClassName="history-filter-tabs-list"
-            activeIndicatorClassName="history-filter-tab-indicator"
-          />
-
-          <span className="ml-auto text-xs tabular-nums text-on-surface-variant">
-            {visible.length === entries.length
-              ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
-              : `${visible.length} of ${entries.length}`}
-          </span>
 
           <AnimatedDropdown open={exportOpen} onOpenChange={setExportOpen}>
             <AnimatedDropdownTrigger className="history-export-trigger" aria-label="More history actions">
@@ -417,6 +388,13 @@ function HistoryPanelComponent({
           </AnimatedDropdown>
         </div>
 
+        {(filtersActive || searching) && entries.length > 0 && (
+          <p className="history-filtered-note">
+            Showing {visible.length} of {entries.length}
+            <button type="button" onClick={showAll}>Show all</button>
+          </p>
+        )}
+
         {notice && (
           <p role="status" className="mx-3.5 mb-1.5 rounded-lg bg-surface-container px-2.5 py-1.5 text-[11px] text-on-surface-variant">{notice}</p>
         )}
@@ -432,7 +410,7 @@ function HistoryPanelComponent({
         ) : visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-on-surface-variant">
             <p className="text-sm">No matching transcripts</p>
-            <button type="button" onClick={() => { setQuery(''); setFilter('all'); setDateFilter('all'); setPinnedFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
+            <button type="button" onClick={showAll} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Show all</button>
           </div>
         ) : rendered.map((entry, index) => {
           const isNewest = entry.id === newestId;
@@ -465,10 +443,11 @@ function HistoryPanelComponent({
                       <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                       <span className="truncate">{entry.sourceName || 'File'}</span>
                     </span>
-                  ) : (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-on-surface/6 px-1.5 text-[10.5px] font-semibold text-on-surface-variant">
-                      <svg className="h-2 w-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-14 0m7 7v3m-4 0h8m-4-6a3 3 0 01-3-3V5a3 3 0 016 0v4a3 3 0 01-3 3z" /></svg>
-                      Mic
+                  ) : null}
+                  {entry.pinned && (
+                    <span title="Pinned" className="inline-flex shrink-0 text-warning">
+                      <Star size={11} aria-hidden="true" className="fill-current" />
+                      <span className="ui-visually-hidden">Pinned</span>
                     </span>
                   )}
                   {entry.interruption && (
