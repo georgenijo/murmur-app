@@ -73,6 +73,29 @@ describe('Sonic Canvas component details', () => {
     expect(badge?.classList).toContain('text-success');
   });
 
+  it('hides the status chip where the page already shows dictation status', async () => {
+    await act(async () => {
+      root.render(
+        <MainHeader
+          status="recovering"
+          initialized
+          recordingDuration={0}
+          recordingMode="hold_down"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsOpen={false}
+          triggerKey="shift_l"
+          showRecordControls={false}
+          showStatusChip={false}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="main-status-chip"]')).toBeNull();
+    expect(container.querySelector('header')?.textContent).not.toContain('Recovering');
+  });
+
   it('omits operational status from Settings while preserving the Settings header controls', async () => {
     const onDone = vi.fn();
     await act(async () => {

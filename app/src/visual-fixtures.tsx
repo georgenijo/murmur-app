@@ -397,6 +397,7 @@ function VisualFixture() {
         triggerKey="shift_l"
         mode={settingsOpen ? 'settings' : 'main'}
         showRecordControls={false}
+        showStatusChip={destination !== 'home'}
         updateIndicator={requestedState === 'update-recovering' ? (
           <UpdateIndicator
             status={{
@@ -472,7 +473,6 @@ function VisualFixture() {
                 onRecord={() => {}}
                 onStop={() => {}}
                 onOpenInsights={() => setDestination('insights')}
-                onOpenSettings={() => {}}
               />
             )}
           </div>

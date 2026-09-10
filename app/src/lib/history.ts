@@ -194,16 +194,16 @@ export type HistoryDateFilter = 'all' | 'today' | 'week' | 'month';
 export type HistoryPinnedFilter = 'all' | 'pinned';
 
 export const HISTORY_FILTER_OPTIONS: { value: HistoryFilter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'recording', label: 'Mic' },
-  { value: 'file', label: 'File' },
+  { value: 'all', label: 'Everything' },
+  { value: 'recording', label: 'Spoken' },
+  { value: 'file', label: 'Files' },
 ];
 
 export const HISTORY_DATE_FILTER_OPTIONS: { value: HistoryDateFilter; label: string }[] = [
-  { value: 'all', label: 'Any date' },
+  { value: 'all', label: 'Any time' },
   { value: 'today', label: 'Today' },
-  { value: 'week', label: 'Last 7 days' },
-  { value: 'month', label: 'Last 30 days' },
+  { value: 'week', label: 'Past 7 days' },
+  { value: 'month', label: 'Past 30 days' },
 ];
 
 export function entrySource(entry: HistoryEntry): HistorySource {

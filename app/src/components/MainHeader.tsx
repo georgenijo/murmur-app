@@ -21,6 +21,8 @@ interface MainHeaderProps {
   meetingPhase?: MeetingRuntimePhase;
   meetingElapsedMs?: number;
   showRecordControls?: boolean;
+  /** Home already shows dictation status in its talk card, so it hides this chip. */
+  showStatusChip?: boolean;
 }
 
 const KEY_LABELS: Record<DoubleTapKey, string> = {
@@ -67,6 +69,7 @@ export function MainHeader({
   meetingPhase = 'idle',
   meetingElapsedMs = 0,
   showRecordControls = true,
+  showStatusChip = true,
 }: MainHeaderProps) {
   const isCapturing = status === 'recording' || status === 'starting';
   const busy = status === 'processing' || status === 'recovering';
@@ -89,7 +92,7 @@ export function MainHeader({
       className={mode === 'settings' ? 'settings-window-header' : ''}
       showWordmark={mode === 'settings'}
     >
-      {mode === 'main' && (
+      {mode === 'main' && showStatusChip && (
         <div
           data-testid="main-status-chip"
           className={`ui-status-chip ${

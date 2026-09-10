@@ -58,7 +58,7 @@ The reusable CSS contracts are:
 - `.transcript-copy-feedback` / `.transcript-teach`
 - `.home-sidebar`
 - `.home-dashboard` / `.home-dashboard-grid`
-- `.home-recording-bar` with shared primary and secondary dashboard actions
+- `.home-talk` (the Home talk card) / `.history-filter-trigger` / `.history-filter-menu`
 - `.personalization-card`
 
 Use these before creating a feature-local control or surface.
@@ -68,12 +68,12 @@ Use these before creating a feature-local control or surface.
 | Area | Contract |
 |------|----------|
 | Native chrome | Traffic lights, status, updates, and Settings share one row; recording actions live in the dashboard |
-| Status | Minimum 72px; state changes do not remove its container |
-| Record | Home owns one 64px row with a stable Start/Stop action, truthful status, shortcut, and file action |
+| Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
+| Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
 | Sidebar | 160px normally, 56px icon rail below 760px; it contains only Home, Notetaker, Queries, and Insights; selection is a surface state, never elevation |
 | Customize | The gear and `⌘,` open one ordered four-row hub; detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
-| Toolbar | 28px controls; search is 180px and expands to 260px on focus |
+| Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | 5px list gap; cards use an 8px vertical inset |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Enter and Space do the same when focused |
@@ -84,8 +84,8 @@ Use these before creating a feature-local control or surface.
 
 ## Review and verification
 
-Every main-dashboard change should be checked at the native 880×720 size and
-the compact 720×560 target in both appearance modes. Home and Insights must also
+Every main-dashboard change should be checked at the native 1120×820 default,
+the 880×720 golden size, and the compact 720×560 target in both appearance modes. Home and Insights must also
 be checked with the low-contrast and high-saturation imported-theme fixtures.
 Recording transitions must be checked in idle, recording, and processing
 states. Native title-bar work must be verified in a bundled Tauri app because a
@@ -97,7 +97,8 @@ navigation, transcript-card actions, and the history overflow menu.
 
 `npm run test:visual` runs Playwright goldens at 880×720 for light and dark
 appearances across idle, recording, processing, Insights, and Settings, plus
-720×560 compact Home and Insights fixtures. Its dashboard theme matrix renders Home and
+720×560 compact Home and Insights fixtures; a layout test also checks the talk
+card and history toolbar at the 1120×820 window default. Its dashboard theme matrix renders Home and
 Insights with Sonic light/dark and repaired low-contrast/high-saturation
 Open VSX-like inputs. The 880×720 fixture must retain a 200px Insights rail
 beside the history column. Update those baselines only after comparing the

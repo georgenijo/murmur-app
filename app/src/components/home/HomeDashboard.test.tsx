@@ -3,7 +3,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomeRecordingBar } from './HomeRecordingBar';
 import { HomeSidebar } from './HomeSidebar';
-import { buildHistoryActivity } from './HomeInsightsRail';
 import { PersonalizationCard } from './PersonalizationCard';
 
 describe('home dashboard interactions', () => {
@@ -21,11 +20,13 @@ describe('home dashboard interactions', () => {
     container.remove();
   });
 
-  it('preserves recording, stop, and file-transcription actions', async () => {
+  it('keeps the talk card to one action and a short hint', async () => {
     const onRecord = vi.fn();
     const onStop = vi.fn();
-    const onTranscribeFile = vi.fn();
-    const renderBar = async (status: 'idle' | 'recording') => {
+    const renderBar = async (
+      status: 'idle' | 'recording' | 'processing' | 'recovering',
+      recordingMode: 'hold_down' | 'double_tap' | 'both' = 'hold_down',
+    ) => {
       await act(async () => root.render(
         <HomeRecordingBar
           status={status}
@@ -33,27 +34,39 @@ describe('home dashboard interactions', () => {
           recordingDuration={12}
           audioLevel={0.04}
           triggerKey="shift_l"
-          recordingMode="hold_down"
+          recordingMode={recordingMode}
           meetingPhase="idle"
           onRecord={onRecord}
           onStop={onStop}
-          onTranscribeFile={onTranscribeFile}
         />,
       ));
     };
 
     await renderBar('idle');
-    await act(async () => (container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement).click());
-    await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Transcribe file'))?.click());
+    expect(container.querySelectorAll('button')).toHaveLength(1);
+    expect(container.textContent).toContain('Click to start talking');
+    expect(container.textContent).toContain('or hold ⇧ Shift in any app');
+    const startLabel = container.querySelector<HTMLElement>('.home-talk-title strong');
+    expect(startLabel?.closest('button')?.dataset.testid).toBe('home-record-button');
+    await act(async () => startLabel?.click());
     expect(onRecord).toHaveBeenCalledOnce();
-    expect(onTranscribeFile).toHaveBeenCalledOnce();
+
+    await renderBar('idle', 'double_tap');
+    expect(container.textContent).toContain('or double-tap ⇧ Shift in any app');
+    await renderBar('idle', 'both');
+    expect(container.textContent).toContain('or hold or double-tap ⇧ Shift in any app');
 
     await renderBar('recording');
     const record = container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement;
-    expect(record.getAttribute('aria-label')).toBe('Stop recording, 0:12');
-    await act(async () => record.click());
+    expect(record.getAttribute('aria-label')).toBe('Click to stop recording, 0:12');
+    expect(container.textContent).toContain('Listening · 0:12');
+    await act(async () => container.querySelector<HTMLElement>('.home-talk-hint')?.click());
     expect(onStop).toHaveBeenCalledOnce();
     expect(container.querySelectorAll('.home-record-waveform span')).toHaveLength(5);
+
+    await renderBar('recovering');
+    expect(container.textContent).toContain('Reconnecting your microphone…');
+    expect((container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('keeps the sidebar focused on the four primary destinations', async () => {
@@ -98,23 +111,5 @@ describe('home dashboard interactions', () => {
     expect(container.textContent).toContain('1 of 3 set up');
     expect(container.textContent).toContain('not a voice-training or confidence score');
     expect(container.textContent).not.toContain('%');
-  });
-
-  it('builds activity from 14 local history days and hides thinner data', () => {
-    const entries = Array.from({ length: 14 }, (_, index) => ({
-      id: `entry-${index}`,
-      text: `dictation ${index}`,
-      timestamp: new Date(2026, 7, 15 + index, 23, 30).getTime(),
-      duration: 1,
-      source: 'recording' as const,
-    }));
-    const referenceDate = new Date(2026, 8, 4, 12);
-
-    expect(buildHistoryActivity(entries.slice(0, 13), referenceDate)).toBeNull();
-    const activity = buildHistoryActivity(entries, referenceDate);
-    expect(activity?.data).toHaveLength(14);
-    expect(activity?.data[0]).toMatchObject({ date: '2026-08-15', value: 1 });
-    expect(activity?.startDate).toBe('2026-07-11');
-    expect(activity?.endDate).toBe('2026-09-04');
   });
 });

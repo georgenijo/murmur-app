@@ -693,6 +693,7 @@ function App() {
         meetingPhase={meetings.status.phase}
         meetingElapsedMs={meetings.status.elapsedMs}
         showRecordControls={false}
+        showStatusChip={mainDestination !== 'home'}
         updateIndicator={!INTERNAL_BENCHMARK_BUILD ? (
           <UpdateIndicator
             status={updateStatus}
@@ -735,7 +736,6 @@ function App() {
                   onRecord={handleStart}
                   onStop={handleStop}
                   onOpenInsights={() => navigateMain('insights', 'pointer')}
-                  onOpenSettings={openSettingsTarget}
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
