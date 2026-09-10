@@ -620,6 +620,11 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Developing' })).toHaveCount(0);
   await expect(page.locator('.usage-analytics-section')).toHaveCount(4);
+  const sectionBottoms = await page.locator('.usage-analytics-section').evaluateAll((sections) => (
+    sections.map((section) => section.getBoundingClientRect().bottom)
+  ));
+  expect(sectionBottoms[0]).toBe(sectionBottoms[1]);
+  expect(sectionBottoms[2]).toBe(sectionBottoms[3]);
   const [workspaceBox, analyticsBox] = await Promise.all([
     page.locator('.main-dashboard-workspace').boundingBox(),
     page.locator('.usage-dashboard-content').boundingBox(),
