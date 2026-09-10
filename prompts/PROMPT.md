@@ -5,7 +5,7 @@ You are starting a new session on the Murmur project. Follow these steps exactly
 ## 1. Load Context
 
 Read these files silently:
-- `CLAUDE.md` — project overview, file map, key patterns (may already be loaded)
+- `CLAUDE.md` — project instructions and documentation links (may already be loaded)
 - `CHANGELOG.md` — version history, recent changes, naming conventions
 - `docs/onboarding.md` — setup, permissions, models, logs
 - `docs/reference/settings.md` — full settings schema (read if your ticket touches settings)
@@ -35,14 +35,17 @@ Do not write any code until the user approves the plan.
 
 After approval, implement exactly what was planned. No scope creep — do not refactor surrounding code, add comments to unchanged code, or introduce features not in the ticket.
 
-**For UI/frontend changes:** If the dev server is running at `http://localhost:1420`, use the Playwright MCP to screenshot your changes after each significant edit. Call `browser_navigate` then `browser_take_screenshot`, evaluate the result visually, and iterate until it looks right. Do not skip this step for visual work.
+For UI and behavior changes, follow the native verification policy in `CLAUDE.md`. Codex uses Computer Use to click through the changed app, or obtains an allowed native UI tool when Computer Use is unavailable or prohibited.
 
 ## 6. Verify
 
-Run all of these before committing:
+Run the relevant checks before committing, plus required CI checks:
 - `cd app/src-tauri && cargo check` — no compile errors or warnings
 - `cd app/src-tauri && cargo test -- --test-threads=1` — all unit tests pass
 - `cd app && npx tsc --noEmit` — no TypeScript errors
+- `cd app && npm test` — frontend tests pass
+
+Exercise affected app flows using the native verification policy in `CLAUDE.md`.
 
 If any check fails, fix the issue before proceeding.
 
@@ -55,3 +58,6 @@ If any check fails, fix the issue before proceeding.
    gh pr create --title "<concise title>" --body "Closes #<issue-number>" --repo georgenijo/murmur-app
    ```
 4. Report the PR URL.
+
+After an authorized merge is confirmed on GitHub, follow the task cleanup rules
+in `CLAUDE.md`.

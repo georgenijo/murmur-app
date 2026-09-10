@@ -61,7 +61,7 @@ Rust tests cover conservative attribution, microphone exclusion, raw transcript
 identity, bounded private audio cleanup, strict worker results and exact child
 preemption. Storage tests cover the v4 migration, transactional assignment,
 renaming, session isolation, export labels and cascading deletion. Native
-capture smoke and the immutable-PR Murmur Bench gate remain separate checks.
+capture smoke remains a separate check.
 
 The debug test bundle also supports two opt-in proof paths through that script:
 `--asr-fixture` measures three paired warmed Core ML decodes around real worker
