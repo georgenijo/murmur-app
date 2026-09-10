@@ -190,6 +190,14 @@ describe('filterHistory', () => {
     expect(filterHistory(dated, { dateFilter: 'month', now }).map((e) => e.id)).toEqual(['today', 'week']);
   });
 
+  it('uses calendar days across daylight-saving transitions', () => {
+    const now = new Date(2026, 2, 9, 15, 0, 0).getTime();
+    const boundary = new Date(2026, 2, 3, 0, 30, 0).getTime();
+    const prior = new Date(2026, 2, 2, 23, 30, 0).getTime();
+    const dated = [entry({ id: 'boundary', timestamp: boundary }), entry({ id: 'prior', timestamp: prior })];
+    expect(filterHistory(dated, { dateFilter: 'week', now }).map((e) => e.id)).toEqual(['boundary']);
+  });
+
   it('treats a missing source as a recording', () => {
     const legacy = [entry({ id: 'legacy', source: undefined })];
     expect(entrySource(legacy[0])).toBe('recording');

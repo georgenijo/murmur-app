@@ -150,12 +150,27 @@ describe('HistoryPanel', () => {
     expect(container.textContent).toContain('1 of 3');
   });
 
+  it('refreshes date-filtered results when the window regains focus', async () => {
+    const firstDay = new Date(2026, 6, 18, 12).getTime();
+    const nextDay = new Date(2026, 6, 19, 12).getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(firstDay);
+    await render({ entries: [entry({ id: 'dated', timestamp: firstDay })] });
+    await act(async () => byText('Today')!.click());
+    expect(cardText()).toHaveLength(1);
+    vi.spyOn(Date, 'now').mockReturnValue(nextDay);
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(cardText()).toHaveLength(0);
+    expect(container.textContent).toContain('No matching transcripts');
+  });
+
   it('shows an empty-result state that resets the filters', async () => {
     await render();
+    await act(async () => byText('Today')!.click());
     await type('nothing matches this');
     expect(container.textContent).toContain('No matching transcripts');
     await act(async () => byText('Reset filters')!.click());
     expect(cardText()).toHaveLength(3);
+    expect(byText('Any date')!.getAttribute('aria-selected')).toBe('true');
   });
 
   it('filters by source', async () => {

@@ -139,6 +139,7 @@ function HistoryPanelComponent({
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [dateFilter, setDateFilter] = useState<HistoryDateFilter>('all');
+  const [filterNow, setFilterNow] = useState(() => Date.now());
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [renderLimit, setRenderLimit] = useState(HISTORY_RENDER_BATCH);
@@ -146,6 +147,27 @@ function HistoryPanelComponent({
   const searchRef = useRef<HTMLInputElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const refresh = () => setFilterNow(Date.now());
+    const scheduleMidnightRefresh = (): ReturnType<typeof setTimeout> => {
+      const now = new Date();
+      const nextMidnight = new Date(now);
+      nextMidnight.setHours(24, 0, 0, 0);
+      return setTimeout(() => {
+        refresh();
+        midnightTimer = scheduleMidnightRefresh();
+      }, Math.max(1000, nextMidnight.getTime() - now.getTime()));
+    };
+    let midnightTimer = scheduleMidnightRefresh();
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      clearTimeout(midnightTimer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
 
   useEffect(() => () => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
@@ -165,8 +187,8 @@ function HistoryPanelComponent({
   };
 
   const visible = useMemo(
-    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter })),
-    [entries, query, filter, dateFilter],
+    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter, now: filterNow })),
+    [entries, query, filter, dateFilter, filterNow],
   );
   const rendered = useMemo(
     () => visible.slice(0, renderLimit),
@@ -382,7 +404,7 @@ function HistoryPanelComponent({
         ) : visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-on-surface-variant">
             <p className="text-sm">No matching transcripts</p>
-            <button type="button" onClick={() => { setQuery(''); setFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
+            <button type="button" onClick={() => { setQuery(''); setFilter('all'); setDateFilter('all'); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium text-on-surface hover:bg-surface-container">Reset filters</button>
           </div>
         ) : rendered.map((entry, index) => {
           const isNewest = entry.id === newestId;

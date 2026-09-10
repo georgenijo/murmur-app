@@ -211,11 +211,13 @@ export function filterHistory(
   today.setHours(0, 0, 0, 0);
   const cutoff = dateFilter === 'today'
     ? today.getTime()
-    : dateFilter === 'week'
-      ? today.getTime() - 6 * 24 * 60 * 60 * 1000
-      : dateFilter === 'month'
-        ? today.getTime() - 29 * 24 * 60 * 60 * 1000
-        : null;
+    : dateFilter === 'week' || dateFilter === 'month'
+      ? (() => {
+        const start = new Date(today);
+        start.setDate(start.getDate() - (dateFilter === 'week' ? 6 : 29));
+        return start.getTime();
+      })()
+      : null;
   return entries.filter((entry) => {
     if ((filter === 'recording' || filter === 'file') && entrySource(entry) !== filter) return false;
     if (cutoff !== null && (entry.timestamp < cutoff || entry.timestamp > now)) return false;
