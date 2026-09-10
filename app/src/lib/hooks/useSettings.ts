@@ -52,7 +52,7 @@ export function useSettings() {
               desiredProbePolicyRef.current = { enabled: false };
               desiredProbePolicyVersionRef.current += 1;
               void emit('settings-changed');
-              setProbeConfigureError('Background microphone checks could not be enabled. Review approved microphones and try again.');
+              setProbeConfigureError('Background microphone checks could not be enabled. Review included microphones and try again.');
             } else {
               setProbeConfigureError('Background microphone checks could not be stopped. Quit Murmur before changing microphones.');
             }

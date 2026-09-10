@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Popover } from '@base-ui/react/popover';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDeviceDescriptor, AudioInputLidState } from '../../lib/audioDevices';
 import {
@@ -20,12 +21,10 @@ import {
   microphoneClassificationLabel,
   microphoneLevelPercent,
   microphonePeakPercent,
-  microphoneSignalVerificationLabel,
   smoothMicrophoneMeterValue,
   startMicrophonePreview,
   stopMicrophonePreview,
   updateMicrophonePreviewVadSensitivity,
-  verifyMicrophonePreviewSignal,
   type MicrophonePreviewLevel,
   type MicrophonePreviewStatus,
   type MicrophonePreviewVad,
@@ -34,6 +33,7 @@ import {
 } from '../../lib/microphonePreview';
 import { Select } from '../ui/Select';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
+import { SettingsBranch } from './SettingsBranch';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
 interface MicrophoneInputTestProps {
@@ -93,8 +93,9 @@ function microphoneAvailabilityReason(device: AudioDeviceDescriptor, defaultInpu
 
 function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smartAuto, smartAutoSelection, lidState, onSelectManual, onSmartAutoChange, describedBy }: MicrophonePickerProps) {
   const [open, setOpen] = useState(false);
-  const pickerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const selectedRadioRef = useRef<HTMLInputElement>(null);
   const restoreFocusWhenEnabledRef = useRef(false);
   const smartAutoActive = smartAuto.smartAutoMicrophoneEnabled;
   const manualDevices = devices.filter((device) => device.hasInput);
@@ -106,7 +107,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
   const knownIds = new Set(approvalDevices.map((device) => device.id));
   const unavailableApprovedIds = smartAuto.smartAutoApprovedDeviceIds.filter((id) => !knownIds.has(id));
   const selectedLabel = smartAutoActive
-    ? smartAutoSelection ? `Smart Auto · Available: ${smartAutoSelection.device.name}` : 'Smart Auto · No preview candidate'
+    ? smartAutoSelection ? `Smart Auto · Available: ${smartAutoSelection.device.name}` : 'Smart Auto · No available microphone'
     : microphone === 'system_default'
       ? followSystemDefaultOptionLabel(manualDevices, defaultInputId)
       : manualOptions.find((device) => device.value === microphone)?.label ?? 'Microphone unavailable';
@@ -121,30 +122,6 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
       if (document.activeElement === document.body) triggerRef.current?.focus();
     }
   }, [disabled]);
-
-  useEffect(() => {
-    if (!open) return;
-    pickerRef.current?.querySelector<HTMLInputElement>('input[type="radio"]:checked')?.focus();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (event.target instanceof Node && !pickerRef.current?.contains(event.target)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener('mousedown', closeOnOutsideClick);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsideClick);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [open]);
 
   const setApproved = (deviceId: string, approved: boolean) => {
     const approvedIds = approved
@@ -164,87 +141,120 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
     });
   };
   const selectManual = (deviceId: string) => {
-    if (pickerRef.current?.contains(document.activeElement)) {
+    if (popupRef.current?.contains(document.activeElement)) {
       restoreFocusWhenEnabledRef.current = true;
     }
+    setOpen(false);
+    if (!smartAutoActive && microphone === deviceId) return;
     onSelectManual(deviceId);
+  };
+  const selectSmartAuto = () => {
+    if (popupRef.current?.contains(document.activeElement)) {
+      restoreFocusWhenEnabledRef.current = true;
+    }
+    setOpen(false);
+    if (!smartAutoActive) onSmartAutoChange({ smartAutoMicrophoneEnabled: true });
   };
 
   return (
-    <div
-      ref={pickerRef}
-      className="relative"
-      onBlur={(event) => {
-        if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-      }}
-    >
-      <button ref={triggerRef} type="button" aria-label="Microphone input" aria-describedby={describedBy} aria-haspopup="dialog" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)} className="flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
-        <span className="truncate">{selectedLabel}</span>
-        <svg className={`ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-      </button>
-      {open && (
-        <div role="dialog" aria-label="Choose microphone mode and Smart Auto microphones" className="absolute z-20 mt-1 max-h-[26rem] w-full overflow-auto rounded-(--ui-radius-popover) border border-(--ui-hairline-strong) bg-surface-container-lowest p-2 shadow-(--ui-shadow-3)">
-          <fieldset>
-            <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>
-            <label className="settings-microphone-choice">
-              <input type="radio" name="microphone-mode" checked={smartAutoActive} disabled={disabled} onChange={() => onSmartAutoChange({ smartAutoMicrophoneEnabled: true })} />
-              <span><span className="block font-medium">Smart Auto</span><span className="block text-xs text-on-surface-variant">Choose from microphones you allow</span></span>
-            </label>
-            <label className="settings-microphone-choice">
-              <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} onChange={() => selectManual('system_default')} />
-              <span><span className="block font-medium">Follow macOS Default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
-            </label>
-            {manualDevices.map((device) => (
-              <label key={`manual-${device.id}`} className="settings-microphone-choice">
-                <input type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} onChange={() => selectManual(device.id)} />
-                <span><span className="block font-medium">{deviceLabel(device)}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
-              </label>
-            ))}
-          </fieldset>
-          {smartAutoActive && (
-            <fieldset className="mt-2 border-t border-outline-variant/20 pt-2">
-              <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Allowed for Smart Auto</legend>
-              {approvalDevices.map((device) => {
-                const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
-                const previewCandidate = smartAutoSelection?.device.id === device.id;
-                const preferred = smartAuto.smartAutoPreferredDeviceIds[0] === device.id;
-                return (
-                  <div key={`approved-${device.id}`} className="settings-microphone-choice">
-                    <label className="settings-microphone-choice-main">
-                      <input type="checkbox" checked={approved} disabled={disabled} onChange={(event) => setApproved(device.id, event.target.checked)} />
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2"><span className="truncate font-medium">{deviceLabel(device)}</span>{previewCandidate && <span className="settings-microphone-active-badge">Available</span>}</span>
-                        <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
-                      </span>
-                    </label>
-                    <button type="button" disabled={disabled || !approved} aria-label={`Prefer ${deviceLabel(device)} for Smart Auto`} aria-pressed={preferred} onClick={() => setPreferred(device.id)} className="settings-microphone-preference">
-                      {preferred ? 'Preferred' : 'Prefer'}
-                    </button>
-                  </div>
-                );
-              })}
-              {unavailableApprovedIds.map((id, index) => (
-                <label key={id} className="settings-microphone-choice">
-                  <input type="checkbox" checked disabled={disabled} onChange={() => setApproved(id, false)} />
-                  <span><span className="block font-medium">Unavailable microphone {index + 1}</span><span className="block text-xs text-on-surface-variant">Previously approved. Uncheck to forget it.</span></span>
+    <>
+      <Popover.Root
+        open={open}
+        onOpenChange={setOpen}
+        onOpenChangeComplete={(nextOpen) => {
+          if (!nextOpen && !disabled && restoreFocusWhenEnabledRef.current) {
+            restoreFocusWhenEnabledRef.current = false;
+            triggerRef.current?.focus();
+          }
+        }}
+      >
+        <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
+          <span className="truncate">{selectedLabel}</span>
+          <svg className="ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform group-data-[popup-open]:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Positioner side="bottom" align="start" sideOffset={4} collisionPadding={8} className="z-50 w-(--anchor-width)">
+            <Popover.Popup
+              ref={popupRef}
+              aria-label="Choose microphone mode"
+              initialFocus={selectedRadioRef}
+              className="max-h-[min(26rem,var(--available-height))] w-(--anchor-width) origin-(--transform-origin) overflow-auto rounded-(--ui-radius-popover) border border-(--ui-hairline-strong) bg-surface-container-lowest p-2 shadow-(--ui-shadow-3) transition-[opacity,transform] duration-150 data-ending-style:pointer-events-none data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-starting-style:scale-[0.98] data-starting-style:opacity-0 motion-reduce:duration-0"
+            >
+              <fieldset>
+                <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>
+                <label className="settings-microphone-choice">
+                  <input ref={smartAutoActive ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={smartAutoActive} disabled={disabled} readOnly onClick={selectSmartAuto} />
+                  <span><span className="block font-medium">Smart Auto</span><span className="block text-xs text-on-surface-variant">Choose from microphones you allow</span></span>
                 </label>
-              ))}
-              <label className="settings-microphone-choice mt-1 border-t border-outline-variant/15 pt-2">
-                <AnimatedSwitch size="sm" aria-label="Allow approved iPhone Continuity Camera microphones" checked={smartAuto.smartAutoAllowContinuity} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })} />
-                <span><span className="block font-medium">Allow iPhone microphones</span><span className="block text-xs text-on-surface-variant">Only approved Continuity Camera inputs</span></span>
-              </label>
-              <label className="settings-microphone-choice">
-                <AnimatedSwitch size="sm" aria-label="Check approved microphones in the background" checked={smartAuto.smartAutoProbeEnabled} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoProbeEnabled: checked })} />
-                <span>
-                  <span className="block font-medium">Background signal checks</span>
-                  <span className="block text-xs text-on-surface-variant">Briefly checks approved inputs while Murmur is idle. Audio is never transcribed or saved.</span>
-                </span>
-              </label>
-            </fieldset>
-          )}
-        </div>
-      )}
-    </div>
+                <label className="settings-microphone-choice">
+                  <input ref={!smartAutoActive && microphone === 'system_default' ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} readOnly onClick={() => selectManual('system_default')} />
+                  <span><span className="block font-medium">Follow macOS Default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
+                </label>
+                {manualDevices.map((device) => (
+                  <label key={`manual-${device.id}`} className="settings-microphone-choice">
+                    <input ref={!smartAutoActive && microphone === device.id ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} readOnly onClick={() => selectManual(device.id)} />
+                    <span><span className="block font-medium">{deviceLabel(device)}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
+                  </label>
+                ))}
+              </fieldset>
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
+      <SettingsBranch open={smartAutoActive} className="mt-2">
+        <fieldset aria-label="Smart Auto microphone inclusion" className="rounded-(--ui-radius-popover) border border-outline-variant/25 bg-surface-container-lowest p-2">
+          <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Smart Auto microphones</legend>
+          {approvalDevices.map((device) => {
+            const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
+            const previewCandidate = smartAutoSelection?.device.id === device.id;
+            const preferred = smartAuto.smartAutoPreferredDeviceIds[0] === device.id;
+            return (
+              <div key={`approved-${device.id}`} className="settings-microphone-choice">
+                <label className="settings-microphone-choice-main">
+                  <input type="checkbox" checked={approved} disabled={disabled} onChange={(event) => setApproved(device.id, event.target.checked)} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-medium">{deviceLabel(device)}</span>
+                      <span className={`settings-microphone-inclusion-state ${approved ? 'settings-microphone-inclusion-state-on' : ''}`}>{approved ? 'Included' : 'Excluded'}</span>
+                      {previewCandidate && <span className="settings-microphone-active-badge">Candidate</span>}
+                    </span>
+                    <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
+                  </span>
+                </label>
+                <button type="button" disabled={disabled || !approved} aria-label={`Prefer ${deviceLabel(device)} for Smart Auto`} aria-pressed={preferred} onClick={() => setPreferred(device.id)} className="settings-microphone-preference">
+                  {preferred ? 'Preferred' : 'Prefer'}
+                </button>
+              </div>
+            );
+          })}
+          {unavailableApprovedIds.map((id, index) => (
+            <label key={id} className="settings-microphone-choice">
+              <input type="checkbox" checked disabled={disabled} onChange={() => setApproved(id, false)} />
+              <span>
+                <span className="flex items-center gap-2"><span className="font-medium">Disconnected microphone {index + 1}</span><span className="settings-microphone-inclusion-state settings-microphone-inclusion-state-on">Included</span></span>
+                <span className="block text-xs text-on-surface-variant">Its saved preference is kept. Uncheck to forget it.</span>
+              </span>
+            </label>
+          ))}
+          {smartAuto.smartAutoApprovedDeviceIds.length === 0 ? (
+            <p className="mx-2 my-1 rounded-lg bg-warning/10 px-2 py-1.5 text-xs text-warning" role="status">No microphones are included. Include at least one available input for Smart Auto.</p>
+          ) : smartAutoSelection === null ? (
+            <p className="mx-2 my-1 rounded-lg bg-warning/10 px-2 py-1.5 text-xs text-warning" role="status">None of the included microphones are available right now. Smart Auto will wait instead of choosing another input.</p>
+          ) : null}
+          <label className="settings-microphone-choice mt-1 border-t border-outline-variant/15 pt-2">
+            <AnimatedSwitch size="sm" aria-label="Allow approved iPhone Continuity Camera microphones" checked={smartAuto.smartAutoAllowContinuity} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })} />
+            <span><span className="block font-medium">Allow iPhone microphones</span><span className="block text-xs text-on-surface-variant">Only approved Continuity Camera inputs</span></span>
+          </label>
+          <label className="settings-microphone-choice">
+            <AnimatedSwitch size="sm" aria-label="Check included microphones in the background" checked={smartAuto.smartAutoProbeEnabled} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoProbeEnabled: checked })} />
+            <span>
+              <span className="block font-medium">Background signal checks</span>
+              <span className="block text-xs text-on-surface-variant">Briefly checks included inputs while Murmur is idle. Audio is never transcribed or saved.</span>
+            </span>
+          </label>
+        </fieldset>
+      </SettingsBranch>
+    </>
   );
 }
 
@@ -274,13 +284,6 @@ export function MicrophoneInputTest({
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [probeRetryError, setProbeRetryError] = useState<string | null>(null);
-  const [verification, setVerification] = useState<{
-    previewId: number;
-    configurationKey: string;
-    message: string;
-    pending: boolean;
-  } | null>(null);
-  const verificationPendingRef = useRef(false);
   const [vadDecision, setVadDecision] = useState<MicrophonePreviewVadDecision | 'listening'>('listening');
   const statusRef = useRef(status);
   const mountedRef = useRef(true);
@@ -541,10 +544,6 @@ export function MicrophoneInputTest({
     previewMicrophone,
     smartAuto: smartAutoRequest,
   }), [defaultInputId, microphone, previewMicrophone, smartAutoRequest]);
-  const previewConfigurationKeyRef = useRef(previewConfigurationKey);
-  const smartAutoActiveRef = useRef(smartAutoActive);
-  previewConfigurationKeyRef.current = previewConfigurationKey;
-  smartAutoActiveRef.current = smartAutoActive;
   const previousPreviewConfigurationRef = useRef(previewConfigurationKey);
   const previousMonitoringActiveRef = useRef(monitoringActive);
 
@@ -631,38 +630,6 @@ export function MicrophoneInputTest({
   }, [applyStatus, onChange, runExclusive]);
 
   const ownsPreview = status.previewId !== null;
-  const verifySignal = async () => {
-    const previewId = statusRef.current.previewId;
-    if (previewId === null || verificationPendingRef.current) return;
-    const configurationKey = previewConfigurationKeyRef.current;
-    const stillOwnsVerification = () => mountedRef.current
-      && statusRef.current.previewId === previewId
-      && previewConfigurationKeyRef.current === configurationKey;
-    verificationPendingRef.current = true;
-    setVerification({ previewId, configurationKey, pending: true, message: 'Speak normally for five seconds. Checking for one second of sustained signal…' });
-    try {
-      const result = await verifyMicrophonePreviewSignal(previewId);
-      if (stillOwnsVerification()) {
-        setVerification({ previewId, configurationKey, pending: false, message: microphoneSignalVerificationLabel(result) });
-      }
-    } catch (error) {
-      if (stillOwnsVerification()) {
-        setVerification({ previewId, configurationKey, pending: false, message: String(error) });
-      }
-    } finally {
-      verificationPendingRef.current = false;
-      if (mountedRef.current) {
-        setVerification((current) => current?.previewId === previewId
-          && current.configurationKey === configurationKey
-          && current.pending
-          ? null
-          : current);
-      }
-      if (stillOwnsVerification() && smartAutoActiveRef.current) {
-        await refreshSmartAutoStatusRef.current();
-      }
-    }
-  };
   const busy = operation !== 'idle';
   const retryPreview = () => {
     if (statusRef.current.previewId !== null) return;
@@ -707,10 +674,12 @@ export function MicrophoneInputTest({
         ? 'Level monitoring starts automatically when this page is open.'
         : status.state === 'connecting'
       ? status.stillConnecting ? 'Still connecting. Check macOS microphone access if this continues.' : 'Connecting to the selected microphone…'
-      : status.state === 'stopping'
-        ? 'Waiting for the microphone worker to close…'
+        : status.state === 'stopping'
+          ? 'Waiting for the microphone worker to close…'
         : ownsPreview
-          ? 'Speak normally and watch the live level.'
+          ? smartAutoActive && smartAutoSelection
+            ? `Live input from ${smartAutoSelection.device.name}. Speak normally and watch the level.`
+            : 'Speak normally and watch the live level.'
           : 'Preview stays on this Mac and is never transcribed or saved.'
   );
   const selectorHelperText = !inventoryAvailable
@@ -726,10 +695,6 @@ export function MicrophoneInputTest({
     ? deviceOptions.find((device) => device.value === smartAutoSelection.device.id)?.label
       ?? smartAutoSelection.device.name
     : null;
-  const previewDeviceLabel = previewDevice
-    ? deviceOptions.find((device) => device.value === previewDevice)?.label
-      ?? (previewDevice === 'system_default' ? 'macOS default' : 'selected microphone')
-    : null;
   const verifiedStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready'
     ? smartAutoStatus.status
     : null;
@@ -742,7 +707,7 @@ export function MicrophoneInputTest({
     : null;
   const probingDeviceLabel = probingStatus
     ? deviceOptions.find((device) => device.value === probingStatus.deviceId)?.label
-      ?? 'approved microphone'
+      ?? 'included microphone'
     : null;
   const automaticHelperText = smartAutoActive
     ? null
@@ -796,36 +761,34 @@ export function MicrophoneInputTest({
         </p>
       ) : smartAutoActive ? (
         <div id={selectorHelperId} className="mt-2 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant" aria-live="polite">
-          <p>
-            <span className="font-medium text-on-surface">Availability candidate: </span>
-            {previewCandidateLabel
-              ? `${previewCandidateLabel}. Chosen from current availability.`
-              : 'None. Approve an available microphone or choose a fixed input.'}
-          </p>
-          {previewDeviceLabel && (
-            <p className="mt-1"><span className="font-medium text-on-surface">Previewing now: </span>{previewDeviceLabel}.</p>
-          )}
-          <p className="mt-1">Background checks are {smartAuto?.smartAutoProbeEnabled ? 'on' : 'off'}.</p>
           {smartAutoStatus.kind === 'loading' ? (
-            <p className="mt-1">Checking recent signal evidence for the next capture…</p>
+            <p>Checking which included microphone is ready…</p>
           ) : probingStatus ? (
-            <p className="mt-1 text-primary">
-              <span className="font-medium">Background check: </span>
-              {probingDeviceLabel}, {smartAutoProbePhaseLabel(probingStatus.phase)}. This brief signal check is not transcribed or saved.
+            <p className="text-primary">
+              <span className="font-medium">Checking {probingDeviceLabel}: </span>
+              {smartAutoProbePhaseLabel(probingStatus.phase)}. Audio is not transcribed or saved.
             </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready' ? (
-            <p className="mt-1 text-success">
-              <span className="font-medium">Next capture ready: </span>
-              {verifiedDeviceLabel}. Verified recently, {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
+            <p className="text-success">
+              <span className="font-medium">Smart Auto will use {verifiedDeviceLabel}. </span>
+              Why: {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
             </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'blocked' ? (
             <>
-              <p className="mt-1 text-warning"><span className="font-medium">Next capture blocked: </span>{smartAutoStatus.status.message}</p>
+              <p className="text-warning">
+                <span className="font-medium">Smart Auto is not ready. </span>
+                {smartAuto?.smartAutoApprovedDeviceIds.length === 0
+                  ? 'Include at least one microphone before Smart Auto can record.'
+                    : smartAutoSelection === null
+                      ? 'None of the included microphones are available right now.'
+                    : smartAuto?.smartAutoProbeEnabled
+                      ? smartAutoStatus.status.message
+                      : 'Turn on Background signal checks so Murmur can confirm an included microphone.'}
+              </p>
               {smartAutoStatus.status.retryAfterMs !== null && (
-                <p className="mt-1">Auto cooldown: about {Math.max(1, Math.ceil(smartAutoStatus.status.retryAfterMs / 1000))} seconds remaining. Another check also requires Murmur to be idle.</p>
+                <p className="mt-1">Another check can start in about {Math.max(1, Math.ceil(smartAutoStatus.status.retryAfterMs / 1000))} seconds while Murmur is idle.</p>
               )}
-              <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
-              {smartAuto?.smartAutoProbeEnabled && (
+              {smartAuto?.smartAutoProbeEnabled && smartAutoSelection !== null && (
                 <button
                   type="button"
                   className="mt-2 rounded border border-outline-variant px-2 py-1 text-on-surface"
@@ -842,10 +805,7 @@ export function MicrophoneInputTest({
               {probeRetryError && <p className="mt-1 text-error" role="alert">{probeRetryError}</p>}
             </>
           ) : smartAutoStatus.kind === 'unavailable' ? (
-            <>
-              <p className="mt-1 text-warning">Murmur could not confirm a safe microphone for the next capture.</p>
-              <p className="mt-1">Verify the preview candidate below, or choose a fixed microphone.</p>
-            </>
+            <p className="text-warning">Murmur could not confirm an included microphone. Smart Auto will wait instead of recording from another input.</p>
           ) : null}
           {previewCandidateLabel && (
             <button
@@ -868,7 +828,6 @@ export function MicrophoneInputTest({
       ) : (
         null
       )}
-      {smartAutoUnavailable && <p className="mt-2 text-xs text-warning">No approved microphone is usable right now.</p>}
       <div className="settings-meter-card">
         <div className="flex items-center gap-3">
           <div
@@ -901,15 +860,6 @@ export function MicrophoneInputTest({
             Retry microphone preview
           </button>
         )}
-        <div className="mt-2 text-xs text-on-surface-variant">
-          <button type="button" className="rounded border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50" disabled={status.state !== 'active' || busy || dictationBusy || verification?.pending === true} onClick={() => void verifySignal()}>
-            {smartAutoActive ? 'Verify preview candidate for 5 seconds' : 'Verify signal for 5 seconds'}
-          </button>
-          {smartAutoActive && <p className="mt-2">The preview follows availability. Smart Auto requires a recent successful check before it can use this candidate.</p>}
-          {verification?.previewId === status.previewId
-            && verification.configurationKey === previewConfigurationKey
-            && <p className="mt-2" role="status">{verification.message}</p>}
-        </div>
         <div className="mt-2 flex items-center justify-between gap-3 border-t border-outline-variant/15 pt-2 text-xs">
           <span className="text-on-surface-variant">
             Voice detection · {vadSensitivity === 0 ? 'Off' : `${vadSensitivity}%`}

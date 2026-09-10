@@ -473,6 +473,21 @@
   font-weight: 600;
 }
 
+.settings-microphone-inclusion-state {
+  flex: none;
+  border-radius: 999px;
+  background: var(--murmur-surface-container-high);
+  padding: 0.1rem 0.4rem;
+  color: var(--murmur-on-surface-variant);
+  font-size: 0.625rem;
+  font-weight: 600;
+}
+
+.settings-microphone-inclusion-state-on {
+  background: color-mix(in srgb, var(--murmur-success) 12%, transparent);
+  color: var(--murmur-success);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .settings-nav-item,
   .settings-search input,

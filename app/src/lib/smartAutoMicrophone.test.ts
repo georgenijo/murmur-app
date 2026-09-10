@@ -120,8 +120,8 @@ describe('Smart Auto microphone status boundary', () => {
   });
 
   it('gives each backend decision reason a user-facing label', () => {
-    expect(smartAutoMicrophoneReasonLabel('current_verified')).toBe('current verified microphone retained');
-    expect(smartAutoMicrophoneReasonLabel('previous_verified_rollback')).toBe('previous verified microphone restored');
-    expect(smartAutoMicrophoneReasonLabel('preferred_approved')).toBe('preferred approved microphone');
+    expect(smartAutoMicrophoneReasonLabel('current_verified')).toBe('already active with recent signal');
+    expect(smartAutoMicrophoneReasonLabel('previous_verified_rollback')).toBe('previously active with recent signal');
+    expect(smartAutoMicrophoneReasonLabel('preferred_approved')).toBe('your preferred included microphone');
   });
 });

@@ -149,11 +149,11 @@ export function smartAutoProbePhaseLabel(phase: 'connecting' | 'verifying' | 'st
 
 export function smartAutoMicrophoneReasonLabel(reason: SmartAutoMicrophoneReadyReason): string {
   switch (reason) {
-    case 'current_verified': return 'current verified microphone retained';
-    case 'previous_verified_rollback': return 'previous verified microphone restored';
-    case 'preferred_approved': return 'preferred approved microphone';
-    case 'approved_macos_default': return 'approved macOS default';
-    case 'approved_external_fallback': return 'approved external fallback';
-    case 'approved_continuity_fallback': return 'approved iPhone fallback';
+    case 'current_verified': return 'already active with recent signal';
+    case 'previous_verified_rollback': return 'previously active with recent signal';
+    case 'preferred_approved': return 'your preferred included microphone';
+    case 'approved_macos_default': return 'an included microphone that matches the macOS default';
+    case 'approved_external_fallback': return 'the first available included external microphone';
+    case 'approved_continuity_fallback': return 'the available included iPhone microphone';
   }
 }

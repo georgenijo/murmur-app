@@ -189,7 +189,7 @@ impl SmartAutoHealth {
             return Ok(current);
         }
         if verified.is_empty() {
-            return Err(SmartAutoBlock::Unavailable("Smart Auto needs a recent signal check. Open Settings, choose an approved input, and verify its signal, or pin a microphone manually."));
+            return Err(SmartAutoBlock::Unavailable("Smart Auto is waiting for recent signal from an included microphone. Turn on Background signal checks in Settings, or pin a microphone manually."));
         }
         // A failed replacement may return immediately to the last verified
         // choice. Other changes wait out the switch cooldown, without capture.
@@ -244,7 +244,7 @@ pub(crate) fn validate(request: &SmartAutoRequest) -> Result<HashSet<&str>, &'st
         || request.approved_device_ids.len() > MAX_APPROVED_DEVICES
         || request.preferred_device_ids.len() > MAX_APPROVED_DEVICES
     {
-        return Err("Smart Auto needs one to 32 approved microphones.");
+        return Err("Smart Auto needs one to 32 included microphones.");
     }
     let approved: HashSet<&str> = request
         .approved_device_ids
