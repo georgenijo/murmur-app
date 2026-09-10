@@ -165,10 +165,19 @@ export function clearHistory(): void {
 
 export type HistoryFilter = 'all' | 'recording' | 'file';
 
+export type HistoryDateFilter = 'all' | 'today' | 'week' | 'month';
+
 export const HISTORY_FILTER_OPTIONS: { value: HistoryFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'recording', label: 'Mic' },
   { value: 'file', label: 'File' },
+];
+
+export const HISTORY_DATE_FILTER_OPTIONS: { value: HistoryDateFilter; label: string }[] = [
+  { value: 'all', label: 'Any date' },
+  { value: 'today', label: 'Today' },
+  { value: 'week', label: 'Last 7 days' },
+  { value: 'month', label: 'Last 30 days' },
 ];
 
 export function entrySource(entry: HistoryEntry): HistorySource {
@@ -192,12 +201,24 @@ function matchesTokens(entry: HistoryEntry, tokens: string[]): boolean {
  */
 export function filterHistory(
   entries: HistoryEntry[],
-  options: { query?: string; filter?: HistoryFilter } = {},
+  options: { query?: string; filter?: HistoryFilter; dateFilter?: HistoryDateFilter; now?: number } = {},
 ): HistoryEntry[] {
   const tokens = searchTokens(options.query ?? '');
   const filter = options.filter ?? 'all';
+  const dateFilter = options.dateFilter ?? 'all';
+  const now = options.now ?? Date.now();
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const cutoff = dateFilter === 'today'
+    ? today.getTime()
+    : dateFilter === 'week'
+      ? today.getTime() - 6 * 24 * 60 * 60 * 1000
+      : dateFilter === 'month'
+        ? today.getTime() - 29 * 24 * 60 * 60 * 1000
+        : null;
   return entries.filter((entry) => {
     if ((filter === 'recording' || filter === 'file') && entrySource(entry) !== filter) return false;
+    if (cutoff !== null && (entry.timestamp < cutoff || entry.timestamp > now)) return false;
     return matchesTokens(entry, tokens);
   });
 }

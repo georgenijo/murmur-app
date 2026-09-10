@@ -174,6 +174,22 @@ describe('filterHistory', () => {
     expect(filterHistory(entries, { filter: 'file', query: 'tauri' })).toEqual([]);
   });
 
+  it('filters by a local calendar date window and composes with search', () => {
+    const now = new Date(2026, 8, 10, 15, 0, 0).getTime();
+    const today = new Date(2026, 8, 10, 9, 0, 0).getTime();
+    const week = new Date(2026, 8, 5, 9, 0, 0).getTime();
+    const old = new Date(2026, 7, 1, 9, 0, 0).getTime();
+    const dated = [
+      entry({ id: 'today', timestamp: today, text: 'today release' }),
+      entry({ id: 'week', timestamp: week, text: 'week release' }),
+      entry({ id: 'old', timestamp: old, text: 'old release' }),
+      entry({ id: 'future', timestamp: now + 1, text: 'future release' }),
+    ];
+    expect(filterHistory(dated, { dateFilter: 'today', now }).map((e) => e.id)).toEqual(['today']);
+    expect(filterHistory(dated, { dateFilter: 'week', query: 'release', now }).map((e) => e.id)).toEqual(['today', 'week']);
+    expect(filterHistory(dated, { dateFilter: 'month', now }).map((e) => e.id)).toEqual(['today', 'week']);
+  });
+
   it('treats a missing source as a recording', () => {
     const legacy = [entry({ id: 'legacy', source: undefined })];
     expect(entrySource(legacy[0])).toBe('recording');

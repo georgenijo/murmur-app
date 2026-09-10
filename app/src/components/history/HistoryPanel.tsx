@@ -2,15 +2,18 @@ import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type Mouse
 import { Copy, GraduationCap } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
+  HISTORY_DATE_FILTER_OPTIONS,
   HISTORY_FILTER_OPTIONS,
   entrySource,
   filterHistory,
   formatTimestamp,
+  formatHistoryExport,
   matchSegments,
   sortForDisplay,
   type HistoryEntry,
   type HistoryExportFormat,
   type HistoryFilter,
+  type HistoryDateFilter,
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
 import { flog } from '../../lib/log';
@@ -44,6 +47,10 @@ const HISTORY_FILTER_TABS = HISTORY_FILTER_OPTIONS.map((option) => ({
 
 function isHistoryFilter(value: string): value is HistoryFilter {
   return HISTORY_FILTER_OPTIONS.some((option) => option.value === value);
+}
+
+function isHistoryDateFilter(value: string): value is HistoryDateFilter {
+  return HISTORY_DATE_FILTER_OPTIONS.some((option) => option.value === value);
 }
 
 function HighlightedText({ text, query }: { text: string; query: string }) {
@@ -131,6 +138,7 @@ function HistoryPanelComponent({
   const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
+  const [dateFilter, setDateFilter] = useState<HistoryDateFilter>('all');
   const [exportOpen, setExportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [renderLimit, setRenderLimit] = useState(HISTORY_RENDER_BATCH);
@@ -157,8 +165,8 @@ function HistoryPanelComponent({
   };
 
   const visible = useMemo(
-    () => sortForDisplay(filterHistory(entries, { query, filter })),
-    [entries, query, filter],
+    () => sortForDisplay(filterHistory(entries, { query, filter, dateFilter })),
+    [entries, query, filter, dateFilter],
   );
   const rendered = useMemo(
     () => visible.slice(0, renderLimit),
@@ -166,7 +174,7 @@ function HistoryPanelComponent({
   );
   useEffect(() => {
     setRenderLimit(HISTORY_RENDER_BATCH);
-  }, [query, filter]);
+  }, [query, filter, dateFilter]);
   // Correct-and-Teach only ever targets the newest entry in the whole history,
   // not the first row on screen — sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
@@ -179,6 +187,19 @@ function HistoryPanelComponent({
     } catch (err) {
       showNotice('Could not copy to the clipboard.');
       flog.warn('main', 'History copy failed', { error: String(err) });
+    }
+  };
+
+  const handleCopyMarkdown = async (entry: HistoryEntry) => {
+    try {
+      await navigator.clipboard.writeText(formatHistoryExport([entry], 'markdown', new Date()));
+      setCopiedId(entry.id);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopiedId(null), 2000);
+      showNotice('Copied transcript as Markdown.');
+    } catch (err) {
+      showNotice('Could not copy the Markdown transcript.');
+      flog.warn('main', 'History Markdown copy failed', { error: String(err) });
     }
   };
 
@@ -266,6 +287,20 @@ function HistoryPanelComponent({
             variant="capsule"
             size="sm"
             ariaLabel="Filter transcripts"
+            className="history-filter-tabs"
+            listClassName="history-filter-tabs-list"
+            activeIndicatorClassName="history-filter-tab-indicator"
+          />
+
+          <FluidTabs
+            tabs={HISTORY_DATE_FILTER_OPTIONS.map((option) => ({ value: option.value, title: option.label }))}
+            value={dateFilter}
+            onValueChange={(value) => {
+              if (isHistoryDateFilter(value)) setDateFilter(value);
+            }}
+            variant="capsule"
+            size="sm"
+            ariaLabel="Filter transcripts by date"
             className="history-filter-tabs"
             listClassName="history-filter-tabs-list"
             activeIndicatorClassName="history-filter-tab-indicator"
@@ -415,6 +450,13 @@ function HistoryPanelComponent({
                     onSelect={() => void handleCopy(entry)}
                   >
                     {copiedId === entry.id ? 'Copied' : 'Copy'}
+                  </SmartOverflowAction>
+                  <SmartOverflowAction
+                    id="copy-markdown"
+                    priority="overflow"
+                    onSelect={() => void handleCopyMarkdown(entry)}
+                  >
+                    Copy as Markdown
                   </SmartOverflowAction>
                   {isNewest && (
                     <SmartOverflowAction
