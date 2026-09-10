@@ -32,7 +32,7 @@ export function SettingToggle({ title, description, label = title, checked, onCh
   return (
     <div
       data-setting-target={targetId}
-      className="flex min-h-[52px] items-center justify-between gap-6 rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40"
+      className="settings-setting-row flex items-center justify-between gap-6 rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40"
     >
       <div>
         <p className="text-sm font-medium text-on-surface">{title}</p>

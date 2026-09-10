@@ -3,7 +3,7 @@ use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString, CFS
 use core_graphics::display::CGDisplay;
 use coreaudio::audio_unit::audio_format::LinearPcmFlags;
 use coreaudio::audio_unit::macos_helpers::{
-    get_audio_device_ids_for_scope, get_default_device_id, get_device_name,
+    get_audio_device_ids, get_default_device_id, get_device_name,
 };
 use coreaudio::audio_unit::render_callback::{self, data};
 use coreaudio::audio_unit::{
@@ -11,12 +11,14 @@ use coreaudio::audio_unit::{
 };
 use coreaudio::sys::{
     kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID,
-    kAudioDevicePropertyTransportType, kAudioHardwarePropertyDefaultInputDevice,
-    kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMaster,
-    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-    kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO, AudioDeviceID,
-    AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectID,
-    AudioObjectPropertyAddress, AudioObjectPropertyListenerProc, AudioObjectRemovePropertyListener,
+    kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyTransportType,
+    kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDevices,
+    kAudioObjectPropertyElementMaster, kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyScopeInput, kAudioObjectSystemObject,
+    kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO, AudioBuffer,
+    AudioBufferList, AudioDeviceID, AudioObjectAddPropertyListener, AudioObjectGetPropertyData,
+    AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+    AudioObjectPropertyListenerProc, AudioObjectRemovePropertyListener,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
@@ -71,6 +73,63 @@ const SYSTEM_AUDIO_FLOW_OBSERVATION: Duration = Duration::from_millis(500);
 // failed/best-effort listener removal has drained every racing callback.
 static INPUT_TOPOLOGY_CHANGED: ProcessAtomicBool = ProcessAtomicBool::new(false);
 const LEGACY_CONTINUITY_CAPTURE_TRANSPORT: u32 = 0x6363_6170;
+const MAX_STREAM_CONFIGURATION_BYTES: usize = 64 * 1024;
+
+#[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {}
+
+fn microphone_authorization_granted() -> bool {
+    use objc2::{msg_send, runtime::AnyClass};
+    use objc2_foundation::NSString;
+    let Some(class) = AnyClass::get(c"AVCaptureDevice") else {
+        return false;
+    };
+    let media = NSString::from_str("soun");
+    let status: isize = unsafe { msg_send![class, authorizationStatusForMediaType: &*media] };
+    status == 3
+}
+
+fn automatic_probe_allowed(deadline_ns: u64, now_ns: Option<u64>, authorized: bool) -> bool {
+    authorized
+        && now_ns
+            .and_then(|now| {
+                murmur_capture_helper_protocol::automatic_probe_remaining_ns(deadline_ns, now)
+            })
+            .is_some()
+}
+
+fn check_automatic_probe(deadline: Option<u64>) -> Result<(), FailureCode> {
+    if deadline.is_some_and(|deadline| {
+        !automatic_probe_allowed(
+            deadline,
+            murmur_capture_helper_protocol::capture_monotonic_ns(),
+            microphone_authorization_granted(),
+        )
+    }) {
+        Err(FailureCode::PermissionDenied)
+    } else {
+        Ok(())
+    }
+}
+
+fn spawn_automatic_probe_watchdog(deadline_ns: u64) -> Result<(), ()> {
+    std::thread::Builder::new()
+        .name("automatic-probe-deadline".into())
+        .spawn(move || loop {
+            let remaining =
+                murmur_capture_helper_protocol::capture_monotonic_ns().and_then(|now| {
+                    murmur_capture_helper_protocol::automatic_probe_remaining_ns(deadline_ns, now)
+                });
+            let Some(remaining) = remaining else {
+                // Exit also closes a stream blocked inside HAL. The host retains
+                // ownership until it confirms this process exit and joins.
+                std::process::exit(0);
+            };
+            std::thread::sleep(Duration::from_nanos(remaining).min(Duration::from_millis(5)));
+        })
+        .map(|_| ())
+        .map_err(|_| ())
+}
 
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
@@ -802,6 +861,70 @@ fn device_property_u32(device_id: AudioDeviceID, selector: u32) -> Option<u32> {
     (status == 0 && size == std::mem::size_of::<u32>() as u32).then_some(value)
 }
 
+fn stream_configuration_has_channels(bytes: &[u8]) -> Option<bool> {
+    let buffers_offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+    if bytes.len() < buffers_offset || bytes.len() > MAX_STREAM_CONFIGURATION_BYTES {
+        return None;
+    }
+    let count = u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+    let buffer_size = std::mem::size_of::<AudioBuffer>();
+    let buffers =
+        bytes.get(buffers_offset..buffers_offset.checked_add(count.checked_mul(buffer_size)?)?)?;
+    let channels_offset = std::mem::offset_of!(AudioBuffer, mNumberChannels);
+    Some(buffers.chunks_exact(buffer_size).any(|buffer| {
+        buffer[channels_offset..channels_offset + 4]
+            .iter()
+            .any(|byte| *byte != 0)
+    }))
+}
+
+fn device_has_input_channels(device_id: AudioDeviceID) -> bool {
+    let address = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioObjectPropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMaster,
+    };
+    let mut size = 0_u32;
+    let status = unsafe {
+        AudioObjectGetPropertyDataSize(device_id, &address, 0, std::ptr::null(), &mut size)
+    };
+    if status != 0
+        || (size as usize) < std::mem::offset_of!(AudioBufferList, mBuffers)
+        || size as usize > MAX_STREAM_CONFIGURATION_BYTES
+    {
+        return false;
+    }
+    let capacity = size as usize;
+    // u64 storage preserves AudioBufferList's native alignment. Zeroing also
+    // keeps every byte initialized if Core Audio returns a shorter list.
+    let mut storage = vec![0_u64; capacity.div_ceil(std::mem::size_of::<u64>())];
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device_id,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            storage.as_mut_ptr().cast(),
+        )
+    };
+    if status != 0 || size as usize > capacity {
+        return false;
+    }
+    // The returned byte length is bounded by the allocated, initialized storage.
+    let bytes = unsafe { std::slice::from_raw_parts(storage.as_ptr().cast(), size as usize) };
+    stream_configuration_has_channels(bytes) == Some(true)
+}
+
+fn input_device_ids() -> Result<Vec<AudioDeviceID>, coreaudio::Error> {
+    // kAudioHardwarePropertyDevices lists all devices. Its system object has
+    // only global scope, so an input scope cannot establish input capability.
+    Ok(get_audio_device_ids()?
+        .into_iter()
+        .filter(|id| device_has_input_channels(*id))
+        .collect())
+}
+
 fn device_kind(transport: Option<u32>) -> ProductionDeviceKind {
     match transport {
         Some(transport) if transport == kAudioDeviceTransportTypeBuiltIn => {
@@ -842,8 +965,7 @@ fn lid_state() -> ProductionLidState {
 }
 
 fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>, ProductionLidState), FailureCode> {
-    let ids =
-        get_audio_device_ids_for_scope(Scope::Input).map_err(|_| FailureCode::EnumerationFailed)?;
+    let ids = input_device_ids().map_err(|_| FailureCode::EnumerationFailed)?;
     let default_input_id = get_default_device_id(true).and_then(raw_uid);
     let devices = ids
         .into_iter()
@@ -853,8 +975,7 @@ fn enumerate() -> Result<(Vec<ProductionDevice>, Option<String>, ProductionLidSt
                 name: get_device_name(id).ok()?,
                 kind: device_kind(device_property_u32(id, kAudioDevicePropertyTransportType)),
                 connected: device_property_u32(id, kAudioDevicePropertyDeviceIsAlive) == Some(1),
-                // Input-scope enumeration is native proof this source has an
-                // input stream. It prevents output-only display routes.
+                // Membership requires a positive native input-channel count.
                 has_input: true,
             })
         })
@@ -1224,7 +1345,7 @@ pub(super) fn start_auhal(
     let default_device = get_default_device_id(true);
     let default_input_available = default_device.is_some();
     let (device, evidence) = match requested {
-        Some(uid) => match get_audio_device_ids_for_scope(Scope::Input) {
+        Some(uid) => match input_device_ids() {
             Ok(devices) => {
                 let input_device_count = devices.len();
                 let selected = require_input_device(select_auhal_device(
@@ -1250,7 +1371,7 @@ pub(super) fn start_auhal(
             // Keep the existing default-device decision independent of the
             // supplementary count enumeration used only for telemetry.
             let selected = require_input_device(default_device);
-            let evidence = match get_audio_device_ids_for_scope(Scope::Input) {
+            let evidence = match input_device_ids() {
                 Ok(devices) => {
                     InputResolutionEvidence::observed(None, devices.len(), default_input_available)
                 }
@@ -2136,6 +2257,47 @@ fn run_meeting(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
+    #[test]
+    fn automatic_probe_watchdog_exits_even_when_worker_thread_is_blocked() {
+        use super::*;
+        const CHILD: &str = "MURMUR_TEST_AUTOMATIC_PROBE_WATCHDOG";
+        if std::env::var_os(CHILD).is_some() {
+            let now = murmur_capture_helper_protocol::capture_monotonic_ns().unwrap();
+            spawn_automatic_probe_watchdog(now + 100_000_000).unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        let started = Instant::now();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "production::tests::automatic_probe_watchdog_exits_even_when_worker_thread_is_blocked"])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::null())
+            .spawn().unwrap();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if started.elapsed() >= Duration::from_secs(2) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("automatic watchdog failed to terminate blocked worker");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn automatic_probe_requires_grant_and_unexpired_bounded_lease() {
+        use super::*;
+        assert!(automatic_probe_allowed(10, Some(1), true));
+        assert!(!automatic_probe_allowed(10, Some(1), false));
+        assert!(!automatic_probe_allowed(10, Some(10), true));
+        assert!(!automatic_probe_allowed(10, Some(11), true));
+        assert!(!automatic_probe_allowed(10, None, true));
+        assert!(!automatic_probe_allowed(u64::MAX, Some(1), true));
+    }
 
     #[test]
     fn a_started_tap_with_no_audio_is_granted_not_a_stall() {
@@ -2569,6 +2731,57 @@ mod tests {
     }
 
     #[test]
+    fn input_stream_configuration_requires_a_positive_channel_count() {
+        let configuration = |channels: &[u32]| {
+            let offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+            let buffer_size = std::mem::size_of::<AudioBuffer>();
+            let mut bytes = vec![0; offset + channels.len() * buffer_size];
+            bytes[..4].copy_from_slice(&(channels.len() as u32).to_ne_bytes());
+            for (index, channels) in channels.iter().enumerate() {
+                let start = offset
+                    + index * buffer_size
+                    + std::mem::offset_of!(AudioBuffer, mNumberChannels);
+                bytes[start..start + 4].copy_from_slice(&channels.to_ne_bytes());
+            }
+            bytes
+        };
+        for channels in [vec![], vec![0], vec![0, 0]] {
+            assert_eq!(
+                stream_configuration_has_channels(&configuration(&channels)),
+                Some(false)
+            );
+        }
+        for channels in [vec![1], vec![2], vec![0, 2], vec![2, 0]] {
+            assert_eq!(
+                stream_configuration_has_channels(&configuration(&channels)),
+                Some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn input_stream_configuration_rejects_unbounded_or_truncated_native_data() {
+        let offset = std::mem::offset_of!(AudioBufferList, mBuffers);
+        let mut one_buffer = vec![0; offset + std::mem::size_of::<AudioBuffer>()];
+        one_buffer[..4].copy_from_slice(&1_u32.to_ne_bytes());
+        let channels_offset = offset + std::mem::offset_of!(AudioBuffer, mNumberChannels);
+        one_buffer[channels_offset..channels_offset + 4].copy_from_slice(&1_u32.to_ne_bytes());
+        for length in 0..one_buffer.len() {
+            assert_eq!(
+                stream_configuration_has_channels(&one_buffer[..length]),
+                None
+            );
+        }
+        assert_eq!(stream_configuration_has_channels(&one_buffer), Some(true));
+        one_buffer[..4].copy_from_slice(&u32::MAX.to_ne_bytes());
+        assert_eq!(stream_configuration_has_channels(&one_buffer), None);
+        assert_eq!(
+            stream_configuration_has_channels(&vec![0; MAX_STREAM_CONFIGURATION_BYTES + 1]),
+            None
+        );
+    }
+
+    #[test]
     fn backend_resolver_classifications_fail_closed_without_identity_leakage() {
         let select_cpal = |matches: &[(bool, bool)]| {
             let mut selection = CpalSelection::default();
@@ -2731,7 +2944,26 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
         &ProductionHelperMessage::HelloAck,
     )
     .map_err(|_| ())?;
-    match read_control(&mut stdin, capture_id, nonce)? {
+    let command = read_control(&mut stdin, capture_id, nonce)?;
+    let (command, automatic_deadline) = match command {
+        ProductionHostMessage::StartAutomaticProbe {
+            device_id,
+            backend,
+            deadline_ns,
+        } => {
+            check_automatic_probe(Some(deadline_ns)).map_err(|_| ())?;
+            spawn_automatic_probe_watchdog(deadline_ns)?;
+            (
+                ProductionHostMessage::Start {
+                    device_id: Some(device_id),
+                    backend,
+                },
+                Some(deadline_ns),
+            )
+        }
+        command => (command, None),
+    };
+    match command {
         ProductionHostMessage::Enumerate => {
             let (devices, default_input_id, lid_state) = enumerate().map_err(|_| ())?;
             write_production_control(
@@ -2773,6 +3005,20 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
         }
         ProductionHostMessage::Start { device_id, backend } => {
             drop(stdin);
+            let (control_tx, control_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut input = std::io::stdin().lock();
+                let message = read_control(&mut input, capture_id, nonce);
+                if automatic_deadline.is_some() {
+                    // A revoke must work while native setup or stream.stop is
+                    // blocked. This helper owns no durable capture state.
+                    std::process::exit(0);
+                }
+                if let Ok(message) = message {
+                    let _ = control_tx.send(message);
+                }
+            });
+            check_automatic_probe(automatic_deadline).map_err(|_| ())?;
             write_production_control(
                 &mut stdout,
                 capture_id,
@@ -2792,6 +3038,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let failed = Arc::new(AtomicBool::new(false));
             let started = {
                 let mut emit_setup = |observation: MicrophoneSetupObservation| {
+                    check_automatic_probe(automatic_deadline)?;
                     let message = match observation {
                         MicrophoneSetupObservation::Step(step, transition) => {
                             ProductionHelperMessage::SetupStep {
@@ -2878,13 +3125,6 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 },
             )
             .map_err(|_| ())?;
-            let (control_tx, control_rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let mut input = std::io::stdin().lock();
-                if let Ok(message) = read_control(&mut input, capture_id, nonce) {
-                    let _ = control_tx.send(message);
-                }
-            });
             let mut sequence = 0_u64;
             let mut retained = 0_u64;
             let mut scratch = [0_f32; 4096];
@@ -2892,7 +3132,14 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let mut last_producer_position = ring.producer_position();
             let mut last_callback_progress = Instant::now();
             let mut starvation_injected = false;
+            let mut last_automatic_permission_check = Instant::now();
             loop {
+                if automatic_deadline.is_some()
+                    && last_automatic_permission_check.elapsed() >= Duration::from_millis(250)
+                {
+                    check_automatic_probe(automatic_deadline).map_err(|_| ())?;
+                    last_automatic_permission_check = Instant::now();
+                }
                 if fault == Some("hang-before-first-buffer") && retained == 0 {
                     std::thread::sleep(Duration::from_millis(20));
                     continue;

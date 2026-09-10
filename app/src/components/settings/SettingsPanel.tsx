@@ -823,7 +823,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <p className="mt-1 text-xs text-on-surface-variant">{keyHelp}</p>
             </div>
             {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
-            <div data-setting-target="sound-cues" className="rounded-lg px-1 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+            <div data-setting-target="sound-cues" className="settings-setting-group rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <SettingToggle
                 title="Sound Cues"
                 description="Play local feedback when recording starts, stops, succeeds, or fails."

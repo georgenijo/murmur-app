@@ -693,6 +693,23 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
 
+    #[test]
+    fn an_unclaimed_arm_expires_before_it_can_be_claimed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = DictationDiagnostics::default();
+        store.initialize(root.path().to_path_buf()).unwrap();
+        store.arm_next().unwrap();
+        {
+            let mut inner = store.inner.lock_or_recover();
+            inner.arm = ArmState::Armed {
+                expires_at_ms: now_ms() - 1,
+            };
+        }
+
+        assert!(!store.claim(41));
+        assert_eq!(store.arm_status(), DictationCaptureArmStatusV1::Unarmed);
+    }
+
     #[tokio::test]
     async fn explicit_upload_sends_one_capture_body_without_a_retry_store() {
         const SENTINEL: &str = "PRIVATE_UPLOAD_SENTINEL";

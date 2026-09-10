@@ -461,6 +461,7 @@ fn persist_recording(
 }
 
 fn emit_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str>) {
+    crate::smart_auto_probe::wake();
     let _ = app_handle.emit(
         "corpus-recording-status",
         serde_json::json!({ "state": state, "error": error }),

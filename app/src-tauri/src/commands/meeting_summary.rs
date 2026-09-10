@@ -153,6 +153,8 @@ impl Drop for SummaryOwnershipGuard {
                 current_generation,
                 "meeting summary ownership guard dropped for a superseded generation"
             );
+        } else {
+            crate::smart_auto_probe::wake();
         }
     }
 }
@@ -309,8 +311,9 @@ pub async fn start_meeting_summary(
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSummaryStatus, String> {
     let session_id = session_id.trim().to_string();
-    let _transition = state.app_state.recording_transition.lock().await;
-    crate::meeting_diarization::preempt()?;
+    let _transition =
+        crate::commands::microphone_preview::transition_after_stopping_preview(&app, state.inner())
+            .await?;
     if state.app_state.meeting_blocks_asr()
         || state.benchmark.is_running()
         || state.app_state.file_transcribing.load(Ordering::SeqCst)

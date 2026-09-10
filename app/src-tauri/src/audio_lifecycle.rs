@@ -294,6 +294,9 @@ impl Default for SupervisorConfig {
 }
 
 trait WorkerFactory: Send + Sync + 'static {
+    fn automatic_capture_authorized(&self) -> bool {
+        crate::commands::permissions::check_microphone_permission_status() == "granted"
+    }
     fn spawn(
         &self,
         spec: AudioWorkerSpec,
@@ -314,6 +317,7 @@ impl WorkerFactory for ProductionWorkerFactory {
 }
 
 trait LifecycleSink: Send + Sync + 'static {
+    fn invalidate_input_health(&self, device_id: Option<&str>);
     fn notify(
         &self,
         app_handle: Option<&tauri::AppHandle>,
@@ -325,6 +329,10 @@ trait LifecycleSink: Send + Sync + 'static {
 struct ProductionLifecycleSink;
 
 impl LifecycleSink for ProductionLifecycleSink {
+    fn invalidate_input_health(&self, device_id: Option<&str>) {
+        crate::audio_inventory::invalidate_signal_evidence(device_id);
+    }
+
     fn notify(
         &self,
         app_handle: Option<&tauri::AppHandle>,
@@ -385,6 +393,7 @@ struct StartRequest {
     origin: String,
     wait_until_ready: bool,
     response: Sender<Result<(), AudioStartError>>,
+    probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
 }
 
 // StartRequest is intentionally owned as one message so the supervisor can
@@ -418,7 +427,10 @@ enum SupervisorMessage {
 }
 
 struct Attempt {
+    probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
+    probe_deadline: Option<Instant>,
     owner: AudioOwner,
+    device_id: Option<String>,
     app_handle: Option<tauri::AppHandle>,
     origin: String,
     phase: AttemptPhase,
@@ -537,6 +549,18 @@ fn run_supervisor(
                     let _ = response.send(());
                     continue;
                 }
+                if attempt
+                    .as_ref()
+                    .is_some_and(|current| current.probe_permit.is_some())
+                {
+                    handle_deadlines_at(
+                        &mut attempt,
+                        sink.as_ref(),
+                        &public,
+                        config,
+                        Instant::now(),
+                    );
+                }
                 handle_message(
                     message,
                     &mut attempt,
@@ -577,7 +601,17 @@ fn deadline_wait(attempt: Option<&Attempt>, config: SupervisorConfig) -> Duratio
         }
         _ => now + Duration::from_secs(60),
     };
-    deadline.saturating_duration_since(now)
+    let wait = deadline.saturating_duration_since(now);
+    if attempt.probe_permit.is_some()
+        && matches!(
+            attempt.phase,
+            AttemptPhase::Starting | AttemptPhase::Recording
+        )
+    {
+        wait.min(Duration::from_millis(10))
+    } else {
+        wait
+    }
 }
 
 fn handle_message(
@@ -609,6 +643,9 @@ fn handle_message(
             let current = attempt.as_mut().expect("attempt was checked above");
             match current.phase {
                 AttemptPhase::Recording => {
+                    if let Some(permit) = &current.probe_permit {
+                        permit.revoke();
+                    }
                     current.active.store(false, Ordering::SeqCst);
                     let _ = current.command_sender.send(AudioCommand::Stop);
                     current.phase = AttemptPhase::Stopping;
@@ -689,6 +726,25 @@ fn handle_start(
     sink: &dyn LifecycleSink,
     public: &PublicState,
 ) {
+    if request
+        .probe_permit
+        .as_ref()
+        .is_some_and(|permit| !permit.is_valid())
+    {
+        let _ = request.response.send(Err(AudioStartError::Cancelled));
+        return;
+    }
+    if request.probe_permit.is_some() && !factory.automatic_capture_authorized() {
+        let _ = request
+            .response
+            .send(Err(AudioStartError::InitializationFailed(
+                AudioFailure::new(
+                    AudioFailureKind::PermissionDenied,
+                    AudioInitPhase::DeviceEnumeration,
+                ),
+            )));
+        return;
+    }
     if let Some(current) = attempt.as_ref() {
         let error = match current.phase {
             AttemptPhase::Starting => AudioStartError::AlreadyStarting,
@@ -709,7 +765,8 @@ fn handle_start(
         shared: Arc::clone(&shared),
         active: Arc::clone(&active),
         app_handle: request.app_handle.clone(),
-        device_id: request.device_id,
+        device_id: request.device_id.clone(),
+        probe_permit: request.probe_permit.clone(),
     };
     // Serialize the transition into capture ownership with any idle-only
     // diagnostic enumeration. Once Starting is published below, the
@@ -717,6 +774,25 @@ fn handle_start(
     let _hal_boundary = hal_boundary()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if request
+        .probe_permit
+        .as_ref()
+        .is_some_and(|permit| !permit.is_valid())
+    {
+        let _ = request.response.send(Err(AudioStartError::Cancelled));
+        return;
+    }
+    if request.probe_permit.is_some() && !factory.automatic_capture_authorized() {
+        let _ = request
+            .response
+            .send(Err(AudioStartError::InitializationFailed(
+                AudioFailure::new(
+                    AudioFailureKind::PermissionDenied,
+                    AudioInitPhase::DeviceEnumeration,
+                ),
+            )));
+        return;
+    }
     // Publish ownership before the worker can spawn its capture helper. Any
     // diagnostic/state-only enumeration racing this start must see Starting
     // and defer until the supervisor returns to Idle.
@@ -726,6 +802,7 @@ fn handle_start(
     let thread_handle = match factory.spawn(spec, worker_event_sender.clone()) {
         Ok(handle) => handle,
         Err(error) => {
+            sink.invalidate_input_health(request.device_id.as_deref());
             public.clear_owner(request.owner);
             public.set_phase(PublicPhase::Idle);
             crate::audio_inventory::lifecycle_became_idle();
@@ -741,7 +818,13 @@ fn handle_start(
     let wait_until_ready = request.wait_until_ready;
     let origin = request.origin;
     *attempt = Some(Attempt {
+        probe_deadline: request
+            .probe_permit
+            .as_ref()
+            .map(|permit| Instant::now() + permit.remaining()),
+        probe_permit: request.probe_permit,
         owner,
+        device_id: request.device_id,
         app_handle,
         origin,
         phase: AttemptPhase::Starting,
@@ -848,6 +931,19 @@ fn handle_worker_event(
 
     match event {
         AudioWorkerEvent::PermissionPromptPending { .. } => {
+            if current.probe_permit.is_some() {
+                begin_recovery(
+                    attempt,
+                    AudioCancelReason::HardDeadline,
+                    sink,
+                    public,
+                    Some(AudioFailure::new(
+                        AudioFailureKind::PermissionDenied,
+                        AudioInitPhase::StreamBuild,
+                    )),
+                );
+                return;
+            }
             if current.phase == AttemptPhase::Starting && current.tcc_pending_since.is_none() {
                 current.tcc_pending_since = Some(Instant::now());
                 if let Some(recording_id) = owner.dictation_id() {
@@ -1016,6 +1112,7 @@ fn handle_worker_event(
             }
         },
         AudioWorkerEvent::InitFailed { failure, .. } => {
+            sink.invalidate_input_health(current.device_id.as_deref());
             current.failure = Some(failure.clone());
             if let Some(response) = current.start_response.take() {
                 let _ = response.send(Err(AudioStartError::InitializationFailed(failure)));
@@ -1269,6 +1366,12 @@ fn begin_recovery(
         return;
     }
     current.active.store(false, Ordering::SeqCst);
+    if let Some(permit) = &current.probe_permit {
+        permit.revoke();
+    }
+    if reason != AudioCancelReason::User {
+        sink.invalidate_input_health(current.device_id.as_deref());
+    }
     let _ = current.command_sender.send(AudioCommand::Stop);
     current.phase = AttemptPhase::Recovering;
     current.recovery_reason = Some(reason);
@@ -1321,6 +1424,7 @@ fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure:
         return;
     }
     attempt.failure_reported = true;
+    sink.invalidate_input_health(attempt.device_id.as_deref());
     tracing::error!(
         target: "audio",
         event_code = "audio.lifecycle_failed",
@@ -1351,6 +1455,23 @@ fn handle_deadlines_at(
     let Some(current) = attempt.as_ref() else {
         return;
     };
+    if (current
+        .probe_permit
+        .as_ref()
+        .is_some_and(|permit| !permit.is_valid())
+        || current
+            .probe_deadline
+            .is_some_and(|deadline| now >= deadline))
+        && matches!(
+            current.phase,
+            AttemptPhase::Starting | AttemptPhase::Recording
+        )
+    {
+        // A probe lease also ends after successful signal verification. Its
+        // cleanup must not advance the failure epoch of the result being saved.
+        begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
+        return;
+    }
     let elapsed = current.active_initialization_elapsed(now);
     let permission_prompt_timed_out = current.phase == AttemptPhase::Starting
         && current.tcc_pending_since.is_some_and(|started| {
@@ -1421,6 +1542,7 @@ fn handle_deadlines_at(
                 }) =>
         {
             current.stopping_guidance_emitted = true;
+            sink.invalidate_input_health(current.device_id.as_deref());
             tracing::warn!(
                 target: "audio",
                 owner = current.owner.telemetry_id(),
@@ -1444,6 +1566,17 @@ fn send_start(
     origin: &str,
     wait_until_ready: bool,
 ) -> Result<(), AudioStartError> {
+    send_start_with_permit(owner, app_handle, device_id, origin, wait_until_ready, None)
+}
+
+fn send_start_with_permit(
+    owner: AudioOwner,
+    app_handle: Option<tauri::AppHandle>,
+    device_id: Option<String>,
+    origin: &str,
+    wait_until_ready: bool,
+    probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
+) -> Result<(), AudioStartError> {
     let (response_sender, response_receiver) = mpsc::channel();
     supervisor()
         .sender
@@ -1454,6 +1587,7 @@ fn send_start(
             origin: origin.to_string(),
             wait_until_ready,
             response: response_sender,
+            probe_permit,
         }))
         .map_err(|_| AudioStartError::SupervisorUnavailable)?;
     let timeout = if wait_until_ready {
@@ -1522,6 +1656,22 @@ pub(crate) fn start_preview_recording(
         device_id,
         "preview",
         false,
+    )
+}
+
+pub(crate) fn start_automatic_preview_recording(
+    app_handle: tauri::AppHandle,
+    device_id: String,
+    preview_id: u64,
+    permit: Arc<crate::smart_auto_probe::ProbePermit>,
+) -> Result<(), AudioStartError> {
+    send_start_with_permit(
+        AudioOwner::Preview(preview_id),
+        Some(app_handle),
+        Some(device_id),
+        "automatic_preview",
+        false,
+        Some(permit),
     )
 }
 
@@ -1818,6 +1968,7 @@ pub(crate) fn register_sleep_wake_observer() {
     ) {
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+                crate::audio_inventory::invalidate_signal_evidence(None);
                 if reason == AudioCancelReason::SystemSleep {
                     cancel_preview_for_environment_change(reason);
                 }
@@ -1865,6 +2016,339 @@ mod tests {
     use crate::audio::{AudioInitPhase, AudioWorkerEvent};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Condvar, Mutex};
+
+    struct AutomaticFactory {
+        authorized: bool,
+        ready: bool,
+        spawned: Arc<AtomicUsize>,
+        teardown: Gate,
+    }
+
+    impl WorkerFactory for AutomaticFactory {
+        fn automatic_capture_authorized(&self) -> bool {
+            self.authorized
+        }
+
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            self.spawned.fetch_add(1, Ordering::SeqCst);
+            let ready = self.ready;
+            let teardown = self.teardown.clone();
+            Ok(std::thread::spawn(move || {
+                assert!(spec.probe_permit.is_some());
+                assert!(!spec.owner.retains_samples());
+                if ready {
+                    let _ = events.send(AudioWorkerEvent::FirstBuffer {
+                        owner: spec.owner,
+                        sample_rate: WHISPER_SAMPLE_RATE,
+                    });
+                }
+                let _ = spec.command_receiver.recv();
+                teardown.wait();
+                assert!(spec.shared.lock().unwrap().is_empty());
+                let _ = events.send(AudioWorkerEvent::ThreadExited { owner: spec.owner });
+            }))
+        }
+    }
+
+    fn automatic_harness(
+        authorized: bool,
+        ready: bool,
+    ) -> (AudioSupervisor, Gate, Arc<AtomicUsize>) {
+        let teardown = Gate::closed();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let supervisor = spawn_supervisor(
+            Arc::new(AutomaticFactory {
+                authorized,
+                ready,
+                teardown: teardown.clone(),
+                spawned: spawned.clone(),
+            }),
+            Arc::new(RecordingSink::default()),
+            SupervisorConfig::default(),
+        );
+        (supervisor, teardown, spawned)
+    }
+
+    fn automatic_start(
+        supervisor: &AudioSupervisor,
+        permit: Arc<crate::smart_auto_probe::ProbePermit>,
+    ) -> Receiver<Result<(), AudioStartError>> {
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Start(StartRequest {
+                owner: AudioOwner::Preview(525),
+                app_handle: None,
+                device_id: Some("test-input".into()),
+                origin: "automatic_preview".into(),
+                wait_until_ready: false,
+                response,
+                probe_permit: Some(permit),
+            }))
+            .unwrap();
+        result
+    }
+
+    #[test]
+    fn automatic_probe_expired_revoked_or_ungranted_never_spawns() {
+        for (expired, revoked, authorized) in [
+            (true, false, true),
+            (false, true, true),
+            (false, false, false),
+        ] {
+            let (supervisor, _, spawned) = automatic_harness(authorized, false);
+            let now = if expired {
+                Instant::now() - crate::smart_auto_probe::PROBE_LIMIT
+            } else {
+                Instant::now()
+            };
+            let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(now));
+            if revoked {
+                permit.revoke();
+            }
+            assert!(automatic_start(&supervisor, permit)
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .is_err());
+            assert_eq!(spawned.load(Ordering::SeqCst), 0);
+            assert_eq!(supervisor.public.phase(), PublicPhase::Idle);
+            shutdown(&supervisor);
+        }
+    }
+
+    #[test]
+    fn automatic_probe_recording_revocation_and_expiry_hold_owner_until_join() {
+        for expire in [false, true] {
+            let (supervisor, teardown, spawned) = automatic_harness(true, true);
+            let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(Instant::now()));
+            assert_eq!(
+                automatic_start(&supervisor, permit.clone())
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap(),
+                Ok(())
+            );
+            wait_until("automatic capture did not become ready", || {
+                supervisor.public.phase() == PublicPhase::Recording
+            });
+            if expire {
+                check_deadlines(&supervisor, Duration::from_secs(9));
+            } else {
+                permit.revoke();
+            }
+            wait_until("automatic capture was not cancelled", || {
+                supervisor.public.phase() == PublicPhase::Recovering
+            });
+            assert!(!permit.is_valid());
+            assert_eq!(spawned.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                start(&supervisor, AudioOwner::Dictation(526))
+                    .recv()
+                    .unwrap(),
+                Err(AudioStartError::AudioRecovering)
+            );
+            teardown.open();
+            wait_until("automatic owner did not join", || {
+                supervisor.public.phase() == PublicPhase::Idle
+            });
+            shutdown(&supervisor);
+        }
+    }
+
+    #[test]
+    fn automatic_probe_permission_pause_is_rejected_and_keeps_teardown_ownership() {
+        let (supervisor, teardown, _) = automatic_harness(true, false);
+        let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(Instant::now()));
+        assert_eq!(
+            automatic_start(&supervisor, permit.clone()).recv().unwrap(),
+            Ok(())
+        );
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(
+                AudioWorkerEvent::PermissionPromptPending {
+                    owner: AudioOwner::Preview(525),
+                },
+            ))
+            .unwrap();
+        wait_until("automatic TCC pause was accepted", || {
+            supervisor.public.phase() == PublicPhase::Recovering
+        });
+        assert!(!permit.is_valid());
+        teardown.open();
+        wait_until("automatic TCC teardown did not join", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn automatic_probe_stop_requires_exact_owner_and_waits_for_teardown() {
+        let (supervisor, teardown, _) = automatic_harness(true, true);
+        let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(Instant::now()));
+        assert_eq!(
+            automatic_start(&supervisor, permit.clone()).recv().unwrap(),
+            Ok(())
+        );
+        wait_until("automatic capture did not become ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(AudioOwner::Preview(526)),
+                response,
+            })
+            .unwrap();
+        assert!(result.recv().unwrap().is_err());
+        assert!(permit.is_valid());
+        assert_eq!(supervisor.public.phase(), PublicPhase::Recording);
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(AudioOwner::Preview(525)),
+                response,
+            })
+            .unwrap();
+        wait_until("automatic capture did not start stopping", || {
+            supervisor.public.phase() == PublicPhase::Stopping
+        });
+        assert!(!permit.is_valid());
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        teardown.open();
+        assert_eq!(
+            result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Ok(Vec::new())
+        );
+        wait_until("automatic stop did not join", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn automatic_probe_verified_revoke_then_stop_preserves_signal_health() {
+        let teardown = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(AutomaticFactory {
+                authorized: true,
+                ready: true,
+                spawned: Arc::new(AtomicUsize::new(0)),
+                teardown: teardown.clone(),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(Instant::now()));
+        assert_eq!(
+            automatic_start(&supervisor, permit.clone()).recv().unwrap(),
+            Ok(())
+        );
+        wait_until("automatic capture did not become ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        // Match the scheduler: collect its result, revoke the permit, then ask
+        // the exact owner to stop. Deadlines run before that Stop is processed.
+        permit.revoke();
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(AudioOwner::Preview(525)),
+                response,
+            })
+            .unwrap();
+        assert!(result
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_err());
+        assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+        assert!(sink.invalidated_inputs.lock().unwrap().is_empty());
+        teardown.open();
+        wait_until("automatic verified stop did not join", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        assert!(
+            sink.invalidated_inputs.lock().unwrap().is_empty(),
+            "normal cleanup must not invalidate the saved signal key's failure epoch"
+        );
+        assert!(sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, event)| matches!(
+                event,
+                AudioLifecycleEvent::Recovering {
+                    reason: AudioCancelReason::User
+                }
+            )));
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn automatic_probe_runtime_failure_still_invalidates_signal_health() {
+        let teardown = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(AutomaticFactory {
+                authorized: true,
+                ready: true,
+                spawned: Arc::new(AtomicUsize::new(0)),
+                teardown: teardown.clone(),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(Instant::now()));
+        assert_eq!(automatic_start(&supervisor, permit).recv().unwrap(), Ok(()));
+        wait_until("automatic capture did not become ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::RuntimeFailed {
+                owner: AudioOwner::Preview(525),
+                failure: AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::Runtime),
+            }))
+            .unwrap();
+        wait_until("automatic runtime failure was not invalidated", || {
+            !sink.invalidated_inputs.lock().unwrap().is_empty()
+        });
+        teardown.open();
+        wait_until("automatic failed capture did not join", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        assert!(sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, event)| matches!(event, AudioLifecycleEvent::InitializationFailed { .. })));
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn automatic_probe_revoked_while_waiting_for_hal_never_spawns() {
+        let (supervisor, _, spawned) = automatic_harness(true, false);
+        let permit = Arc::new(crate::smart_auto_probe::ProbePermit::new(Instant::now()));
+        let boundary = hal_boundary().lock().unwrap();
+        let result = automatic_start(&supervisor, permit.clone());
+        permit.revoke();
+        drop(boundary);
+        assert_eq!(
+            result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Err(AudioStartError::Cancelled)
+        );
+        assert_eq!(spawned.load(Ordering::SeqCst), 0);
+        shutdown(&supervisor);
+    }
 
     #[derive(Clone)]
     struct Gate {
@@ -2115,9 +2599,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<(AudioOwner, AudioLifecycleEvent)>>,
+        invalidated_inputs: Mutex<Vec<Option<String>>>,
     }
 
     impl LifecycleSink for RecordingSink {
+        fn invalidate_input_health(&self, device_id: Option<&str>) {
+            self.invalidated_inputs
+                .lock()
+                .unwrap()
+                .push(device_id.map(str::to_string));
+        }
+
         fn notify(
             &self,
             _app_handle: Option<&tauri::AppHandle>,
@@ -2179,6 +2671,7 @@ mod tests {
                 origin: "hold".to_string(),
                 wait_until_ready: false,
                 response: sender,
+                probe_permit: None,
             }))
             .unwrap();
         receiver
@@ -2974,7 +3467,16 @@ mod tests {
             SupervisorConfig::default(),
         );
         let owner = AudioOwner::Preview(82);
-        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
+        assert_eq!(
+            start_with_device(
+                &supervisor,
+                owner,
+                Some("verified-preview-input".to_string())
+            )
+            .recv()
+            .unwrap(),
+            Ok(())
+        );
         wait_until(
             "preview runtime failure did not reach lifecycle sink",
             || {
@@ -2995,6 +3497,102 @@ mod tests {
             },
         );
         wait_until("runtime-failed preview worker did not exit", || {
+            !supervisor.public.is_active()
+        });
+        let invalidations = sink.invalidated_inputs.lock().unwrap();
+        assert!(!invalidations.is_empty());
+        assert!(invalidations
+            .iter()
+            .all(|id| id.as_deref() == Some("verified-preview-input")));
+        drop(invalidations);
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn stale_failure_and_user_cancel_preserve_input_health() {
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(SpecCaptureFactory {
+                specs: Arc::new(Mutex::new(Vec::new())),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Preview(800);
+        assert_eq!(
+            start_with_device(&supervisor, owner, Some("current-input".to_string()))
+                .recv()
+                .unwrap(),
+            Ok(())
+        );
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::InitFailed {
+                owner: AudioOwner::Preview(799),
+                failure: AudioFailure::new(
+                    AudioFailureKind::FirstBufferTimeout,
+                    AudioInitPhase::FirstBufferWait,
+                ),
+            }))
+            .unwrap();
+        check_deadlines(&supervisor, Duration::ZERO);
+        assert!(sink.invalidated_inputs.lock().unwrap().is_empty());
+        assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
+        wait_until("cancelled preview did not close", || {
+            !supervisor.public.is_active()
+        });
+        assert!(sink.invalidated_inputs.lock().unwrap().is_empty());
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn first_pcm_deadline_revokes_only_the_frozen_input_and_keeps_ownership() {
+        let gate = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let (phase_sender, phase_receiver) = mpsc::channel();
+        let supervisor = spawn_supervisor(
+            Arc::new(BlockingFactory {
+                gate: gate.clone(),
+                retry_gate: None,
+                spawn_count: Arc::new(AtomicUsize::new(0)),
+                active_flags: Arc::new(Mutex::new(Vec::new())),
+                phase: AudioInitPhase::FirstBufferWait,
+                phase_entered: Some(phase_sender),
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(801);
+        assert_eq!(
+            start_with_device(&supervisor, owner, Some("frozen-input".to_string()))
+                .recv()
+                .unwrap(),
+            Ok(())
+        );
+        phase_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        check_deadlines(
+            &supervisor,
+            HARD_INITIALIZATION_DEADLINE + Duration::from_secs(1),
+        );
+        assert!(supervisor.public.is_active());
+        let invalidations = sink.invalidated_inputs.lock().unwrap();
+        assert!(!invalidations.is_empty());
+        assert!(invalidations
+            .iter()
+            .all(|id| id.as_deref() == Some("frozen-input")));
+        drop(invalidations);
+        assert_eq!(
+            start_with_device(
+                &supervisor,
+                AudioOwner::Dictation(802),
+                Some("replacement".to_string())
+            )
+            .recv()
+            .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        gate.open();
+        wait_until("timed-out worker did not close", || {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);

@@ -10,11 +10,14 @@ import { useOverlaySettingsMirror } from '../lib/hooks/useOverlaySettingsMirror'
 import { useRecordingControls } from '../lib/hooks/useRecordingControls';
 import { useWaveform } from '../lib/hooks/useWaveform';
 import { useModeRuntime } from '../lib/hooks/useModeRuntime';
+import { useAudioInputInventory } from '../lib/hooks/useAudioInputInventory';
+import { useSmartAutoMicrophoneStatus } from '../lib/hooks/useSmartAutoMicrophoneStatus';
 import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
 import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatus } from '../lib/meetings';
+import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib/smartAutoMicrophone';
 
 export function OverlayWidget() {
   const geometry = useOverlayGeometry();
@@ -38,6 +41,41 @@ export function OverlayWidget() {
   const hotkeyMissFeedbackRef = useRef(false);
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
+  const smartAutoStatus = useSmartAutoMicrophoneStatus(settingsMirror.smartAuto);
+  const smartAutoInventory = useAudioInputInventory(settingsMirror.smartAuto !== null);
+  const smartAutoReady = smartAutoStatus.view.kind === 'resolved'
+    && smartAutoStatus.view.status.state === 'ready'
+    ? smartAutoStatus.view.status
+    : null;
+  const smartAutoProbing = smartAutoStatus.view.kind === 'resolved'
+    && smartAutoStatus.view.status.state === 'probing'
+    ? smartAutoStatus.view.status
+    : null;
+  const smartAutoBlocked = smartAutoStatus.view.kind === 'resolved'
+    && smartAutoStatus.view.status.state === 'blocked'
+    ? smartAutoStatus.view.status
+    : null;
+  const smartAutoSummary = smartAutoReady
+    ? {
+      kind: 'ready' as const,
+      deviceName: smartAutoInventory.inventory?.devices.find(
+        (device) => device.id === smartAutoReady.deviceId,
+      )?.name ?? 'verified microphone',
+      reason: smartAutoMicrophoneReasonLabel(smartAutoReady.reason),
+    }
+    : smartAutoProbing
+      ? {
+        kind: 'probing' as const,
+        deviceName: smartAutoInventory.inventory?.devices.find(
+          (device) => device.id === smartAutoProbing.deviceId,
+        )?.name ?? 'included microphone',
+        phase: smartAutoProbePhaseLabel(smartAutoProbing.phase),
+      }
+      : smartAutoBlocked
+        ? { kind: 'blocked' as const, retryAfterMs: smartAutoBlocked.retryAfterMs }
+        : smartAutoStatus.view.kind === 'unavailable'
+          ? { kind: 'blocked' as const, retryAfterMs: null }
+          : null;
 
   const runtime = useOverlayRuntime({
     status, statusRef, disabled, setDisabled, showHotkeyMiss, setShowHotkeyMiss, hotkeyMissFeedbackRef,
@@ -211,6 +249,7 @@ export function OverlayWidget() {
           visual={visual}
           status={status}
           barRefs={waveform.barRefs}
+          smartAutoSummary={smartAutoSummary}
         />
         <OverlayDropdown
           geometry={geometry}

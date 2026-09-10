@@ -85,26 +85,46 @@ fn unarmed_and_content_free_terminal_paths_never_persist_transcript_text() {
         .unwrap());
     assert!(store.list_captures().unwrap().is_empty());
 
-    store.arm_next().unwrap();
-    assert!(store.claim(8));
-    assert!(store
-        .finish(
+    for (recording_id, outcome, error_code) in [
+        (
             8,
-            DictationCaptureCompletion::Terminal {
-                outcome: DictationTerminalOutcome::NoSpeech,
-                error_code: DictationErrorCode::VadNoSpeech,
-            },
-        )
-        .unwrap());
+            DictationTerminalOutcome::NoSpeech,
+            DictationErrorCode::VadNoSpeech,
+        ),
+        (
+            9,
+            DictationTerminalOutcome::UserCancelledProcessing,
+            DictationErrorCode::CancelledProcessing,
+        ),
+        (
+            10,
+            DictationTerminalOutcome::NoSpeech,
+            DictationErrorCode::EmptyOutput,
+        ),
+    ] {
+        store.arm_next().unwrap();
+        assert!(store.claim(recording_id));
+        assert!(store
+            .finish(
+                recording_id,
+                DictationCaptureCompletion::Terminal {
+                    outcome,
+                    error_code,
+                },
+            )
+            .unwrap());
+    }
 
     let captures = store.list_captures().unwrap();
-    assert_eq!(captures.len(), 1);
-    let capture = store.get_capture(&captures[0].capture_id).unwrap().unwrap();
-    assert!(capture.result.content().is_none());
-    let encoded = serde_json::to_string(&capture).unwrap();
-    assert!(!encoded.contains("SENTINEL"));
-    assert!(!encoded.contains("rawText"));
-    assert!(!encoded.contains("finalText"));
+    assert_eq!(captures.len(), 3);
+    for summary in captures {
+        let capture = store.get_capture(&summary.capture_id).unwrap().unwrap();
+        assert!(capture.result.content().is_none());
+        let encoded = serde_json::to_string(&capture).unwrap();
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("rawText"));
+        assert!(!encoded.contains("finalText"));
+    }
 }
 
 #[test]
@@ -189,4 +209,30 @@ fn consent_can_be_revoked_and_corrupt_retention_is_removed() {
 
     assert!(store.list_captures().unwrap().is_empty());
     assert!(!path.exists());
+}
+
+#[test]
+fn local_delete_removes_the_private_capture_immediately() {
+    let root = tempfile::tempdir().unwrap();
+    let store = DictationDiagnostics::default();
+    store.initialize(root.path().to_path_buf()).unwrap();
+    store.arm_next().unwrap();
+    assert!(store.claim(12));
+    assert!(store
+        .finish(
+            12,
+            DictationCaptureCompletion::Success {
+                raw_text: "private raw",
+                final_text: "private final",
+                model_id: "test-model",
+                total_ms: 42,
+            },
+        )
+        .unwrap());
+
+    let capture = store.list_captures().unwrap().pop().unwrap();
+    store.delete_capture(&capture.capture_id).unwrap();
+
+    assert!(store.get_capture(&capture.capture_id).unwrap().is_none());
+    assert!(store.list_captures().unwrap().is_empty());
 }

@@ -8,6 +8,7 @@ import {
 import { isIncompleteCodexProbe, queryProviderTestMessage } from '../../lib/voiceQuerySettings';
 import type { useVoiceQuerySettings } from '../../lib/hooks/useVoiceQuerySettings';
 import { Select } from '../ui/Select';
+import { QueryCapabilities } from './QueryCapabilities';
 import { SettingToggle } from './SettingToggle';
 import { SettingsSection } from './SettingsSection';
 
@@ -65,6 +66,8 @@ export function VoiceQuerySettings({
           </p>
         )}
       </div>
+
+      <QueryCapabilities command={vm.queryCommand} />
 
       <SettingToggle
         title="Enable Voice Query"

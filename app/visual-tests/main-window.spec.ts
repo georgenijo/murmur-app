@@ -226,6 +226,39 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   expect(headerBox?.height).toBe(42);
 });
 
+for (const notes of ['short', 'long'] as const) {
+  test(`update dialog gives ${notes} release notes the main reading area`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=update-dialog-${notes}&appearance=light`);
+
+    const fixture = page.locator('[data-visual-ready="true"]');
+    const dialog = page.getByRole('dialog', { name: 'Update Available' });
+    const notesArea = dialog.locator('.overflow-y-auto');
+    const actions = dialog.getByRole('button', { name: 'Update Now' }).locator('..');
+    const [notesBox, actionsBox] = await Promise.all([
+      notesArea.boundingBox(),
+      actions.boundingBox(),
+    ]);
+
+    expect(notesBox?.height).toBeGreaterThan(actionsBox?.height ?? 0);
+    await expect(dialog.getByRole('button', { name: 'Update Now' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Later' })).toBeVisible();
+    await expect(fixture).toHaveScreenshot(`light-update-dialog-${notes}.png`);
+  });
+}
+
+test('update dialog keeps every action visible in a smaller window', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.goto('/visual-fixtures.html?state=update-dialog-long&appearance=light');
+
+  const dialog = page.getByRole('dialog', { name: 'Update Available' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Update Now' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Later' })).toBeInViewport();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-update-dialog-long-small.png');
+});
+
 test('customization hub stays legible and restores focus at native and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
 
@@ -268,26 +301,122 @@ test('recording settings make the live automatic microphone choice explicit', as
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  await expect(page.getByRole('combobox', { name: 'Microphone input' })).toContainText(
+  await expect(page.getByRole('button', { name: 'Microphone input' })).toContainText(
     'Follow macOS Default — MacBook Pro Microphone',
   );
   await expect(page.getByText(/Docking, undocking, or changing the system input/)).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
 });
 
-test('recording settings disclose approved Smart Auto microphones beneath their switch', async ({ page }) => {
+test('recording settings show Smart Auto inclusion and selection status', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-smart-auto&appearance=light');
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  const smartAuto = page.getByRole('switch', { name: 'Enable Smart Auto microphone selection' });
-  await expect(smartAuto).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone (preferred approved).')).toBeVisible();
-  await expect(page.getByText('Approved: MacBook Pro Microphone, Anker USB Microphone.')).toBeVisible();
-  const branch = smartAuto.locator('xpath=../following-sibling::*[1]');
-  await expect(branch).toHaveAttribute('data-expanded', 'true');
-  await expect(branch).toHaveAttribute('aria-hidden', 'false');
+  const picker = page.getByRole('button', { name: 'Microphone input' });
+  await expect(picker).toContainText('Smart Auto · Available: MacBook Pro Microphone');
+  const submenu = page.getByRole('group', { name: 'Smart Auto microphone inclusion' });
+  await expect(submenu.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
+  await expect(submenu.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
+  await expect(submenu.getByRole('checkbox', { name: /Desk Microphone/ })).toBeChecked();
+  await expect(submenu.getByText('Not connected')).toBeVisible();
+  await expect(submenu.getByText('Included', { exact: true })).toHaveCount(3);
+  await expect(submenu.getByText('Candidate')).toBeVisible();
+  await expect(submenu.getByRole('button', { name: 'Prefer MacBook Pro Microphone for Smart Auto' })).toHaveText('Preferred');
+  await expect(submenu.getByRole('button', { name: 'Prefer Anker USB Microphone for Smart Auto' })).toHaveText('Prefer');
+  await expect(submenu.getByRole('switch', { name: 'Check included microphones in the background' })).toBeChecked();
+  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toBeVisible();
+  await expect(page.getByText(/Why: your preferred included microphone/)).toBeVisible();
+  await expect(page.getByText(/Live input from MacBook Pro Microphone/)).toBeVisible();
+  await expect(page.getByRole('button', { name: /Verify signal/ })).toHaveCount(0);
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
+
+  await picker.click();
+  const pickerDialog = page.getByRole('dialog', { name: 'Choose microphone mode' });
+  await expect(pickerDialog.getByRole('radio', { name: /Smart Auto/ })).toBeChecked();
+  await expect(pickerDialog.getByRole('checkbox')).toHaveCount(0);
+  await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
+  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-picker.png');
+  await picker.click();
+  await expect(pickerDialog).toHaveCount(0);
+  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-status.png');
+
+  await picker.click();
+  const smartAutoMode = pickerDialog.getByRole('radio', { name: /Smart Auto/ });
+  await smartAutoMode.focus();
+  await smartAutoMode.press('ArrowDown');
+  await expect(picker).toContainText('Follow macOS Default');
+  await expect(pickerDialog).toHaveCount(0);
+  await expect(picker).toBeFocused();
+});
+
+test('recording settings explain Smart Auto with no eligible microphones', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings-smart-auto-empty&appearance=light');
+  await page.getByRole('button', { name: 'Recording', exact: true }).click();
+
+  const fixture = page.locator('[data-visual-ready="true"]');
+  const submenu = page.getByRole('group', { name: 'Smart Auto microphone inclusion' });
+  await expect(submenu.getByText('Excluded', { exact: true })).toHaveCount(3);
+  await expect(submenu.getByText('No microphones are included. Include at least one available input for Smart Auto.')).toBeVisible();
+  await expect(page.getByText('Smart Auto is not ready.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry background checks' })).toHaveCount(0);
+  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-empty.png');
+});
+
+test('recording setting rows and dependent rails keep the shared spacing contract', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.getByRole('button', { name: 'Recording', exact: true }).click();
+  await page.getByRole('button', { name: 'Double-Tap', exact: true }).click();
+
+  const hotkeyRow = page.locator('[data-setting-target="hotkey-feedback"]');
+  const soundGroup = page.locator('[data-setting-target="sound-cues"]');
+  const soundRow = page.locator('[data-setting-target="sound-cues"] > .settings-setting-row');
+  const dimensions = await Promise.all([hotkeyRow, soundRow].map((row) => row.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { height: box.height, left: box.left, right: box.right };
+  })));
+  expect(Math.abs(dimensions[0].height - dimensions[1].height)).toBeLessThanOrEqual(1);
+  expect(dimensions[0].height).toBeGreaterThanOrEqual(48);
+  expect(dimensions[0].left).toBe(dimensions[1].left);
+  expect(dimensions[0].right).toBe(dimensions[1].right);
+  const groupAndRow = await Promise.all([soundGroup, soundRow].map((item) => item.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { top: box.top, left: box.left, right: box.right };
+  })));
+  expect(Math.abs(groupAndRow[0].top - groupAndRow[1].top)).toBeLessThanOrEqual(1);
+  expect(groupAndRow[0].left).toBe(groupAndRow[1].left);
+  expect(groupAndRow[0].right).toBe(groupAndRow[1].right);
+
+  const rail = page.locator('[data-setting-target="sound-cues"] .settings-dependent-branch-content');
+  const railInsets = await rail.evaluate((element) => {
+    const style = getComputedStyle(element, '::before');
+    return { top: Number.parseFloat(style.top), bottom: Number.parseFloat(style.bottom) };
+  });
+  expect(railInsets.top).toBeGreaterThan(0);
+  expect(railInsets.bottom).toBeGreaterThan(0);
+  expect(Math.abs(railInsets.top - railInsets.bottom)).toBeLessThan(0.1);
+
+  await page.getByRole('button', { name: 'Meetings', exact: true }).click();
+  const meetingAudioRow = page.locator('[data-setting-target="meeting-audio"]');
+  const speakerGroup = page.locator('[data-setting-target="meeting-speakers"]');
+  const speakerRow = speakerGroup.locator('> .settings-setting-row');
+  const meetingDimensions = await Promise.all([meetingAudioRow, speakerRow].map((row) => row.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { height: box.height, left: box.left, right: box.right, minHeight: getComputedStyle(element).minHeight };
+  })));
+  expect(meetingDimensions[0].minHeight).toBe('48px');
+  expect(meetingDimensions[1].minHeight).toBe('48px');
+  expect(meetingDimensions[0].height).toBeGreaterThanOrEqual(48);
+  expect(meetingDimensions[1].height).toBeGreaterThanOrEqual(48);
+  expect(meetingDimensions[0].left).toBe(meetingDimensions[1].left);
+  expect(meetingDimensions[0].right).toBe(meetingDimensions[1].right);
+  const speakerBounds = await Promise.all([speakerGroup, speakerRow].map((item) => item.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { top: box.top, left: box.left, right: box.right };
+  })));
+  expect(Math.abs(speakerBounds[0].top - speakerBounds[1].top)).toBeLessThanOrEqual(1);
+  expect(speakerBounds[0].left).toBe(speakerBounds[1].left);
+  expect(speakerBounds[0].right).toBe(speakerBounds[1].right);
 });
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {

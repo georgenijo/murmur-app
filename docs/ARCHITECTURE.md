@@ -83,7 +83,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 explicit Start Meeting
     |
-signed murmur-capture-worker --production-v9
+signed murmur-capture-worker --production-v10
     |-- microphone AUHAL callback --> preallocated SPSC ring --> optional AEC3 --> Me frames
     +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
     |
@@ -181,7 +181,7 @@ always-dark glass surfaces.
 ### Capture worker boundary
 
 The signed `murmur-capture-worker` owns production microphone capture and the
-phase-one System Audio CATap. Production protocol v9 has capture-scoped
+phase-one System Audio CATap. Production protocol v10 has capture-scoped
 identity, nonce, strict bounded frames, and separate mic/system channel
 sequences. Before each live backend opens the microphone, an `InputResolution`
 message reports only bounded resolution evidence: backend, enumeration success,
@@ -221,7 +221,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 191 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 199 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -466,7 +466,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-191 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+199 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

@@ -52,6 +52,7 @@ export function useQueryReviewDriver() {
   const [signInStatus, setSignInStatus] = useState<string | null>(null);
   const [signInBusy, setSignInBusy] = useState(false);
   const [contextSummary, setContextSummary] = useState<string | null>(null);
+  const [capabilitySummary, setCapabilitySummary] = useState<string | null>(null);
   const passIdRef = useRef<number | null>(null);
   const stateRef = useRef<QueryReviewState>('idle');
   const nextSequenceRef = useRef(0);
@@ -83,6 +84,7 @@ export function useQueryReviewDriver() {
           && contextRefreshTicketRef.current === ticket
         ) {
           setContextSummary(typeof content.contextSummary === 'string' ? content.contextSummary : null);
+          setCapabilitySummary(typeof content.capabilitySummary === 'string' ? content.capabilitySummary : null);
         }
       } catch {
         flog.warn('query-review', 'could not refresh query context');
@@ -136,6 +138,7 @@ export function useQueryReviewDriver() {
           signInAttemptRef.current += 1;
           copyAttemptRef.current += 1;
           setContextSummary(null);
+          setCapabilitySummary(null);
         }
         stateRef.current = payload.state;
         setState(payload.state);
@@ -237,6 +240,7 @@ export function useQueryReviewDriver() {
         signInAttemptRef.current += 1;
         copyAttemptRef.current += 1;
         setContextSummary(null);
+        setCapabilitySummary(null);
       });
       if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenContext(); unlistenHidden(); }
     };
@@ -319,6 +323,7 @@ export function useQueryReviewDriver() {
     signInStatus,
     signInBusy,
     contextSummary,
+    capabilitySummary,
     cancel,
     copy,
     signIn,

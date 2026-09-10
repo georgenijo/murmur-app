@@ -130,6 +130,7 @@ SLO_COUNT_KEYS = {
     "requested",
     "eligible_requests",
     "excluded_permission_prompts",
+    "excluded_user_cancellations_before_target",
     "accepted",
     "ready",
     "ready_without_accepted",
@@ -628,6 +629,15 @@ def _private_capture_csrf(install_id, capture_id):
     return hmac.new(_DASHBOARD_CSRF_SECRET, message, hashlib.sha256).hexdigest()
 
 
+def _private_capture_time(epoch_ms):
+    try:
+        return datetime.fromtimestamp(epoch_ms / 1000, timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
+    except (OSError, OverflowError, ValueError):
+        return "invalid timestamp"
+
+
 def render_private_capture_index(install_id):
     captures = _private_capture_documents(install_id, prune=True)
     if not captures:
@@ -639,12 +649,15 @@ def render_private_capture_index(install_id):
         outcome = "success" if result["kind"] == "success" else result["outcome"]
         capture_id = capture["captureId"]
         rows.append(
-            "<div class='private-capture-index'><span>Recording %s · %s · %s</span>"
+            "<div class='private-capture-index'><span>Recording %s · %s · %s<br>"
+            "Captured %s · server copy expires %s</span>"
             "<a class='download-link' href='/install/%s/private-captures/%s'>Review private capture</a></div>"
             % (
                 capture["recordingId"],
                 html.escape(outcome),
                 html.escape(document["appVersion"]),
+                _private_capture_time(capture["capturedAtMs"]),
+                _private_capture_time(document["serverExpiresAtMs"]),
                 html.escape(install_id, quote=True),
                 html.escape(capture_id, quote=True),
             )
@@ -667,8 +680,10 @@ def render_private_capture_review(install_id, capture_id):
             final = html.escape(result["finalText"]["text"])
             outcome = "success"
             content = (
+                "<details class='private-capture-content'>"
+                "<summary>Reveal captured transcript text</summary>"
                 "<h2>Raw recognition</h2><pre>%s</pre>"
-                "<h2>Final delivery</h2><pre>%s</pre>" % (raw, final)
+                "<h2>Final delivery</h2><pre>%s</pre></details>" % (raw, final)
             )
         else:
             outcome = result["outcome"]
@@ -678,6 +693,7 @@ def render_private_capture_review(install_id, capture_id):
             "<p class='back'><a href='/install/%s'>&larr; device diagnostics</a></p>"
             "<h1>Private diagnostic capture</h1>"
             "<p class='sub'>Recording %s · %s · v%s. This page contains transcript text.</p>"
+            "<p class='sub'>Captured %s · uploaded %s · server copy expires %s.</p>"
             "%s<form method='post' action='/install/%s/private-captures/%s/delete'>"
             "<input type='hidden' name='csrf' value='%s'>"
             "<button class='private-delete' type='submit'>Delete now</button></form>"
@@ -686,6 +702,9 @@ def render_private_capture_review(install_id, capture_id):
                 capture["recordingId"],
                 html.escape(outcome),
                 html.escape(document["appVersion"]),
+                _private_capture_time(capture["capturedAtMs"]),
+                _private_capture_time(document["receivedAtMs"]),
+                _private_capture_time(document["serverExpiresAtMs"]),
                 content,
                 html.escape(install_id, quote=True),
                 html.escape(capture_id, quote=True),
@@ -827,6 +846,18 @@ def render_capture_watch(report):
                     html.escape(str(alert.get("error_class", "unknown"))[:32]),
                 )
             )
+        elif alert.get("kind") == "post_stop_latency_target_missed":
+            rows.append(
+                "<li><code>%s</code> v%s: stop-to-delivery target missed "
+                "with %s samples, p50 %s and p95 %s</li>"
+                % (
+                    install,
+                    html.escape(str(alert.get("app_version", ""))[:40]),
+                    html.escape(str(alert.get("sample_count", ""))[:20]),
+                    _slo_milliseconds(alert.get("p50_ms")),
+                    _slo_milliseconds(alert.get("p95_ms")),
+                )
+            )
     return (
         "<div class='watch-banner alert'><strong>Capture regression watch · "
         "%d alert%s</strong><span>Last run %s</span><ul>%s</ul></div>"
@@ -855,26 +886,61 @@ def render_post_stop_latency(report):
         rows.append(cohort)
     if not rows:
         return (
-            "<div class='watch-banner diagnostic'><strong>Post-stop latency</strong>"
-            "<span>No post-stop latency samples yet.</span></div>"
+            "<div class='watch-banner diagnostic'><strong>Stop-to-delivery attempt</strong>"
+            "<span>No stop-to-delivery samples yet.</span></div>"
         )
     rows.sort(key=lambda row: str(row.get("last_event_at", "")), reverse=True)
-    items = "".join(
-        "<li><code>%s</code> v%s: %s sample%s, p50 %s, p95 %s</li>"
-        % (
-            html.escape(str(row.get("install_id", ""))[:8]),
-            html.escape(str(row.get("app_version", ""))[:40]),
-            html.escape(str(row.get("post_stop_latency_sample_count", ""))[:20]),
-            "" if row.get("post_stop_latency_sample_count") == 1 else "s",
-            _slo_milliseconds(row.get("post_stop_latency_p50_ms")),
-            _slo_milliseconds(row.get("post_stop_latency_p95_ms")),
+    policy = report.get("policy") if isinstance(report.get("policy"), dict) else {}
+    target_p50 = _slo_milliseconds(policy.get("post_stop_target_p50_ms"))
+    target_p95 = _slo_milliseconds(policy.get("post_stop_target_p95_ms"))
+    minimum_audio = _slo_number(policy.get("post_stop_target_min_audio_seconds"))
+    maximum_audio = _slo_number(policy.get("post_stop_target_max_audio_seconds"))
+
+    items = []
+    for row in rows[:20]:
+        target_count = row.get("post_stop_target_sample_count")
+        verdict = row.get("post_stop_target_verdict")
+        if (
+            isinstance(target_count, bool)
+            or not isinstance(target_count, int)
+            or target_count < 0
+            or verdict not in ("met", "missed", "insufficient_data")
+        ):
+            target_text = "target unavailable"
+        else:
+            verdict_text = {
+                "met": "target met",
+                "missed": "target missed",
+                "insufficient_data": "preliminary",
+            }[verdict]
+            target_text = "%s target sample%s, p50 %s, p95 %s, %s" % (
+                html.escape(str(target_count)[:20]),
+                "" if target_count == 1 else "s",
+                _slo_milliseconds(row.get("post_stop_target_p50_ms")),
+                _slo_milliseconds(row.get("post_stop_target_p95_ms")),
+                verdict_text,
+            )
+        items.append(
+            "<li><code>%s</code> v%s: %s; all successful attempts: %s "
+            "sample%s, p50 %s, p95 %s</li>"
+            % (
+                html.escape(str(row.get("install_id", ""))[:8]),
+                html.escape(str(row.get("app_version", ""))[:40]),
+                target_text,
+                html.escape(str(row.get("post_stop_latency_sample_count", ""))[:20]),
+                "" if row.get("post_stop_latency_sample_count") == 1 else "s",
+                _slo_milliseconds(row.get("post_stop_latency_p50_ms")),
+                _slo_milliseconds(row.get("post_stop_latency_p95_ms")),
+            )
         )
-        for row in rows[:20]
+    target_contract = (
+        "Target cohort %s–%s s · p50 &lt; %s · p95 &lt; %s"
+        % (minimum_audio, maximum_audio, target_p50, target_p95)
     )
     return (
-        "<div class='watch-banner diagnostic'><strong>Post-stop latency · "
-        "%d cohort%s</strong><ul>%s</ul></div>"
-        % (len(rows), "" if len(rows) == 1 else "s", items)
+        "<div class='watch-banner diagnostic'><strong>Stop-to-delivery attempt · "
+        "%d cohort%s</strong><span>%s</span><ul>%s</ul></div>"
+        % (len(rows), "" if len(rows) == 1 else "s", target_contract, "".join(items))
     )
 
 
@@ -892,6 +958,12 @@ def _slo_milliseconds(value):
     # than a capture-start latency sample.
     maximum_duration_ms = 31 * 24 * 60 * 60 * 1_000
     return ("%g ms" % value) if 0 <= value <= maximum_duration_ms else "—"
+
+
+def _slo_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "—"
+    return "%g" % value if 0 <= value <= 1_000_000_000 else "—"
 
 
 def _slo_fraction(value):
@@ -1043,13 +1115,17 @@ def _valid_slo_week(week, index, expected_start):
         return False
     if (
         counts["requested"]
-        != counts["eligible_requests"] + counts["excluded_permission_prompts"]
+        != counts["eligible_requests"]
+        + counts["excluded_permission_prompts"]
+        + counts["excluded_user_cancellations_before_target"]
         or counts["accepted"] > counts["requested"]
         or counts["ready"] > counts["requested"]
         or counts["ready_without_accepted"] > counts["ready"]
         or counts["ready"] - counts["ready_without_accepted"]
         > counts["accepted"]
         or counts["failed"] + counts["cancelled"] > counts["requested"]
+        or counts["excluded_user_cancellations_before_target"]
+        > counts["cancelled"]
         or counts["failures_with_actionable_presentation"]
         + counts["failures_without_actionable_presentation"]
         != counts["failed"]
@@ -1154,8 +1230,8 @@ def _valid_reliability_slo(slo):
             "two_consecutive_complete_weeks_pass",
             "weeks",
         }
-        or slo.get("schema_version") != 1
-        or slo.get("report") != "murmur-reliability-slo/v1"
+        or slo.get("schema_version") != 2
+        or slo.get("report") != "murmur-reliability-slo/v2"
         or slo.get("contract_version") != 1
         or slo.get("privacy") != "aggregate_only"
         or not isinstance(slo.get("two_consecutive_complete_weeks_pass"), bool)
@@ -1314,7 +1390,7 @@ def render_reliability_slo(report):
         completeness = "complete" if week.get("complete") is True else "partial"
         rows.append(
             "<li><strong>%s · %s</strong> <span class='slo-window'>%s (%s; %s sample)</span>"
-            "<div class='slo-metrics'>requests %s total · latency denominator %s eligible / %s prompt-excluded · "
+            "<div class='slo-metrics'>requests %s total · latency denominator %s eligible / %s prompt-excluded / %s early-user-cancel-excluded · "
             "accepted %s · ready %s · failed %s · cancelled %s · missing terminal %s · "
             "startup ≤400 ms %s (%s samples; p50 %s, p95 %s, max %s) · "
             "failure presentation %s covered / %s missing · "
@@ -1331,6 +1407,9 @@ def render_reliability_slo(report):
                 _slo_count(counts.get("requested")),
                 _slo_count(counts.get("eligible_requests")),
                 _slo_count(counts.get("excluded_permission_prompts")),
+                _slo_count(
+                    counts.get("excluded_user_cancellations_before_target")
+                ),
                 _slo_count(counts.get("accepted")),
                 _slo_count(counts.get("ready")),
                 _slo_count(counts.get("failed")),
@@ -3311,6 +3390,7 @@ tr.warn td{background:#2a1e0a}tr.error td{background:#2a0f14}
 .search-results{margin-top:1rem}.search-results .install-link{font-family:ui-monospace,monospace;font-size:.75rem}.pagination{margin:1rem 0}
 .private-captures{border:1px solid #7f1d1d;border-radius:12px;background:#1f1118;margin:1.4rem 0;padding:.2rem .9rem 1rem}
 .private-capture-index{align-items:center;border-top:1px solid #3f1d2a;display:flex;font-size:.82rem;gap:1rem;justify-content:space-between;padding:.7rem 0}
+.private-capture-content{border:1px solid #7f1d1d;border-radius:8px;margin:1rem 0;padding:.65rem .8rem}.private-capture-content>summary{color:#fecaca;cursor:pointer;font-weight:700}
 .private-delete{background:#7f1d1d;border:0;border-radius:6px;color:#fecaca;cursor:pointer;padding:.5rem .75rem}
 pre{background:#0b1120;border-radius:8px;max-height:22rem;overflow:auto;padding:.8rem;white-space:pre-wrap}
 .raw-timeline{border-top:1px solid #1e293b;margin-top:1.8rem;padding-top:.6rem}

@@ -11,6 +11,7 @@ import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
+import { UpdateModal } from './components/UpdateModal';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
@@ -82,6 +83,31 @@ if (importedTheme) applyResolvedTheme(resolveTheme(importedTheme, appearance));
 else if (appearance === 'dark') applyResolvedTheme(resolveTheme(DEFAULT_THEME, appearance));
 else document.documentElement.dataset.appearance = appearance;
 
+const shortUpdateNotes = `## What's Changed
+
+- Faster local transcription.
+- More reliable microphone startup.
+- Clearer recording controls.`;
+
+const longUpdateNotes = `## New Features
+
+- Smart Auto can select from approved microphones with recent signal.
+- Voice Query can read an explicitly approved workspace for the current session.
+- Meeting review can assign local names to remote speakers.
+
+## Bug Fixes
+
+- Microphone inventory excludes output-only devices.
+- Recording diagnostics report post-stop delivery latency accurately.
+- Private capture review keeps transcript text collapsed by default.
+- The notch restores its active state after a webview reload.
+- Markdown links follow CommonMark heading rules.
+
+## Other Changes
+
+- Settings use consistent row spacing and branch alignment.
+- Long-session echo-cancellation checks support thirty-minute captures.`;
+
 const meetingFixture = {
   session: {
     id: 'meeting-fixture', startedAtMs: Date.UTC(2026, 7, 31, 14, 30), endedAtMs: Date.UTC(2026, 7, 31, 14, 48),
@@ -102,6 +128,7 @@ const meetingFixture = {
 };
 
 mockIPC((command) => {
+  if (command === 'configure_smart_auto_probe' || command === 'retry_smart_auto_probe') return 1;
   if (command === 'get_meeting_status') {
     return {
       phase: 'idle',
@@ -155,6 +182,12 @@ mockIPC((command) => {
     };
   }
   if (command === 'cancel_microphone_preview') return false;
+  if (command === 'get_smart_auto_microphone_status') {
+    if (requestedState === 'settings-smart-auto') {
+      return { state: 'ready', deviceId: 'fixture-built-in', reason: 'preferred_approved', validForMs: 90_000 };
+    }
+    return { state: 'blocked', message: 'No included microphone has recent signal.' };
+  }
   if (command === 'get_audio_input_inventory') {
     return {
       schemaVersion: 2,
@@ -163,6 +196,9 @@ mockIPC((command) => {
       devices: [
         { id: 'fixture-built-in', name: 'MacBook Pro Microphone', kind: 'builtIn', connected: true, hasInput: true },
         { id: 'fixture-anker', name: 'Anker USB Microphone', kind: 'external', connected: true, hasInput: true },
+        ...(requestedState.startsWith('settings-smart-auto')
+          ? [{ id: 'fixture-desk', name: 'Desk Microphone', kind: 'external', connected: false, hasInput: true }]
+          : []),
       ],
       defaultInputId: 'fixture-built-in',
       lidState: 'open',
@@ -237,9 +273,10 @@ const entries: HistoryEntry[] = [
 
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
-  smartAutoMicrophoneEnabled: requestedState === 'settings-smart-auto',
+  smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
+  smartAutoProbeEnabled: requestedState.startsWith('settings-smart-auto'),
   smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
-    ? ['fixture-built-in', 'fixture-anker']
+    ? ['fixture-built-in', 'fixture-anker', 'fixture-desk']
     : [],
   smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
     ? ['fixture-built-in']
@@ -315,7 +352,7 @@ function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-site-modes'
-    || requestedState === 'settings-smart-auto';
+    || requestedState.startsWith('settings-smart-auto');
   const meetings = useMeetings(fixtureSettings);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
@@ -452,6 +489,17 @@ function VisualFixture() {
         ]}
       />
       <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
+      <UpdateModal
+        status={requestedState === 'update-dialog-short'
+          ? { phase: 'available', version: '0.43.1', notes: shortUpdateNotes, isForced: false }
+          : requestedState === 'update-dialog-long'
+            ? { phase: 'available', version: '0.43.1', notes: longUpdateNotes, isForced: false }
+            : { phase: 'idle' }}
+        onDownload={() => {}}
+        onRetryCheck={() => {}}
+        onSkip={() => {}}
+        onDismiss={() => {}}
+      />
     </div>
   );
 }

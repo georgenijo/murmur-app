@@ -6,11 +6,14 @@
 
 use crate::audio::AudioDeviceDescriptor;
 use murmur_capture_helper_protocol::{ProductionDeviceKind, ProductionLidState};
-use serde::Deserialize;
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 const MAX_APPROVED_DEVICES: usize = 32;
 const MAX_STABLE_ID_BYTES: usize = 4_096;
+pub(crate) const SIGNAL_FRESHNESS: Duration = Duration::from_secs(120);
+const SWITCH_COOLDOWN: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -22,6 +25,8 @@ pub(crate) struct SmartAutoRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SmartAutoReason {
+    CurrentVerified,
+    PreviousVerified,
     PreferredApproved,
     ApprovedMacosDefault,
     ApprovedExternalFallback,
@@ -31,6 +36,8 @@ pub(crate) enum SmartAutoReason {
 impl SmartAutoReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::CurrentVerified => "current_verified",
+            Self::PreviousVerified => "previous_verified_rollback",
             Self::PreferredApproved => "preferred_approved",
             Self::ApprovedMacosDefault => "approved_macos_default",
             Self::ApprovedExternalFallback => "approved_external_fallback",
@@ -45,16 +52,199 @@ pub(crate) struct SmartAutoSelection {
     pub(crate) reason: SmartAutoReason,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SmartAutoBlock {
+    Unavailable(&'static str),
+    Cooldown(Duration),
+}
+
+impl SmartAutoBlock {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable(message) => message,
+            Self::Cooldown(_) => "Smart Auto is waiting ten seconds between microphone changes. Try again shortly or pin a microphone manually.",
+        }
+    }
+
+    fn retry_after_ms(self) -> Option<u64> {
+        match self {
+            Self::Unavailable(_) => None,
+            Self::Cooldown(remaining) => Some(remaining.as_nanos().div_ceil(1_000_000) as u64),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub(crate) enum SmartAutoStatus {
+    #[serde(rename_all = "camelCase")]
+    Ready {
+        device_id: String,
+        reason: &'static str,
+        valid_for_ms: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Probing {
+        device_id: String,
+        phase: &'static str,
+        remaining_ms: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Blocked {
+        message: String,
+        retry_after_ms: Option<u64>,
+    },
+}
+
+/// Session-only evidence. Neither this state nor its device keys are logged or
+/// persisted. Selection never opens a device or extends the evidence lifetime.
+#[derive(Default)]
+pub(crate) struct SmartAutoHealth {
+    verified: HashMap<String, Instant>,
+    current: Option<String>,
+    previous: Option<String>,
+    last_switch: Option<Instant>,
+    current_failed: bool,
+    pub(crate) failure_epoch: u64,
+}
+
+impl SmartAutoHealth {
+    pub(crate) fn current_device_id(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+    pub(crate) fn invalidate_topology(&mut self) {
+        self.verified.clear();
+    }
+
+    pub(crate) fn fail(&mut self, device_id: Option<&str>) {
+        self.failure_epoch = self.failure_epoch.wrapping_add(1);
+        self.current_failed |= device_id.is_none() || self.current.as_deref() == device_id;
+        if let Some(id) = device_id {
+            self.verified.remove(id);
+        } else {
+            // A live default has no frozen physical identity at this boundary.
+            self.verified.clear();
+        }
+    }
+
+    pub(crate) fn verify(&mut self, device_id: &str, now: Instant) {
+        if self.current.as_deref() == Some(device_id) {
+            self.current_failed = false;
+        }
+        self.verified
+            .retain(|_, verified| now.saturating_duration_since(*verified) < SIGNAL_FRESHNESS);
+        if !self.verified.contains_key(device_id) && self.verified.len() >= MAX_APPROVED_DEVICES {
+            if let Some(oldest) = self
+                .verified
+                .iter()
+                .min_by(|(left_id, left), (right_id, right)| {
+                    left.cmp(right).then(left_id.cmp(right_id))
+                })
+                .map(|(id, _)| id.clone())
+            {
+                self.verified.remove(&oldest);
+            }
+        }
+        self.verified.insert(device_id.to_string(), now);
+    }
+
+    fn remaining(&self, device_id: &str, now: Instant) -> Duration {
+        self.verified
+            .get(device_id)
+            .map_or(Duration::ZERO, |verified| {
+                if now < *verified {
+                    Duration::ZERO
+                } else {
+                    SIGNAL_FRESHNESS.saturating_sub(now.duration_since(*verified))
+                }
+            })
+    }
+
+    pub(crate) fn select(
+        &self,
+        request: &SmartAutoRequest,
+        devices: &[AudioDeviceDescriptor],
+        default_input_id: Option<&str>,
+        lid_state: ProductionLidState,
+        now: Instant,
+    ) -> Result<SmartAutoSelection, SmartAutoBlock> {
+        let approved = validate(request).map_err(SmartAutoBlock::Unavailable)?;
+        let verified: Vec<_> = devices
+            .iter()
+            .filter(|device| {
+                is_eligible(device, &approved, lid_state, request.allow_continuity)
+                    && !self.remaining(&device.id, now).is_zero()
+            })
+            .cloned()
+            .collect();
+        let retained = |id: &Option<String>, reason| {
+            id.as_ref()
+                .filter(|id| verified.iter().any(|device| &device.id == *id))
+                .map(|id| SmartAutoSelection {
+                    device_id: id.clone(),
+                    reason,
+                })
+        };
+        if let Some(current) = retained(&self.current, SmartAutoReason::CurrentVerified) {
+            return Ok(current);
+        }
+        if verified.is_empty() {
+            return Err(SmartAutoBlock::Unavailable("Smart Auto is waiting for recent signal from an included microphone. Turn on Background signal checks in Settings, or pin a microphone manually."));
+        }
+        // A failed replacement may return immediately to the last verified
+        // choice. Other changes wait out the switch cooldown, without capture.
+        if self.current_failed {
+            if let Some(previous) = retained(&self.previous, SmartAutoReason::PreviousVerified) {
+                return Ok(previous);
+            }
+        }
+        if let Some(remaining) = self
+            .last_switch
+            .map(|switched| SWITCH_COOLDOWN.saturating_sub(now.saturating_duration_since(switched)))
+            .filter(|remaining| !remaining.is_zero())
+        {
+            return Err(SmartAutoBlock::Cooldown(remaining));
+        }
+        select(request, &verified, default_input_id, lid_state).map_err(SmartAutoBlock::Unavailable)
+    }
+
+    pub(crate) fn commit(&mut self, selection: &SmartAutoSelection, now: Instant) {
+        if self.current.as_deref() != Some(&selection.device_id) {
+            self.previous = self.current.replace(selection.device_id.clone());
+            self.last_switch = Some(now);
+            self.current_failed = false;
+        }
+    }
+
+    pub(crate) fn status(
+        &self,
+        selection: Result<SmartAutoSelection, SmartAutoBlock>,
+        now: Instant,
+    ) -> SmartAutoStatus {
+        match selection {
+            Ok(selection) => SmartAutoStatus::Ready {
+                valid_for_ms: self.remaining(&selection.device_id, now).as_millis() as u64,
+                device_id: selection.device_id,
+                reason: selection.reason.as_str(),
+            },
+            Err(block) => SmartAutoStatus::Blocked {
+                message: block.message().to_string(),
+                retry_after_ms: block.retry_after_ms(),
+            },
+        }
+    }
+}
+
 fn valid_stable_id(value: &str) -> bool {
     !value.is_empty() && !value.contains('\0') && value.len() <= MAX_STABLE_ID_BYTES
 }
 
-fn validate(request: &SmartAutoRequest) -> Result<HashSet<&str>, &'static str> {
+pub(crate) fn validate(request: &SmartAutoRequest) -> Result<HashSet<&str>, &'static str> {
     if request.approved_device_ids.is_empty()
         || request.approved_device_ids.len() > MAX_APPROVED_DEVICES
         || request.preferred_device_ids.len() > MAX_APPROVED_DEVICES
     {
-        return Err("Smart Auto needs one to 32 approved microphones.");
+        return Err("Smart Auto needs one to 32 included microphones.");
     }
     let approved: HashSet<&str> = request
         .approved_device_ids
@@ -250,6 +440,220 @@ mod tests {
             preferred_device_ids: preferred.iter().map(|value| (*value).to_string()).collect(),
             allow_continuity: false,
         }
+    }
+
+    fn routed(
+        health: &SmartAutoHealth,
+        request: &SmartAutoRequest,
+        now: Instant,
+    ) -> Result<SmartAutoSelection, SmartAutoBlock> {
+        health.select(
+            request,
+            &[
+                device("a", ProductionDeviceKind::External),
+                device("b", ProductionDeviceKind::External),
+                device("c", ProductionDeviceKind::External),
+            ],
+            Some("b"),
+            ProductionLidState::Open,
+            now,
+        )
+    }
+
+    #[test]
+    fn availability_and_preferences_cannot_authorize_unverified_input() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        assert!(routed(&health, &request(&["a", "b"], &["a"]), now).is_err());
+        health.verify("b", now);
+        assert_eq!(
+            routed(&health, &request(&["a", "b"], &["a"]), now)
+                .unwrap()
+                .device_id,
+            "b"
+        );
+        assert!(routed(&health, &request(&["a"], &[]), now).is_err());
+    }
+
+    #[test]
+    fn fresh_current_beats_new_preference_and_expiry_is_exact() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        health.verify("a", now);
+        let first = routed(&health, &request(&["a", "b"], &["a"]), now).unwrap();
+        health.commit(&first, now);
+        health.verify("b", now + Duration::from_secs(30));
+        let reordered = request(&["a", "b"], &["b"]);
+        let current = routed(
+            &health,
+            &reordered,
+            now + SIGNAL_FRESHNESS - Duration::from_millis(1),
+        )
+        .unwrap();
+        assert_eq!(current.device_id, "a");
+        assert_eq!(current.reason, SmartAutoReason::CurrentVerified);
+        let next = routed(&health, &reordered, now + SIGNAL_FRESHNESS).unwrap();
+        assert_eq!(next.device_id, "b");
+        assert!(routed(
+            &health,
+            &reordered,
+            now + SIGNAL_FRESHNESS + Duration::from_secs(30)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cooldown_blocks_new_choices_without_reusing_a_revoked_approval() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        health.verify("a", now);
+        health.verify("b", now);
+        let first = routed(&health, &request(&["a"], &[]), now).unwrap();
+        health.commit(&first, now);
+        assert!(routed(
+            &health,
+            &request(&["b"], &[]),
+            now + SWITCH_COOLDOWN - Duration::from_millis(1)
+        )
+        .is_err());
+        assert_eq!(
+            routed(&health, &request(&["b"], &[]), now + SWITCH_COOLDOWN)
+                .unwrap()
+                .device_id,
+            "b"
+        );
+        let last_fraction = now + SWITCH_COOLDOWN - Duration::from_micros(1);
+        let cooldown = health.status(
+            routed(&health, &request(&["b"], &[]), last_fraction),
+            last_fraction,
+        );
+        assert!(matches!(
+            cooldown,
+            SmartAutoStatus::Blocked {
+                retry_after_ms: Some(1),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(cooldown).unwrap()["retryAfterMs"], 1);
+        assert!(matches!(
+            health.status(routed(&health, &request(&["c"], &[]), now), now),
+            SmartAutoStatus::Blocked {
+                retry_after_ms: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn failed_candidate_rolls_back_to_previous_verified_choice_without_cooldown() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        health.verify("a", now);
+        health.verify("b", now);
+        health.commit(&routed(&health, &request(&["a"], &[]), now).unwrap(), now);
+        let switched = now + SWITCH_COOLDOWN;
+        health.commit(
+            &routed(&health, &request(&["b"], &[]), switched).unwrap(),
+            switched,
+        );
+        health.fail(Some("b"));
+        let fallback = routed(&health, &request(&["a", "b"], &["b"]), switched).unwrap();
+        assert_eq!(fallback.device_id, "a");
+        assert_eq!(fallback.reason, SmartAutoReason::PreviousVerified);
+        assert!(routed(&health, &request(&["b"], &[]), switched).is_err());
+        health.fail(Some("a"));
+        assert!(routed(&health, &request(&["a", "b"], &[]), switched).is_err());
+    }
+
+    #[test]
+    fn failure_and_topology_revoke_evidence_without_extending_other_lifetimes() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        health.verify("a", now);
+        health.verify("b", now);
+        health.fail(Some("a"));
+        assert_eq!(
+            routed(&health, &request(&["a", "b"], &["a"]), now)
+                .unwrap()
+                .device_id,
+            "b"
+        );
+        health.invalidate_topology();
+        assert!(routed(&health, &request(&["a", "b"], &[]), now).is_err());
+        health.verify("a", now);
+        health.fail(None);
+        assert!(routed(&health, &request(&["a"], &[]), now).is_err());
+    }
+
+    #[test]
+    fn verified_signal_does_not_override_transport_lid_or_connection_guards() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        health.verify("a", now);
+        for kind in [
+            ProductionDeviceKind::Unknown,
+            ProductionDeviceKind::BuiltIn,
+            ProductionDeviceKind::Continuity,
+        ] {
+            assert!(health
+                .select(
+                    &request(&["a"], &[]),
+                    &[device("a", kind)],
+                    Some("a"),
+                    ProductionLidState::Unknown,
+                    now
+                )
+                .is_err());
+        }
+        let mut disconnected = device("a", ProductionDeviceKind::External);
+        disconnected.connected = false;
+        assert!(health
+            .select(
+                &request(&["a"], &[]),
+                &[disconnected],
+                Some("a"),
+                ProductionLidState::Open,
+                now
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn status_is_read_only_and_reports_only_remaining_freshness() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        health.verify("a", now);
+        let later = now + Duration::from_secs(119);
+        assert_eq!(
+            health.status(routed(&health, &request(&["a"], &[]), later), later),
+            SmartAutoStatus::Ready {
+                device_id: "a".to_string(),
+                reason: "approved_external_fallback",
+                valid_for_ms: 1000,
+            }
+        );
+        assert!(health.current.is_none());
+        assert!(health.last_switch.is_none());
+        assert_eq!(
+            serde_json::to_value(
+                health.status(routed(&health, &request(&["a"], &[]), later), later)
+            )
+            .unwrap()["deviceId"],
+            "a"
+        );
+    }
+
+    #[test]
+    fn evidence_is_bounded_and_does_not_accept_future_timestamps() {
+        let now = Instant::now();
+        let mut health = SmartAutoHealth::default();
+        for index in 0..64 {
+            health.verify(&format!("input-{index:02}"), now);
+        }
+        assert_eq!(health.verified.len(), MAX_APPROVED_DEVICES);
+        assert!(!health.verified.contains_key("input-00"));
+        health.verify("a", now + Duration::from_secs(1));
+        assert!(routed(&health, &request(&["a"], &[]), now).is_err());
     }
 
     #[test]

@@ -26,7 +26,62 @@ The app identity is sampled first and later metadata/selection reads are accepte
 
 The final literal prompt argument contains the question followed by a labeled, explicitly untrusted context block. The popover shows a requester-gated summary such as `Context: Safari — window title · 1.2 KB selection`; it never silently attaches context. App/window mode explicitly says `selection off` (and `app only` when no window title was readable), while selection mode says `no readable selection` when its secure capture fails closed. Settings → App Overrides can deny Voice Query context for a specific bundle ID. That deny rule overrides every global or preset context level and never enables context on its own.
 
-## Lifecycle
+## Capability profiles (#573)
+
+Every app launch starts in **Restricted**. Murmur grants no project folder or
+additional tools and keeps the existing isolated owner-only working directory.
+Inference can still use the provider's network connection. The configured
+executable remains trusted software: an empty working directory and a cleared
+environment are not an OS sandbox, and Custom arguments are user-controlled.
+
+**Trusted read-only** is supported only for Claude Code versions whose help
+advertises `--restricted`, `--safe-mode`, `--strict-mcp-config`, the tool selector,
+permission mode, and session-persistence controls. Tested with Claude 2.1.263.
+The native folder chooser returns a canonical path for a separate confirmation.
+Root, home, ancestors of home, missing folders, and oversized paths are refused.
+Consent is held only in Rust memory, bound to the exact canonical executable and
+unchanged recommended preset arguments. Restarting the app revokes it.
+
+| Capability | Restricted | Claude trusted read-only |
+|---|---|---|
+| Inference network | Provider-owned, may transmit prompt/context | Provider-owned, may also transmit read files |
+| Web/search | No additional grant | Disabled |
+| Local reads | No trusted project folder | Confirmed folder, CLI-enforced `--restricted` scope |
+| Commands and writes | No additional grant | No tools for either |
+| MCP/plugins/project instructions | No additional grant | Disabled by safe mode and strict MCP config |
+| Other provider expansion | None | Codex, Cursor, Grok and Custom rejected |
+
+Expanded runs use fixed Rust-owned arguments with only `Read,Glob,Grep` and
+`dontAsk`. User-supplied flags cannot weaken this profile. Unsupported CLI
+versions or changed provider/argv fail closed; revoke access and reselect the
+Claude preset to repair them. Managed provider policy and the executable itself
+remain outside Murmur's enforcement boundary. Choose a project without secrets.
+
+Each query copies the grant into its immutable command before capture. Revocation
+affects the next query; cancel an active query to terminate its existing process
+group. Authentication and capability probes always use the isolated scratch
+directory. Settings shows the active profile and path; the review window gets
+the frozen profile/path through requester-gated content, never a broadcast.
+No path is saved to frontend storage, telemetry, usage, or history. Trusted
+queries reject malformed/truncated structured output instead of exposing raw
+tool results through the legacy raw fallback. A deliberately retained answer
+can still quote files the user authorized Claude to read.
+
+The chooser pins the canonical directory with an open descriptor, refusing
+symlinks in every path component. macOS uses `O_NOFOLLOW_ANY` so it needs no read
+access to the selected folder's ancestors; other Unix hosts use `openat`.
+Confirmation and pre-spawn validation
+check the path and inode against that descriptor. The child uses `fchdir` on the
+retained descriptor before closing inherited file descriptors. Replacing the
+folder or an ancestor during capture is refused; even a replacement after the
+last check cannot redirect the process to another folder.
+
+The provider remains responsible for inference network use and file-tool
+confinement. Murmur does not claim to confine a hostile executable. See the
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference) and the
+installed CLI's `--help` for its current enforcement contract.
+
+## Query lifecycle
 
 The shared `rdev` listener owns a third detector for the query shortcut (`alt_r`, `ctrl_l`, or `shift_r`). It uses the same double-tap timing as toggle dictation but has no spoken-keyword path. A query and selected-text transform cannot use the same physical key.
 

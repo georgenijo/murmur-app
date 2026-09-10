@@ -5,9 +5,9 @@ use crate::meeting_review::{
     MeetingReviewExportFormat, MeetingWorkspace, RestoreMeetingReviewRequest,
     SaveMeetingReviewRequest,
 };
-use crate::meeting_store::{MeetingPage, MeetingSession, MeetingStoreStatus};
+use crate::meeting_store::{MeetingPage, MeetingRepository, MeetingSession, MeetingStoreStatus};
 use crate::microphone_auto::SmartAutoRequest;
-use crate::state::DictationStatus;
+use crate::state::{AppState, DictationStatus};
 use crate::{MutexExt, State};
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
@@ -104,7 +104,9 @@ pub async fn start_meeting(
     request: StartMeetingRequest,
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSession, String> {
-    let _transition = state.app_state.recording_transition.lock().await;
+    let _transition =
+        crate::commands::microphone_preview::transition_after_stopping_preview(&app, state.inner())
+            .await?;
     crate::meeting_diarization::cancel_all()?;
     if let Some(error) = meeting_conflict(&state) {
         return Err(error.to_string());
@@ -113,8 +115,42 @@ pub async fn start_meeting(
         return Err("Enable Murmur before starting a meeting.".to_string());
     }
 
+    let (repository, session, config) =
+        prepare_meeting_session(&request, &state.app_state, || {
+            state.meeting_store.repository()
+        })?;
+    state.transform_runtime.shutdown();
+    if let Err(error) = state.meetings.start(app, repository.clone(), config) {
+        state
+            .app_state
+            .meeting_active
+            .store(false, Ordering::SeqCst);
+        state
+            .app_state
+            .meeting_inference_active
+            .store(false, Ordering::SeqCst);
+        let _ = repository.finish_session(
+            &session.id,
+            crate::meeting_store::MeetingSessionStatus::Failed,
+            Some("supervisor_unavailable"),
+        );
+        return Err(error);
+    }
+    Ok(session)
+}
+
+fn prepare_meeting_session(
+    request: &StartMeetingRequest,
+    app_state: &AppState,
+    repository: impl FnOnce() -> Result<MeetingRepository, String>,
+) -> Result<(MeetingRepository, MeetingSession, MeetingCaptureConfig), String> {
+    // Refusal must precede retention pruning, session creation, and ownership.
+    let device_id = crate::microphone_auto::resolve_capture_device(
+        request.device_name.clone(),
+        request.smart_auto.as_ref(),
+    )?;
     let (model_name, language, vad_sensitivity, smart_punctuation) = {
-        let dictation = state.app_state.dictation.lock_or_recover();
+        let dictation = app_state.dictation.lock_or_recover();
         (
             dictation.model_name.clone(),
             dictation.language.clone(),
@@ -133,12 +169,12 @@ pub async fn start_meeting(
         );
     }
 
-    let repository = state.meeting_store.repository()?;
+    let repository = repository()?;
     let _ = repository.prune(
         clamp_retention_days(request.retention_days),
         clamp_max_sessions(request.max_sessions),
     );
-    let generation = state.app_state.next_meeting_generation();
+    let generation = app_state.next_meeting_generation();
     let session_id = Uuid::new_v4().to_string();
     let session = repository.create_session(
         &session_id,
@@ -147,16 +183,10 @@ pub async fn start_meeting(
         smart_punctuation,
         request.retain_audio,
     )?;
-    state.app_state.meeting_active.store(true, Ordering::SeqCst);
-    state
-        .app_state
+    app_state.meeting_active.store(true, Ordering::SeqCst);
+    app_state
         .meeting_inference_active
         .store(true, Ordering::SeqCst);
-    state.transform_runtime.shutdown();
-    let device_id = crate::microphone_auto::resolve_capture_device(
-        request.device_name.clone(),
-        request.smart_auto.as_ref(),
-    )?;
     let config = MeetingCaptureConfig {
         generation,
         session_id: session_id.clone(),
@@ -169,23 +199,43 @@ pub async fn start_meeting(
             murmur_capture_helper_protocol::EchoCancellationMode::Disabled
         },
     };
-    if let Err(error) = state.meetings.start(app, repository.clone(), config) {
-        state
-            .app_state
-            .meeting_active
-            .store(false, Ordering::SeqCst);
-        state
-            .app_state
-            .meeting_inference_active
-            .store(false, Ordering::SeqCst);
-        let _ = repository.finish_session(
-            &session_id,
-            crate::meeting_store::MeetingSessionStatus::Failed,
-            Some("supervisor_unavailable"),
-        );
-        return Err(error);
+    Ok((repository, session, config))
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn refused_auto_input_leaves_meeting_store_and_ownership_untouched() {
+        let app_state = AppState::default();
+        for device_name in [None, Some("manual-input".to_string())] {
+            let request = StartMeetingRequest {
+                device_name,
+                smart_auto: Some(SmartAutoRequest {
+                    approved_device_ids: vec!["never-verified-test-input".to_string()],
+                    preferred_device_ids: vec![],
+                    allow_continuity: false,
+                }),
+                retain_audio: false,
+                retention_days: Some(1),
+                max_sessions: 1,
+                echo_cancellation: false,
+                diarization: false,
+            };
+            let result = prepare_meeting_session(&request, &app_state, || {
+                panic!("a refused input must not access or prune the meeting store")
+            });
+            assert!(result.is_err_and(|error| error.contains("Smart Auto")));
+            assert!(!app_state.meeting_active.load(Ordering::SeqCst));
+            assert!(!app_state.meeting_inference_active.load(Ordering::SeqCst));
+            assert_eq!(app_state.meeting_generation.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                app_state.dictation.lock_or_recover().status,
+                DictationStatus::Idle
+            );
+        }
     }
-    Ok(session)
 }
 
 #[tauri::command]
@@ -215,7 +265,11 @@ pub async fn request_system_audio_permission(
     state: tauri::State<'_, State>,
 ) -> Result<SystemAudioAccess, String> {
     {
-        let _transition = state.app_state.recording_transition.lock().await;
+        let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+            &app,
+            state.inner(),
+        )
+        .await?;
         if let Some(error) = meeting_conflict(&state) {
             return Err(error.to_string());
         }
@@ -229,6 +283,7 @@ pub async fn request_system_audio_permission(
         .app_state
         .meeting_active
         .store(false, Ordering::SeqCst);
+    crate::smart_auto_probe::wake();
     let result = joined?;
     if let Ok(access) = result.as_ref() {
         let _ = app.emit("system-audio-permission-changed", access);

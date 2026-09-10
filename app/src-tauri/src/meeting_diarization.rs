@@ -31,6 +31,11 @@ struct Control {
     child: Option<ManagedChild>,
 }
 
+fn release_confirmed_child(control: &mut Control) {
+    control.child.take();
+    crate::smart_auto_probe::wake();
+}
+
 fn stop_owned(control: &mut Control) -> Result<(), String> {
     if let Some(child) = control.child.as_mut() {
         if child
@@ -41,7 +46,7 @@ fn stop_owned(control: &mut Control) -> Result<(), String> {
                 "Speaker refinement is still stopping. Try dictation again shortly.".into(),
             );
         }
-        control.child.take();
+        release_confirmed_child(control);
         control.interrupted = true;
     }
     Ok(())
@@ -60,6 +65,10 @@ impl Drop for JobOwner {
 /// Call under recording_transition before a foreground capture begins.
 pub fn preempt() -> Result<(), String> {
     stop_owned(&mut CONTROL.lock_or_recover())
+}
+
+pub(crate) fn is_active() -> bool {
+    CONTROL.lock_or_recover().child.is_some()
 }
 
 pub fn cancel_session(session_id: &str) -> Result<(), String> {
@@ -95,6 +104,7 @@ impl Drop for ForegroundReservation {
 
 fn app_idle(state: &State) -> bool {
     !state.app_state.meeting_blocks_asr()
+        && !state.app_state.microphone_preview.is_active()
         && !crate::audio_lifecycle::is_audio_active()
         && !state.app_state.file_transcribing.load(Ordering::SeqCst)
         && !state.benchmark.is_running()
@@ -228,7 +238,7 @@ pub fn schedule(
                 });
                 let success = exited.is_some_and(|receipt| receipt.exit_code == Some(0));
                 if exited.is_some() {
-                    control.child.take();
+                    release_confirmed_child(&mut control);
                 }
                 if stop_owned(&mut control).is_err() {
                     break;
@@ -434,6 +444,37 @@ pub fn run_cli_if_requested() -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn natural_success_and_failure_both_wake_parked_input_checks() {
+        for executable in ["/usr/bin/true", "/usr/bin/false"] {
+            let (child, input, output) =
+                ManagedChild::spawn_with_arguments(std::path::Path::new(executable), &[], &[])
+                    .unwrap();
+            let mut control = Control {
+                child: Some(child),
+                ..Control::default()
+            };
+            assert!(control
+                .child
+                .as_mut()
+                .unwrap()
+                .wait_for_exit(Instant::now() + Duration::from_secs(2))
+                .is_some());
+            let _ =
+                tokio::time::timeout(Duration::ZERO, crate::smart_auto_probe::notified_for_test())
+                    .await;
+            release_confirmed_child(&mut control);
+            assert!(control.child.is_none());
+            assert!(tokio::time::timeout(
+                Duration::from_millis(100),
+                crate::smart_auto_probe::notified_for_test()
+            )
+            .await
+            .is_ok());
+            drop((input, output));
+        }
+    }
     #[test]
     fn protocol_rejects_duplicates_unknown_fields_and_out_of_range_turns() {
         let line =

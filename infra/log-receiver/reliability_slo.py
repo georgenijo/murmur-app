@@ -14,8 +14,8 @@ import re
 from datetime import datetime, timedelta, timezone
 
 
-SCHEMA_VERSION = 1
-REPORT_FORMAT = "murmur-reliability-slo/v1"
+SCHEMA_VERSION = 2
+REPORT_FORMAT = "murmur-reliability-slo/v2"
 CONTRACT_VERSION = 1
 MIN_COMPLETE_WEEKS = 8
 MIN_ELIGIBLE_REQUESTS = 200
@@ -181,6 +181,7 @@ def _new_attempt():
         "permission_pending": False,
         "terminal_count": 0,
         "terminal_outcome": None,
+        "terminal_at": None,
         "presentations": set(),
         "state_open": {name: None for name in STATE_NAMES},
         "state_intervals": {name: [] for name in STATE_NAMES},
@@ -424,6 +425,7 @@ class ReliabilitySloEvaluator:
                 attempt["terminal_outcome"] = (
                     outcome if outcome in TERMINAL_OUTCOMES else "unknown"
                 )
+                attempt["terminal_at"] = timestamp
         elif code == "pipeline.dictation_presentation":
             pair = (data.get("status_code"), data.get("action_code"))
             if pair in KNOWN_PRESENTATIONS:
@@ -556,14 +558,36 @@ class ReliabilitySloEvaluator:
         allowed = ACTIONABLE_PRESENTATIONS.get(outcome, set())
         return bool(allowed.intersection(attempt["presentations"]))
 
+    @staticmethod
+    def _cancelled_before_startup_target(attempt):
+        if (
+            attempt["terminal_outcome"] != "user_cancelled_starting"
+            or attempt["ready_at"] is not None
+        ):
+            return False
+        duration = _duration_ms(attempt["requested_at"], attempt["terminal_at"])
+        return duration is not None and duration < STARTUP_TARGET_MS
+
     def _render_week(self, bucket):
         attempts = bucket["attempts"]
-        excluded = [item for item in attempts if item["permission_pending"]]
-        eligible = [item for item in attempts if not item["permission_pending"]]
+        prompt_excluded = [item for item in attempts if item["permission_pending"]]
+        cancellation_excluded = [
+            item
+            for item in attempts
+            if not item["permission_pending"]
+            and self._cancelled_before_startup_target(item)
+        ]
+        eligible = [
+            item
+            for item in attempts
+            if not item["permission_pending"]
+            and not self._cancelled_before_startup_target(item)
+        ]
         counts = {
             "requested": len(attempts),
             "eligible_requests": len(eligible),
-            "excluded_permission_prompts": len(excluded),
+            "excluded_permission_prompts": len(prompt_excluded),
+            "excluded_user_cancellations_before_target": len(cancellation_excluded),
             "accepted": 0,
             "ready": 0,
             "ready_without_accepted": 0,

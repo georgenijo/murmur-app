@@ -267,6 +267,9 @@ cohorts per install. Further versions collapse into a non-comparable
 `overflow` cohort. It reports:
 
 - dictation `startup_ms` p50 and p95;
+- successful stop-to-delivery-attempt p50 and p95, plus a 1 to 15 second
+  target cohort with a 20-sample floor, p50 below 1,000 ms, and p95 below
+  2,000 ms;
 - active-budget timeouts split by stable backend and native setup step;
 - fallback and both-backends-failed counts;
 - exhausted diagnostics-store operations split by stable operation and safe
@@ -283,11 +286,14 @@ still tolerates late or reordered transport and joins internally by install,
 `startup_baseline` app session, and positive recording ID, then publishes only
 weekly aggregate counts. It recomputes one partial and eight complete UTC weeks
 every run so late arrivals update their original window. Only requests marked
-`slo_contract: 1` count; pre-contract data is always insufficient. A complete
-week needs 200 eligible requests and 99.5% at or below 400 ms, has explicit
-permission-prompt exclusion, restart-boundary state classification, and
-actionable-presentation coverage. The newest two complete sufficient passing
-weeks are the only path to the two-week finish-line flag.
+`slo_contract: 1` can enter the `murmur-reliability-slo/v2` report;
+pre-contract data is always insufficient. A complete week needs 200 eligible
+requests and 99.5% at or below 400 ms. Permission prompts and non-prompt user
+cancellations while still starting before the 400 ms deadline are reported as
+separate startup exclusions. Cancellations at or after the deadline remain
+misses. Restart-boundary state classification and actionable-presentation
+coverage still include every request. The newest two complete sufficient
+passing weeks are the only path to the two-week finish-line flag.
 
 Contract requests with invalid or future timestamps are not assigned to guessed
 windows. Valid history older than the retained horizon simply expires. Invalid
@@ -330,6 +336,13 @@ least two of its five most recent attempts had no ready recording; a newer
 healthy cohort supersedes stale failures and later healthy attempts age them
 out. Thresholds live in the watch script and are fixture-tested. The allowlist
 preserves `last_setup_step: "none"` as the explicit pre-native-call state.
+
+The watch also alerts when the newest stop-to-delivery target cohort on an
+install has at least 20 eligible samples and misses either strict percentile
+target. Eligible samples are successful, non-empty native dictations with 1 to
+15 seconds of audio. The metric ends after Murmur's configured clipboard or
+paste attempt. It does not prove that another application consumed a posted
+paste event.
 
 ## Tests
 

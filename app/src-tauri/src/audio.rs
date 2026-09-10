@@ -20,7 +20,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
 pub fn compute_rms(samples: &[f32]) -> f32 {
@@ -404,6 +404,7 @@ impl AudioWorkerEventSender {
 }
 
 pub(crate) struct AudioWorkerSpec {
+    pub probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
     pub owner: crate::audio_lifecycle::AudioOwner,
     pub command_receiver: Receiver<AudioCommand>,
     pub shared: Arc<Mutex<Vec<f32>>>,
@@ -490,7 +491,7 @@ fn spawn_helper(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v9", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v10", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -1912,11 +1913,14 @@ fn run_backend(
     active: &Arc<AtomicBool>,
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
+    probe_permit: Option<&crate::smart_auto_probe::ProbePermit>,
 ) -> AttemptResult {
     // Close the retry-delay timeout boundary before permission probing or a
     // new helper spawn. A Stop queued as the wait expires must own the next
     // action rather than allowing another same-device attempt to start.
-    if stop_requested_between_attempts(command_receiver) {
+    if stop_requested_between_attempts(command_receiver)
+        || probe_permit.is_some_and(|permit| !permit.is_valid())
+    {
         return AttemptResult::Stopped;
     }
     let started_at = Instant::now();
@@ -1926,6 +1930,9 @@ fn run_backend(
     } else {
         backend_attempt_budget(backend)
     };
+    let attempt_budget = probe_permit.map_or(attempt_budget, |permit| {
+        attempt_budget.min(permit.remaining())
+    });
     if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
         let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
             owner,
@@ -1939,7 +1946,7 @@ fn run_backend(
     }
     let mut permission_prompt_started = None;
     let permission_status = crate::commands::permissions::check_microphone_permission_status();
-    if permission_status == "denied" {
+    if permission_status == "denied" || (probe_permit.is_some() && permission_status != "granted") {
         return AttemptResult::Failed {
             failure: AudioFailure::new(
                 AudioFailureKind::PermissionDenied,
@@ -1960,6 +1967,9 @@ fn run_backend(
     }
 
     let (capture_id, nonce, nonce_hex) = capture_identity();
+    if probe_permit.is_some_and(|permit| !permit.is_valid()) {
+        return AttemptResult::Stopped;
+    }
     let (child, mut input, output) = match spawn_helper(
         capture_id,
         &nonce_hex,
@@ -2011,18 +2021,45 @@ fn run_backend(
             };
         }
     };
-    let start_sent_at = Instant::now();
-    if write_production_control(
-        &mut input,
-        capture_id,
-        nonce,
-        &ProductionHostMessage::Start {
+    let start_message = match probe_permit {
+        Some(permit) => {
+            let deadline = permit.deadline_ns();
+            if !permit.is_valid()
+                || crate::commands::permissions::check_microphone_permission_status() != "granted"
+                || deadline.is_none()
+                || device_id.is_none()
+                || stop_requested_between_attempts(command_receiver)
+            {
+                return if terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    Some(ProductionHostMessage::Cancel),
+                    owner,
+                    event_sender,
+                    AudioInitPhase::StreamBuild,
+                ) {
+                    AttemptResult::Stopped
+                } else {
+                    AttemptResult::TerminalHandled
+                };
+            }
+            ProductionHostMessage::StartAutomaticProbe {
+                device_id: device_id
+                    .expect("automatic probe requires a pinned input")
+                    .to_string(),
+                backend,
+                deadline_ns: deadline.expect("automatic probe requires a monotonic deadline"),
+            }
+        }
+        None => ProductionHostMessage::Start {
             device_id: device_id.map(str::to_string),
             backend,
         },
-    )
-    .is_err()
-    {
+    };
+    let start_sent_at = Instant::now();
+    if write_production_control(&mut input, capture_id, nonce, &start_message).is_err() {
         end_permission_prompt_pause(
             &mut permission_prompt_started,
             &mut clock,
@@ -2102,6 +2139,22 @@ fn run_backend(
         );
     }
     loop {
+        if probe_permit.is_some_and(|permit| !permit.is_valid()) {
+            return if terminate_or_quarantine(
+                child,
+                Some(input),
+                capture_id,
+                nonce,
+                Some(ProductionHostMessage::Cancel),
+                owner,
+                event_sender,
+                current_phase,
+            ) {
+                AttemptResult::Stopped
+            } else {
+                AttemptResult::TerminalHandled
+            };
+        }
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 let stop_started = Instant::now();
@@ -2153,9 +2206,10 @@ fn run_backend(
             // destroy retained audio by itself.
             let permission_status =
                 crate::commands::permissions::check_microphone_permission_status();
-            let permission_lost = permission_status == "denied"
+            let permission_lost = (probe_permit.is_some() && permission_status != "granted")
+                || permission_status == "denied"
                 || (retained_audio && permission_status == "notDetermined");
-            if !retained_audio && permission_status == "notDetermined" {
+            if probe_permit.is_none() && !retained_audio && permission_status == "notDetermined" {
                 begin_permission_prompt_pause(
                     &mut permission_prompt_started,
                     &mut clock,
@@ -2238,7 +2292,8 @@ fn run_backend(
         }
 
         let now = Instant::now();
-        if hang_probe.is_none()
+        if probe_permit.is_none()
+            && hang_probe.is_none()
             && !retained_audio
             && crate::hang_diagnostics::armed()
             && clock.elapsed(now) >= attempt_budget / 2
@@ -2267,7 +2322,11 @@ fn run_backend(
                 },
                 current_phase,
             );
-            if ctx.is_primary && ctx.memo_promoted && should_update_capture_memo(owner) {
+            if probe_permit.is_none()
+                && ctx.is_primary
+                && ctx.memo_promoted
+                && should_update_capture_memo(owner)
+            {
                 // The promoted backend hung too, so the hang on this device
                 // is first-attempt-bound rather than backend-bound; keeping
                 // the promotion would oscillate the order every recording.
@@ -2327,7 +2386,14 @@ fn run_backend(
             };
         }
 
-        match reader_rx.recv_timeout(CAPTURE_COMMAND_POLL_INTERVAL) {
+        let read = reader_rx.recv_timeout(CAPTURE_COMMAND_POLL_INTERVAL);
+        if probe_permit.is_some_and(|permit| !permit.is_valid()) {
+            // The bounded worker can exit while this receive is blocked.
+            // Return through confirmed cancellation, not a synthetic protocol
+            // failure that would invalidate already-verified signal evidence.
+            continue;
+        }
+        match read {
             Ok(HelperRead::Frame(ProductionFrame::Pcm(pcm))) => {
                 if pcm.channel != CaptureChannel::Microphone
                     || pcm.sequence != expected_sequence
@@ -2372,30 +2438,44 @@ fn run_backend(
                         .extend_from_slice(&pcm.samples);
                 }
                 if let Some(preview_id) = owner.preview_id() {
+                    if let Some(handle) = app_handle.as_ref() {
+                        handle
+                            .state::<crate::State>()
+                            .app_state
+                            .microphone_preview
+                            .observe_signal_verification(
+                                preview_id,
+                                &pcm.samples,
+                                pcm.sample_rate,
+                                Instant::now(),
+                            );
+                    }
                     // Accumulate every callback between paint-rate emissions;
                     // otherwise a short peak could disappear in the throttle.
-                    preview_levels.observe(&pcm.samples);
-                    // Keep only a bounded rolling window in memory. The
-                    // analyzer runs off-thread and never writes preview PCM to
-                    // the retained recording buffer, disk, or telemetry.
-                    preview_vad_window.observe(&pcm.samples, pcm.sample_rate);
-                    let vad_now = Instant::now();
-                    if preview_vad_window.is_due(vad_now) {
-                        let analysis = app_handle
-                            .as_ref()
-                            .filter(|handle| can_schedule_vad_analysis(handle, preview_id))
-                            .and_then(|handle| {
-                                preview_vad_window
-                                    .snapshot_if_due(vad_now)
-                                    .map(|snapshot| (handle.clone(), snapshot))
-                            });
-                        if let Some((handle, (samples, sample_rate))) = analysis {
-                            schedule_vad_analysis(handle, preview_id, samples, sample_rate);
-                        } else {
-                            // Sensitivity can be Off, an inference can already
-                            // be running, or teardown can have started. Advance
-                            // the cadence without copying the rolling window.
-                            preview_vad_window.defer_due_snapshot(vad_now);
+                    if probe_permit.is_none() {
+                        preview_levels.observe(&pcm.samples);
+                        // Keep only a bounded rolling window in memory. The
+                        // analyzer runs off-thread and never writes preview PCM to
+                        // the retained recording buffer, disk, or telemetry.
+                        preview_vad_window.observe(&pcm.samples, pcm.sample_rate);
+                        let vad_now = Instant::now();
+                        if preview_vad_window.is_due(vad_now) {
+                            let analysis = app_handle
+                                .as_ref()
+                                .filter(|handle| can_schedule_vad_analysis(handle, preview_id))
+                                .and_then(|handle| {
+                                    preview_vad_window
+                                        .snapshot_if_due(vad_now)
+                                        .map(|snapshot| (handle.clone(), snapshot))
+                                });
+                            if let Some((handle, (samples, sample_rate))) = analysis {
+                                schedule_vad_analysis(handle, preview_id, samples, sample_rate);
+                            } else {
+                                // Sensitivity can be Off, an inference can already
+                                // be running, or teardown can have started. Advance
+                                // the cadence without copying the rolling window.
+                                preview_vad_window.defer_due_snapshot(vad_now);
+                            }
                         }
                     }
                 }
@@ -2421,7 +2501,7 @@ fn run_backend(
                             },
                         });
                     }
-                    if should_update_capture_memo(owner) {
+                    if probe_permit.is_none() && should_update_capture_memo(owner) {
                         note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
                     }
                     end_permission_prompt_pause(
@@ -2461,7 +2541,8 @@ fn run_backend(
                         sample_rate: pcm.sample_rate,
                     });
                 }
-                if active.load(Ordering::Acquire)
+                if probe_permit.is_none()
+                    && active.load(Ordering::Acquire)
                     && last_level_emit.elapsed() >= Duration::from_millis(AUDIO_LEVEL_THROTTLE_MS)
                 {
                     if let Some(handle) = app_handle {
@@ -3001,6 +3082,7 @@ fn run_capture_backend_sequence(
 
 fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSender) {
     let AudioWorkerSpec {
+        probe_permit,
         owner,
         command_receiver,
         shared,
@@ -3062,6 +3144,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 &active,
                 &app_handle,
                 event_sender,
+                probe_permit.as_deref(),
             )
         },
     );
@@ -3716,6 +3799,58 @@ mod tests {
                 + CAPTURE_PROTOCOL_RESERVE,
             CAPTURE_ACTIVE_BUDGET
         );
+    }
+
+    #[test]
+    fn automatic_probe_revoke_between_backends_prevents_next_capture_attempt() {
+        let permit = crate::smart_auto_probe::ProbePermit::new(Instant::now());
+        let (_commands, receiver) = mpsc::channel();
+        let events =
+            AudioWorkerEventSender::new(|_| panic!("revoked probe must not enter another backend"));
+        let shared = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(AtomicBool::new(false));
+        let mut attempted = 0;
+        let result = run_capture_backend_pass(
+            crate::audio_lifecycle::AudioOwner::Preview(525),
+            &receiver,
+            &events,
+            preferred_backends(),
+            1,
+            &mut |backend, resolution_pass, backend_attempt| {
+                attempted += 1;
+                if attempted == 1 {
+                    permit.revoke();
+                    return AttemptResult::Failed {
+                        failure: AudioFailure::new(
+                            AudioFailureKind::BackendError,
+                            AudioInitPhase::StreamBuild,
+                        ),
+                        retained_audio: false,
+                        active_elapsed_ms: 1,
+                    };
+                }
+                run_backend(
+                    crate::audio_lifecycle::AudioOwner::Preview(525),
+                    backend,
+                    Some("test-input"),
+                    AttemptContext {
+                        is_primary: false,
+                        memo_promoted: false,
+                        resolution_pass,
+                        backend_attempt,
+                    },
+                    &receiver,
+                    &shared,
+                    &active,
+                    &None,
+                    &events,
+                    Some(&permit),
+                )
+            },
+        );
+        assert!(matches!(result, BackendPassResult::Stopped));
+        assert_eq!(attempted, 2);
+        assert!(shared.lock().unwrap().is_empty());
     }
 
     #[test]

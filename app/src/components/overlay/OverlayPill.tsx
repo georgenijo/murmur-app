@@ -8,7 +8,13 @@ interface OverlayPillProps {
   visual: OverlayVisual;
   status: DictationStatus;
   barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
+  smartAutoSummary?: OverlaySmartAutoSummary | null;
 }
+
+export type OverlaySmartAutoSummary =
+  | { kind: 'ready'; deviceName: string; reason: string }
+  | { kind: 'probing'; deviceName: string; phase: string }
+  | { kind: 'blocked'; retryAfterMs: number | null };
 
 /**
  * Top-bar content: status indicator (left wing) + waveform (right wing). Purely
@@ -26,6 +32,7 @@ export function OverlayPill({
   visual,
   status,
   barRefs,
+  smartAutoSummary = null,
 }: OverlayPillProps) {
   const topH = geometry.collapsedH;
   const wingW = geometry.wingW;
@@ -144,11 +151,42 @@ export function OverlayPill({
             // "Transforming…" — local LLM is thinking (issue #312).
             <span className="w-2.5 h-2.5 rounded-full bg-violet-400 block" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
           ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: indicator.dimmed ? 0.15 : 1 }}>
-              <rect x="9" y="1" width="6" height="12" rx="3" />
-              <path d="M5 10a7 7 0 0 0 14 0" />
-              <line x1="12" y1="17" x2="12" y2="21" />
-            </svg>
+            <span
+              role={smartAutoSummary ? 'status' : undefined}
+              aria-live={smartAutoSummary ? 'polite' : undefined}
+              aria-label={smartAutoSummary?.kind === 'ready'
+                ? `Smart Auto next capture ready with ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
+                : smartAutoSummary?.kind === 'probing'
+                  ? `Smart Auto background check for ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}. Audio is not transcribed or saved.`
+                : smartAutoSummary?.kind === 'blocked'
+                  ? smartAutoSummary.retryAfterMs === null
+                    ? 'Smart Auto next capture blocked. Open Settings to retry, verify signal, or pin an input.'
+                    : `Smart Auto next capture blocked. Cooldown: about ${Math.max(1, Math.ceil(smartAutoSummary.retryAfterMs / 1000))} seconds remaining.`
+                  : undefined}
+              title={smartAutoSummary?.kind === 'ready'
+                ? `Smart Auto: ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
+                : smartAutoSummary?.kind === 'probing'
+                  ? `Smart Auto checking ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}`
+                : smartAutoSummary?.kind === 'blocked'
+                  ? smartAutoSummary.retryAfterMs === null
+                    ? 'Smart Auto blocked. Open Settings to retry, verify signal, or pin an input.'
+                    : 'Smart Auto blocked. Waiting for cooldown.'
+                  : undefined}
+              className={smartAutoSummary?.kind === 'ready'
+                ? 'text-emerald-300'
+                : smartAutoSummary?.kind === 'probing'
+                  ? 'text-sky-300 animate-pulse'
+                : smartAutoSummary?.kind === 'blocked'
+                  ? 'text-amber-300'
+                  : 'text-white/40'}
+              style={{ opacity: indicator.dimmed ? 0.15 : 1 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="9" y="1" width="6" height="12" rx="3" />
+                <path d="M5 10a7 7 0 0 0 14 0" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </span>
           )}
         </div>
 

@@ -49,16 +49,19 @@ mod meeting_review;
 mod meeting_store;
 mod microphone_auto;
 mod microphone_preview;
+mod microphone_signal;
 mod model_artifact;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
 mod query_adapter;
+mod query_capabilities;
 mod query_flow;
 mod query_history;
 mod query_provider;
 mod resource_monitor;
 mod selection;
+mod smart_auto_probe;
 mod smart_formatting;
 mod spoken_numbers;
 mod spoken_structure;
@@ -332,6 +335,10 @@ pub fn run() {
             commands::permissions::list_audio_devices,
             commands::permissions::get_audio_input_inventory,
             commands::microphone_preview::get_microphone_preview_status,
+            commands::microphone_preview::get_smart_auto_microphone_status,
+            smart_auto_probe::configure_smart_auto_probe,
+            smart_auto_probe::retry_smart_auto_probe,
+            commands::microphone_preview::verify_microphone_preview_signal,
             commands::microphone_preview::start_microphone_preview,
             commands::microphone_preview::update_microphone_preview_vad_sensitivity,
             commands::microphone_preview::stop_microphone_preview,
@@ -367,6 +374,10 @@ pub fn run() {
             query_flow::cancel_query,
             query_flow::copy_query_answer,
             query_flow::get_query_review_content,
+            query_capabilities::get_query_capabilities,
+            query_capabilities::choose_query_workspace,
+            query_capabilities::confirm_query_workspace,
+            query_capabilities::revoke_query_capabilities,
             query_flow::list_query_provider_presets,
             query_flow::load_query_environment,
             query_flow::save_query_environment,
@@ -504,6 +515,7 @@ pub fn run() {
         .setup(|app| {
             telemetry::init(app.handle().clone());
             audio_inventory::initialize(app.handle().clone());
+            smart_auto_probe::initialize(app.handle().clone());
             audio_graph_snapshot::set_app_handle(app.handle().clone());
             // Restore the durable per-device capture backend memo before any
             // capture can start, so a relaunch keeps the fast-fail tier a

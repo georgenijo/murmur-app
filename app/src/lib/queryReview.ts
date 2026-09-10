@@ -41,6 +41,7 @@ export interface QueryContent {
   usage: QueryUsage | null;
   signInFix: string | null;
   contextSummary: string | null;
+  capabilitySummary: string | null;
 }
 
 export function isValidPassId(value: unknown): value is number {

@@ -28,6 +28,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   process_failed: 'The configured CLI process failed.',
   exit_nonzero: 'The configured CLI exited with an error.',
   provider_error: 'The configured provider reported an error.',
+  unsupported_capabilities: 'This command does not match the trusted Claude profile. Open Settings and revoke workspace access or reselect Claude.',
+  trusted_workspace_unavailable: 'The trusted folder changed or is unavailable. Open Settings, revoke access, and choose it again.',
   provider_not_authenticated: 'The configured provider is not signed in.',
   output_too_large: 'The answer exceeded the 256 KB safety limit and was stopped.',
   empty_answer: 'The configured CLI returned no answer.',
@@ -178,6 +180,7 @@ export function QueryReviewApp() {
           <p aria-live="polite" className="mt-0.5 truncate text-[13px] font-medium text-white/90">
             {statusLabel(driver.state, driver.errorCode)}
           </p>
+          {driver.capabilitySummary && <p aria-label="Query capabilities" className="mt-0.5 text-[10px] text-violet-200/70">{driver.capabilitySummary}</p>}
           {driver.contextSummary && (
             <p aria-label="Query context" className="mt-0.5 truncate text-[10px] font-medium text-violet-200/70">
               {driver.contextSummary}

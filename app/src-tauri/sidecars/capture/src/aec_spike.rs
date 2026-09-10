@@ -16,6 +16,7 @@ use webrtc_audio_processing::{config::EchoCanceller, Config, Processor};
 const SAMPLE_RATE: u32 = 48_000;
 const FRAME_SAMPLES: usize = 480;
 const CONSENT: &str = "I_UNDERSTAND_THIS_WRITES_LOCAL_AUDIO";
+const MAX_CAPTURE_DURATION_SECONDS: u64 = 30 * 60;
 const MIN_RENDER_ENERGY: f64 = 1e-8;
 const BUILD_SHA: &str = match option_env!("MURMUR_AEC_SPIKE_BUILD_SHA") {
     Some(value) => value,
@@ -296,8 +297,10 @@ fn parse_capture_arguments(arguments: &[String]) -> Result<CaptureArguments, Str
         return Err(format!("--consent {CONSENT} is required"));
     }
     let duration_seconds = duration_seconds.ok_or("--duration-seconds is required")?;
-    if !(1..=300).contains(&duration_seconds) {
-        return Err("--duration-seconds must be between 1 and 300".to_string());
+    if !(1..=MAX_CAPTURE_DURATION_SECONDS).contains(&duration_seconds) {
+        return Err(format!(
+            "--duration-seconds must be between 1 and {MAX_CAPTURE_DURATION_SECONDS}"
+        ));
     }
     Ok(CaptureArguments {
         output_root: required_path(output_root, "--output-root")?,
@@ -931,13 +934,13 @@ mod tests {
             "--output-root".to_string(),
             root.clone(),
             "--duration-seconds".to_string(),
-            "30".to_string(),
+            "1800".to_string(),
             "--consent".to_string(),
             CONSENT.to_string(),
         ];
         let parsed = parse_capture_arguments(&valid).unwrap();
         assert_eq!(parsed.output_root, PathBuf::from(root));
-        assert_eq!(parsed.duration, Duration::from_secs(30));
+        assert_eq!(parsed.duration, Duration::from_secs(1800));
 
         let missing_consent = valid[..4].to_vec();
         assert!(parse_capture_arguments(&missing_consent).is_err());
@@ -945,7 +948,7 @@ mod tests {
             "--output-root".to_string(),
             "/private/tmp/murmur-aec-spike".to_string(),
             "--duration-seconds".to_string(),
-            "301".to_string(),
+            "1801".to_string(),
             "--consent".to_string(),
             CONSENT.to_string(),
         ];

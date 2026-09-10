@@ -335,6 +335,11 @@ impl MeetingCoordinator {
                         "The meeting capture supervisor stopped unexpectedly.",
                     ))
                 });
+                if result.is_err() {
+                    crate::audio_inventory::invalidate_signal_evidence(
+                        config_for_thread.device_id.as_deref(),
+                    );
+                }
                 let (session_status, error_code) = match &result {
                     Ok(_) => (MeetingSessionStatus::Complete, None),
                     Err(error) => (MeetingSessionStatus::Failed, Some(error.code)),
@@ -376,6 +381,7 @@ impl MeetingCoordinator {
                 completion.finish();
             });
         if spawned.is_err() {
+            crate::audio_inventory::invalidate_signal_evidence(config.device_id.as_deref());
             let _ = repository.finish_session(
                 &config.session_id,
                 MeetingSessionStatus::Failed,
@@ -681,7 +687,7 @@ fn spawn_worker(
     let capture_id_text = capture_id.to_string();
     ManagedChild::spawn_with_arguments(
         &path,
-        &["--production-v9", capture_id_text.as_str(), nonce_hex],
+        &["--production-v10", capture_id_text.as_str(), nonce_hex],
         &[],
     )
     .map_err(|_| {

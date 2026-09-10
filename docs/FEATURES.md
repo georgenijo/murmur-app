@@ -220,6 +220,11 @@ Dictation Settings also includes a local-only
 [live microphone input test](features/microphone-input-test.md) with RMS/peak
 metering, quiet/clipping guidance, automatic pause/resume around dictation,
 exact device switching, and no retained PCM.
+Opt-in [Smart Auto routing](features/transcription.md#smart-auto-microphone-selection)
+uses recent verified signal from approved inputs. Separate background-check
+consent enables bounded idle-only candidate checks with confirmed teardown,
+cooldown, and finite retries. The Settings row and overlay distinguish a check
+in progress from an available input and a verified next-capture choice.
 
 ### Appearance — [features/appearance.md](features/appearance.md)
 System/Light/Dark appearance with accessible custom controls, a durable local
@@ -294,7 +299,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 191 registered commands |
+| Rust backend | `app/src-tauri/src/` — 199 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

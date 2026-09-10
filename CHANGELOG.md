@@ -6,14 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Smart Auto now shows an inline microphone inclusion menu, keeps disconnected
+  choices, and uses automatic signal checks instead of a separate verification
+  button (#700).
+
+### Fixed
+
+- The microphone picker now closes with the same transition after mode changes,
+  current-row clicks, trigger clicks, outside clicks, and Escape (#699).
+
+## [0.43.0] - 2026-09-09
+
 ### Added
 
-- Correct the latest dictation with a spoken instruction, review the local model's proposed change, and copy or replace a matching selection. Optional ⌘⇧E shortcut, literal spelling preservation, and separate correction teaching (#676).
+- Smart Auto can verify five seconds of microphone signal in Settings and use
+  recent signal evidence to select an approved input. It can also run bounded,
+  consented probes when no approved microphone has recent evidence (#525).
+- Voice Query can grant compatible Claude Code versions read-only access to an
+  explicitly approved workspace for the current app session without exposing
+  ancestor directories (#573).
+
+### Fixed
+
+- The update dialog gives release notes most of the available space and keeps
+  its three actions in a compact two-row footer (#698).
+- The weekly dictation startup SLO now treats a user cancellation before its
+  400 ms deadline as a censored observation instead of a capture miss, while
+  preserving late cancellations and genuine startup failures in the denominator
+  (#486).
+- Fleet diagnostics now judge 1 to 15 second production dictations against the
+  stop-to-delivery target, show an explicit p50 and p95 verdict, and alert on a
+  missed target without claiming that another app consumed a paste (#487).
+- Private dictation captures on the Fleet dashboard now show their capture and
+  expiry times and keep transcript text collapsed until the operator reveals it
+  (#461).
+- Smart Auto now excludes output-only audio devices, exposes per-microphone approvals in one unified picker, explains why an allowed input is unavailable, and keeps Settings branch and row spacing aligned (#688).
+
+## [0.42.0] - 2026-09-08
 
 ### Fixed
 
 - Close abandoned transform confirmations when a chained capture cannot start, and keep an older confirmation timer from dismissing a newer review (#682, #683).
 - Reloading the notch restores the active recording or processing indicator from native state instead of showing idle while recording continues (#680).
+- Smart Auto microphone routing now applies consistently to dictation, meetings, Voice Query, transforms, retries, and microphone previews, with bounded echo-cancellation recovery after device route changes (#678).
+- Markdown links now follow CommonMark parsing rules, including correct heading-anchor allocation (#667).
+- Dictation diagnostics distinguish successful completion from post-stop latency so empty or failed runs cannot appear as successful performance samples (#668).
+
+### Added
+
+- Correct the latest dictation with a spoken instruction, review the local model's proposed change, and copy or replace a matching selection. Optional ⌘⇧E shortcut, literal spelling preservation, and separate correction teaching (#676).
+- Smart Auto can choose from approved physical microphones while preserving one immutable input choice for the full recording (#678).
+- Meeting review can assign local, session-scoped labels to remote speakers without changing transcript evidence (#685).
+- Diagnostics can compare compatible production dictation cohorts across app versions, with explicit exclusions and bounded retention (#686).
+- Private native capture CI verifies first PCM from both production capture backends on trusted hardware (#687).
+
+### Changed
+
+- Dependent recording settings reveal their controls through quieter animated branches with actionable permission guidance (#677).
+- Removed unused frontend components and added an automated dead-code audit to CI (#675).
 
 ## [0.41.0] - 2026-09-04
 

@@ -121,6 +121,12 @@ class LogReceiverHealthTests(unittest.TestCase):
             "generated_at": "2026-08-05T00:00:00Z",
             "status": "healthy",
             "alerts": [],
+            "policy": {
+                "post_stop_target_min_audio_seconds": 1,
+                "post_stop_target_max_audio_seconds": 15,
+                "post_stop_target_p50_ms": 1_000,
+                "post_stop_target_p95_ms": 2_000,
+            },
             "cohorts": [
                 {
                     "install_id": "12345678-abcd",
@@ -129,6 +135,10 @@ class LogReceiverHealthTests(unittest.TestCase):
                     "post_stop_latency_sample_count": 5,
                     "post_stop_latency_p50_ms": 300,
                     "post_stop_latency_p95_ms": 500,
+                    "post_stop_target_sample_count": 5,
+                    "post_stop_target_p50_ms": 300,
+                    "post_stop_target_p95_ms": 500,
+                    "post_stop_target_verdict": "insufficient_data",
                 },
                 {
                     "install_id": "87654321-dcba",
@@ -152,9 +162,48 @@ class LogReceiverHealthTests(unittest.TestCase):
             finally:
                 receiver.ROOT = original_root
 
-        self.assertIn("Post-stop latency · 1 cohort", page)
-        self.assertIn("12345678</code> v1.2.3: 5 samples, p50 300 ms, p95 500 ms", page)
+        self.assertIn("Stop-to-delivery attempt · 1 cohort", page)
+        self.assertIn("Target cohort 1–15 s · p50 &lt; 1000 ms · p95 &lt; 2000 ms", page)
+        self.assertIn(
+            "12345678</code> v1.2.3: 5 target samples, p50 300 ms, p95 500 ms, "
+            "preliminary; all successful attempts: 5 samples, p50 300 ms, p95 500 ms",
+            page,
+        )
         self.assertNotIn("87654321", page)
+
+    def test_dashboard_surfaces_post_stop_latency_target_alert(self) -> None:
+        report = {
+            "schema_version": 1,
+            "generated_at": "2026-08-05T00:00:00Z",
+            "status": "alert",
+            "alerts": [
+                {
+                    "kind": "post_stop_latency_target_missed",
+                    "install_id": "12345678-abcd",
+                    "app_version": "1.2.3",
+                    "sample_count": 20,
+                    "p50_ms": 1_001,
+                    "p95_ms": 2_001,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            original_root = receiver.ROOT
+            receiver.ROOT = directory
+            try:
+                (Path(directory) / receiver.CAPTURE_WATCH_REPORT).write_text(
+                    json.dumps(report),
+                    encoding="utf-8",
+                )
+                page = receiver.render_dashboard()
+            finally:
+                receiver.ROOT = original_root
+
+        self.assertIn("Capture regression watch · 1 alert", page)
+        self.assertIn(
+            "stop-to-delivery target missed with 20 samples, p50 1001 ms and p95 2001 ms",
+            page,
+        )
 
     def test_dashboard_reports_no_post_stop_latency_samples_yet(self) -> None:
         report = {
@@ -176,7 +225,7 @@ class LogReceiverHealthTests(unittest.TestCase):
             finally:
                 receiver.ROOT = original_root
 
-        self.assertIn("No post-stop latency samples yet.", page)
+        self.assertIn("No stop-to-delivery samples yet.", page)
 
     def test_dashboard_surfaces_performance_store_failure_watch(self) -> None:
         report = {
@@ -289,7 +338,7 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("2026-08-03T00:00:00Z → 2026-08-10T00:00:00Z", page)
         self.assertIn("(complete; sufficient sample)", page)
         self.assertIn(
-            "requests 200 total · latency denominator 200 eligible / 0 prompt-excluded",
+            "requests 200 total · latency denominator 200 eligible / 0 prompt-excluded / 0 early-user-cancel-excluded",
             page,
         )
         self.assertIn("startup ≤400 ms 99.50%", page)
@@ -310,16 +359,11 @@ class LogReceiverHealthTests(unittest.TestCase):
         self.assertIn("Historical pre-contract data is insufficient", rendered)
 
     def test_dashboard_never_trusts_a_contradictory_two_week_pass_flag(self) -> None:
-        report = {
-            "reliability_slo": {
-                "schema_version": 1,
-                "report": "murmur-reliability-slo/v1",
-                "contract_version": 1,
-                "privacy": "aggregate_only",
-                "two_consecutive_complete_weeks_pass": True,
-                "weeks": [],
-            }
-        }
+        slo = reliability_slo.ReliabilitySloEvaluator(
+            now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+        ).report()
+        slo["two_consecutive_complete_weeks_pass"] = True
+        report = {"reliability_slo": slo}
 
         rendered = receiver.render_reliability_slo(report)
 
@@ -334,6 +378,9 @@ class LogReceiverHealthTests(unittest.TestCase):
         contradictory["weeks"][0]["counts"]["requested"] = 1
         contradictory["weeks"][0]["counts"]["eligible_requests"] = 0
         contradictory["weeks"][0]["counts"]["excluded_permission_prompts"] = 0
+        contradictory["weeks"][0]["counts"][
+            "excluded_user_cancellations_before_target"
+        ] = 0
         rendered = receiver.render_reliability_slo(
             {"reliability_slo": contradictory}
         )
@@ -1540,10 +1587,20 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "private, no-store")
         self.assertIn("Private diagnostic captures", page)
         self.assertIn("Review private capture", page)
+        self.assertIn("Captured 2026-08-29T10:40:00Z", page)
+        self.assertIn("server copy expires", page)
         self.assertNotIn(sentinel, page)
         self.assertNotIn("PRIVATE &lt;script&gt;alert(1)&lt;/script&gt;", page)
         self.assertEqual(review_status, 200)
         self.assertEqual(review_headers["Cache-Control"], "private, no-store")
+        self.assertIn(
+            "<details class='private-capture-content'>"
+            "<summary>Reveal captured transcript text</summary>",
+            review,
+        )
+        self.assertNotIn("<details class='private-capture-content' open", review)
+        self.assertIn("Captured 2026-08-29T10:40:00Z", review)
+        self.assertIn("server copy expires", review)
         self.assertIn("PRIVATE &lt;script&gt;alert(1)&lt;/script&gt; raw", review)
         self.assertNotIn("<script>alert(1)</script>", review)
         self.assertIsNotNone(csrf)
@@ -1573,6 +1630,8 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         )
         self.assertEqual(delete_status, 303)
         self.assertFalse(capture_path.exists())
+
+        self.assertEqual(receiver._private_capture_time(10**30), "invalid timestamp")
 
     def test_private_capture_rejects_dev_malformed_and_oversized_content(self) -> None:
         headers = self.private_capture_headers()

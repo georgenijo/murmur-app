@@ -464,6 +464,7 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
     querySignInStatus,
     selectedQueryPreset,
     queryProviderItems,
+    queryCommand: queryCommand(settings),
     toggleVoiceQuery,
     selectQueryProvider,
     saveDeclaredEnvironment,

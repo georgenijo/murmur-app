@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS } from '../settings';
+import { DEFAULT_SETTINGS, type Settings } from '../settings';
 import type { MeetingDetail } from '../meetings';
 import { useMeetings } from './useMeetings';
 
@@ -87,6 +87,7 @@ describe('useMeetings remote speaker refresh', () => {
   let container: HTMLDivElement;
   let root: Root;
   let current: ReturnType<typeof useMeetings> | null;
+  let renderedSettings: Settings;
 
   const controller = () => {
     if (!current) throw new Error('Meeting controller has not rendered.');
@@ -94,8 +95,13 @@ describe('useMeetings remote speaker refresh', () => {
   };
 
   function Harness() {
-    current = useMeetings(DEFAULT_SETTINGS);
+    current = useMeetings(renderedSettings);
     return null;
+  }
+
+  async function renderSettings(settings: Settings) {
+    renderedSettings = settings;
+    await act(async () => root.render(<Harness />));
   }
 
   beforeEach(async () => {
@@ -103,6 +109,7 @@ describe('useMeetings remote speaker refresh', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     current = null;
+    renderedSettings = { ...DEFAULT_SETTINGS };
     eventMocks.listeners.clear();
     meetingMocks.getMeeting.mockReset();
     meetingMocks.startMeeting.mockReset();
@@ -143,6 +150,54 @@ describe('useMeetings remote speaker refresh', () => {
 
     expect(meetingMocks.startMeeting).toHaveBeenCalledWith(expect.objectContaining({
       diarization: false,
+    }));
+  });
+
+  it('uses the latest Smart Auto policy after mount and drops it after a manual pin', async () => {
+    meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
+    meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));
+
+    await renderSettings({
+      ...renderedSettings,
+      smartAutoMicrophoneEnabled: true,
+      smartAutoApprovedDeviceIds: [],
+      smartAutoPreferredDeviceIds: [],
+      smartAutoAllowContinuity: false,
+    });
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      microphone: 'system_default',
+      smartAuto: {
+        approvedDeviceIds: [],
+        preferredDeviceIds: [],
+        allowContinuity: false,
+      },
+    }));
+
+    await renderSettings({
+      ...renderedSettings,
+      smartAutoApprovedDeviceIds: ['usb', 'iphone'],
+      smartAutoPreferredDeviceIds: ['iphone', 'usb'],
+      smartAutoAllowContinuity: true,
+    });
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      smartAuto: {
+        approvedDeviceIds: ['usb', 'iphone'],
+        preferredDeviceIds: ['iphone', 'usb'],
+        allowContinuity: true,
+      },
+    }));
+
+    await renderSettings({
+      ...renderedSettings,
+      microphone: 'usb',
+      smartAutoMicrophoneEnabled: false,
+    });
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      microphone: 'usb',
+      smartAuto: null,
     }));
   });
 });

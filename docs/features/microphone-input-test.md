@@ -33,7 +33,8 @@ the input is too quiet or clipping.
 `AudioOwner::Preview(preview_id)` is a first-class owner of the production
 capture supervisor. Preview IDs are monotonic and every lifecycle event is
 generation-checked. Preview is lower priority than real pipeline work:
-dictation, Transform, Voice Query, corpus capture, and benchmark startup stop
+dictation, file/base64 processing, Meeting Capture, meeting summary, Transform,
+Voice Query, corpus capture, and benchmark startup stop
 the exact Preview owner, wait for confirmed worker teardown, and claim their
 work under the same short `recording_transition` lock. Preview startup still
 refuses while any real pipeline owns audio.
@@ -72,7 +73,41 @@ and meter ARIA values directly from refs.
 
 ## Implementation map
 
+Auto routing also offers separate **Background checks** consent, disabled by
+default. These checks use the same Preview owner and verifier but do not open
+the interactive meter, run VAD, save audio, or update the durable backend memo.
+Opening the visible Settings preview preempts an automatic check and waits for
+confirmed teardown. The status row and overlay show connecting, checking signal,
+finishing, recently verified, or an actionable block. Failed rounds have bounded
+backoff and eventually require Retry; they do not leave a microphone open.
+See [bounded automatic checks](transcription.md#bounded-automatic-checks) for
+permission, timing, ownership, and hardware-acceptance limits.
+
+Selecting **Smart Auto** reveals its microphone inclusion submenu below the
+picker. Each detected input shows an Included or Excluded state. Disconnected
+included inputs keep a generic local entry until the user removes the saved
+preference. Inclusion changes do not pin the input as a fixed microphone.
+
+The live meter shows Smart Auto's current availability candidate. Consented
+background checks use the same Preview owner to provide the signal evidence
+that Smart Auto requires. Settings names the verified next-capture choice and
+its selection reason, or explains why no included microphone is eligible. The
+UI has no separate manual signal-check action.
+
+An automatic check keeps no audio and does not switch the saved input. For an
+explicit stable input, a successful check authorizes Smart Auto to consider
+that device for 120 seconds, subject to approval and capture health. A live
+macOS-default preview does not authorize a physical device for Smart Auto.
+See the [signal verification contract](transcription.md#smart-auto-microphone-selection)
+for thresholds, deadlines, cooldown, result meanings, and the remaining Auto
+routing gates. A result applies only to that preview generation; changing the
+input discards a pending result. Topology changes and capture failures revoke
+the corresponding routing evidence. A previously successful check cannot
+promise that signal is still arriving now.
+
 - Rust state/classification: `app/src-tauri/src/microphone_preview.rs`
+- Bounded signal verification: `app/src-tauri/src/microphone_signal.rs`
+- Automatic scheduling and consent: `app/src-tauri/src/smart_auto_probe.rs`
 - Rust commands/lifecycle bridge: `app/src-tauri/src/commands/microphone_preview.rs`
 - Capture routing: `app/src-tauri/src/audio.rs`, `audio_lifecycle.rs`
 - UI: `app/src/components/settings/MicrophoneInputTest.tsx`

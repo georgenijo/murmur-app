@@ -72,6 +72,18 @@ device presence.
 
 ### `useSettings`
 Loads and persists `Settings` to localStorage, pushes the backend-relevant subset to `configure_dictation`, and reconciles `launchAtLogin` with the actual OS autostart state on mount. Updates are optimistic with rollback: if `configure_dictation` fails, the affected fields revert, and a versioned configure ref prevents a stale rollback from clobbering newer settings. Emits `settings-changed` so the overlay re-reads.
+The main window separately serializes `configure_smart_auto_probe`. Queued
+writes read the latest consent and approval policy. A failed enable clears
+probe consent and submits a disabled policy. Dictation rollback cannot restore
+revoked approvals. Overlay updates own only disabled and auto-paste fields.
+
+### `useSmartAutoMicrophoneStatus`
+
+Reads the backend's cached routing decision after content-free invalidations.
+One-shot timers reread at evidence expiry, cooldown completion, and the probe
+deadline; they never enumerate or start capture. Request generations reject
+stale replies. Ongoing teardown stays visible until a lifecycle event confirms
+the outcome, without polling.
 
 ### `useInitialization`
 One-time init sequence on mount: `init_dictation`, then `configure_dictation` with the loaded settings.
