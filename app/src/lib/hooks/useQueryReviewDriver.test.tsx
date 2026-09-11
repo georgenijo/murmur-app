@@ -90,6 +90,81 @@ describe('useQueryReviewDriver ownership', () => {
     });
   }
 
+  it('requests only an exact Ready pass ID and ignores duplicate clicks while pending', async () => {
+    let finishRequest!: () => void;
+    mocks.invoke.mockImplementation((name: string) => name === 'request_query_follow_up'
+      ? new Promise<void>((resolve) => { finishRequest = resolve; })
+      : Promise.resolve(content(41, 'answer')));
+    await mount();
+    await act(async () => { await current?.followUp(); });
+    expect(mocks.invoke).not.toHaveBeenCalledWith('request_query_follow_up', expect.anything());
+    await act(async () => {
+      mocks.listeners['query-state-changed']({ payload: { queryPassId: 41, state: 'ready', errorCode: null } });
+    });
+    await act(async () => { void current?.followUp(); void current?.followUp(); });
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === 'request_query_follow_up')).toEqual([
+      ['request_query_follow_up', { queryPassId: 41 }],
+    ]);
+    expect(current?.followUpBusy).toBe(true);
+    await act(async () => { finishRequest(); });
+    expect(current?.followUpBusy).toBe(true);
+    await act(async () => {
+      mocks.listeners['query-state-changed']({ payload: { queryPassId: 42, state: 'connecting', errorCode: null } });
+    });
+    expect(current?.followUpBusy).toBe(false);
+  });
+
+  it('cancels the Rust-owned successor when Close precedes Connecting delivery', async () => {
+    mocks.invoke.mockImplementation((name: string) => name === 'get_query_review_content'
+      ? Promise.resolve(content(41, 'answer')) : Promise.resolve(undefined));
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']({ payload: { queryPassId: 41, state: 'ready', errorCode: null } });
+    });
+    // The request is dispatched and Rust may already have allocated pass 42,
+    // while this webview still displays the preceding Ready state.
+    await act(async () => { await current?.followUp(); });
+    await act(async () => { current?.cancel(); });
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', { queryPassId: 41, followUpFromPassId: 41 });
+    await act(async () => {
+      mocks.listeners['query-state-changed']({ payload: { queryPassId: 42, state: 'connecting', errorCode: null } });
+      current?.cancel();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', { queryPassId: 42 });
+    await act(async () => {
+      mocks.listeners['query-review-hidden']({ payload: { queryPassId: 42 } });
+    });
+    expect(current?.state).toBe('idle');
+    expect(current?.answer).toBe('');
+    expect(current?.followUpBusy).toBe(false);
+    expect(current?.followUpError).toBeNull();
+    mocks.invoke.mockClear();
+    await act(async () => { current?.cancel(); });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('drops stale follow-up failures after dismissal or a new pass', async () => {
+    let rejectRequest!: (error: Error) => void;
+    mocks.invoke.mockImplementation((name: string) => name === 'request_query_follow_up'
+      ? new Promise<void>((_, reject) => { rejectRequest = reject; })
+      : Promise.resolve(content(41, 'answer')));
+    await mount();
+    await act(async () => {
+      mocks.listeners['query-state-changed']({ payload: { queryPassId: 41, state: 'ready', errorCode: null } });
+    });
+    await act(async () => { void current?.followUp(); });
+    await act(async () => {
+      mocks.listeners['query-review-hidden']({ payload: { queryPassId: 41 } });
+      mocks.listeners['query-state-changed']({ payload: { queryPassId: 42, state: 'connecting', errorCode: null } });
+      rejectRequest(new Error('late failure'));
+      mocks.listeners['query-follow-up-unavailable']({ payload: { queryPassId: 41 } });
+    });
+    expect(current?.state).toBe('connecting');
+    expect(current?.answer).toBe('');
+    expect(current?.followUpError).toBeNull();
+    expect(current?.followUpBusy).toBe(false);
+  });
+
   it('refreshes the terminal answer and context snapshot', async () => {
     mocks.invoke.mockResolvedValue(content(
       41,

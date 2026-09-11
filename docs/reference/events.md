@@ -74,7 +74,8 @@ sanitized, and the fleet log shipper drops the entire `meeting` stream.
 | `hotkey-tap-rejected` | `{reason: "second_tap_expired", mode: "double_tap" \| "both"}` | `keyboard.rs` | An idle first tap is not followed by a second within 400ms. Never for holds, combos, processing skips, or valid double-taps. | Overlay — amber timing-miss flash, only when `hotkeyMissFeedback` is on. |
 | `keyboard-listener-error` | `string` | `keyboard.rs` | The rdev listener thread errors. | All three recording hooks; they wait 2s and restart the listener. |
 | `app-disabled-changed` | `boolean` | `commands/keyboard.rs` | Global disable toggled from the tray or the overlay's power button. | Main window, overlay (`useOverlayRuntime`). |
-| `query-toggle` | `{queryPassId, action: "start" \| "stop"}` | `keyboard.rs` | A dedicated query-key double-tap starts a pass, or its next single tap stops capture. There is no spoken-keyword trigger. | Main window (`useQueryFlow`). |
+| `query-follow-up-unavailable` | `{queryPassId}` | `useQueryFlow.ts` | Content-free failure for a refused allocation; clears only the matching pending Ready action. | Query review only (`useQueryReviewDriver`). |
+| `query-toggle` | `{queryPassId, action: "start" \| "stop" \| "follow_up"}` | `keyboard.rs`, `query_flow.rs` | A dedicated query-key double-tap starts a pass, or its next single tap stops capture. A review-only follow-up request targets main; the event cannot authorize a fold without its one-shot Rust-owned request. There is no spoken-keyword trigger. | Main window (`useQueryFlow`). |
 
 **Dead listener:** `useCombinedToggle` registers `hold-down-cancel`, which nothing emits. In Both mode an unpromoted tap emits nothing at all, because no recording was ever started.
 
