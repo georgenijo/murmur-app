@@ -31,9 +31,12 @@ Voice Query has a different, off-by-default boundary. Settings → Text → Voic
 Query includes **Keep Voice Query history on this Mac**. When enabled for a
 pass, Rust stores the original question and answer with bounded metadata in a
 separate local SQLite database. History → Queries loads at most 50 records at a
-time, filters by provider, and offers **Delete all query history** as a direct
-one-click purge. The store keeps at most 200 newest entries. Turning the toggle
-off affects new passes only; it never silently deletes old records. Every
+time, filters by provider, searches saved questions and answers with a bounded
+case-insensitive substring, and offers **Delete all query history** with a
+second-click confirmation. Search, provider, pagination, and the matching total
+compose at the requester-gated Rust boundary. The store keeps at most 200 newest
+entries. Turning the toggle off affects new passes only; it never silently
+deletes old records. Every
 recognized query is retained when this explicit local-history consent is on,
 including a query that appended app/window/selection context to its provider
 prompt or used raw structured-provider fallback. Context is not stored as a
@@ -43,12 +46,13 @@ CLI.
 Query records are never cached in localStorage or merged into
 `dictation-history`. They are not editable, teachable, searchable through the
 transcript index, copied into transcript exports, or included in saved files.
+Query-history search text is likewise excluded from exports, logs, and telemetry.
 There is no separate app/window/selection context or composed-prompt field in
 the store. Stderr/error detail, paths, argv, and environment values are also
 excluded. Because a saved answer can quote context or raw provider output,
 enabling Voice Query history is explicit local consent to retain the complete
-question-and-answer result. The provider filter and pagination cross only
-main-window-gated IPC, and live change events contain no content.
+question-and-answer result. The provider filter, search, and pagination cross
+only main-window-gated IPC, and live change events contain no content.
 
 Writes publish atomically through Rust with owner-only file permissions and
 never log transcript content. A

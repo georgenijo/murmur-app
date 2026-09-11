@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub const QUERY_HISTORY_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_QUERY_HISTORY_PAGE_SIZE: u32 = 50;
 pub const MAX_QUERY_HISTORY_PAGE_SIZE: u32 = 100;
+pub const MAX_QUERY_HISTORY_SEARCH_CHARS: usize = 512;
 
 /// The deliberately narrow usage contract allowed in durable query history.
 /// Provider cost estimates are intentionally excluded from this type.
