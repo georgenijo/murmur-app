@@ -228,7 +228,8 @@ export function OverlayWidget() {
     && !meetingBusy
     && !expanded
     && !calibrating
-    && !showMeetingSuggestion;
+    && !showMeetingSuggestion
+    && runtime.deliveryCue === null;
   const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
   const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
@@ -272,6 +273,10 @@ export function OverlayWidget() {
           status={status}
           barRefs={waveform.barRefs}
           smartAutoSummary={smartAutoSummary}
+          deliveryCue={runtime.deliveryCue}
+          onRetryDelivery={runtime.retryDelivery}
+          onPauseDeliveryTimer={runtime.pauseDeliveryTimer}
+          onResumeDeliveryTimer={runtime.resumeDeliveryTimer}
         />
         {showMeetingSuggestion && meetingSuggestion.suggestion ? (
           <OverlayMeetingSuggestion

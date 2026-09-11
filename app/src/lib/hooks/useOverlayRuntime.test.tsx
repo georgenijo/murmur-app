@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   deferredListeners: new Set<string>(),
   deferredResolves: new Map<string, () => void>(),
   warn: vi.fn(),
+  retryLastDelivery: vi.fn(),
   listen: vi.fn((event: string, handler: EventListener) => {
     if (mocks.listenFailures.has(event)) {
       return Promise.reject(new Error(`${event} unavailable`));
@@ -34,6 +35,10 @@ vi.mock('../log', () => ({
 }));
 vi.mock('../settings', () => ({
   loadSettings: () => ({ hotkeyMissFeedback: false }),
+}));
+vi.mock('../deliveryRecovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../deliveryRecovery')>()),
+  retryLastDelivery: mocks.retryLastDelivery,
 }));
 
 import {
@@ -72,6 +77,11 @@ describe('useOverlayRuntime transient cues', () => {
     mocks.listenFailures.clear();
     mocks.deferredListeners.clear();
     mocks.deferredResolves.clear();
+    mocks.retryLastDelivery.mockReset();
+    mocks.retryLastDelivery.mockResolvedValue({
+      kind: 'auto_pasted',
+      message: 'Last delivery pasted securely.',
+    });
     current = null;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -345,6 +355,86 @@ describe('useOverlayRuntime transient cues', () => {
 
     await act(async () => vi.advanceTimersByTime(1));
     expect(current?.showClipboardOnly).toBe(false);
+  });
+
+  it('cancels the expiring cue while retrying and uses the returned result', async () => {
+    await emitDelivery(1);
+    await act(async () => vi.advanceTimersByTime(CLIPBOARD_ONLY_FLASH_MS - 1));
+    await act(async () => current?.pauseDeliveryTimer());
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(current?.deliveryCue?.kind).toBe('confirmed_clipboard');
+
+    await act(async () => {
+      current?.retryDelivery();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.retryLastDelivery).toHaveBeenCalledOnce();
+    expect(current?.deliveryCue).toEqual({
+      kind: 'auto_pasted',
+      message: 'Last delivery pasted securely.',
+    });
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(current?.deliveryCue?.kind).toBe('auto_pasted');
+  });
+
+  it('restarts the full timeout when a pressed retry interaction is cancelled', async () => {
+    await emitDelivery(1);
+    await act(async () => vi.advanceTimersByTime(CLIPBOARD_ONLY_FLASH_MS - 1));
+    await act(async () => current?.pauseDeliveryTimer());
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(current?.deliveryCue?.kind).toBe('confirmed_clipboard');
+
+    await act(async () => current?.resumeDeliveryTimer());
+    await act(async () => vi.advanceTimersByTime(CLIPBOARD_ONLY_FLASH_MS - 1));
+    expect(current?.deliveryCue?.kind).toBe('confirmed_clipboard');
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(current?.deliveryCue).toBeNull();
+  });
+
+  it.each([
+    ['auto_pasted', 'Last delivery pasted securely.'],
+    ['clipboard_only', 'Text copied to the clipboard.'],
+    ['empty', 'Nothing to paste yet.'],
+    ['busy', 'Paste Last is already running.'],
+    ['failed', 'Paste Last did not finish.'],
+  ] as const)('presents the returned %s retry result for a bounded interval', async (kind, message) => {
+    mocks.retryLastDelivery.mockResolvedValueOnce({ kind, message });
+    await emitDelivery(1);
+    await act(async () => {
+      current?.retryDelivery();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current?.deliveryCue).toEqual({ kind, message });
+    expect(current?.showClipboardOnly).toBe(true);
+
+    await act(async () => vi.advanceTimersByTime(CLIPBOARD_ONLY_FLASH_MS));
+    expect(current?.deliveryCue).toBeNull();
+  });
+
+  it('does not subscribe to uncorrelated retry broadcasts', () => {
+    expect(mocks.handlers.has('delivery-retry-feedback')).toBe(false);
+  });
+
+  it('does not restore a late retry result after newer work starts', async () => {
+    let resolveRetry!: (result: { kind: 'auto_pasted'; message: string }) => void;
+    mocks.retryLastDelivery.mockReturnValueOnce(new Promise((resolve) => {
+      resolveRetry = resolve;
+    }));
+    await emitDelivery(1);
+    await act(async () => current?.retryDelivery());
+    expect(current?.deliveryCue?.kind).toBe('retrying');
+
+    await act(async () => root.render(<Harness status="starting" />));
+    expect(current?.deliveryCue).toBeNull();
+    await act(async () => {
+      resolveRetry({ kind: 'auto_pasted', message: 'Late result.' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current?.deliveryCue).toBeNull();
   });
 
   it('restarts the full timeout for a newer clipboard-only delivery', async () => {

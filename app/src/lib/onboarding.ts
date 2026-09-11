@@ -1,3 +1,5 @@
+import { resetDiscovery } from './discovery';
+
 /**
  * First-launch onboarding completion flag.
  *
@@ -35,4 +37,5 @@ export function resetOnboarding(): void {
   } catch {
     // Non-fatal.
   }
+  resetDiscovery();
 }

@@ -68,6 +68,7 @@ async fn happy_path_capture_finish_ready_produces_proposal() {
         run_happy_path_for_test(&sidecar, "Rewrite this politely.", "gimme the report now").await;
 
     // The flow emitted exactly the forward sequence — never an error state.
+    assert_eq!(report.stats_runs, 1);
     assert_eq!(
         report.emitted_states,
         vec![

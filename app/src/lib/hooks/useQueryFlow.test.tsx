@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({
+  emitTo: vi.fn(async () => undefined),
   listen: vi.fn(async (event: string, listener: Listener) => {
     const waiter = mocks.listenWaiters.get(event)?.shift();
     if (waiter) await waiter;
@@ -130,6 +131,89 @@ describe('useQueryFlow', () => {
       await Promise.resolve();
     });
   }
+
+  it('starts a follow-up with a fresh ID and the current immutable settings', async () => {
+    const completed = vi.fn();
+    await renderFlow(completed);
+    const command = { ...DEFAULT_COMMAND, provider: 'grok' as const, arguments: ['--new-preset'], retainQueryHistory: false };
+    await renderFlow(completed, command, true, false);
+    mocks.invoke.mockImplementation(async (name: unknown) => name === 'allocate_query_follow_up' ? 72 as unknown as undefined : undefined);
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 71, action: 'follow_up' } });
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('allocate_query_follow_up', { queryPassId: 71 });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', {
+      queryPassId: 72, deviceName: null, automaticallyCopyAnswer: false, command,
+    });
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 72, action: 'stop' } });
+      mocks.listeners.get('query-state-changed')?.({ payload: { queryPassId: 72, state: 'ready', errorCode: null, usage: null } });
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('finish_query_capture', { queryPassId: 72 });
+    expect(completed).toHaveBeenCalledExactlyOnceWith({ provider: 'grok', succeeded: true, errorCode: null, usage: null });
+  });
+
+  it('cancels the exact follow-up reservation when disabling during allocation', async () => {
+    await renderFlow();
+    let resolveAllocation!: (value: unknown) => void;
+    mocks.invoke.mockImplementation((name: unknown) => name === 'allocate_query_follow_up'
+      ? new Promise<undefined>((resolve) => { resolveAllocation = resolve as (value: unknown) => void; }) : Promise.resolve(undefined));
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 81, action: 'follow_up' } });
+    });
+    await renderFlow(undefined, DEFAULT_COMMAND, false);
+    await act(async () => { resolveAllocation(82); });
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', { queryPassId: 82 });
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'start_query_capture')).toBe(false);
+  });
+
+  for (const interruption of ['stop', 'hidden']) {
+    it(`does not start capture when ${interruption} beats the follow-up allocation response`, async () => {
+      await renderFlow();
+      let resolveAllocation!: (value: unknown) => void;
+      mocks.invoke.mockImplementation((name: unknown) => name === 'allocate_query_follow_up'
+        ? new Promise<undefined>((resolve) => { resolveAllocation = resolve as (value: unknown) => void; }) : Promise.resolve(undefined));
+      await act(async () => {
+        mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 81, action: 'follow_up' } });
+        if (interruption === 'stop') {
+          mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 82, action: 'stop' } });
+        } else {
+          mocks.listeners.get('query-review-hidden')?.({ payload: { queryPassId: 82 } });
+        }
+        resolveAllocation(82);
+      });
+      expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', { queryPassId: 82 });
+      expect(mocks.invoke.mock.calls.some(([name]) => name === 'start_query_capture')).toBe(false);
+    });
+  }
+
+  it('keeps the accepted follow-up settings frozen through an allocation await', async () => {
+    await renderFlow();
+    let resolveAllocation!: (value: unknown) => void;
+    mocks.invoke.mockImplementation((name: unknown) => name === 'allocate_query_follow_up'
+      ? new Promise<undefined>((resolve) => { resolveAllocation = resolve as (value: unknown) => void; }) : Promise.resolve(undefined));
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 91, action: 'follow_up' } });
+    });
+    await renderFlow(undefined, { ...DEFAULT_COMMAND, arguments: ['changed-after-start'] }, true, false);
+    await act(async () => { resolveAllocation(92); });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_query_capture', {
+      queryPassId: 92, deviceName: null, automaticallyCopyAnswer: true, command: DEFAULT_COMMAND,
+    });
+  });
+
+  it('does not capture after a stale or dismissed follow-up allocation fails', async () => {
+    await renderFlow();
+    mocks.invoke.mockImplementation(async (name: unknown) => {
+      if (name === 'allocate_query_follow_up') throw new Error('stale');
+      return undefined;
+    });
+    await act(async () => {
+      mocks.listeners.get('query-toggle')?.({ payload: { queryPassId: 101, action: 'follow_up' } });
+    });
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'start_query_capture')).toBe(false);
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'cancel_query')).toBe(false);
+  });
 
   it('arms the dedicated listener and carries one exact pass through start and stop', async () => {
     await renderFlow();

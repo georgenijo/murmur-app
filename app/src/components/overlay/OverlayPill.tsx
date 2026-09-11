@@ -1,6 +1,7 @@
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 import { BAR_COUNT } from '../../lib/hooks/useWaveform';
+import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 import type { OverlayVisual } from './deriveVisual';
 
 interface OverlayPillProps {
@@ -9,6 +10,10 @@ interface OverlayPillProps {
   status: DictationStatus;
   barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
   smartAutoSummary?: OverlaySmartAutoSummary | null;
+  deliveryCue?: OverlayDeliveryCue | null;
+  onRetryDelivery?: () => void;
+  onPauseDeliveryTimer?: () => void;
+  onResumeDeliveryTimer?: () => void;
 }
 
 export type OverlaySmartAutoSummary =
@@ -33,6 +38,10 @@ export function OverlayPill({
   status,
   barRefs,
   smartAutoSummary = null,
+  deliveryCue = null,
+  onRetryDelivery,
+  onPauseDeliveryTimer,
+  onResumeDeliveryTimer,
 }: OverlayPillProps) {
   const topH = geometry.collapsedH;
   const wingW = geometry.wingW;
@@ -108,10 +117,22 @@ export function OverlayPill({
             <span
               role="status"
               aria-live="polite"
-              aria-label="Text copied to clipboard. Paste manually."
-              className="text-emerald-300 text-[9px] leading-none font-semibold tracking-[-0.04em]"
+              aria-label={deliveryCue?.message ?? 'Text copied to clipboard. Paste manually or try again.'}
+              className={`text-[9px] leading-none font-semibold tracking-[-0.04em] ${deliveryCue?.kind === 'failed' ? 'text-red-300' : deliveryCue?.kind === 'clipboard_only' || deliveryCue?.kind === 'busy' || deliveryCue?.kind === 'empty' ? 'text-amber-300' : deliveryCue?.kind === 'retrying' ? 'text-white/70' : 'text-emerald-300'}`}
             >
-              ⌘V
+              {deliveryCue?.kind === 'auto_pasted'
+                ? '✓'
+                : deliveryCue?.kind === 'retrying'
+                  ? '…'
+                  : deliveryCue?.kind === 'failed'
+                    ? '!'
+                    : deliveryCue?.kind === 'clipboard_only'
+                      ? '↻'
+                    : deliveryCue?.kind === 'busy'
+                      ? '…'
+                      : deliveryCue?.kind === 'empty'
+                        ? '—'
+                        : '⌘V'}
             </span>
           ) : indicator.kind === 'starting' ? (
             <span
@@ -195,25 +216,69 @@ export function OverlayPill({
 
         {/* Right wing — same fixed wing slot; waveform centered in the middle
             of the wing (not flush against the notch edge). */}
-        <div
-          className="shrink-0 flex items-center justify-center transition-opacity duration-300"
-          style={{ width: wingW, opacity: visual.waveformVisible ? 1 : 0 }}
-          aria-hidden={!visual.waveformVisible}
-        >
-          <div className="flex items-center gap-[1.5px] h-4">
-            {Array.from({ length: BAR_COUNT }, (_, i) => (
-              <div
-                key={i}
-                ref={el => { barRefs.current[i] = el; }}
-                className="w-[2px] rounded-full bg-white/90"
+        {indicator.kind === 'clipboardOnly' ? (
+          <div className="shrink-0 flex items-center justify-center" style={{ width: wingW }}>
+            {deliveryCue?.kind === 'auto_pasted' ? (
+              <span className="text-[8px] font-medium leading-none text-emerald-200">Pasted</span>
+            ) : deliveryCue?.kind === 'retrying' ? (
+              <span className="text-[8px] font-medium leading-none text-white/70">Trying…</span>
+            ) : deliveryCue?.kind === 'empty' ? (
+              <span className="text-[8px] font-medium leading-none text-amber-200">Nothing</span>
+            ) : (
+              <button
+                type="button"
+                tabIndex={-1}
+                title={deliveryCue?.message}
+                aria-label="Try delivery again"
+                className="whitespace-nowrap text-emerald-200 hover:text-white"
                 style={{
-                  height: '2px',
-                  transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
+                  fontSize: '8px',
+                  fontWeight: 600,
+                  lineHeight: 1,
+                  letterSpacing: '-0.03em',
                 }}
-              />
-            ))}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onPauseDeliveryTimer?.();
+                }}
+                onPointerLeave={onResumeDeliveryTimer}
+                onPointerCancel={onResumeDeliveryTimer}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRetryDelivery?.();
+                }}
+              >
+                Try again
+              </button>
+            )}
           </div>
-        </div>
+        ) : (
+          <div
+            className="shrink-0 flex items-center justify-center transition-opacity duration-300"
+            style={{ width: wingW, opacity: visual.waveformVisible ? 1 : 0 }}
+            aria-hidden={!visual.waveformVisible}
+          >
+            <div className="flex items-center gap-[1.5px] h-4">
+              {Array.from({ length: BAR_COUNT }, (_, i) => (
+                <div
+                  key={i}
+                  ref={el => { barRefs.current[i] = el; }}
+                  className="w-[2px] rounded-full bg-white/90"
+                  style={{
+                    height: '2px',
+                    transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

@@ -6,6 +6,10 @@ import {
   type QueryUsage,
 } from './queryUsage';
 import type { QueryProviderId } from './settings';
+import { addActivityCompletion, sanitizeActivityStats, type ActivityCompletion, type ActivityStats } from './activityStats';
+
+export const STATS_CHANGED_EVENT = 'murmur-stats-changed';
+export const STATS_RESET_EVENT = 'murmur-stats-reset';
 
 // Per-day usage bucket, keyed by 'YYYY-MM-DD' (local time) in `dailyBuckets`.
 export interface DayBucket {
@@ -84,6 +88,7 @@ export interface DictationStats {
   // Voice Query stores content-free counters only. Question, answer, command,
   // stderr, paths, and credentials are not accepted by this schema.
   query: QueryStats;
+  activity: ActivityStats;
 }
 
 const EMPTY_PROVIDER_STATS: QueryProviderStats = {
@@ -120,6 +125,7 @@ const DEFAULT_STATS: DictationStats = {
   wpmSamples: [],
   dailyBuckets: {},
   query: emptyQueryStats(),
+  activity: sanitizeActivityStats(undefined),
 };
 
 const EMPTY_BUCKET: DayBucket = { words: 0, recordings: 0, recordingSeconds: 0 };
@@ -217,7 +223,9 @@ function sanitizeQueryStats(raw: unknown): QueryStats {
 
 const MAX_WPM_SAMPLES = 100;
 
-function sanitizeStats(parsed: Partial<DictationStats>): DictationStats {
+function sanitizeStats(value: unknown): DictationStats {
+  const parsed = value !== null && typeof value === 'object'
+    ? value as Partial<DictationStats> : {};
   const wpmSamples = Array.isArray(parsed.wpmSamples)
     ? parsed.wpmSamples.filter((value) => (
       typeof value === 'number' && Number.isFinite(value) && value >= 0
@@ -230,6 +238,7 @@ function sanitizeStats(parsed: Partial<DictationStats>): DictationStats {
     wpmSamples,
     dailyBuckets: sanitizeBuckets(parsed.dailyBuckets),
     query: sanitizeQueryStats(parsed.query),
+    activity: sanitizeActivityStats(parsed.activity),
   };
 }
 
@@ -237,13 +246,13 @@ export function loadStats(): DictationStats {
   try {
     const stored = localStorage.getItem(STATS_STORE.storageKey);
     if (stored) {
-      const parsed = JSON.parse(stored) as Partial<DictationStats>;
+      const parsed = JSON.parse(stored) as unknown;
       // Back-compat: stats saved before dailyBuckets existed have no map; the
       // sanitizer turns `undefined` into {} so older installs migrate cleanly.
       return sanitizeStats(parsed);
     }
-  } catch (e) {
-    console.error('Failed to load stats:', e);
+  } catch {
+    console.error('Failed to load stats');
   }
   return sanitizeStats(DEFAULT_STATS);
 }
@@ -255,12 +264,13 @@ export function saveStats(stats: DictationStats): void {
     // the durable statistics blob.
     const blob = JSON.stringify(sanitizeStats(stats));
     saveDurableBlob(STATS_STORE, blob);
-  } catch (e) {
-    console.error('Failed to save stats:', e);
+    window.dispatchEvent(new Event(STATS_CHANGED_EVENT));
+  } catch {
+    console.error('Failed to save stats');
   }
 }
 
-export function updateStats(text: string, durationSeconds: number): void {
+export function updateStats(text: string, durationSeconds: number, modeId?: string | null): void {
   try {
     const stats = loadStats();
     const wordCount = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
@@ -286,7 +296,14 @@ export function updateStats(text: string, durationSeconds: number): void {
       },
     };
 
+    const previous = modeId && Object.prototype.hasOwnProperty.call(stats.activity.recordingsByMode, modeId)
+      ? stats.activity.recordingsByMode[modeId] : 0;
+    const recordingsByMode = typeof modeId === 'string' && modeId.length > 0
+      ? { ...stats.activity.recordingsByMode, [modeId]: previous + 1 }
+      : stats.activity.recordingsByMode;
     saveStats({
+      ...stats,
+      activity: { ...stats.activity, recordingsByMode },
       totalWords: stats.totalWords + wordCount,
       totalRecordings: stats.totalRecordings + 1,
       totalDurationSeconds: stats.totalDurationSeconds + durationSeconds,
@@ -294,8 +311,8 @@ export function updateStats(text: string, durationSeconds: number): void {
       dailyBuckets,
       query: stats.query,
     });
-  } catch (e) {
-    console.error('Failed to update stats:', e);
+  } catch {
+    console.error('Failed to update stats');
   }
 }
 
@@ -349,13 +366,20 @@ export function updateQueryStats(completion: QueryCompletion): void {
     }
     const query: QueryStats = { ...totals, byProvider, failuresByErrorCode };
     saveStats({ ...stats, query });
-  } catch (e) {
-    console.error('Failed to update query stats:', e);
+  } catch {
+    console.error('Failed to update query stats');
   }
+}
+
+export function updateActivityStats(completion: ActivityCompletion, month?: string): void {
+  const stats = loadStats();
+  saveStats({ ...stats, activity: addActivityCompletion(stats.activity, completion, month) });
 }
 
 export function resetStats(): void {
   clearDurableBlob(STATS_STORE);
+  window.dispatchEvent(new Event(STATS_RESET_EVENT));
+  window.dispatchEvent(new Event(STATS_CHANGED_EVENT));
 }
 
 export function getWPM(stats: DictationStats): number {

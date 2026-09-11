@@ -380,6 +380,8 @@ pub fn run() {
             query_flow::finish_query_capture,
             query_flow::cancel_query,
             query_flow::copy_query_answer,
+            query_flow::request_query_follow_up,
+            query_flow::allocate_query_follow_up,
             query_flow::get_query_review_content,
             query_capabilities::get_query_capabilities,
             query_capabilities::choose_query_workspace,

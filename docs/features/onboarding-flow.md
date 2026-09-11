@@ -75,11 +75,39 @@ Settings → App → **Run Setup Assistant** clears the flag and relaunches the
 wizard — the recovery path when a user revokes a permission and wants a guided
 re-grant instead of spelunking through System Settings.
 
+## Post-setup discovery
+
+The wizard remains seven steps. After it finishes, Home shows a dismissible
+**Get more from Murmur** checklist for features that are useful after the first
+dictation: Command Palette, an app-bound Mode, selected-text Transform, Voice
+Query, meeting capture, Correct and Teach, and Keyboard Shortcuts. Settings →
+General can reopen the checklist.
+
+Transform, meeting, and correction rows read the durable local activity
+counters. Voice Query requires a successful setup or a real query. A Mode row
+requires an explicit `modeId` on an app profile; the built-in default Mode does
+not count. Command Palette and Keyboard Shortcuts complete only after their
+views open. Completing setup records the current evidence as a baseline, so a
+fresh setup cycle starts with every row incomplete. Existing installs without
+a discovery record keep credit for prior local usage and explicit
+configuration.
+
+Four event-driven hints are queued once: an expired double-tap window, the
+first new history entry, a dictation whose existing teaching context identifies
+an allow-listed browser, and a meeting entering post-stop processing. The
+stored record contains fixed hint IDs only. It never stores transcript text,
+selected text, site data, window titles, or meeting IDs. Dismissed hints do not
+return after relaunch. Both Run Setup Assistant entry points clear the
+checklist, evidence baseline, and hint state.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `app/src/components/onboarding/OnboardingFlow.tsx` | The wizard |
 | `app/src/lib/onboarding.ts` | Completion-flag persistence |
+| `app/src/lib/discovery.ts` | Checklist evidence, dismissal, and once-only hint persistence |
+| `app/src/lib/hooks/useDiscovery.ts` | Existing-event listeners and live evidence updates |
+| `app/src/components/home/DiscoveryChecklist.tsx` | Home checklist |
 | `app/src/components/ModelDownloader.tsx` | `ModelDownloadPanel` extracted for reuse |
 | `app/src-tauri/src/commands/permissions.rs` | `request_microphone_access` (block2 completion handler) |

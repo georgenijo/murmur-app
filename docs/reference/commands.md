@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 214 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 216 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -203,8 +203,10 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `launch_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<(), String>` | Query-review-only equivalent using the exact failed pass's immutable provider, executable, and Rust-owned environment. |
 | `probe_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<bool, String>` | Query-review-only bounded re-probe used after interactive sign-in; no stdout/stderr content crosses this IPC boundary. |
 | `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Revalidates the configured provider/executable/fixed argv; freezes local ASR, Rust-owned environment, requested `none` / `application` / `selection` context, and `retainQueryHistory` consent for the exact pass; then starts query capture. |
-| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, appends the transcript and frozen context together as one final argv element, and streams bounded stdout to the query popover. |
-| `cancel_query` | `query_pass_id: u64` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. |
+| `request_query_follow_up` | `query_pass_id: u64` | `Result<(), String>` | Query-review-only, content-free request for an exact Ready pass; the main window snapshots current Settings before allocating and starting capture. |
+| `allocate_query_follow_up` | `query_pass_id: u64` | `Result<u64, String>` | Main-only, one-shot consumption of a Rust-owned review request. Reserves a fresh pass and retains only the previous original question/answer in memory; duplicate, stale, cancelled, or child-owned passes are refused. |
+| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, folds any exact previous question/answer and frozen context with the new question as one bounded final argv element, and streams bounded stdout to the query popover. |
+| `cancel_query` | `query_pass_id: u64`, `follow_up_from_pass_id: Option<u64>` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. The optional source ID is query-review-only and resolves its Rust-owned pending successor when Close/Escape beats the new state event. |
 | `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
 | `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, provider, usage, signInFix, contextSummary, capabilitySummary}` only to `query-review`. The capability summary includes the frozen trusted path when enabled. Other windows receive empty content. |
 | `get_query_capabilities` | — | `CapabilityStatus` | Main-only session profile and canonical trusted path. Never persisted in frontend storage. |

@@ -1,9 +1,18 @@
 interface MainErrorBannerProps {
   message: string;
   onDismiss: () => void;
+  actionLabel?: string;
+  actionBusy?: boolean;
+  onAction?: () => void;
 }
 
-export function MainErrorBanner({ message, onDismiss }: MainErrorBannerProps) {
+export function MainErrorBanner({
+  message,
+  onDismiss,
+  actionLabel,
+  actionBusy = false,
+  onAction,
+}: MainErrorBannerProps) {
   return (
     <div
       role="alert"
@@ -14,6 +23,16 @@ export function MainErrorBanner({ message, onDismiss }: MainErrorBannerProps) {
       <p className="min-w-0 flex-1 break-words text-xs leading-5 text-error">
         {message}
       </p>
+      {actionLabel && onAction && (
+        <button
+          type="button"
+          onClick={onAction}
+          disabled={actionBusy}
+          className="ui-dashboard-action h-7 shrink-0 px-2.5 text-xs disabled:cursor-wait disabled:opacity-60"
+        >
+          {actionBusy ? 'Trying…' : actionLabel}
+        </button>
+      )}
       <button
         type="button"
         onClick={onDismiss}
