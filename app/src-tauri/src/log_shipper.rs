@@ -123,13 +123,20 @@ fn shippable_payload(data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len());
     for line in data.split_inclusive(|byte| *byte == b'\n') {
         let body = line.strip_suffix(b"\n").unwrap_or(line);
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
             continue;
         };
         if value.get("stream").and_then(|stream| stream.as_str()) == Some("meeting") {
             continue;
         }
-        output.extend_from_slice(body);
+        if crate::telemetry::strip_private_meeting_metadata(&mut value) {
+            let Ok(sanitized) = serde_json::to_vec(&value) else {
+                continue;
+            };
+            output.extend_from_slice(&sanitized);
+        } else {
+            output.extend_from_slice(body);
+        }
         output.push(b'\n');
     }
     output
@@ -497,12 +504,16 @@ mod tests {
     #[test]
     fn meeting_sessions_and_malformed_lines_are_excluded_from_shipper_output() {
         const TRANSCRIPT_SENTINEL: &str = "PRIVATE MEETING TRANSCRIPT SENTINEL";
+        const TITLE_SENTINEL: &str = "PRIVATE MEETING TITLE SENTINEL";
+        const ATTENDEE_SENTINEL: &str = "PRIVATE MEETING ATTENDEE SENTINEL";
         let input = format!(
-            "{{\"stream\":\"meeting\",\"data\":{{\"transcript\":\"{TRANSCRIPT_SENTINEL}\"}}}}\n{{\"stream\":\"pipeline\",\"data\":{{\"event_code\":\"recording.started\"}}}}\nnot-json\n"
+            "{{\"stream\":\"meeting\",\"data\":{{\"transcript\":\"{TRANSCRIPT_SENTINEL}\"}}}}\n{{\"stream\":\"pipeline\",\"data\":{{\"event_code\":\"recording.started\",\"title\":\"{TITLE_SENTINEL}\",\"attendees\":[\"{ATTENDEE_SENTINEL}\"]}}}}\nnot-json\n"
         );
         let output = shippable_payload(input.as_bytes());
         let output = String::from_utf8(output).unwrap();
         assert!(!output.contains(TRANSCRIPT_SENTINEL));
+        assert!(!output.contains(TITLE_SENTINEL));
+        assert!(!output.contains(ATTENDEE_SENTINEL));
         assert!(!output.contains("meeting"));
         assert!(!output.contains("not-json"));
         assert!(output.contains("pipeline"));

@@ -12,7 +12,7 @@ const segments: MeetingSegment[] = [
 ];
 
 const detail: MeetingDetail = {
-  session: { id: 'meeting', startedAtMs: 1, endedAtMs: 2, status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true, retainAudio: false, durationMs: 1_000, segmentCount: 1, preview: 'Raw evidence', errorCode: null },
+  session: { id: 'meeting', title: null, titleSource: null, attendees: [], startedAtMs: 1, endedAtMs: 2, status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true, retainAudio: false, durationMs: 1_000, segmentCount: 1, preview: 'Raw evidence', errorCode: null },
   segments,
   labels: { me: 'George', them: 'Team' },
   remoteSpeakers: [{ speakerId: 1, label: 'Casey' }],
@@ -26,6 +26,7 @@ function controller(overrides: Partial<ReturnType<typeof useMeetings>> = {}): Re
   return {
     detail,
     summaryStatus: { generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null },
+    saveMetadata: vi.fn().mockResolvedValue(true),
     saveReview: vi.fn().mockResolvedValue(true),
     restoreReview: vi.fn().mockResolvedValue(true),
     copy: vi.fn().mockResolvedValue(true),
@@ -51,6 +52,37 @@ describe('MeetingReviewWorkspace', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('saves a manual title and attendees without changing the review', async () => {
+    const saveMetadata = vi.fn().mockResolvedValue(true);
+    const saveReview = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveMetadata, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Name meeting')?.click());
+    const title = container.querySelector<HTMLInputElement>('form[aria-label="Name meeting"] input');
+    const attendees = container.querySelector<HTMLTextAreaElement>('form[aria-label="Name meeting"] textarea');
+    if (!title || !attendees) throw new Error('Missing meeting metadata fields');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, '  Planning session  ');
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(attendees, 'Alex\n\n Casey ');
+      attendees.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save details')?.click());
+    expect(saveMetadata).toHaveBeenCalledWith({ sessionId: 'meeting', title: 'Planning session', attendees: ['Alex', 'Casey'] });
+    expect(saveReview).not.toHaveBeenCalled();
+  });
+
+  it('keeps naming input after a failed save and clears it when selecting another meeting', async () => {
+    const saveMetadata = vi.fn().mockResolvedValue(false);
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveMetadata })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Name meeting')?.click());
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save details')?.click());
+    expect(container.querySelector('form[aria-label="Name meeting"]')).not.toBeNull();
+    const other: MeetingDetail = { ...detail, session: { ...detail.session, id: 'other', title: 'Other meeting', titleSource: 'manual' } };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: other, saveMetadata })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    expect(container.querySelector('form[aria-label="Name meeting"]')).toBeNull();
+    expect(container.textContent).toContain('Other meeting');
   });
 
   it('copies and exports captions with the selected format and explains their scope', async () => {

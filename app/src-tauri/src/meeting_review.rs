@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 mod subtitles;
 
 pub const MEETING_REVIEW_SCHEMA: &str = "murmur.meeting-review.v1";
-pub const MEETING_REVIEW_EXPORT_SCHEMA: &str = "murmur.meeting-review-export.v1";
+pub const MEETING_REVIEW_EXPORT_SCHEMA: &str = "murmur.meeting-review-export.v2";
 const MAX_LABEL_BYTES: usize = 80;
 const MAX_TEXT_BYTES: usize = 16_384;
 const MAX_ITEMS: usize = 200;
@@ -497,6 +497,19 @@ pub fn render_export(
         "MEETING REVIEW\n\n".to_string()
     };
     output.push_str(&format!(
+        "Title: {}\n",
+        workspace.session.title.as_deref().unwrap_or("None")
+    ));
+    if workspace.session.attendees.is_empty() {
+        output.push_str("Attendees: None\n");
+    } else {
+        output.push_str("Attendees:\n");
+        for attendee in &workspace.session.attendees {
+            output.push_str(&format!("- {attendee}\n"));
+        }
+    }
+    output.push('\n');
+    output.push_str(&format!(
         "Me: {}\nThem: {}\n\n",
         workspace.labels.me, workspace.labels.them
     ));
@@ -712,6 +725,9 @@ mod tests {
         let workspace = MeetingWorkspace {
             session: MeetingSession {
                 id: "meeting".into(),
+                title: Some("Quarterly planning".into()),
+                title_source: Some(crate::meeting_store::MeetingTitleSource::Manual),
+                attendees: vec!["Casey".into(), "Morgan".into()],
                 started_at_ms: 1,
                 ended_at_ms: Some(2),
                 status: crate::meeting_store::MeetingSessionStatus::Complete,
@@ -744,10 +760,18 @@ mod tests {
         };
 
         let text = render_export(&workspace, MeetingReviewExportFormat::Text).unwrap();
+        assert!(text.contains("Title: Quarterly planning"));
+        assert!(text.contains("Attendees:\n- Casey\n- Morgan"));
         assert!(text.contains("[0:00] George [me]: Mic"));
         assert!(text.contains("[0:01] Casey [them]: Remote"));
         assert!(text.contains("[0:02] Team [them]: Uncertain"));
+        let markdown = render_export(&workspace, MeetingReviewExportFormat::Markdown).unwrap();
+        assert!(markdown.contains("Title: Quarterly planning"));
+        assert!(markdown.contains("Attendees:\n- Casey\n- Morgan"));
         let json = render_export(&workspace, MeetingReviewExportFormat::Json).unwrap();
+        assert!(json.contains(MEETING_REVIEW_EXPORT_SCHEMA));
+        assert!(json.contains("\"title\": \"Quarterly planning\""));
+        assert!(json.contains("\"attendees\": ["));
         assert!(json.contains("\"displayLabel\": \"Casey\""));
         assert!(json.contains("\"remoteSpeakers\""));
     }

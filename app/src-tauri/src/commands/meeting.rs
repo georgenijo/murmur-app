@@ -5,7 +5,9 @@ use crate::meeting_review::{
     MeetingReviewExportFormat, MeetingWorkspace, RestoreMeetingReviewRequest,
     SaveMeetingReviewRequest,
 };
-use crate::meeting_store::{MeetingPage, MeetingRepository, MeetingSession, MeetingStoreStatus};
+use crate::meeting_store::{
+    MeetingPage, MeetingRepository, MeetingSession, MeetingStoreStatus, SaveMeetingMetadataRequest,
+};
 use crate::microphone_auto::SmartAutoRequest;
 use crate::state::{AppState, DictationStatus};
 use crate::{MutexExt, State};
@@ -13,6 +15,14 @@ use serde::Deserialize;
 use std::sync::atomic::Ordering;
 use tauri::Emitter;
 use uuid::Uuid;
+
+fn require_main_window(label: &str) -> Result<(), String> {
+    if label == "main" {
+        Ok(())
+    } else {
+        Err("Meeting metadata can only be changed in the main window.".into())
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -317,6 +327,16 @@ pub fn get_meeting(id: String, state: tauri::State<'_, State>) -> Result<Meeting
 }
 
 #[tauri::command]
+pub fn save_meeting_metadata(
+    window: tauri::WebviewWindow,
+    request: SaveMeetingMetadataRequest,
+    state: tauri::State<'_, State>,
+) -> Result<MeetingWorkspace, String> {
+    require_main_window(window.label())?;
+    state.meeting_store.repository()?.save_metadata(request)
+}
+
+#[tauri::command]
 pub fn save_meeting_review(
     request: SaveMeetingReviewRequest,
     state: tauri::State<'_, State>,
@@ -437,6 +457,14 @@ pub fn rename_meeting_remote_speaker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meeting_metadata_changes_require_the_main_window() {
+        assert!(require_main_window("main").is_ok());
+        for label in ["overlay", "diagnostics", "transform-review"] {
+            assert!(require_main_window(label).is_err());
+        }
+    }
 
     #[test]
     fn clamp_retention_days_table() {
