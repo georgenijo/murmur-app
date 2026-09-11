@@ -90,8 +90,10 @@ describe('OverlayPill transient cues', () => {
     const action = container.querySelector<HTMLButtonElement>('[aria-label="Try delivery again"]')!;
     expect(action.textContent).toBe('Try again');
     expect(action.tabIndex).toBe(-1);
-    expect(action.classList).toContain('text-[7px]');
-    expect(action.classList).toContain('tracking-[-0.03em]');
+    expect(action.style.fontSize).toBe('8px');
+    expect(action.style.fontWeight).toBe('600');
+    expect(action.style.lineHeight).toBe('1');
+    expect(action.style.letterSpacing).toBe('-0.03em');
     const pointerDown = new MouseEvent('pointerdown', { bubbles: true, cancelable: true });
     action.dispatchEvent(pointerDown);
     expect(pointerDown.defaultPrevented).toBe(true);

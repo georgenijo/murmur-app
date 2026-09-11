@@ -230,7 +230,13 @@ export function OverlayPill({
                 tabIndex={-1}
                 title={deliveryCue?.message}
                 aria-label="Try delivery again"
-                className="whitespace-nowrap text-[7px] font-semibold leading-none tracking-[-0.03em] text-emerald-200 hover:text-white"
+                className="whitespace-nowrap text-emerald-200 hover:text-white"
+                style={{
+                  fontSize: '8px',
+                  fontWeight: 600,
+                  lineHeight: 1,
+                  letterSpacing: '-0.03em',
+                }}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
