@@ -1,13 +1,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { KnowledgeEntry } from '../../lib/knowledge';
+import type { KnowledgeDraft, KnowledgeEntry } from '../../lib/knowledge';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(async () => {}),
   loadMore: vi.fn(async () => {}),
-  upsert: vi.fn(async () => ({})),
+  upsert: vi.fn(async (_draft: KnowledgeDraft) => ({})),
   toggle: vi.fn(async () => ({})),
   remove: vi.fn(async () => 2),
   preview: vi.fn(async () => ({ output: 'Yesterday:\n- done', matched: true, clipboardRequired: false, clipboardRead: false })),
@@ -25,10 +25,22 @@ const ENTRY: KnowledgeEntry = {
   voiceCommand: { commandType: 'snippet', allowClipboardRead: false },
 };
 
+const DUPLICATE_SOURCE: KnowledgeEntry = {
+  id: 'voice-2',
+  payload: { kind: 'snippet', trigger: 'mail signature', body: 'Regards,\nGeorge\n{{clipboard}}' },
+  enabled: false,
+  scope: { kind: 'app', bundleId: 'com.apple.mail' },
+  provenance: 'manual',
+  createdAtMs: 2,
+  updatedAtMs: 3,
+  revision: 4,
+  voiceCommand: { commandType: 'snippet', allowClipboardRead: true },
+};
+
 vi.mock('../../lib/hooks/useKnowledge', () => ({
   useKnowledge: () => ({
     status: { availability: 'ready', schemaVersion: 3, recordCount: 1, storeRevision: 4, recoveryAtMs: null, message: null },
-    entries: [ENTRY], total: 1, nextOffset: null, loading: false, error: null,
+    entries: [ENTRY, DUPLICATE_SOURCE], total: 2, nextOffset: null, loading: false, error: null,
     refresh: mocks.refresh, loadMore: mocks.loadMore, setStatus: vi.fn(),
   }),
 }));
@@ -108,5 +120,60 @@ describe('VoiceCommandsManager', () => {
       scope: { kind: 'app', bundleId: 'com.apple.mail' },
       voiceCommand: { commandType: 'snippet', allowClipboardRead: true },
     }));
+  });
+
+  it('duplicates into an independent validated draft without reading the clipboard', async () => {
+    const sourceRow = Array.from(container.querySelectorAll('li')).find((row) => row.textContent?.includes('mail signature')) as HTMLLIElement;
+    await act(async () => button(sourceRow, 'Duplicate').click());
+
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Duplicate Voice Command');
+    expect((container.querySelector('[aria-label="Voice Command type"]') as HTMLSelectElement).value).toBe('snippet');
+    expect((container.querySelector('[aria-label="Voice Command scope"]') as HTMLSelectElement).value).toBe('app');
+    expect((container.querySelector('[aria-label="Voice Command application"]') as HTMLSelectElement).value).toBe('com.apple.mail');
+    expect((container.querySelector('[aria-label="Voice Command phrase"]') as HTMLInputElement).value).toBe('');
+    expect((container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement).value).toBe('');
+    expect((container.querySelector('[aria-label="Voice Command content"]') as HTMLTextAreaElement).value).toBe('Regards,\nGeorge\n{{clipboard}}');
+    expect((container.querySelector('[aria-label="Allow clipboard reading"]') as HTMLInputElement).checked).toBe(true);
+    expect((container.querySelector('input[type="checkbox"]:not([aria-label])') as HTMLInputElement).checked).toBe(false);
+    expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.upsert).not.toHaveBeenCalled();
+
+    await act(async () => button(container, 'Save command').click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Enter a spoken phrase.');
+    expect(mocks.upsert).not.toHaveBeenCalled();
+
+    const phrase = container.querySelector('[aria-label="Voice Command phrase"]') as HTMLInputElement;
+    for (const character of 'alternate mail signature') {
+      await act(async () => setValue(phrase, `${phrase.value}${character}`));
+    }
+    expect((container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement).value).toBe('alternate mail signature');
+    await act(async () => button(container, 'Test').click());
+    expect(mocks.preview).toHaveBeenCalledWith({
+      payload: { kind: 'snippet', trigger: 'alternate mail signature', body: 'Regards,\nGeorge\n{{clipboard}}' },
+      enabled: false,
+      scope: { kind: 'app', bundleId: 'com.apple.mail' },
+      voiceCommand: { commandType: 'snippet', allowClipboardRead: true },
+    }, 'alternate mail signature', false);
+    const previewPhrase = container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement;
+    await act(async () => setValue(previewPhrase, 'custom preview phrase'));
+    await act(async () => setValue(phrase, 'alternate mail signature two'));
+    expect(previewPhrase.value).toBe('custom preview phrase');
+
+    mocks.upsert.mockRejectedValueOnce(new Error('same-scope phrase conflict'));
+    await act(async () => button(container, 'Save command').click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('same-scope phrase conflict');
+    expect(container.textContent).toContain('mail signature');
+
+    await act(async () => button(container, 'Save command').click());
+    const savedDraft = mocks.upsert.mock.calls[mocks.upsert.mock.calls.length - 1]?.[0];
+    expect(savedDraft).toEqual({
+      payload: { kind: 'snippet', trigger: 'alternate mail signature two', body: 'Regards,\nGeorge\n{{clipboard}}' },
+      enabled: false,
+      scope: { kind: 'app', bundleId: 'com.apple.mail' },
+      voiceCommand: { commandType: 'snippet', allowClipboardRead: true },
+    });
+    expect(savedDraft).not.toHaveProperty('id');
+    expect(savedDraft).not.toHaveProperty('expectedRevision');
+    expect(mocks.preview).toHaveBeenCalledTimes(1);
   });
 });
