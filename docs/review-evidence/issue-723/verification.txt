@@ -1,0 +1,16 @@
+Issue #723 verification
+Reviewed final source: 416a02d87621837b7e07ba1b2418fe6cdfa8a940
+Native bundle source: e809585e71faee22164166f4cf5d7550f58750e3 (416a02d changes only the cancellation test).
+cargo fmt --all: PASS
+cargo check: PASS
+cargo test -- --test-threads=1: 1389 passed, 0 failed, 10 ignored
+cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings: PASS
+npx tsc --noEmit: PASS
+npm test: 142 files, 1363 tests passed
+Reference documentation: 199 registered commands, PASS
+Markdown links: PASS
+Independent Astra high review: PASS
+Real installed Base model check: PASS; nonempty CPU preview within cooperative 3s deadline, cancellation during actual native inference, final Metal transcript byte-identical before/after preview. Whole test 2.38s.
+Native observed: Base microphone recording of locally synthesized 10.58s speech clip; generation-scoped partial events emitted and native preview presentation reported shown/hidden; exactly one terminal success/history result per stopped recording, final text visible in native UI. Repeated recording with different speech produced its own final result.
+Native incomplete: direct visual inspection/screenshot of preview text, strictly timed 10s capture, and immediate-restart visual stale-partial check. The app-scoped computer-use tool does not expose the separate preview panel; global key/extra capture tooling lacks OS consent and the computer-use safety policy blocks authentication service interaction. Captures lasted longer than the spoken fixture, so these are partial native results, not a completed acceptance claim.
+Murmur Bench: pending before merge; not run in this local-only, no-merge task.

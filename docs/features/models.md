@@ -87,6 +87,12 @@ backend errors.
 Memory-pressure unload is an explicit manager operation and does not select or
 load another model. Murmur has no automatic cross-model fallback.
 
+Whisper Tiny/Base live preview uses an additional recording-local CPU context,
+with two threads, a six-second audio tail, and cancellation/deadline checks.
+It is released after capture ends and the last partial worker finishes. Small,
+Medium, and Large v3 Turbo report preview disabled. Provisional inference never
+borrows or mutates the cached final Metal state described below.
+
 ### WhisperState Caching
 
 As of v0.7.8, the Whisper backend caches both the `WhisperContext` and `WhisperState` across transcriptions. Previously, `create_state()` was called per transcription, causing expensive GPU/Metal buffer alloc/free cycles. Now:

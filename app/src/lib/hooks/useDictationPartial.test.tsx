@@ -100,6 +100,32 @@ describe('useDictationPartial', () => {
     expect(container.textContent).toBe('still going');
   });
 
+  it('rejects queued partials after stop and ignores delayed older generation events', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 9 } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 9, text: 'late old text' } });
+    });
+    expect(container.textContent).toBe('');
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 10 } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 10, text: 'new take' } });
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 9 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 9, text: 'stale' } });
+    });
+    expect(container.textContent).toBe('new take');
+  });
+
+  it('clears text when native presentation rejects a stopped recording', async () => {
+    mocks.invoke.mockRejectedValue(new Error('recording stopped'));
+    await act(async () => {
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 12, text: 'queued' } });
+    });
+    expect(container.textContent).toBe('');
+  });
+
   it('rejects malformed and unbounded payloads and removes listeners', async () => {
     await act(async () => {
       mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
