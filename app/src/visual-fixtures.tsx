@@ -20,7 +20,7 @@ import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
-import { toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
+import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
@@ -544,6 +544,7 @@ function VisualFixture() {
               <HomeDashboard
                 historyEntries={historyEntries}
                 onClearHistory={() => setHistoryEntries([])}
+                onDeleteHistoryEntries={(targets) => setHistoryEntries((current) => removeHistoryEntries(current, targets))}
                 onUpdateHistoryEntry={() => {}}
                 onToggleHistoryPinned={(entry) => setHistoryEntries((current) => toggleHistoryEntryPinned(current, entry).entries)}
                 onTranscribeFile={() => {}}

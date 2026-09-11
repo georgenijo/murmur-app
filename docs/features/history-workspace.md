@@ -109,9 +109,16 @@ filters still evaluate the complete retained history before this presentation
 window is applied, and exports include the complete filtered result set rather
 than only the currently mounted batch.
 
-## Clearing
+## Deleting
 
 `Clear History` removes everything. It is a two-step confirm that disarms after four seconds — deliberately not `window.confirm`, since a native modal steals focus from the main window.
+
+When search or filters narrow the transcript list, **Delete shown** removes the
+complete matching set used by Export, including matches beyond the mounted
+30-row batch. Its two-step confirmation also disarms after four seconds. A
+change to the search, filters, or matching entries disarms it so the confirmed
+scope always matches the displayed count. Pinned matches are deleted with the
+rest of the set; nonmatching entries and their pin state stay intact.
 
 ## Export
 

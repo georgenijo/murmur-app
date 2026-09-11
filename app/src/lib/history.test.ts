@@ -10,6 +10,7 @@ import {
   historyExportFileName,
   loadHistory,
   matchSegments,
+  removeHistoryEntries,
   saveHistory,
   searchTokens,
   sortForDisplay,
@@ -140,6 +141,18 @@ describe('updateHistoryEntry', () => {
     const next = updateHistoryEntry(entries, 'a', 'new');
     expect(next[0].text).toBe('new');
     expect(next[1].text).toBe('keep');
+  });
+});
+
+describe('removeHistoryEntries', () => {
+  it('removes exact entry objects without treating duplicate ids as the same row', () => {
+    const matching = entry({ id: 'duplicate', text: 'remove me', pinned: true });
+    const nonmatching = entry({ id: 'duplicate', text: 'keep me', pinned: true });
+
+    const next = removeHistoryEntries([matching, nonmatching], [matching]);
+
+    expect(next).toEqual([nonmatching]);
+    expect(next[0].pinned).toBe(true);
   });
 });
 

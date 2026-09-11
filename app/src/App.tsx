@@ -269,7 +269,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, togglePinned, clearHistory } = useHistoryManagement(settings.retainHistory);
+  const { historyEntries, addEntry, updateEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
@@ -888,6 +888,7 @@ function App() {
                 <HomeDashboard
                   historyEntries={historyEntries}
                   onClearHistory={clearHistory}
+                  onDeleteHistoryEntries={deleteEntries}
                   onUpdateHistoryEntry={updateEntry}
                   onToggleHistoryPinned={togglePinned}
                   focusSearchToken={historySearchToken}
