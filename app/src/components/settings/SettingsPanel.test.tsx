@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
 import { CUSTOM_QUERY_PRESET } from '../../lib/queryProviders';
 import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import type { TransformModelStatus } from '../../lib/transformSettings';
+import { SettingsSurfaceActiveContext } from './SettingsSurfaceContext';
 import type { ModelHardwareGuidance } from '../../lib/modelHardwareGuidance';
 import {
   SETTINGS_CATEGORIES,
@@ -164,6 +165,7 @@ describe('SettingsPanel information architecture', () => {
     isOpen = true,
     settings: Settings = DEFAULT_SETTINGS,
     pageRequest: SettingsPageRequest | null = null,
+    extras: Pick<Parameters<typeof SettingsPanel>[0], 'onDiscoveryChecklistReopen' | 'onPageOpened' | 'activeRef'> = {},
   ) {
     void isOpen;
     return root.render(
@@ -182,6 +184,7 @@ describe('SettingsPanel information architecture', () => {
         updateStatus={{ phase: 'idle' }}
         configureError={null}
         pageRequest={pageRequest}
+        {...extras}
       />,
     );
   }
@@ -257,6 +260,124 @@ describe('SettingsPanel information architecture', () => {
       .find((legend) => legend.textContent === 'Browser sites');
     expect(browserSites).toBeDefined();
     expect(browserSites?.closest('details')).toBeNull();
+  });
+
+  it('credits only the Settings page rendered after a hidden route changes', async () => {
+    const activeRef = { current: false };
+    const onPageOpened = vi.fn();
+    await act(async () => renderPanel(false, DEFAULT_SETTINGS, { page: 'shortcuts', token: 1 }, {
+      onPageOpened,
+      activeRef,
+    }));
+    expect(onPageOpened).not.toHaveBeenCalled();
+
+    activeRef.current = true;
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+      page: 'ai-transform',
+      target: 'transform-practice',
+      token: 2,
+    }, { onPageOpened, activeRef }));
+    expect(container.querySelector('h1')?.textContent).toBe('Selected-Text Rewrite');
+    expect(onPageOpened).toHaveBeenCalledWith('ai-transform');
+    expect(onPageOpened).not.toHaveBeenCalledWith('shortcuts');
+  });
+
+  it.each([1, 2])('credits a retained page when Settings becomes visible with request %i', async (token) => {
+    const activeRef = { current: false };
+    const onPageOpened = vi.fn();
+    const renderVisiblePanel = (visible: boolean, requestToken: number) => root.render(
+      <SettingsSurfaceActiveContext.Provider value={visible}>
+        <SettingsPanel
+          settings={DEFAULT_SETTINGS}
+          onUpdateSettings={onUpdateSettings}
+          initialized
+          status="idle"
+          onResetStats={vi.fn()}
+          onRerunSetup={vi.fn()}
+          accessibilityGranted
+          onCheckForUpdate={vi.fn(async () => {})}
+          onDownloadUpdate={vi.fn()}
+          onRestartUpdate={vi.fn()}
+          onOpenUpdate={vi.fn()}
+          updateStatus={{ phase: 'idle' }}
+          configureError={null}
+          pageRequest={{ page: 'shortcuts', token: requestToken }}
+          onPageOpened={onPageOpened}
+          activeRef={activeRef}
+        />
+      </SettingsSurfaceActiveContext.Provider>,
+    );
+    await act(async () => renderVisiblePanel(false, 1));
+    expect(onPageOpened).not.toHaveBeenCalled();
+
+    activeRef.current = true;
+    await act(async () => renderVisiblePanel(true, token));
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(onPageOpened).toHaveBeenCalledExactlyOnceWith('shortcuts');
+  });
+
+  it('reopens the feature checklist from General and reports rendered pages', async () => {
+    const onDiscoveryChecklistReopen = vi.fn();
+    const onPageOpened = vi.fn();
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, null, {
+      onDiscoveryChecklistReopen,
+      onPageOpened,
+    }));
+    onPageOpened.mockClear();
+    const general = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .find((button) => button.textContent === 'General') as HTMLButtonElement;
+    await act(async () => general.click());
+    expect(onPageOpened).toHaveBeenCalledWith('general');
+    const show = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Show feature checklist') as HTMLButtonElement;
+    await act(async () => show.click());
+    expect(onDiscoveryChecklistReopen).toHaveBeenCalledOnce();
+
+    const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Keyboard Shortcuts')) as HTMLButtonElement;
+    await act(async () => shortcuts.click());
+    expect(onPageOpened).toHaveBeenCalledWith('shortcuts');
+  });
+
+  it('routes an empty Mode binding through app creation and returns to binding', async () => {
+    const customMode = {
+      id: 'mode.focus', name: 'Focus', builtIn: false, enabled: true,
+      writingStyle: null, cleanupEnabled: null, smartFormattingEnabled: null,
+      cliFormattingEnabled: null, vocabularyPolicy: 'inherit' as const,
+      contextPolicy: 'none' as const, modelId: null, language: null, autoPaste: null,
+    };
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, modes: [customMode] }));
+    const modes = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .find((button) => button.textContent === 'Modes') as HTMLButtonElement;
+    await act(async () => modes.click());
+    const focusMode = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Focus')) as HTMLButtonElement;
+    await act(async () => focusMode.click());
+    const addApp = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Add an app') as HTMLButtonElement;
+    await act(async () => addApp.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Delivery');
+    expect((container.querySelector('details[data-setting-target="app-overrides"]') as HTMLDetailsElement).open).toBe(true);
+
+    await act(async () => renderPanel(true, {
+      ...DEFAULT_SETTINGS,
+      modes: [customMode],
+      appProfiles: [{
+        bundleId: 'com.example.Editor',
+        label: 'Editor',
+        autoPasteOverride: null,
+        cleanupOverride: null,
+        smartFormattingOverride: null,
+        cliFormattingOverride: null,
+        writingStyle: null,
+        ideContextEnabled: false,
+        ideProjectRoots: [],
+        queryContextExcluded: false,
+      }],
+    }));
+    expect(container.querySelector('h1')?.textContent).toBe('Modes');
+    expect((container.querySelector('[aria-label="Mode name"]') as HTMLInputElement).value).toBe('Focus');
+    expect(container.textContent).toContain('Editor');
   });
 
   it('commits keyboard changes to voice-detection sensitivity', async () => {

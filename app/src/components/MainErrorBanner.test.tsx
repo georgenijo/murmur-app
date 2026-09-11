@@ -51,4 +51,34 @@ describe('MainErrorBanner', () => {
     expect(message.classList).toContain('break-words');
     expect(alert.querySelector('button')?.classList).toContain('shrink-0');
   });
+
+  it('offers a retry action and disables it while retrying', async () => {
+    const onAction = vi.fn();
+    await act(async () => root.render(
+      <MainErrorBanner
+        message="Text is in your clipboard."
+        onDismiss={vi.fn()}
+        actionLabel="Try again"
+        onAction={onAction}
+      />,
+    ));
+
+    const action = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Try again') as HTMLButtonElement;
+    await act(async () => action.click());
+    expect(onAction).toHaveBeenCalledOnce();
+
+    await act(async () => root.render(
+      <MainErrorBanner
+        message="Trying delivery again…"
+        onDismiss={vi.fn()}
+        actionLabel="Try again"
+        actionBusy
+        onAction={onAction}
+      />,
+    ));
+    const busyAction = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Trying…') as HTMLButtonElement;
+    expect(busyAction.disabled).toBe(true);
+  });
 });

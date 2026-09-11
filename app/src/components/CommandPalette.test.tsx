@@ -15,9 +15,9 @@ describe('CommandPalette', () => {
   const selectedRow = () => container.querySelector('[aria-selected="true"]');
   const input = () => container.querySelector('input') as HTMLInputElement;
 
-  async function render(isOpen = true) {
+  async function render(isOpen = true, onOpened?: () => void) {
     await act(async () => {
-      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} />);
+      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} onOpened={onOpened} />);
     });
   }
 
@@ -71,6 +71,14 @@ describe('CommandPalette', () => {
     expect(rows()).toHaveLength(3);
     expect(selectedRow()?.textContent).toContain('Start recording');
     expect(document.activeElement).toBe(input());
+  });
+
+  it('records completion only after the palette opens', async () => {
+    const onOpened = vi.fn();
+    await render(false, onOpened);
+    expect(onOpened).not.toHaveBeenCalled();
+    await render(true, onOpened);
+    expect(onOpened).toHaveBeenCalledOnce();
   });
 
   it('filters as you type', async () => {
