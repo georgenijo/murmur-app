@@ -5,6 +5,8 @@ export interface OverlayGeometry {
   dropdownH: number; wingW: number;
 }
 
+export type OverlayContent = 'controls' | 'meeting_suggestion';
+
 const KEYS = ['windowW', 'collapsedH', 'expandedH', 'pillIdleW', 'pillActiveW',
   'pillMarginIdle', 'pillMarginActive', 'dropdownH', 'wingW'] as const;
 

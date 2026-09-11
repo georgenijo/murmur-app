@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 210 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 213 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -62,7 +62,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses every competing audio/model owner. |
+| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions, suggestionToken?}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses competing audio/model/query owners. An optional suggestion token requires the main window and current native frontmost eligibility under the recording transition lock; Rust consumes the suggestion and saves its Calendar title and attendees before capture starts. |
 | `stop_meeting` | — | `Result<(), String>` | Requests capture teardown; the worker must destroy the IOProc, aggregate device, and tap before acknowledging. Pending durable chunks continue through serialized inference. |
 | `get_meeting_status` | — | `MeetingRuntimeStatus` | Current generation, session, phase, elapsed time, per-channel activity, and stable failure code. |
 | `get_system_audio_permission_status` | — | `SystemAudioPermissionState` | Returns the cached `unknown` / `granted` / `denied` / `unsupported` state without creating a tap. |
@@ -99,6 +99,21 @@ seconds to respond. A timed-out worker retains the single Calendar operation
 slot until it returns. Titles and participant names allow 200 characters each,
 with at most 100 participants per event. Oversized results fail instead of
 silently selecting or truncating details. See [Calendar naming](../features/meeting-calendar.md).
+
+## Meeting suggestions (`meeting_suggestions.rs`)
+
+Suggestions default off. Enabling requires Calendar permission already granted;
+the coordinator never opens a permission dialog. Prompt payloads are transient
+and available only to the main window and overlay.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `configure_meeting_suggestions` | `enabled: bool` | `Result<(), String>` | Main-window-only consent boundary. Enables bounded calendar snapshots and native change observation, or revokes pending workers, clears private event data, and releases the observer store. |
+| `get_meeting_suggestion` | — | `Result<Option<MeetingSuggestion>, String>` | Main/overlay-only current prompt with `token`, `title`, `startMs`, and `endMs`. Does not query Calendar; busy or expired prompts return null. |
+| `dismiss_meeting_suggestion` | `token: String` | `Result<(), String>` | Main/overlay-only dismissal of the exact prompt. An already dismissed or stale token does nothing. This occurrence stays suppressed for the app runtime, including off/on toggles. |
+
+Accept routes through `start_meeting`; there is no separate capture entry point.
+See [Meeting suggestions](../features/meeting-suggestions.md) for deadlines and eligibility.
 
 ## Meeting summaries (`commands/meeting_summary.rs`)
 

@@ -29,7 +29,7 @@ import { useOverlayExpansion, type OverlayExpansion } from './useOverlayExpansio
 
 // A pending set_overlay_expanded invocation the test controls.
 interface SurfaceCall {
-  args: { expanded: boolean };
+  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion' };
   resolve: (v: { windowW: number; windowH: number }) => void;
   reject: (e: unknown) => void;
 }
@@ -49,8 +49,12 @@ describe('useOverlayExpansion', () => {
   let surfaceCalls: SurfaceCall[];
   const listeners = new Map<string, (e: { payload: unknown }) => void>();
 
-  function Harness(props: { withIsland?: boolean }) {
-    current = useOverlayExpansion();
+  function Harness(props: {
+    withIsland?: boolean;
+    forcedOpen?: boolean;
+    content?: 'controls' | 'meeting_suggestion';
+  }) {
+    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content });
     return props.withIsland ? <div ref={current.islandRef} /> : null;
   }
 
@@ -66,7 +70,11 @@ describe('useOverlayExpansion', () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   }
 
-  async function mount(props: { withIsland?: boolean } = {}) {
+  async function mount(props: {
+    withIsland?: boolean;
+    forcedOpen?: boolean;
+    content?: 'controls' | 'meeting_suggestion';
+  } = {}) {
     // mount owns the root's whole lifecycle so beforeEach never leaks an empty
     // container. A prior mount (a test that re-mounts) is torn down first.
     if (root) { await act(async () => { root!.unmount(); }); }
@@ -141,6 +149,76 @@ describe('useOverlayExpansion', () => {
     // Ack landed — now the card reveals.
     expect(current.phase).toBe('open');
     expect(current.expanded).toBe(true);
+  });
+
+  it('force-opens a suggestion through the single writer and restores controls on dismissal', async () => {
+    await mount({ forcedOpen: true, content: 'meeting_suggestion' });
+    await flush();
+    const grow = surfaceCalls.find((call) => call.args.expanded);
+    expect(grow?.args).toEqual({ expanded: true, content: 'meeting_suggestion' });
+    await act(async () => grow?.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('open');
+
+    await act(async () => current.onHoverEnd());
+    await act(async () => vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS));
+    expect(surfaceCalls.filter((call) => !call.args.expanded)).toHaveLength(0);
+
+    await act(async () => {
+      root?.render(<Harness forcedOpen={false} content="controls" />);
+    });
+    expect(current.phase).toBe('closing');
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    await flush();
+    const collapse = surfaceCalls.find((call) => !call.args.expanded);
+    expect(collapse?.args).toEqual({ expanded: false, content: 'controls' });
+  });
+
+  it('reapplies an already-open controls surface before revealing suggestion content', async () => {
+    await mount();
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    await flush();
+    const controlsGrow = surfaceCalls.find((call) => call.args.expanded);
+    await act(async () => controlsGrow?.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('open');
+
+    await act(async () => {
+      root?.render(<Harness forcedOpen content="meeting_suggestion" />);
+    });
+    await flush();
+    expect(current.phase).toBe('opening');
+    expect(current.expanded).toBe(false);
+    const suggestionGrow = surfaceCalls.filter((call) => call.args.expanded)[1];
+    expect(suggestionGrow.args.content).toBe('meeting_suggestion');
+
+    await act(async () => suggestionGrow.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('open');
+  });
+
+  it('supersedes an in-flight controls grow when suggestion content arrives', async () => {
+    await mount();
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    await flush();
+    const controlsGrow = surfaceCalls.find((call) => call.args.expanded);
+    expect(controlsGrow?.args.content).toBe('controls');
+
+    await act(async () => {
+      root?.render(<Harness forcedOpen content="meeting_suggestion" />);
+    });
+    expect(current.phase).toBe('opening');
+    await act(async () => controlsGrow?.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('opening');
+
+    const suggestionGrow = surfaceCalls.filter((call) => call.args.expanded)[1];
+    expect(suggestionGrow.args.content).toBe('meeting_suggestion');
+    await act(async () => suggestionGrow.resolve(APPLIED));
+    await flush();
+    expect(current.phase).toBe('open');
   });
 
   it('leaves → closing → enqueues the shrink after the close animation → collapsed', async () => {

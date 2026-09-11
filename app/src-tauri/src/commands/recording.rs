@@ -117,13 +117,25 @@ fn try_begin_dictation_partial(app_state: &AppState, recording_id: u64) -> bool 
             .is_ok()
 }
 
-fn finish_dictation_partial(app_state: &AppState, recording_id: u64) {
-    let _ = app_state.dictation_partial_in_flight_id.compare_exchange(
-        recording_id,
-        0,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    );
+fn finish_dictation_partial(app_state: &AppState, recording_id: u64) -> bool {
+    app_state
+        .dictation_partial_in_flight_id
+        .compare_exchange(recording_id, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+struct DictationPartialLease<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
+    recording_id: u64,
+}
+
+impl<R: tauri::Runtime> Drop for DictationPartialLease<R> {
+    fn drop(&mut self) {
+        let state = self.app.state::<State>();
+        if finish_dictation_partial(&state.app_state, self.recording_id) {
+            state.meeting_suggestions.wake(false);
+        }
+    }
 }
 
 fn dictation_partial_window(samples: &[f32]) -> &[f32] {
@@ -184,7 +196,7 @@ async fn decode_one_dictation_partial(
     recording_id: u64,
     preview: WhisperPreview,
 ) -> bool {
-    let transcription = {
+    let (transcription, lease, retained_preview) = {
         let state = app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return false;
@@ -193,12 +205,16 @@ async fn decode_one_dictation_partial(
             emit_dictation_partial_tick(recording_id, "in_flight", 0);
             return true;
         }
+        let lease = DictationPartialLease {
+            app: app.clone(),
+            recording_id,
+        };
+        let retained_preview = preview;
         let Some(context) = state.app_state.active_context(recording_id) else {
-            finish_dictation_partial(&state.app_state, recording_id);
             emit_dictation_partial_tick(recording_id, "no_context", 0);
             return false;
         };
-        context.transcription.clone()
+        (context.transcription.clone(), lease, retained_preview)
     };
     let whisper = transcriber::whisper::supports_live_preview(&transcription.model_name);
     let window_limit = if whisper {
@@ -210,19 +226,22 @@ async fn decode_one_dictation_partial(
         audio_lifecycle::peek_dictation_samples(recording_id, window_limit).unwrap_or_default();
     let sample_count = samples.len();
     if sample_count < PARTIAL_MIN_SAMPLES {
-        finish_dictation_partial(&app.state::<State>().app_state, recording_id);
         emit_dictation_partial_tick(recording_id, "too_short", sample_count);
         return true;
     }
     let window = dictation_partial_window(&samples).to_vec();
     let worker_app = app.clone();
     let text = tokio::task::spawn_blocking(move || {
+        // The blocking worker outlives cancellation of its awaiting task. Its
+        // model locks and last preview Arc must drop before completion.
+        let _lease = lease;
+        let worker_preview = retained_preview;
         let state = worker_app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return None;
         }
         let raw = if whisper {
-            let mut preview = preview.lock_or_recover();
+            let mut preview = worker_preview.lock_or_recover();
             if preview.is_none() {
                 *preview =
                     transcriber::whisper::WhisperPreviewBackend::load(&transcription.model_name)
@@ -269,7 +288,6 @@ async fn decode_one_dictation_partial(
     .ok()
     .flatten();
     let state = app.state::<State>();
-    finish_dictation_partial(&state.app_state, recording_id);
     if let Some(text) = text {
         if dictation_partial_is_current(&state.app_state, recording_id) {
             let outcome = match app.emit_to(
@@ -803,11 +821,17 @@ impl Drop for FileTranscribeGuard<'_> {
     }
 }
 
-struct SharedBackendChangeGuard(Arc<crate::benchmark::BenchmarkCoordinator>);
+struct SharedBackendChangeGuard(
+    Arc<crate::benchmark::BenchmarkCoordinator>,
+    Option<tauri::AppHandle>,
+);
 
 impl Drop for SharedBackendChangeGuard {
     fn drop(&mut self) {
         self.0.finish_shared_backend_change();
+        if let Some(app) = &self.1 {
+            crate::meeting_suggestions::busy_changed(app);
+        }
     }
 }
 
@@ -3000,7 +3024,11 @@ pub async fn configure_dictation(
                     .to_string(),
             );
         }
-        Some(SharedBackendChangeGuard(state.benchmark.clone()))
+        crate::meeting_suggestions::busy_changed(&app_handle);
+        Some(SharedBackendChangeGuard(
+            state.benchmark.clone(),
+            Some(app_handle.clone()),
+        ))
     } else {
         None
     };
@@ -5666,7 +5694,7 @@ pub async fn transcribe_file(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;
@@ -5781,6 +5809,49 @@ mod tests {
             .store(recording_id + 1, Ordering::SeqCst);
         finish_dictation_partial(&app_state, recording_id);
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
+    }
+
+    pub(crate) fn partial_lease_fixture() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {
+        let recording_id = 41;
+        let app_state = AppState::default();
+        app_state.recording_id.store(recording_id, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(try_begin_dictation_partial(&app_state, recording_id));
+        let app = tauri::test::mock_builder()
+            .manage(State {
+                app_state,
+                benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
+                #[cfg(feature = "internal-benchmark")]
+                corpus: crate::commands::corpus::CorpusRecorderState::default(),
+                knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                meeting_store: crate::meeting_store::MeetingStore::default(),
+                meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
+                meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
+                delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
+                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
+                performance: crate::performance_metrics::PerformanceMetrics::default(),
+                query_history: crate::query_history::QueryHistoryStore::default(),
+                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
+                ),
+                dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
+                ),
+                notch_info: std::sync::Mutex::new(None),
+                display_snapshot: std::sync::Mutex::new(None),
+                transform_popover_anchor: std::sync::Mutex::new(None),
+                transform_main_was_visible: std::sync::Mutex::new(None),
+                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+                query: crate::query_flow::QueryCoordinator::default(),
+            })
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock Tauri app");
+        let lease = DictationPartialLease {
+            app: app.handle().clone(),
+            recording_id,
+        };
+        (app, lease)
     }
 
     #[test]
@@ -6246,6 +6317,7 @@ mod tests {
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
@@ -6373,6 +6445,7 @@ mod tests {
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
@@ -7188,7 +7261,7 @@ mod tests {
         let coordinator = Arc::new(crate::benchmark::BenchmarkCoordinator::new());
         assert!(coordinator.try_start_shared_backend_change());
         {
-            let _guard = SharedBackendChangeGuard(coordinator.clone());
+            let _guard = SharedBackendChangeGuard(coordinator.clone(), None);
             assert!(!coordinator.try_start());
         }
         assert!(coordinator.try_start());

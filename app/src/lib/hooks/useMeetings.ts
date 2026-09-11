@@ -159,7 +159,7 @@ export function useMeetings(settings: Settings) {
     return () => window.clearInterval(timer);
   }, [status.phase]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (suggestionToken?: string) => {
     setError(null);
     setLiveSegments([]);
     try {
@@ -171,6 +171,7 @@ export function useMeetings(settings: Settings) {
         maxSessions: settings.meetingMaxSessions,
         echoCancellation: settings.meetingEchoCancellationEnabled,
         diarization: settings.meetingDiarization,
+        suggestionToken,
       });
       setPage((current) => ({
         ...current,
@@ -179,6 +180,11 @@ export function useMeetings(settings: Settings) {
       }));
       await select(session.id);
     } catch (cause) {
+      if (suggestionToken) {
+        const message = 'Notetaker could not start from that Calendar suggestion. Start it manually to continue.';
+        setError(message);
+        throw new Error(message);
+      }
       setError(String(cause));
     }
   }, [

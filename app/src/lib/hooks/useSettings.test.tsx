@@ -30,6 +30,12 @@ import { useSettings } from './useSettings';
 
 type SettingsState = ReturnType<typeof useSettings>;
 
+function deferred<T>() {
+  let resolve = (_value: T) => {};
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('useSettings configure rollback privacy', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -353,5 +359,187 @@ describe('useSettings configure rollback privacy', () => {
     expect(current.configureError).toContain('could not be enabled');
     const writes = mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe');
     expect(writes[writes.length - 1]?.[1]).toEqual({ policy: { enabled: false } });
+  });
+
+  it('configures the default-off suggestion policy without reading or requesting Calendar', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockImplementation((command?: string) => Promise.resolve(
+      command === 'configure_smart_auto_probe' ? 1 : undefined,
+    ));
+    await mountHarness();
+
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_meeting_suggestions'))
+      .toEqual([['configure_meeting_suggestions', { enabled: false }]]);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'get_calendar_permission_status')).toBe(false);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'request_calendar_permission')).toBe(false);
+    expect(current.settings.meetingSuggestionsEnabled).toBe(false);
+  });
+
+  it('requests undetermined Calendar access only after an explicit suggestion toggle and persists consent', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockImplementation(async (command?: string) => {
+      if (command === 'configure_smart_auto_probe') return 1;
+      if (command === 'get_calendar_permission_status') return 'notDetermined';
+      if (command === 'request_calendar_permission') return 'granted';
+      return undefined;
+    });
+    await mountHarness();
+    mocks.invoke.mockClear();
+
+    await act(async () => {
+      current.updateSettings({ meetingSuggestionsEnabled: true });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.invoke.mock.calls.map(([command]) => command).filter((command) =>
+      command === 'get_calendar_permission_status'
+      || command === 'request_calendar_permission'
+      || command === 'configure_meeting_suggestions')).toEqual([
+      'get_calendar_permission_status',
+      'request_calendar_permission',
+      'configure_meeting_suggestions',
+    ]);
+    expect(current.settings.meetingSuggestionsEnabled).toBe(true);
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').meetingSuggestionsEnabled)
+      .toBe(true);
+  });
+
+  it('drops a stale toggle-on permission result after suggestions are turned off', async () => {
+    const permission = deferred<'granted'>();
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockImplementation((command?: string, args?: unknown) => {
+      if (command === 'configure_smart_auto_probe') return Promise.resolve(1);
+      if (command === 'get_calendar_permission_status') return permission.promise;
+      if (command === 'configure_meeting_suggestions') return Promise.resolve(args);
+      return Promise.resolve(undefined);
+    });
+    await mountHarness();
+    mocks.invoke.mockClear();
+
+    current.updateSettings({ meetingSuggestionsEnabled: true });
+    current.updateSettings({ meetingSuggestionsEnabled: false });
+    await act(async () => {
+      permission.resolve('granted');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const suggestionWrites = mocks.invoke.mock.calls
+      .filter(([command]) => command === 'configure_meeting_suggestions');
+    expect(suggestionWrites).toEqual([
+      ['configure_meeting_suggestions', { enabled: false }],
+    ]);
+    expect(current.settings.meetingSuggestionsEnabled).toBe(false);
+  });
+
+  it('serializes a delayed native enable before the newer disable', async () => {
+    const enableConfigure = deferred<void>();
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockImplementation((command?: string, args?: unknown) => {
+      if (command === 'configure_smart_auto_probe') return Promise.resolve(1);
+      if (command === 'get_calendar_permission_status') return Promise.resolve('granted');
+      if (command === 'configure_meeting_suggestions'
+        && JSON.stringify(args).includes('"enabled":true')) return enableConfigure.promise;
+      return Promise.resolve(undefined);
+    });
+    await mountHarness();
+    mocks.invoke.mockClear();
+
+    await act(async () => {
+      current.updateSettings({ meetingSuggestionsEnabled: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    current.updateSettings({ meetingSuggestionsEnabled: false });
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_meeting_suggestions'))
+      .toEqual([['configure_meeting_suggestions', { enabled: true }]]);
+
+    await act(async () => {
+      enableConfigure.resolve(undefined);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_meeting_suggestions'))
+      .toEqual([
+        ['configure_meeting_suggestions', { enabled: true }],
+        ['configure_meeting_suggestions', { enabled: false }],
+      ]);
+    expect(current.settings.meetingSuggestionsEnabled).toBe(false);
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').meetingSuggestionsEnabled)
+      .toBe(false);
+  });
+
+  it('keeps unconfirmed suggestion consent out of unrelated durable writes', async () => {
+    const permission = deferred<'granted'>();
+    const enableConfigure = deferred<void>();
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockImplementation((command?: string, args?: unknown) => {
+      if (command === 'configure_smart_auto_probe') return Promise.resolve(1);
+      if (command === 'get_calendar_permission_status') return permission.promise;
+      if (command === 'configure_meeting_suggestions'
+        && JSON.stringify(args).includes('"enabled":true')) return enableConfigure.promise;
+      return Promise.resolve(undefined);
+    });
+    await mountHarness();
+
+    current.updateSettings({ meetingSuggestionsEnabled: true });
+    current.updateSettings({ language: 'es' });
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
+      language: 'es',
+      meetingSuggestionsEnabled: false,
+    });
+
+    await act(async () => {
+      permission.resolve('granted');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    current.updateSettings({ autoPaste: true });
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
+      autoPaste: true,
+      language: 'es',
+      meetingSuggestionsEnabled: false,
+    });
+
+    await act(async () => {
+      enableConfigure.resolve(undefined);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
+      autoPaste: true,
+      language: 'es',
+      meetingSuggestionsEnabled: true,
+    });
+  });
+
+  it('rolls back a failed native suggestion enable without exposing backend text', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockImplementation((command?: string, args?: unknown) => {
+      if (command === 'configure_smart_auto_probe') return Promise.resolve(1);
+      if (command === 'get_calendar_permission_status') return Promise.resolve('granted');
+      if (command === 'configure_meeting_suggestions'
+        && JSON.stringify(args).includes('"enabled":true')) {
+        return Promise.reject(new Error('private calendar payload'));
+      }
+      return Promise.resolve(undefined);
+    });
+    await mountHarness();
+
+    await act(async () => {
+      current.updateSettings({ meetingSuggestionsEnabled: true });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.meetingSuggestionsEnabled).toBe(false);
+    expect(current.configureError).toContain('previous setting was restored');
+    expect(current.configureError).not.toContain('private calendar payload');
+    expect(localStorage.getItem('dictation-settings')).not.toContain('private calendar payload');
   });
 });

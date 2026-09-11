@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 mod native;
 
-pub(crate) use native::{permission_status, query_events, request_permission};
+pub(crate) use native::{
+    permission_status, query_events, query_suggestion_events, request_permission,
+    set_suggestion_observation,
+};
 
 pub(crate) const MAX_CALENDAR_EVENTS: usize = 100;
 const MAX_LOOKUP_WINDOW_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
@@ -71,7 +74,7 @@ impl CalendarWindow {
         Self::new(session.started_at_ms, end_ms)
     }
 
-    fn new(start_ms: u64, end_ms: u64) -> Result<Self, String> {
+    pub(crate) fn new(start_ms: u64, end_ms: u64) -> Result<Self, String> {
         if start_ms >= end_ms
             || end_ms > MAX_TIMESTAMP_MS
             || end_ms - start_ms > MAX_LOOKUP_WINDOW_MS
@@ -104,6 +107,73 @@ pub struct CalendarEventCandidate {
     pub attendees: Vec<String>,
     pub start_ms: u64,
     pub end_ms: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct SuggestionEvent {
+    pub occurrence_key: String,
+    pub title: String,
+    pub attendees: Vec<String>,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+fn suggestion_events(
+    window: CalendarWindow,
+    events: Vec<CalendarEvent>,
+) -> Result<Vec<SuggestionEvent>, String> {
+    events
+        .into_iter()
+        .map(|event| {
+            let mut digest = Sha256::new();
+            digest.update(event.identifier.as_bytes());
+            digest.update(event.occurrence_ms.to_le_bytes());
+            let occurrence_key = format!("{:x}", digest.finalize());
+            let candidate = candidates("suggestion", window, vec![event])?
+                .pop()
+                .ok_or(UNAVAILABLE)?;
+            Ok(SuggestionEvent {
+                occurrence_key,
+                title: candidate.title,
+                attendees: candidate.attendees,
+                start_ms: candidate.start_ms,
+                end_ms: candidate.end_ms,
+            })
+        })
+        .collect()
+}
+
+fn contains_video_link(text: &str) -> bool {
+    text.split(|character: char| {
+        character.is_whitespace()
+            || matches!(character, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']')
+    })
+    .any(|part| {
+        let Ok(url) = reqwest::Url::parse(part.trim_end_matches(['.', ',', ';'])) else {
+            return false;
+        };
+        if !matches!(url.scheme(), "https" | "http")
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return false;
+        }
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        [
+            "zoom.us",
+            "teams.microsoft.com",
+            "teams.live.com",
+            "meet.google.com",
+            "webex.com",
+            "facetime.apple.com",
+        ]
+        .iter()
+        .any(|provider| host == *provider || host.ends_with(&format!(".{provider}")))
+            || ((host == "slack.com" || host.ends_with(".slack.com"))
+                && url.path().split('/').any(|part| part == "huddle"))
+    })
 }
 
 fn bounded_text(value: String, maximum: usize) -> Result<String, String> {
@@ -191,6 +261,13 @@ pub(crate) fn validate_selection_token(value: &str) -> Result<(), String> {
 }
 
 static OPERATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+pub(crate) static OPERATION_FINISHED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+pub(crate) const OPERATION_BUSY: &str =
+    "A Calendar request is already in progress. Try again when it finishes.";
+
+pub(crate) fn operation_in_progress() -> bool {
+    OPERATION_ACTIVE.load(Ordering::Acquire)
+}
 
 pub(crate) struct CalendarOperation;
 
@@ -199,15 +276,14 @@ impl CalendarOperation {
         OPERATION_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| Self)
-            .map_err(|_| {
-                "A Calendar request is already in progress. Try again when it finishes.".into()
-            })
+            .map_err(|_| OPERATION_BUSY.into())
     }
 }
 
 impl Drop for CalendarOperation {
     fn drop(&mut self) {
         OPERATION_ACTIVE.store(false, Ordering::Release);
+        OPERATION_FINISHED.notify_waiters();
     }
 }
 
@@ -244,6 +320,43 @@ mod tests {
             serde_json::to_string(&CalendarPermissionStatus::NotDetermined).unwrap(),
             "\"notDetermined\""
         );
+    }
+
+    #[test]
+    fn calendar_video_links_require_parsed_provider_hosts() {
+        for link in [
+            "https://meet.google.com/abc-defg-hij",
+            "Join: https://example.zoom.us/j/123.",
+            "https://teams.microsoft.com/l/meetup-join/123",
+            "https://app.slack.com/huddle/T1/C1",
+            "https://facetime.apple.com/join#value",
+        ] {
+            assert!(contains_video_link(link), "{link}");
+        }
+        for link in [
+            "https://zoom.us.evil.invalid/j/123",
+            "https://zoom.us@evil.invalid/j/123",
+            "https://evil.invalid/?next=https://zoom.us",
+            "https://slack.com/help",
+            "file://meet.google.com/call",
+            "Meet in room 4",
+        ] {
+            assert!(!contains_video_link(link), "{link}");
+        }
+    }
+
+    #[test]
+    fn calendar_occurrence_keys_survive_title_changes_but_distinguish_recurrence() {
+        let window = CalendarWindow::new(1_000, 10_000).unwrap();
+        let first = suggestion_events(window, vec![event()]).unwrap().remove(0);
+        let mut renamed = event();
+        renamed.title = "Changed title".into();
+        let renamed = suggestion_events(window, vec![renamed]).unwrap().remove(0);
+        assert_eq!(first.occurrence_key, renamed.occurrence_key);
+        let mut next = event();
+        next.occurrence_ms += 5_000;
+        let next = suggestion_events(window, vec![next]).unwrap().remove(0);
+        assert_ne!(first.occurrence_key, next.occurrence_key);
     }
 
     #[test]

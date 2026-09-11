@@ -1507,6 +1507,13 @@ pub(crate) fn strip_private_meeting_metadata(data: &mut serde_json::Value) -> bo
                 "calendarLocation",
                 "calendar_url",
                 "calendarUrl",
+                "meeting_suggestion",
+                "meetingSuggestion",
+                "suggestion_token",
+                "suggestionToken",
+                "occurrence_key",
+                "occurrenceKey",
+                "token",
             ] {
                 changed |= object.remove(key).is_some();
             }
@@ -3637,6 +3644,29 @@ mod tests {
                     !serde_json::to_string(&data).unwrap().contains("SECRET"),
                     "stream={stream}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn suggestions_tokens_occurrences_and_payloads_never_enter_logs() {
+        for stream in [
+            "audio",
+            "keyboard",
+            "meeting",
+            "pipeline",
+            "query",
+            "system",
+            "transform",
+        ] {
+            for debug_build in [true, false] {
+                let mut data = serde_json::json!({
+                    "meetingSuggestion": {"title": "SECRET_EVENT"},
+                    "suggestion_token": "SECRET_TOKEN", "occurrenceKey": "SECRET_OCCURRENCE",
+                    "nested": [{"token": "SECRET_TOKEN", "title": "SECRET_TITLE", "attendees": ["SECRET_PERSON"]}]
+                });
+                sanitize_event_data(stream, &mut data, debug_build);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SECRET"));
             }
         }
     }
