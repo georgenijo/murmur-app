@@ -772,7 +772,7 @@ function App() {
                     description="Local meeting transcripts and summaries."
                     back={{ label: 'Back to Home', onActivate: backToHome }}
                   />
-                  <MeetingsPanel meetings={meetings} />
+                  <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
                 </section>
               ) : mainDestination === 'queries' ? (
                 <section className="main-secondary-view" aria-labelledby="queries-view-title">

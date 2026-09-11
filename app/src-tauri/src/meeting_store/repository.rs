@@ -499,6 +499,150 @@ impl MeetingRepository {
             .ok_or_else(|| "The meeting transcript no longer exists.".to_string())
     }
 
+    pub(crate) fn audio_manifest(
+        &self,
+        session_id: &str,
+        from_ms: u64,
+        channel: crate::meeting_audio::PlaybackChannel,
+        cursor: Option<&crate::meeting_audio::AudioCursor>,
+        limit: u32,
+    ) -> Result<crate::meeting_audio::AudioManifest, String> {
+        use crate::meeting_audio::{
+            AudioChunk, AudioCursor, AudioManifest, AudioUnavailableReason, AUDIO_UNAVAILABLE,
+            MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER,
+        };
+        crate::meeting_audio::validate_manifest_request(session_id, from_ms, cursor, limit)?;
+        let connection = self.open_checked()?;
+        let session = connection
+            .query_row(
+                "SELECT retain_audio, status, ended_at_ms FROM meeting_sessions WHERE id=?",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_error)?
+            .ok_or(AUDIO_UNAVAILABLE)?;
+        if !session.0 {
+            return Ok(AudioManifest::Unavailable {
+                reason: AudioUnavailableReason::NotRetained,
+            });
+        }
+        if session.1 == "active" || session.2.is_none() {
+            return Ok(AudioManifest::Unavailable {
+                reason: AudioUnavailableReason::NotFinished,
+            });
+        }
+        let duration_ms = connection.query_row(
+            "SELECT MAX(end_ms) FROM meeting_segments WHERE session_id=? AND status IN ('final','failed') AND audio_relative_path IS NOT NULL",
+            [session_id], |row| row.get::<_, Option<i64>>(0),
+        ).map_err(db_error)?;
+        let Some(duration_ms) = duration_ms else {
+            return Ok(AudioManifest::Unavailable {
+                reason: AudioUnavailableReason::NoAudio,
+            });
+        };
+        let duration_ms = to_u64(duration_ms).map_err(db_error)?;
+        if duration_ms > MAX_SAFE_INTEGER {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        let mut statement = connection.prepare(
+            "SELECT id, speaker, start_ms, end_ms FROM meeting_segments
+             WHERE session_id=?1 AND status IN ('final','failed') AND audio_relative_path IS NOT NULL
+               AND end_ms>?2 AND (?3 IS NULL OR speaker=?3)
+               AND (?4 IS NULL OR start_ms>?4 OR (start_ms=?4 AND id>?5))
+             ORDER BY start_ms ASC, id ASC LIMIT ?6",
+        ).map_err(db_error)?;
+        let mut chunks = statement
+            .query_map(
+                params![
+                    session_id,
+                    to_i64(from_ms)?,
+                    channel.database_filter(),
+                    cursor.map(|cursor| cursor.start_ms as i64),
+                    cursor.map(|cursor| cursor.segment_id),
+                    limit + 1,
+                ],
+                |row| {
+                    let channel = MeetingSpeaker::from_db(&row.get::<_, String>(1)?)?;
+                    Ok(AudioChunk {
+                        segment_id: row.get(0)?,
+                        channel,
+                        start_ms: to_u64(row.get(2)?)?,
+                        end_ms: to_u64(row.get(3)?)?,
+                    })
+                },
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        if chunks.iter().any(|chunk| {
+            chunk.segment_id <= 0
+                || chunk.segment_id as u64 > MAX_SAFE_INTEGER
+                || chunk.end_ms > MAX_SAFE_INTEGER
+                || chunk.start_ms >= chunk.end_ms
+                || chunk.end_ms - chunk.start_ms > MAX_CHUNK_DURATION_MS
+        }) {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        let has_more = chunks.len() > limit as usize;
+        chunks.truncate(limit as usize);
+        let next_cursor = if has_more {
+            chunks.last().map(|chunk| AudioCursor {
+                start_ms: chunk.start_ms,
+                segment_id: chunk.segment_id,
+            })
+        } else {
+            None
+        };
+        Ok(AudioManifest::Available {
+            session_id: session_id.to_string(),
+            duration_ms,
+            chunks,
+            next_cursor,
+        })
+    }
+
+    pub(crate) fn audio_reference(
+        &self,
+        session_id: &str,
+        segment_id: i64,
+    ) -> Result<crate::meeting_audio::OwnedAudioReference, String> {
+        use crate::meeting_audio::{
+            OwnedAudioReference, AUDIO_UNAVAILABLE, MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER,
+        };
+        crate::meeting_audio::validate_session_id(session_id)?;
+        let connection = self.open_checked()?;
+        let row = connection.query_row(
+            "SELECT g.audio_relative_path, g.speaker, g.sequence, g.start_ms, g.end_ms
+             FROM meeting_segments g JOIN meeting_sessions s ON s.id=g.session_id
+             WHERE s.id=?1 AND g.id=?2 AND s.retain_audio=1 AND s.status!='active' AND s.ended_at_ms IS NOT NULL
+               AND g.status IN ('final','failed') AND g.audio_relative_path IS NOT NULL",
+            params![session_id, segment_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
+        ).optional().map_err(db_error)?.ok_or(AUDIO_UNAVAILABLE)?;
+        let channel = MeetingSpeaker::from_db(&row.1).map_err(db_error)?;
+        let sequence = to_u64(row.2).map_err(db_error)?;
+        let start_ms = to_u64(row.3).map_err(db_error)?;
+        let end_ms = to_u64(row.4).map_err(db_error)?;
+        let expected = format!("audio/{session_id}/{}-{sequence:08}.wav", channel.as_db());
+        if row.0 != expected
+            || end_ms > MAX_SAFE_INTEGER
+            || start_ms >= end_ms
+            || end_ms - start_ms > MAX_CHUNK_DURATION_MS
+        {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        Ok(OwnedAudioReference {
+            path: self.root.join(expected),
+            duration_ms: end_ms - start_ms,
+        })
+    }
+
     pub fn save_metadata(
         &self,
         request: SaveMeetingMetadataRequest,
@@ -1036,6 +1180,8 @@ impl MeetingRepository {
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
+        crate::meeting_audio::validate_session_id(id)?;
+        crate::meeting_audio::revoke_audio_reads();
         let mut connection = self.open_checked()?;
         let paths = audio_paths_for_session(&connection, id)?;
         let transaction = connection
@@ -1053,31 +1199,57 @@ impl MeetingRepository {
         if changed == 0 {
             return Err("The meeting transcript no longer exists.".to_string());
         }
-        transaction.commit().map_err(db_error)?;
+        let mut audio_error = None;
         for relative in paths {
-            if let Some(path) = owned_audio_path(&self.root, &relative) {
-                let _ = fs::remove_file(path);
+            if let Err(error) = crate::meeting_audio::remove_owned_audio(&self.root, id, &relative)
+            {
+                audio_error = Some(error);
             }
         }
-        if valid_session_id(id) {
-            let _ = fs::remove_dir(self.root.join("audio").join(id));
+        if let Some(error) = audio_error {
+            return Err(error);
         }
+        crate::meeting_audio::remove_empty_session_audio(&self.root, id)?;
+        transaction.commit().map_err(db_error)?;
         Ok(())
     }
 
     pub fn delete_all(&self) -> Result<(), String> {
-        let connection = self.open_checked()?;
-        connection
+        crate::meeting_audio::revoke_audio_reads();
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        transaction
             .execute_batch(
-                "BEGIN IMMEDIATE; DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions_fts; DELETE FROM meeting_sessions; COMMIT; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
+                "DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions_fts; DELETE FROM meeting_sessions;",
             )
             .map_err(db_error)?;
         let audio_root = self.root.join("audio");
-        let _ = fs::remove_dir_all(&audio_root);
-        fs::create_dir_all(audio_root).map_err(|_| storage_error())
+        match fs::symlink_metadata(&audio_root) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Err("The meeting audio folder could not be removed safely. History remains available so you can retry deletion.".into()),
+            Ok(_) => {
+                use std::os::unix::fs::OpenOptionsExt;
+                let _directory = fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC).open(&audio_root)
+                    .map_err(|_| "The meeting audio folder could not be removed safely.".to_string())?;
+                fs::remove_dir_all(&audio_root).map_err(|_| "Some retained audio could not be removed. History remains available so you can retry deletion.".to_string())?;
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err("The meeting audio folder could not be removed. History remains available so you can retry deletion.".into()),
+        }
+        fs::create_dir_all(audio_root).map_err(|_| storage_error())?;
+        transaction.commit().map_err(db_error)?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            .map_err(db_error)
     }
 
-    pub fn prune(&self, retention_days: Option<u32>, max_sessions: u32) -> Result<u64, String> {
+    pub fn prune(
+        &self,
+        retention_days: Option<u32>,
+        max_sessions: u32,
+        mut invalidate: impl FnMut(&str),
+    ) -> Result<u64, String> {
         let connection = self.open_checked()?;
         let cutoff = retention_days
             .filter(|days| *days > 0)
@@ -1113,6 +1285,7 @@ impl MeetingRepository {
         ids.dedup();
         drop(connection);
         for id in &ids {
+            invalidate(id);
             self.delete_session(id)?;
         }
         Ok(ids.len() as u64)
@@ -1411,7 +1584,8 @@ mod tests {
 
     fn repository() -> (TempDir, MeetingRepository) {
         let temp = TempDir::new().unwrap();
-        let (repository, _) = MeetingRepository::initialize(temp.path().to_path_buf()).unwrap();
+        let (repository, _) =
+            MeetingRepository::initialize(temp.path().canonicalize().unwrap()).unwrap();
         (temp, repository)
     }
 

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 211 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 214 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -76,9 +76,9 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `restore_meeting_review_from_generated` | `request` | `Result<MeetingWorkspace, String>` | Explicitly replaces a saved review from the exact generated revision after checking the current review revision. Raw transcript evidence is unchanged. |
 | `get_meeting_review_export` | `id`, `format` | `Result<String, String>` | Renders one bounded reviewed-meeting snapshot as Markdown, plain text, or schema-v2 JSON for explicit clipboard copy. Document exports include the title and attendees. |
 | `save_meeting_review_export` | `id`, `format`, `path` | `Result<u64, String>` | Renders and atomically saves the same reviewed-meeting snapshot after enforcing the matching `.md`, `.txt`, or `.json` extension. |
-| `delete_meeting` | `id` | `Result<(), String>` | Deletes one inactive session, its segments/FTS rows, and owned chunk audio. |
-| `delete_all_meetings` | — | `Result<(), String>` | Deletes all sessions and owned chunk audio; refused while a meeting is active. |
-| `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Deletes completed/interrupted sessions beyond the bounded age/count policy. |
+| `delete_meeting` | `id` | `Result<(), String>` | Main-window-only deletion of one inactive session, segments/FTS rows, and owned chunk audio. Invalidates playback before deletion. File cleanup failures preserve the session row so deletion can be retried. |
+| `delete_all_meetings` | — | `Result<(), String>` | Main-window-only deletion of sessions and owned chunk audio; refused while a meeting is active. Invalidates all playback and preserves database rows if audio cleanup fails. |
+| `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Main-window-only deletion of finished sessions beyond the bounded age/count policy. Invalidates playback only for sessions selected for removal; a no-op prune emits nothing. |
 
 ## Calendar naming (`commands/meeting_calendar.rs`)
 
@@ -99,6 +99,25 @@ seconds to respond. A timed-out worker retains the single Calendar operation
 slot until it returns. Titles and participant names allow 200 characters each,
 with at most 100 participants per event. Oversized results fail instead of
 silently selecting or truncating details. See [Calendar naming](../features/meeting-calendar.md).
+
+## Retained meeting audio (`meeting_audio.rs`)
+
+All three commands require the main window. The manifest carries no transcript,
+title, attendee, or filesystem path. Range responses use binary IPC rather
+than JSON or base64.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_meeting_audio_manifest` | `sessionId`, `fromMs?`, `channel?: all \| me \| them`, `cursor?: {startMs, segmentId}`, `limit?` | `Result<AudioManifest, String>` | Metadata-only timeline of retained final/failed chunks for a finished session. Defaults to position zero, All, and 128 entries; caps pages at 256. Uses `(startMs, segmentId)` keyset pagination and includes chunks overlapping `fromMs`. The global duration is independent of the selected channel. |
+| `read_meeting_audio_range` | `sessionId`, `segmentId`, `offsetBytes`, `lengthBytes` | `Result<binary response, String>` | Revalidates session/segment ownership and retained-audio consent, refuses symlinks and nonregular files, validates mono 16 kHz PCM16 WAV structure, and returns at most 64 KiB. A file may be at most 512 KiB; exact EOF returns an empty response. Busy capture and invalidated reads fail without returning audio. |
+| `get_meeting_audio_capture_busy` | — | `Result<bool, String>` | Native playback-admission snapshot for dictation, meeting/recovery/summary, transform, query, microphone preview/startup checks, and actual capture activity. Performs no Calendar or model-installation probe. |
+
+`AudioManifest` is either `{kind: unavailable, reason: notRetained | notFinished | noAudio}`
+or `{kind: available, sessionId, durationMs, chunks, nextCursor}`. Each chunk has
+`segmentId`, canonical `channel`, `startMs`, and `endMs`. An empty selected channel
+returns an available manifest with no chunks if another channel has retained audio.
+Manifest and range calls share two admitted workers; extra concurrent requests fail
+instead of forming an unbounded queue. See [Meeting audio playback](../features/meeting-audio-playback.md).
 
 ## Meeting suggestions (`meeting_suggestions.rs`)
 
