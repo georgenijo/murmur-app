@@ -110,49 +110,69 @@ fn emit_presentation(recording_id: u64, outcome: PresentationOutcome) {
 
 /// Show only after the preview webview has committed non-empty text for the
 /// exact recording. Rust remains the native visibility and ownership boundary.
+fn can_show(app_state: &crate::state::AppState, recording_id: u64) -> bool {
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && app_state.dictation.lock_or_recover().status == DictationStatus::Recording
+        && !app_state.is_cancelled(recording_id)
+}
+
+fn can_hide(app_state: &crate::state::AppState, recording_id: u64) -> bool {
+    app_state.recording_id.load(Ordering::SeqCst) == recording_id
+}
+
 #[tauri::command]
-pub fn show_dictation_preview(
+pub async fn show_dictation_preview(
     window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
     recording_id: u64,
 ) -> Result<(), String> {
     if window.label() != "dictation-preview" {
         return Err("dictation preview show is restricted to its own window".to_string());
     }
-    let is_current = recording_id > 0
-        && state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
-        && state.app_state.dictation.lock_or_recover().status == DictationStatus::Recording
-        && !state.app_state.is_cancelled(recording_id);
-    if !is_current {
-        return Err("dictation preview recording is no longer current".to_string());
-    }
-
-    let result = show_internal(window.app_handle());
-    emit_presentation(
-        recording_id,
-        if result.is_ok() {
-            PresentationOutcome::Shown
+    let app = window.app_handle().clone();
+    let dispatch_app = app.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        // Validate at presentation time, not before a queued native mutation.
+        let state = dispatch_app.state::<State>();
+        let result = if can_show(&state.app_state, recording_id) {
+            show_internal(&dispatch_app)
         } else {
-            PresentationOutcome::ShowFailed
-        },
-    );
-    result
-}
-
-pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
-    POPOVER.hide(app)
+            Err("dictation preview recording is no longer current".to_string())
+        };
+        emit_presentation(
+            recording_id,
+            if result.is_ok() {
+                PresentationOutcome::Shown
+            } else {
+                PresentationOutcome::ShowFailed
+            },
+        );
+        let _ = tx.send(result);
+    })
+    .map_err(|_| "dictation preview presentation could not be scheduled".to_string())?;
+    rx.await
+        .map_err(|_| "dictation preview presentation was cancelled".to_string())?
 }
 
 pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
-    let result = hide_internal(app);
-    emit_presentation(
-        recording_id,
-        if result.is_ok() {
-            PresentationOutcome::Hidden
-        } else {
-            PresentationOutcome::HideFailed
-        },
-    );
+    let dispatch_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        // A late ticker must not hide its successor, including after this
+        // operation spent time queued on the native main thread.
+        if !can_hide(&dispatch_app.state::<State>().app_state, recording_id) {
+            return;
+        }
+        let result = POPOVER.hide(&dispatch_app);
+        emit_presentation(
+            recording_id,
+            if result.is_ok() {
+                PresentationOutcome::Hidden
+            } else {
+                PresentationOutcome::HideFailed
+            },
+        );
+    });
 }
 
 pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
@@ -162,6 +182,24 @@ pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_presentation_rechecks_stop_and_restart_ownership() {
+        let state = crate::state::AppState::default();
+        state.recording_id.store(7, Ordering::SeqCst);
+        state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(can_show(&state, 7));
+        state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        assert!(!can_show(&state, 7));
+        assert!(can_hide(&state, 7));
+        state.recording_id.store(8, Ordering::SeqCst);
+        state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(!can_show(&state, 7));
+        assert!(!can_hide(&state, 7));
+        assert!(can_show(&state, 8));
+        state.cancel_recording(8);
+        assert!(!can_show(&state, 8));
+    }
 
     #[test]
     fn preview_sits_below_the_measured_notch() {

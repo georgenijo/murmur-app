@@ -9,9 +9,14 @@ import {
   modelDownloadPercent,
   type ModelDownloadProgress,
 } from '../lib/modelDownload';
+import {
+  modelGuidanceSummary,
+  modelMemoryWarning,
+  useModelHardwareGuidance,
+} from '../lib/modelHardwareGuidance';
 
 const MODEL_DESCRIPTIONS: Record<string, string> = {
-  'parakeet-tdt-0.6b-v3-coreml': 'Fastest on Apple Silicon — multilingual, Apple Neural Engine (recommended)',
+  'parakeet-tdt-0.6b-v3-coreml': 'Fastest on Apple Silicon — multilingual, Apple Neural Engine',
   'parakeet-tdt-0.6b-v2-fp16': 'Fast CPU fallback — English only',
   'large-v3-turbo': 'Highest accuracy, slower (1-2 seconds)',
   'base.en': 'Good balance of speed and accuracy',
@@ -71,6 +76,7 @@ export function ModelDownloadPanel({
   installedModels,
   renderPrimaryAction,
 }: Props) {
+  const hardwareGuidance = useModelHardwareGuidance();
   const [selected, setSelected] = useState<ModelOption>(
     MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
   );
@@ -147,6 +153,9 @@ export function ModelDownloadPanel({
 
   const isDownloading = downloadState.phase === 'downloading';
   const selectedInstalled = installedModels?.[selected] === true;
+  const selectedMemoryWarning = hardwareGuidance
+    ? modelMemoryWarning(hardwareGuidance, selected)
+    : null;
   const selectModel = (model: ModelOption) => {
     if (isDownloading) return;
     setSelected(model);
@@ -175,6 +184,11 @@ export function ModelDownloadPanel({
 
   return (
     <div>
+      {hardwareGuidance && (
+        <p className="mb-3 text-xs text-on-surface-variant" data-testid="model-guidance-summary">
+          {modelGuidanceSummary(hardwareGuidance)}
+        </p>
+      )}
       <div className="space-y-2 mb-6">
           {MODELS.map((model) => (
             <button
@@ -192,19 +206,31 @@ export function ModelDownloadPanel({
                 isDownloading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
               )}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-3">
                 <span className="text-sm font-medium text-on-surface">
                   {model.label}
                 </span>
-                {installedModels?.[model.name] ? (
-                  <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-[11px] font-medium text-on-surface">
-                    Installed
-                  </span>
-                ) : (
-                  <span className="text-xs text-on-surface-variant font-mono">
-                    {model.size}
-                  </span>
-                )}
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {hardwareGuidance?.recommendedModel === model.name && (
+                    <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-xs font-semibold text-on-surface">
+                      Recommended
+                    </span>
+                  )}
+                  {hardwareGuidance?.warnedModels.includes(model.name) && (
+                    <span className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning">
+                      Higher memory
+                    </span>
+                  )}
+                  {installedModels?.[model.name] ? (
+                    <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-[11px] font-medium text-on-surface">
+                      Installed
+                    </span>
+                  ) : (
+                    <span className="text-xs text-on-surface-variant font-mono">
+                      {model.size}
+                    </span>
+                  )}
+                </span>
               </div>
               <p className="text-xs text-on-surface-variant mt-0.5">
                 {model.description}
@@ -212,6 +238,12 @@ export function ModelDownloadPanel({
             </button>
           ))}
         </div>
+
+        {selectedMemoryWarning && (
+          <div role="status" className="dialog-toast mb-4 border-warning/30 bg-warning/10 px-4 py-3 text-xs text-on-surface">
+            {selectedMemoryWarning}
+          </div>
+        )}
 
         {isDownloading && (
           <div className="mb-4" aria-live="polite" aria-busy="true">

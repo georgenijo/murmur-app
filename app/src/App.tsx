@@ -11,6 +11,8 @@ import {
 } from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
+import { nextRecordingCommands } from './lib/nextRecordingCommands';
+import { useModeRuntime } from './lib/hooks/useModeRuntime';
 import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
 import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
@@ -476,6 +478,10 @@ function App() {
 
   // ---- Command palette (⌘K) ----------------------------------------------
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const modeRuntime = useModeRuntime();
+  const setNextRecordingMode = useCallback((modeId: string | null) => {
+    void modeRuntime.setNext(modeId).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+  }, [modeRuntime.setNext]);
   const openSettingsTarget = useCallback((target: Omit<SettingsPageRequest, 'token'>) => {
     beginCurrentUiTransition(settingsLatencyView(target.page), 'programmatic');
     setSettingsPageRequest((previous) => ({
@@ -566,6 +572,7 @@ function App() {
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },
       }] : []),
+      ...nextRecordingCommands(modeRuntime.status, setNextRecordingMode),
       {
         id: 'meeting-toggle',
         title: meetings.status.phase === 'processing' || meetings.status.phase === 'stopping'
@@ -719,6 +726,7 @@ function App() {
     updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickMediaFiles,
     meetings,
+    modeRuntime.status, setNextRecordingMode,
   ]);
 
   const [dismissedExternalErrorKey, setDismissedExternalErrorKey] = useState('');

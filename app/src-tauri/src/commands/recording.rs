@@ -40,6 +40,10 @@ const DICTATION_SLO_CONTRACT: u64 = 1;
 const PARTIAL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
 const PARTIAL_MIN_SAMPLES: usize = 16_000 * 800 / 1_000;
 const PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 20;
+const WHISPER_PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 6;
+const WHISPER_PARTIAL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1500);
+const WHISPER_PARTIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+type WhisperPreview = Arc<Mutex<Option<transcriber::whisper::WhisperPreviewBackend>>>;
 
 struct SuccessfulPrivateCapture<'a> {
     raw_text: &'a str,
@@ -99,7 +103,8 @@ fn emit_dictation_terminal_with_capture(
 }
 
 fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool {
-    app_state.recording_id.load(Ordering::SeqCst) == recording_id
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
         && app_state.dictation.lock_or_recover().status == DictationStatus::Recording
         && !app_state.is_cancelled(recording_id)
 }
@@ -141,32 +146,44 @@ fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_
 }
 
 fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
-    let supported = app
-        .state::<State>()
-        .app_state
-        .active_context(recording_id)
-        .is_some_and(|context| {
-            crate::transcriber::is_coreml_model(&context.transcription.model_name)
-        });
-    if !supported {
+    let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
+        return;
+    };
+    let model = &context.transcription.model_name;
+    let whisper = transcriber::whisper::supports_live_preview(model);
+    if !whisper && !transcriber::is_coreml_model(model) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
         return;
     }
-
+    let interval = if whisper {
+        WHISPER_PARTIAL_INTERVAL
+    } else {
+        PARTIAL_INTERVAL
+    };
+    let preview: WhisperPreview = Arc::new(Mutex::new(None));
     drop(tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(PARTIAL_INTERVAL).await;
-            if !decode_one_dictation_partial(&app, recording_id).await {
+            tokio::time::sleep(interval).await;
+            if !dictation_partial_is_current(&app.state::<State>().app_state, recording_id) {
                 break;
             }
+            // Do not await a decode: ticks skip the global single-flight lease,
+            // and stop/hide must not wait for inference or model initialization.
+            let tick_app = app.clone();
+            let tick_preview = preview.clone();
+            drop(tauri::async_runtime::spawn(async move {
+                decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
+            }));
         }
-        // The preview is scoped to exactly this recording: whatever ended the
-        // loop (stop, cancel, a newer generation), the card goes away with it.
         crate::commands::dictation_preview::hide_for_recording(&app, recording_id);
     }));
 }
 
-async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64) -> bool {
+async fn decode_one_dictation_partial(
+    app: &tauri::AppHandle,
+    recording_id: u64,
+    preview: WhisperPreview,
+) -> bool {
     let transcription = {
         let state = app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
@@ -183,8 +200,14 @@ async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64)
         };
         context.transcription.clone()
     };
-    let samples = audio_lifecycle::peek_dictation_samples(recording_id, PARTIAL_WINDOW_SAMPLES)
-        .unwrap_or_default();
+    let whisper = transcriber::whisper::supports_live_preview(&transcription.model_name);
+    let window_limit = if whisper {
+        WHISPER_PARTIAL_WINDOW_SAMPLES
+    } else {
+        PARTIAL_WINDOW_SAMPLES
+    };
+    let samples =
+        audio_lifecycle::peek_dictation_samples(recording_id, window_limit).unwrap_or_default();
     let sample_count = samples.len();
     if sample_count < PARTIAL_MIN_SAMPLES {
         finish_dictation_partial(&app.state::<State>().app_state, recording_id);
@@ -198,23 +221,47 @@ async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64)
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return None;
         }
-        let (raw, _) = state
-            .app_state
-            .model_runtime
-            .with_ready_backend(
-                Some(&worker_app),
-                &transcription.model_name,
-                PreparationReason::Pipeline,
-                |backend| {
-                    backend.transcribe(
-                        &window,
-                        &transcription.language,
-                        transcription.prompt.as_deref(),
-                        transcription.smart_punctuation,
-                    )
-                },
-            )
-            .ok()?;
+        let raw = if whisper {
+            let mut preview = preview.lock_or_recover();
+            if preview.is_none() {
+                *preview =
+                    transcriber::whisper::WhisperPreviewBackend::load(&transcription.model_name)
+                        .ok();
+            }
+            let deadline = std::time::Instant::now() + WHISPER_PARTIAL_DEADLINE;
+            preview
+                .as_mut()?
+                .transcribe(
+                    &window,
+                    &transcription.language,
+                    transcription.prompt.as_deref(),
+                    transcription.smart_punctuation,
+                    || {
+                        !dictation_partial_is_current(&state.app_state, recording_id)
+                            || std::time::Instant::now() >= deadline
+                    },
+                )
+                .ok()?
+        } else {
+            let (raw, _) = state
+                .app_state
+                .model_runtime
+                .with_ready_backend(
+                    Some(&worker_app),
+                    &transcription.model_name,
+                    PreparationReason::Pipeline,
+                    |backend| {
+                        backend.transcribe(
+                            &window,
+                            &transcription.language,
+                            transcription.prompt.as_deref(),
+                            transcription.smart_punctuation,
+                        )
+                    },
+                )
+                .ok()?;
+            raw
+        };
         let cleaned = raw.trim().to_string();
         (!cleaned.is_empty()).then_some(cleaned)
     })
@@ -384,12 +431,18 @@ fn whisper_prefix(prompt: &str) -> String {
 /// folder is scanned (and cached) and its identifiers are placed *first* — they're
 /// more specific than the generic built-ins, so they survive Whisper's prompt
 /// truncation. Folder scanning still happens at most once per folder/enable change.
-fn resolve_code_vocab_prompt(app_state: &AppState, bundle_id: Option<&str>) -> String {
+fn resolve_code_vocab_prompt(
+    app_state: &AppState,
+    bundle_id: Option<&str>,
+    code_override: Option<bool>,
+) -> String {
     // Fast path under the lock: feature off => nothing to do.
     let (enabled, folder, cached) = {
         let dictation = app_state.dictation.lock_or_recover();
         (
-            dictation.code_vocabulary_enabled_for(bundle_id),
+            dictation.code_vocab_enabled
+                && code_override
+                    .unwrap_or_else(|| dictation.code_vocabulary_enabled_for(bundle_id)),
             dictation.code_vocab_folder.clone(),
             dictation.code_vocab_prompt.clone(),
         )
@@ -441,8 +494,10 @@ fn resolve_code_vocab_prompt(app_state: &AppState, bundle_id: Option<&str>) -> S
 fn cached_code_vocab_prompt(
     dictation: &crate::state::DictationState,
     bundle_id: Option<&str>,
+    code_override: Option<bool>,
 ) -> Option<String> {
-    let enabled_for_context = dictation.code_vocabulary_enabled_for(bundle_id);
+    let enabled_for_context = dictation.code_vocab_enabled
+        && code_override.unwrap_or_else(|| dictation.code_vocabulary_enabled_for(bundle_id));
     if !enabled_for_context {
         return Some(String::new());
     }
@@ -469,6 +524,7 @@ pub(crate) fn resolve_live_context(
     app_identity: &crate::frontmost::FrontmostAppIdentity,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
     site_identity: Option<&crate::browser_site::BrowserSiteIdentity>,
+    session_overrides: SessionOverrides,
 ) -> Arc<DictationContextSnapshot> {
     let bundle_id = app_identity.bundle_id.as_deref();
     let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
@@ -483,38 +539,82 @@ pub(crate) fn resolve_live_context(
         }
     };
     loop {
-        let code_vocab = resolve_code_vocab_prompt(app_state, bundle_id);
+        let code_override = session_overrides
+            .code_vocabulary_override(&app_state.dictation.lock_or_recover(), bundle_id);
+        let code_vocab = resolve_code_vocab_prompt(app_state, bundle_id, code_override);
         let dictation = app_state.dictation.lock_or_recover();
-        let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {
+        if session_overrides.code_vocabulary_override(&dictation, bundle_id) != code_override {
+            continue;
+        }
+        let Some(current_code_vocab) =
+            cached_code_vocab_prompt(&dictation, bundle_id, code_override)
+        else {
             continue;
         };
         if current_code_vocab != code_vocab {
             continue;
         }
+        let resource_profiles = session_overrides.resource_profiles(&dictation.app_profiles);
         let sanitized = crate::vocabulary_alias::prompt_terms(
             &dictation.vocabulary_entries,
             bundle_id,
-            &dictation.app_profiles,
+            &resource_profiles,
         )
         .replace('\0', "");
         let prompt = combine_prompts(&sanitized, &code_vocab);
-        let correction_matcher = app_state
-            .correction_matcher
-            .lock_or_recover()
-            .as_ref()
-            .map(|matchers| matchers.select(bundle_id));
+        let correction_matcher = if session_overrides.mode.is_some() {
+            // Build only this explicit one-recording policy's immutable matcher.
+            // Scoped aliases/replacements still use the same app/project inputs.
+            let include_code = code_override
+                .unwrap_or_else(|| dictation.code_vocabulary_enabled_for(bundle_id))
+                && dictation.code_vocab_enabled;
+            let terms = if include_code {
+                crate::vocab::builtin_terms_prompt()
+                    .split_whitespace()
+                    .chain(
+                        dictation
+                            .code_vocab_prompt
+                            .as_deref()
+                            .unwrap_or("")
+                            .split_whitespace(),
+                    )
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let knowledge = app_state.knowledge_replacements.lock_or_recover();
+            Some(
+                crate::vocabulary_alias::CorrectionMatcherSet::build_with_knowledge(
+                    &terms,
+                    &dictation.vocabulary_entries,
+                    &resource_profiles,
+                    &knowledge,
+                    dictation.correction_fuzzy,
+                    include_code,
+                )
+                .select(bundle_id),
+            )
+        } else {
+            app_state
+                .correction_matcher
+                .lock_or_recover()
+                .as_ref()
+                .map(|matchers| matchers.select(bundle_id))
+        };
         let ide_context_index = bundle_id.and_then(|bundle_id| {
-            dictation
-                .app_profiles
+            resource_profiles
                 .iter()
                 .find(|profile| profile.bundle_id == bundle_id)
                 .filter(|profile| {
                     profile.ide_context_enabled
-                        || dictation.modes.iter().any(|mode| {
-                            mode.enabled
-                                && profile.mode_id.as_deref() == Some(mode.id.as_str())
-                                && mode.context_policy == crate::state::ModeContextPolicy::Project
-                        })
+                        || (session_overrides.mode.is_none()
+                            && dictation.modes.iter().any(|mode| {
+                                mode.enabled
+                                    && profile.mode_id.as_deref() == Some(mode.id.as_str())
+                                    && mode.context_policy
+                                        == crate::state::ModeContextPolicy::Project
+                            }))
                 })
                 .and_then(|profile| {
                     app_state
@@ -535,7 +635,7 @@ pub(crate) fn resolve_live_context(
             ide_context_index,
             vocabulary_version,
             voice_commands: repository_voice_commands.clone(),
-            session_overrides: SessionOverrides::default(),
+            session_overrides: session_overrides.clone(),
         });
         context.app.process_id = app_identity.process_id;
         context.app.delivery_target = delivery_target.clone();
@@ -639,6 +739,7 @@ struct IdleGuard<'a> {
     app_state: &'a AppState,
     recording_id: u64,
     disarmed: bool,
+    next_mode_token: Option<u64>,
 }
 
 impl<'a> IdleGuard<'a> {
@@ -647,11 +748,16 @@ impl<'a> IdleGuard<'a> {
             app_state,
             recording_id,
             disarmed: false,
+            next_mode_token: None,
         }
     }
 
     fn disarm(&mut self) {
         self.disarmed = true;
+    }
+
+    fn consume_next_mode_after_processing(&mut self, token: Option<u64>, sample_count: usize) {
+        self.next_mode_token = (sample_count >= 4_800).then_some(token).flatten();
     }
 }
 
@@ -666,6 +772,11 @@ impl Drop for IdleGuard<'_> {
             let current_rid = self.app_state.recording_id.load(Ordering::SeqCst);
             if current_rid != self.recording_id {
                 return;
+            }
+            if dictation.status == DictationStatus::Processing
+                && !self.app_state.is_cancelled(self.recording_id)
+            {
+                dictation.next_recording_mode.consume(self.next_mode_token);
             }
             transition_dictation_status(self.recording_id, &mut dictation, DictationStatus::Idle);
             keyboard::set_processing(false);
@@ -1866,7 +1977,10 @@ async fn run_transcription_pipeline(
 ) -> Result<PipelineResult, String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
-    let _guard = IdleGuard::new(app_state, recording_id);
+    let mut _guard = IdleGuard::new(app_state, recording_id);
+    // Only the native path supplies a token. Phantom captures never enter the
+    // pipeline; retain the boundary here so other sources cannot consume one.
+    _guard.consume_next_mode_after_processing(context.next_mode_token, samples.len());
 
     let transcription = &context.transcription;
     let transformations = &context.transformations;
@@ -2455,6 +2569,7 @@ pub async fn process_audio(
         &app_identity,
         &delivery_target,
         site_identity.as_ref(),
+        SessionOverrides::default(),
     );
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
@@ -4296,6 +4411,7 @@ pub async fn start_native_recording(
         site_identity,
         selected_device_name,
         smart_auto_reason,
+        session_overrides,
     ) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.meeting_blocks_asr() {
@@ -4450,6 +4566,7 @@ pub async fn start_native_recording(
                     site_identity,
                     selected_device_name,
                     smart_auto_reason,
+                    super::mode_runtime::next_recording_overrides(&dictation),
                 )
             }
         }
@@ -4530,6 +4647,7 @@ pub async fn start_native_recording(
         &app_identity,
         &delivery_target,
         site_identity.as_ref(),
+        session_overrides,
     );
     state.performance.production_context(rid, &context);
     let context_action = {
@@ -5441,7 +5559,7 @@ pub async fn transcribe_file(
     let sanitized = custom_vocabulary.replace('\0', "");
     // Imported files have no frontmost-app context, so developer vocabulary is
     // not applied. Explicit preferred terms remain in `custom_vocabulary`.
-    let code_vocab = resolve_code_vocab_prompt(&state.app_state, None);
+    let code_vocab = resolve_code_vocab_prompt(&state.app_state, None, None);
     let prompt = combine_prompts(&sanitized, &code_vocab);
     let mut decode_ms = 0;
     let (text, load_report) = state.app_state.model_runtime.with_ready_backend(
@@ -5663,6 +5781,53 @@ mod tests {
             .store(recording_id + 1, Ordering::SeqCst);
         finish_dictation_partial(&app_state, recording_id);
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
+    }
+
+    #[test]
+    fn stopped_partial_cannot_publish_or_release_a_new_recording_lease() {
+        let app_state = AppState::default();
+        app_state.recording_id.store(41, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(try_begin_dictation_partial(&app_state, 41));
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        assert!(!dictation_partial_is_current(&app_state, 41));
+        app_state.recording_id.store(42, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(!dictation_partial_is_current(&app_state, 41));
+        // A stale decode still owns the global slot until it actually finishes.
+        assert!(!try_begin_dictation_partial(&app_state, 42));
+        finish_dictation_partial(&app_state, 41);
+        assert!(try_begin_dictation_partial(&app_state, 42));
+        finish_dictation_partial(&app_state, 41);
+        assert!(!try_begin_dictation_partial(&app_state, 42));
+        app_state.cancel_recording(42);
+        assert!(!dictation_partial_is_current(&app_state, 42));
+        finish_dictation_partial(&app_state, 42);
+    }
+
+    #[test]
+    fn concurrent_preview_ticks_admit_exactly_one_decode() {
+        let app_state = Arc::new(AppState::default());
+        app_state.recording_id.store(7, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let state = app_state.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    try_begin_dictation_partial(&state, 7)
+                })
+            })
+            .collect();
+        let admitted = workers
+            .into_iter()
+            .map(|worker| usize::from(worker.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(admitted, 1);
+        finish_dictation_partial(&app_state, 7);
+        assert!(try_begin_dictation_partial(&app_state, 7));
     }
 
     fn failed_capture_completion() -> DictationPerformanceCompletion {
@@ -6601,19 +6766,19 @@ mod tests {
         dictation.app_profiles = vec![ordinary, technical];
 
         assert_eq!(
-            cached_code_vocab_prompt(&dictation, None).as_deref(),
+            cached_code_vocab_prompt(&dictation, None, None).as_deref(),
             Some("")
         );
         assert_eq!(
-            cached_code_vocab_prompt(&dictation, Some("com.example.Chat")).as_deref(),
+            cached_code_vocab_prompt(&dictation, Some("com.example.Chat"), None).as_deref(),
             Some("")
         );
         assert_eq!(
-            cached_code_vocab_prompt(&dictation, Some("com.example.Unknown")).as_deref(),
+            cached_code_vocab_prompt(&dictation, Some("com.example.Unknown"), None).as_deref(),
             Some("")
         );
         let technical_prompt =
-            cached_code_vocab_prompt(&dictation, Some("com.example.Editor")).unwrap();
+            cached_code_vocab_prompt(&dictation, Some("com.example.Editor"), None).unwrap();
         assert!(technical_prompt.starts_with("all__ toBe"));
         assert!(technical_prompt.contains("useEffect"));
     }
@@ -6801,6 +6966,178 @@ mod tests {
         }
         let dictation = app_state.dictation.lock().unwrap();
         assert_eq!(dictation.status, DictationStatus::Idle);
+    }
+
+    #[test]
+    fn real_recording_consumes_once_before_idle_but_cancel_and_phantom_do_not() {
+        for outcome in [
+            "real",
+            "cancelled",
+            "phantom",
+            "cancel_committed",
+            "superseded",
+        ] {
+            let app_state = AppState::default();
+            let rid = app_state.next_recording_id();
+            let token = {
+                let mut dictation = app_state.dictation.lock_or_recover();
+                dictation.status = DictationStatus::Processing;
+                dictation.next_recording_mode.set(Some(
+                    dictation_context::builtin_mode("builtin.verbatim").unwrap(),
+                ));
+                dictation.next_recording_mode.snapshot().next_mode_token
+            };
+            let mut guard = IdleGuard::new(&app_state, rid);
+            guard.consume_next_mode_after_processing(
+                token,
+                if outcome == "phantom" { 4_799 } else { 4_800 },
+            );
+            if outcome == "cancelled" {
+                app_state.cancel_recording(rid);
+            }
+            if outcome == "cancel_committed" {
+                app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            }
+            if outcome == "superseded" {
+                app_state.next_recording_id();
+            }
+            drop(guard);
+            let dictation = app_state.dictation.lock_or_recover();
+            assert_eq!(
+                dictation.next_recording_mode.snapshot().mode.is_none(),
+                outcome == "real",
+                "{outcome}"
+            );
+            if outcome == "real" {
+                assert_eq!(dictation.status, DictationStatus::Idle);
+            }
+        }
+    }
+
+    #[test]
+    fn session_mode_scopes_prompt_and_matcher_to_its_effective_context_and_style() {
+        use crate::knowledge_store::{
+            KnowledgeEntry, KnowledgePayload, KnowledgeProvenance, KnowledgeScope,
+        };
+        use crate::state::{
+            AppProfile, ModeContextPolicy, VocabularyEntry, VocabularyScope, WritingStyle,
+        };
+        let app_state = AppState::default();
+        let bundle = "com.example.Editor";
+        {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            dictation.code_vocab_enabled = true;
+            dictation.code_vocab_folder = "/project".into();
+            dictation.code_vocab_prompt = Some("all__ toBe".into());
+            dictation.app_profiles = vec![AppProfile {
+                bundle_id: bundle.into(),
+                label: "Editor".into(),
+                auto_paste_override: None,
+                cleanup_override: None,
+                cli_formatting_override: None,
+                smart_formatting_override: None,
+                writing_style: Some(WritingStyle::CodeTechnical),
+                ide_context_enabled: true,
+                ide_project_roots: vec!["/project".into()],
+                query_context_excluded: false,
+                mode_id: None,
+            }];
+            dictation.vocabulary_entries = vec![VocabularyEntry {
+                id: "project-term".into(),
+                written: "ProjectWord".into(),
+                aliases: vec!["project alias".into()],
+                enabled: true,
+                scope: VocabularyScope::Project {
+                    bundle_id: bundle.into(),
+                    root: "/project".into(),
+                },
+            }];
+        }
+        *app_state.knowledge_replacements.lock_or_recover() = Arc::new(vec![KnowledgeEntry {
+            id: "project-learned".into(),
+            payload: KnowledgePayload::ReplacementRule {
+                source: "learned alias".into(),
+                replacement: "LearnedWord".into(),
+            },
+            enabled: true,
+            scope: KnowledgeScope::Project {
+                bundle_id: bundle.into(),
+                root: "/project".into(),
+            },
+            provenance: KnowledgeProvenance::LearnedCorrection,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            revision: 1,
+            voice_command: None,
+        }]);
+        let identity = crate::frontmost::FrontmostAppIdentity {
+            bundle_id: Some(bundle.into()),
+            process_id: Some(1),
+        };
+        let knowledge = crate::knowledge_store::KnowledgeStore::default();
+        for id in [
+            "builtin.email",
+            "builtin.notes",
+            "builtin.messages",
+            "builtin.technical",
+            "builtin.verbatim",
+            "project",
+        ] {
+            let mut mode = dictation_context::builtin_mode(if id == "project" {
+                "builtin.technical"
+            } else {
+                id
+            })
+            .unwrap();
+            if id == "project" {
+                mode.context_policy = ModeContextPolicy::Project;
+            }
+            let context = resolve_live_context(
+                &app_state,
+                &knowledge,
+                &identity,
+                &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+                None,
+                SessionOverrides {
+                    mode: Some(mode),
+                    ..Default::default()
+                },
+            );
+            let prompt = context.transcription.prompt.as_deref().unwrap_or("");
+            let matcher = context.transformations.correction_matcher.as_ref().unwrap();
+            let project = id == "project";
+            let technical = project || id == "builtin.technical";
+            assert_eq!(context.context_capture.local_project_index, project, "{id}");
+            assert_eq!(prompt.contains("ProjectWord"), project, "{id}");
+            assert_eq!(prompt.contains("all__"), technical, "{id}");
+            assert_eq!(
+                matcher.apply("project alias"),
+                if project {
+                    "ProjectWord"
+                } else {
+                    "project alias"
+                },
+                "{id}"
+            );
+            assert_eq!(
+                matcher.apply("learned alias"),
+                if project {
+                    "LearnedWord"
+                } else {
+                    "learned alias"
+                },
+                "{id}"
+            );
+            assert_eq!(
+                matcher.apply("all the machines"),
+                if technical {
+                    "all__ the machines"
+                } else {
+                    "all the machines"
+                },
+                "{id}"
+            );
+        }
     }
 
     #[test]
