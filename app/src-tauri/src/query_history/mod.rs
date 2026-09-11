@@ -101,8 +101,9 @@ impl QueryHistoryStore {
         offset: u32,
         limit: u32,
         provider: Option<QueryProviderId>,
+        search: Option<String>,
     ) -> Result<QueryHistoryPageV1, String> {
-        self.repository()?.list(offset, limit, provider)
+        self.repository()?.list(offset, limit, provider, search)
     }
 
     pub(crate) fn clear(&self) -> Result<(), String> {
@@ -173,7 +174,7 @@ mod tests {
         drop(connection);
         fs::write(root.join("quarantine/stale.sqlite3"), b"PRIVATE").unwrap();
 
-        assert!(store.list(0, 10, None).is_err());
+        assert!(store.list(0, 10, None, None).is_err());
         store.clear().unwrap();
         assert_ne!(store.clear_epoch(), Some(old_epoch));
         assert!(store
@@ -191,7 +192,7 @@ mod tests {
             )
             .unwrap()
             .is_none());
-        assert_eq!(store.list(0, 10, None).unwrap().total, 0);
+        assert_eq!(store.list(0, 10, None, None).unwrap().total, 0);
         assert_eq!(fs::read_dir(root.join("quarantine")).unwrap().count(), 0);
         let connection = Connection::open(db).unwrap();
         let version: u32 = connection

@@ -3703,7 +3703,7 @@ mod tests {
         assert_eq!(snapshot.answer, format!("{user_frame}{malformed}"));
         assert!(snapshot.answer.contains(private_context));
         assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 1);
 
         let raw_snapshot = QueryTerminalSnapshot {
             provider: QueryProviderId::Custom,
@@ -3721,7 +3721,7 @@ mod tests {
             terminal_intent: None,
         };
         assert!(persist_query_history_snapshot(&history, &raw_snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 2);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 2);
     }
 
     #[test]
@@ -3750,7 +3750,7 @@ mod tests {
         };
 
         assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 0);
     }
 
     #[test]
@@ -3810,7 +3810,7 @@ mod tests {
         assert_eq!(snapshot.answer, composed_prompt);
         assert!(snapshot.answer.contains(private_context));
         assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 1);
     }
 
     #[test]
@@ -3882,7 +3882,7 @@ mod tests {
         let snapshot = query.claim_terminal(pass_id).unwrap();
         assert_eq!(snapshot.answer, answer);
         assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 1);
     }
 
     #[test]
