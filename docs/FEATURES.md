@@ -269,6 +269,14 @@ tokens, dashboard/sidebar primitives, and transcript-card invariants keep the
 redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
+
+The seven-step first-launch assistant is followed by a dismissible Home
+checklist for Command Palette, app-bound Modes, Transform, Voice Query,
+meetings, Correct and Teach, and shortcuts. Real local counters and explicit
+configuration complete operational rows. Four content-free, once-only hints
+react to existing hotkey, history, browser teaching-context, and meeting events.
+Settings → General reopens the checklist; either setup-assistant entry point
+resets checklist and hint state.
 First-launch wizard: Welcome → Microphone → Accessibility → optional System
 Audio → Model download → Hotkey → Done. The mic step fires the native macOS
 prompt in-app; permission steps update when the user returns from System Settings;
