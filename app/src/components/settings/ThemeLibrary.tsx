@@ -118,7 +118,6 @@ function ModePreview({
   options,
   selected,
   active,
-  interactive,
   labels,
   open,
   offset,
@@ -130,7 +129,6 @@ function ModePreview({
   options: readonly ModeOption[];
   selected: ModeOption;
   active: boolean;
-  interactive: boolean;
   labels: ReadonlyMap<string, string>;
   open: boolean;
   offset: number;
@@ -151,34 +149,26 @@ function ModePreview({
   );
   return (
     <>
-      {interactive ? (
-        <button
-          type="button"
-          aria-label={`Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`}
-          aria-pressed={active}
-          title={`${modeLabel}: ${selectedLabel} · hover for variants`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onChoose(selected.entry);
-          }}
-          onFocus={onOpen}
-          onMouseEnter={onOpen}
-          className="absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
-          style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
-        >
-          {preview}
-        </button>
-      ) : (
-        <span
-          aria-label={`${modeLabel} preview: ${selectedLabel}`}
-          role="img"
-          title={`${modeLabel}: ${selectedLabel}`}
-          className="pointer-events-none absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center"
-          style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
-        >
-          {preview}
-        </span>
-      )}
+      <button
+        type="button"
+        aria-label={options.length > 1
+          ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`
+          : `Use ${selectedLabel} for ${mode} mode`}
+        aria-pressed={active}
+        title={options.length > 1
+          ? `${modeLabel}: ${selectedLabel} · hover for variants`
+          : `Use ${selectedLabel} for ${mode} mode`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onChoose(selected.entry);
+        }}
+        onFocus={onOpen}
+        onMouseEnter={onOpen}
+        className="absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
+        style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
+      >
+        {preview}
+      </button>
       {showLabel && (
         <span
           className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-20 -translate-x-1/2 items-center gap-1 text-[10px] font-medium text-on-surface"
@@ -328,7 +318,6 @@ function CollectionCard({
               options={group.options}
               selected={group.selected}
               active={selection[group.mode] === group.selected.entry.id}
-              interactive={group.options.length > 1}
               labels={labels}
               open={radialOpen === group.mode}
               offset={offset}
@@ -404,11 +393,16 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
 
   const applyPair = (light: ThemeLibraryEntryV1 | null, dark: ThemeLibraryEntryV1 | null) => {
     try {
+      const onlyEntry = light ?? dark;
+      if (!light || !dark) {
+        if (onlyEntry) void commit(appearance.library.previewSelection(onlyEntry.id));
+        return;
+      }
       void commit(previewThemeLibraryPairSelection(
         appearance.document,
         appearance.library.document,
-        light?.id ?? 'sonic',
-        dark?.id ?? 'sonic',
+        light.id,
+        dark.id,
       ));
     } catch (cause) {
       setError(String(cause));
@@ -452,13 +446,21 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
     theme: appearance.document.theme,
     source: { kind: 'local' },
   };
-  const applyCustom = () => void commit({
+  const applyCustomPair = () => void commit({
     mode: appearance.document.mode,
     theme: appearance.document.theme,
     light: appearance.document.cache.light,
     dark: appearance.document.cache.dark,
     adjustments: appearance.adjustments,
     selection: { light: 'custom', dark: 'custom' },
+  });
+  const applyCustomMode = (_entry: ThemeLibraryEntryV1, mode: ResolvedAppearance) => void commit({
+    mode,
+    theme: appearance.document.theme,
+    light: appearance.document.cache.light,
+    dark: appearance.document.cache.dark,
+    adjustments: appearance.adjustments,
+    selection: { ...selection, [mode]: 'custom' },
   });
 
   return (
@@ -524,8 +526,8 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
             label="Custom"
             entries={[customEntry]}
             selection={selection}
-            onApplyPair={applyCustom}
-            onApplyMode={applyCustom}
+            onApplyPair={applyCustomPair}
+            onApplyMode={applyCustomMode}
             onCustomize={onCustomize}
             resolvedAppearance={appearance.resolvedAppearance}
           />

@@ -126,18 +126,12 @@ describe('Murmur layout contracts', () => {
     expect(css).toMatch(/\.ui-dashboard-action:disabled\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
   });
 
-  it('keeps copy feedback and uses flat, full-width home history rows', () => {
+  it('keeps copy feedback outside the transcript layout', () => {
     expect(css).toMatch(
       /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-card\s*\{[^}]*border-bottom-color:\s*var\(--ui-dashboard-border-subtle\);[^}]*border-radius:\s*0;[^}]*padding:\s*var\(--ui-space-5\) var\(--ui-space-4\);[^}]*box-shadow:\s*none;/s,
-    );
-    expect(css).toMatch(
       /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*padding-right:\s*0;/s,
-    );
-    expect(css).toMatch(
-      /\.home-history \.transcript-card\[data-copied="true"\]\s*\{[^}]*border-bottom-color:\s*color-mix\(in srgb, var\(--murmur-success\) 50%, transparent\);[^}]*box-shadow:\s*none;/s,
     );
     expect(css).toMatch(
       /\.home-insights-rail\s*\{[^}]*width:\s*var\(--ui-dashboard-rail\);/s,

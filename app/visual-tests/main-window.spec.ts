@@ -121,6 +121,7 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
   const feedback = middleCard.locator('.transcript-copy-feedback');
   const copyAction = middleCard.locator('[data-action-id="copy"]');
   const before = await middleCard.boundingBox();
+  const shadowBefore = await middleCard.evaluate((element) => getComputedStyle(element).boxShadow);
 
   await expect(middleCard).toHaveAttribute('data-day-end', 'false');
   await middleCard.click();
@@ -128,7 +129,7 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
   await expect(feedback).toHaveText('Copied');
   await expect(copyAction).toHaveText('Copied');
   expect(await middleCard.boundingBox()).toEqual(before);
-  expect(await middleCard.evaluate((element) => getComputedStyle(element).boxShadow)).toBe('none');
+  expect(await middleCard.evaluate((element) => getComputedStyle(element).boxShadow)).toBe(shadowBefore);
   await expect(middleCard).toHaveScreenshot('light-history-copy-middle.png');
 
   const newestCard = page.locator('.home-history .transcript-card').first();

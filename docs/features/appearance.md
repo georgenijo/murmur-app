@@ -102,6 +102,13 @@ make one pair accessible by breaking another. The emergency preset fallback
 remains a fail-closed postcondition and is not part of ordinary color
 resolution.
 
+Dark custom palettes also keep panels above the canvas in lightness, including
+imports that assign the same color to every editor panel. The elevation floor
+preserves each panel's hue and yields to the text-contrast cap. Foreground
+colors are solved against the final panel colors. Reapplying a compiled palette
+does not accumulate small gamut-rounding changes. Untouched Sonic still uses
+its exact fixtures; its raised controls use the existing container token.
+
 Text pairs meet WCAG AA (4.5:1), and focus/interactive/status pairs meet 3:1
 where required. Explicit overrides cannot bypass the matrix; a value that
 cannot be adjusted deterministically falls back to the nearest valid preset
@@ -114,7 +121,11 @@ returns the preset to Sonic and restores the exact built-in fixtures.
 
 Selecting a saved palette compiles its resolved tokens into the active
 document. Light and dark can name different library owners; a paired entry can
-set both at once. This makes utility consumers independent from the larger
+set both at once while preserving the current System, Light, or Dark preference.
+Selecting a single-mode card switches to its supported mode. Selecting any
+light or dark swatch switches to that mode and preserves the other palette.
+The mode and selected palette are saved in one appearance document update.
+This makes utility consumers independent from the larger
 library at first paint. Editing any control on a saved or explicitly compiled
 palette derives a seed-based Custom theme from the currently rendered colors,
 sets both owners to `custom`, and leaves the saved source unchanged. Removing
@@ -175,6 +186,10 @@ already repaired semantic palette:
 - focus and meaningful selection indicators use `primary`
 - chart intensity uses five bounded mixes between surface and primary
 - elevation uses one neutral black shadow and never an imported foreground
+
+Settings shares the same visible borders, raised panels, and neutral shadows.
+Home transcripts have separate rounded cards with a gap between entries, and
+the recording control is capped at 26 rem while fitting narrower windows.
 
 These `--ui-dashboard-*` and `--ui-chart-*` values are runtime CSS aliases, not
 new saved theme fields. Imported themes therefore pass through the normal
