@@ -788,6 +788,25 @@ test('meeting captions explain segment timing and keep copy and export reachable
   }
 });
 
+test('meeting calendar picker requires selection and keeps denied access usable', async ({ page }) => {
+  await page.setViewportSize({ width: 880, height: 720 });
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
+  await page.getByRole('button', { name: 'Name from calendar', exact: true }).click();
+  await expect(page.getByRole('radio')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Apply event' })).toBeDisabled();
+  await page.getByRole('radio', { name: /Orion planning/ }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.getByRole('button', { name: 'Apply event' })).toBeEnabled();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-picker.png');
+
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&calendar=denied');
+  await page.getByRole('button', { name: 'Name from calendar', exact: true }).click();
+  await expect(page.getByLabel('Meeting title', { exact: true })).toBeEditable();
+  await expect(page.getByRole('button', { name: 'Open Calendar Settings' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reset Calendar Access' })).toBeVisible();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-denied.png');
+});
+
 test('dashboard charts keep tooltip, plot, and seven weekday labels in stable regions', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
   const chart = page.locator('figure[aria-label="Words per day bar chart"]');

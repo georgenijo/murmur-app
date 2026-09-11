@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
   checkMicrophonePermissionStatus: vi.fn(),
   getModelRuntimeCatalog: vi.fn(),
   getSystemAudioPermissionStatus: vi.fn(),
+  getCalendarPermissionStatus: vi.fn(),
+  getMeetingCalendarEvents: vi.fn(),
+  requestCalendarPermission: vi.fn(),
+  resetCalendarPermission: vi.fn(),
+  openCalendarPreferences: vi.fn(),
   requestSystemAudioPermission: vi.fn(),
 }));
 
@@ -29,6 +34,15 @@ vi.mock('../../lib/meetings', () => ({
   getSystemAudioPermissionStatus: () => mocks.getSystemAudioPermissionStatus(),
   openSystemAudioPreferences: vi.fn().mockResolvedValue(undefined),
   requestSystemAudioPermission: () => mocks.requestSystemAudioPermission(),
+}));
+
+vi.mock('../../lib/calendar', () => ({
+  getCalendarPermissionStatus: () => mocks.getCalendarPermissionStatus(),
+  openCalendarPreferences: () => mocks.openCalendarPreferences(),
+  requestCalendarPermission: () => mocks.requestCalendarPermission(),
+  resetCalendarPermission: () => mocks.resetCalendarPermission(),
+  // Onboarding must never ask EventKit for event content.
+  getMeetingCalendarEvents: () => mocks.getMeetingCalendarEvents(),
 }));
 
 vi.mock('../ModelDownloader', () => ({
@@ -93,6 +107,14 @@ vi.mock('../ui/WindowHeader', () => ({
   WindowHeader: () => <div>Window header</div>,
 }));
 
+function deferred<T>() {
+  let resolve = (_value: T) => {};
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
 describe('OnboardingFlow', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -133,7 +155,7 @@ describe('OnboardingFlow', () => {
 
   const expectProgress = (step: number) => {
     const progress = container.querySelector<HTMLElement>('[role="progressbar"]');
-    expect(progress?.getAttribute('aria-label')).toBe(`Step ${step} of 7`);
+    expect(progress?.getAttribute('aria-label')).toBe(`Step ${step} of 8`);
     expect(progress?.getAttribute('aria-valuenow')).toBe(String(step));
     return progress!;
   };
@@ -176,7 +198,16 @@ describe('OnboardingFlow', () => {
   const goToModelStep = async () => {
     await goToSystemAudioStep();
     await clickButton('Skip Meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
+    await clickButton('Skip Calendar for now');
     expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
+    await settle();
+  };
+
+  const goToCalendarStep = async () => {
+    await goToSystemAudioStep();
+    await clickButton('Skip Meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
     await settle();
   };
 
@@ -190,6 +221,10 @@ describe('OnboardingFlow', () => {
       { modelName: 'base.en', installState: 'installed' },
     ]);
     mocks.getSystemAudioPermissionStatus.mockResolvedValue('unknown');
+    mocks.getCalendarPermissionStatus.mockResolvedValue('notDetermined');
+    mocks.requestCalendarPermission.mockResolvedValue('granted');
+    mocks.resetCalendarPermission.mockResolvedValue(undefined);
+    mocks.openCalendarPreferences.mockResolvedValue(undefined);
     mocks.requestSystemAudioPermission.mockResolvedValue({
       permission: 'granted',
       captureReady: true,
@@ -225,18 +260,22 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Skip Meetings for now');
     expectProgress(5);
-    expectNavigation('Continue');
+    expectNavigation('Continue', 'Skip Calendar for now');
 
-    await clickButton('Continue');
+    await clickButton('Skip Calendar for now');
     expectProgress(6);
     expectNavigation('Continue');
 
     await clickButton('Continue');
     expectProgress(7);
+    expectNavigation('Continue');
+
+    await clickButton('Continue');
+    expectProgress(8);
     expectNavigation('Start Using Murmur');
 
     await clickButton('Back');
-    expectProgress(6);
+    expectProgress(7);
     expect(container.querySelector('h1')?.textContent).toContain('Recording Shortcut');
   });
 
@@ -263,6 +302,12 @@ describe('OnboardingFlow', () => {
     expect(navigation.actionButtons[1].disabled).toBe(true);
 
     await clickButton('Skip Meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
+    navigation = expectNavigation('Continue', 'Skip Calendar for now');
+    expect(navigation.actionButtons[0].disabled).toBe(false);
+    expect(navigation.actionButtons[1].disabled).toBe(true);
+
+    await clickButton('Skip Calendar for now');
     expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
   });
 
@@ -275,7 +320,7 @@ describe('OnboardingFlow', () => {
     expect(navigation.actionButtons[0].disabled).toBe(true);
 
     await clickButton('Back');
-    expect(container.querySelector('h1')?.textContent).toContain('System Audio Access');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
   });
 
   it('locks model navigation during download and restores it for retry', async () => {
@@ -319,6 +364,7 @@ describe('OnboardingFlow', () => {
     await clickButton('Continue');
     await clickButton('Continue');
     await clickButton('Skip Meetings for now');
+    await clickButton('Skip Calendar for now');
     await clickButton('Continue');
 
     await clickButton('Double-Tap');
@@ -346,6 +392,7 @@ describe('OnboardingFlow', () => {
     await clickButton('Continue');
     await clickButton('Continue');
     await clickButton('Skip Meetings for now');
+    await clickButton('Skip Calendar for now');
     await clickButton('Continue');
 
     const triggerKey = container.querySelector<HTMLSelectElement>('#onboarding-trigger-key')!;
@@ -393,5 +440,123 @@ describe('OnboardingFlow', () => {
     await clickButton('Allow System Audio Access');
 
     expect(container.textContent).toContain('Quit and reopen Murmur');
+  });
+
+  it('does not touch Calendar before its step and requests access only after a click', async () => {
+    await renderFlow();
+
+    expect(mocks.getCalendarPermissionStatus).not.toHaveBeenCalled();
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+    expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
+
+    await clickButton('Get Started');
+    await clickButton('Continue');
+    await clickButton('Continue');
+    expect(mocks.getCalendarPermissionStatus).not.toHaveBeenCalled();
+
+    await clickButton('Skip Meetings for now');
+    expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(1);
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+    expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
+
+    await clickButton('Allow Calendar Access');
+    expect(mocks.requestCalendarPermission).toHaveBeenCalledTimes(1);
+    expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Calendar access granted');
+  });
+
+  it('keeps Calendar request errors local and content-free', async () => {
+    mocks.requestCalendarPermission.mockRejectedValue(
+      new Error('private EventKit diagnostic that must not reach the UI'),
+    );
+    await goToCalendarStep();
+
+    await clickButton('Allow Calendar Access');
+
+    expect(container.textContent).toContain('Could not request Calendar access');
+    expect(container.textContent).not.toContain('private EventKit diagnostic');
+    expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
+  });
+
+  it('skips Calendar without requesting access or reading events', async () => {
+    await goToCalendarStep();
+
+    await clickButton('Skip Calendar for now');
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+
+    expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
+    expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(1);
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+    expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
+  });
+
+  it('explains manual naming and lets denied Calendar access be opened or reset', async () => {
+    mocks.getCalendarPermissionStatus.mockResolvedValue('denied');
+    await goToCalendarStep();
+
+    expect(container.textContent).toContain('You can still name meetings manually');
+    expect(getButton('Reset Calendar permission').disabled).toBe(false);
+
+    await clickButton('Open System Settings');
+    expect(mocks.openCalendarPreferences).toHaveBeenCalledTimes(1);
+
+    await clickButton('Reset Calendar permission');
+    expect(mocks.resetCalendarPermission).toHaveBeenCalledTimes(1);
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+    expect(getButton('Allow Calendar Access')).toBeDefined();
+  });
+
+  it('finishes a pending Calendar request after leaving and re-entering the step', async () => {
+    const request = deferred<'granted'>();
+    mocks.requestCalendarPermission.mockReturnValue(request.promise);
+    await goToCalendarStep();
+
+    await clickButton('Allow Calendar Access');
+    expect(getButton('Waiting for macOS…').disabled).toBe(true);
+    await clickButton('Skip Calendar for now');
+    await clickButton('Back');
+    expect(getButton('Waiting for macOS…').disabled).toBe(true);
+
+    await act(async () => request.resolve('granted'));
+    await settle();
+
+    expect(container.textContent).toContain('Calendar access granted');
+    expect(expectNavigation('Continue').actionButtons[0].disabled).toBe(false);
+  });
+
+  it('finishes a pending Calendar reset after leaving and re-entering the step', async () => {
+    const reset = deferred<void>();
+    mocks.getCalendarPermissionStatus.mockResolvedValue('denied');
+    mocks.resetCalendarPermission.mockReturnValue(reset.promise);
+    await goToCalendarStep();
+
+    await clickButton('Reset Calendar permission');
+    expect(getButton('Reset Calendar permission').disabled).toBe(true);
+    await clickButton('Skip Calendar for now');
+    await clickButton('Back');
+    expect(getButton('Reset Calendar permission').disabled).toBe(true);
+
+    await act(async () => reset.resolve(undefined));
+    await settle();
+
+    expect(getButton('Allow Calendar Access').disabled).toBe(false);
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+  });
+
+  it('refreshes denied Calendar access on focus while its step is visible', async () => {
+    mocks.getCalendarPermissionStatus.mockResolvedValue('denied');
+    await goToCalendarStep();
+
+    await clickButton('Open System Settings');
+    mocks.getCalendarPermissionStatus.mockResolvedValue('granted');
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+
+    expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Calendar access granted');
+    expect(expectNavigation('Continue').actionButtons[0].disabled).toBe(false);
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+    expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
   });
 });
