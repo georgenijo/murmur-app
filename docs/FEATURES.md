@@ -78,7 +78,9 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - **Clipboard-first, always.** Auto-paste is layered on top and never the only path.
 - Native `CGEvent` Cmd+V with an `osascript` fallback; configurable 10–500ms delay; one retry; timeout-bounded.
-- Auto-paste failure emits a hint — the text is already on the clipboard.
+- Auto-paste failure emits a hint with an inline **Try again** action in the
+  non-activating overlay and main window. Every retry reports whether text was
+  pasted, copied only, unavailable, busy, or failed without exposing content.
 - **File output** — numbered `.txt` transcripts and/or 16kHz mono `.wav` audio to a chosen folder (default `Documents/Murmur`). While file output is on, auto-paste is suppressed without overwriting the user's stored preference.
 - **Mirror captions to NotchPill** — opt-in, off by default, and shown in Settings only when macOS reports NotchPill installed. Mirrors the final transcript to `~/Library/Application Support/local-dictation/latest-caption.json` (`{text, timestamp}`) so the notch overlay can show what was just said. Owner-only (`0600`), most-recent-caption-only, written after the clipboard on a blocking task so it can never delay delivery, and deleted when the setting is switched off or NotchPill is removed. On-device; nothing is sent anywhere.
 
