@@ -3924,7 +3924,7 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
             assert!(query.request_follow_up(pass));
             pass = query.allocate_follow_up(pass).unwrap();
         }
-        let entries = serde_json::to_value(history.list(0, 10, None).unwrap()).unwrap();
+        let entries = serde_json::to_value(history.list(0, 10, None, None).unwrap()).unwrap();
         assert_eq!(entries["total"], 2);
         assert!(entries["entries"].as_array().unwrap().iter().all(|entry| {
             matches!(
@@ -4139,7 +4139,7 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
                 assert!(!prompt.contains("first question"));
             }
         }
-        let page = history.list(0, 10, None).unwrap();
+        let page = history.list(0, 10, None, None).unwrap();
         assert_eq!(page.total, 2);
         let json = serde_json::to_value(page).unwrap();
         let entries = json["entries"].as_array().unwrap();
