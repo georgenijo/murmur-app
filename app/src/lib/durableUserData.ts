@@ -40,6 +40,23 @@ function tauriAvailable(): boolean {
   }
 }
 
+let pendingStatsMutation: Promise<unknown> | null = null;
+
+function persistStats(command: string, blob?: string): void {
+  const write = () => invoke(command, blob === undefined ? undefined : { blob });
+  const pending = (pendingStatsMutation ? pendingStatsMutation.then(write) : write())
+    .catch(() => { console.error('Failed to persist statistics'); });
+  pendingStatsMutation = pending;
+  void pending.then(() => {
+    if (pendingStatsMutation === pending) pendingStatsMutation = null;
+  });
+}
+
+function reportStorageError(store: DurableBlobStore, message: string, error: unknown): void {
+  if (store.storageKey === STATS_STORE.storageKey) console.error(message);
+  else console.error(message, error);
+}
+
 /**
  * Keep localStorage as the synchronous frontend cache while mirroring the exact
  * serialized blob to the Rust-owned durable file. Plain-browser builds and
@@ -48,11 +65,15 @@ function tauriAvailable(): boolean {
 export function mirrorDurableBlob(store: DurableBlobStore, blob: string): void {
   try {
     if (!tauriAvailable()) return;
+    if (store.storageKey === STATS_STORE.storageKey) {
+      persistStats(store.saveCommand, blob);
+      return;
+    }
     void invoke(store.saveCommand, { blob }).catch((error) => {
-      console.error(`Failed to persist ${store.label} to disk:`, error);
+      reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
     });
   } catch (error) {
-    console.error(`Failed to persist ${store.label} to disk:`, error);
+    reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
   }
 }
 
@@ -60,7 +81,7 @@ export function saveDurableBlob(store: DurableBlobStore, blob: string): void {
   try {
     localStorage.setItem(store.storageKey, blob);
   } catch (error) {
-    console.error(`Failed to cache ${store.label}:`, error);
+    reportStorageError(store, `Failed to cache ${store.label}:`, error);
   }
   // The cache is an optimization, not a prerequisite for the durable write.
   mirrorDurableBlob(store, blob);
@@ -70,15 +91,19 @@ export function clearDurableBlob(store: DurableBlobStore): void {
   try {
     localStorage.removeItem(store.storageKey);
   } catch (error) {
-    console.error(`Failed to clear cached ${store.label}:`, error);
+    reportStorageError(store, `Failed to clear cached ${store.label}:`, error);
   }
   try {
     if (!tauriAvailable()) return;
+    if (store.storageKey === STATS_STORE.storageKey) {
+      persistStats(store.clearCommand);
+      return;
+    }
     void invoke(store.clearCommand).catch((error) => {
-      console.error(`Failed to clear durable ${store.label}:`, error);
+      reportStorageError(store, `Failed to clear durable ${store.label}:`, error);
     });
   } catch (error) {
-    console.error(`Failed to clear durable ${store.label}:`, error);
+    reportStorageError(store, `Failed to clear durable ${store.label}:`, error);
   }
 }
 
@@ -101,7 +126,7 @@ export async function hydrateDurableStore(store: DurableBlobStore): Promise<void
   } catch (error) {
     // A storage problem must not block startup. Keep the localStorage cache as
     // the session fallback, matching the durable settings contract.
-    console.error(`Failed to hydrate ${store.label} from disk:`, error);
+    reportStorageError(store, `Failed to hydrate ${store.label} from disk:`, error);
   }
 }
 

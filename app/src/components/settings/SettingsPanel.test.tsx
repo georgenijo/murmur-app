@@ -9,6 +9,7 @@ import type { ModelHardwareGuidance } from '../../lib/modelHardwareGuidance';
 import {
   SETTINGS_CATEGORIES,
   SettingsPanel,
+  type SettingsPageRequest,
   autoPasteDeliveryDescription,
   effectiveAutoPaste,
   fileOutputDeliveryDescription,
@@ -156,9 +157,14 @@ describe('SettingsPanel information architecture', () => {
   let container: HTMLDivElement;
   let root: Root;
   const scrollTo = vi.fn();
+  const scrollIntoView = vi.fn();
   const onUpdateSettings = vi.fn();
 
-  function renderPanel(isOpen = true, settings: Settings = DEFAULT_SETTINGS) {
+  function renderPanel(
+    isOpen = true,
+    settings: Settings = DEFAULT_SETTINGS,
+    pageRequest: SettingsPageRequest | null = null,
+  ) {
     void isOpen;
     return root.render(
       <SettingsPanel
@@ -175,15 +181,17 @@ describe('SettingsPanel information architecture', () => {
         onOpenUpdate={vi.fn()}
         updateStatus={{ phase: 'idle' }}
         configureError={null}
+        pageRequest={pageRequest}
       />,
     );
   }
 
   beforeEach(async () => {
     scrollTo.mockReset();
+    scrollIntoView.mockReset();
     onUpdateSettings.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: scrollTo, configurable: true });
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: vi.fn(), configurable: true });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: scrollIntoView, configurable: true });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -197,7 +205,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('opens on a single customization hub before the direct settings destinations', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Customize', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
+      'Customize', 'Modes', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
@@ -207,6 +215,7 @@ describe('SettingsPanel information architecture', () => {
       expect.stringContaining('Text & Vocabulary'),
       expect.stringContaining('Voice Commands'),
       expect.stringContaining('Styles'),
+      expect.stringContaining('Modes'),
       expect.stringContaining('Transforms'),
     ]);
     expect(resolvePage(undefined)).toBe('customize');
@@ -221,6 +230,7 @@ describe('SettingsPanel information architecture', () => {
       ['Text & Vocabulary', 'Text & Vocabulary'],
       ['Voice Commands', 'Voice Commands'],
       ['Styles', 'Delivery'],
+      ['Modes', 'Modes'],
       ['Transforms', 'Selected-Text Rewrite'],
     ] as const) {
       const row = hubButton(label);
@@ -234,6 +244,19 @@ describe('SettingsPanel information architecture', () => {
       expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
       expect(document.activeElement).toBe(hubButton(label));
     }
+  });
+
+  it('shows Modes and browser site rules on their own page', async () => {
+    const modes = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .find((button) => button.textContent === 'Modes') as HTMLButtonElement;
+
+    await act(async () => modes.click());
+
+    expect(container.querySelector('h1')?.textContent).toBe('Modes');
+    const browserSites = Array.from(container.querySelectorAll('legend'))
+      .find((legend) => legend.textContent === 'Browser sites');
+    expect(browserSites).toBeDefined();
+    expect(browserSites?.closest('details')).toBeNull();
   });
 
   it('commits keyboard changes to voice-detection sensitivity', async () => {
@@ -434,6 +457,106 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).not.toContain('Context content never enters history');
   });
 
+  it('opens Keyboard Shortcuts from General and preserves its contextual owner route', async () => {
+    const general = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .find((button) => button.textContent === 'General') as HTMLButtonElement;
+    await act(async () => general.click());
+
+    const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Keyboard Shortcuts')) as HTMLButtonElement;
+    await act(async () => shortcuts.click());
+
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(general.getAttribute('aria-current')).toBe('page');
+
+    const correction = container.querySelector<HTMLButtonElement>('[data-shortcut-id="correction"] button') as HTMLButtonElement;
+    scrollTo.mockClear();
+    scrollIntoView.mockClear();
+    vi.useFakeTimers();
+    try {
+      await act(async () => correction.click());
+      const target = container.querySelector('[data-setting-target="correction-shortcut"]') as HTMLElement;
+      expect(container.querySelector('h1')?.textContent).toBe('Selected-Text Rewrite');
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+      expect(scrollTo).not.toHaveBeenCalled();
+      expect(target.classList.contains('settings-target-flash')).toBe(true);
+
+      await act(async () => vi.advanceTimersByTime(1800));
+      expect(target.classList.contains('settings-target-flash')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const backToShortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Keyboard Shortcuts')) as HTMLButtonElement;
+    await act(async () => backToShortcuts.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(document.activeElement).toBe(container.querySelector('[data-shortcut-id="correction"] button'));
+
+    const backToGeneral = container.querySelector<HTMLButtonElement>('.settings-back-btn') as HTMLButtonElement;
+    await act(async () => backToGeneral.click());
+    expect(container.querySelector('h1')?.textContent).toBe('General');
+    expect(document.activeElement?.textContent).toContain('Keyboard Shortcuts');
+  });
+
+  it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {
+    await act(async () => root.render(
+      <SettingsPanel
+        settings={DEFAULT_SETTINGS}
+        onUpdateSettings={onUpdateSettings}
+        initialized
+        status="idle"
+        onResetStats={vi.fn()}
+        onRerunSetup={vi.fn()}
+        accessibilityGranted
+        onCheckForUpdate={vi.fn(async () => {})}
+        onDownloadUpdate={vi.fn()}
+        onRestartUpdate={vi.fn()}
+        onOpenUpdate={vi.fn()}
+        updateStatus={{ phase: 'idle' }}
+        configureError={null}
+        pageRequest={{ page: 'shortcuts', token: 1 }}
+      />,
+    ));
+
+    expect(resolvePage('shortcuts')).toBe('shortcuts');
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
+  });
+
+  it('honors initial and repeated target requests, then resets on normal navigation', async () => {
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    scrollTo.mockClear();
+    scrollIntoView.mockClear();
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+      page: 'recording',
+      target: 'trigger-key',
+      token: 1,
+    }));
+    const target = container.querySelector('[data-setting-target="trigger-key"]') as HTMLElement;
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(target.classList.contains('settings-target-flash')).toBe(true);
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+      page: 'recording',
+      target: 'trigger-key',
+      token: 2,
+    }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(target.classList.contains('settings-target-flash')).toBe(true);
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+      page: 'general',
+      token: 3,
+    }));
+    expect(container.querySelector('h1')?.textContent).toBe('General');
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+    expect(target.classList.contains('settings-target-flash')).toBe(false);
+  });
+
   it('shows hardware guidance and keeps a warned speech model selectable', async () => {
     guidanceMocks.current = {
       schemaVersion: 1,
@@ -581,6 +704,36 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => result.click());
     expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('Appearance');
     expect(container.textContent).toContain('Appearance settings');
+  });
+
+  it('resets targeted scrolling when entering and leaving a settings editor', async () => {
+    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'vocabulary aliases');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Vocabulary & Aliases'),
+    ) as HTMLButtonElement;
+    await act(async () => result.click());
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+
+    scrollTo.mockClear();
+    const aliases = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim().startsWith('Aliases'),
+    ) as HTMLButtonElement;
+    await act(async () => aliases.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Aliases');
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+
+    scrollTo.mockClear();
+    const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Back to Text settings'),
+    ) as HTMLButtonElement;
+    await act(async () => back.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Text & Vocabulary');
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
   it('finds the Voice Query clipboard preference from settings search', async () => {

@@ -661,11 +661,48 @@ pub struct AnchorRect {
     pub height: f64,
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TransformStatsOutcome {
+    Runs,
+    Approved,
+    Undone,
+}
+
+// No Debug: preset names are private labels, only delivered to main's local
+// stats writer. Pass and attempt IDs are transient deduplication keys.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TransformStatsReceipt {
+    kind: &'static str,
+    pass_id: u64,
+    attempt: u64,
+    outcome: TransformStatsOutcome,
+    preset_name: Option<String>,
+}
+
+fn stats_receipt(
+    session: &transform_apply::TransformSession,
+    outcome: TransformStatsOutcome,
+) -> Option<TransformStatsReceipt> {
+    if session.purpose.is_correction() || session.transform_pass_id == 0 {
+        return None;
+    }
+    Some(TransformStatsReceipt {
+        kind: "transform",
+        pass_id: session.transform_pass_id,
+        attempt: session.stats_instruction_attempt,
+        outcome,
+        preset_name: session.stats_preset_name.clone(),
+    })
+}
+
 /// Every side effect the async core performs, behind a trait so a recording
 /// fake can stand in for Tauri in tests.
 pub(crate) trait FlowEffects: Send + Sync {
     /// Emit content-free `transform-state-changed` correlation/state metadata.
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>);
+    fn record_stats(&self, receipt: TransformStatsReceipt);
     fn show_popover(&self, anchor: Option<AnchorRect>);
     fn hide_popover(&self);
     fn set_focusable(&self, focusable: bool);
@@ -880,6 +917,7 @@ pub(crate) async fn run_transform(
     deadline: Duration,
 ) -> TransformRunReport {
     let transform_pass_id = app_state.active_transform_pass_id().unwrap_or(0);
+    let stats_owner = transform_apply::session_snapshot(app_state);
     let instruction = match instruction {
         Ok(text) if !text.trim().is_empty() => text,
         _ => {
@@ -1032,6 +1070,12 @@ pub(crate) async fn run_transform(
                     transform_apply::set_proposed_text(app_state, output.output);
                     fx.set_expanded(true);
                     fx.set_focusable(true);
+                    if let Some(receipt) = stats_owner
+                        .as_ref()
+                        .and_then(|session| stats_receipt(session, TransformStatsOutcome::Runs))
+                    {
+                        fx.record_stats(receipt);
+                    }
                     fx.emit_state(ReviewState::Ready, None);
                     if transform_pass_id != 0 {
                         crate::transform_trace::resolution(
@@ -1343,6 +1387,10 @@ pub(crate) struct TauriFlowEffects<'a> {
 }
 
 impl FlowEffects for TauriFlowEffects<'_> {
+    fn record_stats(&self, receipt: TransformStatsReceipt) {
+        let _ = self.app.emit_to("main", "local-stats-completion", receipt);
+    }
+
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>) {
         use tauri::Emitter;
         // Payload carries only content-free correlation/state metadata. The
@@ -2455,15 +2503,23 @@ pub(crate) async fn finish_transform_instruction(
                     Some(instruction_asr_started.elapsed().as_millis() as u64),
                     None,
                 );
-                Ok(
+                let (instruction, preset_name) =
                     if transform_apply::session_snapshot(&state.app_state)
                         .is_some_and(|session| session.purpose.is_correction())
                     {
-                        raw
+                        (raw, None)
                     } else {
                         expand_instruction(&state, &raw)
-                    },
-                )
+                    };
+                if !transform_apply::set_stats_preset(
+                    &state.app_state,
+                    transform_pass_id,
+                    attempt,
+                    preset_name,
+                ) {
+                    return Ok(());
+                }
+                Ok(instruction)
             }
             Err(error) => {
                 state.transform_diagnostics.phase(
@@ -2674,19 +2730,22 @@ pub(crate) async fn finish_transform_instruction(
 /// Expand a transcribed instruction when it names a built-in preset or a
 /// saved `KnowledgeKind::Transform`. Otherwise the raw transcript is the
 /// instruction (free-form spoken rewrite request). Never logs the text.
-fn expand_instruction(state: &crate::State, spoken: &str) -> String {
+fn expand_instruction(state: &crate::State, spoken: &str) -> (String, Option<String>) {
     if let Some(preset) = crate::transform_presets::resolve_preset(spoken) {
-        return preset.to_string();
+        return (
+            preset.instruction.to_string(),
+            Some(preset.name.to_string()),
+        );
     }
-    if let Some(saved) = resolve_saved_transform(state, spoken) {
-        return saved;
+    if let Some((instruction, name)) = resolve_saved_transform(state, spoken) {
+        return (instruction, Some(name));
     }
-    spoken.to_string()
+    (spoken.to_string(), None)
 }
 
 /// Case-insensitive match of a spoken name against enabled global/app
-/// Transform knowledge entries. Returns the instruction body, not the name.
-fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String> {
+/// Transform knowledge entries. Returns the instruction and its exact saved name.
+fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<(String, String)> {
     use crate::knowledge_store::{KnowledgeKind, KnowledgeListRequest, KnowledgePayload};
 
     let request = KnowledgeListRequest {
@@ -2703,7 +2762,7 @@ fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<String>
     for entry in response.entries {
         if let KnowledgePayload::Transform { name, instruction } = entry.payload {
             if crate::transform_presets::normalize(&name) == key {
-                return Some(instruction);
+                return Some((instruction, name));
             }
         }
     }
@@ -2861,9 +2920,16 @@ pub(crate) async fn approve_transform(
     };
 
     require_review_pass(&state.app_state, transform_pass_id)?;
+    let stats_owner = transform_apply::session_snapshot(&state.app_state);
     match transform_apply::apply_transform(&app_handle, &state.app_state).await {
         Ok(via) => {
             guard.mark_succeeded(); // status -> Idle; session.applied stays true
+            if let Some(receipt) = stats_owner
+                .as_ref()
+                .and_then(|session| stats_receipt(session, TransformStatsOutcome::Approved))
+            {
+                fx.record_stats(receipt);
+            }
             fx.emit_state(ReviewState::Applied, None);
             fx.schedule_linger_hide(transform_pass_id);
             if transform_pass_id != 0 {
@@ -3181,9 +3247,16 @@ pub(crate) async fn undo_transform_and_close(
         };
 
     require_review_pass(&state.app_state, transform_pass_id)?;
+    let stats_owner = transform_apply::session_snapshot(&state.app_state);
     match transform_apply::undo_applied_transform(&app_handle, &state.app_state).await {
         Ok(()) => {
             guard.mark_succeeded();
+            if let Some(receipt) = stats_owner
+                .as_ref()
+                .and_then(|session| stats_receipt(session, TransformStatsOutcome::Undone))
+            {
+                fx.record_stats(receipt);
+            }
             // Hide + clear WITHOUT another epoch bump (cancel would bump).
             transform_apply::clear_session(&state.app_state);
             let _ = crate::commands::transform_popover::hide_popover_internal(&app_handle);
@@ -3279,6 +3352,7 @@ pub(crate) struct RecordingFlowEffects {
 struct RecordingInner {
     /// (state, error_code) pairs, in emit order.
     emitted: Vec<(String, Option<String>)>,
+    stats: Vec<TransformStatsReceipt>,
     popover_shown: bool,
     focusable: Option<bool>,
     expanded: Option<bool>,
@@ -3337,6 +3411,14 @@ impl RecordingFlowEffects {
 
 #[cfg(any(test, debug_assertions, feature = "llm-test-support"))]
 impl FlowEffects for RecordingFlowEffects {
+    fn record_stats(&self, receipt: TransformStatsReceipt) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .stats
+            .push(receipt);
+    }
+
     fn emit_state(&self, state: ReviewState, error_code: Option<&str>) {
         self.inner
             .lock()
@@ -3389,6 +3471,7 @@ impl FlowEffects for RecordingFlowEffects {
 #[cfg(any(debug_assertions, feature = "llm-test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HappyPathReport {
+    pub stats_runs: usize,
     /// Review-state names emitted, in order (expected: listening, thinking, ready).
     pub emitted_states: Vec<String>,
     /// The proposed text stored on the session after the sidecar returned.
@@ -3461,7 +3544,14 @@ pub async fn run_happy_path_for_test(
     .await;
 
     let session = transform_apply::session_snapshot(&app_state);
+    let stats_runs = fx
+        .inner
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .stats
+        .len();
     HappyPathReport {
+        stats_runs,
         emitted_states: fx.emitted_states(),
         proposed: session.as_ref().and_then(|s| s.proposed.clone()),
         instruction: session.as_ref().and_then(|s| s.instruction.clone()),
@@ -3472,6 +3562,36 @@ pub async fn run_happy_path_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_stats_receipt_excludes_content_and_correction_passes() {
+        let mut session =
+            transform_apply::TransformSession::new_for_pass(snapshot_for_dismiss_tests(), 1, 73);
+        session.instruction = Some("PRIVATE_INSTRUCTION".into());
+        session.proposed = Some("PRIVATE_PROPOSAL".into());
+        session.stats_preset_name = Some("Exact saved name".into());
+        session.stats_instruction_attempt = 2;
+        let receipt = stats_receipt(&session, TransformStatsOutcome::Runs).unwrap();
+        assert_eq!(
+            serde_json::to_value(receipt).unwrap(),
+            serde_json::json!({
+                "kind": "transform", "passId": 73, "attempt": 2,
+                "outcome": "runs", "presetName": "Exact saved name",
+            })
+        );
+        session.purpose = crate::dictation_correction::ReviewPurpose::Correction {
+            recording_id: 4,
+            delivery: crate::dictation_correction::CorrectionDelivery::Copy,
+            teaching_context: None,
+        };
+        for outcome in [
+            TransformStatsOutcome::Runs,
+            TransformStatsOutcome::Approved,
+            TransformStatsOutcome::Undone,
+        ] {
+            assert!(stats_receipt(&session, outcome).is_none());
+        }
+    }
 
     // ---- Pure state machine ------------------------------------------------
 

@@ -1,6 +1,6 @@
 # React Hooks Reference
 
-The 44 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
+The 45 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
 
 For the commands these hooks call see [commands.md](commands.md). For the events they subscribe to see [events.md](events.md). For settings managed by `useSettings` see [settings.md](settings.md).
 
@@ -52,7 +52,7 @@ Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }`
 Validates generation-tagged `dictation-partial` events and renders only the newest recording's provisional text. It asks Rust to show the preview after the text has painted and clears the card as soon as capture leaves `recording`.
 
 ### `useDeliveryRecoveryListeners` (main window)
-Surfaces `delivery-retry-feedback` and `correction-start-failed` through the main banner. Retry messages clear after five seconds.
+Surfaces `delivery-retry-feedback` and `correction-start-failed` through the main banner. Its sibling `useDeliveryRecoveryNotice` owns the current notice, identity, and single auto-hide timer, so presenting a retry-in-progress, correction, or configuration message invalidates every older timer. Completed retry messages clear after five seconds.
 
 ### `useSoundCues` (main window)
 Maps dictation start, stop, delivery, initialization failure, and interruption events to local sound cues. It also maps meeting phase changes when meeting cues are enabled, while preventing dictation cues during an active meeting.
@@ -183,7 +183,7 @@ Owns geometry sourced from Rust — the single source of truth. Fetches `get_ove
 The hover-expand lifecycle, owned end to end: 150ms dwell intent gate, cursor polling, and the **only** writer to the native resize path (`set_overlay_expanded`). Awaits the applied frame before revealing the dropdown, so CSS never animates into a window that hasn't grown yet. Treats `overlay-geometry-changed` as an authoritative reset — cancels timers, forces collapsed, issues one corrective resize.
 
 ### `useOverlayRuntime`
-Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, a `dictation-generation-started` ownership floor plus generation-ordered `dictation-delivery-outcome` clipboard-only cue, and the `app-disabled-changed` state mirror. Duplicate or stale delivery IDs are ignored; a newer generation or non-clipboard outcome clears the older cue.
+Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, a `dictation-generation-started` ownership floor plus generation-ordered `dictation-delivery-outcome` clipboard-only cue, the inline non-focusing retry action and its authoritative returned-result presentation, and the `app-disabled-changed` state mirror. Pointer-down pauses the expiring cue before click, cancelled interactions restart it, and superseded retry promises are ignored.
 
 ### `useOverlaySettingsMirror`
 The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows), including the confirmed vertical calibration offset, plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.

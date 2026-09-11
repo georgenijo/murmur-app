@@ -107,7 +107,10 @@ fail-closed.
 The latest nonempty final text that completed clipboard delivery is retained in
 one process-memory slot with its immutable delivery target. The command palette,
 tray, and optional global `⌘⇧V` shortcut all call
-the same Rust command. It runs `inject_text()` again, including Accessibility,
+the same Rust command. The clipboard-only overlay cue and matching main-window
+failure hint also expose an inline **Try again** action that calls this command;
+the overlay action prevents mouse focus and activation before invoking it. It
+runs `inject_text()` again, including Accessibility,
 focused-role, exact-process, process-instance, and pasteboard-generation checks.
 If the original target is no longer focused, the text is copied to the clipboard
 and automatic paste fails closed. Before the first completed delivery the action
@@ -116,6 +119,14 @@ returns the explicit message “Nothing to paste yet.”
 Retry never records, transcribes, transforms, adds History, changes statistics,
 or updates correction learning. The retained text is replaced only by a later
 successful final delivery and disappears when Murmur exits.
+
+The overlay cancels the original five-second auto-hide timer while an inline
+retry is running, then starts a fresh bounded result cue. Automatic paste shows
+**Pasted**; clipboard-only results use a neutral retry symbol because that kind
+can include a changed pasteboard whose contents are no longer proven; busy and
+failed results also keep **Try again** available. Empty history shows **Nothing**.
+A newer recording generation invalidates any pending retry presentation. Retry
+messages contain only fixed status text and never transcript content.
 
 When effective auto-paste is enabled and Accessibility permission is missing,
 Settings > Delivery shows a "Grant" action that opens System Settings.

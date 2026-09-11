@@ -7,6 +7,22 @@
 
 export type MainWindowShortcut = 'palette' | 'search' | 'settings' | 'logs';
 
+export interface MainWindowShortcutDefinition {
+  action: MainWindowShortcut;
+  key: string;
+  label: string;
+  binding: string;
+}
+
+/** Fixed main-window bindings, shared by event handling and the Settings
+ * reference screen so the two cannot drift. */
+export const MAIN_WINDOW_SHORTCUTS = [
+  { action: 'palette', key: 'k', label: 'Command palette', binding: '⌘K' },
+  { action: 'search', key: 'f', label: 'Search transcripts', binding: '⌘F' },
+  { action: 'settings', key: ',', label: 'Open Settings', binding: '⌘,' },
+  { action: 'logs', key: 'l', label: 'Open Performance Lab', binding: '⌘L' },
+] satisfies readonly MainWindowShortcutDefinition[];
+
 /** The subset of `KeyboardEvent` the mapping reads. */
 export interface ShortcutEvent {
   key: string;
@@ -42,11 +58,5 @@ export function mainWindowShortcut(
   if (!(event.metaKey || event.ctrlKey)) return null;
   if (event.altKey || event.shiftKey) return null;
   if (inEditableField && !event.metaKey) return null;
-  switch (event.key.toLowerCase()) {
-    case 'k': return 'palette';
-    case 'f': return 'search';
-    case ',': return 'settings';
-    case 'l': return 'logs';
-    default: return null;
-  }
+  return MAIN_WINDOW_SHORTCUTS.find(({ key }) => key === event.key.toLowerCase())?.action ?? null;
 }

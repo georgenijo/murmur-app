@@ -29,6 +29,7 @@ import { MainErrorBanner } from './components/MainErrorBanner';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
+import { useLocalStats } from './lib/hooks/useLocalStats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
@@ -46,7 +47,10 @@ import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useSoundCues } from './lib/hooks/useSoundCues';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { useDevUpdaterMock } from './lib/hooks/useDevUpdaterMock';
-import { useDeliveryRecoveryListeners } from './lib/hooks/useDeliveryRecoveryListeners';
+import {
+  useDeliveryRecoveryListeners,
+  useDeliveryRecoveryNotice,
+} from './lib/hooks/useDeliveryRecoveryListeners';
 import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
@@ -66,7 +70,11 @@ import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
-import { retryLastDelivery, setPasteLastShortcut } from './lib/deliveryRecovery';
+import {
+  canRetryDelivery,
+  retryLastDelivery,
+  setPasteLastShortcut,
+} from './lib/deliveryRecovery';
 import { microphoneDeviceNameArg, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
@@ -104,7 +112,11 @@ function App() {
   useEffect(() => {
     setQuerySetupStatus(null);
   }, [settings.queryProvider, settings.queryExecutable, settings.queryArguments]);
-  const [deliveryRecoveryMessage, setDeliveryRecoveryMessage] = useState('');
+  const {
+    notice: deliveryRecoveryNotice,
+    presentNotice: presentDeliveryRecoveryNotice,
+    clearNotice: clearDeliveryRecoveryNotice,
+  } = useDeliveryRecoveryNotice();
   const pasteLastShortcutGenerationRef = useRef(0);
   const lastWorkingPasteLastShortcutRef = useRef<typeof settings.pasteLastShortcut>(null);
   const meetings = useMeetings(settings);
@@ -187,7 +199,10 @@ function App() {
       settings.correctionShortcutEnabled === true && !settings.disabled,
       smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
       smartAuto,
-    ).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
+    ).catch(() => presentDeliveryRecoveryNotice({
+      message: 'Could not enable the correction shortcut.',
+      retryable: false,
+    }));
   }, [
     settings.correctionShortcutEnabled,
     settings.disabled,
@@ -197,6 +212,7 @@ function App() {
     settings.smartAutoApprovedDeviceIds,
     settings.smartAutoPreferredDeviceIds,
     settings.smartAutoAllowContinuity,
+    presentDeliveryRecoveryNotice,
   ]);
 
   useEffect(() => {
@@ -210,13 +226,13 @@ function App() {
       })
       .catch((error: unknown) => {
         if (pasteLastShortcutGenerationRef.current !== generation) return;
-        setDeliveryRecoveryMessage(String(error));
+        presentDeliveryRecoveryNotice({ message: String(error), retryable: false });
         const fallback = lastWorkingPasteLastShortcutRef.current;
         if (requested !== fallback) updateSettings({ pasteLastShortcut: fallback });
       });
-  }, [settings.pasteLastShortcut, updateSettings]);
+  }, [presentDeliveryRecoveryNotice, settings.pasteLastShortcut, updateSettings]);
 
-  useDeliveryRecoveryListeners(setDeliveryRecoveryMessage);
+  useDeliveryRecoveryListeners(presentDeliveryRecoveryNotice);
 
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
@@ -235,23 +251,20 @@ function App() {
   const { historyEntries, addEntry, updateEntry, togglePinned, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
+    canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
+    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
   } = useRecordingState({
     addEntry,
     microphone: settings.microphone,
     smartAuto: smartAutoMicrophoneRequest(settings),
   });
-  const [statsResetVersion, setStatsResetVersion] = useState(0);
-  const [queryStatsVersion, setQueryStatsVersion] = useState(0);
-  const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
+  const combinedStatsVersion = useLocalStats();
   const handleResetStats = useCallback(() => {
     resetStats();
-    setStatsResetVersion(v => v + 1);
   }, []);
   const handleQueryCompleted = useCallback((completion: QueryCompletion) => {
     updateQueryStats(completion);
-    setQueryStatsVersion(v => v + 1);
   }, []);
   const handleQuerySetupStatusChange = useCallback((next: QuerySetupStatus) => {
     setQuerySetupStatus(next);
@@ -453,8 +466,11 @@ function App() {
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const modeRuntime = useModeRuntime();
   const setNextRecordingMode = useCallback((modeId: string | null) => {
-    void modeRuntime.setNext(modeId).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
-  }, [modeRuntime.setNext]);
+    void modeRuntime.setNext(modeId).catch((error: unknown) => presentDeliveryRecoveryNotice({
+      message: String(error),
+      retryable: false,
+    }));
+  }, [modeRuntime.setNext, presentDeliveryRecoveryNotice]);
   const openSettingsTarget = useCallback((target: Omit<SettingsPageRequest, 'token'>) => {
     beginCurrentUiTransition(settingsLatencyView(target.page), 'programmatic');
     setSettingsPageRequest((previous) => ({
@@ -540,7 +556,10 @@ function App() {
           void startDictationCorrection(
             smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
             smartAuto,
-          ).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+          ).catch((error: unknown) => presentDeliveryRecoveryNotice({
+            message: String(error),
+            retryable: false,
+          }));
         },
       },
       {
@@ -599,6 +618,13 @@ function App() {
         keywords: ['questions', 'answers', 'agent', 'queries'],
         run: () => { closeSettings('programmatic'); setMainDestination('queries'); },
       },
+      {
+        id: 'settings-shortcuts',
+        title: 'Settings: Keyboard Shortcuts',
+        section: 'Settings',
+        keywords: ['hotkeys', 'bindings', 'keys'],
+        run: () => openSettingsPage('shortcuts'),
+      },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
         title: `Settings: ${category.label}`,
@@ -644,16 +670,32 @@ function App() {
     settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
     updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickMediaFiles,
-    meetings,
+    meetings, presentDeliveryRecoveryNotice,
     modeRuntime.status, setNextRecordingMode,
   ]);
 
   const [dismissedExternalErrorKey, setDismissedExternalErrorKey] = useState('');
   const errorPresentation = [
-    initError ? { key: `initialization:${initError}`, message: initError, source: 'initialization' as const } : null,
-    recordingError ? { key: `recording:${recordingError}`, message: recordingError, source: 'recording' as const } : null,
-    deliveryRecoveryMessage ? { key: `delivery:${deliveryRecoveryMessage}`, message: deliveryRecoveryMessage, source: 'delivery' as const } : null,
+    initError ? {
+      key: `initialization:${initError}`,
+      message: initError,
+      source: 'initialization' as const,
+      retryable: false,
+    } : null,
+    recordingError ? {
+      key: `recording:${recordingError}`,
+      message: recordingError,
+      source: 'recording' as const,
+      retryable: recordingCanRetryDelivery,
+    } : null,
+    deliveryRecoveryNotice ? {
+      key: `delivery:${deliveryRecoveryNotice.message}`,
+      message: deliveryRecoveryNotice.message,
+      source: 'delivery' as const,
+      retryable: deliveryRecoveryNotice.retryable,
+    } : null,
   ].find((candidate) => candidate !== null && candidate.key !== dismissedExternalErrorKey) ?? null;
+  const [deliveryRetryBusy, setDeliveryRetryBusy] = useState(false);
 
   const dismissMainError = useCallback(() => {
     if (!errorPresentation) return;
@@ -662,11 +704,33 @@ function App() {
       return;
     }
     if (errorPresentation.source === 'delivery') {
-      setDeliveryRecoveryMessage('');
+      clearDeliveryRecoveryNotice();
       return;
     }
     setDismissedExternalErrorKey(errorPresentation.key);
-  }, [dismissRecordingError, errorPresentation]);
+  }, [clearDeliveryRecoveryNotice, dismissRecordingError, errorPresentation]);
+
+  const retryDeliveryFromBanner = useCallback(() => {
+    if (deliveryRetryBusy) return;
+    if (errorPresentation?.source === 'recording') dismissRecordingError();
+    setDeliveryRetryBusy(true);
+    presentDeliveryRecoveryNotice({ message: 'Trying delivery again…', retryable: true });
+    void retryLastDelivery()
+      .then((result) => presentDeliveryRecoveryNotice({
+        message: result.message,
+        retryable: canRetryDelivery(result),
+      }, 5000))
+      .catch(() => presentDeliveryRecoveryNotice({
+        message: 'Paste Last did not finish. Try again.',
+        retryable: true,
+      }, 5000))
+      .finally(() => setDeliveryRetryBusy(false));
+  }, [
+    deliveryRetryBusy,
+    dismissRecordingError,
+    errorPresentation,
+    presentDeliveryRecoveryNotice,
+  ]);
 
   if (onboardingState === 'unknown' || modelReady === null) {
     return <div className="h-screen bg-background" />;
@@ -786,6 +850,7 @@ function App() {
                 </section>
               ) : (
                 <InsightsView
+                  modes={settings.modes}
                   statsVersion={combinedStatsVersion}
                   onBackToHome={backToHome}
                 />
@@ -797,6 +862,9 @@ function App() {
             <MainErrorBanner
               message={errorPresentation.message}
               onDismiss={dismissMainError}
+              actionLabel={errorPresentation.retryable ? 'Try again' : undefined}
+              actionBusy={deliveryRetryBusy}
+              onAction={errorPresentation.retryable ? retryDeliveryFromBanner : undefined}
             />
           )}
 
