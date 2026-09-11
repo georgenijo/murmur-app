@@ -1112,6 +1112,7 @@ textarea {
 .personalization-privacy { margin-top: var(--ui-space-5); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: 1.45; }
 
 .insights-view { overflow-y: auto; }
+.insights-view .ui-dashboard-stat-value { overflow-wrap: anywhere; }
 .insights-view > .ui-dashboard-surface { margin-top: var(--ui-dashboard-gap); }
 .usage-dashboard-sections { display: flex; flex-direction: column; gap: var(--ui-space-6); padding: var(--ui-space-5); }
 .usage-dashboard-content[data-display-mode="inline"] .usage-dashboard-sections { padding-top: 0; }
