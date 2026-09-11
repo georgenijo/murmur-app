@@ -35,6 +35,8 @@ interface HistoryPanelProps {
   entries: HistoryEntry[];
   /** Clear the whole history. */
   onClear: () => void;
+  /** Delete a narrowed set of history entries. */
+  onDeleteEntries: (entries: readonly HistoryEntry[]) => void;
   onUpdateEntry: (id: string, text: string) => void;
   onTogglePinned?: (entry: HistoryEntry) => void;
   pinnedCount?: number;
@@ -127,6 +129,7 @@ function HistoryPanelComponent({
   titleId,
   entries,
   onClear,
+  onDeleteEntries,
   onUpdateEntry,
   onTogglePinned = () => {},
   pinnedCount = 0,
@@ -150,6 +153,8 @@ function HistoryPanelComponent({
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handledTeachTokenRef = useRef<number | undefined>(undefined);
+  const deleteEntryTokensRef = useRef(new WeakMap<HistoryEntry, number>());
+  const nextDeleteEntryTokenRef = useRef(0);
 
   useEffect(() => {
     const refresh = () => setFilterNow(Date.now());
@@ -296,6 +301,18 @@ function HistoryPanelComponent({
     searchRef.current?.focus();
   };
   const searching = query.trim() !== '';
+  const narrowed = filtersActive || searching;
+  const deleteScopeKey = useMemo(() => {
+    const entryTokens = visible.map((entry) => {
+      const existing = deleteEntryTokensRef.current.get(entry);
+      if (existing !== undefined) return existing;
+      nextDeleteEntryTokenRef.current += 1;
+      const created = nextDeleteEntryTokenRef.current;
+      deleteEntryTokensRef.current.set(entry, created);
+      return created;
+    });
+    return JSON.stringify({ query, filter, dateFilter, pinnedFilter, entryTokens });
+  }, [query, filter, dateFilter, pinnedFilter, visible]);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -392,6 +409,25 @@ function HistoryPanelComponent({
                 </AnimatedDropdownItem>
               ))}
               <AnimatedDropdownSeparator />
+              {narrowed && (
+                <>
+                  <HoldToDeleteButton
+                    key={deleteScopeKey}
+                    label={`Hold to delete ${visible.length} shown`}
+                    confirmLabel={`Click again to delete ${visible.length} shown`}
+                    holdDuration={1200}
+                    onDelete={() => {
+                      const count = visible.length;
+                      onDeleteEntries(visible);
+                      setExportOpen(false);
+                      showNotice(`Deleted ${count} ${count === 1 ? 'entry' : 'entries'}.`);
+                    }}
+                    disabled={visible.length === 0}
+                    className="h-9 w-full min-w-0 justify-start rounded-lg px-2.5 text-[length:var(--ui-font-label)]"
+                  />
+                  <AnimatedDropdownSeparator />
+                </>
+              )}
               <HoldToDeleteButton
                 label="Hold to clear history"
                 confirmLabel="Click again to clear history"
@@ -407,7 +443,7 @@ function HistoryPanelComponent({
           </AnimatedDropdown>
         </div>
 
-        {(filtersActive || searching) && entries.length > 0 && (
+        {narrowed && entries.length > 0 && (
           <p className="history-filtered-note">
             Showing {visible.length} of {entries.length}
             <button type="button" onClick={showAll}>Show all</button>

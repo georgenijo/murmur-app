@@ -14,6 +14,7 @@ pub mod meeting_calendar;
 pub mod meeting_summary;
 pub mod microphone_preview;
 pub mod microphone_startup_benchmark;
+pub mod mode_exchange;
 pub mod mode_runtime;
 pub mod models;
 pub(crate) mod native_window;

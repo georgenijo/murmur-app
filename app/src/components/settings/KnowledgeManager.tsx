@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { AppProfile } from '../../lib/settings';
 import {
@@ -18,6 +18,7 @@ import {
   type KnowledgeKind,
   type KnowledgeListRequest,
 } from '../../lib/knowledge';
+import { applyKnowledgeBulk, collectKnowledgeSnapshot, type KnowledgeBulkAction, type KnowledgeBulkResult } from '../../lib/knowledgeBulk';
 import { useKnowledge } from '../../lib/hooks/useKnowledge';
 import { KnowledgeEditorModal } from './KnowledgeEditorModal';
 
@@ -32,6 +33,12 @@ const KIND_LABELS: Record<KnowledgeKind, string> = {
   snippet: 'Snippet',
   transform: 'Transform',
 };
+
+type BulkState =
+  | { kind: 'idle' }
+  | { kind: 'collecting' }
+  | { kind: 'confirming'; entries: KnowledgeEntry[]; scopeLabel: string; controller: AbortController }
+  | { kind: 'applying' };
 
 function formatUpdated(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
@@ -87,7 +94,6 @@ function ConfirmDialog({ title, children, confirmLabel, dangerous = false, disab
 
 export function KnowledgeManager({ active, profiles }: Props) {
   const [query, setQuery] = useState('');
-  const deferredQuery = useDeferredValue(query);
   const [kind, setKind] = useState<KnowledgeKind | 'all'>('all');
   const [enabled, setEnabled] = useState<'all' | 'enabled' | 'disabled'>('all');
   const [scope, setScope] = useState<'all' | 'global' | 'app' | 'project'>('all');
@@ -99,14 +105,80 @@ export function KnowledgeManager({ active, profiles }: Props) {
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [bulk, setBulk] = useState<BulkState>({ kind: 'idle' });
+  const [bulkResult, setBulkResult] = useState<KnowledgeBulkResult | null>(null);
+  const [bulkDeletePhrase, setBulkDeletePhrase] = useState('');
+  const bulkController = useRef<AbortController | null>(null);
+  const bulkBusy = bulk.kind !== 'idle';
+
+  useLayoutEffect(() => {
+    if (!active) setBulk({ kind: 'idle' });
+    return () => {
+      bulkController.current?.abort();
+      bulkController.current = null;
+    };
+  }, [active]);
+
   const request = useMemo<KnowledgeListRequest>(() => ({
-    query: deferredQuery.trim() || undefined,
+    query: query.trim() || undefined,
     kind: kind === 'all' ? undefined : kind,
     enabled: enabled === 'all' ? undefined : enabled === 'enabled',
     scopeKind: scope === 'all' ? undefined : scope,
-  }), [deferredQuery, enabled, kind, scope]);
+  }), [query, enabled, kind, scope]);
   const knowledge = useKnowledge(request, active);
   const unavailable = knowledge.status.availability === 'unavailable';
+
+  const finishBulk = async (entries: KnowledgeEntry[], action: KnowledgeBulkAction, controller: AbortController) => {
+    if (controller.signal.aborted || bulkController.current !== controller) return;
+    setBulk({ kind: 'applying' });
+    try {
+      const result = await applyKnowledgeBulk(entries, action, controller.signal);
+      if (controller.signal.aborted || bulkController.current !== controller) return;
+      setBulkResult(result);
+      await knowledge.refresh();
+    } catch (cause) {
+      if (!controller.signal.aborted) setActionError(String(cause));
+    } finally {
+      if (bulkController.current === controller) {
+        bulkController.current = null;
+        setBulk({ kind: 'idle' });
+      }
+    }
+  };
+
+  const startBulk = async (action: KnowledgeBulkAction) => {
+    if (!active || unavailable || bulkController.current !== null) return;
+    const controller = new AbortController();
+    bulkController.current = controller;
+    setBulk({ kind: 'collecting' });
+    setBulkResult(null);
+    setActionError(null);
+    setNotice(null);
+    setBulkDeletePhrase('');
+    const filterLabel = [kind === 'all' ? 'All types' : KIND_LABELS[kind],
+      enabled === 'all' ? 'any state' : enabled,
+      scope === 'all' ? 'any visibility' : scope,
+      ...(request.query ? [`search: “${request.query}”`] : [])].join(' · ');
+    try {
+      const entries = await collectKnowledgeSnapshot(request, controller.signal);
+      if (controller.signal.aborted || bulkController.current !== controller) return;
+      if (action === 'delete') setBulk({ kind: 'confirming', entries, scopeLabel: filterLabel, controller });
+      else await finishBulk(entries, action, controller);
+    } catch (cause) {
+      if (!controller.signal.aborted) setActionError(String(cause));
+      if (bulkController.current === controller) {
+        bulkController.current = null;
+        setBulk({ kind: 'idle' });
+      }
+    }
+  };
+
+  const cancelBulk = () => {
+    bulkController.current?.abort();
+    bulkController.current = null;
+    setBulk({ kind: 'idle' });
+    setBulkDeletePhrase('');
+  };
 
   const run = async (action: () => Promise<unknown>, success: string) => {
     setActionError(null);
@@ -169,28 +241,42 @@ export function KnowledgeManager({ active, profiles }: Props) {
               Manage local replacement rules, vocabulary, reusable snippets, and Voice Command records. Voice-enabled records run locally during live transcription; other enabled replacements run through Smart Correction with deterministic scope and provenance precedence.
             </p>
           </div>
-          <button type="button" onClick={() => setEditing(null)} disabled={unavailable} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge</button>
+          <button type="button" onClick={() => setEditing(null)} disabled={unavailable || bulkBusy} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge</button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" onClick={() => void chooseExport().catch(() => {})} disabled={unavailable} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Export…</button>
-          <button type="button" onClick={() => void chooseImport()} disabled={unavailable} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Import…</button>
-          <button type="button" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || knowledge.status.recordCount === 0} className="rounded-lg border border-error/30 px-3 py-1.5 text-xs font-medium text-error disabled:opacity-40">Delete all…</button>
+          <button type="button" onClick={() => void chooseExport().catch(() => {})} disabled={unavailable || bulkBusy} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Export…</button>
+          <button type="button" onClick={() => void chooseImport()} disabled={unavailable || bulkBusy} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Import…</button>
+          <button type="button" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || bulkBusy || knowledge.status.recordCount === 0} className="rounded-lg border border-error/30 px-3 py-1.5 text-xs font-medium text-error disabled:opacity-40">Delete all…</button>
           <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally · schema v{knowledge.status.schemaVersion}</span>
         </div>
       </div>
 
       <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_repeat(3,minmax(105px,auto))]">
-        <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs outline-none focus:border-primary" />
-        <select aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
+        <input disabled={bulkBusy} value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs outline-none focus:border-primary" />
+        <select disabled={bulkBusy} aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">All types</option><option value="replacement_rule">Replacements</option><option value="vocabulary_term">Vocabulary</option><option value="snippet">Snippets</option><option value="transform">Transforms</option>
         </select>
-        <select aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
+        <select disabled={bulkBusy} aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">Any state</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
         </select>
-        <select aria-label="Filter visibility" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
+        <select disabled={bulkBusy} aria-label="Filter visibility" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">Any visibility</option><option value="global">Global</option><option value="app">App</option><option value="project">Project</option>
         </select>
       </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => void startBulk('enable')} disabled={bulkBusy || knowledge.loading || unavailable || knowledge.total === 0} className="settings-quiet-btn px-3 py-2 text-xs disabled:opacity-40">Enable all shown</button>
+        <button type="button" onClick={() => void startBulk('disable')} disabled={bulkBusy || knowledge.loading || unavailable || knowledge.total === 0} className="settings-quiet-btn px-3 py-2 text-xs disabled:opacity-40">Disable all shown</button>
+        <button type="button" onClick={() => void startBulk('delete')} disabled={bulkBusy || knowledge.loading || unavailable || knowledge.total === 0} className="settings-quiet-btn px-3 py-2 text-xs text-error disabled:opacity-40">Delete all shown…</button>
+        <span className="text-xs text-on-surface-variant">All matching records, including unloaded pages.</span>
+      </div>
+      {(bulk.kind === 'collecting' || bulk.kind === 'applying') && <p role="status" className="text-xs text-on-surface-variant">{bulk.kind === 'collecting' ? 'Collecting all matching records…' : 'Updating matching records…'}</p>}
+      {bulkResult && <div role="status" className="settings-card p-3 text-xs text-on-surface">
+        <p>{bulkResult.succeeded} records {bulkResult.action === 'delete' ? 'removed' : bulkResult.action === 'enable' ? 'enabled' : 'disabled'}; {bulkResult.failures.length} failed.{bulkResult.action !== 'delete' && ` ${bulkResult.unchanged} already ${bulkResult.action === 'enable' ? 'enabled' : 'disabled'}.`}</p>
+        {bulkResult.failures.length > 0 && <ul className="mt-2 space-y-1 text-error">
+          {bulkResult.failures.map(({ entry, message }) => <li key={entry.id}>{payloadTitle(entry.payload)} · {entry.id}: {message}</li>)}
+        </ul>}
+      </div>}
 
       {(actionError || knowledge.error) && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{actionError ?? knowledge.error}</p>}
       {notice && <p role="status" className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">{notice}</p>}
@@ -198,7 +284,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
       <div className="settings-card overflow-hidden">
         <div className="flex items-center justify-between bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
           <span>{knowledge.loading && knowledge.entries.length === 0 ? 'Loading…' : `${knowledge.total} matching ${knowledge.total === 1 ? 'record' : 'records'}`}</span>
-          <button type="button" onClick={() => void knowledge.refresh()} disabled={knowledge.loading || unavailable} className="font-medium underline disabled:opacity-40">Refresh</button>
+          <button type="button" onClick={() => void knowledge.refresh()} disabled={knowledge.loading || unavailable || bulkBusy} className="font-medium underline disabled:opacity-40">Refresh</button>
         </div>
         {knowledge.entries.length === 0 && !knowledge.loading ? (
           <div className="px-4 py-10 text-center text-sm text-on-surface-variant">{unavailable ? 'Retry the store to manage personal knowledge.' : 'No knowledge matches these filters.'}</div>
@@ -208,13 +294,14 @@ export function KnowledgeManager({ active, profiles }: Props) {
               <li key={entry.id} className={`flex items-start gap-3 bg-surface-container-lowest px-3 py-3 ${entry.enabled ? '' : 'opacity-60'}`}>
                 <button
                   type="button"
+                  disabled={bulkBusy}
                   role="switch"
                   aria-checked={entry.enabled}
                   aria-label={`${entry.enabled ? 'Disable' : 'Enable'} ${payloadTitle(entry.payload)}`}
                   onClick={() => void run(() => setKnowledgeEnabled(entry, !entry.enabled), entry.enabled ? 'Knowledge disabled.' : 'Knowledge enabled.').catch(() => {})}
                   className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full ${entry.enabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
                 ><span className={`h-3.5 w-3.5 rounded-full shadow transition-transform ${entry.enabled ? 'translate-x-4 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} /></button>
-                <button type="button" onClick={() => setEditing(entry)} className="min-w-0 flex-1 text-left">
+                <button type="button" disabled={bulkBusy} onClick={() => setEditing(entry)} className="min-w-0 flex-1 text-left">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded bg-surface-container px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">{KIND_LABELS[entry.payload.kind]}</span>
                     <strong className="truncate text-sm text-on-surface">{payloadTitle(entry.payload)}</strong>
@@ -223,15 +310,15 @@ export function KnowledgeManager({ active, profiles }: Props) {
                   <p className="mt-1 truncate text-[11px] text-on-surface-variant">{scopeLabel(entry.scope)} · {entry.provenance.replace('_', ' ')} · Updated {formatUpdated(entry.updatedAtMs)}</p>
                 </button>
                 <div className="flex shrink-0 gap-1">
-                  <button type="button" onClick={() => setEditing(entry)} aria-label={`Edit ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Edit</button>
-                  <button type="button" onClick={() => setDeleteTarget(entry)} aria-label={`Delete ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">Delete</button>
+                  <button type="button" disabled={bulkBusy} onClick={() => setEditing(entry)} aria-label={`Edit ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Edit</button>
+                  <button type="button" disabled={bulkBusy} onClick={() => setDeleteTarget(entry)} aria-label={`Delete ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">Delete</button>
                 </div>
               </li>
             ))}
           </ul>
         )}
         {knowledge.nextOffset !== null && (
-          <button type="button" onClick={() => void knowledge.loadMore()} disabled={knowledge.loading} className="w-full border-t border-outline-variant/25 px-3 py-2 text-xs font-semibold text-primary disabled:opacity-40">{knowledge.loading ? 'Loading…' : 'Load 50 more'}</button>
+          <button type="button" onClick={() => void knowledge.loadMore()} disabled={knowledge.loading || bulkBusy} className="w-full border-t border-outline-variant/25 px-3 py-2 text-xs font-semibold text-primary disabled:opacity-40">{knowledge.loading ? 'Loading…' : 'Load 50 more'}</button>
         )}
       </div>
 
@@ -250,6 +337,24 @@ export function KnowledgeManager({ active, profiles }: Props) {
       }, 'Knowledge imported.').then(() => setImportPreview(null)).catch(() => {})}>
         <p>{importPreview.summary.total} records inspected: {importPreview.summary.new} new, {importPreview.summary.duplicates} duplicates, and {importPreview.summary.conflicts} trigger conflicts.</p>
         <p className="mt-2">Existing records are never overwritten. Same-ID conflicts reject the import.</p>
+      </ConfirmDialog>}
+
+      {bulk.kind === 'confirming' && <ConfirmDialog title="Delete all matching knowledge?" confirmLabel={`Delete ${bulk.entries.length} matching records`} dangerous disabled={bulkDeletePhrase !== 'DELETE' || bulk.entries.length === 0} onCancel={() => { if (bulkController.current === bulk.controller) cancelBulk(); }} onConfirm={() => {
+        const controller = bulk.controller;
+        if (bulkController.current !== controller || controller.signal.aborted || bulkDeletePhrase !== 'DELETE') return;
+        bulkController.current = null;
+        controller.abort();
+        const deletion = new AbortController();
+        bulkController.current = deletion;
+        setBulkDeletePhrase('');
+        void finishBulk(bulk.entries, 'delete', deletion);
+      }}>
+        <p>Permanently remove these {bulk.entries.length} matching records, including unloaded pages.</p>
+        <p className="mt-2">{bulk.scopeLabel}</p>
+        <p className="mt-2">Only the collected records will be deleted. Records changed since collection will be kept and reported as failures.</p>
+        <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
+          <input aria-label="Type DELETE to confirm matching records" value={bulkDeletePhrase} onChange={(event) => setBulkDeletePhrase(event.target.value)} className="mt-1 w-full rounded-(--ui-radius-control) border border-error bg-(--ui-tint-raised) px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />
+        </label>
       </ConfirmDialog>}
 
       {deleteAllOpen && <ConfirmDialog title="Delete all personal knowledge?" confirmLabel="Delete everything" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>

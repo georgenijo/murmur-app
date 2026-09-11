@@ -41,6 +41,7 @@ describe('HistoryPanel', () => {
   const searchInput = () => container.querySelector('input[type="search"]') as HTMLInputElement;
   const searchClose = () => container.querySelector('[aria-label="Clear transcript search"]') as HTMLButtonElement;
   const moreActions = () => container.querySelector('[aria-label="More history actions"]') as HTMLButtonElement;
+  const deleteShown = () => document.querySelector('[aria-label^="Hold to delete"]') as HTMLButtonElement | null;
   const filterTrigger = () => container.querySelector('[aria-label^="Filter transcripts"]') as HTMLButtonElement;
   const filterOption = (label: string) => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitemradio"], [role="menuitemcheckbox"]'))
     .find((item) => item.textContent === label);
@@ -56,6 +57,7 @@ describe('HistoryPanel', () => {
         <HistoryPanel
           entries={ENTRIES}
           onClear={vi.fn()}
+          onDeleteEntries={vi.fn()}
           onUpdateEntry={vi.fn()}
           {...props}
         />,
@@ -69,6 +71,16 @@ describe('HistoryPanel', () => {
     await act(async () => {
       setter.call(input, value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  async function quickClick(button: HTMLButtonElement) {
+    await act(async () => {
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
     });
   }
 
@@ -312,6 +324,106 @@ describe('HistoryPanel', () => {
     expect(written).toContain('ship the Tauri release notes');
     expect(written).not.toContain('imported meeting audio');
     expect(container.textContent).toContain('Copied 1 entry');
+  });
+
+  it('offers Delete shown only while search or filters narrow history', async () => {
+    await render();
+    await act(async () => moreActions().click());
+    expect(deleteShown()).toBeNull();
+
+    await act(async () => moreActions().click());
+    await type('tauri');
+    await act(async () => moreActions().click());
+    expect(deleteShown()?.textContent).toContain('Hold to delete 1 shown');
+  });
+
+  it('deletes the exact filtered subset, including a pin, without matching duplicate ids', async () => {
+    vi.useFakeTimers();
+    const matching = entry({ id: 'duplicate', text: 'remove alpha', pinned: true });
+    const nonmatching = entry({ id: 'duplicate', text: 'keep beta', pinned: true });
+    const onDeleteEntries = vi.fn();
+    const onClear = vi.fn();
+    await render({ entries: [matching, nonmatching], onDeleteEntries, onClear });
+    await type('alpha');
+    await act(async () => moreActions().click());
+
+    const button = deleteShown()!;
+    await quickClick(button);
+    expect(onDeleteEntries).not.toHaveBeenCalled();
+    await quickClick(button);
+
+    expect(onDeleteEntries).toHaveBeenCalledOnce();
+    expect(onDeleteEntries).toHaveBeenCalledWith([matching]);
+    expect(onClear).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('deletes every matching entry beyond the mounted batch', async () => {
+    vi.useFakeTimers();
+    const matches = Array.from({ length: 35 }, (_, index) => entry({
+      id: `match-${index}`,
+      text: `matched transcript ${index}`,
+      timestamp: Date.UTC(2026, 6, 18, 12, index),
+    }));
+    const nonmatches = Array.from({ length: 5 }, (_, index) => entry({
+      id: `other-${index}`,
+      text: `other transcript ${index}`,
+    }));
+    const onDeleteEntries = vi.fn();
+    await render({ entries: [...matches, ...nonmatches], onDeleteEntries });
+    await type('matched');
+    expect(cardText()).toHaveLength(30);
+    await act(async () => moreActions().click());
+
+    const button = deleteShown()!;
+    await quickClick(button);
+    await quickClick(button);
+
+    expect(onDeleteEntries).toHaveBeenCalledOnce();
+    const deleted = onDeleteEntries.mock.calls[0][0] as HistoryEntry[];
+    expect(deleted).toHaveLength(35);
+    expect(new Set(deleted)).toEqual(new Set(matches));
+    vi.useRealTimers();
+  });
+
+  it('disarms Delete shown after four seconds', async () => {
+    vi.useFakeTimers();
+    const onDeleteEntries = vi.fn();
+    await render({ onDeleteEntries });
+    await type('tauri');
+    await act(async () => moreActions().click());
+
+    const button = deleteShown()!;
+    await quickClick(button);
+    expect(button.textContent).toContain('Click again to delete 1 shown');
+    await act(async () => vi.advanceTimersByTime(4000));
+    expect(button.textContent).toContain('Hold to delete 1 shown');
+    await quickClick(button);
+
+    expect(onDeleteEntries).not.toHaveBeenCalled();
+    expect(button.textContent).toContain('Click again to delete 1 shown');
+    vi.useRealTimers();
+  });
+
+  it('disarms an armed delete when the shown scope changes', async () => {
+    vi.useFakeTimers();
+    const alpha = entry({ id: 'alpha', text: 'alpha transcript' });
+    const beta = entry({ id: 'beta', text: 'beta transcript' });
+    const onDeleteEntries = vi.fn();
+    await render({ entries: [alpha, beta], onDeleteEntries });
+    await type('alpha');
+    await act(async () => moreActions().click());
+    await quickClick(deleteShown()!);
+
+    await type('beta');
+    const changedScopeButton = deleteShown()!;
+    expect(changedScopeButton.textContent).toContain('Hold to delete 1 shown');
+    await quickClick(changedScopeButton);
+    expect(onDeleteEntries).not.toHaveBeenCalled();
+    await quickClick(changedScopeButton);
+
+    expect(onDeleteEntries).toHaveBeenCalledWith([beta]);
+    vi.useRealTimers();
   });
 
   it('reports a per-entry clipboard failure without copying another entry', async () => {

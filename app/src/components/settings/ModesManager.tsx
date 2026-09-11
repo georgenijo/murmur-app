@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { ModeFileActions } from './ModeFileActions';
 import {
   AVAILABLE_MODEL_OPTIONS,
   BUILTIN_MODES,
@@ -167,6 +168,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
         <div><h2 id="modes-title" className="text-sm font-semibold text-on-surface">Modes</h2><p className="mt-1 text-xs text-on-surface-variant">Reusable local behavior for any number of apps.</p></div>
         <button type="button" onClick={() => create()} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Create Mode</button>
       </div>
+      <ModeFileActions settings={{ modes, appProfiles: profiles, browserSiteRules: siteRules, siteModeLookupEnabled: siteLookupEnabled }} onChange={onChange} />
       <div className="mt-4 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
         <div className="space-y-1" role="list" aria-label="Modes">
           {allModes.map((mode) => <button key={mode.id} type="button" onClick={() => setSelectedId(mode.id)} className={`w-full rounded-lg px-3 py-2 text-left text-xs ${mode.id === selected.id ? 'bg-primary-container text-on-primary-container' : 'text-on-surface hover:bg-surface-container'}`}><span className="block font-semibold">{mode.name}</span><span className="block truncate text-[10px] opacity-70">{mode.builtIn ? 'Built-in' : mode.enabled ? 'Enabled' : 'Disabled'}</span></button>)}
