@@ -179,7 +179,7 @@ describe('Open VSX package import', () => {
     });
     expect(entries[0]!.theme.light?.background).toBe('#f7f9fb');
     expect(entries[0]!.theme.dark?.background).toBe('#101316');
-    expect(entries[0]!.theme.dark?.['surface-container-low']).toBe('#191d21');
+    expect(entries[0]!.theme.dark?.['surface-container-low']).toBe('#1b1f23');
   });
 
   it('rejects untrusted download hosts before making a request', async () => {

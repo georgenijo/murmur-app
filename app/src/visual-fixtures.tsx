@@ -22,7 +22,7 @@ import type { MainDestination } from './lib/homeDashboard';
 import { toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
-import { DEFAULT_THEME, applyResolvedTheme, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { DEFAULT_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -38,6 +38,19 @@ const status: DictationStatus = requestedState === 'recording'
       : 'idle';
 
 const importedThemeFixtures: Record<string, ThemeConfigV1> = {
+  'flat-dark': parseVsCodeThemeFile({
+    name: 'Flat dark',
+    type: 'dark',
+    colors: {
+      'editor.background': '#111111',
+      'editor.foreground': '#c4c4cc',
+      'sideBar.background': '#111111',
+      'panel.background': '#111111',
+      'menu.background': '#111111',
+      'panel.border': '#111111',
+      'focusBorder': '#999999',
+    },
+  }).theme,
   'open-vsx-low-contrast': {
     version: 1,
     presetId: 'custom',

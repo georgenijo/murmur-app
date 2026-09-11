@@ -138,6 +138,13 @@ function cloneTokens(tokens: MurmurTokens): MurmurTokens {
 }
 
 const SURFACE_POLE_MINIMUM = 7;
+const DARK_SURFACE_FLOORS = [
+  ['surface-container-low', 0.05],
+  ['surface-container-lowest', 0.085],
+  ['surface-container', 0.12],
+  ['surface-container-high', 0.16],
+  ['surface-container-highest', 0.2],
+] as const;
 
 function contrastPole(background: HexColor): HexColor {
   const black = '#000000' as HexColor;
@@ -221,7 +228,7 @@ function surfaceLadder(
   const strength = 1 + contrast / 100;
   const rung = (target: HexColor, amount: number) =>
     repairSurfaceForPole(mixOklab(repairedBackground, target, amount), pole);
-  return {
+  const surfaces = {
     background: repairedBackground,
     surface: repairedBackground,
     'surface-container-low': rung(pole, 0.035 * strength),
@@ -230,6 +237,14 @@ function surfaceLadder(
     'surface-container-lowest': rung(lowestPole, 0.02 * strength),
     'surface-container-highest': rung(pole, 0.14 * strength),
   };
+  if (pole === '#ffffff') {
+    for (const [token, amount] of DARK_SURFACE_FLOORS) {
+      surfaces[token] = repairSurfaceForPole(
+        compositeSrgb(pole, repairedBackground, amount * Math.max(1, strength)), pole,
+      );
+    }
+  }
+  return surfaces;
 }
 
 function deriveAccent(
@@ -293,12 +308,28 @@ function ensureCoherentSurfaceRange(
   const foreground = contrastPole(tokens.background);
 
   for (const token of SURFACE_TOKENS) {
+    let surface = tokens[token];
+    // Editor themes can assign the canvas color to every panel. Raise dark
+    // panels before the accessibility cap and the subsequent text solve.
+    const floorEntry = DARK_SURFACE_FLOORS.find(([name]) => name === token);
+    if (foreground === '#ffffff' && floorEntry) {
+      const current = oklabToOklch(hexToOklab(surface));
+      const floor = hexToOklab(compositeSrgb(foreground, tokens.background, floorEntry[1])).l;
+      if (current.l < floor) {
+        const raised = repairSurfaceForPole(
+          oklchToHexInGamut({ ...current, l: floor }).color, foreground,
+        );
+        // At the text-contrast cap, repeated gamut rounding must not drift
+        // an already repaired palette by a channel on every selection.
+        if (hexToOklab(raised).l > current.l + 0.005) surface = raised;
+      }
+    }
     recordChange(
       tokens,
       adjustments,
       appearance,
       token,
-      repairSurfaceForPole(tokens[token], foreground),
+      repairSurfaceForPole(surface, foreground),
       'contrast',
     );
   }

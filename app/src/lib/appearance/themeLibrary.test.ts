@@ -216,6 +216,59 @@ describe('theme library selection', () => {
     expect(composeThemeSelection(current, library, mixed.selection!)).toEqual(mixed.theme);
   });
 
+  it('activates a single-mode theme and preserves the opposite selection', () => {
+    const light = makeLocalThemeEntry('paper-light', 'Paper Light', {
+      version: 1,
+      presetId: 'custom',
+      background: '#f8f4ec',
+      foreground: '#171717',
+      accent: '#17627a',
+    }, ['light']);
+    const dark = makeLocalThemeEntry('midnight-dark', 'Midnight Dark', {
+      version: 1,
+      presetId: 'custom',
+      background: '#11151a',
+      foreground: '#f2f5f7',
+      accent: '#8ccfff',
+    }, ['dark']);
+    const library = { version: 1 as const, revision: 1, themes: [light, dark] };
+    const lightPreview = previewThemeLibrarySelection(
+      createAppearanceDocument('light'),
+      library,
+      light.id,
+    );
+    const current = createAppearanceDocument(
+      lightPreview.mode,
+      lightPreview.theme,
+      1,
+      lightPreview.selection,
+    );
+
+    const darkPreview = previewThemeLibrarySelection(current, library, dark.id);
+
+    expect(darkPreview.mode).toBe('dark');
+    expect(darkPreview.selection).toEqual({ light: light.id, dark: dark.id });
+    expect(darkPreview.light).toEqual(lightPreview.light);
+  });
+
+  it('switches to the mode of an explicitly selected swatch', () => {
+    const theme = localTheme('ocean');
+    const library = { version: 1 as const, revision: 1, themes: [theme] };
+
+    expect(previewThemeLibrarySelection(
+      createAppearanceDocument('light'),
+      library,
+      theme.id,
+      'dark',
+    ).mode).toBe('dark');
+    expect(previewThemeLibrarySelection(
+      createAppearanceDocument('dark'),
+      library,
+      theme.id,
+      'light',
+    ).mode).toBe('light');
+  });
+
   it('refuses missing or mode-incompatible owners', () => {
     const lightOnly = makeLocalThemeEntry('light-only', 'Light only', {
       version: 1,
@@ -255,6 +308,7 @@ describe('theme library selection', () => {
     );
 
     expect(preview.selection).toEqual({ light: light.id, dark: dark.id });
+    expect(preview.mode).toBe('system');
     expect(preview.light.background).not.toBe(preview.dark.background);
     expect(preview.theme).toEqual(
       composeThemeSelection(createAppearanceDocument(), library, preview.selection!),

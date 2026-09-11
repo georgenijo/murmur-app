@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   pairVsCodeThemes,
+  contrastRatio,
+  hexToOklab,
+  nonTextContrastFailures,
   parseVsCodeThemeFile,
   resolveTheme,
   resolveVsCodeThemeLabelCollisions,
+  semanticContrastFailures,
 } from '.';
 
 describe('VS Code theme conversion', () => {
@@ -26,11 +30,45 @@ describe('VS Code theme conversion', () => {
     const tokens = resolveTheme(converted.theme, 'dark').tokens;
     expect(converted).toMatchObject({ label: 'Sample Dark', appearance: 'dark' });
     expect(tokens.background).toBe('#101214');
-    expect(tokens['surface-container-low']).toBe('#171a1d');
-    expect(tokens['surface-container']).toBe('#1d2125');
+    expect(hexToOklab(tokens['surface-container-low']).l).toBeGreaterThanOrEqual(hexToOklab('#171a1d').l);
+    expect(hexToOklab(tokens['surface-container']).l).toBeGreaterThanOrEqual(hexToOklab('#1d2125').l);
     expect(tokens['on-surface']).not.toBe('#121416');
     expect(converted.theme.dark).not.toHaveProperty('terminal.ansiBlack');
   });
+
+  it.each(['#000000', '#111111', '#202126'] as const)(
+    'separates flat dark panels on %s while preserving readable text and theme identity',
+    (background) => {
+      const converted = parseVsCodeThemeFile({
+        name: 'Flat dark',
+        type: 'dark',
+        colors: {
+          'editor.background': background,
+          'editor.foreground': '#c4c4cc',
+          'sideBar.background': background,
+          'panel.background': background,
+          'menu.background': background,
+          'panel.border': background,
+          'focusBorder': '#999999',
+        },
+      });
+      const resolved = resolveTheme(converted.theme, 'dark');
+      const tokens = resolved.tokens;
+      expect(tokens.background).toBe(background);
+      expect(contrastRatio(tokens['surface-container'], background)).toBeGreaterThan(1.2);
+      const ladder = [
+        tokens.background, tokens['surface-container-low'], tokens['surface-container-lowest'],
+        tokens['surface-container'], tokens['surface-container-high'],
+      ];
+      for (let index = 1; index < ladder.length; index += 1) {
+        expect(hexToOklab(ladder[index]).l).toBeGreaterThanOrEqual(hexToOklab(ladder[index - 1]).l);
+      }
+      expect(semanticContrastFailures(tokens)).toEqual([]);
+      expect(nonTextContrastFailures(tokens)).toEqual([]);
+      const compiled = resolveTheme({ version: 1, presetId: 'custom', dark: tokens }, 'dark');
+      expect(compiled.tokens).toEqual(tokens);
+    },
+  );
 
   it('flattens alpha and accepts display-p3 colors before gamut repair', () => {
     const converted = parseVsCodeThemeFile({

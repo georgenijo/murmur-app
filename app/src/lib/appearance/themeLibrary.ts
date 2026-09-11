@@ -5,6 +5,7 @@ import { resolveTheme } from './resolve';
 import { sanitizeRevision, sanitizeTheme } from './sanitize';
 import {
   MAX_APPEARANCE_REVISION,
+  type AppearanceMode,
   type ResolvedAppearance,
   type AppearanceDocumentV1,
   type AppearanceSelectionV1,
@@ -441,14 +442,18 @@ export function previewThemeLibrarySelection(
   if (!entry && themeId !== 'sonic') throw new Error('That theme is not installed.');
   const currentSelection = appearanceSelection(current);
   let selection: AppearanceSelectionV1;
+  let mode: AppearanceMode = current.mode;
   if (appearance) {
     if (!modes.includes(appearance)) {
       throw new Error(`That theme has no ${appearance} variant.`);
     }
     selection = { ...currentSelection, [appearance]: themeId };
+    mode = appearance;
   } else if (modes.length === 1) {
-    const onlyMode = modes[0]!;
+    const onlyMode = modes[0];
+    if (!onlyMode) throw new Error('That theme has no selectable variant.');
     selection = { ...currentSelection, [onlyMode]: themeId };
+    mode = onlyMode;
   } else {
     selection = { light: themeId, dark: themeId };
   }
@@ -456,7 +461,7 @@ export function previewThemeLibrarySelection(
   const light = resolveTheme(theme, 'light');
   const dark = resolveTheme(theme, 'dark');
   return {
-    mode: current.mode,
+    mode,
     theme,
     light: light.tokens,
     dark: dark.tokens,

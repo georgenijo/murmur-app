@@ -429,6 +429,83 @@ describe("AppearanceSettings", () => {
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
   });
 
+  it("activates single-mode cards and swatches without replacing the opposite theme", async () => {
+    const darkOnly: ThemeLibraryEntryV1 = {
+      version: 1,
+      id: "midnight-dark",
+      label: "Midnight Dark",
+      modes: ["dark"],
+      theme: {
+        version: 1,
+        presetId: "custom",
+        dark: { background: "#11151a", "on-surface": "#f2f5f7" },
+      },
+      source: { kind: "local" },
+    };
+    const preview: ThemeImportPreview = {
+      mode: "dark",
+      theme: darkOnly.theme,
+      light: mocks.controller!.document.cache.light,
+      dark: resolveTheme(darkOnly.theme, "dark").tokens,
+      adjustments: [],
+      selection: { light: "sonic", dark: darkOnly.id },
+    };
+    mocks.controller!.document.mode = "light";
+    mocks.controller!.library.document = {
+      version: 1,
+      revision: 1,
+      themes: [darkOnly],
+    };
+    vi.mocked(mocks.controller!.library.previewSelection).mockReturnValue(preview);
+    await act(async () => root.render(<AppearanceSettings />));
+
+    const cardButton = container.querySelector(
+      'button[aria-label="Use Midnight Dark theme"]',
+    ) as HTMLButtonElement;
+    await act(async () => cardButton.click());
+    expect(mocks.controller!.library.previewSelection).toHaveBeenLastCalledWith(
+      darkOnly.id,
+    );
+    expect(mocks.controller!.commitImport).toHaveBeenLastCalledWith(preview);
+
+    vi.mocked(mocks.controller!.library.previewSelection).mockClear();
+    vi.mocked(mocks.controller!.commitImport).mockClear();
+    const darkSwatch = container.querySelector(
+      'button[aria-label="Use Dark for dark mode"]',
+    ) as HTMLButtonElement;
+    expect(darkSwatch).not.toBeNull();
+    await act(async () => darkSwatch.click());
+    expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith(
+      darkOnly.id,
+      "dark",
+    );
+    expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
+  });
+
+  it("activates a Custom swatch in its mode while preserving the opposite owner", async () => {
+    mocks.controller!.document.mode = "light";
+    mocks.controller!.document.theme = {
+      version: 1,
+      presetId: "custom",
+      light: { primary: "#123456" },
+      dark: { primary: "#abcdef" },
+    };
+    mocks.controller!.document.selection = { light: "sonic", dark: "custom" };
+    await act(async () => root.render(<AppearanceSettings />));
+
+    const darkSwatch = container.querySelector(
+      '[data-theme-collection="Custom"] button[aria-label="Use Custom for dark mode"]',
+    ) as HTMLButtonElement;
+    await act(async () => darkSwatch.click());
+
+    expect(mocks.controller!.commitImport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "dark",
+        selection: { light: "sonic", dark: "custom" },
+      }),
+    );
+  });
+
   it("collapses imported collections into one fixed-height card with direct radial variants", async () => {
     const collection = { id: "open-vsx:h1dr0n.claude-theme", label: "Claude Theme" };
     const entry = (
@@ -480,7 +557,7 @@ describe("AppearanceSettings", () => {
     expect(sonicCard.querySelector('[role="group"]')?.classList.contains("h-14")).toBe(true);
     expect(claudeCard.querySelector('[role="group"]')?.classList.contains("h-14")).toBe(true);
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
-    expect(claudeCard.querySelector('[role="img"][aria-label^="Light preview"]')).not.toBeNull();
+    expect(claudeCard.querySelector('button[aria-label="Use Dusk Light for light mode"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(container.textContent).not.toContain("Active theme");
     expect(claudeCard.textContent).not.toContain("Active");
@@ -499,6 +576,7 @@ describe("AppearanceSettings", () => {
     await act(async () => card.click());
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(
       expect.objectContaining({
+        mode: "system",
         selection: { light: light.id, dark: midnight.id },
       }),
     );

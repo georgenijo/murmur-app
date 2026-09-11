@@ -36,7 +36,7 @@
     color-mix(in srgb, var(--murmur-surface-container-low) 88%, var(--murmur-background)),
     var(--murmur-surface-container-low)
   );
-  border-right: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
+  border-right: 1px solid var(--ui-dashboard-border-subtle);
 }
 
 .settings-search {
@@ -47,7 +47,7 @@
 .settings-search input {
   border-radius: var(--settings-radius-pill);
   border: 1px solid var(--settings-hairline);
-  background: var(--murmur-surface-container-lowest);
+  background: var(--settings-tint-raised);
   box-shadow: var(--settings-shadow-1);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -67,7 +67,7 @@
 }
 
 .settings-nav-item[aria-current='page'] {
-  background: var(--murmur-surface-container-lowest);
+  background: var(--settings-tint-raised);
   box-shadow: var(--settings-shadow-1);
   font-weight: 650;
 }
@@ -167,7 +167,7 @@
   padding: 0 12px;
   border-radius: var(--settings-radius-pill);
   border: 1px solid var(--settings-hairline);
-  background: var(--murmur-surface-container-lowest);
+  background: var(--settings-tint-raised);
   box-shadow: var(--settings-shadow-1);
   color: var(--murmur-on-surface-variant);
   font-size: 12px;
@@ -183,7 +183,7 @@
 .settings-quiet-btn {
   border-radius: var(--settings-radius-control);
   border: 1px solid var(--settings-hairline);
-  background: var(--murmur-surface-container-lowest);
+  background: var(--settings-tint-raised);
   box-shadow: var(--settings-shadow-1);
   font-weight: 600;
   transition: background-color 120ms ease, color 120ms ease;
@@ -201,7 +201,7 @@
   padding: 3px;
   border-radius: var(--settings-radius-pill);
   background: var(--settings-tint-sunken);
-  border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent);
+  border: 1px solid var(--settings-hairline);
 }
 
 .settings-segmented-btn {
@@ -222,7 +222,9 @@
 }
 
 .settings-segmented-btn[data-selected='true'] {
-  background: var(--murmur-surface-container-lowest);
+  outline: 1px solid var(--settings-hairline-strong);
+  outline-offset: -1px;
+  background: var(--settings-tint-raised);
   color: var(--murmur-on-surface);
   font-weight: 650;
   box-shadow: var(--settings-shadow-1);
@@ -296,7 +298,7 @@
 .settings-workspace ul[role='listbox'] {
   border-radius: var(--ui-radius-popover, 1rem);
   border: 1px solid var(--settings-hairline-strong);
-  background: var(--murmur-surface-container-lowest);
+  background: var(--settings-tint-raised);
   box-shadow: var(--ui-shadow-3, 0 2px 4px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent), 0 16px 40px -16px color-mix(in srgb, var(--murmur-on-surface) 34%, transparent));
 }
 

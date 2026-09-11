@@ -86,15 +86,15 @@
   /* Sona-modern surface ramp: soft hairlines, layered low-alpha shadows,
      tinted surfaces, and the caps/tight/title tracking scale. Every value
      is computed from --murmur-* so light/dark flip automatically. */
-  --ui-hairline: color-mix(in srgb, var(--murmur-outline-variant) 55%, transparent);
-  --ui-hairline-strong: color-mix(in srgb, var(--murmur-outline-variant) 78%, transparent);
-  --ui-shadow-1: 0 1px 2px color-mix(in srgb, var(--murmur-on-surface) 7%, transparent);
+  --ui-hairline: color-mix(in srgb, var(--murmur-on-surface-variant) 32%, transparent);
+  --ui-hairline-strong: color-mix(in srgb, var(--murmur-on-surface-variant) 50%, transparent);
+  --ui-shadow-1: 0 1px 2px rgb(0 0 0 / 8%);
   --ui-shadow-2:
-    0 1px 2px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent),
-    0 8px 20px -10px color-mix(in srgb, var(--murmur-on-surface) 22%, transparent);
+    0 1px 2px rgb(0 0 0 / 8%),
+    0 8px 20px -10px rgb(0 0 0 / 22%);
   --ui-shadow-3:
-    0 2px 4px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent),
-    0 16px 40px -16px color-mix(in srgb, var(--murmur-on-surface) 34%, transparent);
+    0 2px 4px rgb(0 0 0 / 12%),
+    0 16px 40px -16px rgb(0 0 0 / 34%);
   --ui-shadow-accent: 0 6px 16px -8px color-mix(in srgb, var(--murmur-primary) 55%, transparent);
   --ui-tint-raised: var(--murmur-surface-container-lowest);
   --ui-tint-sunken: color-mix(in srgb, var(--murmur-surface-container-low) 70%, var(--murmur-background));
@@ -133,7 +133,7 @@
   --ui-dashboard-gap: 0.75rem;
   --ui-card-shadow: var(--ui-shadow-2);
   --ui-dashboard-border: var(--ui-hairline);
-  --ui-dashboard-border-subtle: color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
+  --ui-dashboard-border-subtle: color-mix(in srgb, var(--murmur-on-surface-variant) 20%, transparent);
   --ui-dashboard-hover: var(--murmur-surface-container);
   --ui-dashboard-pressed: var(--murmur-surface-container-high);
   --ui-dashboard-selected: var(--murmur-surface-container-lowest);
@@ -180,6 +180,10 @@
    overrides here so they track the attribute Murmur actually controls at
    runtime, not just the OS preference. */
 [data-appearance="dark"] {
+  --ui-tint-raised: var(--murmur-surface-container);
+  --ui-shadow-1: 0 1px 2px rgb(0 0 0 / 24%);
+  --ui-shadow-2: 0 1px 2px rgb(0 0 0 / 24%), 0 8px 20px -10px rgb(0 0 0 / 45%);
+  --ui-shadow-3: 0 2px 4px rgb(0 0 0 / 28%), 0 16px 40px -16px rgb(0 0 0 / 60%);
   --ui-scrim: color-mix(in oklab, var(--murmur-background) 72%, transparent);
   --ui-tint-sunken: color-mix(in srgb, var(--murmur-background) 70%, var(--murmur-surface-container-lowest));
 }
@@ -843,7 +847,7 @@ textarea {
   min-height: 0;
   flex-shrink: 0;
   flex-direction: column;
-  border-right: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 20%, transparent);
+  border-right: 1px solid var(--ui-dashboard-border-subtle);
   background: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--murmur-surface-container-low) 88%, var(--murmur-background)),
@@ -970,6 +974,8 @@ textarea {
 }
 
 .home-talk {
+  width: min(100%, 26rem);
+  align-self: flex-start;
   flex-shrink: 0;
   border: 1px solid var(--ui-hairline);
   border-radius: var(--ui-radius-card);
@@ -1051,7 +1057,7 @@ textarea {
 .home-history .history-search { width: auto; max-width: 13rem; flex: 1 1 7rem; transition: max-width 250ms var(--ui-ease-out), border-color var(--ui-motion-standard), box-shadow var(--ui-motion-standard); }
 .home-history .history-search:focus-within { width: auto; max-width: 17rem; }
 .home-history .history-filtered-note { padding-inline: 0; }
-.home-history .history-list { gap: 0; padding-inline: 0; padding-bottom: 0; }
+.home-history .history-list { gap: var(--ui-space-4); padding-inline: 0; padding-bottom: var(--ui-space-2); }
 .home-history .history-date-label { display: block; padding: var(--ui-space-6) 0 var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: var(--ui-track-caps); text-transform: uppercase; }
 .home-history .history-date-label:first-child { padding-top: 0; }
 .home-history .transcript-card {
@@ -1059,29 +1065,23 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   row-gap: 0.1875rem;
-  border-color: transparent;
-  border-bottom-color: var(--ui-dashboard-border-subtle);
-  border-radius: 0;
+  border-color: var(--ui-hairline);
+  border-radius: var(--ui-radius-card);
   padding: var(--ui-space-5) var(--ui-space-4);
-  background: transparent;
-  box-shadow: none;
+  background: var(--ui-tint-raised);
+  box-shadow: var(--ui-shadow-1);
 }
 .home-history .transcript-card:hover {
-  border-color: transparent;
-  border-bottom-color: var(--ui-dashboard-border-subtle);
-  border-radius: var(--ui-radius-card);
-  background: var(--ui-tint-sunken);
-  box-shadow: none;
+  border-color: var(--ui-hairline-strong);
+  background: var(--murmur-surface-container-high);
 }
 .home-history .transcript-card[data-copied="true"] {
-  border-color: transparent;
-  border-bottom-color: color-mix(in srgb, var(--murmur-success) 50%, transparent);
-  box-shadow: none;
+  border-color: var(--murmur-success);
+  box-shadow: var(--ui-shadow-1);
 }
 .home-history .transcript-card[data-newest="true"]:not([data-copied="true"]) {
-  border-color: transparent;
-  border-bottom-color: var(--ui-dashboard-border-subtle);
-  box-shadow: none;
+  border-color: var(--ui-hairline-strong);
+  box-shadow: var(--ui-shadow-1);
 }
 .home-history .transcript-meta { grid-column: 1; grid-row: 1; min-width: 0; margin: 0; }
 .home-history .transcript-meta > div:first-child { min-width: 0; gap: var(--ui-space-3); }
