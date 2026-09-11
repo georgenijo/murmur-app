@@ -1,11 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { isEditableTarget, mainWindowShortcut, type ShortcutEvent } from './keyboardShortcuts';
+import {
+  MAIN_WINDOW_SHORTCUTS,
+  isEditableTarget,
+  mainWindowShortcut,
+  type ShortcutEvent,
+} from './keyboardShortcuts';
 
 function event(overrides: Partial<ShortcutEvent> & { key: string }): ShortcutEvent {
   return { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...overrides };
 }
 
 describe('mainWindowShortcut', () => {
+  it('publishes the same four bindings used by the event mapping', () => {
+    expect(MAIN_WINDOW_SHORTCUTS).toEqual([
+      { action: 'palette', key: 'k', label: 'Command palette', binding: '⌘K' },
+      { action: 'search', key: 'f', label: 'Search transcripts', binding: '⌘F' },
+      { action: 'settings', key: ',', label: 'Open Settings', binding: '⌘,' },
+      { action: 'logs', key: 'l', label: 'Open Performance Lab', binding: '⌘L' },
+    ]);
+  });
+
   it('maps the four bound keys under Command', () => {
     expect(mainWindowShortcut(event({ key: 'k', metaKey: true }))).toBe('palette');
     expect(mainWindowShortcut(event({ key: 'f', metaKey: true }))).toBe('search');

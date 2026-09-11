@@ -206,7 +206,11 @@ export function OverlayWidget() {
   // notch. Recording and processing keep the full top bar even without hover so
   // their right-side indicators never disappear.
   const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
-  const compactIdle = status === 'idle' && !meetingBusy && !expanded && !calibrating;
+  const compactIdle = status === 'idle'
+    && !meetingBusy
+    && !expanded
+    && !calibrating
+    && runtime.deliveryCue === null;
   const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
   const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
@@ -250,6 +254,10 @@ export function OverlayWidget() {
           status={status}
           barRefs={waveform.barRefs}
           smartAutoSummary={smartAutoSummary}
+          deliveryCue={runtime.deliveryCue}
+          onRetryDelivery={runtime.retryDelivery}
+          onPauseDeliveryTimer={runtime.pauseDeliveryTimer}
+          onResumeDeliveryTimer={runtime.resumeDeliveryTimer}
         />
         <OverlayDropdown
           geometry={geometry}

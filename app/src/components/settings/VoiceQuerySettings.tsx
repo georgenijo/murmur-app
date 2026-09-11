@@ -83,6 +83,7 @@ export function VoiceQuerySettings({
       <div><QueryCapabilities command={vm.queryCommand} /></div>
 
       <SettingToggle
+        targetId="voice-query-shortcut"
         title="Enable Voice Query"
         description="Double-tap a dedicated key to record; tap once to finish. No spoken keyword is used."
         checked={settings.queryHotkey !== null}

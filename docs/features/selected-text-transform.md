@@ -12,6 +12,13 @@ Binding runtime ADR: [docs/decisions/2026-07-20-signed-local-llm-sidecar.md](../
 4. Popover shows **thinking** then **ready** (word diff). Events carry content-free `{ state, errorCode, transformPassId }` metadata; instruction / original / proposed text are pulled via `get_transform_review_content`.
 5. **Approve** writes through `transform_apply` (AX set-value or paste fallback with clipboard restore). **Undo** restores the frozen original. Global Esc snapshots and carries the exact pass ID for Capturing/Connecting/Listening/Thinking and the brief ReviewPending-before-focus handoff; the backend no-ops if that pass no longer owns the flow, so a delayed handler cannot cancel the next pass. Once Ready or Failed is focusable, its local Esc handler also carries the rendered pass ID. If local and global delivery race, duplicate scoped cancellation is idempotent. A short transform-key tap cancels the active hold. Applying is bounded and not keyboard-cancellable; after apply, use Undo.
 
+Settings includes an editable synthetic sample-text practice block. Its button
+selects the sample inside Murmur, then tells the user to use the configured
+hold key and speak an instruction. This exercises the normal native selection,
+capture, model, review, and apply flow. The practice block does not call a
+sample-only command or mark a Transform as complete. If the shortcut or local
+model is missing, it points to the setup controls on the same page.
+
 Dictation and transform are mutually exclusive (status guards both ways + sidecar busy + helper shutdown before recording).
 
 ## Instruction expansion and name precedence
