@@ -1,6 +1,6 @@
 use super::types::*;
 use crate::query_provider::QueryProviderId;
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, Row};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -153,9 +153,14 @@ impl QueryHistoryRepository {
         offset: u32,
         limit: u32,
         provider: Option<QueryProviderId>,
+        search: Option<String>,
     ) -> Result<QueryHistoryPageV1, String> {
         let connection = self.open_checked()?;
         let limit = limit.clamp(1, MAX_QUERY_HISTORY_PAGE_SIZE);
+        let search = normalize_search(search)?;
+        if let Some(search) = search {
+            return self.list_matching(&connection, offset, limit, provider, &search);
+        }
         let total: u32 = match provider {
             Some(provider) => connection
                 .query_row(
@@ -180,35 +185,7 @@ impl QueryHistoryRepository {
             .map_err(db_error)?;
         let provider = provider.map(|value| value.as_str());
         let rows = statement
-            .query_map(params![provider, provider, limit, offset], |row| {
-                let record_version = row.get::<_, u32>(1)?;
-                if record_version != QUERY_HISTORY_SCHEMA_VERSION {
-                    return Err(rusqlite::Error::InvalidQuery);
-                }
-                let provider = parse_provider(&row.get::<_, String>(3)?)?;
-                let tokens_json = row.get::<_, Option<String>>(6)?;
-                let tokens = tokens_json
-                    .map(|json| serde_json::from_str(&json))
-                    .transpose()
-                    .map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            6,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
-                Ok(QueryHistoryEntryV1 {
-                    schema_version: record_version,
-                    id: row.get(0)?,
-                    timestamp_ms: row.get(2)?,
-                    provider,
-                    question: row.get(4)?,
-                    answer: row.get(5)?,
-                    tokens,
-                    duration_ms: to_u64(row.get(7)?)?,
-                    error_code: row.get(8)?,
-                })
-            })
+            .query_map(params![provider, provider, limit, offset], row_to_entry)
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)?;
@@ -216,6 +193,57 @@ impl QueryHistoryRepository {
         Ok(QueryHistoryPageV1 {
             schema_version: QUERY_HISTORY_SCHEMA_VERSION,
             entries: rows,
+            total,
+            offset,
+            has_more,
+        })
+    }
+
+    fn list_matching(
+        &self,
+        connection: &Connection,
+        offset: u32,
+        limit: u32,
+        provider: Option<QueryProviderId>,
+        search: &str,
+    ) -> Result<QueryHistoryPageV1, String> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, record_version, timestamp_ms, provider, question, answer,
+                        tokens_json, duration_ms, error_code
+                 FROM query_history
+                 WHERE (? IS NULL OR provider = ?)
+                 ORDER BY timestamp_ms DESC, rowid DESC",
+            )
+            .map_err(db_error)?;
+        let provider = provider.map(|value| value.as_str());
+        let needle = search.to_lowercase();
+        let matching = statement
+            .query_map(params![provider, provider], row_to_entry)
+            .map_err(db_error)?
+            .filter_map(|entry| match entry {
+                Ok(entry)
+                    if entry.question.to_lowercase().contains(&needle)
+                        || entry.answer.to_lowercase().contains(&needle) =>
+                {
+                    Some(Ok(entry))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        let total = matching.len() as u32;
+        let offset = offset.min(total);
+        let entries = matching
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect::<Vec<_>>();
+        let has_more = offset.saturating_add(entries.len() as u32) < total;
+        Ok(QueryHistoryPageV1 {
+            schema_version: QUERY_HISTORY_SCHEMA_VERSION,
+            entries,
             total,
             offset,
             has_more,
@@ -297,6 +325,50 @@ impl QueryHistoryRepository {
             .map_err(|_| storage_error())?;
         Ok(InitializationOutcome::Reinitialized)
     }
+}
+
+fn normalize_search(search: Option<String>) -> Result<Option<String>, String> {
+    let search = search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(search) = search else {
+        return Ok(None);
+    };
+    if search.contains('\0') || search.chars().count() > MAX_QUERY_HISTORY_SEARCH_CHARS {
+        return Err("Enter a shorter Voice Query history search.".to_string());
+    }
+    Ok(Some(search.to_string()))
+}
+
+fn row_to_entry(row: &Row<'_>) -> rusqlite::Result<QueryHistoryEntryV1> {
+    let record_version = row.get::<_, u32>(1)?;
+    if record_version != QUERY_HISTORY_SCHEMA_VERSION {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let provider = parse_provider(&row.get::<_, String>(3)?)?;
+    let tokens_json = row.get::<_, Option<String>>(6)?;
+    let tokens = tokens_json
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+    Ok(QueryHistoryEntryV1 {
+        schema_version: record_version,
+        id: row.get(0)?,
+        timestamp_ms: row.get(2)?,
+        provider,
+        question: row.get(4)?,
+        answer: row.get(5)?,
+        tokens,
+        duration_ms: to_u64(row.get(7)?)?,
+        error_code: row.get(8)?,
+    })
 }
 
 fn validate_draft(draft: &QueryHistoryDraft) -> Result<(), String> {
@@ -795,7 +867,7 @@ mod tests {
             .insert_if_epoch(epoch, draft(1))
             .unwrap()
             .unwrap();
-        let page = repository.list(0, 10, None).unwrap();
+        let page = repository.list(0, 10, None, None).unwrap();
         assert_eq!(page.entries, vec![inserted]);
         assert_eq!(page.total, 1);
         assert!(!page.has_more);
@@ -826,16 +898,105 @@ mod tests {
             }
             repository.insert_if_epoch(epoch, item).unwrap();
         }
-        let first = repository.list(0, 1000, None).unwrap();
+        let first = repository.list(0, 1000, None, None).unwrap();
         assert_eq!(first.total, 200);
         assert_eq!(first.entries.len(), 100);
         assert!(first.has_more);
         assert_eq!(first.entries[0].question, "question-205");
         let codex = repository
-            .list(0, 10, Some(QueryProviderId::Codex))
+            .list(0, 10, Some(QueryProviderId::Codex), None)
             .unwrap();
         assert_eq!(codex.total, 1);
         assert_eq!(codex.entries[0].provider, QueryProviderId::Codex);
+    }
+
+    #[test]
+    fn search_is_case_insensitive_literal_and_composes_with_provider_and_pagination() {
+        let (_temp, repository) = repository();
+        let epoch = repository.clear_epoch().unwrap();
+        let mut question_match = draft(1);
+        question_match.question = "Where is Murmur history?".to_string();
+        repository.insert_if_epoch(epoch, question_match).unwrap();
+        let mut answer_match = draft(2);
+        answer_match.answer = "The MURMUR store is local.".to_string();
+        repository.insert_if_epoch(epoch, answer_match).unwrap();
+        let mut codex_match = draft(3);
+        codex_match.provider = QueryProviderId::Codex;
+        codex_match.answer = "murmur uses SQLite".to_string();
+        repository.insert_if_epoch(epoch, codex_match).unwrap();
+        let mut literal_percent = draft(4);
+        literal_percent.question = "What does 100% mean?".to_string();
+        repository.insert_if_epoch(epoch, literal_percent).unwrap();
+        let mut unicode_question = draft(5);
+        unicode_question.question = "Where is the CAFÉ?".to_string();
+        repository.insert_if_epoch(epoch, unicode_question).unwrap();
+        let mut unicode_answer = draft(6);
+        unicode_answer.answer = "The answer is ΑΘΗΝΑ.".to_string();
+        repository.insert_if_epoch(epoch, unicode_answer).unwrap();
+
+        let first = repository
+            .list(0, 2, None, Some("mUrMuR".to_string()))
+            .unwrap();
+        assert_eq!(first.total, 3);
+        assert_eq!(first.entries.len(), 2);
+        assert!(first.has_more);
+
+        let claude_second = repository
+            .list(
+                1,
+                1,
+                Some(QueryProviderId::Claude),
+                Some("MURMUR".to_string()),
+            )
+            .unwrap();
+        assert_eq!(claude_second.total, 2);
+        assert_eq!(
+            claude_second.entries[0].question,
+            "Where is Murmur history?"
+        );
+        assert!(!claude_second.has_more);
+
+        let percent = repository.list(0, 10, None, Some("%".to_string())).unwrap();
+        assert_eq!(percent.total, 1);
+        assert_eq!(percent.entries[0].question, "What does 100% mean?");
+
+        let accented = repository
+            .list(0, 10, None, Some("café".to_string()))
+            .unwrap();
+        assert_eq!(accented.total, 1);
+        assert_eq!(accented.entries[0].question, "Where is the CAFÉ?");
+        let greek = repository
+            .list(0, 10, None, Some("αθηνα".to_string()))
+            .unwrap();
+        assert_eq!(greek.total, 1);
+        assert_eq!(greek.entries[0].answer, "The answer is ΑΘΗΝΑ.");
+
+        assert_eq!(repository.list(0, 10, None, None).unwrap().total, 6);
+        assert_eq!(
+            repository
+                .list(0, 10, None, Some("   ".to_string()))
+                .unwrap()
+                .total,
+            6
+        );
+    }
+
+    #[test]
+    fn search_rejects_oversized_and_nul_input() {
+        let (_temp, repository) = repository();
+        assert!(repository
+            .list(
+                0,
+                10,
+                None,
+                Some("x".repeat(MAX_QUERY_HISTORY_SEARCH_CHARS + 1)),
+            )
+            .unwrap_err()
+            .contains("shorter"));
+        assert!(repository
+            .list(0, 10, None, Some("private\0query".to_string()))
+            .unwrap_err()
+            .contains("shorter"));
     }
 
     #[test]
@@ -853,7 +1014,7 @@ mod tests {
             .insert_if_epoch(old_epoch, draft(2))
             .unwrap()
             .is_none());
-        assert_eq!(repository.list(0, 10, None).unwrap().total, 0);
+        assert_eq!(repository.list(0, 10, None, None).unwrap().total, 0);
         assert_eq!(
             fs::read_dir(temp.path().join("query-history/quarantine"))
                 .unwrap()
@@ -876,7 +1037,7 @@ mod tests {
         assert_eq!(schema_version(&connection).unwrap(), 99);
         drop(connection);
         let repository = QueryHistoryRepository::reset(root, 1).unwrap();
-        assert_eq!(repository.list(0, 10, None).unwrap().total, 0);
+        assert_eq!(repository.list(0, 10, None, None).unwrap().total, 0);
     }
 
     #[test]
@@ -973,7 +1134,7 @@ mod tests {
 
             let (repository, outcome) = QueryHistoryRepository::initialize(root.clone()).unwrap();
             assert_eq!(outcome, InitializationOutcome::Reinitialized);
-            assert_eq!(repository.list(0, 10, None).unwrap().total, 0);
+            assert_eq!(repository.list(0, 10, None, None).unwrap().total, 0);
             assert_eq!(fs::read_dir(root.join("quarantine")).unwrap().count(), 1);
         }
     }
@@ -1074,7 +1235,7 @@ mod tests {
             drop(connection);
             let (repository, outcome) = QueryHistoryRepository::initialize(root.clone()).unwrap();
             assert_eq!(outcome, InitializationOutcome::Reinitialized);
-            assert_eq!(repository.list(0, 10, None).unwrap().total, 0);
+            assert_eq!(repository.list(0, 10, None, None).unwrap().total, 0);
             assert_eq!(fs::read_dir(root.join("quarantine")).unwrap().count(), 1);
         }
     }
@@ -1084,7 +1245,7 @@ mod tests {
         let (_temp, repository) = repository();
         let epoch = repository.clear_epoch().unwrap();
         repository.insert_if_epoch(epoch, draft(1)).unwrap();
-        let page = repository.list(99, 10, None).unwrap();
+        let page = repository.list(99, 10, None, None).unwrap();
         assert_eq!(page.offset, 1);
         assert!(page.entries.is_empty());
         assert!(!page.has_more);
@@ -1144,7 +1305,7 @@ mod tests {
         drop(connection);
         let (repository, outcome) = QueryHistoryRepository::initialize(root).unwrap();
         assert_eq!(outcome, InitializationOutcome::Reinitialized);
-        assert_eq!(repository.list(0, 10, None).unwrap().total, 0);
+        assert_eq!(repository.list(0, 10, None, None).unwrap().total, 0);
     }
 
     #[test]

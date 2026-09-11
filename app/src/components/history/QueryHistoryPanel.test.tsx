@@ -24,12 +24,14 @@ function history(overrides: Partial<ReturnType<typeof useQueryHistory>> = {}): R
       errorCode: null,
     }],
     provider: 'all',
+    search: '',
     total: 1,
     hasMore: false,
     loading: false,
     clearing: false,
     error: null,
     setProvider: vi.fn(),
+    setSearch: vi.fn(),
     refresh: vi.fn(async () => {}),
     loadMore: vi.fn(async () => {}),
     clear: vi.fn(async () => true),
@@ -112,6 +114,41 @@ describe('QueryHistoryPanel', () => {
     expect(state.clear).toHaveBeenCalledOnce();
     expect(confirm).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Voice Query history deleted from this Mac.');
+  });
+
+  it('searches questions and answers and offers a clear affordance', async () => {
+    const state = history({ search: 'private answer' });
+    await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
+
+    const search = container.querySelector(
+      'input[aria-label="Search Voice Query history"]',
+    ) as HTMLInputElement;
+    expect(search.value).toBe('private answer');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(search, 'different');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(state.setSearch).toHaveBeenCalledWith('different');
+
+    const clear = container.querySelector(
+      'button[aria-label="Clear Voice Query history search"]',
+    ) as HTMLButtonElement;
+    await act(async () => clear.click());
+    expect(state.setSearch).toHaveBeenCalledWith('');
+  });
+
+  it('distinguishes no search matches from an empty saved-query store', async () => {
+    await act(async () => root.render(
+      <QueryHistoryPanel
+        history={history({ entries: [], search: 'unmatched', total: 0 })}
+        retentionEnabled
+      />,
+    ));
+
+    expect(container.textContent).toContain('No matches for your search');
+    expect(container.textContent).toContain('Try a different word or clear the search.');
+    expect(container.textContent).not.toContain('No saved Voice Queries');
   });
 
   it('explains the fail-closed default when retention is off', async () => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   QUERY_HISTORY_PAGE_SIZE,
+  boundQueryHistorySearchInput,
   clearQueryHistory,
   isQueryHistoryChanged,
   listQueryHistory,
@@ -44,6 +45,7 @@ function mergeQueryHistoryEntries(
 export function useQueryHistory(active: boolean) {
   const [entries, setEntries] = useState<QueryHistoryEntryV1[]>([]);
   const [provider, setProviderState] = useState<QueryHistoryProviderFilter>('all');
+  const [search, setSearchState] = useState('');
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -52,8 +54,10 @@ export function useQueryHistory(active: boolean) {
   const requestRef = useRef(0);
   const activeRef = useRef(active);
   const providerRef = useRef(provider);
+  const searchRef = useRef(search);
   useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => { providerRef.current = provider; }, [provider]);
+  useEffect(() => { searchRef.current = search; }, [search]);
 
   const refresh = useCallback(async () => {
     if (!activeRef.current) return;
@@ -64,6 +68,7 @@ export function useQueryHistory(active: boolean) {
         offset: 0,
         limit: QUERY_HISTORY_PAGE_SIZE,
         provider: providerRef.current === 'all' ? null : providerRef.current,
+        search: searchRef.current || null,
       });
       if (request !== requestRef.current || !activeRef.current) return;
       setEntries(page.entries);
@@ -88,6 +93,7 @@ export function useQueryHistory(active: boolean) {
         offset: entries.length,
         limit: QUERY_HISTORY_PAGE_SIZE,
         provider: providerRef.current === 'all' ? null : providerRef.current,
+        search: searchRef.current || null,
       });
       if (request !== requestRef.current || !activeRef.current) return;
       setEntries((current) => mergeQueryHistoryEntries(current, page.entries));
@@ -134,11 +140,25 @@ export function useQueryHistory(active: boolean) {
     setError(null);
   }, []);
 
+  const setSearch = useCallback((next: string) => {
+    const bounded = boundQueryHistorySearchInput(next);
+    if (bounded === searchRef.current) return;
+    requestRef.current += 1;
+    searchRef.current = bounded;
+    setSearchState(bounded);
+    setEntries([]);
+    setTotal(0);
+    setHasMore(false);
+    setError(null);
+  }, []);
+
   useEffect(() => {
     if (!active) {
       requestRef.current += 1;
       // Keep the content-free provider filter as a workspace preference, but
-      // release every value derived from the Rust-owned content store.
+      // release search and every value derived from the Rust-owned content store.
+      searchRef.current = '';
+      setSearchState('');
       setEntries([]);
       setTotal(0);
       setHasMore(false);
@@ -148,7 +168,7 @@ export function useQueryHistory(active: boolean) {
       return;
     }
     void refresh();
-  }, [active, provider, refresh]);
+  }, [active, provider, search, refresh]);
 
   useEffect(() => {
     if (!active) return;
@@ -179,12 +199,14 @@ export function useQueryHistory(active: boolean) {
   return {
     entries,
     provider,
+    search,
     total,
     hasMore,
     loading,
     clearing,
     error,
     setProvider,
+    setSearch,
     refresh,
     loadMore,
     clear,
