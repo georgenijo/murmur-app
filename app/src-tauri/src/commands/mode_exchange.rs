@@ -16,7 +16,10 @@ fn read_modes_file_at(path: &Path) -> Result<String, String> {
     let unreadable = || "Murmur could not read the Mode file.".to_string();
     let oversized = || "Mode files must be 256 KiB or smaller.".to_string();
     if !path.is_absolute()
-        || !path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        || !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
     {
         return Err(invalid());
     }
@@ -71,12 +74,26 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("private-mode-name.json");
         fs::write(&path, "é".repeat(MAX_MODE_IMPORT_BYTES / 2)).unwrap();
-        assert_eq!(read_modes_file_at(&path).unwrap().len(), MAX_MODE_IMPORT_BYTES);
+        assert_eq!(
+            read_modes_file_at(&path).unwrap().len(),
+            MAX_MODE_IMPORT_BYTES
+        );
         fs::write(&path, vec![b'a'; MAX_MODE_IMPORT_BYTES + 1]).unwrap();
-        assert_eq!(read_modes_file_at(&path).unwrap_err(), "Mode files must be 256 KiB or smaller.");
+        assert_eq!(
+            read_modes_file_at(&path).unwrap_err(),
+            "Mode files must be 256 KiB or smaller."
+        );
         fs::write(&path, [0xff]).unwrap();
-        assert_eq!(read_modes_file_at(&path).unwrap_err(), "Mode files must be valid UTF-8.");
-        for invalid in [Path::new("relative.json"), temp.path(), Path::new("/missing/private.json"), Path::new("/private.txt")] {
+        assert_eq!(
+            read_modes_file_at(&path).unwrap_err(),
+            "Mode files must be valid UTF-8."
+        );
+        for invalid in [
+            Path::new("relative.json"),
+            temp.path(),
+            Path::new("/missing/private.json"),
+            Path::new("/private.txt"),
+        ] {
             let error = read_modes_file_at(invalid).unwrap_err();
             assert!(!error.contains("private"));
         }

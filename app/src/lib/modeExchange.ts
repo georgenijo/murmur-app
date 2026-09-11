@@ -117,7 +117,10 @@ export function exportModeFile(settings: ModeExchangeSettings): string {
       ? [{ bundleId: profile.bundleId, modeId: profile.modeId }] : []),
     browserSiteRules: settings.browserSiteRules.filter((rule) => ids.has(rule.modeId)),
   };
-  return JSON.stringify(parseModeFile(JSON.stringify(file)), null, 2) + '\n';
+  const validated = parseModeFile(JSON.stringify(file));
+  const pretty = JSON.stringify(validated, null, 2) + '\n';
+  return new TextEncoder().encode(pretty).length <= MAX_MODE_FILE_BYTES
+    ? pretty : JSON.stringify(validated);
 }
 
 function equal<T extends object>(left: T, right: T): boolean {

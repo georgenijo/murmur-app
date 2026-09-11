@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_MODES, DEFAULT_SETTINGS, loadSettings, type MurmurMode, type AppProfile } from './settings';
+import { AVAILABLE_MODEL_OPTIONS, BUILTIN_MODES, DEFAULT_SETTINGS, LANGUAGE_OPTIONS, loadSettings, type MurmurMode, type AppProfile } from './settings';
 import { commitModeImport, exportModeFile, MAX_MODE_FILE_BYTES, parseModeFile, previewModeImport, type ModeExchangeSettings } from './modeExchange';
 
 const mode: MurmurMode = {
@@ -23,6 +23,30 @@ function expectRejected(update: object) {
 }
 
 describe('Mode JSON boundary', () => {
+  it('keeps a full export with escaped strings within the import byte limit', () => {
+    const modelId = AVAILABLE_MODEL_OPTIONS.reduce((longest, option) => option.value.length > longest.value.length ? option : longest).value;
+    const language = LANGUAGE_OPTIONS.reduce((longest, option) => option.value.length > longest.value.length ? option : longest).value;
+    const modes: MurmurMode[] = Array.from({ length: 100 }, (_, index) => ({
+      ...mode, id: '"'.repeat(123) + String(index).padStart(2, '0'), name: '"'.repeat(128),
+      writingStyle: 'code_technical', cleanupEnabled: false, smartFormattingEnabled: false,
+      cliFormattingEnabled: false, autoPaste: false, modelId, language,
+    }));
+    const settings: ModeExchangeSettings = {
+      ...empty, modes,
+      appProfiles: modes.map((item, index) => ({ ...profile,
+        bundleId: 'com.' + 'x'.repeat(249) + String(index).padStart(2, '0'), modeId: item.id,
+      })),
+      browserSiteRules: Array.from({ length: 128 }, (_, index) => ({
+        id: '"'.repeat(125) + String(index).padStart(3, '0'),
+        browserBundleId: 'company.thebrowser.Browser',
+        host: ['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(54) + String(index).padStart(3, '0'), 'com'].join('.'),
+        modeId: modes[index % modes.length].id, enabled: false,
+      })),
+    };
+    const contents = exportModeFile(settings);
+    expect(new TextEncoder().encode(contents).length).toBeLessThanOrEqual(MAX_MODE_FILE_BYTES);
+    expect(parseModeFile(contents).modes).toEqual(modes);
+  });
   it('round trips every Mode policy into clean persisted settings without exporting private profile content or consent', () => {
     const json = exportModeFile(source);
     expect(json).not.toContain('/private/project');
