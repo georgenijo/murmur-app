@@ -136,19 +136,32 @@ impl DoubleTapDetector {
         event_type: &EventType,
         shortcut_modifiers_held: bool,
     ) -> bool {
+        self.handle_event_with_context(event_type, shortcut_modifiers_held, false)
+    }
+
+    fn handle_event_with_context(
+        &mut self,
+        event_type: &EventType,
+        shortcut_modifiers_held: bool,
+        repeated_function_press: bool,
+    ) -> bool {
         self.last_rejection = None;
         let target = match self.target_key {
             Some(k) => k,
             None => return false,
         };
 
-        let function_chord_rejected = shortcut_modifiers_held
-            && is_function_key(target)
+        let function_chord_rejected = is_function_key(target)
             && match (self.state, event_type) {
-                (DetectorState::Idle, EventType::KeyPress(key)) => is_target_key(*key, target),
+                (DetectorState::Idle, EventType::KeyPress(key)) => {
+                    is_target_key(*key, target)
+                        && (shortcut_modifiers_held || repeated_function_press)
+                }
                 (DetectorState::WaitingFirstUp, EventType::KeyPress(_))
                 | (DetectorState::WaitingSecondDown, EventType::KeyPress(_))
-                | (DetectorState::WaitingSecondUp, EventType::KeyPress(_)) => true,
+                | (DetectorState::WaitingSecondUp, EventType::KeyPress(_)) => {
+                    shortcut_modifiers_held
+                }
                 _ => false,
             };
         if function_chord_rejected {
@@ -333,6 +346,60 @@ fn is_function_key(key: Key) -> bool {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PressedFunctionKeys(u32);
+
+impl PressedFunctionKeys {
+    /// Record physical F-key state and report whether this KeyPress is an OS
+    /// autorepeat. Releases always clear the bit, even while dictation is
+    /// disabled or processing, so the next physical press starts fresh.
+    fn update(&mut self, event_type: &EventType) -> bool {
+        match event_type {
+            EventType::KeyPress(key) => {
+                let Some(bit) = function_key_bit(*key) else {
+                    return false;
+                };
+                let repeated = self.0 & bit != 0;
+                self.0 |= bit;
+                repeated
+            }
+            EventType::KeyRelease(key) => {
+                if let Some(bit) = function_key_bit(*key) {
+                    self.0 &= !bit;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+fn function_key_bit(key: Key) -> Option<u32> {
+    match key {
+        Key::F1 => Some(1 << 0),
+        Key::F2 => Some(1 << 1),
+        Key::F3 => Some(1 << 2),
+        Key::F4 => Some(1 << 3),
+        Key::F5 => Some(1 << 4),
+        Key::F6 => Some(1 << 5),
+        Key::F7 => Some(1 << 6),
+        Key::F8 => Some(1 << 7),
+        Key::F9 => Some(1 << 8),
+        Key::F10 => Some(1 << 9),
+        Key::F11 => Some(1 << 10),
+        Key::F12 => Some(1 << 11),
+        Key::F13 => Some(1 << 12),
+        Key::F14 => Some(1 << 13),
+        Key::F15 => Some(1 << 14),
+        Key::F16 => Some(1 << 15),
+        Key::F17 => Some(1 << 16),
+        Key::F18 => Some(1 << 17),
+        Key::F19 => Some(1 << 18),
+        Key::F20 => Some(1 << 19),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ShortcutModifierState(u16);
 
 impl ShortcutModifierState {
@@ -450,16 +517,27 @@ impl HoldDownDetector {
         event_type: &EventType,
         shortcut_modifiers_held: bool,
     ) -> HoldDownEvent {
+        self.handle_event_with_context(event_type, shortcut_modifiers_held, false)
+    }
+
+    fn handle_event_with_context(
+        &mut self,
+        event_type: &EventType,
+        shortcut_modifiers_held: bool,
+        repeated_function_press: bool,
+    ) -> HoldDownEvent {
         let target = match self.target_key {
             Some(k) => k,
             None => return HoldDownEvent::None,
         };
 
-        let function_chord_rejected = shortcut_modifiers_held
-            && is_function_key(target)
+        let function_chord_rejected = is_function_key(target)
             && match (self.state, event_type) {
-                (HoldState::Idle, EventType::KeyPress(key)) => is_target_key(*key, target),
-                (HoldState::Held, EventType::KeyPress(_)) => true,
+                (HoldState::Idle, EventType::KeyPress(key)) => {
+                    is_target_key(*key, target)
+                        && (shortcut_modifiers_held || repeated_function_press)
+                }
+                (HoldState::Held, EventType::KeyPress(_)) => shortcut_modifiers_held,
                 _ => false,
             };
         if function_chord_rejected {
@@ -1128,6 +1206,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
             );
 
             let mut shortcut_modifiers = ShortcutModifierState::default();
+            let mut pressed_function_keys = PressedFunctionKeys::default();
             let callback = move |event: Event| {
                 // Track these even while every feature is idle. If a user
                 // holds Command before enabling a function-key trigger, the
@@ -1135,6 +1214,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 // intentionally absent because Apple keyboards may require it
                 // to produce F1–F12 events.
                 shortcut_modifiers.update(&event.event_type);
+                let repeated_function_press = pressed_function_keys.update(&event.event_type);
 
                 // The dictation listener (LISTENER_ACTIVE) and the transform
                 // hotkey (TRANSFORM_ACTIVE) are independent; either one being
@@ -1419,9 +1499,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
                                 let previous_wait = d.second_tap_wait_started_at();
-                                let fired = d.handle_event_with_shortcut_modifiers(
+                                let fired = d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
+                                    repeated_function_press,
                                 );
                                 let wait_started_at = d
                                     .second_tap_wait_started_at()
@@ -1451,9 +1532,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             let mut det =
                                 HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                             if let Some(d) = det.as_mut() {
-                                d.handle_event_with_shortcut_modifiers(
+                                d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
+                                    repeated_function_press,
                                 )
                             } else {
                                 HoldDownEvent::None
@@ -1506,9 +1588,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             let mut det =
                                 HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                             if let Some(d) = det.as_mut() {
-                                d.handle_event_with_shortcut_modifiers(
+                                d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
+                                    repeated_function_press,
                                 )
                             } else {
                                 HoldDownEvent::None
@@ -1522,9 +1605,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
                                 let previous_wait = d.second_tap_wait_started_at();
-                                let fired = d.handle_event_with_shortcut_modifiers(
+                                let fired = d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
+                                    repeated_function_press,
                                 );
                                 let wait_started_at = d
                                     .second_tap_wait_started_at()
@@ -2621,7 +2705,14 @@ mod tests {
 
         assert_eq!(d.handle_event(&press(Key::KeyA)), HoldDownEvent::Stop);
         assert_eq!(d.state, HoldState::Idle);
+        assert_eq!(
+            d.handle_event_with_context(&press(Key::F8), false, true),
+            HoldDownEvent::None,
+            "an autorepeat before physical release stays suppressed"
+        );
         assert_eq!(d.handle_event(&release(Key::F8)), HoldDownEvent::None);
+        d.last_stopped_at = None;
+        assert_eq!(d.handle_event(&press(Key::F8)), HoldDownEvent::Start);
     }
 
     #[test]
@@ -2642,7 +2733,7 @@ mod tests {
 
             let mut hold = make_hold_detector(Key::F8);
             assert_eq!(
-                hold.handle_event_with_shortcut_modifiers(&press(Key::F8), modifiers.any()),
+                hold.handle_event_with_context(&press(Key::F8), modifiers.any(), true),
                 HoldDownEvent::None,
                 "{modifier:?}+F8 must not start a hold"
             );
@@ -2663,6 +2754,16 @@ mod tests {
 
             modifiers.update(&release(modifier));
             assert!(!modifiers.any(), "{modifier:?}");
+            assert_eq!(
+                hold.handle_event_with_shortcut_modifiers(&press(Key::F8), modifiers.any()),
+                HoldDownEvent::None,
+                "releasing {modifier:?} must not reinterpret F8 autorepeat"
+            );
+            assert!(!double_tap.handle_event_with_context(&press(Key::F8), modifiers.any(), true,));
+            assert_eq!(double_tap.state, DetectorState::Idle);
+            assert_eq!(hold.handle_event(&release(Key::F8)), HoldDownEvent::None);
+            assert!(!double_tap.handle_event(&release(Key::F8)));
+            assert_eq!(hold.handle_event(&press(Key::F8)), HoldDownEvent::Start);
         }
 
         let mut modifiers = ShortcutModifierState::default();
@@ -2704,7 +2805,14 @@ mod tests {
             HoldDownEvent::Stop
         );
         assert_eq!(hold.state, HoldState::Idle);
+        assert_eq!(
+            hold.handle_event_with_context(&press(Key::F8), false, true),
+            HoldDownEvent::None,
+            "Command release followed by F8 autorepeat stays suppressed"
+        );
         assert_eq!(hold.handle_event(&release(Key::F8)), HoldDownEvent::None);
+        hold.last_stopped_at = None;
+        assert_eq!(hold.handle_event(&press(Key::F8)), HoldDownEvent::Start);
     }
 
     #[test]
@@ -2714,6 +2822,11 @@ mod tests {
         assert_eq!(first_down.state, DetectorState::WaitingFirstUp);
         assert!(!first_down.handle_event_with_shortcut_modifiers(&press(Key::MetaLeft), true,));
         assert_eq!(first_down.state, DetectorState::Idle);
+        assert!(!first_down.handle_event_with_context(&press(Key::F8), false, true));
+        assert_eq!(first_down.state, DetectorState::Idle);
+        assert!(!first_down.handle_event(&release(Key::F8)));
+        assert!(!first_down.handle_event(&press(Key::F8)));
+        assert_eq!(first_down.state, DetectorState::WaitingFirstUp);
 
         let mut between_taps = make_detector(Key::F8);
         between_taps.handle_event(&press(Key::F8));
@@ -2729,6 +2842,11 @@ mod tests {
         assert_eq!(second_down.state, DetectorState::WaitingSecondUp);
         assert!(!second_down.handle_event_with_shortcut_modifiers(&press(Key::Alt), true,));
         assert_eq!(second_down.state, DetectorState::Idle);
+        assert!(!second_down.handle_event_with_context(&press(Key::F8), false, true));
+        assert_eq!(second_down.state, DetectorState::Idle);
+        assert!(!second_down.handle_event(&release(Key::F8)));
+        assert!(!second_down.handle_event(&press(Key::F8)));
+        assert_eq!(second_down.state, DetectorState::WaitingFirstUp);
 
         let mut stopping = make_detector(Key::F8);
         stopping.recording = true;
@@ -2736,6 +2854,35 @@ mod tests {
         assert!(!stopping.handle_event_with_shortcut_modifiers(&press(Key::ShiftLeft), true,));
         assert!(!stopping.handle_event(&release(Key::F8)));
         assert_eq!(stopping.state, DetectorState::Idle);
+    }
+
+    #[test]
+    fn changing_function_key_target_accepts_the_new_physical_key() {
+        let mut hold = make_hold_detector(Key::F8);
+        assert_eq!(
+            hold.handle_event_with_shortcut_modifiers(&press(Key::F8), true),
+            HoldDownEvent::None
+        );
+        assert!(!hold.set_target(Some(Key::F9)));
+        assert_eq!(hold.handle_event(&press(Key::F9)), HoldDownEvent::Start);
+
+        let mut double_tap = make_detector(Key::F8);
+        assert!(!double_tap.handle_event_with_shortcut_modifiers(&press(Key::F8), true));
+        double_tap.set_target(Some(Key::F9));
+        assert!(!double_tap.handle_event(&press(Key::F9)));
+        assert_eq!(double_tap.state, DetectorState::WaitingFirstUp);
+    }
+
+    #[test]
+    fn physical_function_key_state_marks_repeats_until_the_matching_release() {
+        let mut pressed = PressedFunctionKeys::default();
+        assert!(!pressed.update(&press(Key::F8)));
+        assert!(pressed.update(&press(Key::F8)));
+        assert!(!pressed.update(&release(Key::F9)));
+        assert!(pressed.update(&press(Key::F8)));
+        assert!(!pressed.update(&release(Key::F8)));
+        assert!(!pressed.update(&press(Key::F8)));
+        assert!(!pressed.update(&press(Key::Function)));
     }
 
     #[test]
@@ -2756,6 +2903,21 @@ mod tests {
     }
 
     #[test]
+    fn timed_out_function_key_repeat_stays_suppressed_until_release() {
+        let mut d = make_detector(Key::F12);
+        assert!(!d.handle_event(&press(Key::F12)));
+        d.state_entered_at = Instant::now() - Duration::from_millis(250);
+
+        assert!(!d.handle_event_with_context(&press(Key::F12), false, true));
+        assert_eq!(d.state, DetectorState::Idle);
+        assert!(!d.handle_event_with_context(&press(Key::F12), false, true));
+        assert_eq!(d.state, DetectorState::Idle);
+        assert!(!d.handle_event(&release(Key::F12)));
+        assert!(!d.handle_event(&press(Key::F12)));
+        assert_eq!(d.state, DetectorState::WaitingFirstUp);
+    }
+
+    #[test]
     fn resetting_function_key_detectors_cancels_partial_sequences() {
         let mut hold = make_hold_detector(Key::F20);
         let mut double_tap = make_detector(Key::F20);
@@ -2765,6 +2927,11 @@ mod tests {
         hold.reset();
         double_tap.reset();
 
+        assert_eq!(
+            hold.handle_event_with_context(&press(Key::F20), false, true),
+            HoldDownEvent::None
+        );
+        assert!(!double_tap.handle_event_with_context(&press(Key::F20), false, true));
         assert_eq!(hold.handle_event(&release(Key::F20)), HoldDownEvent::None);
         assert!(!double_tap.handle_event(&release(Key::F20)));
         assert_eq!(hold.state, HoldState::Idle);
