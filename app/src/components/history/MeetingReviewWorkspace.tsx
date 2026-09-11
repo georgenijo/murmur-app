@@ -275,6 +275,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
         session={detail.session}
         disabled={captureBusy}
         onSave={meetings.saveMetadata}
+        onApplyCalendar={meetings.applyCalendarEvent}
         onNotice={onNotice}
       />
 

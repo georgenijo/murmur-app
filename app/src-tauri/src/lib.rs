@@ -10,6 +10,7 @@ mod audio_lifecycle;
 // stable external API.
 pub mod benchmark;
 mod browser_site;
+mod calendar;
 pub mod capture_agent_probe;
 mod capture_health;
 pub mod capture_helper_probe;
@@ -417,6 +418,12 @@ pub fn run() {
             commands::meeting::list_meetings,
             commands::meeting::get_meeting,
             commands::meeting::save_meeting_metadata,
+            commands::meeting_calendar::get_calendar_permission_status,
+            commands::meeting_calendar::request_calendar_permission,
+            commands::meeting_calendar::reset_calendar_permission,
+            commands::meeting_calendar::open_calendar_preferences,
+            commands::meeting_calendar::get_meeting_calendar_events,
+            commands::meeting_calendar::apply_meeting_calendar_event,
             commands::meeting::save_meeting_review,
             commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
+import { applyMeetingCalendarEvent } from '../calendar';
 import { smartAutoMicrophoneRequest, type Settings } from '../settings';
 import {
   IDLE_MEETING_STATUS,
@@ -301,6 +302,22 @@ export function useMeetings(settings: Settings) {
     }
   }, [refresh]);
 
+  const applyCalendarEvent = useCallback(async (sessionId: string, selectionToken: string) => {
+    const ticket = selectionTicketRef.current;
+    setError(null);
+    try {
+      const next = await applyMeetingCalendarEvent(sessionId, selectionToken);
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === sessionId) setDetail(next);
+      await refresh();
+      return true;
+    } catch {
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === sessionId) {
+        setError('Calendar details could not be applied. Look up the event again, or name this meeting manually.');
+      }
+      return false;
+    }
+  }, [refresh]);
+
   const restoreReview = useCallback(async (
     sessionId: string,
     generatedRevision: number,
@@ -390,6 +407,7 @@ export function useMeetings(settings: Settings) {
     exportReview,
     saveReview,
     saveMetadata,
+    applyCalendarEvent,
     restoreReview,
     renameRemoteSpeaker,
     remove,

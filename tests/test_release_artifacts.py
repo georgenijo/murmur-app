@@ -645,6 +645,24 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertIn('"capture-agent-info.plist"', build_script)
         self.assertIn('"__info_plist"', build_script)
 
+    def test_calendar_access_is_declared_only_for_the_host(self) -> None:
+        tauri_root = Path(__file__).parents[1] / "app/src-tauri"
+        calendar_key = "com.apple.security.personal-information.calendars"
+        with (tauri_root / "entitlements.plist").open("rb") as handle:
+            self.assertIs(plistlib.load(handle).get(calendar_key), True)
+        with (tauri_root / "macos/Info.plist").open("rb") as handle:
+            self.assertTrue(plistlib.load(handle).get("NSCalendarsFullAccessUsageDescription"))
+        configuration = json.loads((tauri_root / "tauri.conf.json").read_text())
+        self.assertEqual(configuration["bundle"]["macOS"]["entitlements"], "./entitlements.plist")
+        for filename in (
+            "capture-agent.entitlements.plist",
+            "capture-helper.entitlements.plist",
+            "capture-worker.entitlements.plist",
+            "local-llm-sidecar.entitlements.plist",
+        ):
+            with self.subTest(filename=filename), (tauri_root / filename).open("rb") as handle:
+                self.assertNotIn(calendar_key, plistlib.load(handle))
+
     def test_capture_helper_identity_and_entitlements_are_exact(self) -> None:
         self.assertEqual(
             HELPERS["murmur-capture-helper"],

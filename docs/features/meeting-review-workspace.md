@@ -120,8 +120,9 @@ the main window. Rust trims and validates every value, limits titles and attende
 names to 200 characters, and accepts at most 100 attendees. A non-null title gets
 the `manual` source on the server. Clearing the title also clears its source. The
 same immediate transaction updates the session row and title FTS row without
-changing transcript evidence or review revisions. A later calendar integration
-must use its own confirmed apply command to assign `calendar`.
+changing transcript evidence or review revisions. [Calendar naming](meeting-calendar.md)
+uses a separate confirmed apply command to assign `calendar`. A later manual
+rename assigns `manual` again.
 
 ## Export contract
 

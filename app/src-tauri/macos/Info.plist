@@ -6,6 +6,8 @@
     <string>Local Dictation needs microphone access to record your voice for transcription.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Murmur needs system audio access to create local Me/Them meeting transcripts.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Murmur reads overlapping calendar events only when you choose Name from calendar, so you can confirm a meeting title and attendees. Murmur never changes your calendar.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Local Dictation needs accessibility access for global hotkeys.</string>
 </dict>

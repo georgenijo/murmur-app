@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 205 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 211 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -79,6 +79,26 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `delete_meeting` | `id` | `Result<(), String>` | Deletes one inactive session, its segments/FTS rows, and owned chunk audio. |
 | `delete_all_meetings` | — | `Result<(), String>` | Deletes all sessions and owned chunk audio; refused while a meeting is active. |
 | `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Deletes completed/interrupted sessions beyond the bounded age/count policy. |
+
+## Calendar naming (`commands/meeting_calendar.rs`)
+
+Every Calendar command requires the main window. Permission reads never query
+events. Event lookup and application run only after explicit user actions.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_calendar_permission_status` | — | `Result<CalendarPermissionStatus, String>` | Reads native authorization without prompting or creating an event store. Returns `notDetermined`, `granted`, `denied`, `restricted`, or `unsupported`; write-only access maps to `denied`. |
+| `request_calendar_permission` | — | `Result<CalendarPermissionStatus, String>` | Explicitly requests full event access on the main thread. Keeps the native store alive through completion. Never fetches events or writes to Calendar. |
+| `reset_calendar_permission` | — | `Result<(), String>` | Resets only the running app's Calendar TCC entry with a ten-second process deadline. Does not request permission afterward. |
+| `open_calendar_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Calendars. |
+| `get_meeting_calendar_events` | `sessionId: String` | `Result<Vec<CalendarEventCandidate>, String>` | Derives a finished session's overlap window from SQLite and queries EventKit off the main thread. Returns at most 100 candidates containing `selectionToken`, `title`, `attendees`, `startMs`, and `endMs`. Retains no cache and applies nothing. |
+| `apply_meeting_calendar_event` | `sessionId: String`, `selectionToken: String` | `Result<MeetingWorkspace, String>` | Requeries the stored session window and matches the displayed event's token. Changed or missing details fail without a write. A successful explicit selection saves only title, attendees, and `calendar` source through the shared metadata transaction. |
+
+Lookup accepts session windows up to seven days and gives the worker fifteen
+seconds to respond. A timed-out worker retains the single Calendar operation
+slot until it returns. Titles and participant names allow 200 characters each,
+with at most 100 participants per event. Oversized results fail instead of
+silently selecting or truncating details. See [Calendar naming](../features/meeting-calendar.md).
 
 ## Meeting summaries (`commands/meeting_summary.rs`)
 
