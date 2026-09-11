@@ -1,5 +1,5 @@
 use crate::browser_site::{self, BrowserSiteIdentity};
-use crate::dictation_context::builtin_mode;
+use crate::dictation_context::{builtin_mode, SessionOverrides};
 use crate::frontmost;
 use crate::state::{DictationState, MurmurMode};
 use crate::{MutexExt, State};
@@ -38,10 +38,74 @@ impl ModeSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModeChoice {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NextRecordingMode {
+    revision: u64,
+    pending: Option<(u64, MurmurMode)>,
+}
+
+impl NextRecordingMode {
+    pub(crate) fn set(&mut self, mode: Option<MurmurMode>) {
+        self.revision += 1;
+        self.pending = mode.map(|mode| (self.revision, mode));
+    }
+
+    pub(crate) fn snapshot(&self) -> SessionOverrides {
+        let Some((token, mode)) = &self.pending else {
+            return SessionOverrides::default();
+        };
+        SessionOverrides {
+            mode: Some(mode.clone()),
+            next_mode_token: Some(*token),
+            ..SessionOverrides::default()
+        }
+    }
+
+    /// Called under the dictation ownership lock before a real recording goes
+    /// Idle. Cancellation/phantom paths never call this, and an older snapshot
+    /// cannot clear a replacement selected while inference was running.
+    pub(crate) fn consume(&mut self, token: Option<u64>) -> bool {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, _)| Some(*pending) == token)
+        {
+            self.pending = None;
+            self.revision += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModeRuntimeStatus {
     pub id: String,
     pub name: String,
     pub source: ModeSource,
+    pub pending: Option<ModeChoice>,
+    pub pending_revision: u64,
+    pub available: Vec<ModeChoice>,
+}
+
+pub(crate) fn next_recording_overrides(dictation: &DictationState) -> SessionOverrides {
+    let mut snapshot = dictation.next_recording_mode.snapshot();
+    let Some(mode) = snapshot
+        .mode
+        .as_ref()
+        .and_then(|mode| mode_by_id(dictation, &mode.id))
+    else {
+        return SessionOverrides::default();
+    };
+    snapshot.mode = Some(mode);
+    snapshot
 }
 
 fn mode_by_id(dictation: &DictationState, id: &str) -> Option<MurmurMode> {
@@ -102,6 +166,22 @@ fn resolved_status(
         id: mode.id,
         name: mode.name,
         source,
+        pending_revision: dictation.next_recording_mode.revision,
+        pending: dictation
+            .next_recording_mode
+            .pending
+            .as_ref()
+            .map(|(_, mode)| ModeChoice {
+                id: mode.id.clone(),
+                name: mode.name.clone(),
+            }),
+        available: available_modes(dictation)
+            .into_iter()
+            .map(|mode| ModeChoice {
+                id: mode.id,
+                name: mode.name,
+            })
+            .collect(),
     }
 }
 
@@ -110,6 +190,11 @@ fn observe_context(
     bundle_id: Option<&str>,
     site: Option<&BrowserSiteIdentity>,
 ) -> ModeRuntimeStatus {
+    if let Some((_, pending)) = &dictation.next_recording_mode.pending {
+        if mode_by_id(dictation, &pending.id).is_none() {
+            dictation.next_recording_mode.set(None);
+        }
+    }
     if dictation.temporary_mode_bundle_id.as_deref() != bundle_id {
         dictation.temporary_mode_id = None;
         dictation.temporary_mode_bundle_id = None;
@@ -120,6 +205,39 @@ fn observe_context(
 fn publish(app: &tauri::AppHandle, status: &ModeRuntimeStatus) {
     super::tray::set_mode_menu_status(status);
     let _ = app.emit("mode-runtime-changed", status);
+}
+
+pub(crate) fn select_next_recording_mode(
+    app: &tauri::AppHandle,
+    state: &State,
+    mode_id: Option<&str>,
+) -> Result<ModeRuntimeStatus, String> {
+    {
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let mode = mode_id
+            .map(|id| {
+                mode_by_id(&dictation, id)
+                    .ok_or_else(|| "This Mode is no longer available.".to_string())
+            })
+            .transpose()?;
+        dictation.next_recording_mode.set(mode);
+    }
+    let status = get_mode_runtime_status(app.state::<State>());
+    publish(app, &status);
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn set_next_recording_mode(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    mode_id: Option<String>,
+) -> Result<ModeRuntimeStatus, String> {
+    if window.label() != "main" {
+        return Err("Next-recording Mode selection is available only in the main window.".into());
+    }
+    select_next_recording_mode(&app, &state, mode_id.as_deref())
 }
 
 fn current_identity() -> frontmost::FrontmostAppIdentity {
@@ -243,6 +361,83 @@ pub(crate) fn spawn_mode_watcher(app: tauri::AppHandle) {
 mod tests {
     use super::*;
     use crate::state::{AppProfile, BrowserSiteRule};
+
+    #[test]
+    fn one_recording_mode_consumes_once_without_touching_the_binding() {
+        let mut state = DictationState {
+            manual_mode_id: "builtin.email".into(),
+            ..Default::default()
+        };
+        state
+            .next_recording_mode
+            .set(builtin_mode("builtin.verbatim"));
+        let snapshot = state.next_recording_mode.snapshot();
+        assert_eq!(
+            resolved_status(&state, None, None).pending.unwrap().name,
+            "Verbatim"
+        );
+        assert!(state.next_recording_mode.consume(snapshot.next_mode_token));
+        assert!(!state.next_recording_mode.consume(snapshot.next_mode_token));
+        let status = resolved_status(&state, None, None);
+        assert!(status.pending.is_none());
+        assert_eq!(status.id, "builtin.email");
+    }
+
+    #[test]
+    fn snapshot_is_immutable_and_cannot_consume_a_replacement_even_with_same_mode() {
+        let mut pending = NextRecordingMode::default();
+        pending.set(builtin_mode("builtin.verbatim"));
+        let first = pending.snapshot();
+        pending.set(builtin_mode("builtin.verbatim"));
+        assert!(!pending.consume(first.next_mode_token));
+        assert_eq!(
+            first.mode.unwrap().writing_style,
+            Some(crate::state::WritingStyle::Verbatim)
+        );
+        assert!(pending.snapshot().mode.is_some());
+        pending.set(None);
+        assert!(pending.snapshot().mode.is_none());
+    }
+
+    #[test]
+    fn pending_mode_is_memory_only_and_survives_focus_changes() {
+        let mut state = DictationState::default();
+        state
+            .next_recording_mode
+            .set(builtin_mode("builtin.technical"));
+        assert!(
+            observe_context(&mut state, Some("com.example.Editor"), None)
+                .pending
+                .is_some()
+        );
+        assert!(observe_context(&mut state, Some("com.example.Mail"), None)
+            .pending
+            .is_some());
+        let serialized = serde_json::to_value(&state).unwrap();
+        assert!(serialized.get("next_recording_mode").is_none());
+        let restored: DictationState = serde_json::from_value(serialized).unwrap();
+        assert!(restored.next_recording_mode.snapshot().mode.is_none());
+    }
+
+    #[test]
+    fn pending_custom_mode_uses_edits_at_acceptance_and_clears_when_unavailable() {
+        let mut mode = builtin_mode("builtin.email").unwrap();
+        mode.id = "mode.custom".into();
+        let mut state = DictationState {
+            modes: vec![mode.clone()],
+            ..Default::default()
+        };
+        state.next_recording_mode.set(Some(mode));
+        state.modes[0].writing_style = Some(crate::state::WritingStyle::Verbatim);
+        let accepted = next_recording_overrides(&state);
+        assert_eq!(
+            accepted.mode.unwrap().writing_style,
+            Some(crate::state::WritingStyle::Verbatim)
+        );
+        state.modes[0].enabled = false;
+        assert!(next_recording_overrides(&state).mode.is_none());
+        assert!(observe_context(&mut state, None, None).pending.is_none());
+    }
 
     #[test]
     fn app_binding_temporarily_overrides_and_leaving_restores_manual_mode() {

@@ -12,6 +12,7 @@ from scripts.validate_reference_docs import (
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_FILES = (
+    "CLAUDE.md",
     "app/src-tauri/src/lib.rs",
     "docs/reference/commands.md",
     "docs/ARCHITECTURE.md",
@@ -49,7 +50,7 @@ class ReferenceDocsTests(unittest.TestCase):
                 validate_reference_docs(root)
 
     def test_stale_human_facing_count_fails(self) -> None:
-        for relative in ("docs/ARCHITECTURE.md", "docs/FEATURES.md"):
+        for relative in ("CLAUDE.md", "docs/ARCHITECTURE.md", "docs/FEATURES.md"):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 copy_reference_fixture(root)

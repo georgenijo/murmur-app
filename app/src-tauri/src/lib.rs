@@ -304,6 +304,7 @@ pub fn run() {
             commands::recording::get_status,
             commands::recording::configure_dictation,
             commands::mode_runtime::get_mode_runtime_status,
+            commands::mode_runtime::set_next_recording_mode,
             commands::mode_runtime::cycle_mode,
             commands::mode_runtime::clear_temporary_mode_override,
             browser_site::probe_browser_site,
@@ -714,6 +715,7 @@ pub fn run() {
             let paste_last_item =
                 MenuItemBuilder::with_id("paste_last", "Paste Last / Retry Delivery").build(app)?;
             let mode_item = MenuItemBuilder::with_id("cycle_mode", "Mode: Everyday").build(app)?;
+            let next_mode_menu = tauri::menu::SubmenuBuilder::new(app, "Next recording").build()?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
                 .checked(false)
                 .build(app)?;
@@ -728,6 +730,7 @@ pub fn run() {
             let tray_menu = tray_menu
                 .item(&paste_last_item)
                 .item(&mode_item)
+                .item(&next_mode_menu)
                 .separator()
                 .item(&disabled_item)
                 .separator()
@@ -735,6 +738,7 @@ pub fn run() {
                 .build()?;
             commands::keyboard::register_tray_disabled_item(disabled_item.clone());
             commands::tray::register_mode_item(mode_item);
+            commands::tray::register_next_mode_menu(next_mode_menu);
             #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_tray_update_item(update_item);
             let handle = app.handle().clone();
@@ -774,6 +778,11 @@ pub fn run() {
                         }
                         "quit" => {
                             app_handle.exit(0);
+                        }
+                        id if id.starts_with("next_mode:") => {
+                            let mode_id = id.strip_prefix("next_mode:").filter(|id| !id.is_empty());
+                            let state = app_handle.state::<State>();
+                            let _ = commands::mode_runtime::select_next_recording_mode(app_handle, &state, mode_id);
                         }
                         _ => {}
                     }
