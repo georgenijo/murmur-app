@@ -3,6 +3,8 @@ import { useState, useRef, useEffect, useId } from 'react';
 export interface SelectOption<T extends string = string> {
   value: T;
   label: string;
+  badge?: string;
+  badgeTone?: 'accent' | 'warning';
 }
 
 export interface SelectGroup<T extends string = string> {
@@ -51,6 +53,21 @@ export function Select<T extends string = string>({
 
   const selectedOption = flatOptions.find((o) => o.value === value);
   const displayLabel = selectedOption?.label ?? placeholder ?? '';
+
+  function badge(option: SelectOption<T>) {
+    if (!option.badge) return null;
+    return (
+      <span
+        className={`ml-2 shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+          option.badgeTone === 'warning'
+            ? 'bg-warning/15 text-warning'
+            : 'bg-[var(--ui-tint-accent-strong)] text-on-surface'
+        }`}
+      >
+        {option.badge}
+      </span>
+    );
+  }
 
   // Click-outside handler
   useEffect(() => {
@@ -181,7 +198,10 @@ export function Select<T extends string = string>({
           isHighlighted ? 'bg-surface-container' : ''
         } ${isSelected ? 'font-medium' : ''}`}
       >
-        <span className="truncate">{option.label}</span>
+        <span className="flex min-w-0 flex-1 items-center">
+          <span className="truncate">{option.label}</span>
+          {badge(option)}
+        </span>
         {isSelected && (
           <svg
             className="ml-2 h-4 w-4 shrink-0 text-primary"
@@ -231,7 +251,10 @@ export function Select<T extends string = string>({
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         }`}
       >
-        <span className="truncate">{displayLabel}</span>
+        <span className="flex min-w-0 flex-1 items-center">
+          <span className="truncate">{displayLabel}</span>
+          {selectedOption && badge(selectedOption)}
+        </span>
         <svg
           className={`ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${
             isOpen ? 'rotate-180' : ''

@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
 import { CUSTOM_QUERY_PRESET } from '../../lib/queryProviders';
 import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import type { TransformModelStatus } from '../../lib/transformSettings';
+import type { ModelHardwareGuidance } from '../../lib/modelHardwareGuidance';
 import {
   SETTINGS_CATEGORIES,
   SettingsPanel,
@@ -27,6 +28,17 @@ const eventMocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
   listen: vi.fn(),
 }));
+const guidanceMocks = vi.hoisted(() => ({
+  current: {
+    schemaVersion: 1,
+    chip: 'Apple M5 Pro',
+    chipTier: 'currentAppleSilicon',
+    physicalMemoryGib: 48,
+    modelMemoryBudgetMib: 8192,
+    recommendedModel: 'parakeet-tdt-0.6b-v3-coreml',
+    warnedModels: [],
+  } as ModelHardwareGuidance | null,
+}));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: coreMocks.invoke,
 }));
@@ -37,6 +49,10 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../../lib/soundCues', () => ({ playSoundCue: soundCueMock }));
 vi.mock('../../lib/modelRuntime', () => ({ useModelRuntimeCatalog: () => ({ models: [], byName: new Map(), error: null }) }));
+vi.mock('../../lib/modelHardwareGuidance', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../lib/modelHardwareGuidance')>(),
+  useModelHardwareGuidance: () => guidanceMocks.current,
+}));
 vi.mock('../../lib/hooks/useVocabScan', () => ({
   useVocabScan: () => ({ status: 'idle', walker: null, stats: null, scan: vi.fn(), cancel: vi.fn() }),
 }));
@@ -82,6 +98,15 @@ beforeEach(() => {
   coreMocks.notchPillInstalled = false;
   coreMocks.notchPillDetectionError = false;
   coreMocks.invoke.mockReset();
+  guidanceMocks.current = {
+    schemaVersion: 1,
+    chip: 'Apple M5 Pro',
+    chipTier: 'currentAppleSilicon',
+    physicalMemoryGib: 48,
+    modelMemoryBudgetMib: 8192,
+    recommendedModel: 'parakeet-tdt-0.6b-v3-coreml',
+    warnedModels: [],
+  };
   coreMocks.invoke.mockImplementation(async (command: string) => {
     if (command === 'get_audio_input_inventory') return {
       schemaVersion: 2,
@@ -530,6 +555,38 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('h1')?.textContent).toBe('General');
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
     expect(target.classList.contains('settings-target-flash')).toBe(false);
+  });
+
+  it('shows hardware guidance and keeps a warned speech model selectable', async () => {
+    guidanceMocks.current = {
+      schemaVersion: 1,
+      chip: 'Apple M1',
+      chipTier: 'legacyAppleSilicon',
+      physicalMemoryGib: 8,
+      modelMemoryBudgetMib: 1536,
+      recommendedModel: 'parakeet-tdt-0.6b-v3-coreml',
+      warnedModels: ['parakeet-tdt-0.6b-v2-fp16', 'medium.en', 'large-v3-turbo'],
+    };
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, model: 'large-v3-turbo' }));
+    const aiModels = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'AI & Models',
+    ) as HTMLButtonElement;
+    await act(async () => aiModels.click());
+    const speechModel = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Speech-to-Text') && button.textContent?.includes('Configure'),
+    ) as HTMLButtonElement;
+    await act(async () => speechModel.click());
+
+    expect(container.textContent).toContain('recommended for Apple M1 with 8 GB RAM');
+    expect(container.textContent).toContain('You can still select and use it');
+    const picker = container.querySelector('[role="combobox"]') as HTMLButtonElement;
+    await act(async () => picker.click());
+    const medium = Array.from(container.querySelectorAll('[role="option"]')).find(
+      (option) => option.textContent?.includes('Whisper Medium'),
+    ) as HTMLElement;
+    expect(medium.textContent).toContain('Higher memory');
+    await act(async () => medium.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ model: 'medium.en' });
   });
 
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
