@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.46.2] - 2026-09-11
+
+### Changed
+
+- Dark and imported themes now preserve readable text, controls, and recording
+  states, and selecting a library theme switches to its matching light or dark
+  mode.
+
+### Fixed
+
+- Smart Auto can record when background microphone checks are disabled, keeps
+  its microphone controls compact until needed, and preserves the manual
+  microphone layout outside Smart Auto.
+
 ## [0.46.1] - 2026-09-10
 
 ### Fixed
