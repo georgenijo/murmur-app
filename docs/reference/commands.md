@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 217 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 218 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -350,11 +350,17 @@ frontend.
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
 | `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>` | `()` | Routes a frontend message through Rust tracing with `source="frontend"`, optionally correlated to a transform pass. |
 
+## Mode file exchange (`commands/mode_exchange.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `read_modes_file` | `path: String` | `Result<String, String>` | Main-window-only reader for absolute regular non-symlink `.json` files, bounded to 256 KiB of UTF-8. Errors omit paths and contents. Schema validation and preview happen in the frontend before Settings changes. |
+
 ## Export (`commands/export.rs`)
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (transcript history today) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
+| `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (including custom Modes) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`/`.srt`/`.vtt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
 
 ## Durable frontend data store (`commands/settings_store.rs`)
 
