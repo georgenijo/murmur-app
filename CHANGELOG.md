@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- Ask a spoken follow-up from a Voice Query answer, carrying the previous
+  question and answer into a fresh bounded pass without saving a conversation (#733).
+
 - Onboarding and Settings now recommend a speech model from a read-once local
   Apple chip and physical-memory check, and flag higher-memory choices without
   hiding them or preventing selection (#732).
