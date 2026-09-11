@@ -71,7 +71,7 @@ Use these before creating a feature-local control or surface.
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
 | Sidebar | 160px normally, 56px icon rail below 760px; it contains only Home, Notetaker, Queries, and Insights; selection is a surface state, never elevation |
-| Customize | The gear and `⌘,` open one ordered four-row hub; detail pages expose Back to Customize and restore the originating row's focus |
+| Customize | The gear and `⌘,` open one ordered five-row hub; detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | 5px list gap; cards use an 8px vertical inset |

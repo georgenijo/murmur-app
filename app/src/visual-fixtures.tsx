@@ -15,6 +15,7 @@ import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
+import { DiscoveryHintToast } from './components/DiscoveryHintToast';
 import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
 import type { DictationStatus } from './lib/types';
@@ -267,6 +268,9 @@ mockIPC((command, payload) => {
     return { entries: [], total: 0, nextOffset: null, storeRevision: 0 };
   }
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
+  if (command === 'transform_model_status') {
+    return { state: 'ready', path: '/fixture/transform.gguf', sizeBytes: 986_000_000, sha256: 'fixture', runtimeDisabled: false };
+  }
   if (command.includes('version')) return '0.27.0';
   return null;
 }, { shouldMockEvents: true });
@@ -319,6 +323,11 @@ const entries: HistoryEntry[] = [
   },
 ];
 
+const shortcutFixtureEnabled = requestedState === 'settings-shortcuts';
+const fixtureTransformHoldKey: Settings['transformHoldKey'] = shortcutFixtureEnabled ? 'alt_r' : null;
+const fixtureQueryHotkey: Settings['queryHotkey'] = shortcutFixtureEnabled ? 'ctrl_l' : null;
+const fixturePasteLastShortcut: Settings['pasteLastShortcut'] = shortcutFixtureEnabled ? 'command_option_v' : null;
+
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
   smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
@@ -330,6 +339,9 @@ const fixtureSettings = {
     ? ['fixture-built-in']
     : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
+  transformHoldKey: requestedState === 'settings-transform-practice' ? 'alt_r' : fixtureTransformHoldKey,
+  queryHotkey: fixtureQueryHotkey,
+  pasteLastShortcut: fixturePasteLastShortcut,
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
     browserBundleId: 'com.apple.Safari',
@@ -401,11 +413,19 @@ localStorage.setItem('dictation-stats', JSON.stringify({
       provider_error: 1,
     },
   },
+  activity: {
+    ...fixtureStats.activity,
+    meetings: { count: 2, totalMinutes: 44, summariesGenerated: 1 },
+    transforms: { runs: 4, approved: 3, undone: 0, byPresetName: {} },
+    corrections: { proposed: 3, taught: 2, byScope: { global: 1, app: 1, project: 0 } },
+  },
 }));
 
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
+    || requestedState === 'settings-shortcuts'
+    || requestedState === 'settings-transform-practice'
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
   const meetings = useMeetings(fixtureSettings);
@@ -483,6 +503,11 @@ function VisualFixture() {
           onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
+          pageRequest={requestedState === 'settings-shortcuts'
+            ? { page: 'shortcuts', token: 1 }
+            : requestedState === 'settings-transform-practice'
+              ? { page: 'ai-transform', target: 'transform-practice', token: 1 }
+            : undefined}
         />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -533,6 +558,11 @@ function VisualFixture() {
                 onRecord={() => {}}
                 onStop={() => {}}
                 onOpenInsights={() => setDestination('insights')}
+                discovery={{
+                  completed: ['transform', 'voice_query', 'meeting', 'correction'],
+                  onAction: () => {},
+                  onDismiss: () => {},
+                }}
               />
             )}
           </div>
@@ -550,6 +580,9 @@ function VisualFixture() {
           { id: 'logs', title: 'Open Performance workspace', section: 'Navigate', hint: '⌘L', run: () => {} },
         ]}
       />
+      {requestedState === 'discovery-hint' && (
+        <DiscoveryHintToast hint="browser_modes" onAction={() => {}} onDismiss={() => {}} />
+      )}
       <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
       <UpdateModal
         status={requestedState === 'update-dialog-short'

@@ -7,6 +7,8 @@ import { loadStats } from '../../lib/stats';
 import { HistoryPanel } from '../history/HistoryPanel';
 import { HomeRecordingBar } from './HomeRecordingBar';
 import { HomeInsightsRail } from './HomeInsightsRail';
+import { DiscoveryChecklist } from './DiscoveryChecklist';
+import type { ChecklistItemId } from '../../lib/discovery';
 
 interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
@@ -14,6 +16,8 @@ interface HomeDashboardProps {
   onUpdateHistoryEntry: (id: string, text: string) => void;
   onToggleHistoryPinned: (entry: HistoryEntry) => void;
   focusSearchToken?: number;
+  teachLatestToken?: number;
+  onTeachLatestHandled?: () => void;
   onTranscribeFile: () => void;
   status: DictationStatus;
   initialized: boolean;
@@ -25,6 +29,11 @@ interface HomeDashboardProps {
   onRecord: () => void;
   onStop: () => void;
   onOpenInsights: () => void;
+  discovery?: {
+    completed: readonly ChecklistItemId[];
+    onAction: (id: ChecklistItemId) => void;
+    onDismiss: () => void;
+  };
 }
 
 export function HomeDashboard({
@@ -33,6 +42,8 @@ export function HomeDashboard({
   onUpdateHistoryEntry,
   onToggleHistoryPinned,
   focusSearchToken,
+  teachLatestToken,
+  onTeachLatestHandled,
   onTranscribeFile,
   status,
   initialized,
@@ -44,6 +55,7 @@ export function HomeDashboard({
   onRecord,
   onStop,
   onOpenInsights,
+  discovery,
 }: HomeDashboardProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
 
@@ -63,6 +75,14 @@ export function HomeDashboard({
             onStop={onStop}
           />
 
+          {discovery && (
+            <DiscoveryChecklist
+              completed={discovery.completed}
+              onAction={discovery.onAction}
+              onDismiss={discovery.onDismiss}
+            />
+          )}
+
           <section className="home-history" aria-labelledby="recent-dictations-title">
             <HistoryPanel
               title="Your dictations"
@@ -73,6 +93,8 @@ export function HomeDashboard({
               onTogglePinned={onToggleHistoryPinned}
               pinnedCount={historyEntries.filter((entry) => entry.pinned === true).length}
               focusSearchToken={focusSearchToken}
+              teachLatestToken={teachLatestToken}
+              onTeachLatestHandled={onTeachLatestHandled}
               onTranscribeFile={onTranscribeFile}
             />
           </section>
