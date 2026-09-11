@@ -1490,9 +1490,13 @@ pub(crate) fn strip_private_meeting_metadata(data: &mut serde_json::Value) -> bo
             }
             changed
         }
-        serde_json::Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
-            strip_private_meeting_metadata(item) || changed
-        }),
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= strip_private_meeting_metadata(item);
+            }
+            changed
+        }
         _ => false,
     }
 }
