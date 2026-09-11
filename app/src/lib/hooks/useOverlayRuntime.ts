@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
 import { loadSettings } from '../settings';
@@ -13,6 +13,11 @@ import {
   interruptedPresentationFromPayload,
   type DictationPresentationActionCode,
 } from '../dictationPresentation';
+import {
+  canRetryDelivery,
+  retryLastDelivery,
+  type DeliveryRetryResult,
+} from '../deliveryRecovery';
 
 const CANCELLED_FLASH_MS = 800;
 /** How long the secure-field refusal flash shows (issue #312 PR-C2). */
@@ -27,6 +32,16 @@ export type MicrophoneFailureCue =
   | 'openMicrophoneSettings'
   | 'chooseMicrophone'
   | 'waitForPartialTranscription';
+
+export type OverlayDeliveryCue =
+  | DeliveryRetryResult
+  | { kind: 'confirmed_clipboard'; message: string }
+  | { kind: 'retrying'; message: string };
+
+function canRetryOverlayDelivery(cue: OverlayDeliveryCue): boolean {
+  return cue.kind === 'confirmed_clipboard'
+    || (cue.kind !== 'retrying' && canRetryDelivery(cue));
+}
 
 type DictationDeliveryOutcome =
   | 'clipboardOnly'
@@ -105,8 +120,16 @@ export interface OverlayRuntime {
   showTransformBusy: boolean;
   /** Bounded, content-free microphone-initialization failure cue. */
   showMicrophoneFailure: MicrophoneFailureCue | null;
-  /** Text reached the clipboard, but automatic paste did not complete. */
+  /** A bounded inline delivery cue is visible. */
   showClipboardOnly: boolean;
+  /** Current inline delivery result, kept content-free. */
+  deliveryCue: OverlayDeliveryCue | null;
+  /** Re-runs secure delivery without activating or focusing Murmur. */
+  retryDelivery: () => void;
+  /** Pauses auto-hide as soon as a pointer interaction starts. */
+  pauseDeliveryTimer: () => void;
+  /** Restarts auto-hide if the pointer interaction is cancelled. */
+  resumeDeliveryTimer: () => void;
   disabled: boolean;
   setDisabled: (value: boolean) => void;
   /** Ref mirror of `disabled`, read synchronously by useRecordingControls. */
@@ -136,7 +159,7 @@ export function useOverlayRuntime({
   const [showTransformBusy, setShowTransformBusy] = useState(false);
   const [showMicrophoneFailure, setShowMicrophoneFailure] =
     useState<MicrophoneFailureCue | null>(null);
-  const [showClipboardOnly, setShowClipboardOnly] = useState(false);
+  const [deliveryCue, setDeliveryCue] = useState<OverlayDeliveryCue | null>(null);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clipboardOnlyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,6 +168,78 @@ export function useOverlayRuntime({
   const lastDeliveryRecordingIdRef = useRef(0);
   const latestRecordingGenerationRef = useRef(0);
   const clipboardListenerFailedRef = useRef(false);
+  const deliveryRetryInFlightRef = useRef(false);
+  const deliveryRetryAttemptRef = useRef(0);
+  const deliveryCueRef = useRef<OverlayDeliveryCue | null>(null);
+  const mountedRef = useRef(true);
+
+  const showDeliveryCueForTimeout = useCallback((cue: OverlayDeliveryCue) => {
+    if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+    deliveryCueRef.current = cue;
+    setDeliveryCue(cue);
+    clipboardOnlyTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        deliveryCueRef.current = null;
+        setDeliveryCue(null);
+      }
+      clipboardOnlyTimerRef.current = null;
+    }, CLIPBOARD_ONLY_FLASH_MS);
+  }, []);
+
+  const retryDelivery = useCallback(() => {
+    if (deliveryRetryInFlightRef.current) return;
+    deliveryRetryInFlightRef.current = true;
+    if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+    clipboardOnlyTimerRef.current = null;
+    const retrying = { kind: 'retrying', message: 'Trying delivery again.' } as const;
+    deliveryCueRef.current = retrying;
+    setDeliveryCue(retrying);
+    const attempt = ++deliveryRetryAttemptRef.current;
+    void retryLastDelivery()
+      .then((result) => {
+        if (!mountedRef.current || deliveryRetryAttemptRef.current !== attempt) return;
+        showDeliveryCueForTimeout(result);
+      })
+      .catch(() => {
+        if (!mountedRef.current || deliveryRetryAttemptRef.current !== attempt) return;
+        showDeliveryCueForTimeout({
+          kind: 'failed',
+          message: 'Paste Last did not finish. Try again.',
+        });
+      })
+      .finally(() => {
+        if (deliveryRetryAttemptRef.current === attempt) {
+          deliveryRetryInFlightRef.current = false;
+        }
+      });
+  }, [showDeliveryCueForTimeout]);
+
+  const pauseDeliveryTimer = useCallback(() => {
+    if (!deliveryCueRef.current || !canRetryOverlayDelivery(deliveryCueRef.current)) return;
+    if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+    clipboardOnlyTimerRef.current = null;
+  }, []);
+
+  const resumeDeliveryTimer = useCallback(() => {
+    const cue = deliveryCueRef.current;
+    if (
+      statusRef.current !== 'idle'
+      || clipboardOnlyTimerRef.current
+      || !cue
+      || !canRetryOverlayDelivery(cue)
+    ) return;
+    showDeliveryCueForTimeout(cue);
+  }, [showDeliveryCueForTimeout, statusRef]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      deliveryRetryAttemptRef.current += 1;
+      deliveryRetryInFlightRef.current = false;
+      deliveryCueRef.current = null;
+    };
+  }, []);
 
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
 
@@ -242,16 +337,25 @@ export function useOverlayRuntime({
       );
       lastDeliveryRecordingIdRef.current = event.payload.recordingId;
 
-      if (clipboardOnlyTimerRef.current) {
-        clearTimeout(clipboardOnlyTimerRef.current);
-        clipboardOnlyTimerRef.current = null;
-      }
+      deliveryRetryAttemptRef.current += 1;
+      deliveryRetryInFlightRef.current = false;
+      deliveryCueRef.current = null;
+      if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
+      clipboardOnlyTimerRef.current = null;
       const clipboardOnly = event.payload.outcome === 'clipboardOnly';
-      setShowClipboardOnly(clipboardOnly);
+      const nextCue: OverlayDeliveryCue | null = clipboardOnly ? {
+        kind: 'confirmed_clipboard',
+        message: 'Text copied to clipboard. Paste manually or try again.',
+      } : null;
+      deliveryCueRef.current = nextCue;
+      setDeliveryCue(nextCue);
       if (!clipboardOnly) return;
 
       clipboardOnlyTimerRef.current = setTimeout(() => {
-        if (!cancelled) setShowClipboardOnly(false);
+        if (!cancelled) {
+          deliveryCueRef.current = null;
+          setDeliveryCue(null);
+        }
         clipboardOnlyTimerRef.current = null;
       }, CLIPBOARD_ONLY_FLASH_MS);
     }).then((fn) => {
@@ -261,7 +365,8 @@ export function useOverlayRuntime({
       clipboardListenerFailedRef.current = true;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
       clipboardOnlyTimerRef.current = null;
-      setShowClipboardOnly(false);
+      deliveryCueRef.current = null;
+      setDeliveryCue(null);
       flog.warn('overlay', 'dictation-delivery-outcome listener unavailable', {
         error: String(cause),
       });
@@ -297,9 +402,12 @@ export function useOverlayRuntime({
       // could not be installed.
       if (clipboardListenerFailedRef.current) return;
       if (recordingId <= lastDeliveryRecordingIdRef.current) return;
+      deliveryRetryAttemptRef.current += 1;
+      deliveryRetryInFlightRef.current = false;
+      deliveryCueRef.current = null;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
       clipboardOnlyTimerRef.current = null;
-      setShowClipboardOnly(false);
+      setDeliveryCue(null);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     }).catch((cause: unknown) => {
@@ -307,7 +415,10 @@ export function useOverlayRuntime({
       clipboardListenerFailedRef.current = true;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
       clipboardOnlyTimerRef.current = null;
-      setShowClipboardOnly(false);
+      deliveryRetryAttemptRef.current += 1;
+      deliveryRetryInFlightRef.current = false;
+      deliveryCueRef.current = null;
+      setDeliveryCue(null);
       flog.warn('overlay', 'dictation-generation-started listener unavailable', {
         error: String(cause),
       });
@@ -324,7 +435,10 @@ export function useOverlayRuntime({
     if (status === 'idle') return;
     if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
     clipboardOnlyTimerRef.current = null;
-    setShowClipboardOnly(false);
+    deliveryRetryAttemptRef.current += 1;
+    deliveryRetryInFlightRef.current = false;
+    deliveryCueRef.current = null;
+    setDeliveryCue(null);
     if (microphoneFailureTimerRef.current) clearTimeout(microphoneFailureTimerRef.current);
     microphoneFailureTimerRef.current = null;
     microphoneFailureRecordingIdRef.current = 0;
@@ -458,7 +572,11 @@ export function useOverlayRuntime({
     showSecureField,
     showTransformBusy,
     showMicrophoneFailure,
-    showClipboardOnly,
+    showClipboardOnly: deliveryCue !== null,
+    deliveryCue,
+    retryDelivery,
+    pauseDeliveryTimer,
+    resumeDeliveryTimer,
     showHotkeyMiss,
     disabled,
     setDisabled,

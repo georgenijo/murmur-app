@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { Copy, GraduationCap, Star } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
@@ -41,6 +41,9 @@ interface HistoryPanelProps {
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
+  /** Bumped by a discovery action to open the newest entry for teaching. */
+  teachLatestToken?: number;
+  onTeachLatestHandled?: () => void;
 }
 
 const HISTORY_RENDER_BATCH = 30;
@@ -129,6 +132,8 @@ function HistoryPanelComponent({
   pinnedCount = 0,
   focusSearchToken,
   onTranscribeFile = () => {},
+  teachLatestToken,
+  onTeachLatestHandled = () => {},
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
@@ -144,6 +149,7 @@ function HistoryPanelComponent({
   const searchRef = useRef<HTMLInputElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handledTeachTokenRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const refresh = () => setFilterNow(Date.now());
@@ -177,11 +183,24 @@ function HistoryPanelComponent({
     searchRef.current?.select();
   }, [focusSearchToken]);
 
-  const showNotice = (message: string) => {
+  const showNotice = useCallback((message: string) => {
     setNotice(message);
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = setTimeout(() => setNotice(null), 4000);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (teachLatestToken === undefined) {
+      handledTeachTokenRef.current = undefined;
+      return;
+    }
+    if (handledTeachTokenRef.current === teachLatestToken) return;
+    handledTeachTokenRef.current = teachLatestToken;
+    const newest = entries[entries.length - 1];
+    if (newest) setTeachingEntry(newest);
+    else showNotice('Make a dictation first, then use Correct & Teach on the newest entry.');
+    onTeachLatestHandled();
+  }, [entries, onTeachLatestHandled, showNotice, teachLatestToken]);
 
   const visible = useMemo(
     // The clock state triggers rollover/resume refreshes; each new entry must

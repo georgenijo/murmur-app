@@ -29,6 +29,7 @@ import { MainErrorBanner } from './components/MainErrorBanner';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
+import { useLocalStats } from './lib/hooks/useLocalStats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
@@ -46,15 +47,30 @@ import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useSoundCues } from './lib/hooks/useSoundCues';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { useDevUpdaterMock } from './lib/hooks/useDevUpdaterMock';
-import { useDeliveryRecoveryListeners } from './lib/hooks/useDeliveryRecoveryListeners';
+import {
+  useDeliveryRecoveryListeners,
+  useDeliveryRecoveryNotice,
+} from './lib/hooks/useDeliveryRecoveryListeners';
 import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { setTrayUpdateAvailable } from './lib/updater';
-import { resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
+import { loadStats, resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
+import {
+  completeChecklistItem,
+  checklistDestination,
+  discoveryEvidence,
+  hintDestination,
+  initializeDiscoveryAfterSetup,
+  initializeGrandfatheredDiscovery,
+  type ChecklistItemId,
+  type DiscoveryHintId,
+} from './lib/discovery';
+import { useDiscovery } from './lib/hooks/useDiscovery';
+import { DiscoveryHintToast } from './components/DiscoveryHintToast';
 import {
   checkAccessibilityPermission,
   checkMicrophonePermissionStatus,
@@ -66,7 +82,11 @@ import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
-import { retryLastDelivery, setPasteLastShortcut } from './lib/deliveryRecovery';
+import {
+  canRetryDelivery,
+  retryLastDelivery,
+  setPasteLastShortcut,
+} from './lib/deliveryRecovery';
 import { microphoneDeviceNameArg, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
@@ -104,7 +124,11 @@ function App() {
   useEffect(() => {
     setQuerySetupStatus(null);
   }, [settings.queryProvider, settings.queryExecutable, settings.queryArguments]);
-  const [deliveryRecoveryMessage, setDeliveryRecoveryMessage] = useState('');
+  const {
+    notice: deliveryRecoveryNotice,
+    presentNotice: presentDeliveryRecoveryNotice,
+    clearNotice: clearDeliveryRecoveryNotice,
+  } = useDeliveryRecoveryNotice();
   const pasteLastShortcutGenerationRef = useRef(0);
   const lastWorkingPasteLastShortcutRef = useRef<typeof settings.pasteLastShortcut>(null);
   const meetings = useMeetings(settings);
@@ -145,6 +169,7 @@ function App() {
   // when models are already on disk (#240).
   useEffect(() => {
     if (isOnboardingComplete()) {
+      initializeGrandfatheredDiscovery(discoveryEvidence(settings, loadStats()));
       setOnboardingState('done');
       return;
     }
@@ -158,6 +183,7 @@ function App() {
       if (micStatus === 'granted' && axGranted && anyModelExists) {
         flog.info('main', 'Onboarding grandfathered: permissions and a model already present');
         markOnboardingComplete();
+        initializeGrandfatheredDiscovery(discoveryEvidence(settings, loadStats()));
         setOnboardingState('done');
       } else {
         flog.info('main', 'Onboarding needed', { micStatus, axGranted, anyModelExists });
@@ -173,10 +199,17 @@ function App() {
     doubleTapKey: typeof settings.doubleTapKey,
   ) => {
     markOnboardingComplete();
+    initializeDiscoveryAfterSetup(discoveryEvidence(settings, loadStats()));
     updateSettings({ recordingMode, doubleTapKey });
     markModelReady(model);
     setOnboardingState('done');
-  }, [markModelReady, updateSettings]);
+  }, [
+    markModelReady,
+    settings.appProfiles,
+    settings.queryExecutable,
+    settings.queryHotkey,
+    updateSettings,
+  ]);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
@@ -187,7 +220,10 @@ function App() {
       settings.correctionShortcutEnabled === true && !settings.disabled,
       smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
       smartAuto,
-    ).catch(() => setDeliveryRecoveryMessage('Could not enable the correction shortcut.'));
+    ).catch(() => presentDeliveryRecoveryNotice({
+      message: 'Could not enable the correction shortcut.',
+      retryable: false,
+    }));
   }, [
     settings.correctionShortcutEnabled,
     settings.disabled,
@@ -197,6 +233,7 @@ function App() {
     settings.smartAutoApprovedDeviceIds,
     settings.smartAutoPreferredDeviceIds,
     settings.smartAutoAllowContinuity,
+    presentDeliveryRecoveryNotice,
   ]);
 
   useEffect(() => {
@@ -210,13 +247,13 @@ function App() {
       })
       .catch((error: unknown) => {
         if (pasteLastShortcutGenerationRef.current !== generation) return;
-        setDeliveryRecoveryMessage(String(error));
+        presentDeliveryRecoveryNotice({ message: String(error), retryable: false });
         const fallback = lastWorkingPasteLastShortcutRef.current;
         if (requested !== fallback) updateSettings({ pasteLastShortcut: fallback });
       });
-  }, [settings.pasteLastShortcut, updateSettings]);
+  }, [presentDeliveryRecoveryNotice, settings.pasteLastShortcut, updateSettings]);
 
-  useDeliveryRecoveryListeners(setDeliveryRecoveryMessage);
+  useDeliveryRecoveryListeners(presentDeliveryRecoveryNotice);
 
   // Track accessibility permission — when it transitions false→true the
   // double-tap listener restarts automatically (rdev silently does nothing
@@ -235,26 +272,30 @@ function App() {
   const { historyEntries, addEntry, updateEntry, togglePinned, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, recordingDuration, error: recordingError,
+    canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
+    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
   } = useRecordingState({
     addEntry,
     microphone: settings.microphone,
     smartAuto: smartAutoMicrophoneRequest(settings),
   });
-  const [statsResetVersion, setStatsResetVersion] = useState(0);
-  const [queryStatsVersion, setQueryStatsVersion] = useState(0);
-  const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
+  const combinedStatsVersion = useLocalStats();
+  const discovery = useDiscovery({
+    enabled: onboardingState === 'done' && modelReady === true,
+    settings,
+    statsVersion: combinedStatsVersion,
+    historyEntries,
+  });
   const handleResetStats = useCallback(() => {
     resetStats();
-    setStatsResetVersion(v => v + 1);
   }, []);
   const handleQueryCompleted = useCallback((completion: QueryCompletion) => {
     updateQueryStats(completion);
-    setQueryStatsVersion(v => v + 1);
   }, []);
   const handleQuerySetupStatusChange = useCallback((next: QuerySetupStatus) => {
     setQuerySetupStatus(next);
+    if (next.state === 'ready') completeChecklistItem('voice_query');
     if (next.state === 'failed') updateSettings({ queryHotkey: null });
   }, [updateSettings]);
   // Keep the global hotkeys disarmed until onboarding completes — accessibility
@@ -419,6 +460,8 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
+  const [teachLatestToken, setTeachLatestToken] = useState<number | undefined>(undefined);
+  const handleTeachLatestHandled = useCallback(() => setTeachLatestToken(undefined), []);
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
     setMainDestination('home');
@@ -453,8 +496,11 @@ function App() {
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const modeRuntime = useModeRuntime();
   const setNextRecordingMode = useCallback((modeId: string | null) => {
-    void modeRuntime.setNext(modeId).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
-  }, [modeRuntime.setNext]);
+    void modeRuntime.setNext(modeId).catch((error: unknown) => presentDeliveryRecoveryNotice({
+      message: String(error),
+      retryable: false,
+    }));
+  }, [modeRuntime.setNext, presentDeliveryRecoveryNotice]);
   const openSettingsTarget = useCallback((target: Omit<SettingsPageRequest, 'token'>) => {
     beginCurrentUiTransition(settingsLatencyView(target.page), 'programmatic');
     setSettingsPageRequest((previous) => ({
@@ -466,6 +512,53 @@ function App() {
   const openSettingsPage = useCallback((page: string) => {
     openSettingsTarget({ page });
   }, [openSettingsTarget]);
+
+  const openLatestTeaching = useCallback(() => {
+    closeSettings('programmatic');
+    setMainDestination('home');
+    setTeachLatestToken((token) => (token ?? 0) + 1);
+  }, [closeSettings]);
+
+  const runDiscoveryChecklistAction = useCallback((id: ChecklistItemId) => {
+    const destination = checklistDestination(id);
+    switch (destination.kind) {
+      case 'palette': setIsPaletteOpen(true); break;
+      case 'settings': openSettingsTarget(destination); break;
+      case 'main': navigateMain(destination.page, 'programmatic'); break;
+      case 'teach': openLatestTeaching(); break;
+      default: {
+        const exhaustive: never = destination;
+        return exhaustive;
+      }
+    }
+  }, [navigateMain, openLatestTeaching, openSettingsTarget]);
+
+  const runDiscoveryHintAction = useCallback((id: DiscoveryHintId) => {
+    discovery.dismissHint(id);
+    const destination = hintDestination(id);
+    switch (destination.kind) {
+      case 'palette': setIsPaletteOpen(true); break;
+      case 'settings': openSettingsTarget(destination); break;
+      case 'main': navigateMain(destination.page, 'programmatic'); break;
+      case 'teach': openLatestTeaching(); break;
+      default: {
+        const exhaustive: never = destination;
+        return exhaustive;
+      }
+    }
+  }, [discovery.dismissHint, navigateMain, openLatestTeaching, openSettingsTarget]);
+
+  const handleSettingsPageOpened = useCallback((page: string) => {
+    if (page === 'shortcuts') completeChecklistItem('shortcuts');
+  }, []);
+
+  const handlePaletteOpened = useCallback(() => {
+    completeChecklistItem('command_palette');
+  }, []);
+
+  const handleModeBound = useCallback(() => {
+    completeChecklistItem('mode_binding');
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -540,7 +633,10 @@ function App() {
           void startDictationCorrection(
             smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
             smartAuto,
-          ).catch((error: unknown) => setDeliveryRecoveryMessage(String(error)));
+          ).catch((error: unknown) => presentDeliveryRecoveryNotice({
+            message: String(error),
+            retryable: false,
+          }));
         },
       },
       {
@@ -651,16 +747,32 @@ function App() {
     settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
     updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickMediaFiles,
-    meetings,
+    meetings, presentDeliveryRecoveryNotice,
     modeRuntime.status, setNextRecordingMode,
   ]);
 
   const [dismissedExternalErrorKey, setDismissedExternalErrorKey] = useState('');
   const errorPresentation = [
-    initError ? { key: `initialization:${initError}`, message: initError, source: 'initialization' as const } : null,
-    recordingError ? { key: `recording:${recordingError}`, message: recordingError, source: 'recording' as const } : null,
-    deliveryRecoveryMessage ? { key: `delivery:${deliveryRecoveryMessage}`, message: deliveryRecoveryMessage, source: 'delivery' as const } : null,
+    initError ? {
+      key: `initialization:${initError}`,
+      message: initError,
+      source: 'initialization' as const,
+      retryable: false,
+    } : null,
+    recordingError ? {
+      key: `recording:${recordingError}`,
+      message: recordingError,
+      source: 'recording' as const,
+      retryable: recordingCanRetryDelivery,
+    } : null,
+    deliveryRecoveryNotice ? {
+      key: `delivery:${deliveryRecoveryNotice.message}`,
+      message: deliveryRecoveryNotice.message,
+      source: 'delivery' as const,
+      retryable: deliveryRecoveryNotice.retryable,
+    } : null,
   ].find((candidate) => candidate !== null && candidate.key !== dismissedExternalErrorKey) ?? null;
+  const [deliveryRetryBusy, setDeliveryRetryBusy] = useState(false);
 
   const dismissMainError = useCallback(() => {
     if (!errorPresentation) return;
@@ -669,11 +781,33 @@ function App() {
       return;
     }
     if (errorPresentation.source === 'delivery') {
-      setDeliveryRecoveryMessage('');
+      clearDeliveryRecoveryNotice();
       return;
     }
     setDismissedExternalErrorKey(errorPresentation.key);
-  }, [dismissRecordingError, errorPresentation]);
+  }, [clearDeliveryRecoveryNotice, dismissRecordingError, errorPresentation]);
+
+  const retryDeliveryFromBanner = useCallback(() => {
+    if (deliveryRetryBusy) return;
+    if (errorPresentation?.source === 'recording') dismissRecordingError();
+    setDeliveryRetryBusy(true);
+    presentDeliveryRecoveryNotice({ message: 'Trying delivery again…', retryable: true });
+    void retryLastDelivery()
+      .then((result) => presentDeliveryRecoveryNotice({
+        message: result.message,
+        retryable: canRetryDelivery(result),
+      }, 5000))
+      .catch(() => presentDeliveryRecoveryNotice({
+        message: 'Paste Last did not finish. Try again.',
+        retryable: true,
+      }, 5000))
+      .finally(() => setDeliveryRetryBusy(false));
+  }, [
+    deliveryRetryBusy,
+    dismissRecordingError,
+    errorPresentation,
+    presentDeliveryRecoveryNotice,
+  ]);
 
   if (onboardingState === 'unknown' || modelReady === null) {
     return <div className="h-screen bg-background" />;
@@ -757,6 +891,8 @@ function App() {
                   onUpdateHistoryEntry={updateEntry}
                   onToggleHistoryPinned={togglePinned}
                   focusSearchToken={historySearchToken}
+                  teachLatestToken={teachLatestToken}
+                  onTeachLatestHandled={handleTeachLatestHandled}
                   onTranscribeFile={pickMediaFiles}
                   status={status}
                   initialized={initialized}
@@ -768,6 +904,11 @@ function App() {
                   onRecord={handleStart}
                   onStop={handleStop}
                   onOpenInsights={() => navigateMain('insights', 'pointer')}
+                  discovery={discovery.state && !discovery.state.checklistDismissed ? {
+                    completed: discovery.state.completed,
+                    onAction: runDiscoveryChecklistAction,
+                    onDismiss: discovery.dismissChecklist,
+                  } : undefined}
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
@@ -793,6 +934,7 @@ function App() {
                 </section>
               ) : (
                 <InsightsView
+                  modes={settings.modes}
                   statsVersion={combinedStatsVersion}
                   onBackToHome={backToHome}
                 />
@@ -804,6 +946,9 @@ function App() {
             <MainErrorBanner
               message={errorPresentation.message}
               onDismiss={dismissMainError}
+              actionLabel={errorPresentation.retryable ? 'Try again' : undefined}
+              actionBusy={deliveryRetryBusy}
+              onAction={errorPresentation.retryable ? retryDeliveryFromBanner : undefined}
             />
           )}
 
@@ -838,6 +983,12 @@ function App() {
               status={status}
               onResetStats={handleResetStats}
               onRerunSetup={rerunSetup}
+              onDiscoveryChecklistReopen={() => {
+                discovery.reopenChecklist();
+                navigateMain('home', 'programmatic');
+              }}
+              onPageOpened={handleSettingsPageOpened}
+              onModeBound={handleModeBound}
               accessibilityGranted={accessibilityGranted}
               onCheckForUpdate={checkForUpdate}
               onDownloadUpdate={startDownload}
@@ -858,7 +1009,16 @@ function App() {
         isOpen={isPaletteOpen}
         onClose={() => setIsPaletteOpen(false)}
         commands={commands}
+        onOpened={handlePaletteOpened}
       />
+
+      {discovery.state?.pendingHints[0] && (
+        <DiscoveryHintToast
+          hint={discovery.state.pendingHints[0]}
+          onAction={runDiscoveryHintAction}
+          onDismiss={discovery.dismissHint}
+        />
+      )}
 
       <AboutModal
         isOpen={showAbout}

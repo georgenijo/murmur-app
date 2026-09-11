@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { KnowledgeEntry, KnowledgeScope } from './knowledge';
+import { reportLocalStats } from './localStatsEvents';
 
 export interface TeachingContext {
   appBundleId?: string | null;
@@ -25,25 +26,36 @@ export type CorrectionProposalOutcome =
     }
   | { kind: 'unsafe'; reason: string };
 
-export const proposeLearnedCorrection = (
+export const proposeLearnedCorrection = async (
   originalText: string,
   correctedText: string,
   teachingContext?: TeachingContext,
-) => invoke<CorrectionProposalOutcome>('propose_learned_correction', {
-  request: { originalText, correctedText, teachingContext },
-});
+) => {
+  const outcome = await invoke<CorrectionProposalOutcome>('propose_learned_correction', {
+    request: { originalText, correctedText, teachingContext },
+  });
+  if (outcome?.kind === 'proposal') reportLocalStats({ kind: 'correction_proposed', proposalId: outcome.proposalId });
+  return outcome;
+};
 
-export const proposeSpecificLearnedCorrection = (
+export const proposeSpecificLearnedCorrection = async (
   originalText: string,
   source: string,
   replacement: string,
   teachingContext?: TeachingContext,
-) => invoke<CorrectionProposalOutcome>('propose_specific_learned_correction', {
-  request: { originalText, source, replacement, teachingContext },
-});
+) => {
+  const outcome = await invoke<CorrectionProposalOutcome>('propose_specific_learned_correction', {
+    request: { originalText, source, replacement, teachingContext },
+  });
+  if (outcome?.kind === 'proposal') reportLocalStats({ kind: 'correction_proposed', proposalId: outcome.proposalId });
+  return outcome;
+};
 
-export const confirmLearnedCorrection = (proposalId: number, scope: KnowledgeScope) =>
-  invoke<KnowledgeEntry>('confirm_learned_correction', { proposalId, scope });
+export const confirmLearnedCorrection = async (proposalId: number, scope: KnowledgeScope) => {
+  const entry = await invoke<KnowledgeEntry>('confirm_learned_correction', { proposalId, scope });
+  reportLocalStats({ kind: 'correction_taught', proposalId, scope: scope.kind });
+  return entry;
+};
 
 export const discardLearnedCorrectionProposal = (proposalId: number) =>
   invoke<void>('discard_learned_correction_proposal', { proposalId });

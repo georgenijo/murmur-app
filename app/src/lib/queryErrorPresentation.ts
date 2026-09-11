@@ -13,7 +13,7 @@ const QUERY_ERROR_MESSAGES: Record<string, string> = {
   audio_recovery_stalled: 'Audio capture recovery stalled. Reopen Murmur and try again.',
   no_speech: 'No speech was detected. Try asking again.',
   empty_query: 'The recording did not contain a question.',
-  query_too_large: 'The spoken query exceeded the safety limit.',
+  query_too_large: 'The query and its included context exceeded the safety limit.',
   transcription_failed: 'Local transcription failed. Check the selected model.',
   spawn_failed: 'The configured CLI could not be started. Check its path and permissions.',
   timed_out: 'The configured CLI timed out and was stopped.',
@@ -99,7 +99,7 @@ export function queryHistoryErrorMessage(errorCode: string | null): string | nul
     return `${message} Increase the timeout in Voice Query settings or ask a shorter question.`;
   }
   if (errorCode === 'query_too_large') {
-    return `${message} Ask a shorter question and try again.`;
+    return `${message} Ask a shorter question, or close this popover and start a new query without the previous exchange.`;
   }
   if (errorCode === 'output_too_large') {
     return `${message} Ask for a shorter answer and try again.`;

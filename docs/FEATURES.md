@@ -78,7 +78,9 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - **Clipboard-first, always.** Auto-paste is layered on top and never the only path.
 - Native `CGEvent` Cmd+V with an `osascript` fallback; configurable 10–500ms delay; one retry; timeout-bounded.
-- Auto-paste failure emits a hint — the text is already on the clipboard.
+- Auto-paste failure emits a hint with an inline **Try again** action in the
+  non-activating overlay and main window. Every retry reports whether text was
+  pasted, copied only, unavailable, busy, or failed without exposing content.
 - **File output** — numbered `.txt` transcripts and/or 16kHz mono `.wav` audio to a chosen folder (default `Documents/Murmur`). While file output is on, auto-paste is suppressed without overwriting the user's stored preference.
 - **Mirror captions to NotchPill** — opt-in, off by default, and shown in Settings only when macOS reports NotchPill installed. Mirrors the final transcript to `~/Library/Application Support/local-dictation/latest-caption.json` (`{text, timestamp}`) so the notch overlay can show what was just said. Owner-only (`0600`), most-recent-caption-only, written after the clipboard on a blocking task so it can never delay delivery, and deleted when the setting is switched off or NotchPill is removed. On-device; nothing is sent anywhere.
 
@@ -177,6 +179,7 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 
 - Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
 - Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
+- Ask follow-up from a Ready popover to include its previous question and answer in a fresh bounded query, with no persistent conversation.
 - Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
 - Question, answer, and context stay out of telemetry, logs, stats, diagnostics, and file output. An off-by-default setting may retain only questions and answers in a separate bounded Rust-owned local history store. Successful final answers are copied once by default; users can disable automatic copy and use the review popover's manual Copy action instead. Voice Query never auto-pastes.
 
@@ -193,7 +196,27 @@ primary destinations in the Home sidebar. Home uses
 one 64px recording row for the real recording state, configured shortcut, and
 file transcription, then gives Recent Dictations the remaining workspace.
 The responsive Home insights rail and full Insights destination use only
-durable local statistics. Home keeps inspectable vocabulary, app-style, and
+durable local statistics. Insights includes total dictation minutes, estimated
+typing time saved at 40 words per minute minus dictation time, the most-used
+Mode, this month's completed meetings and capture minutes, this month's
+transform proposals and approval rate, and corrections taught.
+
+Local counters also retain meeting summary completions; transform runs,
+approvals, and successful undos by exact preset name; corrections proposed
+and taught; taught corrections by global/app/project scope; recordings by
+Mode ID; and successful Paste Last uses from every entry point. Each successful
+selected-text proposal counts as one run, including retries. Approvals and undos
+belong to the proposal's month. Dictation correction reviews do not count as
+selected-text transforms. Meeting minutes use native capture elapsed time
+before processing, excluding the UI timer and transcript processing time.
+
+Main owns stats writes. Other webviews send completion receipts containing
+only counter metadata. Preset names and Mode IDs stay in local statistics;
+text, instructions, preset bodies, app identifiers, and project paths never
+enter stats. Reset clears the new counters along with the existing totals.
+Older stats load with zeroed new counters.
+
+Home keeps inspectable vocabulary, app-style, and
 regular-use milestones—not a tuning percentage, acoustic-training claim, or
 fabricated unlock. The full Insights page reserves its width for aligned Voice
 Query totals and interactive activity, words-per-day, and WPM charts. File
@@ -247,6 +270,14 @@ tokens, dashboard/sidebar primitives, and transcript-card invariants keep the
 redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
+
+The seven-step first-launch assistant is followed by a dismissible Home
+checklist for Command Palette, app-bound Modes, Transform, Voice Query,
+meetings, Correct and Teach, and shortcuts. Real local counters and explicit
+configuration complete operational rows. Four content-free, once-only hints
+react to existing hotkey, history, browser teaching-context, and meeting events.
+Settings → General reopens the checklist; either setup-assistant entry point
+resets checklist and hint state.
 First-launch wizard: Welcome → Microphone → Accessibility → optional System
 Audio → Model download → Hotkey → Done. The mic step fires the native macOS
 prompt in-app; permission steps update when the user returns from System Settings;
@@ -306,7 +337,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 202 registered commands |
+| Rust backend | `app/src-tauri/src/` — 204 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

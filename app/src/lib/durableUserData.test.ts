@@ -153,3 +153,49 @@ describe('durable write-through operations', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('clear_history_blob');
   });
 });
+
+describe('statistics persistence ordering and restart', () => {
+  it('serializes counter writes and reset, then hydrates the latest completed state', async () => {
+    let disk: string | null = null;
+    let finishFirst: () => void = () => {};
+    const firstWrite = new Promise<void>((resolve) => { finishFirst = resolve; });
+    let saves = 0;
+    mocks.invoke.mockImplementation(async (command: string, args?: { blob: string }) => {
+      if (command === 'save_stats_blob') {
+        saves++;
+        if (saves === 1) await firstWrite;
+        disk = args?.blob ?? null;
+      }
+      if (command === 'clear_stats_blob') disk = null;
+      if (command === 'load_stats_blob') return disk;
+      return null;
+    });
+    const first = '{"activity":{"pasteLastUses":1}}';
+    const second = '{"activity":{"pasteLastUses":2}}';
+    const afterReset = '{"activity":{"pasteLastUses":1,"corrections":{"taught":3}}}';
+    saveDurableBlob(STATS_STORE, first);
+    saveDurableBlob(STATS_STORE, second);
+    clearDurableBlob(STATS_STORE);
+    saveDurableBlob(STATS_STORE, afterReset);
+    expect(saves).toBe(1);
+    expect(localStorage.getItem(STATS_STORE.storageKey)).toBe(afterReset);
+    finishFirst();
+    await vi.waitFor(() => expect(disk).toBe(afterReset));
+    expect(mocks.invoke.mock.calls.filter(([command]) => command.endsWith('stats_blob')).map(([command]) => command)).toEqual([
+      'save_stats_blob', 'save_stats_blob', 'clear_stats_blob', 'save_stats_blob',
+    ]);
+    localStorage.clear();
+    await hydrateUserDataFromDisk();
+    expect(localStorage.getItem(STATS_STORE.storageKey)).toBe(afterReset);
+  });
+
+  it('continues after a failed stats write without logging private error text', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.invoke.mockRejectedValueOnce(new Error('PRIVATE_PRESET_LABEL'));
+    saveDurableBlob(STATS_STORE, '{"activity":{"pasteLastUses":1}}');
+    saveDurableBlob(STATS_STORE, '{"activity":{"pasteLastUses":2}}');
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(error.mock.calls)).not.toContain('PRIVATE_PRESET_LABEL');
+    error.mockRestore();
+  });
+});

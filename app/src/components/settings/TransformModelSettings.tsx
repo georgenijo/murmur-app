@@ -7,6 +7,7 @@ import { SettingToggle } from './SettingToggle';
 import { SettingsBranch } from './SettingsBranch';
 import { SettingsCallout } from './SettingsLayout';
 import { SettingsSection } from './SettingsSection';
+import { TransformPractice } from './TransformPractice';
 
 interface TransformModelSettingsProps {
   settings: Settings;
@@ -82,6 +83,10 @@ export function TransformModelSettings({
           )}
         </div>
       </SettingsBranch>
+      <TransformPractice
+        transformHoldKey={settings.transformHoldKey}
+        modelReady={vm.transformModel?.state === 'ready'}
+      />
       <div>
         <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
         <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">

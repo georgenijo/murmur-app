@@ -99,7 +99,8 @@ describe('ModesManager', () => {
 
   it('binds one Mode to an application and supports disabling it', async () => {
     const onChange = vi.fn();
-    await act(async () => root.render(<ModesManager modes={[mode]} profiles={[profile]} siteLookupEnabled={false} siteRules={[]} onChange={onChange} />));
+    const onModeBound = vi.fn();
+    await act(async () => root.render(<ModesManager modes={[mode]} profiles={[profile]} siteLookupEnabled={false} siteRules={[]} onChange={onChange} onModeBound={onModeBound} />));
     const focus = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Focus'))!;
     await act(async () => focus.click());
     const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
@@ -107,10 +108,30 @@ describe('ModesManager', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       appProfiles: [expect.objectContaining({ modeId: 'mode.focus' })],
     }));
+    expect(onModeBound).toHaveBeenCalledOnce();
     const disable = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Disable')!;
     await act(async () => disable.click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       modes: [expect.objectContaining({ enabled: false })],
     }));
+  });
+
+  it('gives an empty app list a direct creation path', async () => {
+    const onAddAppProfile = vi.fn();
+    await act(async () => root.render(
+      <ModesManager
+        modes={[]}
+        profiles={[]}
+        siteLookupEnabled={false}
+        siteRules={[]}
+        onChange={vi.fn()}
+        onAddAppProfile={onAddAppProfile}
+      />,
+    ));
+    const addApp = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Add an app') as HTMLButtonElement;
+    expect(container.textContent).toContain('then choose its Mode here');
+    await act(async () => addApp.click());
+    expect(onAddAppProfile).toHaveBeenCalledWith('builtin.everyday');
   });
 });

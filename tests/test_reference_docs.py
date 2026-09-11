@@ -45,6 +45,13 @@ class ReferenceDocsTests(unittest.TestCase):
         self.assertIn("remove_model", commands)
         self.assertIn("remove_model", documented)
 
+    def test_follow_up_commands_are_registered_and_documented(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        for command in ("request_query_follow_up", "allocate_query_follow_up"):
+            self.assertIn(command, commands)
+            self.assertIn(command, documented)
+
     def test_missing_command_row_fails_even_when_prose_count_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
