@@ -39,6 +39,11 @@ leaving an unsafe dangling binding.
 Each Mode shows a compact effective-policy summary. Its before/after tester is
 a pure in-window preview: sample text remains in React memory and the tester
 does not invoke clipboard, paste, text injection, or target-app commands.
+When no app profiles exist, the binding area links directly to the app-profile
+editor. After the first app is added, Settings returns to Modes so the user can
+choose its binding without searching through Delivery settings. The return
+restores the Mode that was selected before app creation, including a custom
+Mode. Navigating elsewhere cancels the pending return.
 
 ## Native activation
 

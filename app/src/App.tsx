@@ -50,10 +50,22 @@ import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { setTrayUpdateAvailable } from './lib/updater';
-import { resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
+import { loadStats, resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
+import {
+  completeChecklistItem,
+  checklistDestination,
+  discoveryEvidence,
+  hintDestination,
+  initializeDiscoveryAfterSetup,
+  initializeGrandfatheredDiscovery,
+  type ChecklistItemId,
+  type DiscoveryHintId,
+} from './lib/discovery';
+import { useDiscovery } from './lib/hooks/useDiscovery';
+import { DiscoveryHintToast } from './components/DiscoveryHintToast';
 import {
   checkAccessibilityPermission,
   checkMicrophonePermissionStatus,
@@ -144,6 +156,7 @@ function App() {
   // when models are already on disk (#240).
   useEffect(() => {
     if (isOnboardingComplete()) {
+      initializeGrandfatheredDiscovery(discoveryEvidence(settings, loadStats()));
       setOnboardingState('done');
       return;
     }
@@ -157,6 +170,7 @@ function App() {
       if (micStatus === 'granted' && axGranted && anyModelExists) {
         flog.info('main', 'Onboarding grandfathered: permissions and a model already present');
         markOnboardingComplete();
+        initializeGrandfatheredDiscovery(discoveryEvidence(settings, loadStats()));
         setOnboardingState('done');
       } else {
         flog.info('main', 'Onboarding needed', { micStatus, axGranted, anyModelExists });
@@ -172,10 +186,17 @@ function App() {
     doubleTapKey: typeof settings.doubleTapKey,
   ) => {
     markOnboardingComplete();
+    initializeDiscoveryAfterSetup(discoveryEvidence(settings, loadStats()));
     updateSettings({ recordingMode, doubleTapKey });
     markModelReady(model);
     setOnboardingState('done');
-  }, [markModelReady, updateSettings]);
+  }, [
+    markModelReady,
+    settings.appProfiles,
+    settings.queryExecutable,
+    settings.queryHotkey,
+    updateSettings,
+  ]);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
@@ -242,6 +263,12 @@ function App() {
     smartAuto: smartAutoMicrophoneRequest(settings),
   });
   const combinedStatsVersion = useLocalStats();
+  const discovery = useDiscovery({
+    enabled: onboardingState === 'done' && modelReady === true,
+    settings,
+    statsVersion: combinedStatsVersion,
+    historyEntries,
+  });
   const handleResetStats = useCallback(() => {
     resetStats();
   }, []);
@@ -250,6 +277,7 @@ function App() {
   }, []);
   const handleQuerySetupStatusChange = useCallback((next: QuerySetupStatus) => {
     setQuerySetupStatus(next);
+    if (next.state === 'ready') completeChecklistItem('voice_query');
     if (next.state === 'failed') updateSettings({ queryHotkey: null });
   }, [updateSettings]);
   // Keep the global hotkeys disarmed until onboarding completes — accessibility
@@ -414,6 +442,8 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
+  const [teachLatestToken, setTeachLatestToken] = useState<number | undefined>(undefined);
+  const handleTeachLatestHandled = useCallback(() => setTeachLatestToken(undefined), []);
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
     setMainDestination('home');
@@ -457,6 +487,53 @@ function App() {
   const openSettingsPage = useCallback((page: string) => {
     openSettingsTarget({ page });
   }, [openSettingsTarget]);
+
+  const openLatestTeaching = useCallback(() => {
+    closeSettings('programmatic');
+    setMainDestination('home');
+    setTeachLatestToken((token) => (token ?? 0) + 1);
+  }, [closeSettings]);
+
+  const runDiscoveryChecklistAction = useCallback((id: ChecklistItemId) => {
+    const destination = checklistDestination(id);
+    switch (destination.kind) {
+      case 'palette': setIsPaletteOpen(true); break;
+      case 'settings': openSettingsTarget(destination); break;
+      case 'main': navigateMain(destination.page, 'programmatic'); break;
+      case 'teach': openLatestTeaching(); break;
+      default: {
+        const exhaustive: never = destination;
+        return exhaustive;
+      }
+    }
+  }, [navigateMain, openLatestTeaching, openSettingsTarget]);
+
+  const runDiscoveryHintAction = useCallback((id: DiscoveryHintId) => {
+    discovery.dismissHint(id);
+    const destination = hintDestination(id);
+    switch (destination.kind) {
+      case 'palette': setIsPaletteOpen(true); break;
+      case 'settings': openSettingsTarget(destination); break;
+      case 'main': navigateMain(destination.page, 'programmatic'); break;
+      case 'teach': openLatestTeaching(); break;
+      default: {
+        const exhaustive: never = destination;
+        return exhaustive;
+      }
+    }
+  }, [discovery.dismissHint, navigateMain, openLatestTeaching, openSettingsTarget]);
+
+  const handleSettingsPageOpened = useCallback((page: string) => {
+    if (page === 'shortcuts') completeChecklistItem('shortcuts');
+  }, []);
+
+  const handlePaletteOpened = useCallback(() => {
+    completeChecklistItem('command_palette');
+  }, []);
+
+  const handleModeBound = useCallback(() => {
+    completeChecklistItem('mode_binding');
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -746,6 +823,8 @@ function App() {
                   onUpdateHistoryEntry={updateEntry}
                   onToggleHistoryPinned={togglePinned}
                   focusSearchToken={historySearchToken}
+                  teachLatestToken={teachLatestToken}
+                  onTeachLatestHandled={handleTeachLatestHandled}
                   onTranscribeFile={pickMediaFiles}
                   status={status}
                   initialized={initialized}
@@ -757,6 +836,11 @@ function App() {
                   onRecord={handleStart}
                   onStop={handleStop}
                   onOpenInsights={() => navigateMain('insights', 'pointer')}
+                  discovery={discovery.state && !discovery.state.checklistDismissed ? {
+                    completed: discovery.state.completed,
+                    onAction: runDiscoveryChecklistAction,
+                    onDismiss: discovery.dismissChecklist,
+                  } : undefined}
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
@@ -828,6 +912,12 @@ function App() {
               status={status}
               onResetStats={handleResetStats}
               onRerunSetup={rerunSetup}
+              onDiscoveryChecklistReopen={() => {
+                discovery.reopenChecklist();
+                navigateMain('home', 'programmatic');
+              }}
+              onPageOpened={handleSettingsPageOpened}
+              onModeBound={handleModeBound}
               accessibilityGranted={accessibilityGranted}
               onCheckForUpdate={checkForUpdate}
               onDownloadUpdate={startDownload}
@@ -848,7 +938,16 @@ function App() {
         isOpen={isPaletteOpen}
         onClose={() => setIsPaletteOpen(false)}
         commands={commands}
+        onOpened={handlePaletteOpened}
       />
+
+      {discovery.state?.pendingHints[0] && (
+        <DiscoveryHintToast
+          hint={discovery.state.pendingHints[0]}
+          onAction={runDiscoveryHintAction}
+          onDismiss={discovery.dismissHint}
+        />
+      )}
 
       <AboutModal
         isOpen={showAbout}

@@ -148,6 +148,9 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onRerunSetup: () => void;
+  onDiscoveryChecklistReopen?: () => void;
+  onPageOpened?: (page: string) => void;
+  onModeBound?: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
   onDownloadUpdate: () => void;
@@ -317,6 +320,9 @@ export const SettingsPanel = memo(function SettingsPanel({
   status,
   onResetStats,
   onRerunSetup,
+  onDiscoveryChecklistReopen,
+  onPageOpened,
+  onModeBound,
   accessibilityGranted,
   onCheckForUpdate,
   onDownloadUpdate,
@@ -330,7 +336,11 @@ export const SettingsPanel = memo(function SettingsPanel({
   activeRef,
 }: SettingsPanelProps) {
   const { byName: runtimeByName } = useModelRuntimeCatalog();
+  const settingsSurfaceActive = useSettingsSurfaceActive();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
+  const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
+  const pageRequestPending = pageRequest !== null && pageRequest.token !== appliedRequestToken;
+  const pageVisible = settingsSurfaceActive && activeRef?.current !== false;
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
@@ -345,6 +355,8 @@ export const SettingsPanel = memo(function SettingsPanel({
   ));
   const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
   const [shortcutReturnFocus, setShortcutReturnFocus] = useState<GlobalShortcutId | null>(null);
+  const [modeSelectionId, setModeSelectionId] = useState<string | null>(null);
+  const [returnToModesPending, setReturnToModesPending] = useState(false);
   const latencyView = editorTab
     ? `settings.text.editor.${editorTab}`
     : `settings.${activeCat}`;
@@ -352,6 +364,10 @@ export const SettingsPanel = memo(function SettingsPanel({
   useLayoutEffect(() => {
     onLatencyViewChange?.(latencyView);
   }, [latencyView, onLatencyViewChange]);
+  useEffect(() => {
+    if (!pageVisible || pageRequestPending) return;
+    onPageOpened?.(activeCat);
+  }, [activeCat, pageVisible, pageRequestPending, onPageOpened]);
   const searchResults = useMemo(() => {
     const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const query = normalize(searchQuery);
@@ -359,10 +375,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     return SETTINGS_SEARCH_ITEMS.filter((item) =>
       normalize(`${item.title} ${item.detail} ${item.keywords}`).includes(query));
   }, [searchQuery]);
-  const requestTokenRef = useRef(pageRequest?.token);
   useEffect(() => {
-    if (!pageRequest || pageRequest.token === requestTokenRef.current) return;
-    requestTokenRef.current = pageRequest.token;
+    if (!pageRequest || pageRequest.token === appliedRequestToken) return;
+    setAppliedRequestToken(pageRequest.token);
     setActiveCat(resolvePage(pageRequest.page));
     setEditorTab(pageRequest.editorTab ?? null);
     setSearchQuery('');
@@ -372,7 +387,11 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationReturnFocus(destination);
     setEditorBackToCustomization(Boolean(destination && pageRequest.editorTab));
     setShortcutReturnFocus(null);
-  }, [pageRequest]);
+    if (pageRequest.page !== 'delivery' || pageRequest.target !== 'app-overrides') {
+      setModeSelectionId(null);
+      setReturnToModesPending(false);
+    }
+  }, [pageRequest, appliedRequestToken]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -551,7 +570,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   }, [settings.model]);
 
-  const settingsSurfaceActive = useSettingsSurfaceActive();
   const audioInventoryState = useAudioInputInventory(settingsSurfaceActive);
   const audioInventory = audioInventoryState.inventory;
   const audioDevices = audioInventory?.status === 'available' ? audioInventory.devices : [];
@@ -664,6 +682,10 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationReturnFocus(null);
     setEditorBackToCustomization(false);
     setShortcutReturnFocus(null);
+    if (page !== 'modes') {
+      setModeSelectionId(null);
+      setReturnToModesPending(false);
+    }
   };
 
   const openShortcutOwner = (destination: ShortcutOwnerDestination) => {
@@ -677,6 +699,24 @@ export const SettingsPanel = memo(function SettingsPanel({
     setEditorBackToCustomization(false);
     setShortcutReturnFocus(destination.shortcutId);
   };
+
+  const openAppProfileForMode = (modeId: string) => {
+    beginCurrentUiTransition('settings.delivery', 'pointer');
+    setModeSelectionId(modeId);
+    setReturnToModesPending(true);
+    setActiveCat('delivery');
+    setEditorTab(null);
+    setSearchQuery('');
+    setTargetRequest(settingTargetRequest('app-overrides'));
+    setCustomizationDetail(null);
+    setEditorBackToCustomization(false);
+  };
+
+  useEffect(() => {
+    if (!returnToModesPending || settings.appProfiles.length === 0) return;
+    setReturnToModesPending(false);
+    openPage('modes', 'programmatic');
+  }, [returnToModesPending, settings.appProfiles.length]);
 
   const returnToShortcuts = () => {
     beginCurrentUiTransition('settings.shortcuts', 'programmatic');
@@ -1232,6 +1272,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 siteLookupEnabled={settings.siteModeLookupEnabled}
                 siteRules={settings.browserSiteRules}
                 onChange={onUpdateSettings}
+                onAddAppProfile={openAppProfileForMode}
+                initialSelectedId={modeSelectionId}
+                onModeBound={onModeBound}
               />
             </div>
           </SettingsSection>
@@ -1330,6 +1373,12 @@ export const SettingsPanel = memo(function SettingsPanel({
               <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
               <p className="text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
             </div>
+            {onDiscoveryChecklistReopen && (
+              <div data-setting-target="discovery-checklist" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+                <button type="button" onClick={onDiscoveryChecklistReopen} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Show feature checklist</button>
+                <p className="text-xs text-on-surface-variant">Return to Home and revisit Get more from Murmur.</p>
+              </div>
+            )}
             <SettingsDisclosure title="Advanced" layout="stack">
               <OverlayCalibrationControl
                 offset={settings.overlayVerticalOffset}

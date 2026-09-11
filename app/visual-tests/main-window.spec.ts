@@ -120,6 +120,7 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
   const middleCard = page.locator('.home-history .transcript-card').nth(1);
   const feedback = middleCard.locator('.transcript-copy-feedback');
   const copyAction = middleCard.locator('[data-action-id="copy"]');
+  await middleCard.scrollIntoViewIfNeeded();
   const before = await middleCard.boundingBox();
   const shadowBefore = await middleCard.evaluate((element) => getComputedStyle(element).boxShadow);
 
@@ -894,7 +895,37 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
+  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(7);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
+});
+
+test('discovery checklist and contextual hint remain readable together', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
+  await expect(page.getByRole('heading', { name: 'Try what is ready when you are' })).toBeVisible();
+  await expect(page.getByText('Use a Mode for this site', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-discovery-hint.png');
+});
+
+test('checklist feature names and pitches stay readable beside the Insights rail', async ({ page }) => {
+  for (const [width, height] of [[1120, 820], [880, 720], [720, 560]]) {
+    await page.setViewportSize({ width, height });
+    await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+    const labels = page.locator('.discovery-checklist-items strong, .discovery-checklist-items small');
+    await expect(labels).toHaveCount(14);
+    const clipped = await labels.evaluateAll((elements) => elements
+      .filter((element) => element.scrollWidth > element.clientWidth + 1
+        || element.scrollHeight > element.clientHeight + 1)
+      .map((element) => element.textContent));
+    expect(clipped, `Checklist text at ${width}x${height}`).toEqual([]);
+  }
+});
+
+test('Transform practice shows the real hold-flow instructions', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings-transform-practice&appearance=light');
+  await expect(page.getByRole('heading', { name: 'Practice on sample text' })).toBeVisible();
+  await page.getByRole('button', { name: 'Select sample text' }).click();
+  await expect(page.locator('.transform-practice [role="status"]')).toContainText('make this shorter');
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-settings-transform-practice.png');
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {
