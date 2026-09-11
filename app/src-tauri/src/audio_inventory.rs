@@ -673,7 +673,7 @@ fn current_topology(state: &InventoryState) -> Result<&AudioInputTopology, &'sta
     Ok(topology)
 }
 
-fn verified_selection(
+fn capture_selection(
     state: &InventoryState,
     request: &SmartAutoRequest,
     now: Instant,
@@ -691,7 +691,7 @@ fn verified_selection(
 pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAutoSelection, String> {
     let mut state = coordinator().state.lock_or_recover();
     let now = Instant::now();
-    let selection = verified_selection(&state, request, now).map_err(|block| {
+    let selection = capture_selection(&state, request, now).map_err(|block| {
         let reason = block.message();
         tracing::warn!(target: "audio", event_code = "audio.auto_input_refused", reason, "Smart Auto capture refused");
         reason.to_string()
@@ -699,7 +699,7 @@ pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAuto
     state.routing.commit(&selection, now);
     drop(state);
     emit_routing_changed();
-    tracing::info!(target: "audio", event_code = "audio.auto_input_selected", reason = selection.reason.as_str(), "verified microphone selected for next capture");
+    tracing::info!(target: "audio", event_code = "audio.auto_input_selected", reason = selection.reason.as_str(), "microphone selected for next capture");
     Ok(selection)
 }
 
@@ -716,7 +716,7 @@ pub(crate) fn cached_smart_auto_status(request: &SmartAutoRequest) -> SmartAutoS
     let now = Instant::now();
     state
         .routing
-        .status(verified_selection(&state, request, now), now)
+        .status(capture_selection(&state, request, now), now)
 }
 
 /// Candidate ordering uses only an authoritative cache. This path cannot
@@ -935,6 +935,7 @@ mod tests {
             approved_device_ids: vec!["a".into(), "b".into(), "c".into()],
             preferred_device_ids: vec![],
             allow_continuity: false,
+            require_recent_signal: true,
         };
         let candidates = |coordinator: &AudioInputInventoryCoordinator,
                           request: &SmartAutoRequest| {
@@ -1000,6 +1001,7 @@ mod tests {
             approved_device_ids: vec!["a".into(), "b".into()],
             preferred_device_ids: vec!["a".into()],
             allow_continuity: false,
+            require_recent_signal: true,
         };
         let key_a = signal_evidence_key_for_state(&state, Some("a")).unwrap();
         assert!(apply_signal_evidence(
@@ -1009,7 +1011,7 @@ mod tests {
             now
         ));
         assert_eq!(state.routing.current_device_id(), None);
-        let selected = verified_selection(&state, &request, now).unwrap();
+        let selected = capture_selection(&state, &request, now).unwrap();
         state.routing.commit(&selected, now);
         let key_b = signal_evidence_key_for_state(&state, Some("b")).unwrap();
         assert!(apply_signal_evidence(
@@ -1019,7 +1021,7 @@ mod tests {
             now
         ));
         assert_eq!(
-            verified_selection(&state, &request, now).unwrap().device_id,
+            capture_selection(&state, &request, now).unwrap().device_id,
             "a"
         );
         assert_eq!(state.routing.current_device_id(), Some("a"));
@@ -1030,7 +1032,7 @@ mod tests {
             now
         ));
         assert!(
-            verified_selection(&state, &request, now + microphone_auto::SIGNAL_FRESHNESS).is_err()
+            capture_selection(&state, &request, now + microphone_auto::SIGNAL_FRESHNESS).is_err()
         );
     }
 
@@ -1067,6 +1069,29 @@ mod tests {
             production_device_kind_for_snapshot(&stale, Some("built-in-id")),
             None
         );
+    }
+
+    #[test]
+    fn availability_selection_needs_current_inventory_but_not_recent_signal() {
+        let request = SmartAutoRequest {
+            approved_device_ids: vec!["a".into()],
+            preferred_device_ids: vec!["a".into()],
+            allow_continuity: false,
+            require_recent_signal: false,
+        };
+        let now = Instant::now();
+        let mut state = InventoryState::default();
+        assert!(capture_selection(&state, &request, now).is_err());
+        state.attempted = true;
+        state.topology = Some(normalize_inventory(topology(&[("a", "A")], Some("a"))).unwrap());
+        assert_eq!(
+            capture_selection(&state, &request, now).unwrap().device_id,
+            "a"
+        );
+        assert!(state.routing.current_device_id().is_none());
+        assert!(!state.pending);
+        state.invalidated = true;
+        assert!(capture_selection(&state, &request, now).is_err());
     }
 
     #[test]
@@ -1248,6 +1273,7 @@ mod tests {
             approved_device_ids: vec!["uid-a".to_string()],
             preferred_device_ids: vec![],
             allow_continuity: false,
+            require_recent_signal: true,
         };
         for negative in [
             SignalVerificationResult::NoPcm,
@@ -1260,9 +1286,9 @@ mod tests {
                 SignalVerificationResult::Verified,
                 now
             ));
-            assert!(verified_selection(&state, &request, now).is_ok());
+            assert!(capture_selection(&state, &request, now).is_ok());
             assert!(apply_signal_evidence(&mut state, &key, negative, now));
-            assert!(verified_selection(&state, &request, now).is_err());
+            assert!(capture_selection(&state, &request, now).is_err());
         }
         let key = signal_evidence_key_for_state(&state, Some("uid-a")).unwrap();
         assert!(!apply_signal_evidence(
@@ -1271,7 +1297,7 @@ mod tests {
             SignalVerificationResult::Interrupted,
             now
         ));
-        assert!(verified_selection(&state, &request, now).is_err());
+        assert!(capture_selection(&state, &request, now).is_err());
     }
 
     #[test]

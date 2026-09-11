@@ -14,7 +14,7 @@ export type SmartAutoMicrophoneStatus =
     state: 'ready';
     deviceId: string;
     reason: SmartAutoMicrophoneReadyReason;
-    validForMs: number;
+    validForMs: number | null;
   }
   | {
     state: 'blocked';
@@ -58,10 +58,15 @@ export function parseSmartAutoMicrophoneStatus(value: unknown): SmartAutoMicroph
   if (value.state === 'ready') {
     if (!isBoundedText(value.deviceId, 4096)
       || !isReadyReason(value.reason)
-      || typeof value.validForMs !== 'number'
-      || !Number.isSafeInteger(value.validForMs)
-      || value.validForMs <= 0
-      || value.validForMs > 120_000) return null;
+      || (value.validForMs !== null && (
+        typeof value.validForMs !== 'number'
+        || !Number.isSafeInteger(value.validForMs)
+        || value.validForMs <= 0
+        || value.validForMs > 120_000
+      ))
+      || (value.validForMs === null && (
+        value.reason === 'current_verified' || value.reason === 'previous_verified_rollback'
+      ))) return null;
     return {
       state: 'ready',
       deviceId: value.deviceId,

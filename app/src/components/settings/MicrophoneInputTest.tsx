@@ -93,6 +93,8 @@ function microphoneAvailabilityReason(device: AudioDeviceDescriptor, defaultInpu
 
 function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smartAuto, smartAutoSelection, lidState, onSelectManual, onSmartAutoChange, describedBy }: MicrophonePickerProps) {
   const [open, setOpen] = useState(false);
+  const [smartAutoControlsOpen, setSmartAutoControlsOpen] = useState(false);
+  const smartAutoControlsId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const selectedRadioRef = useRef<HTMLInputElement>(null);
@@ -153,7 +155,10 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
       restoreFocusWhenEnabledRef.current = true;
     }
     setOpen(false);
-    if (!smartAutoActive) onSmartAutoChange({ smartAutoMicrophoneEnabled: true });
+    if (!smartAutoActive) {
+      setSmartAutoControlsOpen(true);
+      onSmartAutoChange({ smartAutoMicrophoneEnabled: true });
+    }
   };
 
   return (
@@ -201,8 +206,26 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           </Popover.Positioner>
         </Popover.Portal>
       </Popover.Root>
-      <SettingsBranch open={smartAutoActive} className="mt-2">
-        <fieldset aria-label="Smart Auto microphone inclusion" className="rounded-(--ui-radius-control) border border-outline-variant/25 bg-surface-container-lowest p-2">
+      {smartAutoActive && (
+        <button
+          type="button"
+          aria-expanded={smartAutoControlsOpen}
+          aria-controls={smartAutoControlsId}
+          onClick={() => setSmartAutoControlsOpen((current) => !current)}
+          className="mt-2 flex w-full items-center justify-between gap-3 rounded-(--ui-radius-control) px-2 py-1.5 text-left text-xs font-medium text-on-surface transition-colors hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <span>Smart Auto microphones</span>
+          <svg aria-hidden="true" viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${smartAutoControlsOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="m5 7.5 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+      <div id={smartAutoControlsId}>
+        <SettingsBranch
+          open={smartAutoActive && smartAutoControlsOpen}
+          className={smartAutoActive && smartAutoControlsOpen ? 'mt-2' : ''}
+        >
+          <fieldset aria-label="Smart Auto microphone inclusion" className="rounded-(--ui-radius-control) border border-outline-variant/25 bg-surface-container-lowest p-2">
           <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Smart Auto microphones</legend>
           {approvalDevices.map((device) => {
             const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
@@ -249,11 +272,12 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
             <AnimatedSwitch size="sm" aria-label="Check included microphones in the background" checked={smartAuto.smartAutoProbeEnabled} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoProbeEnabled: checked })} />
             <span>
               <span className="block font-medium">Background signal checks</span>
-              <span className="block text-xs text-on-surface-variant">Briefly checks included inputs while Murmur is idle. Audio is never transcribed or saved.</span>
+              <span className="block text-xs text-on-surface-variant">Optional. When off, Murmur chooses an included available microphone when recording starts. Checks never transcribe or save audio.</span>
             </span>
           </label>
-        </fieldset>
-      </SettingsBranch>
+          </fieldset>
+        </SettingsBranch>
+      </div>
     </>
   );
 }
@@ -501,11 +525,13 @@ export function MicrophoneInputTest({
     approvedDeviceIds: smartAuto.smartAutoApprovedDeviceIds,
     preferredDeviceIds: smartAuto.smartAutoPreferredDeviceIds,
     allowContinuity: smartAuto.smartAutoAllowContinuity,
+    requireRecentSignal: smartAuto.smartAutoProbeEnabled,
   } : null, [
     smartAutoActive,
     smartAuto?.smartAutoAllowContinuity,
     smartAuto?.smartAutoApprovedDeviceIds,
     smartAuto?.smartAutoPreferredDeviceIds,
+    smartAuto?.smartAutoProbeEnabled,
   ]);
   const { view: smartAutoStatus, refresh: refreshSmartAutoStatus } = useSmartAutoMicrophoneStatus(
     smartAutoRequest,
@@ -710,15 +736,15 @@ export function MicrophoneInputTest({
     ? deviceOptions.find((device) => device.value === smartAutoSelection.device.id)?.label
       ?? smartAutoSelection.device.name
     : null;
-  const verifiedStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready'
+  const readyStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready'
     ? smartAutoStatus.status
     : null;
   const probingStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'probing'
     ? smartAutoStatus.status
     : null;
-  const verifiedDeviceLabel = verifiedStatus
-    ? deviceOptions.find((device) => device.value === verifiedStatus.deviceId)?.label
-      ?? 'verified microphone'
+  const readyDeviceLabel = readyStatus
+    ? deviceOptions.find((device) => device.value === readyStatus.deviceId)?.label
+      ?? 'ready microphone'
     : null;
   const probingDeviceLabel = probingStatus
     ? deviceOptions.find((device) => device.value === probingStatus.deviceId)?.label
@@ -785,7 +811,7 @@ export function MicrophoneInputTest({
             </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready' ? (
             <p className="text-success">
-              <span className="font-medium">Smart Auto will use {verifiedDeviceLabel}. </span>
+              <span className="font-medium">Smart Auto will use {readyDeviceLabel}. </span>
               Why: {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
             </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'blocked' ? (
@@ -796,9 +822,7 @@ export function MicrophoneInputTest({
                   ? 'Include at least one microphone before Smart Auto can record.'
                     : smartAutoSelection === null
                       ? 'None of the included microphones are available right now.'
-                    : smartAuto?.smartAutoProbeEnabled
-                      ? smartAutoStatus.status.message
-                      : 'Turn on Background signal checks so Murmur can confirm an included microphone.'}
+                      : smartAutoStatus.status.message}
               </p>
               {smartAutoStatus.status.retryAfterMs !== null && (
                 <p className="mt-1">Another check can start in about {Math.max(1, Math.ceil(smartAutoStatus.status.retryAfterMs / 1000))} seconds while Murmur is idle.</p>

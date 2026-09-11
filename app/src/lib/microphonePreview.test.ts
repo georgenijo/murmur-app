@@ -50,6 +50,7 @@ describe('microphone preview presentation', () => {
       approvedDeviceIds: ['usb'],
       preferredDeviceIds: ['usb'],
       allowContinuity: false,
+      requireRecentSignal: false,
     };
 
     await startMicrophonePreview('usb', 60, smartAuto);

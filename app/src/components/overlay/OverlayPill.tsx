@@ -155,7 +155,7 @@ export function OverlayPill({
               role={smartAutoSummary ? 'status' : undefined}
               aria-live={smartAutoSummary ? 'polite' : undefined}
               aria-label={smartAutoSummary?.kind === 'ready'
-                ? `Smart Auto next capture ready with ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
+                ? `Smart Auto next capture ready with ${smartAutoSummary.deviceName}. ${smartAutoSummary.reason}.`
                 : smartAutoSummary?.kind === 'probing'
                   ? `Smart Auto background check for ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}. Audio is not transcribed or saved.`
                 : smartAutoSummary?.kind === 'blocked'
@@ -164,7 +164,7 @@ export function OverlayPill({
                     : `Smart Auto next capture blocked. Cooldown: about ${Math.max(1, Math.ceil(smartAutoSummary.retryAfterMs / 1000))} seconds remaining.`
                   : undefined}
               title={smartAutoSummary?.kind === 'ready'
-                ? `Smart Auto: ${smartAutoSummary.deviceName}. Verified recently; ${smartAutoSummary.reason}.`
+                ? `Smart Auto: ${smartAutoSummary.deviceName}. ${smartAutoSummary.reason}.`
                 : smartAutoSummary?.kind === 'probing'
                   ? `Smart Auto checking ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}`
                 : smartAutoSummary?.kind === 'blocked'

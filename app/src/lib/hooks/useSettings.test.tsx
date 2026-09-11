@@ -297,6 +297,7 @@ describe('useSettings configure rollback privacy', () => {
           approvedDeviceIds: ['usb-a'],
           preferredDeviceIds: ['usb-a'],
           allowContinuity: false,
+          requireRecentSignal: true,
         },
       },
     });
@@ -320,7 +321,7 @@ describe('useSettings configure rollback privacy', () => {
       .toEqual([{ policy: { enabled: false } }]);
     await act(async () => current.applyExternalSettings({ ...current.settings, disabled: false }));
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe').slice(-1)[0]?.[1])
-      .toEqual({ policy: { enabled: true, request: { approvedDeviceIds: ['usb'], preferredDeviceIds: ['usb'], allowContinuity: false } } });
+      .toEqual({ policy: { enabled: true, request: { approvedDeviceIds: ['usb'], preferredDeviceIds: ['usb'], allowContinuity: false, requireRecentSignal: true } } });
     await act(async () => current.updateSettings({ disabled: true }));
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_smart_auto_probe').slice(-1)[0]?.[1])
       .toEqual({ policy: { enabled: false } });

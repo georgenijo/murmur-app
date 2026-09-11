@@ -20,6 +20,7 @@ const smartAuto = {
   approvedDeviceIds: ['usb'],
   preferredDeviceIds: ['usb'],
   allowContinuity: false,
+  requireRecentSignal: true,
 };
 
 function StatusProbe() {
@@ -51,6 +52,15 @@ describe('useSmartAutoMicrophoneStatus', () => {
     await act(async () => root.unmount());
     vi.useRealTimers();
     container.remove();
+  });
+
+  it('keeps availability ready without a signal-expiry retry loop', async () => {
+    mocks.invoke.mockResolvedValue({ state: 'ready', deviceId: 'usb', reason: 'preferred_approved', validForMs: null });
+    await act(async () => { root.render(<StatusProbe />); });
+    expect(container.textContent).toBe('ready:usb');
+    await act(async () => { await vi.advanceTimersByTimeAsync(180_000); });
+    expect(container.textContent).toBe('ready:usb');
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 
   it('subtracts command latency and rereads once to discover the next fresh candidate', async () => {

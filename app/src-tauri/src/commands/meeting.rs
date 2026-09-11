@@ -216,6 +216,7 @@ mod admission_tests {
                     approved_device_ids: vec!["never-verified-test-input".to_string()],
                     preferred_device_ids: vec![],
                     allow_continuity: false,
+                    require_recent_signal: true,
                 }),
                 retain_audio: false,
                 retention_days: Some(1),

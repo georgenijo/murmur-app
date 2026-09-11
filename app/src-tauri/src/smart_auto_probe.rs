@@ -292,6 +292,11 @@ fn apply_policy(inner: &mut Inner, policy: serde_json::Value) -> Result<u64, &'s
                     .ok_or("Include at least one microphone before enabling automatic checks.")
                     .and_then(|request| {
                         crate::microphone_auto::validate(&request)?;
+                        if !request.require_recent_signal {
+                            return Err(
+                                "Automatic input checks require a recent-signal selection policy.",
+                            );
+                        }
                         Ok(request)
                     })
                     .map(Some)
@@ -454,9 +459,7 @@ async fn run(app: tauri::AppHandle) {
         let (epoch, candidates) = crate::audio_inventory::probe_candidates(&request);
         let status = crate::audio_inventory::cached_smart_auto_status(&request);
         let fresh = match status {
-            SmartAutoStatus::Ready { valid_for_ms, .. } => {
-                Some(Duration::from_millis(valid_for_ms))
-            }
+            SmartAutoStatus::Ready { valid_for_ms, .. } => valid_for_ms.map(Duration::from_millis),
             _ => None,
         };
         let transition = state.app_state.recording_transition.lock().await;
@@ -657,7 +660,7 @@ mod tests {
     }
 
     fn enabled_policy() -> serde_json::Value {
-        serde_json::json!({"enabled": true, "request": {"approvedDeviceIds": ["a"], "preferredDeviceIds": ["a"], "allowContinuity": false}})
+        serde_json::json!({"enabled": true, "request": {"approvedDeviceIds": ["a"], "preferredDeviceIds": ["a"], "allowContinuity": false, "requireRecentSignal": true}})
     }
 
     #[test]
@@ -665,8 +668,9 @@ mod tests {
         for invalid in [
             serde_json::json!({"enabled": true}),
             serde_json::json!({"enabled": "true"}),
-            serde_json::json!({"enabled": true, "request": {"approvedDeviceIds": [], "preferredDeviceIds": [], "allowContinuity": false}}),
-            serde_json::json!({"enabled": false, "request": {"approvedDeviceIds": ["a"], "preferredDeviceIds": [], "allowContinuity": false}}),
+            serde_json::json!({"enabled": true, "request": {"approvedDeviceIds": [], "preferredDeviceIds": [], "allowContinuity": false, "requireRecentSignal": true}}),
+            serde_json::json!({"enabled": false, "request": {"approvedDeviceIds": ["a"], "preferredDeviceIds": [], "allowContinuity": false, "requireRecentSignal": true}}),
+            serde_json::json!({"enabled": true, "request": {"approvedDeviceIds": ["a"], "preferredDeviceIds": [], "allowContinuity": false, "requireRecentSignal": false}}),
         ] {
             let mut inner = Inner::default();
             assert!(inner.request.is_none());
@@ -697,7 +701,7 @@ mod tests {
         let same = apply_policy(&mut inner, enabled_policy()).unwrap();
         assert_eq!(same, first);
         assert_ne!(inner.interruption, interruption);
-        let changed = apply_policy(&mut inner, serde_json::json!({"enabled":true,"request":{"approvedDeviceIds":["a"],"preferredDeviceIds":[],"allowContinuity":false}})).unwrap();
+        let changed = apply_policy(&mut inner, serde_json::json!({"enabled":true,"request":{"approvedDeviceIds":["a"],"preferredDeviceIds":[],"allowContinuity":false,"requireRecentSignal":true}})).unwrap();
         assert_ne!(changed, first);
         let disabled = apply_policy(&mut inner, serde_json::json!({"enabled":false})).unwrap();
         assert_ne!(changed, disabled);

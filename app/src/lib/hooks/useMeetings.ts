@@ -189,6 +189,7 @@ export function useMeetings(settings: Settings) {
     settings.smartAutoAllowContinuity,
     settings.smartAutoApprovedDeviceIds,
     settings.smartAutoMicrophoneEnabled,
+    settings.smartAutoProbeEnabled,
     settings.smartAutoPreferredDeviceIds,
   ]);
 

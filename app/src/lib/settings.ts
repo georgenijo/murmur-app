@@ -678,6 +678,7 @@ export interface SmartAutoMicrophoneRequest {
   approvedDeviceIds: string[];
   preferredDeviceIds: string[];
   allowContinuity: boolean;
+  requireRecentSignal: boolean;
 }
 
 function sanitizeSmartAutoDeviceIds(value: unknown): string[] {
@@ -698,6 +699,7 @@ function sanitizeSmartAutoDeviceIds(value: unknown): string[] {
 export function smartAutoMicrophoneRequest(
   settings: Pick<Settings,
     'smartAutoMicrophoneEnabled'
+    | 'smartAutoProbeEnabled'
     | 'smartAutoApprovedDeviceIds'
     | 'smartAutoPreferredDeviceIds'
     | 'smartAutoAllowContinuity'>,
@@ -707,6 +709,7 @@ export function smartAutoMicrophoneRequest(
     approvedDeviceIds: settings.smartAutoApprovedDeviceIds,
     preferredDeviceIds: settings.smartAutoPreferredDeviceIds,
     allowContinuity: settings.smartAutoAllowContinuity,
+    requireRecentSignal: settings.smartAutoProbeEnabled,
   };
 }
 
