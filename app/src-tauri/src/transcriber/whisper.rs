@@ -470,11 +470,28 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let mut entered_tx = Some(entered_tx);
+            let mut checks = 0;
             preview.transcribe(&window, "en", None, true, || {
-                if let Some(tx) = entered_tx.take() {
-                    tx.send(()).unwrap();
+                checks += 1;
+                // First check is preflight; the second is the native full()
+                // abort callback, so cancellation must exercise in-flight ASR.
+                if checks == 2 {
+                    if let Some(tx) = entered_tx.take() {
+                        if tx.send(()).is_err() {
+                            return true;
+                        }
+                    }
+                    // Test-only handshake keeps this native callback in flight
+                    // until the main thread requests stop; never wait unbounded.
+                    if resume_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .is_err()
+                    {
+                        return true;
+                    }
                 }
                 worker_cancelled.load(Ordering::SeqCst)
             })
@@ -483,6 +500,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
         cancelled.store(true, Ordering::SeqCst);
+        resume_tx.send(()).unwrap();
         // Final decode does not join the partial worker or acquire its context.
         let after_preview = final_backend
             .transcribe(&samples, "en", None, true)
