@@ -365,6 +365,7 @@ impl Drop for RunGuard {
             .microphone_startup_benchmark
             .finish(self.benchmark_run_id);
         self.coordinator.finish();
+        crate::meeting_suggestions::busy_changed(&self.app);
     }
 }
 
@@ -1086,6 +1087,7 @@ pub async fn run_microphone_startup_benchmark(
     };
     let backend_plan = crate::audio::microphone_startup_backend_plan(device_id.as_deref());
     drop(transition);
+    crate::meeting_suggestions::busy_changed(&app_handle);
     tokio::task::spawn_blocking(move || {
         run_cycles(
             app_handle,

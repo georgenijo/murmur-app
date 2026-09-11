@@ -7,11 +7,12 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-struct BenchmarkRunGuard(Arc<BenchmarkCoordinator>);
+struct BenchmarkRunGuard(Arc<BenchmarkCoordinator>, tauri::AppHandle);
 
 impl Drop for BenchmarkRunGuard {
     fn drop(&mut self) {
         self.0.finish();
+        crate::meeting_suggestions::busy_changed(&self.1);
     }
 }
 
@@ -101,11 +102,12 @@ pub async fn run_benchmark(
         }
     }
     drop(transition);
+    crate::meeting_suggestions::busy_changed(&app_handle);
     // Only one heavy inference runtime may be resident: stop any local-LLM
     // helper before benchmarking (fail-fast no-op while a transform is in
     // flight). The benchmark slot is already claimed above.
     state.transform_runtime.shutdown();
-    let guard = BenchmarkRunGuard(coordinator.clone());
+    let guard = BenchmarkRunGuard(coordinator.clone(), app_handle.clone());
     super::models::ensure_vad_model(&app_handle)
         .await
         .map_err(|error| format!("Could not prepare speech filtering: {error}"))?;

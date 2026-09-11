@@ -24,7 +24,7 @@ fn require_main_window(label: &str) -> Result<(), String> {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartMeetingRequest {
     #[serde(default)]
@@ -41,6 +41,8 @@ pub struct StartMeetingRequest {
     pub echo_cancellation: bool,
     #[serde(default)]
     pub diarization: bool,
+    #[serde(default)]
+    pub suggestion_token: Option<String>,
 }
 
 fn default_max_sessions() -> u32 {
@@ -71,6 +73,16 @@ fn clamp_max_sessions(max_sessions: u32) -> u32 {
 }
 
 fn meeting_conflict(state: &State) -> Option<&'static str> {
+    if state.query.status().blocks_pipeline() {
+        return Some("Finish or cancel the active voice query before starting a meeting.");
+    }
+    if state.microphone_startup_benchmark.is_active() {
+        return Some("Wait for the microphone startup check to finish before starting a meeting.");
+    }
+    #[cfg(feature = "internal-benchmark")]
+    if state.corpus.is_active() {
+        return Some("Finish the corpus recording before starting a meeting.");
+    }
     if state
         .app_state
         .meeting_summary_active
@@ -111,12 +123,34 @@ fn meeting_conflict(state: &State) -> Option<&'static str> {
 #[tauri::command]
 pub async fn start_meeting(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     request: StartMeetingRequest,
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSession, String> {
-    let _transition =
+    let _transition = if request.suggestion_token.is_some() {
+        require_main_window(window.label())?;
+        state.app_state.recording_transition.lock().await
+    } else {
         crate::commands::microphone_preview::transition_after_stopping_preview(&app, state.inner())
-            .await?;
+            .await?
+    };
+    let suggestion = if let Some(token) = request.suggestion_token.as_deref() {
+        if crate::calendar::permission_status()
+            != crate::calendar::CalendarPermissionStatus::Granted
+        {
+            return Err(crate::calendar::ACCESS_REQUIRED.into());
+        }
+        let frontmost = crate::meeting_suggestions::frontmost_bundle_id(&app).await;
+        let selected = state.meeting_suggestions.accept(
+            token,
+            frontmost.as_deref(),
+            crate::meeting_suggestions::is_busy(&state),
+        )?;
+        crate::meeting_suggestions::publish(&app);
+        Some(selected)
+    } else {
+        None
+    };
     crate::meeting_diarization::cancel_all()?;
     if let Some(error) = meeting_conflict(&state) {
         return Err(error.to_string());
@@ -126,7 +160,7 @@ pub async fn start_meeting(
     }
 
     let (repository, session, config) =
-        prepare_meeting_session(&request, &state.app_state, || {
+        prepare_meeting_session(&request, &state.app_state, suggestion.as_ref(), || {
             state.meeting_store.repository()
         })?;
     state.transform_runtime.shutdown();
@@ -152,6 +186,7 @@ pub async fn start_meeting(
 fn prepare_meeting_session(
     request: &StartMeetingRequest,
     app_state: &AppState,
+    suggestion: Option<&crate::calendar::SuggestionEvent>,
     repository: impl FnOnce() -> Result<MeetingRepository, String>,
 ) -> Result<(MeetingRepository, MeetingSession, MeetingCaptureConfig), String> {
     // Refusal must precede retention pruning, session creation, and ownership.
@@ -186,13 +221,30 @@ fn prepare_meeting_session(
     );
     let generation = app_state.next_meeting_generation();
     let session_id = Uuid::new_v4().to_string();
-    let session = repository.create_session(
+    let mut session = repository.create_session(
         &session_id,
         &model_name,
         &language,
         smart_punctuation,
         request.retain_audio,
     )?;
+    if let Some(suggestion) = suggestion {
+        match repository.save_calendar_metadata(SaveMeetingMetadataRequest {
+            session_id: session_id.clone(),
+            title: Some(suggestion.title.clone()),
+            attendees: suggestion.attendees.clone(),
+        }) {
+            Ok(workspace) => session = workspace.session,
+            Err(error) => {
+                let _ = repository.finish_session(
+                    &session_id,
+                    crate::meeting_store::MeetingSessionStatus::Failed,
+                    Some("supervisor_unavailable"),
+                );
+                return Err(error);
+            }
+        }
+    }
     app_state.meeting_active.store(true, Ordering::SeqCst);
     app_state
         .meeting_inference_active
@@ -233,8 +285,9 @@ mod admission_tests {
                 max_sessions: 1,
                 echo_cancellation: false,
                 diarization: false,
+                suggestion_token: None,
             };
-            let result = prepare_meeting_session(&request, &app_state, || {
+            let result = prepare_meeting_session(&request, &app_state, None, || {
                 panic!("a refused input must not access or prune the meeting store")
             });
             assert!(result.is_err_and(|error| error.contains("Smart Auto")));

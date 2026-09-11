@@ -58,7 +58,9 @@ manual rename sets the source to `manual`.
 - Event objects, identifiers, and lookup results are never cached or persisted.
   The picker holds its displayed result only while open. Closing it or changing
   sessions discards that state.
-- No background lookup, event annotation, recording, or model warm-up occurs.
+- This naming flow performs no background lookup, event annotation, recording,
+  or model warm-up. The separately enabled [meeting suggestions](meeting-suggestions.md)
+  feature reads bounded upcoming events while its setting is on.
   Calendar data is never logged or included in diagnostic output. Calendar
   commands return stable errors without native descriptions, and structured log
   sanitization strips Calendar payload fields in every build and stream.
