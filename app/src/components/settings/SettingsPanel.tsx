@@ -27,6 +27,11 @@ import { useVocabScan } from '../../lib/hooks/useVocabScan';
 import { useAudioInputInventory } from '../../lib/hooks/useAudioInputInventory';
 import { useModelRuntimeCatalog } from '../../lib/modelRuntime';
 import {
+  modelGuidanceSummary,
+  modelMemoryWarning,
+  useModelHardwareGuidance,
+} from '../../lib/modelHardwareGuidance';
+import {
   correlatedModelDownloadAttempt,
   modelDownloadLabel,
   modelDownloadPercent,
@@ -458,6 +463,10 @@ export const SettingsPanel = memo(function SettingsPanel({
   }, []);
 
   const selectedRuntime = runtimeByName.get(settings.model);
+  const modelHardwareGuidance = useModelHardwareGuidance();
+  const selectedModelMemoryWarning = modelHardwareGuidance
+    ? modelMemoryWarning(modelHardwareGuidance, settings.model)
+    : null;
   const modelAvailable = selectedRuntime ? selectedRuntime.installState === 'installed' : null;
   const [modelDownload, setModelDownload] = useState<
     | { phase: 'idle' }
@@ -988,9 +997,29 @@ export const SettingsPanel = memo(function SettingsPanel({
                 value={settings.model}
                 onChange={(model) => onUpdateSettings({ model })}
                 disabled={isRecording}
-                items={AVAILABLE_MODEL_OPTIONS.map((model) => ({ value: model.value, label: `${model.label}${model.backend === 'coreml' ? ' — Recommended' : ''} (${model.size})` }))}
+                items={AVAILABLE_MODEL_OPTIONS.map((model) => ({
+                  value: model.value,
+                  label: `${model.label} (${model.size})`,
+                  badge: modelHardwareGuidance?.warnedModels.includes(model.value)
+                    ? 'Higher memory'
+                    : modelHardwareGuidance?.recommendedModel === model.value
+                      ? 'Recommended'
+                      : undefined,
+                  badgeTone: modelHardwareGuidance?.warnedModels.includes(model.value)
+                    ? 'warning' as const
+                    : 'accent' as const,
+                }))}
               />
-              <p className="text-xs text-on-surface-variant">Parakeet Core ML is recommended on supported Macs. Larger models can be more accurate but use more storage and memory.</p>
+              <p className="text-xs text-on-surface-variant">
+                {modelHardwareGuidance
+                  ? modelGuidanceSummary(modelHardwareGuidance)
+                  : 'Larger models can be more accurate but use more storage and memory.'}
+              </p>
+              {selectedModelMemoryWarning && (
+                <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-on-surface">
+                  {selectedModelMemoryWarning}
+                </div>
+              )}
               {selectedRuntime && <p className="text-xs text-on-surface-variant" data-testid="model-runtime-status">{selectedRuntime.label}: {selectedRuntime.backend} / {selectedRuntime.accelerator} / {selectedRuntime.size} · {selectedRuntime.installState} · {selectedRuntime.lifecycleState}</p>}
               {isRecording && <p className="text-xs text-primary">Stop recording before changing model.</p>}
               {modelAvailable === false && modelDownload.phase === 'idle' && (

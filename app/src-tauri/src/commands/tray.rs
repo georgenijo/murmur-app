@@ -1,14 +1,75 @@
-use std::sync::OnceLock;
-use tauri::menu::MenuItem;
+use crate::MutexExt;
+use std::sync::{Mutex, OnceLock};
+use tauri::menu::{CheckMenuItemBuilder, MenuItem, MenuItemBuilder, Submenu};
 
 static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
 static MODE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+static NEXT_MODE_MENU: OnceLock<Submenu<tauri::Wry>> = OnceLock::new();
+#[derive(PartialEq, Eq)]
+struct NextModeMenuStatus {
+    revision: u64,
+    modes: Vec<super::mode_runtime::ModeChoice>,
+    pending: Option<super::mode_runtime::ModeChoice>,
+}
+
+static NEXT_MODE_STATUS: Mutex<Option<NextModeMenuStatus>> = Mutex::new(None);
+
+pub(crate) fn register_next_mode_menu(menu: Submenu<tauri::Wry>) {
+    let _ = NEXT_MODE_MENU.set(menu);
+}
 
 pub(crate) fn register_mode_item(item: MenuItem<tauri::Wry>) {
     let _ = MODE_MENU_ITEM.set(item);
 }
 
 pub(crate) fn set_mode_menu_status(status: &super::mode_runtime::ModeRuntimeStatus) {
+    if let Some(menu) = NEXT_MODE_MENU.get() {
+        let menu = menu.clone();
+        let status = status.clone();
+        let handle = menu.app_handle().clone();
+        let _ = handle.run_on_main_thread(move || {
+            let new_status = NextModeMenuStatus {
+                revision: status.pending_revision,
+                modes: status.available.clone(),
+                pending: status.pending.clone(),
+            };
+            let mut previous = NEXT_MODE_STATUS.lock_or_recover();
+            if previous
+                .as_ref()
+                .is_some_and(|previous| previous.revision > status.pending_revision)
+            {
+                return;
+            }
+            if previous.as_ref() != Some(&new_status) {
+                let refreshed = (|| -> tauri::Result<()> {
+                    while menu.remove_at(0)?.is_some() {}
+                    for mode in &status.available {
+                        let item = CheckMenuItemBuilder::with_id(
+                            format!("next_mode:{}", mode.id),
+                            format!("Next recording: {}", mode.name),
+                        )
+                        .checked(
+                            status
+                                .pending
+                                .as_ref()
+                                .is_some_and(|pending| pending.id == mode.id),
+                        )
+                        .build(menu.app_handle())?;
+                        menu.append(&item)?;
+                    }
+                    let clear =
+                        MenuItemBuilder::with_id("next_mode:", "Clear next recording override")
+                            .enabled(status.pending.is_some())
+                            .build(menu.app_handle())?;
+                    menu.append(&clear)?;
+                    Ok(())
+                })();
+                if refreshed.is_ok() {
+                    *previous = Some(new_status);
+                }
+            }
+        });
+    }
     if let Some(item) = MODE_MENU_ITEM.get() {
         let suffix = match status.source {
             super::mode_runtime::ModeSource::Manual => "",

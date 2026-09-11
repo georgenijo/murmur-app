@@ -158,7 +158,7 @@ Each window is a separate webview with its own Tauri capability set.
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always on top, transparent, and non-activating |
 | Transform Review | `transform-review` | `transform-review.html` | 320×76 compact | Transform proposal review. Non-focusable until `ready` or `failed` |
 | Query Review | `query-review` | `query-review.html` | 440×92 compact, 440×340 expanded | Voice Query answer review. Always on top, transparent, and non-activating |
-| Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML transcript preview under the notch. Always on top, transparent, non-activating, and click-through |
+| Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML and Whisper Tiny/Base transcript preview under the notch. Always on top, transparent, non-activating, and click-through |
 
 Main and Diagnostics hide on close instead of being destroyed. Overlay and Transform Review call the shared non-activating window treatment in `commands/native_window.rs`. Query Review and Dictation Preview use its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
 
@@ -221,7 +221,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 199 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 201 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -378,7 +378,7 @@ trait TranscriptionBackend: Send + Sync {
 - **Core ML (FluidAudio)** — Parakeet v3 on the ANE. Decoder state is reset between one-shot dictations. An empty result after VAD trimming retries once with the original unfiltered audio.
 - **Parakeet CPU (sherpa-onnx)** — English fallback, also the non-macOS path.
 
-All backends take one final-after-stop pass. The Whisper-only incremental/preview worker was removed in #279; delivery happens exactly once.
+All backends take one authoritative final-after-stop pass; delivery happens exactly once. Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
 
 ### `llm_sidecar.rs` — Local LLM Supervisor
 
@@ -466,7 +466,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-199 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+201 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

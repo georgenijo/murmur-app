@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
   listen: vi.fn(),
+  invoke: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import { DictationPreviewApp, visiblePartial } from './DictationPreviewApp';
 

@@ -286,6 +286,9 @@ pub struct DictationState {
     pub temporary_mode_id: Option<String>,
     #[serde(skip)]
     pub temporary_mode_bundle_id: Option<String>,
+    /// Palette/tray intent for one recording, never serialized or persisted.
+    #[serde(skip)]
+    pub next_recording_mode: crate::commands::mode_runtime::NextRecordingMode,
     pub voice_commands_enabled: bool,
     /// User-defined voice commands applied after the built-in set.
     #[serde(default)]
@@ -358,6 +361,7 @@ impl Default for DictationState {
             manual_mode_id: "builtin.everyday".to_string(),
             temporary_mode_id: None,
             temporary_mode_bundle_id: None,
+            next_recording_mode: Default::default(),
             voice_commands_enabled: false,
             voice_command_pairs: Vec::new(),
             cleanup_enabled: false,

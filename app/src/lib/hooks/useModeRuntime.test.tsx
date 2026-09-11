@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 
-import { useModeRuntime } from './useModeRuntime';
+import { useModeRuntime, type ModeRuntimeStatus } from './useModeRuntime';
 
 describe('useModeRuntime', () => {
   let root: Root;
@@ -62,4 +62,30 @@ describe('useModeRuntime', () => {
     await act(async () => mocks.listener?.({ payload: { id: '', name: 'Private', source: 'manual' } }));
     expect(container.textContent).toBe('Notes:manual');
   });
+});
+
+it('ignores a stale response or event after pending intent has been consumed', async () => {
+  let listener: (event: { payload: unknown }) => void = () => {};
+  let resolveInitial: (status: ModeRuntimeStatus) => void = () => {};
+  const initial = new Promise<ModeRuntimeStatus>((resolve) => { resolveInitial = resolve; });
+  const unlisten = vi.fn();
+  mocks.invoke.mockReturnValue(initial);
+  mocks.listen.mockImplementation(async (_name, callback) => { listener = callback; return unlisten; });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  function Harness() {
+    const { status } = useModeRuntime();
+    return <span>{status.pending?.name ?? 'none'}</span>;
+  }
+  const status = { id: 'builtin.email', name: 'Email', source: 'app_binding' as const, available: [] };
+  await act(async () => root.render(<Harness />));
+  await act(async () => listener({ payload: { ...status, pendingRevision: 1, pending: { id: 'builtin.verbatim', name: 'Verbatim' } } }));
+  expect(container.textContent).toBe('Verbatim');
+  await act(async () => resolveInitial({ ...status, pendingRevision: 0, pending: null }));
+  expect(container.textContent).toBe('Verbatim');
+  await act(async () => listener({ payload: { ...status, pendingRevision: 2, pending: null } }));
+  await act(async () => listener({ payload: { ...status, pendingRevision: 1, pending: { id: 'builtin.verbatim', name: 'Verbatim' } } }));
+  expect(container.textContent).toBe('none');
+  await act(async () => root.unmount());
+  expect(unlisten).toHaveBeenCalledOnce();
 });
