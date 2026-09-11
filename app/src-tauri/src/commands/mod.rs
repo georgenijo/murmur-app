@@ -10,6 +10,7 @@ pub mod keyboard;
 pub mod knowledge;
 pub mod logging;
 pub mod meeting;
+pub mod meeting_calendar;
 pub mod meeting_summary;
 pub mod microphone_preview;
 pub mod microphone_startup_benchmark;

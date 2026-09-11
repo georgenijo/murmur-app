@@ -1,0 +1,37 @@
+[
+  {
+    "check": "fmt",
+    "exit": 0,
+    "seconds": 0.73
+  },
+  {
+    "check": "cargo-check",
+    "exit": 0,
+    "seconds": 2.87
+  },
+  {
+    "check": "clippy",
+    "exit": 0,
+    "seconds": 18.47
+  },
+  {
+    "check": "cargo-test",
+    "exit": 0,
+    "seconds": 101.98
+  },
+  {
+    "check": "tsc",
+    "exit": 0,
+    "seconds": 6.82
+  },
+  {
+    "check": "npm-test",
+    "exit": 0,
+    "seconds": 25.53
+  },
+  {
+    "check": "reference-docs",
+    "exit": 0,
+    "seconds": 0.1
+  }
+]

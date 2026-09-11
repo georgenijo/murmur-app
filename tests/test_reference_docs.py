@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from scripts.validate_reference_docs import (
+    command_count_mentions,
     documented_commands,
     registered_commands,
     validate_reference_docs,
@@ -31,6 +32,16 @@ class ReferenceDocsTests(unittest.TestCase):
     def test_repository_reference_docs_match_registered_commands(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
         self.assertEqual(validate_reference_docs(), len(commands))
+        for relative in (
+            "CLAUDE.md",
+            "docs/reference/commands.md",
+            "docs/ARCHITECTURE.md",
+            "docs/FEATURES.md",
+        ):
+            with self.subTest(relative=relative):
+                mentions = command_count_mentions((ROOT / relative).read_text())
+                self.assertTrue(mentions)
+                self.assertEqual(set(mentions), {len(commands)})
 
     def test_model_hardware_guidance_command_is_registered_and_documented(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
@@ -44,6 +55,19 @@ class ReferenceDocsTests(unittest.TestCase):
         documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
         self.assertIn("read_modes_file", commands)
         self.assertIn("read_modes_file", documented)
+
+    def test_remove_model_command_is_registered_and_documented(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        self.assertIn("remove_model", commands)
+        self.assertIn("remove_model", documented)
+
+    def test_follow_up_commands_are_registered_and_documented(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        for command in ("request_query_follow_up", "allocate_query_follow_up"):
+            self.assertIn(command, commands)
+            self.assertIn(command, documented)
 
     def test_missing_command_row_fails_even_when_prose_count_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -62,8 +86,34 @@ class ReferenceDocsTests(unittest.TestCase):
             ):
                 validate_reference_docs(root)
 
+    def test_calendar_commands_are_part_of_the_checked_reference(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        for command in (
+            "get_calendar_permission_status",
+            "request_calendar_permission",
+            "reset_calendar_permission",
+            "open_calendar_preferences",
+            "get_meeting_calendar_events",
+            "apply_meeting_calendar_event",
+            "configure_meeting_suggestions",
+            "get_meeting_suggestion",
+            "dismiss_meeting_suggestion",
+            "get_meeting_audio_manifest",
+            "read_meeting_audio_range",
+            "get_meeting_audio_capture_busy",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, commands)
+                self.assertIn(command, documented)
+
     def test_stale_human_facing_count_fails(self) -> None:
-        for relative in ("CLAUDE.md", "docs/ARCHITECTURE.md", "docs/FEATURES.md"):
+        for relative in (
+            "CLAUDE.md",
+            "docs/reference/commands.md",
+            "docs/ARCHITECTURE.md",
+            "docs/FEATURES.md",
+        ):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 copy_reference_fixture(root)

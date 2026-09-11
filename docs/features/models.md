@@ -238,3 +238,27 @@ Model options are defined in `settings.ts` with the `MODEL_OPTIONS` array. Each 
 The Rust catalog remains authoritative for runtime behavior. The persisted
 setting stores only the selected identifier; install/lifecycle state and
 capabilities are runtime data and are not written to localStorage.
+
+## Removing installed models
+
+Settings → Speech-to-Text → Model storage lists the catalog's installation
+state. Installed models that are neither selected nor active expose Remove,
+then Confirm remove. Leaving the button or changing selection clears the
+confirmation. After removal the row shows Not installed and Download; the
+runtime publishes the new state without restarting.
+
+`remove_model` accepts only catalog identifiers. It refuses while dictation,
+file transcription, Voice Query capture/transcription, text transforms, meetings,
+model preparation, or a model download owns the
+relevant runtime. Selection, runtime use, and the per-model install transaction
+remain locked until deletion and state publication complete. A quarantined
+Core ML installer must have confirmed termination before cache removal.
+
+Removal deletes only the selected catalog artifact: Murmur's exact Whisper
+`.bin`, the CPU Parakeet bundle, or FluidAudio's documented v3 cache directory.
+It preserves VAD, other model artifacts, and other FluidAudio caches. Symbolic
+links are refused. Whisper copies found through legacy or environment search
+paths are preserved: remove those manually before using this action, since
+a surviving external copy would still make the model installed. If a failed
+recursive removal damages a bundle, its runtime state becomes Invalid and the
+row offers Download to repair it.

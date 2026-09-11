@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { useQueryHistory } from '../../lib/hooks/useQueryHistory';
+import { QUERY_HISTORY_MAX_SEARCH_CHARS } from '../../lib/queryHistory';
 import { queryHistoryErrorMessage } from '../../lib/queryErrorPresentation';
 
 interface QueryHistoryPanelProps {
@@ -42,6 +43,7 @@ const READY_DELIVERY_LABELS: Record<string, string> = {
 };
 
 export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPanelProps) {
+  const searchInputId = useId();
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmPurge, setConfirmPurge] = useState(false);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,6 +85,36 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
                 : 'Saving is off. Existing entries remain available until you delete them.'}
               {' '}Context is never stored as a separate field; provider stderr, commands, paths, and environment values are never stored here.
             </p>
+          </div>
+          <div className="min-w-52">
+            <label
+              htmlFor={searchInputId}
+              className="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant"
+            >
+              Search
+            </label>
+            <div className="relative mt-1">
+              <input
+                id={searchInputId}
+                type="search"
+                value={history.search}
+                maxLength={QUERY_HISTORY_MAX_SEARCH_CHARS}
+                onChange={(event) => history.setSearch(event.target.value)}
+                placeholder="Questions and answers"
+                aria-label="Search Voice Query history"
+                className="block w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest py-1.5 pl-2.5 pr-7 text-xs normal-case tracking-normal text-on-surface outline-none placeholder:text-on-surface-variant focus:border-primary focus:ring-1 focus:ring-primary [&::-webkit-search-cancel-button]:appearance-none"
+              />
+              {history.search && (
+                <button
+                  type="button"
+                  onClick={() => history.setSearch('')}
+                  aria-label="Clear Voice Query history search"
+                  className="absolute right-1 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-xs leading-none text-on-surface-variant hover:bg-surface-container"
+                >
+                  ×
+                </button>
+              )}
+            </div>
           </div>
           <label className="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant">
             Provider
@@ -136,12 +168,16 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
           <div className="grid min-h-full place-items-center text-center">
             <div className="max-w-sm rounded-[var(--ui-radius-popover)] border border-dashed border-[var(--ui-hairline)] bg-surface-container-low p-8">
               <p className="text-sm font-medium text-on-surface">
-                {history.provider === 'all'
+                {history.search.trim()
+                  ? 'No matches for your search'
+                  : history.provider === 'all'
                   ? 'No saved Voice Queries'
                   : `No saved ${providerLabel(history.provider)} queries`}
               </p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
-                {history.provider !== 'all'
+                {history.search.trim()
+                  ? 'Try a different word or clear the search.'
+                  : history.provider !== 'all'
                   ? 'Choose All providers to see queries saved with another provider.'
                   : retentionEnabled
                   ? 'Recognized Voice Queries appear here, including queries that shared app context. Saved answers can quote that context.'

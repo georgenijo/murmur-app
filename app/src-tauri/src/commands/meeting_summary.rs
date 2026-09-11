@@ -155,6 +155,7 @@ impl Drop for SummaryOwnershipGuard {
             );
         } else {
             crate::smart_auto_probe::wake();
+            crate::meeting_suggestions::busy_changed(&self.app);
         }
     }
 }

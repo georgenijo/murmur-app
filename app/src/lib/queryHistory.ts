@@ -72,12 +72,14 @@ export interface QueryHistoryListOptions {
   offset?: number;
   limit?: number;
   provider?: QueryProviderId | null;
+  search?: string | null;
 }
 
 export type QueryHistoryChanged = { kind: 'inserted' | 'cleared' };
 
 export const QUERY_HISTORY_PAGE_SIZE = 50;
 export const QUERY_HISTORY_MAX_ENTRIES = 200;
+export const QUERY_HISTORY_MAX_SEARCH_CHARS = 512;
 
 const MAX_QUESTION_BYTES = 32 * 1024;
 const MAX_ANSWER_BYTES = 256 * 1024;
@@ -168,10 +170,21 @@ export function isQueryHistoryChanged(value: unknown): value is QueryHistoryChan
     && (value.kind === 'inserted' || value.kind === 'cleared');
 }
 
+export function boundQueryHistorySearchInput(search: string | null | undefined): string {
+  return Array.from(search ?? '')
+    .slice(0, QUERY_HISTORY_MAX_SEARCH_CHARS)
+    .join('');
+}
+
+export function normalizeQueryHistorySearch(search: string | null | undefined): string {
+  return boundQueryHistorySearchInput(search).trim();
+}
+
 export async function listQueryHistory({
   offset = 0,
   limit = QUERY_HISTORY_PAGE_SIZE,
   provider = null,
+  search = null,
 }: QueryHistoryListOptions = {}): Promise<QueryHistoryPageV1> {
   const boundedOffset = Number.isFinite(offset)
     ? Math.max(0, Math.min(QUERY_HISTORY_MAX_ENTRIES, Math.trunc(offset)))
@@ -179,10 +192,12 @@ export async function listQueryHistory({
   const boundedLimit = Number.isFinite(limit)
     ? Math.max(1, Math.min(QUERY_HISTORY_PAGE_SIZE, Math.trunc(limit)))
     : QUERY_HISTORY_PAGE_SIZE;
+  const boundedSearch = normalizeQueryHistorySearch(search);
   const value = await invoke<unknown>('list_query_history', {
     offset: boundedOffset,
     limit: boundedLimit,
     provider,
+    search: boundedSearch || null,
   });
   if (!isQueryHistoryPageV1(value)) {
     throw new Error('Murmur returned an unsupported Voice Query history schema.');

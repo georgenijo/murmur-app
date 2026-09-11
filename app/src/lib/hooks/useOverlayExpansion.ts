@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { flog } from '../log';
+import type { OverlayContent } from '../overlayGeometry';
 import {
   COLLAPSE_DELAY_MS,
   HOVER_OPEN_DWELL_MS,
@@ -81,7 +82,13 @@ export interface OverlayExpansion {
 // distinguish "the newer request won" from a real applied frame.
 const SUPERSEDED = Symbol('overlay-surface-superseded');
 
-export function useOverlayExpansion(): OverlayExpansion {
+export function useOverlayExpansion({
+  forcedOpen = false,
+  content = 'controls',
+}: {
+  forcedOpen?: boolean;
+  content?: OverlayContent;
+} = {}): OverlayExpansion {
   const [phase, setPhase] = useState<OverlayPhase>('collapsed');
 
   const phaseRef = useRef<OverlayPhase>('collapsed');
@@ -98,6 +105,11 @@ export function useOverlayExpansion(): OverlayExpansion {
   const genRef = useRef(0);
   const chainRef = useRef<Promise<unknown>>(Promise.resolve());
   const desiredRef = useRef(false);
+  const contentRef = useRef<OverlayContent>(content);
+  const forcedOpenRef = useRef(forcedOpen);
+  const wasForcedOpenRef = useRef(false);
+  contentRef.current = content;
+  forcedOpenRef.current = forcedOpen;
 
   // Inputs mirrored into refs for the always-on poller / async callbacks.
   const visibleRef = useRef(true); // default visible on mount, matches show_overlay ordering
@@ -146,7 +158,10 @@ export function useOverlayExpansion(): OverlayExpansion {
     const desiredExpanded = desiredRef.current;
     try {
       const applied = await withSurfaceAckTimeout(
-        invoke<AppliedSurface>('set_overlay_expanded', { expanded: desiredExpanded }),
+        invoke<AppliedSurface>('set_overlay_expanded', {
+          expanded: desiredExpanded,
+          content: contentRef.current,
+        }),
       );
       if (gen !== genRef.current) return SUPERSEDED; // a newer request will reconcile
       reconcileOnSuccess(desiredExpanded);
@@ -253,6 +268,7 @@ export function useOverlayExpansion(): OverlayExpansion {
   }, [open]);
 
   const onHoverEnd = useCallback(() => {
+    if (forcedOpenRef.current) return;
     clearOpenDwell();
     if (phaseRef.current === 'opening') {
       // Content has not been revealed yet, so there is no animation to preserve.
@@ -265,6 +281,23 @@ export function useOverlayExpansion(): OverlayExpansion {
     }
     beginClose(COLLAPSE_DELAY_MS);
   }, [clearOpenDwell, clearCloseTimers, setPhaseSync, pushSurface, beginClose]);
+
+  useEffect(() => {
+    const wasForcedOpen = wasForcedOpenRef.current;
+    wasForcedOpenRef.current = forcedOpen;
+    if (forcedOpen) {
+      clearAllTimers();
+      if (!wasForcedOpen && (phaseRef.current === 'open' || phaseRef.current === 'opening')) {
+        setPhaseSync('opening');
+        pushSurface(true);
+      } else {
+        open();
+      }
+    } else if (wasForcedOpen) {
+      clearAllTimers();
+      startClosing();
+    }
+  }, [forcedOpen, clearAllTimers, open, pushSurface, setPhaseSync, startClosing]);
 
   // Reduced-motion is an accessibility input to the close choreography. CSS
   // removes the transitions under this query, so the native frame can shrink
@@ -291,12 +324,14 @@ export function useOverlayExpansion(): OverlayExpansion {
         clearAllTimers();
         setPhaseSync('collapsed');
         pushSurface(false);
+      } else if (forcedOpenRef.current) {
+        open();
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, [clearAllTimers, setPhaseSync, pushSurface]);
+  }, [clearAllTimers, setPhaseSync, pushSurface, open]);
 
   // --- Display-change reset -------------------------------------------------
   // Rust repositions and resizes the overlay to collapsed on a display change, so
@@ -315,11 +350,12 @@ export function useOverlayExpansion(): OverlayExpansion {
       clearAllTimers();
       setPhaseSync('collapsed');
       pushSurface(false);
+      if (forcedOpenRef.current) open();
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, [clearAllTimers, setPhaseSync, pushSurface]);
+  }, [clearAllTimers, setPhaseSync, pushSurface, open]);
 
   // --- Single cursor poller -------------------------------------------------
   // The overlay is non-activating and sits above the menu bar, so macOS can miss
@@ -359,7 +395,8 @@ export function useOverlayExpansion(): OverlayExpansion {
           const right = windowPosition.x + rect.right * scale + padding;
           const top = windowPosition.y + rect.top * scale - padding;
           const bottom = windowPosition.y + rect.bottom * scale + padding;
-          if (cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom) {
+          if (!forcedOpenRef.current
+            && (cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom)) {
             beginClose(0);
           }
         } else {

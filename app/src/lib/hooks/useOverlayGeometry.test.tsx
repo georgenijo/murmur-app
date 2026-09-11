@@ -48,6 +48,18 @@ const fallback: OverlayGeometry = {
   wingW: 36,
 };
 
+const meetingSuggestion: OverlayGeometry = {
+  windowW: 320,
+  collapsedH: 32,
+  expandedH: 168,
+  pillIdleW: 221,
+  pillActiveW: 320,
+  pillMarginIdle: 31.5,
+  pillMarginActive: 0,
+  dropdownH: 136,
+  wingW: 36,
+};
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -100,7 +112,7 @@ describe('useOverlayGeometry', () => {
       await Promise.resolve();
     });
     expect(mocks.listener).not.toBeNull();
-    expect(mocks.invoke).toHaveBeenCalledWith('get_overlay_geometry');
+    expect(mocks.invoke).toHaveBeenCalledWith('get_overlay_geometry', { content: 'controls' });
 
     await act(async () => {
       mocks.listener?.({ payload: fallback });
@@ -185,5 +197,39 @@ describe('useOverlayGeometry', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     expect(geometryCallCount()).toBe(1);
     expect(current!).toEqual(fallback);
+  });
+
+  it('re-fetches the suggestion profile on mode and display changes', async () => {
+    mocks.invoke.mockImplementation(async (_command: string, args?: { content?: string }) => (
+      args?.content === 'meeting_suggestion' ? meetingSuggestion : notched
+    ));
+
+    function Harness({ content }: { content: 'controls' | 'meeting_suggestion' }) {
+      current = useOverlayGeometry(content);
+      return null;
+    }
+
+    await act(async () => {
+      root.render(<Harness content="controls" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!).toEqual(notched);
+
+    await act(async () => {
+      root.render(<Harness content="meeting_suggestion" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current!).toEqual(meetingSuggestion);
+    const callsBeforeDisplayChange = geometryCallCount();
+
+    await act(async () => {
+      mocks.listener?.({ payload: fallback });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(geometryCallCount()).toBe(callsBeforeDisplayChange + 1);
+    expect(current!).toEqual(meetingSuggestion);
   });
 });

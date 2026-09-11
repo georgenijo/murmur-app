@@ -2087,11 +2087,13 @@ async fn start_capture_inner(
     // an aborted pass.
     if model_ready {
         let audio_start_started = std::time::Instant::now();
-        if let Err(e) = crate::audio::start_transform_capture_audio(
-            Some(app_handle.clone()),
-            device_name,
-            transform_pass_id,
-        ) {
+        if let Err(e) = arm_transform_capture(&app_handle, || {
+            crate::audio::start_transform_capture_audio(
+                Some(app_handle.clone()),
+                device_name,
+                transform_pass_id,
+            )
+        }) {
             cancel_transform_prewarm(&state.app_state, transform_pass_id);
             crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
             crate::transform_trace::resolution(
@@ -2769,6 +2771,15 @@ fn resolve_saved_transform(state: &crate::State, spoken: &str) -> Option<(String
     None
 }
 
+fn arm_transform_capture<R: tauri::Runtime, T>(
+    app: &tauri::AppHandle<R>,
+    arm: impl FnOnce() -> T,
+) -> T {
+    use tauri::Emitter;
+    let _ = app.emit_to("main", "transform-capture-starting", ());
+    arm()
+}
+
 fn require_review_pass(app_state: &AppState, pass_id: u64) -> Result<(), String> {
     if pass_id == 0 || app_state.active_transform_pass_id() != Some(pass_id) {
         Err("stale_pass".into())
@@ -2840,11 +2851,13 @@ pub(crate) async fn retry_transform_instruction(
             }
         };
 
-    if let Err(e) = crate::audio::start_transform_capture_audio(
-        Some(app_handle.clone()),
-        device_name,
-        transform_pass_id,
-    ) {
+    if let Err(e) = arm_transform_capture(&app_handle, || {
+        crate::audio::start_transform_capture_audio(
+            Some(app_handle.clone()),
+            device_name,
+            transform_pass_id,
+        )
+    }) {
         crate::transform_trace::audio(transform_pass_id, "armed", "error", 0, 0);
         crate::transform_trace::resolution(
             transform_pass_id,
@@ -3562,6 +3575,24 @@ pub async fn run_happy_path_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepted_transform_notifies_before_microphone_arm() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tauri::Listener;
+        let app = tauri::test::mock_app();
+        let notified = Arc::new(AtomicBool::new(false));
+        let observed = notified.clone();
+        app.listen_any("transform-capture-starting", move |event| {
+            assert_eq!(event.payload(), "null");
+            observed.store(true, Ordering::SeqCst);
+        });
+        let result = arm_transform_capture(app.handle(), || {
+            assert!(notified.load(Ordering::SeqCst));
+            Err::<(), _>("capture unavailable")
+        });
+        assert_eq!(result, Err("capture unavailable"));
+    }
 
     #[test]
     fn local_stats_receipt_excludes_content_and_correction_passes() {

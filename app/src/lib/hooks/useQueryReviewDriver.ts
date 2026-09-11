@@ -45,6 +45,11 @@ export function useQueryReviewDriver() {
   const [state, setState] = useState<QueryReviewState>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
+  const [followUpBusy, setFollowUpBusy] = useState(false);
+  const [followUpError, setFollowUpError] = useState<string | null>(null);
+  const followUpAttemptRef = useRef(0);
+  const followUpPendingRef = useRef(false);
+  const followUpSourceRef = useRef<number | null>(null);
   const [partial, setPartial] = useState('');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [usage, setUsage] = useState<QueryUsage | null>(null);
@@ -71,6 +76,7 @@ export function useQueryReviewDriver() {
     let unlistenPartial: (() => void) | null = null;
     let unlistenContext: (() => void) | null = null;
     let unlistenHidden: (() => void) | null = null;
+    let unlistenFollowUp: (() => void) | null = null;
 
     const refreshContext = async (expectedPassId: number) => {
       const ticket = contextRefreshTicketRef.current + 1;
@@ -129,6 +135,11 @@ export function useQueryReviewDriver() {
           terminalPassIdRef.current = null;
           terminalAnswerSnapshotRef.current = false;
           setAnswer('');
+          followUpAttemptRef.current += 1;
+          followUpSourceRef.current = null;
+          followUpPendingRef.current = false;
+          setFollowUpBusy(false);
+          setFollowUpError(null);
           setPartial('');
           setErrorDetail(null);
           setUsage(null);
@@ -220,6 +231,7 @@ export function useQueryReviewDriver() {
         if (disposed || !isHiddenPayload(event.payload)) return;
         const payload = event.payload;
         if (payload.queryPassId !== passIdRef.current) return;
+        followUpSourceRef.current = null;
         passIdRef.current = null;
         nextSequenceRef.current = 0;
         contentRefreshTicketRef.current += 1;
@@ -229,6 +241,10 @@ export function useQueryReviewDriver() {
         terminalAnswerSnapshotRef.current = false;
         stateRef.current = 'idle';
         setState('idle');
+        followUpAttemptRef.current += 1;
+        followUpPendingRef.current = false;
+        setFollowUpBusy(false);
+        setFollowUpError(null);
         setErrorCode(null);
         setAnswer('');
         setPartial('');
@@ -242,7 +258,18 @@ export function useQueryReviewDriver() {
         setContextSummary(null);
         setCapabilitySummary(null);
       });
-      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenContext(); unlistenHidden(); }
+      if (disposed) { unlistenState(); unlistenChunk(); unlistenPartial(); unlistenContext(); unlistenHidden(); return; }
+      unlistenFollowUp = await listen<unknown>('query-follow-up-unavailable', (event) => {
+        if (disposed || !isHiddenPayload(event.payload)) return;
+        if (event.payload.queryPassId === followUpSourceRef.current) {
+          followUpSourceRef.current = null;
+          followUpPendingRef.current = false;
+          setFollowUpBusy(false);
+        }
+        if (event.payload.queryPassId !== passIdRef.current || stateRef.current !== 'ready') return;
+        setFollowUpError('Could not start a follow-up. Try again or ask a new query.');
+      });
+      if (disposed) unlistenFollowUp();
     };
     void setup();
     return () => {
@@ -254,13 +281,18 @@ export function useQueryReviewDriver() {
       unlistenPartial?.();
       unlistenContext?.();
       unlistenHidden?.();
+      unlistenFollowUp?.();
+      followUpAttemptRef.current += 1;
     };
   }, []);
 
   const cancel = useCallback(() => {
     const queryPassId = passIdRef.current;
     if (queryPassId === null) return;
-    void invoke('cancel_query', { queryPassId }).catch(() => {
+    void invoke('cancel_query', {
+      queryPassId,
+      ...(followUpSourceRef.current !== null ? { followUpFromPassId: followUpSourceRef.current } : {}),
+    }).catch(() => {
       flog.warn('query-review', 'cancel failed', { query_pass_id: queryPassId });
     });
   }, []);
@@ -281,6 +313,27 @@ export function useQueryReviewDriver() {
         flog.warn('query-review', 'copy failed', { query_pass_id: queryPassId });
       }
     });
+  }, []);
+
+  const followUp = useCallback(async () => {
+    const queryPassId = passIdRef.current;
+    if (queryPassId === null || stateRef.current !== 'ready' || followUpPendingRef.current) return;
+    const attempt = ++followUpAttemptRef.current;
+    const ownsAttempt = () => followUpAttemptRef.current === attempt && passIdRef.current === queryPassId;
+    followUpPendingRef.current = true;
+    followUpSourceRef.current = queryPassId;
+    setFollowUpBusy(true);
+    setFollowUpError(null);
+    try {
+      await invoke('request_query_follow_up', { queryPassId });
+    } catch {
+      if (followUpSourceRef.current === queryPassId) followUpSourceRef.current = null;
+      if (ownsAttempt()) {
+        followUpPendingRef.current = false;
+        setFollowUpBusy(false);
+        setFollowUpError('Could not start a follow-up. Check that Voice Query is enabled, then try again.');
+      }
+    }
   }, []);
 
   const signIn = useCallback(async () => {
@@ -324,6 +377,9 @@ export function useQueryReviewDriver() {
     signInBusy,
     contextSummary,
     capabilitySummary,
+    followUp,
+    followUpBusy,
+    followUpError,
     cancel,
     copy,
     signIn,
