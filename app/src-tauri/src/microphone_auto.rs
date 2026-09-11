@@ -371,6 +371,7 @@ fn macos_lid_state() -> Option<ProductionLidState> {
     use core_foundation::base::TCFType;
     use core_foundation::base::{CFAllocatorRef, CFGetTypeID, CFRelease, CFTypeRef};
     use core_foundation::boolean::{kCFBooleanTrue, CFBooleanGetTypeID, CFBooleanRef};
+    use core_foundation::dictionary::{CFDictionaryRef, CFMutableDictionaryRef};
     use core_foundation::string::CFString;
     use core_foundation::string::CFStringRef;
     use std::ffi::c_char;
@@ -380,7 +381,11 @@ fn macos_lid_state() -> Option<ProductionLidState> {
 
     #[link(name = "IOKit", kind = "framework")]
     extern "C" {
-        fn IORegistryEntryFromPath(main_port: u32, path: *const c_char) -> IoRegistryEntry;
+        fn IOServiceMatching(name: *const c_char) -> CFMutableDictionaryRef;
+        fn IOServiceGetMatchingService(
+            main_port: u32,
+            matching: CFDictionaryRef,
+        ) -> IoRegistryEntry;
         fn IORegistryEntryCreateCFProperty(
             entry: IoRegistryEntry,
             key: CFStringRef,
@@ -390,7 +395,13 @@ fn macos_lid_state() -> Option<ProductionLidState> {
         fn IOObjectRelease(object: IoRegistryEntry) -> KernReturn;
     }
 
-    let entry = unsafe { IORegistryEntryFromPath(0, c"IOService:/".as_ptr()) };
+    let matching = unsafe { IOServiceMatching(c"IOPMrootDomain".as_ptr()) };
+    if matching.is_null() {
+        return None;
+    }
+    // AppleClamshellState belongs to the power-management service, not the
+    // registry root. IOServiceGetMatchingService consumes the dictionary.
+    let entry = unsafe { IOServiceGetMatchingService(0, matching) };
     if entry == 0 {
         return None;
     }
@@ -717,6 +728,38 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_lid_state_matches_power_management_registry() {
+        let output = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-r", "-c", "IOPMrootDomain", "-d", "1"])
+            .output()
+            .expect("read the power-management registry");
+        assert!(output.status.success());
+        let registry = String::from_utf8(output.stdout).unwrap();
+        let clamshell = registry
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("\"AppleClamshellState\" = "));
+        let expected = match clamshell {
+            Some("Yes") => ProductionLidState::Closed,
+            Some("No") => ProductionLidState::Open,
+            None => ProductionLidState::Unknown,
+            Some(value) => panic!("unexpected clamshell value: {value}"),
+        };
+        let observed = current_lid_state();
+        assert_eq!(observed, expected);
+        assert_eq!(
+            select(
+                &request(&["built-in"], &["built-in"]),
+                &[device("built-in", ProductionDeviceKind::BuiltIn)],
+                Some("built-in"),
+                observed,
+            )
+            .is_ok(),
+            expected == ProductionLidState::Open,
+        );
     }
 
     #[test]
