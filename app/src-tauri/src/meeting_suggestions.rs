@@ -438,6 +438,7 @@ pub(crate) fn initialize(app: tauri::AppHandle) {
         "recording-status-changed",
         "file-transcription-status-changed",
         "transform-state-changed",
+        "transform-capture-starting",
         "query-state-changed",
         "meeting-status-changed",
         "meeting-summary-status-changed",

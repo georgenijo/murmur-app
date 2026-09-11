@@ -16,13 +16,17 @@ The positive Calendar → suggestion → Accept flow is **not verified**. Comput
 ## Automated evidence
 
 - `cargo fmt --all`, `cargo check`, and workspace Clippy with warnings denied passed.
-- `cargo test -- --test-threads=1`: 1,411 passed, 9 ignored.
+- `cargo test -- --test-threads=1`: 1,412 passed, 9 ignored.
 - `npx tsc --noEmit` passed.
 - `npm test`: 1,400 passed across 146 files.
 - Reference-document and release-artifact Python checks: 54 passed.
 - Suggestion overlay visual check: 1 passed. Meetings settings rhythm checks: 2 passed.
-- Independent Astra review at high effort: three findings fixed and rechecked; no remaining actionable findings.
+- Independent Astra review at high effort: the initial three findings and an early transform-notification gap were fixed and rechecked; no remaining actionable findings.
 
 The tests cover disabled-state Calendar query suppression, event deduplication, busy admission, cancellation and stale work, Calendar contention recovery, consent persistence, ordered configuration, native geometry acknowledgment, and visible Accept failure recovery.
+
+A real Tauri event-listener test also verifies that accepted transform and
+correction capture paths notify listeners before microphone arm. This closes
+the interval before a slow AX selection returns and publishes review state.
 
 The [overlay snapshot](../../../app/visual-tests/main-window.spec.ts-snapshots/synthetic-meeting-suggestion-overlay-darwin.png) uses explicitly synthetic Calendar data. It proves layout only and does not establish native Calendar permission or capture behavior.

@@ -2,37 +2,36 @@
   {
     "check": "fmt",
     "exit": 0,
-    "seconds": 0.73
+    "seconds": 0.74
   },
   {
     "check": "cargo-check",
     "exit": 0,
-    "seconds": 13.67
+    "seconds": 12.22
   },
   {
     "check": "clippy",
     "exit": 0,
-    "seconds": 37.06
+    "seconds": 14.21
   },
   {
     "check": "cargo-test",
     "exit": 0,
-    "seconds": 82.87
+    "seconds": 43.24
   },
   {
     "check": "tsc",
     "exit": 0,
-    "seconds": 7.12
+    "seconds": 6.41
   },
   {
     "check": "npm-test",
     "exit": 0,
-    "seconds": 30.3,
-    "rerun": "After semantic fixture color fix; 1400 tests passed"
+    "seconds": 25.8
   },
   {
-    "check": "reference-docs-and-release-artifacts",
+    "check": "reference-docs",
     "exit": 0,
-    "tests": 54
+    "seconds": 0.1
   }
 ]

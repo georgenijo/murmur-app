@@ -52,6 +52,9 @@ benchmarks, shared backend changes, model loading/warming/unloading, speaker
 analysis, and disabled-app state suppress prompts. Model lifecycle and benchmark
 activity use nonblocking status reads; contention counts as busy. A
 suppressed event can still prompt after Murmur becomes idle if it remains current.
+Accepted transform and correction starts emit `transform-capture-starting`
+before arming the microphone. The coordinator clears a visible suggestion then,
+without waiting for a potentially slow AX selection or the first review event.
 
 Prompt publication does not open a tap, claim audio, or prepare a model. Accept
 sends only the opaque prompt token to the main window. `start_meeting` acquires
