@@ -56,7 +56,7 @@ fn cache_root() -> Option<PathBuf> {
     dirs::data_dir().map(|path| path.join("FluidAudio").join("Models"))
 }
 
-fn model_dir() -> Option<PathBuf> {
+pub(crate) fn model_dir() -> Option<PathBuf> {
     cache_root().map(|path| path.join(CACHE_DIR_NAME))
 }
 

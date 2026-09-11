@@ -1,7 +1,7 @@
 use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
 use crate::vad;
-use crate::State;
+use crate::{MutexExt, State};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use tauri::Emitter;
@@ -138,6 +138,136 @@ pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: S
 fn is_safe_model_identifier(model_name: &str) -> bool {
     // Model identifiers are catalog keys, never paths supplied by callers.
     !model_name.contains("..") && !model_name.contains('/') && !model_name.contains('\\')
+}
+
+/// Destructive operations use only catalog-derived paths and never follow a
+/// symlink in the artifact or its ancestors into another application's data.
+fn remove_catalog_artifact(path: &std::path::Path, directory: bool) -> Result<(), String> {
+    for ancestor in path.ancestors() {
+        let metadata = std::fs::symlink_metadata(ancestor)
+            .map_err(|error| format!("Could not inspect model artifact: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Model removal does not follow symbolic links".to_string());
+        }
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if directory != metadata.is_dir() || (!directory && !metadata.is_file()) {
+        return Err("Unexpected model artifact type; nothing was removed".to_string());
+    }
+    let result = if directory {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    result.map_err(|error| format!("Could not remove model: {error}"))
+}
+
+fn remove_whisper_artifact(
+    model_name: &str,
+    root: &std::path::Path,
+    search_paths: &[std::path::PathBuf],
+) -> Result<(), String> {
+    if model_runtime::model_definition(model_name)?.install_kind != InstallKind::Whisper {
+        return Err("Not a Whisper model".to_string());
+    }
+    let filename = format!("ggml-{model_name}.bin");
+    // Legacy/environment search roots belong to the user or another app.
+    // Refuse before deleting anything if another installed copy remains.
+    for other in search_paths {
+        if other != root
+            && crate::model_artifact::binary_model_is_valid(
+                &other.join(&filename),
+                crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
+            )
+        {
+            return Err("This model has a copy outside Murmur's model storage. Remove that copy manually before using Remove here.".to_string());
+        }
+    }
+    remove_catalog_artifact(&root.join(filename), false)
+}
+
+fn remove_installed_artifact(model_name: &str) -> Result<(), String> {
+    let definition = model_runtime::model_definition(model_name)?;
+    match definition.install_kind {
+        InstallKind::Whisper => remove_whisper_artifact(
+            model_name,
+            &transcriber::WhisperBackend::new().models_dir()?,
+            &transcriber::whisper::get_model_search_paths(),
+        ),
+        InstallKind::Parakeet => {
+            remove_catalog_artifact(&transcriber::parakeet::model_directory(model_name)?, true)
+        }
+        InstallKind::Coreml => {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            {
+                if !crate::coreml_installer::clear_quarantined_installer() {
+                    return Err("Wait for the previous Core ML installer to exit before removing this model".to_string());
+                }
+                remove_catalog_artifact(
+                    &transcriber::coreml::model_dir()
+                        .ok_or("Could not locate the Core ML model cache")?,
+                    true,
+                )
+            }
+            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+            Err("Core ML transcription requires Apple Silicon macOS".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn remove_model(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    model_name: String,
+) -> Result<(), String> {
+    if !is_safe_model_identifier(&model_name) {
+        return Err("Invalid model identifier".to_string());
+    }
+    model_runtime::model_definition(&model_name)?;
+    // Same admission lock as live capture, files, and meetings. Hold selection
+    // and runtime ownership until disk removal and the snapshot are committed.
+    let _transition = state
+        .app_state
+        .recording_transition
+        .try_lock()
+        .map_err(|_| "Wait for the current recording transition to finish")?;
+    let dictation = state
+        .app_state
+        .dictation
+        .try_lock_or_recover()
+        .ok_or("Wait for the current dictation operation to finish")?;
+    if dictation.status != crate::state::DictationStatus::Idle
+        || state.app_state.file_transcribing.load(Ordering::SeqCst)
+        || state.app_state.meeting_blocks_asr()
+        || state.query.status().blocks_capture()
+        || state.app_state.transform_status().blocks_recording()
+        || state.transform_runtime.is_transform_busy()
+        || crate::audio_lifecycle::is_audio_active()
+    {
+        return Err(
+            "Stop recording and wait for transcription to finish before removing a model"
+                .to_string(),
+        );
+    }
+    if !state.benchmark.try_start_shared_backend_change() {
+        return Err(
+            "Wait for the current model operation to finish before removing a model".to_string(),
+        );
+    }
+    struct ChangeGuard<'a>(&'a crate::benchmark::BenchmarkCoordinator);
+    impl Drop for ChangeGuard<'_> {
+        fn drop(&mut self) {
+            self.0.finish();
+        }
+    }
+    let _change = ChangeGuard(&state.benchmark);
+    state.app_state.model_runtime.remove_model_artifact(
+        Some(&app_handle),
+        &model_name,
+        &dictation.model_name,
+        || remove_installed_artifact(&model_name),
+    )
 }
 
 #[tauri::command]
@@ -323,6 +453,88 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("murmur-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn removal_deletes_only_the_exact_file_or_bundle() {
+        let root = test_dir("remove-artifact");
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let whisper = root.join("ggml-tiny.en.bin");
+        let vad = root.join("ggml-silero-v5.1.2.bin");
+        fs::write(&whisper, b"model").unwrap();
+        fs::write(&vad, b"preserve").unwrap();
+        remove_catalog_artifact(&whisper, false).unwrap();
+        assert!(!whisper.exists());
+        assert!(vad.exists());
+        for name in [
+            "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-fp16",
+            "parakeet-tdt-0.6b-v3",
+        ] {
+            let bundle = root.join(name);
+            fs::create_dir_all(bundle.join("nested")).unwrap();
+            fs::write(bundle.join("nested/weights"), b"weights").unwrap();
+            remove_catalog_artifact(&bundle, true).unwrap();
+            assert!(!bundle.exists());
+            assert!(vad.exists());
+        }
+        assert!(remove_catalog_artifact(&vad, true).is_err());
+        assert!(vad.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn whisper_removal_preserves_external_copies_and_rejects_non_catalog_names() {
+        let root = test_dir("remove-external");
+        fs::create_dir_all(root.join("managed")).unwrap();
+        fs::create_dir_all(root.join("external")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let managed = root.join("managed");
+        let external = root.join("external");
+        let filename = "ggml-tiny.en.bin";
+        for directory in [&managed, &external] {
+            let file = fs::File::create(directory.join(filename)).unwrap();
+            file.set_len(crate::model_artifact::MIN_WHISPER_MODEL_BYTES)
+                .unwrap();
+        }
+        assert!(
+            remove_whisper_artifact("tiny.en", &managed, &[external.clone()])
+                .unwrap_err()
+                .contains("outside Murmur")
+        );
+        assert!(managed.join(filename).exists());
+        assert!(external.join(filename).exists());
+        for name in [
+            "../tiny.en",
+            "tiny.en/child",
+            "unknown",
+            model_runtime::PARAKEET_CPU_MODEL,
+        ] {
+            assert!(remove_whisper_artifact(name, &managed, &[]).is_err());
+        }
+        fs::remove_file(external.join(filename)).unwrap();
+        remove_whisper_artifact("tiny.en", &managed, &[managed.clone()]).unwrap();
+        assert!(!managed.join(filename).exists());
+        assert!(external.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removal_refuses_symlink_artifacts_and_symlink_ancestors() {
+        use std::os::unix::fs::symlink;
+        let root = test_dir("remove-symlink");
+        fs::create_dir_all(root.join("real")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let model = root.join("real/model.bin");
+        fs::write(&model, b"preserve").unwrap();
+        symlink(&model, root.join("model.bin")).unwrap();
+        symlink(root.join("real"), root.join("alias")).unwrap();
+        assert!(remove_catalog_artifact(&root.join("model.bin"), false).is_err());
+        assert!(remove_catalog_artifact(&root.join("alias/model.bin"), false).is_err());
+        assert!(remove_catalog_artifact(&root.join("alias"), true).is_err());
+        assert_eq!(fs::read(&model).unwrap(), b"preserve");
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn write_parakeet_archive(archive_path: &std::path::Path, dir_name: &str, complete: bool) {

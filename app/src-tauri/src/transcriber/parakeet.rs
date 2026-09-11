@@ -89,6 +89,13 @@ fn data_models_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| app_models_dir(&d))
 }
 
+pub(crate) fn model_directory(model_name: &str) -> Result<PathBuf, String> {
+    let variant = variant_for(model_name).ok_or("Unknown Parakeet model")?;
+    Ok(data_models_dir()
+        .ok_or("Could not find application data directory")?
+        .join(variant.dir))
+}
+
 /// Returns true if `model_name` should be served by the Parakeet backend.
 /// This is the dispatch sentinel used by `configure_dictation`.
 pub fn is_parakeet_model(model_name: &str) -> bool {

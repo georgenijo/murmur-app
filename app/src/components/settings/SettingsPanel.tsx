@@ -42,6 +42,7 @@ import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
 import { VoiceQuerySettings } from './VoiceQuerySettings';
 import { TransformModelSettings } from './TransformModelSettings';
+import { TranscriptionModelStorage } from './TranscriptionModelStorage';
 import type { DictationStatus } from '../../lib/types';
 import { UpdateIndicator } from '../UpdateIndicator';
 import type { UpdateStatus } from '../../lib/updater';
@@ -334,7 +335,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   onLatencyViewChange,
   activeRef,
 }: SettingsPanelProps) {
-  const { byName: runtimeByName } = useModelRuntimeCatalog();
+  const { models: runtimeModels, byName: runtimeByName } = useModelRuntimeCatalog();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -1127,6 +1128,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
               {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}
             </div>
+            <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <div data-setting-target="language" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="block text-sm font-medium text-on-surface">Language</label>
               <Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />
