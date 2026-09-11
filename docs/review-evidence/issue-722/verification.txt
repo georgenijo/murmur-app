@@ -1,0 +1,15 @@
+Issue #722 verification
+Reviewed implementation: 186bda1a41e5283294bd152fdeab7215b5218bb2
+Native bundle: same implementation, debug dev identity, built on this Mac.
+cargo fmt --all: PASS
+cargo check: PASS
+cargo test -- --test-threads=1: 1392 passed, 0 failed, 9 ignored
+cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings: PASS
+npx tsc --noEmit: PASS
+npm test: 144 files, 1365 tests passed
+Reference documentation: 200 registered commands; validator + 4 tests PASS
+Markdown links: PASS
+Independent Astra high review: PASS after resource-scope fix
+Native observed: Cmd+K Next recording: Verbatim selects successfully; accepted TextEdit/Email context resolves Verbatim; cancelling permission-pending capture preserves the pending override (Clear next recording override remains available).
+Native incomplete: actual literal recording, following recording returning to Email, tray interaction, and visual pending overlay show/clear. Rebuilt dev identity requires renewed macOS consent; computer-use safety restrictions block the system notification/authentication service.
+Murmur Bench: pending before merge; not run in this local-only, no-merge task.
