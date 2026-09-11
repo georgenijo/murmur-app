@@ -127,12 +127,10 @@ impl DoubleTapDetector {
     }
 
     /// Process a keyboard event. Returns true if a double-tap was detected.
-    #[cfg(test)]
     fn handle_event(&mut self, event_type: &EventType) -> bool {
         self.handle_event_with_shortcut_modifiers(event_type, false)
     }
 
-    #[cfg(test)]
     fn handle_event_with_shortcut_modifiers(
         &mut self,
         event_type: &EventType,
