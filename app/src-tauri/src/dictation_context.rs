@@ -128,6 +128,8 @@ pub struct DictationContextSnapshot {
     pub context_capture: ContextCapturePermissions,
     pub writing_style: WritingStyle,
     pub resolved_mode_id: Option<String>,
+    /// Exact in-memory selection captured at acceptance; never a durable setting.
+    pub next_mode_token: Option<u64>,
 }
 
 pub(crate) fn builtin_mode(id: &str) -> Option<MurmurMode> {
@@ -228,15 +230,63 @@ fn selected_mode(
     (mode, invalid)
 }
 
-/// Ephemeral overrides supplied by the recording trigger. No caller supplies
-/// them today, but keeping them explicit makes precedence testable and avoids a
-/// second resolution path when session-specific behavior is introduced.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Ephemeral overrides supplied by the recording trigger, after app fine-tuning.
+#[derive(Debug, Clone, Default)]
 pub struct SessionOverrides {
+    pub mode: Option<MurmurMode>,
+    pub next_mode_token: Option<u64>,
     pub auto_paste: Option<bool>,
     pub cleanup_enabled: Option<bool>,
     pub cli_formatting_enabled: Option<bool>,
     pub smart_formatting_enabled: Option<bool>,
+}
+
+impl SessionOverrides {
+    /// Resource scopes must honor the same one-session project-context policy
+    /// as the resolved snapshot, rather than the durable profile's old opt-in.
+    pub(crate) fn resource_profiles<'a>(
+        &self,
+        profiles: &'a [AppProfile],
+    ) -> std::borrow::Cow<'a, [AppProfile]> {
+        let Some(mode) = &self.mode else {
+            return std::borrow::Cow::Borrowed(profiles);
+        };
+        std::borrow::Cow::Owned(
+            profiles
+                .iter()
+                .cloned()
+                .map(|mut profile| {
+                    profile.ide_context_enabled = mode.context_policy == ModeContextPolicy::Project
+                        && !profile.ide_project_roots.is_empty();
+                    if let Some(style) = mode.writing_style {
+                        profile.writing_style = Some(style);
+                    }
+                    profile
+                })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn code_vocabulary_override(
+        &self,
+        global: &DictationState,
+        bundle_id: Option<&str>,
+    ) -> Option<bool> {
+        self.mode.as_ref().map(|mode| match mode.vocabulary_policy {
+            ModeVocabularyPolicy::Technical => true,
+            ModeVocabularyPolicy::General => false,
+            ModeVocabularyPolicy::Inherit => match mode.writing_style {
+                Some(WritingStyle::CodeTechnical) => true,
+                Some(WritingStyle::Verbatim) => false,
+                _ => bundle_id.is_some_and(|bundle_id| {
+                    crate::state::app_profiles_enable_code_vocabulary(
+                        &self.resource_profiles(&global.app_profiles),
+                        bundle_id,
+                    )
+                }),
+            },
+        })
+    }
 }
 
 pub struct ResolverInputs<'a> {
@@ -272,62 +322,100 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         inputs.bundle_id,
         inputs.site_mode_id,
     );
+    let session_mode = inputs.session_overrides.mode.as_ref();
+    let effective_mode = session_mode.or(mode.as_ref());
+    let invalid_mode = invalid_mode && session_mode.is_none();
     let ide_context_enabled = !invalid_mode
         && explicit_profile.is_some_and(|profile| {
-            profile.ide_context_enabled
-                || (mode
-                    .as_ref()
-                    .is_some_and(|mode| mode.context_policy == ModeContextPolicy::Project)
-                    && !profile.ide_project_roots.is_empty())
+            session_mode.map_or(
+                profile.ide_context_enabled
+                    || (mode
+                        .as_ref()
+                        .is_some_and(|mode| mode.context_policy == ModeContextPolicy::Project)
+                        && !profile.ide_project_roots.is_empty()),
+                |mode| {
+                    mode.context_policy == ModeContextPolicy::Project
+                        && !profile.ide_project_roots.is_empty()
+                },
+            )
         });
     let writing_style = if invalid_mode {
         WritingStyle::Verbatim
     } else {
-        resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
-            profile
-                .writing_style
-                .filter(|style| *style != WritingStyle::Inherit)
-        })
-        .or_else(|| mode.as_ref().and_then(|mode| mode.writing_style))
-        .unwrap_or(WritingStyle::Inherit)
+        session_mode
+            .and_then(|mode| mode.writing_style)
+            .or_else(|| {
+                resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
+                    profile
+                        .writing_style
+                        .filter(|style| *style != WritingStyle::Inherit)
+                })
+            })
+            .or_else(|| mode.as_ref().and_then(|mode| mode.writing_style))
+            .unwrap_or(WritingStyle::Inherit)
     };
     let style = StylePolicy::for_style(writing_style);
+    let session_style = session_mode
+        .and_then(|mode| mode.writing_style)
+        .map(StylePolicy::for_style);
     let auto_paste = !invalid_mode
-        && inputs.session_overrides.auto_paste.unwrap_or_else(|| {
-            resolve_profile_override(
-                if invalid_mode {
-                    false
-                } else {
-                    mode.as_ref()
-                        .and_then(|mode| mode.auto_paste)
-                        .unwrap_or(global.auto_paste)
-                },
-                inputs.bundle_id,
-                &global.app_profiles,
-                |profile| profile.auto_paste_override,
-            )
-        });
+        && inputs
+            .session_overrides
+            .auto_paste
+            .or_else(|| session_mode.and_then(|mode| mode.auto_paste))
+            .unwrap_or_else(|| {
+                resolve_profile_override(
+                    if invalid_mode {
+                        false
+                    } else {
+                        mode.as_ref()
+                            .and_then(|mode| mode.auto_paste)
+                            .unwrap_or(global.auto_paste)
+                    },
+                    inputs.bundle_id,
+                    &global.app_profiles,
+                    |profile| profile.auto_paste_override,
+                )
+            });
     let cleanup_enabled = !invalid_mode
-        && inputs.session_overrides.cleanup_enabled.unwrap_or_else(|| {
-            resolve_profile_override(
-                if invalid_mode {
-                    false
-                } else {
-                    mode.as_ref()
-                        .and_then(|mode| mode.cleanup_enabled)
-                        .unwrap_or_else(|| style.cleanup_enabled.unwrap_or(global.cleanup_enabled))
-                },
-                inputs.bundle_id,
-                &global.app_profiles,
-                |profile| profile.cleanup_override,
-            )
-        });
+        && inputs
+            .session_overrides
+            .cleanup_enabled
+            .or_else(|| session_mode.and_then(|mode| mode.cleanup_enabled))
+            .or_else(|| {
+                session_style
+                    .as_ref()
+                    .and_then(|style| style.cleanup_enabled)
+            })
+            .unwrap_or_else(|| {
+                resolve_profile_override(
+                    if invalid_mode {
+                        false
+                    } else {
+                        mode.as_ref()
+                            .and_then(|mode| mode.cleanup_enabled)
+                            .unwrap_or_else(|| {
+                                style.cleanup_enabled.unwrap_or(global.cleanup_enabled)
+                            })
+                    },
+                    inputs.bundle_id,
+                    &global.app_profiles,
+                    |profile| profile.cleanup_override,
+                )
+            });
     let cli_override = if invalid_mode {
         Some(false)
     } else {
         inputs
             .session_overrides
             .cli_formatting_enabled
+            .or_else(|| session_mode.and_then(|mode| mode.cli_formatting_enabled))
+            .or_else(|| {
+                session_style
+                    .as_ref()
+                    .and_then(|style| style.cli_formatting_mode)
+                    .map(|mode| mode == CliFormattingMode::Enabled)
+            })
             .or_else(|| {
                 resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
                     profile.cli_formatting_override
@@ -340,12 +428,28 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         Some(false) => CliFormattingMode::Disabled,
         None => style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto),
     };
-    let cli_formatting_enabled =
-        !invalid_mode && (cli_override.is_some() || style.cli_formatting_enabled);
+    let session_cli_explicit = inputs.session_overrides.cli_formatting_enabled.is_some()
+        || session_mode.is_some_and(|mode| mode.cli_formatting_enabled.is_some());
+    let cli_formatting_enabled = !invalid_mode
+        && if session_style
+            .as_ref()
+            .is_some_and(|style| !style.cli_formatting_enabled)
+            && !session_cli_explicit
+        {
+            false
+        } else {
+            cli_override.is_some() || style.cli_formatting_enabled
+        };
     let resolved_smart_formatting = !invalid_mode
         && inputs
             .session_overrides
             .smart_formatting_enabled
+            .or_else(|| session_mode.and_then(|mode| mode.smart_formatting_enabled))
+            .or_else(|| {
+                session_style
+                    .as_ref()
+                    .and_then(|style| style.smart_formatting_enabled)
+            })
             .unwrap_or_else(|| {
                 resolve_profile_override(
                     if invalid_mode {
@@ -388,17 +492,25 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         && crate::vocabulary_alias::has_applicable_entries(
             &global.vocabulary_entries,
             inputs.bundle_id,
-            &global.app_profiles,
+            &inputs
+                .session_overrides
+                .resource_profiles(&global.app_profiles),
         );
     let code_vocab = !invalid_mode
         && global.code_vocab_enabled
-        && match mode.as_ref().map(|mode| mode.vocabulary_policy) {
-            Some(ModeVocabularyPolicy::Technical) => true,
-            Some(ModeVocabularyPolicy::General) => false,
-            _ => inputs.bundle_id.is_some_and(|bundle_id| {
-                crate::state::app_profiles_enable_code_vocabulary(&global.app_profiles, bundle_id)
-            }),
-        };
+        && inputs
+            .session_overrides
+            .code_vocabulary_override(global, inputs.bundle_id)
+            .unwrap_or_else(|| match effective_mode.map(|mode| mode.vocabulary_policy) {
+                Some(ModeVocabularyPolicy::Technical) => true,
+                Some(ModeVocabularyPolicy::General) => false,
+                _ => inputs.bundle_id.is_some_and(|bundle_id| {
+                    crate::state::app_profiles_enable_code_vocabulary(
+                        &global.app_profiles,
+                        bundle_id,
+                    )
+                }),
+            });
     let source = match (custom_vocab, code_vocab) {
         (false, false) => VocabularySource::None,
         (true, false) => VocabularySource::Custom,
@@ -442,12 +554,10 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         matched_profile,
         teaching_project_root,
         transcription: TranscriptionSettings {
-            model_name: mode
-                .as_ref()
+            model_name: effective_mode
                 .and_then(|mode| mode.model_id.clone())
                 .unwrap_or_else(|| global.model_name.clone()),
-            language: mode
-                .as_ref()
+            language: effective_mode
                 .and_then(|mode| mode.language.clone())
                 .unwrap_or_else(|| global.language.clone()),
             vad_sensitivity: global.vad_sensitivity,
@@ -505,7 +615,8 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             ..ContextCapturePermissions::default()
         },
         writing_style,
-        resolved_mode_id: mode.map(|mode| mode.id),
+        resolved_mode_id: effective_mode.map(|mode| mode.id.clone()),
+        next_mode_token: inputs.session_overrides.next_mode_token,
     }
 }
 
@@ -940,6 +1051,73 @@ mod tests {
             snapshot.transformations.cli_formatting_mode,
             CliFormattingMode::Disabled
         );
+    }
+
+    #[test]
+    fn next_verbatim_mode_overrides_bound_style_and_all_profile_fine_tuning() {
+        let mut app = profile("com.example.Editor", Some(true), Some(true));
+        app.mode_id = Some("builtin.email".into());
+        app.writing_style = Some(WritingStyle::Polished);
+        app.cli_formatting_override = Some(true);
+        app.smart_formatting_override = Some(true);
+        app.ide_context_enabled = true;
+        app.ide_project_roots = vec!["/project".into()];
+        let global = DictationState {
+            app_profiles: vec![app],
+            ..Default::default()
+        };
+        let once = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides {
+                mode: builtin_mode("builtin.verbatim"),
+                next_mode_token: Some(42),
+                ..Default::default()
+            },
+        );
+        assert_eq!(once.resolved_mode_id.as_deref(), Some("builtin.verbatim"));
+        assert_eq!(once.writing_style, WritingStyle::Verbatim);
+        assert_eq!(once.next_mode_token, Some(42));
+        assert!(!once.transformations.cleanup_enabled);
+        assert!(!once.transformations.correction_enabled);
+        assert!(!once.transformations.smart_formatting_enabled);
+        assert!(!once.transformations.cli_formatting_enabled);
+        assert!(!once.transformations.spoken_numbers_enabled);
+        assert!(!once.transformations.ide_context_enabled);
+        assert!(!once.enabled_command_groups.built_in_voice_commands);
+        assert!(!once.context_capture.clipboard);
+        let next = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(next.resolved_mode_id.as_deref(), Some("builtin.email"));
+        assert_eq!(next.writing_style, WritingStyle::Polished);
+        assert!(next.transformations.cleanup_enabled);
+        assert_eq!(once.writing_style, WritingStyle::Verbatim);
+    }
+
+    #[test]
+    fn session_mode_carries_custom_model_language_and_delivery_policy() {
+        let global = DictationState::default();
+        let mut mode = builtin_mode("builtin.technical").unwrap();
+        mode.model_id = Some("base.en".into());
+        mode.language = Some("en".into());
+        mode.auto_paste = Some(false);
+        let snapshot = resolve_test(
+            &global,
+            None,
+            SessionOverrides {
+                mode: Some(mode),
+                ..Default::default()
+            },
+        );
+        assert_eq!(snapshot.transcription.model_name, "base.en");
+        assert_eq!(snapshot.transcription.language, "en");
+        assert_eq!(snapshot.writing_style, WritingStyle::CodeTechnical);
+        assert!(!snapshot.delivery.auto_paste);
+        assert!(!snapshot.context_capture.local_project_index);
+        assert!(!snapshot.context_capture.selected_text);
     }
 
     #[test]

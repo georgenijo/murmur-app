@@ -44,6 +44,7 @@ export function useDictationPartial(): string {
   const [partial, setPartial] = useState<DictationPartialPayload | null>(null);
   const recordingIdRef = useRef(0);
   const shownRecordingIdRef = useRef(0);
+  const stoppedThroughRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,13 +57,16 @@ export function useDictationPartial(): string {
 
     track(listen<unknown>('dictation-generation-started', ({ payload }) => {
       const recordingId = (payload as { recordingId?: unknown } | null)?.recordingId;
-      if (!validRecordingId(recordingId)) return;
+      if (!validRecordingId(recordingId) || recordingId <= recordingIdRef.current) return;
       recordingIdRef.current = recordingId;
       shownRecordingIdRef.current = 0;
       setPartial(null);
     }));
 
     track(listen<unknown>('recording-status-changed', ({ payload }) => {
+      if (payload === 'processing' || payload === 'idle') {
+        stoppedThroughRef.current = Math.max(stoppedThroughRef.current, recordingIdRef.current);
+      }
       if (payload !== 'recording') {
         shownRecordingIdRef.current = 0;
         setPartial(null);
@@ -70,7 +74,8 @@ export function useDictationPartial(): string {
     }));
 
     track(listen<unknown>('dictation-partial', ({ payload }) => {
-      if (!validPayload(payload) || payload.recordingId < recordingIdRef.current) return;
+      if (!validPayload(payload) || payload.recordingId < recordingIdRef.current
+        || payload.recordingId <= stoppedThroughRef.current) return;
       // A partial can land before this window observes the generation event
       // (the card is only shown once words exist). Adopt the newer id rather
       // than dropping the very first line of the transcript.
@@ -93,6 +98,7 @@ export function useDictationPartial(): string {
     void invoke('show_dictation_preview', { recordingId: partial.recordingId }).catch(() => {
       if (shownRecordingIdRef.current === partial.recordingId) {
         shownRecordingIdRef.current = 0;
+        setPartial((current) => current?.recordingId === partial.recordingId ? null : current);
       }
     });
   }, [partial]);

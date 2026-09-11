@@ -15,7 +15,7 @@ before Modes have no `modeId` and preserve their delivered behavior exactly.
 4. Matching per-app fine-tuning overrides
 5. One-session overrides
 
-One-session overrides are an explicit, typed resolver input but no trigger supplies them yet. This keeps the precedence contract ready for future commands without adding a second app-detection or settings path.
+The command palette and tray supply a memory-only **Next recording: <Mode>** selection through the typed one-session input. Its Mode policy applies after profile fine-tuning and is frozen at recording acceptance. Cancelled recordings, failed starts, and phantom captures shorter than 0.3 seconds retain it; a real recording consumes that exact selection before returning Idle. Voice Query and imported/audio-processing sources do not claim it.
 
 Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, and local IDE project context. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
 

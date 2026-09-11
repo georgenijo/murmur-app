@@ -68,8 +68,7 @@ pub struct ModelDefinition {
 }
 
 const WHISPER_EN_CAPABILITIES: ModelCapabilities = ModelCapabilities {
-    // #279 removed Murmur's current partial-result consumer. Whisper still
-    // reports the backend fact so a later product can choose a new contract.
+    // Live preview uses a separate, cancellable CPU context for Tiny/Base.
     partial_results: true,
     initial_prompts: true,
     multilingual: false,
@@ -80,6 +79,7 @@ const WHISPER_EN_CAPABILITIES: ModelCapabilities = ModelCapabilities {
 };
 
 const WHISPER_MULTILINGUAL_CAPABILITIES: ModelCapabilities = ModelCapabilities {
+    partial_results: false,
     multilingual: true,
     ..WHISPER_EN_CAPABILITIES
 };
@@ -95,7 +95,7 @@ const PARAKEET_CPU_CAPABILITIES: ModelCapabilities = ModelCapabilities {
 };
 
 const COREML_CAPABILITIES: ModelCapabilities = ModelCapabilities {
-    partial_results: false,
+    partial_results: true,
     initial_prompts: false,
     multilingual: true,
     translation: false,
@@ -159,7 +159,10 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         size: "~500 MB",
         backend: BackendKind::Whisper,
         accelerator: "Metal GPU",
-        capabilities: WHISPER_EN_CAPABILITIES,
+        capabilities: ModelCapabilities {
+            partial_results: false,
+            ..WHISPER_EN_CAPABILITIES
+        },
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
@@ -171,7 +174,10 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
         size: "~1.5 GB",
         backend: BackendKind::Whisper,
         accelerator: "Metal GPU",
-        capabilities: WHISPER_EN_CAPABILITIES,
+        capabilities: ModelCapabilities {
+            partial_results: false,
+            ..WHISPER_EN_CAPABILITIES
+        },
         install_kind: InstallKind::Whisper,
         warm_on_startup: false,
         retry_unfiltered_on_empty: false,
@@ -840,6 +846,19 @@ mod tests {
                 .capabilities
                 .confidence
         );
+    }
+
+    #[test]
+    fn partial_capabilities_match_enabled_producers() {
+        for model in MODEL_DEFINITIONS {
+            assert_eq!(
+                model.capabilities.partial_results,
+                model.backend == BackendKind::Coreml
+                    || crate::transcriber::whisper::supports_live_preview(model.model_name),
+                "{}",
+                model.model_name
+            );
+        }
     }
 
     const FAKE_CAPABILITIES: ModelCapabilities = ModelCapabilities {

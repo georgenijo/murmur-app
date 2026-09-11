@@ -1911,6 +1911,7 @@ pub(crate) async fn start_query_capture(
         &identity,
         &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
         None,
+        crate::dictation_context::SessionOverrides::default(),
     );
     if !state
         .query

@@ -3,12 +3,21 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelDownloadProgress } from '../lib/modelDownload';
 import { ModelDownloadPanel } from './ModelDownloader';
+import type { ModelHardwareGuidance } from '../lib/modelHardwareGuidance';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   listener: null as null | ((event: { payload: ModelDownloadProgress }) => void),
   unlisten: vi.fn(),
+}));
+const guidanceMocks = vi.hoisted(() => ({
+  current: null as ModelHardwareGuidance | null,
+}));
+
+vi.mock('../lib/modelHardwareGuidance', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../lib/modelHardwareGuidance')>(),
+  useModelHardwareGuidance: () => guidanceMocks.current,
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -74,6 +83,7 @@ describe('ModelDownloadPanel', () => {
     mocks.listen.mockReset().mockResolvedValue(mocks.unlisten);
     mocks.unlisten.mockReset();
     mocks.listener = null;
+    guidanceMocks.current = null;
   });
 
   afterEach(async () => {
@@ -185,5 +195,29 @@ describe('ModelDownloadPanel', () => {
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
     expect(button('Retry Download').hasAttribute('disabled')).toBe(false);
     expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('shows low-memory guidance while keeping warned model choices enabled', async () => {
+    guidanceMocks.current = {
+      schemaVersion: 1,
+      chip: 'Apple M1',
+      chipTier: 'legacyAppleSilicon',
+      physicalMemoryGib: 8,
+      modelMemoryBudgetMib: 1536,
+      recommendedModel: 'parakeet-tdt-0.6b-v3-coreml',
+      warnedModels: ['parakeet-tdt-0.6b-v2-fp16', 'medium.en', 'large-v3-turbo'],
+    };
+    await renderPanel();
+
+    expect(container.textContent).toContain('recommended for Apple M1 with 8 GB RAM');
+    expect(container.textContent?.match(/Higher memory/g)).toHaveLength(2);
+    const warnedModel = container.querySelector('#download-model-large-v3-turbo') as HTMLButtonElement;
+    expect(warnedModel.disabled).toBe(false);
+
+    await act(async () => warnedModel.click());
+
+    expect(warnedModel.getAttribute('aria-pressed')).toBe('true');
+    expect(container.textContent).toContain('You can still select and use it');
+    expect(button('Download').hasAttribute('disabled')).toBe(false);
   });
 });

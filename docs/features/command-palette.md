@@ -4,7 +4,7 @@
 
 Murmur's main window has direct Settings destinations, local workspaces, an updater, and a setup assistant behind it. The palette makes all of it one keystroke away: press **⌘K**, type three letters, press Enter.
 
-It is a navigation surface only. Every row carries its own `run` callback supplied by `App.tsx`, so the palette never learns what a command *means* and there is exactly one definition of each action.
+It dispatches navigation and explicit actions. Every row carries its own `run` callback supplied by `App.tsx`, so the palette never learns what a command *means* and there is exactly one definition of each action.
 
 ## Shortcuts
 
@@ -23,7 +23,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 
 | Section | Commands |
 |---------|----------|
-| Recording | Start / Stop recording · Enable / Disable Murmur |
+| Recording | Start / Stop recording · Enable / Disable Murmur · Next recording: <Mode> · Clear next recording override |
 | History | Correct last dictation… · Paste Last / Retry Delivery · Search transcripts · Copy last transcript\* · Export history to a Markdown file\* |
 | Navigation | Go to Record · Go to Transcribe File |
 | Settings | One row per main page, plus Keyboard Shortcuts: Modes, Recording, Transcription, Transform, Text & Vocabulary, Delivery, Benchmark, Performance, Appearance, General |
@@ -35,6 +35,10 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
 Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, Modes, and Transforms requests retain a route back to that hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
+
+The next-recording rows use the backend enabled-Mode catalog. They arm one in-memory
+selection and show a pending hint; opening Murmur to choose it does not bind it
+to Murmur. Return to the target app before recording. See [Modes](modes.md).
 
 ## Matching and ranking
 

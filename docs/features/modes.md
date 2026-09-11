@@ -75,3 +75,26 @@ Site rules can bind built-in or enabled custom Modes. Deleting a custom Mode
 also removes its site rules. A site change inside the same browser restores the
 app binding or manual Mode on the next observation; a temporary override keeps
 its existing bundle-scoped semantics and remains highest precedence.
+
+## One recording only
+
+Choose **Next recording: <Mode>** from the main window's ⌘K palette or the
+tray's **Next recording** submenu. Both list enabled built-in and custom Modes,
+with an explicit clear action while an override is pending. This selection
+uses the resolver's existing highest-precedence `SessionOverrides` input and
+does not change app/site bindings, the last manual Mode, or durable settings.
+
+The expanded overlay shows **Next: <Mode>** until the selection is consumed.
+Edits to a pending custom Mode apply at acceptance; disabling or deleting it
+clears the pending selection. At native recording acceptance the Mode policy and a selection token are copied
+into the immutable context. Focus, settings, and later Mode selections cannot
+alter that recording. Cancellation (including while processing), failed starts,
+and phantom captures below 0.3 seconds retain the pending selection. A real
+recording's pipeline clears only its matching token before returning Idle,
+including no-speech or inference failure; a newer selection remains pending.
+The following recording returns to the normal bound/manual Mode.
+
+Only native dictation claims the override. File/audio-processing paths, Voice
+Query, transforms, and meetings do not consume it. All pending state disappears
+when Murmur exits. Local project context remains limited to configured roots
+and an available memory-only index.
