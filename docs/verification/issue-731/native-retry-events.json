@@ -1,0 +1,112 @@
+[
+  {
+    "timestamp": "2026-09-11T09:28:02.490Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:29:05.670Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:29:06.765Z",
+    "stream": "pipeline",
+    "level": "info",
+    "summary": "delivery retry completed",
+    "data": {
+      "event_code": "pipeline.delivery_retry_terminal",
+      "outcome": "clipboard_only"
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:30:29.618Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:31:44.257Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:31:44.896Z",
+    "stream": "pipeline",
+    "level": "info",
+    "summary": "delivery retry completed",
+    "data": {
+      "event_code": "pipeline.delivery_retry_terminal",
+      "outcome": "clipboard_only"
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:36:42.801Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:38:06.534Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:38:07.158Z",
+    "stream": "pipeline",
+    "level": "info",
+    "summary": "delivery retry completed",
+    "data": {
+      "event_code": "pipeline.delivery_retry_terminal",
+      "outcome": "clipboard_only"
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:41:59.123Z",
+    "stream": "system",
+    "level": "info",
+    "summary": "delivery retry smoke fixture seeded",
+    "data": {
+      "event_code": "smoke.delivery_retry_fixture_seeded",
+      "recording_id": 1
+    }
+  },
+  {
+    "timestamp": "2026-09-11T09:41:59.755Z",
+    "stream": "pipeline",
+    "level": "info",
+    "summary": "delivery retry completed",
+    "data": {
+      "event_code": "pipeline.delivery_retry_terminal",
+      "outcome": "clipboard_only"
+    }
+  }
+]
