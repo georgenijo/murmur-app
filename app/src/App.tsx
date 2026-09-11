@@ -27,6 +27,7 @@ import { MainErrorBanner } from './components/MainErrorBanner';
 import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
+import { useLocalStats } from './lib/hooks/useLocalStats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
@@ -234,22 +235,18 @@ function App() {
   const {
     status, recordingDuration, error: recordingError,
     dismissError: dismissRecordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel, statsVersion,
+    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
   } = useRecordingState({
     addEntry,
     microphone: settings.microphone,
     smartAuto: smartAutoMicrophoneRequest(settings),
   });
-  const [statsResetVersion, setStatsResetVersion] = useState(0);
-  const [queryStatsVersion, setQueryStatsVersion] = useState(0);
-  const combinedStatsVersion = statsVersion + statsResetVersion + queryStatsVersion;
+  const combinedStatsVersion = useLocalStats();
   const handleResetStats = useCallback(() => {
     resetStats();
-    setStatsResetVersion(v => v + 1);
   }, []);
   const handleQueryCompleted = useCallback((completion: QueryCompletion) => {
     updateQueryStats(completion);
-    setQueryStatsVersion(v => v + 1);
   }, []);
   const handleQuerySetupStatusChange = useCallback((next: QuerySetupStatus) => {
     setQuerySetupStatus(next);
@@ -785,6 +782,7 @@ function App() {
                 </section>
               ) : (
                 <InsightsView
+                  modes={settings.modes}
                   statsVersion={combinedStatsVersion}
                   onBackToHome={backToHome}
                 />

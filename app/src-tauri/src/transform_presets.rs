@@ -63,21 +63,21 @@ pub fn normalize(s: &str) -> String {
         .join(" ")
 }
 
-/// Resolve a spoken (or typed) name to a built-in preset instruction.
+/// Resolve a spoken (or typed) name to its canonical preset and instruction.
 /// Case-insensitive match against canonical name and aliases. Returns
 /// `None` when no preset matches so the raw transcript is used as-is.
-pub fn resolve_preset(spoken: &str) -> Option<&'static str> {
+pub fn resolve_preset(spoken: &str) -> Option<&'static TransformPreset> {
     let key = normalize(spoken);
     if key.is_empty() {
         return None;
     }
     for preset in BUILTIN_PRESETS {
         if normalize(preset.name) == key {
-            return Some(preset.instruction);
+            return Some(preset);
         }
         for alias in preset.aliases {
             if normalize(alias) == key {
-                return Some(preset.instruction);
+                return Some(preset);
             }
         }
     }
@@ -90,42 +90,18 @@ mod tests {
 
     #[test]
     fn resolves_canonical_names_case_insensitively() {
-        assert_eq!(
-            resolve_preset("shorten"),
-            Some(BUILTIN_PRESETS[0].instruction)
-        );
-        assert_eq!(
-            resolve_preset("  BULLETS  "),
-            Some(BUILTIN_PRESETS[1].instruction)
-        );
-        assert_eq!(
-            resolve_preset("Professional"),
-            Some(BUILTIN_PRESETS[2].instruction)
-        );
-        assert_eq!(
-            resolve_preset("fix grammar"),
-            Some(BUILTIN_PRESETS[3].instruction)
-        );
-        assert_eq!(
-            resolve_preset("Casual"),
-            Some(BUILTIN_PRESETS[4].instruction)
-        );
+        assert_eq!(resolve_preset("shorten"), Some(&BUILTIN_PRESETS[0]));
+        assert_eq!(resolve_preset("  BULLETS  "), Some(&BUILTIN_PRESETS[1]));
+        assert_eq!(resolve_preset("Professional"), Some(&BUILTIN_PRESETS[2]));
+        assert_eq!(resolve_preset("fix grammar"), Some(&BUILTIN_PRESETS[3]));
+        assert_eq!(resolve_preset("Casual"), Some(&BUILTIN_PRESETS[4]));
     }
 
     #[test]
     fn resolves_aliases() {
-        assert_eq!(
-            resolve_preset("make shorter"),
-            Some(BUILTIN_PRESETS[0].instruction)
-        );
-        assert_eq!(
-            resolve_preset("bullet points"),
-            Some(BUILTIN_PRESETS[1].instruction)
-        );
-        assert_eq!(
-            resolve_preset("proofread"),
-            Some(BUILTIN_PRESETS[3].instruction)
-        );
+        assert_eq!(resolve_preset("make shorter"), Some(&BUILTIN_PRESETS[0]));
+        assert_eq!(resolve_preset("bullet points"), Some(&BUILTIN_PRESETS[1]));
+        assert_eq!(resolve_preset("proofread"), Some(&BUILTIN_PRESETS[3]));
     }
 
     #[test]
@@ -141,17 +117,11 @@ mod tests {
     /// preserved as a word separator boundary (there is none in these cases).
     #[test]
     fn resolves_names_with_trailing_or_surrounding_punctuation() {
-        assert_eq!(
-            resolve_preset("Shorten."),
-            Some(BUILTIN_PRESETS[0].instruction)
-        );
-        assert_eq!(
-            resolve_preset("Make shorter!"),
-            Some(BUILTIN_PRESETS[0].instruction)
-        );
+        assert_eq!(resolve_preset("Shorten."), Some(&BUILTIN_PRESETS[0]));
+        assert_eq!(resolve_preset("Make shorter!"), Some(&BUILTIN_PRESETS[0]));
         assert_eq!(
             resolve_preset("  fix grammar?  "),
-            Some(BUILTIN_PRESETS[3].instruction)
+            Some(&BUILTIN_PRESETS[3])
         );
     }
 

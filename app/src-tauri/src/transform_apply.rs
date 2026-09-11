@@ -143,6 +143,9 @@ pub struct TransformSession {
     /// Surfaced ONLY via `get_transform_review_content` (pulled by the popover
     /// window) — never logged or attached to an event payload.
     pub instruction: Option<String>,
+    /// Private label for local Insights only. Never log or send to telemetry.
+    pub stats_preset_name: Option<String>,
+    pub stats_instruction_attempt: u64,
     pub proposed: Option<String>,
     pub applied: bool,
     /// Monotonic id stamped at `start_session` time. See the module doc
@@ -173,6 +176,8 @@ impl TransformSession {
             snapshot,
             purpose: crate::dictation_correction::ReviewPurpose::default(),
             instruction: None,
+            stats_preset_name: None,
+            stats_instruction_attempt: 1,
             proposed: None,
             applied: false,
             generation,
@@ -240,6 +245,29 @@ pub fn set_instruction(app_state: &AppState, instruction: String) -> bool {
         }
         None => false,
     }
+}
+
+/// Attach name attribution only to the pass and instruction attempt that
+/// resolved it. A cancelled ASR continuation cannot label a replacement pass.
+pub(crate) fn set_stats_preset(
+    app_state: &AppState,
+    pass_id: u64,
+    attempt: u64,
+    preset_name: Option<String>,
+) -> bool {
+    let mut session = app_state.transform_session.lock_or_recover();
+    let Some(active) = session.as_mut() else {
+        return false;
+    };
+    if active.transform_pass_id != pass_id
+        || app_state.active_transform_pass_id() != Some(pass_id)
+        || app_state.current_instruction_attempt() != attempt
+    {
+        return false;
+    }
+    active.stats_preset_name = preset_name;
+    active.stats_instruction_attempt = attempt;
+    true
 }
 
 /// Snapshot (clone) of the active session, if any. Used by tests and by
@@ -1330,6 +1358,27 @@ mod tests {
     use super::*;
     use crate::selection::TransformSnapshot;
     use std::time::Instant;
+
+    #[test]
+    fn stats_attribution_is_owned_by_the_exact_pass_and_attempt() {
+        let state = AppState::default();
+        state.activate_transform_pass(73);
+        start_session(&state, snapshot());
+        assert!(set_stats_preset(&state, 73, 1, Some("Saved name".into())));
+        assert_eq!(state.next_instruction_attempt(), 2);
+        assert!(!set_stats_preset(&state, 73, 1, Some("Stale name".into())));
+        assert!(set_stats_preset(&state, 73, 2, None));
+        let current = session_snapshot(&state).unwrap();
+        assert_eq!(current.stats_instruction_attempt, 2);
+        assert!(current.stats_preset_name.is_none());
+        state.activate_transform_pass(74);
+        start_session(&state, snapshot());
+        assert!(!set_stats_preset(&state, 73, 2, Some("Old pass".into())));
+        assert!(session_snapshot(&state)
+            .unwrap()
+            .stats_preset_name
+            .is_none());
+    }
 
     fn snapshot() -> TransformSnapshot {
         TransformSnapshot {

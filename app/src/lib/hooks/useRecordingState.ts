@@ -51,6 +51,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const smartAutoRef = useRef(smartAuto);
   const recordingStartTimeRef = useRef(recordingStartTime);
   const latestRecordingGenerationRef = useRef(0);
+  const completedRecordingIds = useRef(new Set<number>());
   const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
   const nextErrorIdRef = useRef(0);
   const errorProducerEpochRef = useRef(0);
@@ -324,6 +325,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       // never in handleStop, to avoid race-condition duplicates.
       const { text, rawText, duration, teachingContext, interrupted, recording } = event.payload;
       if (text) {
+        if (recording) {
+          if (completedRecordingIds.current.has(recording.recordingId)) return;
+          completedRecordingIds.current.add(recording.recordingId);
+        }
         setTranscription(text);
         const details = typeof rawText === 'string' && recording
           ? { rawText, recording }
@@ -333,7 +338,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         } else {
           addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
         }
-        updateStats(text, duration);
+        updateStats(text, duration, recording?.modeId);
         setStatsVersion(v => v + 1);
       }
     }).then((fn) => {

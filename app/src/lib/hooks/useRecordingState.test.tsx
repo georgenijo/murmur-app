@@ -226,8 +226,22 @@ describe('useRecordingState transition ordering', () => {
       },
     );
     expect(mocks.updateStats).toHaveBeenCalledTimes(1);
-    expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);
+    expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12, null);
     expect(current.transcription).toBe('one final transcript');
+  });
+
+  it('attributes stats to the recording-start Mode once, even for a repeated completion', async () => {
+    const payload = {
+      text: 'words completed in another Mode', duration: 8,
+      recording: { recordingId: 81, modelId: 'parakeet-v3', modeId: 'frozen-mode', profileId: null, stages: [] },
+    };
+    await act(async () => {
+      mocks.listeners.get('transcription-complete')?.({ payload });
+      mocks.listeners.get('transcription-complete')?.({ payload });
+    });
+    expect(mocks.updateStats).toHaveBeenCalledOnce();
+    expect(mocks.updateStats).toHaveBeenCalledWith(payload.text, 8, 'frozen-mode');
+    expect(mocks.addEntry).toHaveBeenCalledOnce();
   });
 
   it('clears an older failure for a new generation and ignores delayed stale presentations', async () => {

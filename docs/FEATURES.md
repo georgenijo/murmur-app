@@ -193,7 +193,27 @@ primary destinations in the Home sidebar. Home uses
 one 64px recording row for the real recording state, configured shortcut, and
 file transcription, then gives Recent Dictations the remaining workspace.
 The responsive Home insights rail and full Insights destination use only
-durable local statistics. Home keeps inspectable vocabulary, app-style, and
+durable local statistics. Insights includes total dictation minutes, estimated
+typing time saved at 40 words per minute minus dictation time, the most-used
+Mode, this month's completed meetings and capture minutes, this month's
+transform proposals and approval rate, and corrections taught.
+
+Local counters also retain meeting summary completions; transform runs,
+approvals, and successful undos by exact preset name; corrections proposed
+and taught; taught corrections by global/app/project scope; recordings by
+Mode ID; and successful Paste Last uses from every entry point. Each successful
+selected-text proposal counts as one run, including retries. Approvals and undos
+belong to the proposal's month. Dictation correction reviews do not count as
+selected-text transforms. Meeting minutes use native capture elapsed time
+before processing, excluding the UI timer and transcript processing time.
+
+Main owns stats writes. Other webviews send completion receipts containing
+only counter metadata. Preset names and Mode IDs stay in local statistics;
+text, instructions, preset bodies, app identifiers, and project paths never
+enter stats. Reset clears the new counters along with the existing totals.
+Older stats load with zeroed new counters.
+
+Home keeps inspectable vocabulary, app-style, and
 regular-use milestones—not a tuning percentage, acoustic-training claim, or
 fabricated unlock. The full Insights page reserves its width for aligned Voice
 Query totals and interactive activity, words-per-day, and WPM charts. File
