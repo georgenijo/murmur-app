@@ -44,6 +44,7 @@ pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
+mod meeting_audio;
 mod meeting_capture;
 pub mod meeting_diarization;
 mod meeting_review;
@@ -430,6 +431,9 @@ pub fn run() {
             meeting_suggestions::configure_meeting_suggestions,
             meeting_suggestions::get_meeting_suggestion,
             meeting_suggestions::dismiss_meeting_suggestion,
+            meeting_audio::get_meeting_audio_manifest,
+            meeting_audio::read_meeting_audio_range,
+            meeting_audio::get_meeting_audio_capture_busy,
             commands::meeting::save_meeting_review,
             commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,

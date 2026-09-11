@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { echoCancellationNotice, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
+import { useMeetingAudio } from '../../lib/hooks/useMeetingAudio';
 
 interface MeetingsPanelProps {
   meetings: ReturnType<typeof useMeetings>;
+  playbackBusy: boolean;
 }
 
 function phaseLabel(phase: ReturnType<typeof useMeetings>['status']['phase']): string {
@@ -16,7 +18,7 @@ function phaseLabel(phase: ReturnType<typeof useMeetings>['status']['phase']): s
   return 'Ready for a meeting';
 }
 
-export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
+export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const [query, setQuery] = useState('');
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -25,6 +27,13 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = ['starting', 'recording', 'stopping'].includes(meetings.status.phase);
   const processing = meetings.status.phase === 'processing';
+  const captureBusy = active || processing || playbackBusy;
+  const meetingAudio = useMeetingAudio({
+    sessionId: meetings.detail?.session.retainAudio === true
+      ? meetings.detail.session.id
+      : null,
+    captureBusy,
+  });
   const visibleSegments = meetings.detail?.segments ?? (
     meetings.status.sessionId ? meetings.liveSegments.filter((segment) => segment.sessionId === meetings.status.sessionId) : []
   );
@@ -61,6 +70,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
       return;
     }
     setConfirmDelete(null);
+    meetingAudio.invalidate();
     if (await meetings.remove(id)) {
       showNotice('Meeting deleted from this Mac.');
     }
@@ -74,6 +84,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
       return;
     }
     setConfirmClear(false);
+    meetingAudio.invalidate();
     if (await meetings.clear()) {
       showNotice('All meeting transcripts deleted from this Mac.');
     }
@@ -240,7 +251,8 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               <MeetingReviewWorkspace
                 meetings={meetings}
                 segments={visibleSegments}
-                captureBusy={active || processing}
+                captureBusy={captureBusy}
+                meetingAudio={meetingAudio}
                 onNotice={showNotice}
               />
             </>

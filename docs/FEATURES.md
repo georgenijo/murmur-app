@@ -72,6 +72,10 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Optional [meeting suggestions](features/meeting-suggestions.md) offer Start
   Notetaker when a video-call event is in progress and a supported meeting app
   or browser is frontmost. The setting defaults off and recording requires Accept.
+- [Retained audio playback](features/meeting-audio-playback.md) plays the full
+  Me/Them timeline or seeks from a selected segment on its canonical channel.
+  Playback pauses for recording and voice work; unretained sessions explain
+  why audio is unavailable.
 - Copy or save speaker-labeled SRT/WebVTT captions using recorded segment times.
   Overlapping speech keeps its original timing and untranscribed sections are
   marked. Review summaries and audio are excluded from captions.
@@ -343,7 +347,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 214 registered commands |
+| Rust backend | `app/src-tauri/src/` — 217 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

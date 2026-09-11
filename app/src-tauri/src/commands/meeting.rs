@@ -159,10 +159,13 @@ pub async fn start_meeting(
         return Err("Enable Murmur before starting a meeting.".to_string());
     }
 
-    let (repository, session, config) =
-        prepare_meeting_session(&request, &state.app_state, suggestion.as_ref(), || {
-            state.meeting_store.repository()
-        })?;
+    let (repository, session, config) = prepare_meeting_session(
+        &request,
+        &state.app_state,
+        suggestion.as_ref(),
+        || state.meeting_store.repository(),
+        |id| crate::meeting_audio::invalidate_playback(&app, Some(id)),
+    )?;
     state.transform_runtime.shutdown();
     if let Err(error) = state.meetings.start(app, repository.clone(), config) {
         state
@@ -188,6 +191,7 @@ fn prepare_meeting_session(
     app_state: &AppState,
     suggestion: Option<&crate::calendar::SuggestionEvent>,
     repository: impl FnOnce() -> Result<MeetingRepository, String>,
+    invalidate_audio: impl FnMut(&str),
 ) -> Result<(MeetingRepository, MeetingSession, MeetingCaptureConfig), String> {
     // Refusal must precede retention pruning, session creation, and ownership.
     let device_id = crate::microphone_auto::resolve_capture_device(
@@ -218,6 +222,7 @@ fn prepare_meeting_session(
     let _ = repository.prune(
         clamp_retention_days(request.retention_days),
         clamp_max_sessions(request.max_sessions),
+        invalidate_audio,
     );
     let generation = app_state.next_meeting_generation();
     let session_id = Uuid::new_v4().to_string();
@@ -287,9 +292,13 @@ mod admission_tests {
                 diarization: false,
                 suggestion_token: None,
             };
-            let result = prepare_meeting_session(&request, &app_state, None, || {
-                panic!("a refused input must not access or prune the meeting store")
-            });
+            let result = prepare_meeting_session(
+                &request,
+                &app_state,
+                None,
+                || panic!("a refused input must not access or prune the meeting store"),
+                |_| panic!("a refused input must not invalidate playback"),
+            );
             assert!(result.is_err_and(|error| error.contains("Smart Auto")));
             assert!(!app_state.meeting_active.load(Ordering::SeqCst));
             assert!(!app_state.meeting_inference_active.load(Ordering::SeqCst));
@@ -447,7 +456,13 @@ pub fn save_meeting_review_export(
 }
 
 #[tauri::command]
-pub fn delete_meeting(id: String, state: tauri::State<'_, State>) -> Result<(), String> {
+pub fn delete_meeting(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    id: String,
+    state: tauri::State<'_, State>,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
     let id = id.trim();
     if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
         return Err("Stop this meeting before deleting it.".to_string());
@@ -463,11 +478,17 @@ pub fn delete_meeting(id: String, state: tauri::State<'_, State>) -> Result<(), 
         return Err("Cancel this meeting summary before deleting it.".to_string());
     }
     crate::meeting_diarization::cancel_session(id)?;
+    crate::meeting_audio::invalidate_playback(&app, Some(id));
     state.meeting_store.repository()?.delete_session(id)
 }
 
 #[tauri::command]
-pub fn delete_all_meetings(state: tauri::State<'_, State>) -> Result<(), String> {
+pub fn delete_all_meetings(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, State>,
+) -> Result<(), String> {
+    require_main_window(window.label())?;
     if state.meetings.is_active() {
         return Err("Stop the active meeting before deleting meeting history.".to_string());
     }
@@ -479,18 +500,23 @@ pub fn delete_all_meetings(state: tauri::State<'_, State>) -> Result<(), String>
         return Err("Cancel the active meeting summary before deleting meeting history.".into());
     }
     crate::meeting_diarization::cancel_all()?;
+    crate::meeting_audio::invalidate_playback(&app, None);
     state.meeting_store.repository()?.delete_all()
 }
 
 #[tauri::command]
 pub fn prune_meetings(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     retention_days: Option<u32>,
     max_sessions: u32,
     state: tauri::State<'_, State>,
 ) -> Result<u64, String> {
+    require_main_window(window.label())?;
     state.meeting_store.repository()?.prune(
         clamp_retention_days(retention_days),
         clamp_max_sessions(max_sessions),
+        |id| crate::meeting_audio::invalidate_playback(&app, Some(id)),
     )
 }
 

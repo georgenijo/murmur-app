@@ -9,6 +9,11 @@ provenance, or letting regeneration erase reviewed work.
 
 ## Usage
 
+Sessions with retained audio expose [audio playback](meeting-audio-playback.md).
+Play all follows the original Me/Them timeline. Selecting a segment seeks to its
+offset on the canonical channel, regardless of its editable speaker label.
+Sessions without retained audio explain why playback is unavailable.
+
 The Notetaker loads one Rust-owned workspace snapshot for the selected meeting.
 The user can name the meeting, maintain its attendee list, rename the two capture
 channels, edit existing generated claims,

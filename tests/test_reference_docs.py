@@ -93,6 +93,9 @@ class ReferenceDocsTests(unittest.TestCase):
             "configure_meeting_suggestions",
             "get_meeting_suggestion",
             "dismiss_meeting_suggestion",
+            "get_meeting_audio_manifest",
+            "read_meeting_audio_range",
+            "get_meeting_audio_capture_busy",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, commands)

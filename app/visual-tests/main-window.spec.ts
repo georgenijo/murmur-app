@@ -780,6 +780,20 @@ test('meeting review keeps provenance, actions, and transcript evidence usable a
   await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
 });
 
+test('synthetic retained-WAV review exposes playback transport and segment controls', async ({ page }) => {
+  await page.setViewportSize({ width: 880, height: 900 });
+  await page.goto('/visual-fixtures.html?state=meetings-review-audio&appearance=light');
+  const fixture = page.locator('[data-visual-ready="true"]');
+
+  await expect(page.getByText('Synthetic retained-audio review', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Meeting audio playback' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play all' })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Playback position' })).toHaveAttribute('aria-valuetext', '0:00 of 18:00');
+  await expect(page.getByRole('button', { name: 'Play segment at 0:12, Me channel' })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(fixture).toHaveScreenshot('light-meeting-retained-audio.png');
+});
+
 test('meeting captions explain segment timing and keep copy and export reachable', async ({ page }) => {
   for (const [appearance, width, height, format] of [
     ['light', 880, 720, 'srt'],
