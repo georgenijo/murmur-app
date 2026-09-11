@@ -233,7 +233,11 @@ Mac.
 
 ## Non-goals
 
-System-channel diarization is a separate optional phase-2 feature. Calendar
-integration, auto-start, cloud sync, translation, and caption overlays are not
+System-channel diarization is a separate optional phase-2 feature. Auto-start,
+cloud sync, translation, and caption overlays are not
 part of meeting capture. Action items are derived
 text only; Murmur does not execute, send, or sync them.
+An explicit [Calendar naming](meeting-calendar.md) action is available in the
+review workspace after capture; it does not touch the capture pipeline.
+Optional [meeting suggestions](meeting-suggestions.md) can offer Start Notetaker
+for an in-progress Calendar call. Only accepting that prompt starts capture.

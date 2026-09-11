@@ -181,7 +181,7 @@ fn terminate_or_retain(mut child: ManagedChild) -> bool {
     }
 }
 
-fn clear_quarantined_installer() -> bool {
+pub(crate) fn clear_quarantined_installer() -> bool {
     let mut slot = UNCONFIRMED_INSTALLER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

@@ -50,6 +50,12 @@ class ReferenceDocsTests(unittest.TestCase):
         self.assertIn("get_model_hardware_guidance", commands)
         self.assertIn("get_model_hardware_guidance", documented)
 
+    def test_remove_model_command_is_registered_and_documented(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        self.assertIn("remove_model", commands)
+        self.assertIn("remove_model", documented)
+
     def test_follow_up_commands_are_registered_and_documented(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
         documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
@@ -73,6 +79,24 @@ class ReferenceDocsTests(unittest.TestCase):
                 AssertionError, r"missing=.*set_overlay_vertical_offset.*extra="
             ):
                 validate_reference_docs(root)
+
+    def test_calendar_commands_are_part_of_the_checked_reference(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        for command in (
+            "get_calendar_permission_status",
+            "request_calendar_permission",
+            "reset_calendar_permission",
+            "open_calendar_preferences",
+            "get_meeting_calendar_events",
+            "apply_meeting_calendar_event",
+            "configure_meeting_suggestions",
+            "get_meeting_suggestion",
+            "dismiss_meeting_suggestion",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, commands)
+                self.assertIn(command, documented)
 
     def test_stale_human_facing_count_fails(self) -> None:
         for relative in (

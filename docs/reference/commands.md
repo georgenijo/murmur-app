@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 204 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 214 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -62,7 +62,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses every competing audio/model owner. |
+| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions, suggestionToken?}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses competing audio/model/query owners. An optional suggestion token requires the main window and current native frontmost eligibility under the recording transition lock; Rust consumes the suggestion and saves its Calendar title and attendees before capture starts. |
 | `stop_meeting` | — | `Result<(), String>` | Requests capture teardown; the worker must destroy the IOProc, aggregate device, and tap before acknowledging. Pending durable chunks continue through serialized inference. |
 | `get_meeting_status` | — | `MeetingRuntimeStatus` | Current generation, session, phase, elapsed time, per-channel activity, and stable failure code. |
 | `get_system_audio_permission_status` | — | `SystemAudioPermissionState` | Returns the cached `unknown` / `granted` / `denied` / `unsupported` state without creating a tap. |
@@ -79,6 +79,41 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `delete_meeting` | `id` | `Result<(), String>` | Deletes one inactive session, its segments/FTS rows, and owned chunk audio. |
 | `delete_all_meetings` | — | `Result<(), String>` | Deletes all sessions and owned chunk audio; refused while a meeting is active. |
 | `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Deletes completed/interrupted sessions beyond the bounded age/count policy. |
+
+## Calendar naming (`commands/meeting_calendar.rs`)
+
+Every Calendar command requires the main window. Permission reads never query
+events. Event lookup and application run only after explicit user actions.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_calendar_permission_status` | — | `Result<CalendarPermissionStatus, String>` | Reads native authorization without prompting or creating an event store. Returns `notDetermined`, `granted`, `denied`, `restricted`, or `unsupported`; write-only access maps to `denied`. |
+| `request_calendar_permission` | — | `Result<CalendarPermissionStatus, String>` | Explicitly requests full event access on the main thread. Keeps the native store alive through completion. Never fetches events or writes to Calendar. |
+| `reset_calendar_permission` | — | `Result<(), String>` | Resets only the running app's Calendar TCC entry with a ten-second process deadline. Does not request permission afterward. |
+| `open_calendar_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Calendars. |
+| `get_meeting_calendar_events` | `sessionId: String` | `Result<Vec<CalendarEventCandidate>, String>` | Derives a finished session's overlap window from SQLite and queries EventKit off the main thread. Returns at most 100 candidates containing `selectionToken`, `title`, `attendees`, `startMs`, and `endMs`. Retains no cache and applies nothing. |
+| `apply_meeting_calendar_event` | `sessionId: String`, `selectionToken: String` | `Result<MeetingWorkspace, String>` | Requeries the stored session window and matches the displayed event's token. Changed or missing details fail without a write. A successful explicit selection saves only title, attendees, and `calendar` source through the shared metadata transaction. |
+
+Lookup accepts session windows up to seven days and gives the worker fifteen
+seconds to respond. A timed-out worker retains the single Calendar operation
+slot until it returns. Titles and participant names allow 200 characters each,
+with at most 100 participants per event. Oversized results fail instead of
+silently selecting or truncating details. See [Calendar naming](../features/meeting-calendar.md).
+
+## Meeting suggestions (`meeting_suggestions.rs`)
+
+Suggestions default off. Enabling requires Calendar permission already granted;
+the coordinator never opens a permission dialog. Prompt payloads are transient
+and available only to the main window and overlay.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `configure_meeting_suggestions` | `enabled: bool` | `Result<(), String>` | Main-window-only consent boundary. Enables bounded calendar snapshots and native change observation, or revokes pending workers, clears private event data, and releases the observer store. |
+| `get_meeting_suggestion` | — | `Result<Option<MeetingSuggestion>, String>` | Main/overlay-only current prompt with `token`, `title`, `startMs`, and `endMs`. Does not query Calendar; busy or expired prompts return null. |
+| `dismiss_meeting_suggestion` | `token: String` | `Result<(), String>` | Main/overlay-only dismissal of the exact prompt. An already dismissed or stale token does nothing. This occurrence stays suppressed for the app runtime, including off/on toggles. |
+
+Accept routes through `start_meeting`; there is no separate capture entry point.
+See [Meeting suggestions](../features/meeting-suggestions.md) for deadlines and eligibility.
 
 ## Meeting summaries (`commands/meeting_summary.rs`)
 
@@ -159,7 +194,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `choose_query_workspace` | — | `Option<String>` | Main-only native folder selection; stages a canonical folder without granting access. |
 | `confirm_query_workspace` | `command: QueryCommandConfig`, `expected_directory: String` | `CapabilityStatus` | Main-only explicit consent; verifies the displayed canonical folder and Claude capability flags, then binds the pending folder to the exact command. |
 | `revoke_query_capabilities` | — | `CapabilityStatus` | Main-only revocation invalidates pending selection/confirmation and grants. Existing query snapshots require cancellation to stop. |
-| `list_query_history` | `offset: Option<u32>`, `limit: Option<u32>`, `provider: Option<QueryProviderId>` | `Result<QueryHistoryPageV1, String>` | Main-window-only, newest-first page from the separate opt-in query store. Defaults to 50 entries and caps requests at 100; it never has a separate context, stderr/detail, executable/argv/environment, or secrets field, though a retained answer may quote context sent to its CLI. |
+| `list_query_history` | `offset: Option<u32>`, `limit: Option<u32>`, `provider: Option<QueryProviderId>`, `search: Option<String>` | `Result<QueryHistoryPageV1, String>` | Main-window-only, newest-first page from the separate opt-in query store. Defaults to 50 entries, caps requests at 100, and composes provider with bounded case-insensitive question/answer substring search; it never has a separate context, stderr/detail, executable/argv/environment, or secrets field, though a retained answer may quote context sent to its CLI. |
 | `clear_query_history` | — | `Result<(), String>` | Main-window-only direct purge of every retained Voice Query record and recovery artifact. Advances the store clear epoch so an older in-flight pass cannot reinsert content after deletion. |
 
 ## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
@@ -218,6 +253,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
 | `get_model_hardware_guidance` | — | `ModelHardwareGuidance` | Read-once Apple chip tier and physical-memory guidance for model pickers, including the recommended model, presentation-only model-memory budget, and warned catalog identifiers. It does not select, install, load, unload, or hide models. |
 | `get_diarization_model_status` | — | `ModelStatus` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. |
+| `remove_model` | `model_name: String` | `Result<(), String>` | Removes only the exact managed catalog artifact (or documented FluidAudio v3 cache); refuses selected/active models, recording/transcription, concurrent model work, downloads, symbolic links, and external Whisper copies. Publishes NotInstalled immediately. |
 | `download_model` | `model_name: String` | `Result<(), String>` | Single-flight install with attempt-correlated `download-progress`, atomic publication, and Silero VAD co-download. Core ML setup runs behind a same-signed killable process boundary with a hard deadline, durable incomplete-repair detection, confirmed cleanup, validation, Retry, and fallback-ready terminal errors. |
 | `remove_diarization_model` | — | `Result<(), String>` | Cancels active diarization work, waits for model-use ownership, and removes the installed speaker-model directory after acquiring the shared model-cache lease. |
 

@@ -363,6 +363,16 @@ impl BenchmarkCoordinator {
             == CoordinatorActivity::Benchmark
     }
 
+    pub(crate) fn is_busy(&self) -> bool {
+        match self.activity.try_lock() {
+            Ok(activity) => *activity != CoordinatorActivity::Idle,
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                *error.into_inner() != CoordinatorActivity::Idle
+            }
+            Err(std::sync::TryLockError::WouldBlock) => true,
+        }
+    }
+
     pub fn try_start(&self) -> bool {
         let mut activity = self
             .activity
@@ -1871,6 +1881,20 @@ mod tests {
         assert!(!coordinator.try_start_shared_backend_change());
         coordinator.finish();
         assert!(coordinator.try_start_shared_backend_change());
+    }
+
+    #[test]
+    fn suggestions_treat_shared_backend_changes_and_contended_activity_as_busy() {
+        let coordinator = BenchmarkCoordinator::new();
+        assert!(!coordinator.is_busy());
+        assert!(coordinator.try_start_shared_backend_change());
+        assert!(coordinator.is_busy());
+        coordinator.finish_shared_backend_change();
+        assert!(!coordinator.is_busy());
+        let activity = coordinator.activity.lock().unwrap();
+        assert!(coordinator.is_busy());
+        drop(activity);
+        assert!(!coordinator.is_busy());
     }
 
     fn model(name: &'static str) -> BenchmarkModel {

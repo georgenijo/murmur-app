@@ -10,6 +10,7 @@ mod audio_lifecycle;
 // stable external API.
 pub mod benchmark;
 mod browser_site;
+mod calendar;
 pub mod capture_agent_probe;
 mod capture_health;
 pub mod capture_helper_probe;
@@ -47,6 +48,7 @@ mod meeting_capture;
 pub mod meeting_diarization;
 mod meeting_review;
 mod meeting_store;
+mod meeting_suggestions;
 mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
@@ -174,6 +176,7 @@ pub(crate) struct State {
     pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) meeting_store: meeting_store::MeetingStore,
     pub(crate) meetings: meeting_capture::MeetingCoordinator,
+    pub(crate) meeting_suggestions: meeting_suggestions::MeetingSuggestions,
     pub(crate) meeting_summaries: commands::meeting_summary::MeetingSummaryCoordinator,
     pub(crate) delivery_recovery: delivery_recovery::DeliveryRecoveryState,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
@@ -282,6 +285,7 @@ pub fn run() {
             knowledge: knowledge_store::KnowledgeStore::default(),
             meeting_store: meeting_store::MeetingStore::default(),
             meetings: meeting_capture::MeetingCoordinator::default(),
+            meeting_suggestions: meeting_suggestions::MeetingSuggestions::default(),
             meeting_summaries: commands::meeting_summary::MeetingSummaryCoordinator::default(),
             delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
@@ -417,6 +421,15 @@ pub fn run() {
             commands::meeting::list_meetings,
             commands::meeting::get_meeting,
             commands::meeting::save_meeting_metadata,
+            commands::meeting_calendar::get_calendar_permission_status,
+            commands::meeting_calendar::request_calendar_permission,
+            commands::meeting_calendar::reset_calendar_permission,
+            commands::meeting_calendar::open_calendar_preferences,
+            commands::meeting_calendar::get_meeting_calendar_events,
+            commands::meeting_calendar::apply_meeting_calendar_event,
+            meeting_suggestions::configure_meeting_suggestions,
+            meeting_suggestions::get_meeting_suggestion,
+            meeting_suggestions::dismiss_meeting_suggestion,
             commands::meeting::save_meeting_review,
             commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,
@@ -471,6 +484,7 @@ pub fn run() {
             commands::models::get_model_runtime_status,
             commands::models::get_model_hardware_guidance,
             commands::models::download_model,
+            commands::models::remove_model,
             commands::transform_model::transform_model_status,
             commands::transform_model::download_transform_model,
             commands::transform_model::remove_transform_model,
@@ -706,6 +720,7 @@ pub fn run() {
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
             frontmost::register_delivery_transition_observers();
+            meeting_suggestions::initialize(app.handle().clone());
             #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_update_wake_observer(app.handle().clone());
 
@@ -841,6 +856,7 @@ pub fn run() {
             if let Some(state) = _app_handle.try_state::<State>() {
                 let _ = meeting_diarization::cancel_all();
                 state.meetings.shutdown(_app_handle);
+                state.meeting_suggestions.shutdown();
                 state.transform_runtime.shutdown();
                 state.query.shutdown();
             }

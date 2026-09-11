@@ -185,8 +185,11 @@ statistics, performance diagnostics, and logs.
 
 The store retains the newest 200 records and prunes in the same transaction as
 each insert. History → Queries reads it through main-window-only, paged IPC and
-offers a provider filter. A failed record shows a readable explanation and a
-recovery step derived from its stable error code. Provider stderr remains
+offers a provider filter plus bounded, case-insensitive substring search over
+saved questions and answers. Search, provider, pagination, and the matching
+total compose at that same requester-gated boundary. Search text is never
+logged, exported, or included in telemetry. A failed record shows a readable
+explanation and a recovery step derived from its stable error code. Provider stderr remains
 ephemeral. A bounded partial answer remains available behind a disclosure. The
 **Delete all query history** action requires a second click within four seconds.
 Turning retention off stops future inserts but does not silently delete existing

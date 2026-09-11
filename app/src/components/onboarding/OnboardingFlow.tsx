@@ -27,10 +27,34 @@ import {
   requestSystemAudioPermission,
   type SystemAudioPermissionState,
 } from '../../lib/meetings';
+import {
+  getCalendarPermissionStatus,
+  openCalendarPreferences,
+  requestCalendarPermission,
+  resetCalendarPermission,
+  type CalendarPermissionState,
+} from '../../lib/calendar';
 
-type Step = 'welcome' | 'microphone' | 'accessibility' | 'systemAudio' | 'model' | 'hotkey' | 'done';
+type Step =
+  | 'welcome'
+  | 'microphone'
+  | 'accessibility'
+  | 'systemAudio'
+  | 'calendar'
+  | 'model'
+  | 'hotkey'
+  | 'done';
 
-const STEP_ORDER: Step[] = ['welcome', 'microphone', 'accessibility', 'systemAudio', 'model', 'hotkey', 'done'];
+const STEP_ORDER: Step[] = [
+  'welcome',
+  'microphone',
+  'accessibility',
+  'systemAudio',
+  'calendar',
+  'model',
+  'hotkey',
+  'done',
+];
 
 interface Props {
   initialModel: ModelOption;
@@ -44,14 +68,15 @@ interface Props {
 /**
  * First-launch setup assistant.
  *
- * Walks a new install through the two macOS permissions and the model
- * download, replacing the old flow where the mic TCC prompt only fired on the
- * first recording attempt and permissions were a dismissible banner.
+ * Walks a new install through core macOS permissions, optional meeting
+ * permissions, and the model download. This replaces the old flow where the
+ * mic TCC prompt only fired on the first recording attempt and permissions
+ * were a dismissible banner.
  *
- * Permission state is polled every second (plus on window focus) for the whole
- * wizard lifetime, so a grant made in System Settings flips the step live when
- * the user comes back. Both permission steps handle the "wishy-washy" TCC
- * states explicitly:
+ * Microphone and Accessibility state is polled every second, plus on window
+ * focus, so a grant made in System Settings flips the step live when the user
+ * comes back. Optional meeting permissions are read only on their own steps.
+ * The core permission steps handle the "wishy-washy" TCC states explicitly:
  * - mic `notDetermined`/`unknown` → in-app native prompt (request_microphone_access)
  * - mic `denied` → open System Settings, or reset the stale TCC entry, which
  *   returns the status to `notDetermined` so the in-app prompt works again
@@ -68,6 +93,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [systemAudioStatus, setSystemAudioStatus] = useState<SystemAudioPermissionState>('unknown');
   const [systemAudioBusy, setSystemAudioBusy] = useState(false);
   const [systemAudioError, setSystemAudioError] = useState<string | null>(null);
+  const [calendarStatus, setCalendarStatus] = useState<CalendarPermissionState>('notDetermined');
+  const [calendarBusy, setCalendarBusy] = useState(false);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
   // Per-model on-disk status for every option the download panel offers.
   // null = not probed yet; the model step shows a spinner-less blank until known.
   const [installedModels, setInstalledModels] = useState<Partial<Record<ModelOption, boolean>> | null>(null);
@@ -85,6 +113,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   // Monotonic sequence so an interval probe overlapping a focus probe can't
   // apply an older TCC result over a newer one.
   const pollSeq = useRef(0);
+  const calendarProbeSeq = useRef(0);
+  const calendarMutationSeq = useRef(0);
   const refreshPermissions = useCallback(async () => {
     const seq = ++pollSeq.current;
     let mic: MicPermissionStatus = 'unknown';
@@ -148,6 +178,35 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   useEffect(() => {
     if (step !== 'systemAudio') return;
     void getSystemAudioPermissionStatus().then(setSystemAudioStatus).catch(() => {});
+  }, [step]);
+
+  // Calendar access is optional. Keep even its passive permission probe out of
+  // the welcome and unrelated setup steps so onboarding never touches EventKit
+  // before the user reaches this screen.
+  useEffect(() => {
+    if (step !== 'calendar') return;
+    let stale = false;
+    const refreshCalendarPermission = () => {
+      const seq = ++calendarProbeSeq.current;
+      setCalendarError(null);
+      void getCalendarPermissionStatus().then(
+        (status) => {
+          if (!stale && seq === calendarProbeSeq.current) setCalendarStatus(status);
+        },
+        () => {
+          if (!stale && seq === calendarProbeSeq.current) {
+            setCalendarError('Could not check Calendar access. You can skip this step and name meetings manually.');
+          }
+        },
+      );
+    };
+
+    refreshCalendarPermission();
+    window.addEventListener('focus', refreshCalendarPermission);
+    return () => {
+      stale = true;
+      window.removeEventListener('focus', refreshCalendarPermission);
+    };
   }, [step]);
 
   // If the settings model is missing but another offered model is on disk,
@@ -249,6 +308,55 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     }
   };
 
+  const handleRequestCalendar = async () => {
+    const mutationSeq = ++calendarMutationSeq.current;
+    ++calendarProbeSeq.current;
+    setCalendarError(null);
+    setCalendarBusy(true);
+    try {
+      const status = await requestCalendarPermission();
+      if (mutationSeq === calendarMutationSeq.current) {
+        ++calendarProbeSeq.current;
+        setCalendarStatus(status);
+      }
+    } catch {
+      if (mutationSeq === calendarMutationSeq.current) {
+        setCalendarError('Could not request Calendar access. You can skip this step and name meetings manually.');
+      }
+    } finally {
+      if (mutationSeq === calendarMutationSeq.current) setCalendarBusy(false);
+    }
+  };
+
+  const handleOpenCalendarSettings = async () => {
+    setCalendarError(null);
+    try {
+      await openCalendarPreferences();
+    } catch {
+      setCalendarError('Could not open Calendar settings. Open Privacy & Security → Calendars in System Settings.');
+    }
+  };
+
+  const handleResetCalendar = async () => {
+    const mutationSeq = ++calendarMutationSeq.current;
+    ++calendarProbeSeq.current;
+    setCalendarError(null);
+    setCalendarBusy(true);
+    try {
+      await resetCalendarPermission();
+      if (mutationSeq === calendarMutationSeq.current) {
+        ++calendarProbeSeq.current;
+        setCalendarStatus('notDetermined');
+      }
+    } catch {
+      if (mutationSeq === calendarMutationSeq.current) {
+        setCalendarError('Could not reset Calendar access. Open Privacy & Security → Calendars in System Settings.');
+      }
+    } finally {
+      if (mutationSeq === calendarMutationSeq.current) setCalendarBusy(false);
+    }
+  };
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       <WindowHeader />
@@ -291,7 +399,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </p>
             <p className="mx-auto mb-8 max-w-md text-sm leading-relaxed text-on-surface-variant">
               Setup takes about a minute: core macOS permissions, optional System
-              Audio access for meetings, and a one-time model download.
+              Audio and Calendar access for meetings, and a one-time model download.
             </p>
             <button
               onClick={goNext}
@@ -474,6 +582,87 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
           </div>
         )}
 
+        {step === 'calendar' && (
+          <div>
+            <StepHeading
+              title="Calendar Access"
+              granted={calendarStatus === 'granted'}
+              subtitle="Optional for Meetings. Murmur can read events that overlap a meeting and offer their names and attendees for you to confirm. It never changes your calendar or chooses an event automatically."
+            />
+
+            {calendarStatus === 'granted' ? (
+              <GrantedCard label="Calendar access granted" />
+            ) : calendarStatus === 'denied' ? (
+              <div className="dialog-card mb-6 space-y-3 border-error/30 bg-error/10 px-4 py-3">
+                <p className="text-sm text-error">
+                  Calendar access is denied. You can still name meetings manually, or enable Murmur under Privacy &amp; Security → Calendars.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleOpenCalendarSettings()}
+                  className="dialog-pill-btn w-full border-error/30 bg-error/10 px-4 py-2 text-sm font-semibold text-error"
+                >
+                  Open System Settings
+                </button>
+                <div>
+                  <button
+                    type="button"
+                    disabled={calendarBusy}
+                    onClick={() => void handleResetCalendar()}
+                    className="text-xs text-error underline hover:no-underline disabled:cursor-wait disabled:opacity-60"
+                  >
+                    Reset Calendar permission
+                  </button>
+                  <p className="mt-1 text-xs text-error">
+                    Clears Murmur's Calendar entry so macOS can ask again the next time you allow access.
+                  </p>
+                </div>
+              </div>
+            ) : calendarStatus === 'restricted' ? (
+              <div className="dialog-card mb-6 space-y-3 border-warning/30 bg-warning/10 px-4 py-3">
+                <p className="text-sm text-warning">
+                  macOS policy restricts Calendar access on this Mac. You can still name meetings manually.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleOpenCalendarSettings()}
+                  className="dialog-pill-btn w-full border-warning/30 bg-warning/10 px-4 py-2 text-sm font-semibold text-warning"
+                >
+                  Open System Settings
+                </button>
+              </div>
+            ) : calendarStatus === 'unsupported' ? (
+              <div className="dialog-card mb-6 border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+                Calendar lookup is unavailable on this Mac. You can still name meetings manually.
+              </div>
+            ) : (
+              <div className="mb-6 space-y-3">
+                <button
+                  type="button"
+                  disabled={calendarBusy}
+                  onClick={() => void handleRequestCalendar()}
+                  className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {calendarBusy ? 'Waiting for macOS…' : 'Allow Calendar Access'}
+                </button>
+                <p className="text-center text-xs leading-relaxed text-on-surface-variant">
+                  Murmur only reads Calendar when you ask to name a meeting. Calendar details stay on this Mac.
+                </p>
+              </div>
+            )}
+
+            {calendarError && <p className="mb-4 text-xs text-error">{calendarError}</p>}
+            <WizardNavigationRow
+              onBack={goBack}
+              onNext={goNext}
+              nextEnabled={calendarStatus === 'granted'}
+              nextLabel="Continue"
+              skippable={calendarStatus !== 'granted'}
+              skipLabel="Skip Calendar for now"
+            />
+          </div>
+        )}
+
         {step === 'model' && (
           <div>
             <h1 className="mb-1 text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
@@ -600,6 +789,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <SummaryRow ok={micGranted} label="Microphone" okText="Granted" missingText="Not granted — grant later from the in-app banner or Settings" />
               <SummaryRow ok={axGranted === true} label="Accessibility" okText="Granted" missingText="Not granted — the recording key won't work outside the app" />
               <SummaryRow ok={systemAudioStatus === 'granted'} label="System Audio" okText="Granted for Meetings" missingText="Optional — enable later from Meetings" />
+              <SummaryRow ok={calendarStatus === 'granted'} label="Calendar" okText="Granted for Meetings" missingText="Optional — name meetings manually or enable later" />
               <SummaryRow ok={modelInstalled === true} label="Model" okText="Installed" missingText="Not verified — the app will ask again if it's missing" />
             </div>
 

@@ -42,6 +42,7 @@ import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
 import { VoiceQuerySettings } from './VoiceQuerySettings';
 import { TransformModelSettings } from './TransformModelSettings';
+import { TranscriptionModelStorage } from './TranscriptionModelStorage';
 import type { DictationStatus } from '../../lib/types';
 import { UpdateIndicator } from '../UpdateIndicator';
 import type { UpdateStatus } from '../../lib/updater';
@@ -72,6 +73,7 @@ import {
   type DiagnosticsTab,
 } from '../log-viewer/DiagnosticsWorkspace';
 import { SettingToggle } from './SettingToggle';
+import { openCalendarPreferences } from '../../lib/calendar';
 import {
   KeyboardShortcutsSettings,
   type GlobalShortcutId,
@@ -340,13 +342,14 @@ export const SettingsPanel = memo(function SettingsPanel({
   onLatencyViewChange,
   activeRef,
 }: SettingsPanelProps) {
-  const { byName: runtimeByName } = useModelRuntimeCatalog();
+  const { models: runtimeModels, byName: runtimeByName } = useModelRuntimeCatalog();
   const settingsSurfaceActive = useSettingsSurfaceActive();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
   const pageRequestPending = pageRequest !== null && pageRequest.token !== appliedRequestToken;
   const pageVisible = settingsSurfaceActive && activeRef?.current !== false;
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
+  const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
   const [targetRequest, setTargetRequest] = useState<SettingTargetRequest | null>(() => (
@@ -1167,6 +1170,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
               {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}
             </div>
+            <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <div data-setting-target="language" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="block text-sm font-medium text-on-surface">Language</label>
               <Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />
@@ -1312,6 +1316,33 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsCallout title="Stored separately from dictation">
               Meeting transcripts use the crash-safe local store and never appear in dictation history.
             </SettingsCallout>
+            <div className="settings-stack">
+              <SettingToggle
+                targetId="meeting-suggestions"
+                title="Suggest Notetaker for Calendar Meetings"
+                description="Off by default. While enabled, Murmur reads upcoming Calendar events and offers to start Notetaker when a supported meeting app is frontmost. Nothing records until you accept."
+                checked={settings.meetingSuggestionsEnabled}
+                onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
+              />
+              <p className="text-xs leading-relaxed text-on-surface-variant">
+                Supports Zoom, Microsoft Teams, Slack, Webex, FaceTime, Safari, Chrome, Firefox, Edge, Brave, Arc, and Chromium. Browser suggestions cannot verify the active tab because Murmur does not read URLs or window titles.
+              </p>
+              <button
+                type="button"
+                className="w-fit text-xs font-medium text-on-surface-variant underline hover:text-primary"
+                onClick={() => {
+                  setCalendarSettingsError(null);
+                  void openCalendarPreferences().catch(() => {
+                    setCalendarSettingsError('Calendar settings could not be opened. Open Privacy & Security → Calendars in System Settings.');
+                  });
+                }}
+              >
+                Open Calendar Settings
+              </button>
+              {calendarSettingsError && (
+                <p role="alert" className="text-xs text-error">{calendarSettingsError}</p>
+              )}
+            </div>
             <SettingToggle
               targetId="meeting-audio"
               title="Keep Meeting Audio"

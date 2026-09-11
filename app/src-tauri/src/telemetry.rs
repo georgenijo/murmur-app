@@ -1482,7 +1482,39 @@ pub(crate) fn strip_private_meeting_metadata(data: &mut serde_json::Value) -> bo
     match data {
         serde_json::Value::Object(object) => {
             let mut changed = false;
-            for key in ["title", "title_source", "titleSource", "attendees"] {
+            for key in [
+                "title",
+                "title_source",
+                "titleSource",
+                "attendees",
+                "calendar_event",
+                "calendarEvent",
+                "calendar_events",
+                "calendarEvents",
+                "calendar_title",
+                "calendarTitle",
+                "calendar_attendees",
+                "calendarAttendees",
+                "event_identifier",
+                "eventIdentifier",
+                "calendar_identifier",
+                "calendarIdentifier",
+                "selection_token",
+                "selectionToken",
+                "calendar_notes",
+                "calendarNotes",
+                "calendar_location",
+                "calendarLocation",
+                "calendar_url",
+                "calendarUrl",
+                "meeting_suggestion",
+                "meetingSuggestion",
+                "suggestion_token",
+                "suggestionToken",
+                "occurrence_key",
+                "occurrenceKey",
+                "token",
+            ] {
                 changed |= object.remove(key).is_some();
             }
             for value in object.values_mut() {
@@ -3578,6 +3610,63 @@ mod tests {
                 assert!(!encoded.contains("titleSource"), "stream={stream}");
                 assert!(!encoded.contains("title_source"), "stream={stream}");
                 assert!(!encoded.contains("attendees"), "stream={stream}");
+            }
+        }
+    }
+
+    #[test]
+    fn calendar_fields_never_enter_any_event_stream() {
+        for stream in [
+            "audio",
+            "keyboard",
+            "meeting",
+            "pipeline",
+            "query",
+            "system",
+            "transform",
+        ] {
+            for debug_build in [true, false] {
+                let mut data = serde_json::json!({
+                    "calendarEvent": {"notes": "SECRET_CALENDAR_NOTE"},
+                    "nested": [{
+                        "eventIdentifier": "SECRET_EVENT_ID",
+                        "calendar_identifier": "SECRET_CALENDAR_ID",
+                        "selectionToken": "SECRET_SELECTION",
+                        "calendarTitle": "SECRET_TITLE",
+                        "calendarAttendees": ["SECRET_PERSON"],
+                        "calendar_notes": "SECRET_NOTES",
+                        "calendarLocation": "SECRET_ROOM",
+                        "calendarUrl": "https://SECRET_CALL.invalid/"
+                    }]
+                });
+                sanitize_event_data(stream, &mut data, debug_build);
+                assert!(
+                    !serde_json::to_string(&data).unwrap().contains("SECRET"),
+                    "stream={stream}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn suggestions_tokens_occurrences_and_payloads_never_enter_logs() {
+        for stream in [
+            "audio",
+            "keyboard",
+            "meeting",
+            "pipeline",
+            "query",
+            "system",
+            "transform",
+        ] {
+            for debug_build in [true, false] {
+                let mut data = serde_json::json!({
+                    "meetingSuggestion": {"title": "SECRET_EVENT"},
+                    "suggestion_token": "SECRET_TOKEN", "occurrenceKey": "SECRET_OCCURRENCE",
+                    "nested": [{"token": "SECRET_TOKEN", "title": "SECRET_TITLE", "attendees": ["SECRET_PERSON"]}]
+                });
+                sanitize_event_data(stream, &mut data, debug_build);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SECRET"));
             }
         }
     }
