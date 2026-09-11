@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   deleteKnowledge,
+  listKnowledge,
   setKnowledgeEnabled,
   upsertKnowledge,
   type KnowledgeDraft,
@@ -60,17 +61,24 @@ export function presetShadowWarning(name: string): string | null {
   return 'This name matches a built-in preset. Speaking it will run the built-in preset instead — presets always take precedence over saved transforms with the same name.';
 }
 
+type EditorSession =
+  | { kind: 'new' }
+  | { kind: 'edit'; entry: KnowledgeEntry }
+  | { kind: 'duplicate'; entry: KnowledgeEntry; name: string };
+
 function TransformEditor({
-  entry,
+  session,
   onClose,
   onSaved,
 }: {
-  entry: KnowledgeEntry | null;
+  session: EditorSession;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const entry = session.kind === 'new' ? null : session.entry;
   const [name, setName] = useState(
-    entry?.payload.kind === 'transform' ? entry.payload.name : '',
+    session.kind === 'duplicate' ? session.name
+      : entry?.payload.kind === 'transform' ? entry.payload.name : '',
   );
   const [instruction, setInstruction] = useState(
     entry?.payload.kind === 'transform' ? entry.payload.instruction : '',
@@ -84,12 +92,11 @@ function TransformEditor({
   const shadowWarning = presetShadowWarning(name);
 
   const draft = useMemo<KnowledgeDraft>(() => ({
-    id: entry?.id,
-    expectedRevision: entry?.revision,
+    ...(session.kind === 'edit' ? { id: session.entry.id, expectedRevision: session.entry.revision } : {}),
     payload: { kind: 'transform', name: name.trim(), instruction: instruction.trim() },
     enabled,
     scope: { kind: 'global' },
-  }), [enabled, entry, instruction, name]);
+  }), [enabled, session, instruction, name]);
 
   const save = async () => {
     if (!name.trim()) {
@@ -124,6 +131,7 @@ function TransformEditor({
       <div>
         <label className="mb-1 block text-xs font-medium text-on-surface">Spoken name</label>
         <input
+          aria-label="Spoken name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface"
@@ -143,6 +151,7 @@ function TransformEditor({
           </span>
         </div>
         <textarea
+          aria-label="Instruction"
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           rows={4}
@@ -186,9 +195,38 @@ const TRANSFORM_LIST_REQUEST = { kind: 'transform' as const, limit: 100 };
  */
 export function TransformsManager({ active }: Props) {
   const { entries, loading, error, refresh } = useKnowledge(TRANSFORM_LIST_REQUEST, active);
-  const [editing, setEditing] = useState<KnowledgeEntry | null | 'new'>(null);
+  const [editing, setEditing] = useState<{ id: number; session: EditorSession } | null>(null);
+  const nextEditorId = useRef(0);
+  const openEditor = (session: EditorSession) => setEditing({ id: nextEditorId.current++, session });
+  const [duplicating, setDuplicating] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const duplicate = async (entry: KnowledgeEntry) => {
+    if (entry.payload.kind !== 'transform') return;
+    setDuplicating(true);
+    setActionError(null);
+    try {
+      const names = new Set<string>();
+      let offset: number | null = 0;
+      do {
+        const page = await listKnowledge({ ...TRANSFORM_LIST_REQUEST, offset });
+        for (const existing of page.entries) {
+          if (existing.payload.kind === 'transform') names.add(normalizeTransformKey(existing.payload.name));
+        }
+        offset = page.nextOffset;
+      } while (offset !== null);
+      const base = `Copy of ${entry.payload.name}`;
+      const candidate = (suffix: string) => Array.from(base).slice(0, 256 - suffix.length).join('').trimEnd() + suffix;
+      let name = candidate('');
+      for (let suffix = 2; names.has(normalizeTransformKey(name)); suffix += 1) name = candidate(` ${suffix}`);
+      openEditor({ kind: 'duplicate', entry, name });
+    } catch (cause) {
+      setActionError(String(cause));
+    } finally {
+      setDuplicating(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -201,7 +239,8 @@ export function TransformsManager({ active }: Props) {
         </p>
         <button
           type="button"
-          onClick={() => setEditing('new')}
+          disabled={duplicating}
+          onClick={() => openEditor({ kind: 'new' })}
           className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary"
         >
           Add
@@ -210,7 +249,8 @@ export function TransformsManager({ active }: Props) {
 
       {editing !== null && (
         <TransformEditor
-          entry={editing === 'new' ? null : editing}
+          key={editing.id}
+          session={editing.session}
           onClose={() => setEditing(null)}
           onSaved={async () => {
             await refresh();
@@ -251,9 +291,18 @@ export function TransformsManager({ active }: Props) {
                 <button
                   type="button"
                   className="text-xs text-on-surface-variant underline"
-                  onClick={() => setEditing(entry)}
+                  disabled={duplicating}
+                  onClick={() => openEditor({ kind: 'edit', entry })}
                 >
                   Edit
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-on-surface-variant underline"
+                  disabled={duplicating}
+                  onClick={() => void duplicate(entry)}
+                >
+                  Duplicate
                 </button>
                 <button
                   type="button"
