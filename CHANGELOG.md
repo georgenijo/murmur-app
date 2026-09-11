@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-10
+
 ### Added
 
 - Choose F1–F20 as the recording shortcut in Settings or first-run setup, with
