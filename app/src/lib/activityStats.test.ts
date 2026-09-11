@@ -6,6 +6,33 @@ import { STATS_STORE } from './durableUserData';
 beforeEach(() => localStorage.clear());
 
 describe('local activity statistics', () => {
+  it('has no most-used transform when no named transform has run', () => {
+    expect(getActivityInsights(loadStats())).toMatchObject({ mostUsedTransformName: null, mostUsedTransformRuns: 0 });
+    updateActivityStats({ kind: 'transform', outcome: 'approved', presetName: 'Uncounted' });
+    updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: null });
+    expect(getActivityInsights(loadStats())).toMatchObject({ mostUsedTransformName: null, mostUsedTransformRuns: 0 });
+  });
+
+  it('counts the most-used named transform across months without counting approvals or undos as runs', () => {
+    updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Meeting notes' }, '2026-08');
+    updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Meeting notes' }, '2026-09');
+    updateActivityStats({ kind: 'transform', outcome: 'approved', presetName: 'Meeting notes' }, '2026-09');
+    updateActivityStats({ kind: 'transform', outcome: 'undone', presetName: 'Meeting notes' }, '2026-09');
+    expect(getActivityInsights(loadStats(), new Date(2026, 8, 1))).toMatchObject({
+      mostUsedTransformName: 'Meeting notes', mostUsedTransformRuns: 2, month: { runs: 1 }, approvalRate: 100,
+    });
+    updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Shorten' }, '2026-09');
+    expect(getActivityInsights(loadStats()).mostUsedTransformName).toBe('Meeting notes');
+  });
+
+  it('breaks transform run ties by name regardless of insertion order', () => {
+    for (const names of [['Shorten', 'Bullets'], ['Bullets', 'Shorten']]) {
+      resetStats();
+      for (const presetName of names) updateActivityStats({ kind: 'transform', outcome: 'runs', presetName });
+      expect(getActivityInsights(loadStats())).toMatchObject({ mostUsedTransformName: 'Bullets', mostUsedTransformRuns: 1 });
+    }
+  });
+
   it('back-fills every new counter to zero for legacy stats without changing old usage', () => {
     localStorage.setItem(STATS_STORE.storageKey, JSON.stringify({ totalWords: 80, totalRecordings: 2, totalDurationSeconds: 10 }));
     const stats = loadStats();

@@ -42,6 +42,7 @@ export function InsightsView({ statsVersion, modes = [], onBackToHome }: Insight
           { id: 'mode', label: 'Most-used Mode', value: modeName, detail: `${activity.mostUsedModeRecordings.toLocaleString()} recordings` },
           { id: 'meetings', label: 'Meetings this month', value: activity.month.meetings.toLocaleString(), detail: `${minutes(activity.month.meetingMinutes)} minutes` },
           { id: 'transforms', label: 'Transforms this month', value: activity.month.runs.toLocaleString(), detail: `${activity.approvalRate}% approved` },
+          { id: 'most-used-transform', label: 'Most-used transform', value: activity.mostUsedTransformName ?? 'None yet', detail: `${activity.mostUsedTransformRuns.toLocaleString()} runs` },
           { id: 'corrections', label: 'Corrections taught', value: stats.activity.corrections.taught.toLocaleString(), detail: `${stats.activity.corrections.proposed.toLocaleString()} proposed` },
         ]}
       />

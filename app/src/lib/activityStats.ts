@@ -153,11 +153,16 @@ export function getActivityInsights(stats: {
   const mostUsedMode = Object.entries(stats.activity.recordingsByMode)
     .filter(([, count]) => count > 0)
     .sort(([idA, countA], [idB, countB]) => countB - countA || idA.localeCompare(idB))[0];
+  const mostUsedTransform = Object.entries(stats.activity.transforms.byPresetName)
+    .filter(([, counts]) => counts.runs > 0)
+    .sort(([nameA, countsA], [nameB, countsB]) => countsB.runs - countsA.runs || nameA.localeCompare(nameB))[0];
   return {
     dictationMinutes: stats.totalDurationSeconds / 60,
     typingMinutesSaved: Math.max(0, stats.totalWords / ASSUMED_TYPING_WPM - stats.totalDurationSeconds / 60),
     mostUsedModeId: mostUsedMode?.[0] ?? null,
     mostUsedModeRecordings: mostUsedMode?.[1] ?? 0,
+    mostUsedTransformName: mostUsedTransform?.[0] ?? null,
+    mostUsedTransformRuns: mostUsedTransform?.[1].runs ?? 0,
     month,
     approvalRate: month.runs > 0 ? Math.round(month.approved / month.runs * 100) : 0,
   };
