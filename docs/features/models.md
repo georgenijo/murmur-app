@@ -25,6 +25,39 @@ never fall through to Whisper or another backend.
 
 **Default for new installs:** `parakeet-tdt-0.6b-v3-coreml`. The complete macOS catalog is always exposed. Persisted Whisper and CPU Parakeet selections remain valid and are not migrated. The Rust `DictationState::default()` stays `base.en` until the first frontend `configure_dictation` call selects the persisted model.
 
+## Hardware guidance
+
+The onboarding model step and Settings → Speech-to-Text request one cached
+native snapshot of the Apple chip identifier and physical RAM. Chip identifiers
+are reduced to `legacyAppleSilicon` (M1/M2), `currentAppleSilicon` (M3 or newer),
+or `unknown` for the guidance calculation. Detection emits no event or telemetry.
+It is separate from `ModelRuntimeManager` and cannot select, install, load,
+unload, block, or hide a model. The saved selection and the new-install default
+remain unchanged.
+
+The recommendation is Parakeet Core ML when Apple Silicon is detected because
+it uses the Apple Neural Engine and fits the smallest supported model budget.
+Whisper Base is the conservative recommendation when chip detection is
+unavailable. Physical RAM and chip tier produce a presentation-only model
+budget: under 12 GiB → 1.5 GiB; 12–15 GiB → 3 GiB; 16–23 GiB → 3 GiB on M1/M2
+or 4 GiB on M3 and newer; 24–31 GiB → 7 GiB; 32 GiB or more → 8 GiB. Unknown
+RAM uses a conservative 3 GiB budget.
+
+The constant table below is keyed to every existing catalog identifier and size.
+Working-memory estimates add ordinary decoder/runtime headroom to the on-disk
+artifact size. A model above this Mac's budget gets a **Higher memory** badge and
+an informational message; the row or option remains enabled.
+
+| Model | Catalog size | Guidance working-memory estimate |
+|-------|--------------|------------------------------------|
+| `parakeet-tdt-0.6b-v3-coreml` | ~470 MB | 1.5 GiB |
+| `parakeet-tdt-0.6b-v2-fp16` | ~1.2 GB | 3 GiB |
+| `tiny.en` | ~75 MB | 384 MiB |
+| `base.en` | ~150 MB | 768 MiB |
+| `small.en` | ~500 MB | 1.5 GiB |
+| `medium.en` | ~1.5 GB | 4 GiB |
+| `large-v3-turbo` | ~3 GB | 7 GiB |
+
 ## Backend
 
 ### FluidAudio Core ML (`transcriber/coreml.rs`)
@@ -110,7 +143,7 @@ On first launch (the selected model is not present), a full-screen download view
 
 | Model | Description |
 |-------|-------------|
-| `parakeet-tdt-0.6b-v3-coreml` | "Fastest on Apple Silicon — multilingual, Apple Neural Engine (recommended)" |
+| `parakeet-tdt-0.6b-v3-coreml` | "Fastest on Apple Silicon — multilingual, Apple Neural Engine" |
 | `parakeet-tdt-0.6b-v2-fp16` | "Fast CPU fallback — English only" |
 | `large-v3-turbo` | "Highest accuracy, slower (1-2 seconds)" |
 | `base.en` | "Good balance of speed and accuracy" |

@@ -51,6 +51,7 @@ mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
 mod model_artifact;
+mod model_hardware_guidance;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
@@ -465,6 +466,7 @@ pub fn run() {
             commands::models::check_specific_model_exists,
             commands::models::get_model_runtime_catalog,
             commands::models::get_model_runtime_status,
+            commands::models::get_model_hardware_guidance,
             commands::models::download_model,
             commands::transform_model::transform_model_status,
             commands::transform_model::download_transform_model,

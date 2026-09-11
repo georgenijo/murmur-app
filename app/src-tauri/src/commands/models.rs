@@ -116,6 +116,11 @@ pub fn get_model_runtime_status(
 }
 
 #[tauri::command]
+pub fn get_model_hardware_guidance() -> crate::model_hardware_guidance::ModelHardwareGuidance {
+    crate::model_hardware_guidance::get()
+}
+
+#[tauri::command]
 pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: String) -> bool {
     if model_name == crate::diarization_model::MODEL_ID {
         return crate::diarization_model::installed();
