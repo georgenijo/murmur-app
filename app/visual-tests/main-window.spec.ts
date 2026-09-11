@@ -355,7 +355,7 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice Commands' });
   await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
-  await expect(customizationList.getByRole('button')).toHaveCount(4);
+  await expect(customizationList.getByRole('button')).toHaveCount(5);
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
 
   await voiceCommands.click();
@@ -541,8 +541,7 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
-  await page.getByRole('button', { name: 'Delivery', exact: true }).click();
-  await page.locator('details[data-setting-target="app-overrides"] > summary').click();
+  await page.getByRole('button', { name: 'Modes', exact: true }).click();
   await page.getByRole('button', { name: /Technical Built-in/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');

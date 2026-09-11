@@ -14,22 +14,23 @@ independent versioned active document under `murmur-appearance`, with saved
 themes in `murmur-theme-library`; neither is merged into this interface or
 emitted through `dictation-settings`.
 
-The native Settings workspace opens on **Customize**, an ordered hub with four
-rows: **Text & Vocabulary**, **Voice Commands**, **Styles**, and **Transforms**.
+The native Settings workspace opens on **Customize**, an ordered hub with five
+rows: **Text & Vocabulary**, **Voice Commands**, **Styles**, **Modes**, and
+**Transforms**.
 The gear button, `⌘,`, and overlay Settings action all open this same overview.
 Each row opens the existing owning page or editor, shows **Back to Customize**,
 and restores focus to its source row on return. Contextual links from Home use
 the same routes, so they cannot leave the user trapped in a detail page.
 
 The persistent navigation (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`) keeps
-the complete workspace available: Customize, General, Recording, Delivery,
-Meetings, Text & Vocabulary, AI & Models, and Appearance. Performance Lab and
-Diagnostics remain in the Tools group. The search field routes matching rows
-to their owning page. Power-user controls are collapsed under **Advanced**
+the complete workspace available: Customize, Modes, General, Recording,
+Delivery, Meetings, Text & Vocabulary, AI & Models, and Appearance. Performance
+Lab and Diagnostics remain in the Tools group. The search field routes matching
+rows to their owning page. Power-user controls are collapsed under **Advanced**
 disclosures.
 
-Modes may optionally activate from exact browser hosts under Delivery →
-Advanced → Modes. The global switch is off by default. Each rule stores only a
+Modes may optionally activate from exact browser hosts under Settings → Modes.
+The global switch is off by default. Each rule stores only a
 rule ID, allowed browser bundle ID, exact host, Mode ID, and enabled flag. Live
 URL identity is memory-only and reduced to the host before it crosses the
 native boundary; paths, page text, selections, clipboard content, and browsing

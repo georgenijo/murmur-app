@@ -166,6 +166,7 @@ interface SettingsPanelProps {
 
 export const SETTINGS_CATEGORIES = [
   { id: 'customize', label: 'Customize', icon: 'customize' },
+  { id: 'modes', label: 'Modes', icon: 'modes' },
   { id: 'general', label: 'General', icon: 'general' },
   { id: 'recording', label: 'Recording', icon: 'recording' },
   { id: 'delivery', label: 'Delivery', icon: 'delivery' },
@@ -190,6 +191,7 @@ function customizationDestinationForRequest(
   if (request.page === 'text' && request.editorTab === 'aliases') return 'text';
   if (request.page === 'text' && !request.editorTab) return 'text';
   if (request.page === 'delivery' && request.target === 'app-overrides') return 'styles';
+  if (request.page === 'modes') return 'modes';
   if (resolvePage(request.page) === 'ai-transform') return 'transforms';
   return null;
 }
@@ -203,6 +205,7 @@ function customizationRoute(destination: CustomizationDestination): {
     case 'text': return { page: 'text' };
     case 'commands': return { page: 'text', editorTab: 'commands' };
     case 'styles': return { page: 'delivery', target: 'app-overrides' };
+    case 'modes': return { page: 'modes' };
     case 'transforms': return { page: 'ai-transform' };
   }
 }
@@ -236,6 +239,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'file-output', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription History', detail: 'Keep completed dictations on this Mac.', keywords: 'save retain local transcripts' },
   { page: 'delivery', target: 'app-overrides', title: 'App Overrides', detail: 'Customize delivery for individual apps.', keywords: 'profile bundle id per app' },
+  { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites.', keywords: 'style profiles browser host site rules' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting Audio', detail: 'Choose whether source audio is retained.', keywords: 'capture wav keep delete' },
   { page: 'meetings', target: 'meeting-speakers', title: 'Remote Speaker Labels', detail: 'Install and enable local per-speaker meeting labels.', keywords: 'diarization speaker names model local system audio' },
   { page: 'meetings', target: 'meeting-retention', title: 'Meeting Retention', detail: 'Set age and session limits.', keywords: 'history days sessions sqlite' },
@@ -261,6 +265,7 @@ function SettingsNavIcon({ icon }: { icon: string }) {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></>,
     recording: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" /></>,
     delivery: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="m9 12 2 2 4-5" /></>,
+    modes: <><path d="M5 7h8M17 7h2M5 17h2M11 17h8" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></>,
     meetings: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
     text: <><path d="M5 5h14M8 5v14M5 19h6M15 10h4M15 14h4" /></>,
     ai: <><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></>,
@@ -1152,6 +1157,12 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
             {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app." layout="stack" targetId="app-overrides">
+              <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
+            </SettingsDisclosure>
+          </SettingsSection>
+
+          <SettingsSection card={false} pageId="modes" activePage={activeCat} title="Modes" subtitle="Reusable behavior for apps and browser sites">
+            <div data-setting-target="modes">
               <ModesManager
                 modes={settings.modes}
                 profiles={settings.appProfiles}
@@ -1159,8 +1170,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 siteRules={settings.browserSiteRules}
                 onChange={onUpdateSettings}
               />
-              <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
-            </SettingsDisclosure>
+            </div>
           </SettingsSection>
 
           <SettingsSection pageId="meetings" activePage={activeCat} title="Meetings" subtitle="Local meeting transcript and audio retention">
