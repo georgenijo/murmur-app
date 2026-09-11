@@ -218,10 +218,10 @@ Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mi
 
 ### Settings — [reference/settings.md](reference/settings.md)
 The default **Customize** page is a compact, ordered hub for **Text &
-Vocabulary**, **Voice Commands**, **Styles**, and **Transforms**. Every hub
-destination has a visible route back, and returning restores keyboard focus to
-the row that opened it. The persistent Settings navigation also exposes
-General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
+Vocabulary**, **Voice Commands**, **Styles**, **Modes**, and **Transforms**.
+Every hub destination has a visible route back. Returning restores keyboard
+focus to the row that opened it. The persistent Settings navigation also exposes
+Modes, General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
 Appearance, Performance Lab, and Diagnostics directly. Search spans those
 pages. Power-user controls live in Advanced disclosures.
 

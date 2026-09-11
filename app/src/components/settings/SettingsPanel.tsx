@@ -72,6 +72,11 @@ import {
   type DiagnosticsTab,
 } from '../log-viewer/DiagnosticsWorkspace';
 import { SettingToggle } from './SettingToggle';
+import {
+  KeyboardShortcutsSettings,
+  type GlobalShortcutId,
+  type ShortcutOwnerDestination,
+} from './KeyboardShortcutsSettings';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
   const [draft, setDraft] = useState(value);
@@ -166,6 +171,7 @@ interface SettingsPanelProps {
 
 export const SETTINGS_CATEGORIES = [
   { id: 'customize', label: 'Customize', icon: 'customize' },
+  { id: 'modes', label: 'Modes', icon: 'modes' },
   { id: 'general', label: 'General', icon: 'general' },
   { id: 'recording', label: 'Recording', icon: 'recording' },
   { id: 'delivery', label: 'Delivery', icon: 'delivery' },
@@ -181,6 +187,15 @@ export const SETTINGS_TOOLS = [
 ] as const;
 
 const AI_DETAIL_PAGES = ['ai-query', 'ai-transform', 'ai-transcription'] as const;
+const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
+
+interface SettingTargetRequest {
+  id: string;
+}
+
+function settingTargetRequest(id: string | undefined): SettingTargetRequest | null {
+  return id === undefined ? null : { id };
+}
 
 function customizationDestinationForRequest(
   request: Pick<SettingsPageRequest, 'page' | 'editorTab' | 'target'> | null | undefined,
@@ -190,6 +205,7 @@ function customizationDestinationForRequest(
   if (request.page === 'text' && request.editorTab === 'aliases') return 'text';
   if (request.page === 'text' && !request.editorTab) return 'text';
   if (request.page === 'delivery' && request.target === 'app-overrides') return 'styles';
+  if (request.page === 'modes') return 'modes';
   if (resolvePage(request.page) === 'ai-transform') return 'transforms';
   return null;
 }
@@ -203,6 +219,7 @@ function customizationRoute(destination: CustomizationDestination): {
     case 'text': return { page: 'text' };
     case 'commands': return { page: 'text', editorTab: 'commands' };
     case 'styles': return { page: 'delivery', target: 'app-overrides' };
+    case 'modes': return { page: 'modes' };
     case 'transforms': return { page: 'ai-transform' };
   }
 }
@@ -213,6 +230,7 @@ export function resolvePage(page: string | undefined): string {
   if (SETTINGS_CATEGORIES.some((category) => category.id === page)) return page as string;
   if (SETTINGS_TOOLS.some((tool) => tool.id === page)) return page as string;
   if ((AI_DETAIL_PAGES as readonly string[]).includes(page ?? '')) return page as string;
+  if ((GENERAL_DETAIL_PAGES as readonly string[]).includes(page ?? '')) return page as string;
   if (page === 'dictation') return 'recording';
   if (page === 'model' || page === 'transcription') return 'ai-transcription';
   if (page === 'benchmark') return 'performance';
@@ -236,6 +254,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'file-output', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription History', detail: 'Keep completed dictations on this Mac.', keywords: 'save retain local transcripts' },
   { page: 'delivery', target: 'app-overrides', title: 'App Overrides', detail: 'Customize delivery for individual apps.', keywords: 'profile bundle id per app' },
+  { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites.', keywords: 'style profiles browser host site rules' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting Audio', detail: 'Choose whether source audio is retained.', keywords: 'capture wav keep delete' },
   { page: 'meetings', target: 'meeting-speakers', title: 'Remote Speaker Labels', detail: 'Install and enable local per-speaker meeting labels.', keywords: 'diarization speaker names model local system audio' },
   { page: 'meetings', target: 'meeting-retention', title: 'Meeting Retention', detail: 'Set age and session limits.', keywords: 'history days sessions sqlite' },
@@ -249,6 +268,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'text-editors', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
+  { page: 'shortcuts', target: 'shortcuts', title: 'Keyboard Shortcuts', detail: 'See every global and main-window shortcut.', keywords: 'hotkey key binding command control recording transform query paste correction' },
   { page: 'general', target: 'setup', title: 'Setup Assistant', detail: 'Re-check permissions and model setup.', keywords: 'onboarding microphone accessibility' },
   { page: 'general', target: 'updates', title: 'Updates', detail: 'Check for a newer Murmur release.', keywords: 'version upgrade' },
   { page: 'performance', target: 'performance', title: 'Performance Lab', detail: 'Compare installed models on this Mac.', keywords: 'benchmark speed accuracy' },
@@ -261,6 +281,7 @@ function SettingsNavIcon({ icon }: { icon: string }) {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></>,
     recording: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" /></>,
     delivery: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="m9 12 2 2 4-5" /></>,
+    modes: <><path d="M5 7h8M17 7h2M5 17h2M11 17h8" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></>,
     meetings: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
     text: <><path d="M5 5h14M8 5v14M5 19h6M15 10h4M15 14h4" /></>,
     ai: <><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></>,
@@ -318,7 +339,9 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
-  const [targetRequest, setTargetRequest] = useState<string | null>(null);
+  const [targetRequest, setTargetRequest] = useState<SettingTargetRequest | null>(() => (
+    settingTargetRequest(pageRequest?.target)
+  ));
   const [customizationDetail, setCustomizationDetail] = useState<CustomizationDestination | null>(() => (
     customizationDestinationForRequest(pageRequest)
   ));
@@ -326,6 +349,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     Boolean(pageRequest?.editorTab && customizationDestinationForRequest(pageRequest))
   ));
   const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
+  const [shortcutReturnFocus, setShortcutReturnFocus] = useState<GlobalShortcutId | null>(null);
   const latencyView = editorTab
     ? `settings.text.editor.${editorTab}`
     : `settings.${activeCat}`;
@@ -347,15 +371,18 @@ export const SettingsPanel = memo(function SettingsPanel({
     setActiveCat(resolvePage(pageRequest.page));
     setEditorTab(pageRequest.editorTab ?? null);
     setSearchQuery('');
-    setTargetRequest(pageRequest.target ?? null);
+    setTargetRequest(settingTargetRequest(pageRequest.target));
     const destination = customizationDestinationForRequest(pageRequest);
     setCustomizationDetail(destination);
     setCustomizationReturnFocus(destination);
     setEditorBackToCustomization(Boolean(destination && pageRequest.editorTab));
+    setShortcutReturnFocus(null);
   }, [pageRequest]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const generalShortcutsButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreGeneralShortcutsFocusRef = useRef(false);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { void getVersion().then(setVersion); }, []);
@@ -366,15 +393,28 @@ export const SettingsPanel = memo(function SettingsPanel({
       content.scrollTo({ top: 0 });
       return;
     }
-    const target = content.querySelector<HTMLElement>(`[data-setting-target="${targetRequest}"]`);
+    const target = content.querySelector<HTMLElement>(`[data-setting-target="${targetRequest.id}"]`);
     if (!target) return;
     if (target instanceof HTMLDetailsElement) target.open = true;
     target.scrollIntoView({ block: 'center' });
     target.classList.add('settings-target-flash');
     const timeout = window.setTimeout(() => target.classList.remove('settings-target-flash'), 1800);
-    setTargetRequest(null);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      window.clearTimeout(timeout);
+      target.classList.remove('settings-target-flash');
+    };
   }, [activeCat, editorTab, targetRequest]);
+  useLayoutEffect(() => {
+    if (activeCat !== 'shortcuts' || shortcutReturnFocus === null) return;
+    contentRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-shortcut-id="${shortcutReturnFocus}"] button`)
+      ?.focus();
+  }, [activeCat, shortcutReturnFocus]);
+  useLayoutEffect(() => {
+    if (activeCat !== 'general' || !restoreGeneralShortcutsFocusRef.current) return;
+    restoreGeneralShortcutsFocusRef.current = false;
+    generalShortcutsButtonRef.current?.focus();
+  }, [activeCat]);
   useEffect(() => () => {
     if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
   }, []);
@@ -415,11 +455,13 @@ export const SettingsPanel = memo(function SettingsPanel({
     beginCurrentUiTransition(`settings.text.editor.${tab}`, 'pointer');
     setActiveCat('text');
     setSearchQuery('');
+    setTargetRequest(null);
     setEditorTab(tab);
     setEditorBackToCustomization(false);
   }, []);
   const closeEditor = useCallback(() => {
     beginCurrentUiTransition('settings.text', 'programmatic');
+    setTargetRequest(null);
     setEditorTab(null);
     setEditorBackToCustomization(false);
   }, []);
@@ -431,7 +473,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       : `settings.${route.page}`, 'pointer');
     setActiveCat(route.page);
     setEditorTab(route.editorTab ?? null);
-    setTargetRequest(route.target ?? null);
+    setTargetRequest(settingTargetRequest(route.target));
     setSearchQuery('');
     setCustomizationDetail(destination);
     setCustomizationReturnFocus(destination);
@@ -630,10 +672,41 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationDetail(null);
     setCustomizationReturnFocus(null);
     setEditorBackToCustomization(false);
+    setShortcutReturnFocus(null);
+  };
+
+  const openShortcutOwner = (destination: ShortcutOwnerDestination) => {
+    beginCurrentUiTransition(`settings.${destination.page}`, 'pointer');
+    setActiveCat(destination.page);
+    setEditorTab(null);
+    setSearchQuery('');
+    setTargetRequest(settingTargetRequest(destination.target));
+    setCustomizationDetail(null);
+    setCustomizationReturnFocus(null);
+    setEditorBackToCustomization(false);
+    setShortcutReturnFocus(destination.shortcutId);
+  };
+
+  const returnToShortcuts = () => {
+    beginCurrentUiTransition('settings.shortcuts', 'programmatic');
+    setActiveCat('shortcuts');
+    setEditorTab(null);
+    setSearchQuery('');
+    setTargetRequest(null);
+    setCustomizationDetail(null);
+    setCustomizationReturnFocus(null);
+    setEditorBackToCustomization(false);
+  };
+
+  const returnToGeneral = () => {
+    restoreGeneralShortcutsFocusRef.current = true;
+    openPage('general', 'programmatic');
   };
 
   const navPageIsActive = (page: string) => (
-    page === 'ai' ? activeCat === 'ai' || activeCat.startsWith('ai-') : activeCat === page
+    page === 'ai'
+      ? activeCat === 'ai' || activeCat.startsWith('ai-')
+      : page === 'general' ? activeCat === 'general' || activeCat === 'shortcuts' : activeCat === page
   );
 
   const searchPageLabel = (page: string) => {
@@ -746,11 +819,12 @@ export const SettingsPanel = memo(function SettingsPanel({
                         beginCurrentUiTransition(`settings.${result.page}`, 'pointer');
                         setActiveCat(result.page);
                         setEditorTab(null);
-                        setTargetRequest(result.target);
+                        setTargetRequest(settingTargetRequest(result.target));
                         setSearchQuery('');
                         setCustomizationDetail(null);
                         setCustomizationReturnFocus(null);
                         setEditorBackToCustomization(false);
+                        setShortcutReturnFocus(null);
                       }}
                       className="flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
                     >
@@ -778,7 +852,25 @@ export const SettingsPanel = memo(function SettingsPanel({
               <span aria-hidden="true">‹</span> Back to Customize
             </button>
           )}
-          {(AI_DETAIL_PAGES as readonly string[]).includes(activeCat) && !customizationDetail && (
+          {activeCat === 'shortcuts' && (
+            <button
+              type="button"
+              onClick={returnToGeneral}
+              className="settings-back-btn mb-4"
+            >
+              <span aria-hidden="true">‹</span> General
+            </button>
+          )}
+          {shortcutReturnFocus !== null && activeCat !== 'shortcuts' && (
+            <button
+              type="button"
+              onClick={returnToShortcuts}
+              className="settings-back-btn mb-4"
+            >
+              <span aria-hidden="true">‹</span> Keyboard Shortcuts
+            </button>
+          )}
+          {(AI_DETAIL_PAGES as readonly string[]).includes(activeCat) && !customizationDetail && shortcutReturnFocus === null && (
             <button
               type="button"
               onClick={() => openPage('ai', 'programmatic')}
@@ -793,6 +885,11 @@ export const SettingsPanel = memo(function SettingsPanel({
               onOpen={openCustomizationDestination}
             />
           )}
+          <KeyboardShortcutsSettings
+            settings={settings}
+            activePage={activeCat}
+            onOpenOwner={openShortcutOwner}
+          />
           <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, shortcuts, and automatic stopping">
             <div data-setting-target="microphone" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <MicrophoneInputTest
@@ -1152,6 +1249,12 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
             {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app." layout="stack" targetId="app-overrides">
+              <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
+            </SettingsDisclosure>
+          </SettingsSection>
+
+          <SettingsSection card={false} pageId="modes" activePage={activeCat} title="Modes" subtitle="Reusable behavior for apps and browser sites">
+            <div data-setting-target="modes">
               <ModesManager
                 modes={settings.modes}
                 profiles={settings.appProfiles}
@@ -1159,8 +1262,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 siteRules={settings.browserSiteRules}
                 onChange={onUpdateSettings}
               />
-              <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
-            </SettingsDisclosure>
+            </div>
           </SettingsSection>
 
           <SettingsSection pageId="meetings" activePage={activeCat} title="Meetings" subtitle="Local meeting transcript and audio retention">
@@ -1240,6 +1342,19 @@ export const SettingsPanel = memo(function SettingsPanel({
 
           <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
             {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
+            <button
+              ref={generalShortcutsButtonRef}
+              type="button"
+              data-setting-target="shortcuts"
+              onClick={() => openPage('shortcuts')}
+              className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <span className="settings-title-description">
+                <span className="block text-sm font-medium text-on-surface">Keyboard Shortcuts</span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-on-surface-variant">See global and main-window shortcuts in one place.</span>
+              </span>
+              <span aria-hidden="true" className="text-on-surface-variant">›</span>
+            </button>
             <div data-setting-target="setup" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
               <p className="text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
