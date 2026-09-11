@@ -45,6 +45,9 @@ export interface MeetingRuntimeStatus {
 
 export interface MeetingSession {
   id: string;
+  title: string | null;
+  titleSource: 'manual' | 'calendar' | 'generated' | null;
+  attendees: string[];
   startedAtMs: number;
   endedAtMs: number | null;
   status: MeetingSessionStatus;
@@ -165,6 +168,7 @@ export interface StartMeetingOptions {
   maxSessions: number;
   echoCancellation: boolean;
   diarization: boolean;
+  suggestionToken?: string;
 }
 
 export interface DiarizationModelStatus {
@@ -201,6 +205,7 @@ export async function startMeeting(options: StartMeetingOptions): Promise<Meetin
       maxSessions: options.maxSessions,
       echoCancellation: options.echoCancellation,
       diarization: options.diarization,
+      ...(options.suggestionToken ? { suggestionToken: options.suggestionToken } : {}),
     },
   });
 }
@@ -239,6 +244,16 @@ export async function getMeeting(id: string): Promise<MeetingDetail> {
 
 export async function saveMeetingReview(request: SaveMeetingReviewRequest): Promise<MeetingDetail> {
   return invoke('save_meeting_review', { request });
+}
+
+export interface SaveMeetingMetadataRequest {
+  sessionId: string;
+  title: string | null;
+  attendees: string[];
+}
+
+export async function saveMeetingMetadata(request: SaveMeetingMetadataRequest): Promise<MeetingDetail> {
+  return invoke('save_meeting_metadata', { request });
 }
 
 export async function restoreMeetingReviewFromGenerated(

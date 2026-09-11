@@ -33,7 +33,7 @@ Expanded replacement and snippet content is protected in memory until Spoken Str
 
 ## Preview and delivery
 
-Settings can create, test, preview, edit, enable, disable, and delete commands. Preview invokes the real Rust matcher but never writes to the clipboard or triggers paste. Live command expansion remains in the existing ordered pipeline:
+Settings can create, duplicate, test, preview, edit, enable, disable, and delete commands. Duplicating copies the command type, content, scope, enabled state, and clipboard permission into a new draft with a blank phrase; saving it uses the normal create validation and leaves the original command independent. Opening a duplicate does not read the clipboard. Preview invokes the real Rust matcher but never writes to the clipboard or triggers paste. Live command expansion remains in the existing ordered pipeline:
 
 ```text
 cleanup → user Voice Commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final delivery

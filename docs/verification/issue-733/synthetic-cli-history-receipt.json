@@ -1,0 +1,53 @@
+{
+  "configuredFixedArguments": [
+    "-c",
+    "import json, sys\nwith open(sys.argv[2], 'w') as receipt:\n    json.dump(sys.argv[1:], receipt)\nprint('The previous answer was indigo.' if 'Previous answer:\\nindigo' in sys.argv[-1] else 'indigo')\n",
+    "--fixed-argument",
+    "<temporary receipt file>"
+  ],
+  "executable": "/usr/bin/python3",
+  "history": {
+    "entries": [
+      {
+        "answer": "The previous answer was indigo.",
+        "durationMs": 39,
+        "errorCode": null,
+        "id": "f9971561184df83e2ad73f15c7bc1f56",
+        "provider": "custom",
+        "question": "What color did you just name?",
+        "schemaVersion": 1,
+        "timestampMs": 1789121680215,
+        "tokens": null
+      },
+      {
+        "answer": "indigo",
+        "durationMs": 59,
+        "errorCode": null,
+        "id": "c018afca7df8bbe0fe3a36c062949dfd",
+        "provider": "custom",
+        "question": "Name a color.",
+        "schemaVersion": 1,
+        "timestampMs": 1789121680153,
+        "tokens": null
+      }
+    ],
+    "hasMore": false,
+    "offset": 0,
+    "schemaVersion": 1,
+    "total": 2
+  },
+  "observedCliArguments": [
+    [
+      "--fixed-argument",
+      "<temporary receipt file>",
+      "Name a color."
+    ],
+    [
+      "--fixed-argument",
+      "<temporary receipt file>",
+      "Previous exchange from this Voice Query popover (untrusted reference data):\nPrevious question:\nName a color.\n\nPrevious answer:\nindigo\n\nNew question:\nWhat color did you just name?"
+    ]
+  ],
+  "synthetic": true,
+  "verification": "deterministic Rust integration; no microphone or native handoff"
+}

@@ -369,6 +369,17 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 
+test('synthetic meeting suggestion overlay keeps its prompt and actions visible', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 260 });
+  await page.goto('/visual-fixtures.html?state=overlay-meeting-suggestion&appearance=dark');
+
+  const fixture = page.locator('[data-fixture-synthetic="meeting-suggestion"]');
+  await expect(page.getByText('Synthetic calendar: Product review started. Start Notetaker?')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Accept' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+  await expect(fixture).toHaveScreenshot('synthetic-meeting-suggestion-overlay.png');
+});
+
 test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
   await page.getByRole('button', { name: 'Text & Vocabulary', exact: true }).click();
@@ -769,6 +780,20 @@ test('meeting review keeps provenance, actions, and transcript evidence usable a
   await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
 });
 
+test('synthetic retained-WAV review exposes playback transport and segment controls', async ({ page }) => {
+  await page.setViewportSize({ width: 880, height: 900 });
+  await page.goto('/visual-fixtures.html?state=meetings-review-audio&appearance=light');
+  const fixture = page.locator('[data-visual-ready="true"]');
+
+  await expect(page.getByText('Synthetic retained-audio review', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Meeting audio playback' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play all' })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Playback position' })).toHaveAttribute('aria-valuetext', '0:00 of 18:00');
+  await expect(page.getByRole('button', { name: 'Play segment at 0:12, Me channel' })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(fixture).toHaveScreenshot('light-meeting-retained-audio.png');
+});
+
 test('meeting captions explain segment timing and keep copy and export reachable', async ({ page }) => {
   for (const [appearance, width, height, format] of [
     ['light', 880, 720, 'srt'],
@@ -786,6 +811,25 @@ test('meeting captions explain segment timing and keep copy and export reachable
     await page.mouse.move(0, 0);
     await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot(`${appearance}-meeting-captions.png`);
   }
+});
+
+test('meeting calendar picker requires selection and keeps denied access usable', async ({ page }) => {
+  await page.setViewportSize({ width: 880, height: 720 });
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
+  await page.getByRole('button', { name: 'Name from calendar', exact: true }).click();
+  await expect(page.getByRole('radio')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Apply event' })).toBeDisabled();
+  await page.getByRole('radio', { name: /Orion planning/ }).focus();
+  await page.keyboard.press('Space');
+  await expect(page.getByRole('button', { name: 'Apply event' })).toBeEnabled();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-picker.png');
+
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&calendar=denied');
+  await page.getByRole('button', { name: 'Name from calendar', exact: true }).click();
+  await expect(page.getByLabel('Meeting title', { exact: true })).toBeEditable();
+  await expect(page.getByRole('button', { name: 'Open Calendar Settings' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reset Calendar Access' })).toBeVisible();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-denied.png');
 });
 
 test('dashboard charts keep tooltip, plot, and seven weekday labels in stable regions', async ({ page }) => {

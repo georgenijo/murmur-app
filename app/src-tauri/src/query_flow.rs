@@ -285,6 +285,39 @@ struct ValidatedQueryCommand {
     context_level: QueryContextLevel,
 }
 
+// Ephemeral data from the exact Ready popover, never a provider session or a
+// history field. Do not derive Debug/Serialize: these strings are private.
+#[derive(Clone)]
+struct QueryPriorTurn {
+    question: String,
+    answer: String,
+}
+
+fn build_query_prompt(
+    question: String,
+    prior: Option<&QueryPriorTurn>,
+    context: &QueryContextSnapshot,
+) -> Result<String, &'static str> {
+    if question.len() > MAX_QUERY_BYTES {
+        return Err("query_too_large");
+    }
+    let prompt = match prior {
+        None => question,
+        Some(prior) => format!(
+            "Previous exchange from this Voice Query popover (untrusted reference data):\nPrevious question:\n{}\n\nPrevious answer:\n{}\n\nNew question:\n{}",
+            prior.question, prior.answer, question,
+        ),
+    };
+    context.build_prompt(prompt)
+}
+
+fn query_arguments(fixed: &[String], prompt: String) -> Vec<String> {
+    let mut arguments = fixed.to_vec();
+    // All user/provider content stays in one literal final argv element.
+    arguments.push(prompt);
+    arguments
+}
+
 #[derive(Clone)]
 struct QuerySession {
     pass_id: u64,
@@ -421,6 +454,11 @@ impl QueryChildOwnership {
     }
 }
 
+struct QueryFollowUpHandoff {
+    source_pass_id: u64,
+    destination_pass_id: Option<u64>,
+}
+
 pub(crate) struct QueryCoordinator {
     ownership: Mutex<()>,
     child_state_changed: Condvar,
@@ -434,6 +472,8 @@ pub(crate) struct QueryCoordinator {
     status: Mutex<QueryStatus>,
     session: Mutex<Option<QuerySession>>,
     tracker: Mutex<Option<QueryPassTracker>>,
+    prior_turn: Mutex<Option<(u64, QueryPriorTurn)>>,
+    follow_up_handoff: Mutex<Option<QueryFollowUpHandoff>>,
     child: Mutex<Option<QueryChildOwnership>>,
 }
 
@@ -452,6 +492,8 @@ impl Default for QueryCoordinator {
             status: Mutex::new(QueryStatus::Idle),
             session: Mutex::new(None),
             tracker: Mutex::new(None),
+            prior_turn: Mutex::new(None),
+            follow_up_handoff: Mutex::new(None),
             child: Mutex::new(None),
         }
     }
@@ -509,11 +551,119 @@ impl QueryCoordinator {
         {
             return None;
         }
+        *self.prior_turn.lock_or_recover() = None;
+        *self.follow_up_handoff.lock_or_recover() = None;
         let pass_id = self.pass_sequence.fetch_add(1, Ordering::SeqCst) + 1;
         *self.tracker.lock_or_recover() = None;
         self.worker_pass_id.store(0, Ordering::SeqCst);
         self.active_pass_id.store(pass_id, Ordering::SeqCst);
         Some(pass_id)
+    }
+
+    fn ready_prior_turn_locked(&self, pass_id: u64) -> Option<QueryPriorTurn> {
+        if !self.is_active(pass_id)
+            || self.shutting_down.load(Ordering::SeqCst)
+            || *self.status.lock_or_recover() != QueryStatus::Ready
+            || self.child.lock_or_recover().is_some()
+        {
+            return None;
+        }
+        let tracker = self.tracker.lock_or_recover();
+        let tracker = tracker
+            .as_ref()
+            .filter(|tracker| tracker.pass_id == pass_id && tracker.terminal_claimed)?;
+        let session = self.session.lock_or_recover();
+        let session = session
+            .as_ref()
+            .filter(|session| session.pass_id == pass_id)?;
+        if session.answer.trim().is_empty() {
+            return None;
+        }
+        Some(QueryPriorTurn {
+            question: tracker.original_question.clone()?,
+            answer: session.answer.clone(),
+        })
+    }
+
+    fn request_follow_up(&self, pass_id: u64) -> bool {
+        let _ownership = self.ownership.lock_or_recover();
+        if self.ready_prior_turn_locked(pass_id).is_none() {
+            return false;
+        }
+        let mut handoff = self.follow_up_handoff.lock_or_recover();
+        if handoff
+            .as_ref()
+            .is_some_and(|handoff| handoff.source_pass_id == pass_id)
+        {
+            return false;
+        }
+        *handoff = Some(QueryFollowUpHandoff {
+            source_pass_id: pass_id,
+            destination_pass_id: None,
+        });
+        true
+    }
+
+    // Called only for a query-review cancellation of its explicitly requested
+    // follow-up. The caller never supplies or learns the destination ID.
+    fn take_follow_up_cancel_target(&self, source_pass_id: u64) -> Option<u64> {
+        let _ownership = self.ownership.lock_or_recover();
+        let mut handoff = self.follow_up_handoff.lock_or_recover();
+        if handoff
+            .as_ref()
+            .is_none_or(|handoff| handoff.source_pass_id != source_pass_id)
+        {
+            return None;
+        }
+        handoff
+            .take()
+            .map(|handoff| handoff.destination_pass_id.unwrap_or(source_pass_id))
+    }
+
+    #[cfg(test)]
+    fn allocate_follow_up(&self, previous_pass_id: u64) -> Option<u64> {
+        self.allocate_follow_up_and_publish(previous_pass_id, |_| {})
+    }
+
+    fn allocate_follow_up_and_publish(
+        &self,
+        previous_pass_id: u64,
+        publish: impl FnOnce(u64),
+    ) -> Option<u64> {
+        let _ownership = self.ownership.lock_or_recover();
+        let prior = self.ready_prior_turn_locked(previous_pass_id)?;
+        let mut handoff = self.follow_up_handoff.lock_or_recover();
+        let handoff = handoff.as_mut().filter(|handoff| {
+            handoff.source_pass_id == previous_pass_id && handoff.destination_pass_id.is_none()
+        })?;
+        let pass_id = self.pass_sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        handoff.destination_pass_id = Some(pass_id);
+        *self.prior_turn.lock_or_recover() = Some((pass_id, prior));
+        *self.tracker.lock_or_recover() = None;
+        *self.session.lock_or_recover() = None;
+        self.worker_pass_id.store(0, Ordering::SeqCst);
+        self.active_pass_id.store(pass_id, Ordering::SeqCst);
+        // Reserve the normal capture phase immediately, including the short
+        // main-webview configuration handoff. Duplicate requests cannot win.
+        *self.status.lock_or_recover() = QueryStatus::Connecting;
+        // Cancellation cannot hide the successor before its Connecting event
+        // is enqueued, or rearm the detector after teardown. The callback must
+        // not call back into this coordinator while ownership is held.
+        publish(pass_id);
+        Some(pass_id)
+    }
+
+    fn take_prior_turn(&self, pass_id: u64) -> Option<QueryPriorTurn> {
+        let _ownership = self.ownership.lock_or_recover();
+        if !self.is_active(pass_id) {
+            return None;
+        }
+        let mut prior = self.prior_turn.lock_or_recover();
+        if prior.as_ref().is_some_and(|(owner, _)| *owner == pass_id) {
+            prior.take().map(|(_, turn)| turn)
+        } else {
+            None
+        }
     }
 
     fn mark_worker_started(&self, pass_id: u64) -> bool {
@@ -1237,6 +1387,8 @@ impl QueryCoordinator {
             return false;
         }
         *self.session.lock_or_recover() = None;
+        *self.prior_turn.lock_or_recover() = None;
+        *self.follow_up_handoff.lock_or_recover() = None;
         *self.status.lock_or_recover() = QueryStatus::Idle;
         self.active_pass_id.store(0, Ordering::SeqCst);
         true
@@ -1486,6 +1638,16 @@ fn emit_state(
     error_code: Option<&'static str>,
 ) {
     let usage = app.state::<crate::State>().query.usage_snapshot(pass_id);
+    emit_state_with_usage(app, pass_id, status, error_code, usage);
+}
+
+fn emit_state_with_usage(
+    app: &tauri::AppHandle,
+    pass_id: u64,
+    status: QueryStatus,
+    error_code: Option<&'static str>,
+    usage: Option<QueryUsage>,
+) {
     let _ = app.emit(
         "query-state-changed",
         serde_json::json!({
@@ -2473,11 +2635,7 @@ fn run_cli(
         app: app.clone(),
         pass_id,
     };
-    let mut arguments = command.arguments.clone();
-    // The transcript and its optional immutable context are one final argv
-    // element. They are never parsed, quoted, substituted, or evaluated by a
-    // shell.
-    arguments.push(prompt);
+    let arguments = query_arguments(&command.arguments, prompt);
     let environment: Vec<(String, String)> = command
         .environment
         .iter()
@@ -2974,7 +3132,8 @@ pub(crate) async fn finish_query_capture(
         }
     };
     set_query_diagnostic_stage(&state, query_pass_id, PerformanceStageV1::SidecarSpawnLoad);
-    let prompt = match session.query_context.build_prompt(query.clone()) {
+    let prior = state.query.take_prior_turn(query_pass_id);
+    let prompt = match build_query_prompt(query, prior.as_ref(), &session.query_context) {
         Ok(prompt) => prompt,
         Err(error_code) => {
             fail_query(&app_handle, &state, query_pass_id, error_code);
@@ -3065,9 +3224,20 @@ pub(crate) async fn finish_query_capture(
 #[tauri::command]
 pub(crate) fn cancel_query(
     app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::State>,
     query_pass_id: u64,
+    follow_up_from_pass_id: Option<u64>,
 ) -> Result<(), String> {
+    let query_pass_id = if let Some(source_pass_id) = follow_up_from_pass_id {
+        require_window(&window, "query-review")?;
+        state
+            .query
+            .take_follow_up_cancel_target(source_pass_id)
+            .unwrap_or(query_pass_id)
+    } else {
+        query_pass_id
+    };
     // A hotkey release can beat the async start command. Establish a
     // content-free lifecycle first so that even that pre-start cancellation
     // produces one terminal run instead of silently disappearing.
@@ -3125,6 +3295,58 @@ pub(crate) fn cancel_query(
     // awaiting teardown. Never clear or hide the newer owner's session.
     finish_cancelled_query(&app_handle, &state, query_pass_id);
     Ok(())
+}
+
+/// The review window requests only an exact pass ID; private content stays in
+/// Rust. Main owns the current configuration and whether the listener is armed.
+#[tauri::command]
+pub(crate) fn request_query_follow_up(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    query_pass_id: u64,
+) -> Result<(), String> {
+    require_window(&window, "query-review")?;
+    if !crate::keyboard::query_listener_active() || !state.query.request_follow_up(query_pass_id) {
+        return Err(
+            "That query is no longer ready for a follow-up. Try again or ask a new query.".into(),
+        );
+    }
+    if app_handle
+        .emit_to(
+            "main",
+            "query-toggle",
+            serde_json::json!({
+                "queryPassId": query_pass_id, "action": "follow_up",
+            }),
+        )
+        .is_err()
+    {
+        state.query.take_follow_up_cancel_target(query_pass_id);
+        return Err("Could not request a follow-up. Try again.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn allocate_query_follow_up(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    query_pass_id: u64,
+) -> Result<u64, String> {
+    require_window(&window, "main")?;
+    if !crate::keyboard::query_listener_active() {
+        return Err("Enable Voice Query in Settings before asking a follow-up.".into());
+    }
+    let pass_id = state
+        .query
+        .allocate_follow_up_and_publish(query_pass_id, |pass_id| {
+            crate::keyboard::set_query_recording_state(true);
+            emit_state_with_usage(&app_handle, pass_id, QueryStatus::Connecting, None, None);
+        })
+        .ok_or_else(|| "That query is no longer ready for a follow-up.".to_string())?;
+    Ok(pass_id)
 }
 
 #[tauri::command]
@@ -3540,6 +3762,397 @@ mod tests {
         assert_eq!(query.active_pass_id(), Some(second));
     }
 
+    fn ready_follow_up_fixture(query: &QueryCoordinator, question: &str, answer: &str) -> u64 {
+        let pass = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass, QueryProviderId::Custom, false, None));
+        install_test_query_session(query, pass, false, answer);
+        query.mark_transcription_finished(pass, Some(question.into()), true);
+        query.set_status(pass, QueryStatus::Ready);
+        assert!(query.claim_terminal(pass).is_some());
+        assert!(query.request_follow_up(pass));
+        pass
+    }
+
+    #[test]
+    fn follow_up_publication_precedes_concurrent_source_cancellation() {
+        let query = Arc::new(QueryCoordinator::default());
+        let previous = ready_follow_up_fixture(&query, "question", "answer");
+        let (publishing_tx, publishing_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let published = Arc::new(AtomicBool::new(false));
+        let allocator = {
+            let query = Arc::clone(&query);
+            let published = Arc::clone(&published);
+            std::thread::spawn(move || {
+                query
+                    .allocate_follow_up_and_publish(previous, |_| {
+                        publishing_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        published.store(true, Ordering::SeqCst);
+                    })
+                    .unwrap()
+            })
+        };
+        publishing_rx.recv().unwrap();
+        assert!(query.ownership.try_lock().is_err());
+        let cancel = {
+            let query = Arc::clone(&query);
+            let published = Arc::clone(&published);
+            std::thread::spawn(move || {
+                let next = query.take_follow_up_cancel_target(previous).unwrap();
+                assert!(published.load(Ordering::SeqCst));
+                assert!(query.begin_cancel(next));
+                assert!(query.complete_cancel(next));
+            })
+        };
+        release_tx.send(()).unwrap();
+        allocator.join().unwrap();
+        cancel.join().unwrap();
+        assert_eq!(query.active_pass_id(), None);
+        assert!(query.session.lock_or_recover().is_none());
+        assert!(query.prior_turn.lock_or_recover().is_none());
+        assert!(query.follow_up_handoff.lock_or_recover().is_none());
+    }
+
+    #[test]
+    fn follow_up_requires_one_shot_review_authorization_and_cancels_owned_successor() {
+        let query = QueryCoordinator::default();
+        let previous = ready_follow_up_fixture(&query, "one", "answer one");
+        query.follow_up_handoff.lock_or_recover().take();
+        assert_eq!(
+            query.allocate_follow_up(previous),
+            None,
+            "a spoofed main event is not authority"
+        );
+        assert!(query.request_follow_up(previous));
+        assert!(!query.request_follow_up(previous));
+        let next = query.allocate_follow_up(previous).unwrap();
+        assert_eq!(query.allocate_follow_up(previous), None);
+        assert_eq!(query.take_follow_up_cancel_target(previous), Some(next));
+        assert!(query.begin_cancel(next));
+        assert!(query.complete_cancel(next));
+        assert_eq!(query.allocate_follow_up(previous), None);
+        assert!(query.follow_up_handoff.lock_or_recover().is_none());
+
+        let fresh = ready_follow_up_fixture(&query, "fresh", "fresh answer");
+        assert_eq!(query.take_follow_up_cancel_target(previous), None);
+        assert!(!query.begin_cancel(previous));
+        assert_eq!(query.active_pass_id(), Some(fresh));
+        assert_eq!(query.take_follow_up_cancel_target(fresh), Some(fresh));
+        assert_eq!(
+            query.allocate_follow_up(fresh),
+            None,
+            "cancel before allocation revokes the request"
+        );
+        assert!(query.begin_cancel(fresh));
+        assert!(query.complete_cancel(fresh));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follow_up_two_real_children_reflect_prior_turn_and_keep_independent_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let history = crate::query_history::QueryHistoryStore::default();
+        history
+            .initialize(directory.path().join("history"), None)
+            .unwrap();
+        let receipt = directory.path().join("argv.json");
+        // A tiny deterministic CLI fixture; no shell, network, provider login,
+        // microphone or OS-permission override is involved in this test.
+        let script = r#"import json, sys
+with open(sys.argv[2], 'w') as receipt:
+    json.dump(sys.argv[1:], receipt)
+print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.argv[-1] else 'indigo')
+"#;
+        let fixed = vec![
+            "-c".into(),
+            script.into(),
+            "--fixed-argument".into(),
+            receipt.to_string_lossy().into_owned(),
+        ];
+        let query = QueryCoordinator::default();
+        let mut pass = query.allocate_keyboard_pass().unwrap();
+        let mut receipts = Vec::new();
+        for (question, expected_answer) in [
+            ("Name a color.", "indigo"),
+            (
+                "What color did you just name?",
+                "The previous answer was indigo.",
+            ),
+        ] {
+            assert!(query.begin_tracking(
+                pass,
+                QueryProviderId::Custom,
+                true,
+                history.clear_epoch()
+            ));
+            install_test_query_session(&query, pass, false, "");
+            query.mark_transcription_finished(pass, Some(question.into()), true);
+            let prior = query.take_prior_turn(pass);
+            let prompt =
+                build_query_prompt(question.into(), prior.as_ref(), &Default::default()).unwrap();
+            let arguments = query_arguments(&fixed, prompt.clone());
+            let (mut child, stdin, mut stdout, stderr) = ManagedChild::spawn_user_cli(
+                Path::new("/usr/bin/python3"),
+                &arguments,
+                &[],
+                directory.path(),
+            )
+            .unwrap();
+            drop((stdin, stderr));
+            let mut output = String::new();
+            stdout.read_to_string(&mut output).unwrap();
+            assert_eq!(
+                child
+                    .wait_for_exit(Instant::now() + Duration::from_secs(5))
+                    .unwrap()
+                    .exit_code,
+                Some(0)
+            );
+            assert_eq!(output.trim(), expected_answer);
+            let argv: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&receipt).unwrap()).unwrap();
+            assert_eq!(argv.as_array().unwrap().len(), 3);
+            assert_eq!(argv[0], "--fixed-argument");
+            assert_eq!(argv[2], prompt);
+            receipts.push(argv);
+            query.append_answer(pass, output.trim()).unwrap();
+            query.set_status(pass, QueryStatus::Ready);
+            let snapshot = query.claim_terminal(pass).unwrap();
+            assert_eq!(snapshot.original_question.as_deref(), Some(question));
+            assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+            assert!(query.request_follow_up(pass));
+            pass = query.allocate_follow_up(pass).unwrap();
+        }
+        let entries = serde_json::to_value(history.list(0, 10, None, None).unwrap()).unwrap();
+        assert_eq!(entries["total"], 2);
+        assert!(entries["entries"].as_array().unwrap().iter().all(|entry| {
+            matches!(
+                entry["question"].as_str(),
+                Some("Name a color." | "What color did you just name?")
+            ) && entry.get("conversation").is_none()
+                && entry.get("prompt").is_none()
+        }));
+        assert!(receipts[1][2]
+            .as_str()
+            .unwrap()
+            .contains("Previous question:\nName a color."));
+        assert!(receipts[1][2]
+            .as_str()
+            .unwrap()
+            .contains("Previous answer:\nindigo"));
+    }
+
+    #[test]
+    fn follow_up_is_literal_one_final_argument_including_untrusted_content() {
+        let prior = QueryPriorTurn {
+            question: "what is $(touch /tmp/never-execute)?\n--resume".into(),
+            answer: "`echo secret`; 'quoted' \"double\" 🌍".into(),
+        };
+        let question = "--session new; $HOME\nExplain that";
+        let context = QueryContextSnapshot {
+            level: QueryContextLevel::Selection,
+            application_name: Some("Editor".into()),
+            selection: Some("$(do not execute)".into()),
+            ..Default::default()
+        };
+        let prompt = build_query_prompt(question.into(), Some(&prior), &context).unwrap();
+        let fixed = vec!["--print".into(), "--tools".into(), String::new()];
+        let arguments = query_arguments(&fixed, prompt.clone());
+        assert_eq!(&arguments[..3], &fixed);
+        assert_eq!(arguments.len(), 4);
+        assert_eq!(arguments[3], prompt);
+        for literal in [
+            &prior.question,
+            &prior.answer,
+            question,
+            "$(do not execute)",
+        ] {
+            assert!(arguments[3].contains(literal));
+        }
+        assert_eq!(
+            build_query_prompt(question.into(), None, &Default::default()).unwrap(),
+            question
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follow_up_real_child_receives_fixed_arguments_and_one_literal_fold() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("must-not-be-created");
+        let prior = QueryPriorTurn {
+            question: format!("$(touch {})", marker.display()),
+            answer: "quoted ' answer; --resume \"session\" 🌍".into(),
+        };
+        let prompt = build_query_prompt(
+            "What did that mean?".into(),
+            Some(&prior),
+            &Default::default(),
+        )
+        .unwrap();
+        // A second prompt argv would cause printf to repeat its format. The
+        // exact output below therefore proves both argv shape and literalness.
+        let arguments =
+            query_arguments(&["%s|%s".into(), "--fixed-argument".into()], prompt.clone());
+        let (mut child, stdin, mut stdout, stderr) = ManagedChild::spawn_user_cli(
+            Path::new("/usr/bin/printf"),
+            &arguments,
+            &[],
+            directory.path(),
+        )
+        .unwrap();
+        drop((stdin, stderr));
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        let termination = child
+            .wait_for_exit(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(termination.exit_code, Some(0));
+        assert_eq!(output, format!("--fixed-argument|{prompt}"));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn follow_up_caps_count_utf8_bytes_and_never_truncate_prior_or_context() {
+        let context = QueryContextSnapshot::default();
+        let mut prior = QueryPriorTurn {
+            question: "Earlier?".into(),
+            answer: String::new(),
+        };
+        let overhead = build_query_prompt("next".into(), Some(&prior), &context)
+            .unwrap()
+            .len();
+        let remaining = MAX_QUERY_PROMPT_BYTES - overhead;
+        prior.answer = "é".repeat(remaining / 2) + &"a".repeat(remaining % 2);
+        let exact = build_query_prompt("next".into(), Some(&prior), &context).unwrap();
+        assert_eq!(exact.len(), MAX_QUERY_PROMPT_BYTES);
+        assert!(exact.contains(&prior.answer));
+        prior.answer.push('é');
+        assert_eq!(
+            build_query_prompt("next".into(), Some(&prior), &context),
+            Err("query_too_large")
+        );
+        assert!(build_query_prompt("é".repeat(MAX_QUERY_BYTES / 2), None, &context).is_ok());
+        assert_eq!(
+            build_query_prompt("é".repeat(MAX_QUERY_BYTES / 2 + 1), None, &context),
+            Err("query_too_large")
+        );
+        prior.answer.truncate(remaining);
+        let included = QueryContextSnapshot {
+            level: QueryContextLevel::Application,
+            application_name: Some("Editor".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_query_prompt("next".into(), Some(&prior), &included),
+            Err("query_too_large")
+        );
+    }
+
+    #[test]
+    fn follow_up_requires_exact_finalized_ready_and_confirmed_child_teardown() {
+        let query = QueryCoordinator::default();
+        let previous = ready_follow_up_fixture(&query, "one", "answer one");
+        assert!(!query.request_follow_up(previous));
+        assert_eq!(query.allocate_follow_up(previous + 1), None);
+        *query.child.lock_or_recover() = Some(QueryChildOwnership::Starting { pass_id: previous });
+        assert_eq!(query.allocate_follow_up(previous), None);
+        query.release_child_start(previous);
+        query.set_status(previous, QueryStatus::Failed);
+        assert_eq!(query.allocate_follow_up(previous), None);
+        query.set_status(previous, QueryStatus::Ready);
+        query
+            .tracker
+            .lock_or_recover()
+            .as_mut()
+            .unwrap()
+            .terminal_claimed = false;
+        assert_eq!(query.allocate_follow_up(previous), None);
+        query.claim_terminal(previous).unwrap();
+        let next = query.allocate_follow_up(previous).unwrap();
+        assert_eq!(next, previous + 1);
+        assert_eq!(query.status(), QueryStatus::Connecting);
+        assert!(query.status().blocks_capture());
+        assert!(query.status().blocks_pipeline());
+        assert_eq!(query.allocate_follow_up(previous), None);
+        assert_eq!(query.allocate_keyboard_pass(), None);
+        assert!(query.session(previous).is_none());
+        assert!(query.take_prior_turn(previous).is_none());
+        let prior = query.take_prior_turn(next).unwrap();
+        assert_eq!(prior.question, "one");
+        assert_eq!(prior.answer, "answer one");
+        assert!(query.take_prior_turn(next).is_none());
+    }
+
+    #[test]
+    fn follow_up_dismissal_and_fresh_shortcut_discard_ephemeral_exchange() {
+        let query = QueryCoordinator::default();
+        let previous = ready_follow_up_fixture(&query, "private", "private answer");
+        let next = query.allocate_follow_up(previous).unwrap();
+        assert!(!query.complete_cancel(previous));
+        assert!(query.begin_cancel(next));
+        assert!(query.complete_cancel(next));
+        assert!(query.prior_turn.lock_or_recover().is_none());
+        assert_eq!(query.allocate_follow_up(previous), None);
+        assert_eq!(query.allocate_follow_up(next), None);
+        let fresh = ready_follow_up_fixture(&query, "fresh", "fresh answer");
+        let follow = query.allocate_follow_up(fresh).unwrap();
+        query.set_status(follow, QueryStatus::Failed);
+        let shortcut = query.allocate_keyboard_pass().unwrap();
+        assert!(query.take_prior_turn(shortcut).is_none());
+        assert!(query.prior_turn.lock_or_recover().is_none());
+    }
+
+    #[test]
+    fn chained_follow_up_history_remains_independent_and_only_previous_turn_is_folded() {
+        let temp = tempfile::tempdir().unwrap();
+        let history = crate::query_history::QueryHistoryStore::default();
+        history
+            .initialize(temp.path().join("query-history"), None)
+            .unwrap();
+        let query = QueryCoordinator::default();
+        let mut pass = query.allocate_keyboard_pass().unwrap();
+        for (question, answer) in [
+            ("first question", "first answer"),
+            ("second question", "second answer"),
+        ] {
+            assert!(query.begin_tracking(
+                pass,
+                QueryProviderId::Custom,
+                true,
+                history.clear_epoch()
+            ));
+            install_test_query_session(&query, pass, false, answer);
+            query.mark_transcription_finished(pass, Some(question.into()), true);
+            query.set_status(pass, QueryStatus::Ready);
+            let snapshot = query.claim_terminal(pass).unwrap();
+            assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
+            assert!(query.request_follow_up(pass));
+            pass = query.allocate_follow_up(pass).unwrap();
+            let prior = query.take_prior_turn(pass).unwrap();
+            assert_eq!(prior.question, question);
+            assert_eq!(prior.answer, answer);
+            let prompt =
+                build_query_prompt("next".into(), Some(&prior), &Default::default()).unwrap();
+            if question == "second question" {
+                assert!(!prompt.contains("first question"));
+            }
+        }
+        let page = history.list(0, 10, None, None).unwrap();
+        assert_eq!(page.total, 2);
+        let json = serde_json::to_value(page).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        for entry in entries {
+            assert!(["first question", "second question"]
+                .contains(&entry["question"].as_str().unwrap()));
+            assert!(["first answer", "second answer"].contains(&entry["answer"].as_str().unwrap()));
+            assert!(entry.get("conversation").is_none());
+            assert!(entry.get("prompt").is_none());
+            assert!(entry.get("priorTurn").is_none());
+        }
+    }
+
     #[test]
     fn tracked_terminal_state_blocks_reuse_until_claimed() {
         let query = QueryCoordinator::default();
@@ -3703,7 +4316,7 @@ mod tests {
         assert_eq!(snapshot.answer, format!("{user_frame}{malformed}"));
         assert!(snapshot.answer.contains(private_context));
         assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 1);
 
         let raw_snapshot = QueryTerminalSnapshot {
             provider: QueryProviderId::Custom,
@@ -3721,7 +4334,7 @@ mod tests {
             terminal_intent: None,
         };
         assert!(persist_query_history_snapshot(&history, &raw_snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 2);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 2);
     }
 
     #[test]
@@ -3750,7 +4363,7 @@ mod tests {
         };
 
         assert!(!persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 0);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 0);
     }
 
     #[test]
@@ -3810,7 +4423,7 @@ mod tests {
         assert_eq!(snapshot.answer, composed_prompt);
         assert!(snapshot.answer.contains(private_context));
         assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 1);
     }
 
     #[test]
@@ -3882,7 +4495,7 @@ mod tests {
         let snapshot = query.claim_terminal(pass_id).unwrap();
         assert_eq!(snapshot.answer, answer);
         assert!(persist_query_history_snapshot(&history, &snapshot, None).unwrap());
-        assert_eq!(history.list(0, 10, None).unwrap().total, 1);
+        assert_eq!(history.list(0, 10, None, None).unwrap().total, 1);
     }
 
     #[test]

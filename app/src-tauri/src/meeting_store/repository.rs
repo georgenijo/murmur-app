@@ -444,19 +444,23 @@ impl MeetingRepository {
             let fts_query = fts_query(query)?;
             let total = connection
                 .query_row(
-                    "SELECT COUNT(*) FROM meeting_sessions s WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)",
-                    [&fts_query],
+                    "SELECT COUNT(*) FROM meeting_sessions s
+                     WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)
+                        OR s.id IN (SELECT session_id FROM meeting_sessions_fts WHERE meeting_sessions_fts MATCH ?)",
+                    params![fts_query, fts_query],
                     |row| row.get::<_, i64>(0),
                 )
                 .map_err(db_error)?;
             let sql = format!(
-                "{} WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?) ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ? OFFSET ?",
+                "{} WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)
+                        OR s.id IN (SELECT session_id FROM meeting_sessions_fts WHERE meeting_sessions_fts MATCH ?)
+                     ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ? OFFSET ?",
                 session_query()
             );
             let mut statement = connection.prepare(&sql).map_err(db_error)?;
             let sessions = statement
                 .query_map(
-                    params![fts_query, i64::from(limit), to_i64(offset)?],
+                    params![fts_query, fts_query, i64::from(limit), to_i64(offset)?],
                     row_to_session,
                 )
                 .map_err(db_error)?
@@ -493,6 +497,232 @@ impl MeetingRepository {
         let connection = self.open_checked()?;
         session_by_id(&connection, id)?
             .ok_or_else(|| "The meeting transcript no longer exists.".to_string())
+    }
+
+    pub(crate) fn audio_manifest(
+        &self,
+        session_id: &str,
+        from_ms: u64,
+        channel: crate::meeting_audio::PlaybackChannel,
+        cursor: Option<&crate::meeting_audio::AudioCursor>,
+        limit: u32,
+    ) -> Result<crate::meeting_audio::AudioManifest, String> {
+        use crate::meeting_audio::{
+            AudioChunk, AudioCursor, AudioManifest, AudioUnavailableReason, AUDIO_UNAVAILABLE,
+            MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER,
+        };
+        crate::meeting_audio::validate_manifest_request(session_id, from_ms, cursor, limit)?;
+        let connection = self.open_checked()?;
+        let session = connection
+            .query_row(
+                "SELECT retain_audio, status, ended_at_ms FROM meeting_sessions WHERE id=?",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_error)?
+            .ok_or(AUDIO_UNAVAILABLE)?;
+        if !session.0 {
+            return Ok(AudioManifest::Unavailable {
+                reason: AudioUnavailableReason::NotRetained,
+            });
+        }
+        if session.1 == "active" || session.2.is_none() {
+            return Ok(AudioManifest::Unavailable {
+                reason: AudioUnavailableReason::NotFinished,
+            });
+        }
+        let duration_ms = connection.query_row(
+            "SELECT MAX(end_ms) FROM meeting_segments WHERE session_id=? AND status IN ('final','failed') AND audio_relative_path IS NOT NULL",
+            [session_id], |row| row.get::<_, Option<i64>>(0),
+        ).map_err(db_error)?;
+        let Some(duration_ms) = duration_ms else {
+            return Ok(AudioManifest::Unavailable {
+                reason: AudioUnavailableReason::NoAudio,
+            });
+        };
+        let duration_ms = to_u64(duration_ms).map_err(db_error)?;
+        if duration_ms > MAX_SAFE_INTEGER {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        let mut statement = connection.prepare(
+            "SELECT id, speaker, start_ms, end_ms FROM meeting_segments
+             WHERE session_id=?1 AND status IN ('final','failed') AND audio_relative_path IS NOT NULL
+               AND end_ms>?2 AND (?3 IS NULL OR speaker=?3)
+               AND (?4 IS NULL OR start_ms>?4 OR (start_ms=?4 AND id>?5))
+             ORDER BY start_ms ASC, id ASC LIMIT ?6",
+        ).map_err(db_error)?;
+        let mut chunks = statement
+            .query_map(
+                params![
+                    session_id,
+                    to_i64(from_ms)?,
+                    channel.database_filter(),
+                    cursor.map(|cursor| cursor.start_ms as i64),
+                    cursor.map(|cursor| cursor.segment_id),
+                    limit + 1,
+                ],
+                |row| {
+                    let channel = MeetingSpeaker::from_db(&row.get::<_, String>(1)?)?;
+                    Ok(AudioChunk {
+                        segment_id: row.get(0)?,
+                        channel,
+                        start_ms: to_u64(row.get(2)?)?,
+                        end_ms: to_u64(row.get(3)?)?,
+                    })
+                },
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        if chunks.iter().any(|chunk| {
+            chunk.segment_id <= 0
+                || chunk.segment_id as u64 > MAX_SAFE_INTEGER
+                || chunk.end_ms > MAX_SAFE_INTEGER
+                || chunk.start_ms >= chunk.end_ms
+                || chunk.end_ms - chunk.start_ms > MAX_CHUNK_DURATION_MS
+        }) {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        let has_more = chunks.len() > limit as usize;
+        chunks.truncate(limit as usize);
+        let next_cursor = if has_more {
+            chunks.last().map(|chunk| AudioCursor {
+                start_ms: chunk.start_ms,
+                segment_id: chunk.segment_id,
+            })
+        } else {
+            None
+        };
+        Ok(AudioManifest::Available {
+            session_id: session_id.to_string(),
+            duration_ms,
+            chunks,
+            next_cursor,
+        })
+    }
+
+    pub(crate) fn audio_reference(
+        &self,
+        session_id: &str,
+        segment_id: i64,
+    ) -> Result<crate::meeting_audio::OwnedAudioReference, String> {
+        use crate::meeting_audio::{
+            OwnedAudioReference, AUDIO_UNAVAILABLE, MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER,
+        };
+        crate::meeting_audio::validate_session_id(session_id)?;
+        let connection = self.open_checked()?;
+        let row = connection.query_row(
+            "SELECT g.audio_relative_path, g.speaker, g.sequence, g.start_ms, g.end_ms
+             FROM meeting_segments g JOIN meeting_sessions s ON s.id=g.session_id
+             WHERE s.id=?1 AND g.id=?2 AND s.retain_audio=1 AND s.status!='active' AND s.ended_at_ms IS NOT NULL
+               AND g.status IN ('final','failed') AND g.audio_relative_path IS NOT NULL",
+            params![session_id, segment_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
+        ).optional().map_err(db_error)?.ok_or(AUDIO_UNAVAILABLE)?;
+        let channel = MeetingSpeaker::from_db(&row.1).map_err(db_error)?;
+        let sequence = to_u64(row.2).map_err(db_error)?;
+        let start_ms = to_u64(row.3).map_err(db_error)?;
+        let end_ms = to_u64(row.4).map_err(db_error)?;
+        let expected = format!("audio/{session_id}/{}-{sequence:08}.wav", channel.as_db());
+        if row.0 != expected
+            || end_ms > MAX_SAFE_INTEGER
+            || start_ms >= end_ms
+            || end_ms - start_ms > MAX_CHUNK_DURATION_MS
+        {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        Ok(OwnedAudioReference {
+            path: self.root.join(expected),
+            duration_ms: end_ms - start_ms,
+        })
+    }
+
+    pub fn save_metadata(
+        &self,
+        request: SaveMeetingMetadataRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        self.save_metadata_from(request, MeetingTitleSource::Manual)
+    }
+
+    pub(crate) fn save_calendar_metadata(
+        &self,
+        request: SaveMeetingMetadataRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        self.save_metadata_from(request, MeetingTitleSource::Calendar)
+    }
+
+    fn save_metadata_from(
+        &self,
+        request: SaveMeetingMetadataRequest,
+        source: MeetingTitleSource,
+    ) -> Result<MeetingWorkspace, String> {
+        let session_id = request.session_id.trim().to_string();
+        if !valid_session_id(&session_id) {
+            return Err("The meeting metadata request is invalid.".into());
+        }
+        let title = validate_optional_metadata_text(
+            request.title,
+            MAX_MEETING_TITLE_CHARS,
+            "The meeting title is invalid.",
+        )?;
+        if request.attendees.len() > MAX_MEETING_ATTENDEES {
+            return Err(format!(
+                "A meeting can have at most {MAX_MEETING_ATTENDEES} attendees."
+            ));
+        }
+        let attendees = request
+            .attendees
+            .into_iter()
+            .map(|attendee| {
+                validate_required_metadata_text(
+                    attendee,
+                    MAX_MEETING_ATTENDEE_CHARS,
+                    "A meeting attendee is invalid.",
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let attendees_json = serde_json::to_string(&attendees).map_err(|_| storage_error())?;
+        let title_source = title.as_ref().map(|_| source);
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE meeting_sessions SET title=?, title_source=?, attendees_json=? WHERE id=?",
+                params![
+                    title.as_deref(),
+                    title_source.map(MeetingTitleSource::as_db),
+                    attendees_json,
+                    session_id
+                ],
+            )
+            .map_err(db_error)?;
+        if changed != 1 {
+            return Err("The meeting transcript no longer exists.".into());
+        }
+        transaction
+            .execute(
+                "DELETE FROM meeting_sessions_fts WHERE session_id=?",
+                [&session_id],
+            )
+            .map_err(db_error)?;
+        if let Some(title) = title.as_deref() {
+            transaction
+                .execute(
+                    "INSERT INTO meeting_sessions_fts(session_id, title) VALUES (?, ?)",
+                    params![session_id, title],
+                )
+                .map_err(db_error)?;
+        }
+        transaction.commit().map_err(db_error)?;
+        self.workspace(&session_id)
     }
 
     pub fn detail(&self, id: &str) -> Result<MeetingDetail, String> {
@@ -950,41 +1180,76 @@ impl MeetingRepository {
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
-        let connection = self.open_checked()?;
+        crate::meeting_audio::validate_session_id(id)?;
+        crate::meeting_audio::revoke_audio_reads();
+        let mut connection = self.open_checked()?;
         let paths = audio_paths_for_session(&connection, id)?;
-        connection
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        transaction
             .execute("DELETE FROM meeting_segments_fts WHERE session_id=?", [id])
             .map_err(db_error)?;
-        let changed = connection
+        transaction
+            .execute("DELETE FROM meeting_sessions_fts WHERE session_id=?", [id])
+            .map_err(db_error)?;
+        let changed = transaction
             .execute("DELETE FROM meeting_sessions WHERE id=?", [id])
             .map_err(db_error)?;
         if changed == 0 {
             return Err("The meeting transcript no longer exists.".to_string());
         }
+        let mut audio_error = None;
         for relative in paths {
-            if let Some(path) = owned_audio_path(&self.root, &relative) {
-                let _ = fs::remove_file(path);
+            if let Err(error) = crate::meeting_audio::remove_owned_audio(&self.root, id, &relative)
+            {
+                audio_error = Some(error);
             }
         }
-        if valid_session_id(id) {
-            let _ = fs::remove_dir(self.root.join("audio").join(id));
+        if let Some(error) = audio_error {
+            return Err(error);
         }
+        crate::meeting_audio::remove_empty_session_audio(&self.root, id)?;
+        transaction.commit().map_err(db_error)?;
         Ok(())
     }
 
     pub fn delete_all(&self) -> Result<(), String> {
-        let connection = self.open_checked()?;
-        connection
+        crate::meeting_audio::revoke_audio_reads();
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        transaction
             .execute_batch(
-                "BEGIN IMMEDIATE; DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions; COMMIT; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
+                "DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions_fts; DELETE FROM meeting_sessions;",
             )
             .map_err(db_error)?;
         let audio_root = self.root.join("audio");
-        let _ = fs::remove_dir_all(&audio_root);
-        fs::create_dir_all(audio_root).map_err(|_| storage_error())
+        match fs::symlink_metadata(&audio_root) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Err("The meeting audio folder could not be removed safely. History remains available so you can retry deletion.".into()),
+            Ok(_) => {
+                use std::os::unix::fs::OpenOptionsExt;
+                let _directory = fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC).open(&audio_root)
+                    .map_err(|_| "The meeting audio folder could not be removed safely.".to_string())?;
+                fs::remove_dir_all(&audio_root).map_err(|_| "Some retained audio could not be removed. History remains available so you can retry deletion.".to_string())?;
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err("The meeting audio folder could not be removed. History remains available so you can retry deletion.".into()),
+        }
+        fs::create_dir_all(audio_root).map_err(|_| storage_error())?;
+        transaction.commit().map_err(db_error)?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            .map_err(db_error)
     }
 
-    pub fn prune(&self, retention_days: Option<u32>, max_sessions: u32) -> Result<u64, String> {
+    pub fn prune(
+        &self,
+        retention_days: Option<u32>,
+        max_sessions: u32,
+        mut invalidate: impl FnMut(&str),
+    ) -> Result<u64, String> {
         let connection = self.open_checked()?;
         let cutoff = retention_days
             .filter(|days| *days > 0)
@@ -1020,6 +1285,7 @@ impl MeetingRepository {
         ids.dedup();
         drop(connection);
         for id in &ids {
+            invalidate(id);
             self.delete_session(id)?;
         }
         Ok(ids.len() as u64)
@@ -1147,8 +1413,29 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSession> {
     let duration_ms = ended_at_ms
         .unwrap_or_else(now_ms)
         .saturating_sub(started_at_ms);
+    let title = row.get::<_, Option<String>>(11)?;
+    let title_source = row
+        .get::<_, Option<String>>(12)?
+        .map(|value| MeetingTitleSource::from_db(&value))
+        .transpose()?;
+    let attendees = serde_json::from_str::<Vec<String>>(&row.get::<_, String>(13)?)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if title.is_some() != title_source.is_some()
+        || title
+            .as_deref()
+            .is_some_and(|value| !valid_stored_metadata_text(value, MAX_MEETING_TITLE_CHARS))
+        || attendees.len() > MAX_MEETING_ATTENDEES
+        || attendees
+            .iter()
+            .any(|value| !valid_stored_metadata_text(value, MAX_MEETING_ATTENDEE_CHARS))
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     Ok(MeetingSession {
         id: row.get(0)?,
+        title,
+        title_source,
+        attendees,
         started_at_ms,
         ended_at_ms,
         status: MeetingSessionStatus::from_db(&row.get::<_, String>(3)?)?,
@@ -1167,8 +1454,38 @@ fn session_query() -> &'static str {
     "SELECT s.id, s.started_at_ms, s.ended_at_ms, s.status, s.model_name, s.language, s.smart_punctuation, s.retain_audio,
             (SELECT COUNT(*) FROM meeting_segments g WHERE g.session_id=s.id AND g.status='final'),
             COALESCE((SELECT substr(text, 1, 240) FROM meeting_segments g WHERE g.session_id=s.id AND g.status='final' AND text!='' ORDER BY start_ms ASC, id ASC LIMIT 1), ''),
-            s.error_code
+            s.error_code, s.title, s.title_source, s.attendees_json
      FROM meeting_sessions s"
+}
+
+fn validate_optional_metadata_text(
+    value: Option<String>,
+    maximum_chars: usize,
+    message: &str,
+) -> Result<Option<String>, String> {
+    value
+        .map(|value| validate_required_metadata_text(value, maximum_chars, message))
+        .transpose()
+}
+
+fn validate_required_metadata_text(
+    value: String,
+    maximum_chars: usize,
+    message: &str,
+) -> Result<String, String> {
+    let value = value.trim();
+    if !valid_stored_metadata_text(value, maximum_chars) {
+        Err(message.to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn valid_stored_metadata_text(value: &str, maximum_chars: usize) -> bool {
+    !value.is_empty()
+        && value.trim() == value
+        && value.chars().count() <= maximum_chars
+        && !value.chars().any(char::is_control)
 }
 
 fn session_by_id(connection: &Connection, id: &str) -> Result<Option<MeetingSession>, String> {
@@ -1267,7 +1584,8 @@ mod tests {
 
     fn repository() -> (TempDir, MeetingRepository) {
         let temp = TempDir::new().unwrap();
-        let (repository, _) = MeetingRepository::initialize(temp.path().to_path_buf()).unwrap();
+        let (repository, _) =
+            MeetingRepository::initialize(temp.path().canonicalize().unwrap()).unwrap();
         (temp, repository)
     }
 
@@ -1375,6 +1693,10 @@ mod tests {
              CREATE INDEX meeting_segments_session_time_idx ON meeting_segments(session_id, start_ms, id);
              CREATE INDEX meeting_segments_pending_idx ON meeting_segments(status, id);
              DROP TABLE meeting_remote_speakers;
+             DROP TABLE meeting_sessions_fts;
+             ALTER TABLE meeting_sessions DROP COLUMN attendees_json;
+             ALTER TABLE meeting_sessions DROP COLUMN title_source;
+             ALTER TABLE meeting_sessions DROP COLUMN title;
              PRAGMA user_version=3;
              COMMIT;
              PRAGMA foreign_keys=ON;
@@ -1427,6 +1749,50 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".meeting-recovery-")));
+    }
+
+    #[test]
+    fn corrupted_main_recovers_private_metadata_from_a_v5_backup() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/meetings-v5-metadata.sqlite3");
+        let (_source_root, source) = repository();
+        source
+            .create_session("metadata-recovery", "base.en", "en", true, false)
+            .unwrap();
+        source
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-recovery".into(),
+                title: Some("Private planning title".into()),
+                attendees: vec!["Alex".into(), "Casey".into()],
+            })
+            .unwrap();
+        source
+            .finish_session("metadata-recovery", MeetingSessionStatus::Complete, None)
+            .unwrap();
+        let expected = source.workspace("metadata-recovery").unwrap();
+        source
+            .open_checked()
+            .unwrap()
+            .backup(MAIN_DB, &backup, None)
+            .unwrap();
+        fs::write(root.path().join(DATABASE_NAME), b"corrupt database").unwrap();
+
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        assert_eq!(
+            recovered.workspace("metadata-recovery").unwrap().session,
+            expected.session
+        );
+        assert_eq!(
+            recovered
+                .list_sessions(Some("planning"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
     }
 
     #[test]
@@ -1979,6 +2345,122 @@ mod tests {
         assert!(!detail.segments[0].audio_available);
         repository.delete_session("session-1").unwrap();
         assert_eq!(repository.list_sessions(None, 0, 20).unwrap().total, 0);
+    }
+
+    #[test]
+    fn metadata_save_is_bounded_transactional_and_refreshes_title_search() {
+        let (_temp, repository) = repository();
+        repository
+            .create_session("metadata-session", "base.en", "en", true, false)
+            .unwrap();
+        let segment = final_segment(
+            &repository,
+            "metadata-session",
+            MeetingSpeaker::Me,
+            0,
+            "Immutable transcript evidence",
+        );
+        repository
+            .finish_session("metadata-session", MeetingSessionStatus::Complete, None)
+            .unwrap();
+
+        let saved = repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: Some("  Project Atlas  ".into()),
+                attendees: vec!["  Alex  ".into(), "Casey".into()],
+            })
+            .unwrap();
+        assert_eq!(saved.session.title.as_deref(), Some("Project Atlas"));
+        assert_eq!(saved.session.title_source, Some(MeetingTitleSource::Manual));
+        assert_eq!(
+            saved.session.attendees,
+            vec!["Alex".to_string(), "Casey".to_string()]
+        );
+        assert_eq!(saved.segments[0].id, segment);
+        assert_eq!(saved.segments[0].text, "Immutable transcript evidence");
+        assert!(saved.review.is_none());
+        assert_eq!(
+            repository
+                .list_sessions(Some("Atlas"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+
+        repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: Some("Project Borealis".into()),
+                attendees: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_sessions(Some("Atlas"), 0, 10)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            repository
+                .list_sessions(Some("Borealis"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+
+        let cleared = repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: None,
+                attendees: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(cleared.session.title, None);
+        assert_eq!(cleared.session.title_source, None);
+        assert!(cleared.session.attendees.is_empty());
+        assert_eq!(
+            repository
+                .list_sessions(Some("Borealis"), 0, 10)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            repository
+                .list_sessions(Some("Immutable"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+
+        let too_long = "x".repeat(MAX_MEETING_TITLE_CHARS + 1);
+        assert!(repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: Some(too_long),
+                attendees: Vec::new(),
+            })
+            .is_err());
+        assert!(repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: None,
+                attendees: vec!["x".repeat(MAX_MEETING_ATTENDEE_CHARS + 1)],
+            })
+            .is_err());
+        assert!(repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: None,
+                attendees: vec!["attendee".into(); MAX_MEETING_ATTENDEES + 1],
+            })
+            .is_err());
+        assert_eq!(
+            repository.get_session("metadata-session").unwrap(),
+            cleared.session
+        );
     }
 
     #[test]

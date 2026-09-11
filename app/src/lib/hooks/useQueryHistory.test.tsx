@@ -101,7 +101,12 @@ describe('useQueryHistory', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(mocks.list).toHaveBeenCalledWith({ offset: 0, limit: 50, provider: null });
+    expect(mocks.list).toHaveBeenCalledWith({
+      offset: 0,
+      limit: 50,
+      provider: null,
+      search: null,
+    });
     const staleListener = mocks.listeners.get('query-history-changed');
     expect(staleListener).toBeDefined();
     let finishClear!: () => void;
@@ -121,6 +126,7 @@ describe('useQueryHistory', () => {
     expect(latest.loading).toBe(false);
     expect(latest.clearing).toBe(false);
     expect(latest.error).toBeNull();
+    expect(latest.search).toBe('');
 
     mocks.list.mockClear();
     await act(async () => {
@@ -142,7 +148,12 @@ describe('useQueryHistory', () => {
     await act(async () => root.render(<Harness active />));
 
     await act(async () => latest.setProvider('codex'));
-    expect(mocks.list).toHaveBeenLastCalledWith({ offset: 0, limit: 50, provider: 'codex' });
+    expect(mocks.list).toHaveBeenLastCalledWith({
+      offset: 0,
+      limit: 50,
+      provider: 'codex',
+      search: null,
+    });
 
     await act(async () => {
       resolveSecond({ schemaVersion: 1, entries: [privateEntry], total: 1, offset: 0, hasMore: false });
@@ -153,6 +164,59 @@ describe('useQueryHistory', () => {
       await Promise.resolve();
     });
     expect(latest.entries).toEqual([privateEntry]);
+  });
+
+  it('refetches with bounded search and composes it with provider and paging', async () => {
+    mocks.list.mockResolvedValueOnce(emptyPage()).mockResolvedValueOnce({
+      schemaVersion: 1,
+      entries: [privateEntry],
+      total: 2,
+      offset: 0,
+      hasMore: true,
+    }).mockResolvedValueOnce({
+      schemaVersion: 1,
+      entries: [{ ...privateEntry, id: '2123456789abcdef0123456789abcdef', timestampMs: 10 }],
+      total: 2,
+      offset: 1,
+      hasMore: false,
+    });
+    await act(async () => {
+      root.render(<Harness active />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      latest.setProvider('codex');
+      latest.setSearch('private answer');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.list).toHaveBeenLastCalledWith({
+      offset: 0,
+      limit: 50,
+      provider: 'codex',
+      search: 'private answer',
+    });
+    expect(latest.search).toBe('private answer');
+
+    await act(async () => {
+      await latest.loadMore();
+    });
+    expect(mocks.list).toHaveBeenLastCalledWith({
+      offset: 1,
+      limit: 50,
+      provider: 'codex',
+      search: 'private answer',
+    });
+
+    await act(async () => latest.setSearch(''));
+    expect(mocks.list).toHaveBeenLastCalledWith({
+      offset: 0,
+      limit: 50,
+      provider: 'codex',
+      search: null,
+    });
   });
 
   it('tears down the selected Queries tab when the warm-mounted Settings surface opens', async () => {

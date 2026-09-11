@@ -28,6 +28,14 @@ pub struct AppliedSurface {
     pub window_h: f64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayContent {
+    #[default]
+    Controls,
+    MeetingSuggestion,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DisplaySnapshot {
     pub(crate) notch_info: Option<(f64, f64)>,
@@ -53,6 +61,8 @@ pub(crate) struct DisplaySnapshot {
 // (recording timer, "Tap missed" label) renders below notch height instead.
 const WING: f64 = 36.0;
 const DROPDOWN_H: f64 = 44.0;
+const MEETING_SUGGESTION_MIN_W: f64 = 320.0;
+const MEETING_SUGGESTION_DROPDOWN_H: f64 = 136.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 const MAX_REASONABLE_MENU_BAR_H: f64 = 128.0;
@@ -84,6 +94,46 @@ fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
         dropdown_h: DROPDOWN_H,
         wing_w: WING,
     }
+}
+
+fn geometry_for_content(notch: Option<(f64, f64)>, content: OverlayContent) -> OverlayGeometry {
+    let mut geometry = geometry_for(notch);
+    if content == OverlayContent::MeetingSuggestion {
+        let normal_width = geometry.window_w;
+        geometry.window_w = normal_width.max(MEETING_SUGGESTION_MIN_W);
+        geometry.pill_margin_idle = (geometry.window_w - normal_width) / 2.0;
+        geometry.pill_active_w = geometry.window_w;
+        geometry.dropdown_h = MEETING_SUGGESTION_DROPDOWN_H;
+        geometry.expanded_h = geometry.collapsed_h + geometry.dropdown_h;
+    }
+    geometry
+}
+
+fn surface_for_content(
+    notch: Option<(f64, f64)>,
+    expanded: bool,
+    content: OverlayContent,
+) -> AppliedSurface {
+    let content = if expanded {
+        content
+    } else {
+        OverlayContent::Controls
+    };
+    applied_surface_for(&geometry_for_content(notch, content), expanded)
+}
+
+fn resized_physical_position(
+    current_position: (i32, i32),
+    current_width: u32,
+    target_width: u32,
+) -> (i32, i32) {
+    // Symmetric integer division keeps opposite width transitions reversible
+    // even on 1x screens where an odd width difference has no exact pixel center.
+    let shift = (i64::from(current_width) - i64::from(target_width)) / 2;
+    (
+        (i64::from(current_position.0) + shift) as i32,
+        current_position.1,
+    )
 }
 
 fn applied_surface_for(g: &OverlayGeometry, expanded: bool) -> AppliedSurface {
@@ -462,8 +512,14 @@ pub(crate) fn position_overlay_default(
 
 /// Return the current overlay geometry so the frontend can size the island.
 #[tauri::command]
-pub fn get_overlay_geometry(state: tauri::State<'_, State>) -> OverlayGeometry {
-    geometry_for(*state.notch_info.lock_or_recover())
+pub fn get_overlay_geometry(
+    state: tauri::State<'_, State>,
+    content: Option<OverlayContent>,
+) -> OverlayGeometry {
+    geometry_for_content(
+        *state.notch_info.lock_or_recover(),
+        content.unwrap_or_default(),
+    )
 }
 
 /// Show the always-on-top macOS notch overlay window.
@@ -493,51 +549,61 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-/// Resize the overlay for the hover dropdown and return the applied frame as an
-/// acknowledgment. All dimensions come from `geometry_for()`, the same source as
-/// `position_overlay_default`, so the collapsed size matches what `show_overlay`
-/// set. Only the size changes — the window keeps its current calibrated top
-/// edge, so the extra height grows downward.
-///
-/// Returning the `AppliedSurface` lets the expansion controller await this call
-/// and start the CSS reveal only once the native window is known to have grown,
-/// so the dropdown can never animate into a window that has not yet resized.
-///
-/// We resize on hover rather than pre-allocating a tall window because a
-/// transparent overlay with cursor events enabled captures the mouse across its
-/// whole frame, which would create a click dead-zone below the notch when idle.
+/// Resize the overlay through the expansion controller's single writer. A
+/// suggestion grows around the current center; every resize retains the
+/// calibrated top edge. Collapsing restores the ordinary controls dimensions.
+/// The acknowledgment resolves after the main-thread frame update, before the
+/// frontend reveals content or starts accepting clicks in the expanded area.
 #[tauri::command]
-pub fn set_overlay_expanded(
+pub async fn set_overlay_expanded(
     app: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expanded: bool,
+    content: Option<OverlayContent>,
 ) -> Result<AppliedSurface, String> {
+    let applied = surface_for_content(
+        *state.notch_info.lock_or_recover(),
+        expanded,
+        content.unwrap_or_default(),
+    );
     #[cfg(not(target_os = "macos"))]
     {
         let _ = &app;
-        // Off macOS the window is never resized, but the controller still needs
-        // a resolved frame to treat as an ack. Report the geometry it would apply.
-        let g = geometry_for(*state.notch_info.lock_or_recover());
-        return Ok(applied_surface_for(&g, expanded));
+        return Ok(applied);
     }
 
     #[cfg(target_os = "macos")]
     {
-        let notch = *state.notch_info.lock_or_recover();
-        match app.get_webview_window("overlay") {
-            Some(overlay) => {
-                let g = geometry_for(notch);
-                let applied = applied_surface_for(&g, expanded);
+        let overlay = app
+            .get_webview_window("overlay")
+            .ok_or_else(|| "overlay window not found".to_string())?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.run_on_main_thread(move || {
+            let result = (|| {
+                let position = overlay
+                    .outer_position()
+                    .map_err(|error| error.to_string())?;
+                let size = overlay.outer_size().map_err(|error| error.to_string())?;
+                let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
+                let target_width = (applied.window_w * scale).round().max(1.0) as u32;
+                let target_height = (applied.window_h * scale).round().max(1.0) as u32;
+                let (x, y) =
+                    resized_physical_position((position.x, position.y), size.width, target_width);
                 overlay
-                    .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
-                    .map_err(|e| e.to_string())?;
+                    .set_size(tauri::PhysicalSize::new(target_width, target_height))
+                    .map_err(|error| error.to_string())?;
+                overlay
+                    .set_position(tauri::PhysicalPosition::new(x, y))
+                    .map_err(|error| error.to_string())?;
                 Ok(applied)
-            }
-            None => {
-                tracing::warn!(target: "system", "set_overlay_expanded: overlay window not found — skipping");
-                Err("overlay window not found".to_string())
-            }
-        }
+            })();
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .map_err(|_| "overlay resize timed out".to_string())?
+            .map_err(|_| "overlay resize was dropped".to_string())?
     }
 }
 
@@ -565,7 +631,7 @@ pub async fn set_overlay_vertical_offset(
         let overlay = app
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window not found".to_string())?;
-        let g = geometry_for(*state.notch_info.lock_or_recover());
+        let _ = &state;
         let monitor = app
             .primary_monitor()
             .map_err(|error| error.to_string())?
@@ -574,25 +640,34 @@ pub async fn set_overlay_vertical_offset(
         let position = monitor.position();
         let size = monitor.size();
         let scale_factor = monitor.scale_factor();
-        let (x, base_y) = centered_physical_position(
-            (position.x, position.y),
-            (size.width, size.height),
-            scale_factor,
-            g.window_w,
-        );
+        let monitor_position = (position.x, position.y);
+        let monitor_size = (size.width, size.height);
         let monitor_x = position.x;
         let monitor_y = position.y;
-        let y = base_y + (offset * scale_factor).round() as i32;
         let overlay_to_move = overlay.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         app.run_on_main_thread(move || {
-            let result = overlay_to_move
-                .set_position(tauri::PhysicalPosition::new(x, y))
-                .map_err(|error| error.to_string());
+            let result = (|| {
+                let width = overlay_to_move
+                    .outer_size()
+                    .map_err(|error| error.to_string())?
+                    .width;
+                let (x, base_y) = centered_physical_position(
+                    monitor_position,
+                    monitor_size,
+                    scale_factor,
+                    f64::from(width) / scale_factor,
+                );
+                let y = base_y + (offset * scale_factor).round() as i32;
+                overlay_to_move
+                    .set_position(tauri::PhysicalPosition::new(x, y))
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((x, y))
+            })();
             let _ = tx.send(result);
         })
         .map_err(|error| error.to_string())?;
-        tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+        let (x, y) = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
             .map_err(|_| "overlay position update timed out".to_string())?
             .map_err(|_| "overlay position update was dropped".to_string())??;
@@ -673,6 +748,8 @@ mod tests {
             geometry_for(Some((185.0, 32.0))),
             geometry_for(Some((FALLBACK_NOTCH_W, 30.0))),
             geometry_for(None),
+            geometry_for_content(Some((185.0, 32.0)), OverlayContent::MeetingSuggestion),
+            geometry_for_content(None, OverlayContent::MeetingSuggestion),
         ] {
             assert!(g.window_w >= g.pill_active_w + g.pill_margin_active);
             assert!(g.window_w >= g.pill_idle_w + g.pill_margin_idle);
@@ -784,9 +861,12 @@ mod tests {
     #[test]
     fn matches_fixture() {
         #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
         struct F {
             notched: OverlayGeometry,
             fallback: OverlayGeometry,
+            meeting_suggestion_notched: OverlayGeometry,
+            meeting_suggestion_fallback: OverlayGeometry,
         }
         let f: F = serde_json::from_str(include_str!(
             "../../../src/components/overlay/overlay-geometry.fixture.json"
@@ -794,6 +874,14 @@ mod tests {
         .unwrap();
         assert_eq!(geometry_for(Some((185.0, 32.0))), f.notched);
         assert_eq!(geometry_for(None), f.fallback);
+        assert_eq!(
+            geometry_for_content(Some((185.0, 32.0)), OverlayContent::MeetingSuggestion),
+            f.meeting_suggestion_notched,
+        );
+        assert_eq!(
+            geometry_for_content(None, OverlayContent::MeetingSuggestion),
+            f.meeting_suggestion_fallback,
+        );
     }
 
     #[test]
@@ -804,6 +892,80 @@ mod tests {
             .unwrap()
             .insert("extraField".into(), serde_json::json!(1));
         assert!(serde_json::from_value::<OverlayGeometry>(value).is_err());
+    }
+
+    #[test]
+    fn content_names_are_explicit_and_unknown_profiles_are_rejected() {
+        assert_eq!(OverlayContent::default(), OverlayContent::Controls);
+        assert_eq!(
+            serde_json::from_str::<OverlayContent>("\"meeting_suggestion\"").unwrap(),
+            OverlayContent::MeetingSuggestion,
+        );
+        assert!(serde_json::from_str::<OverlayContent>("\"meeting\"").is_err());
+    }
+
+    #[test]
+    fn suggestion_profile_preserves_notch_and_restores_controls_on_collapse() {
+        for notch in [
+            None,
+            Some((185.0, 32.0)),
+            Some((80.0, 30.0)),
+            Some((300.0, 37.0)),
+        ] {
+            let controls = geometry_for(notch);
+            let suggestion = geometry_for_content(notch, OverlayContent::MeetingSuggestion);
+            assert_eq!(
+                geometry_for_content(notch, OverlayContent::Controls),
+                controls
+            );
+            assert_eq!(suggestion.window_w, controls.window_w.max(320.0));
+            assert_eq!(suggestion.collapsed_h, controls.collapsed_h);
+            assert_eq!(suggestion.expanded_h, controls.collapsed_h + 136.0);
+            assert_eq!(suggestion.pill_idle_w, controls.pill_idle_w);
+            assert_eq!(
+                suggestion.pill_margin_idle + controls.window_w / 2.0,
+                suggestion.window_w / 2.0,
+            );
+            assert_eq!(
+                surface_for_content(notch, true, OverlayContent::MeetingSuggestion),
+                applied_surface_for(&suggestion, true),
+            );
+            assert_eq!(
+                surface_for_content(notch, false, OverlayContent::MeetingSuggestion),
+                applied_surface_for(&controls, false),
+            );
+        }
+    }
+
+    #[test]
+    fn width_transitions_preserve_calibrated_top_and_do_not_drift() {
+        for scale in [1.0, 2.0] {
+            for notch in [None, Some((185.0, 32.0))] {
+                let controls = geometry_for(notch);
+                let suggestion = geometry_for_content(notch, OverlayContent::MeetingSuggestion);
+                let normal_width = (controls.window_w * scale) as u32;
+                let suggestion_width = (suggestion.window_w * scale) as u32;
+                for original in [(5120, -24), (-2560, 140)] {
+                    let mut current = original;
+                    for _ in 0..20 {
+                        let expanded =
+                            resized_physical_position(current, normal_width, suggestion_width);
+                        assert_eq!(expanded.1, original.1);
+                        let old_center_twice = i64::from(current.0) * 2 + i64::from(normal_width);
+                        let new_center_twice =
+                            i64::from(expanded.0) * 2 + i64::from(suggestion_width);
+                        assert!((old_center_twice - new_center_twice).abs() <= 1);
+                        assert_eq!(
+                            resized_physical_position(expanded, suggestion_width, suggestion_width),
+                            expanded,
+                        );
+                        current =
+                            resized_physical_position(expanded, suggestion_width, normal_width);
+                        assert_eq!(current, original);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

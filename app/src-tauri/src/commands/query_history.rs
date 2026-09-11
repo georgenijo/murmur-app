@@ -17,6 +17,7 @@ pub fn list_query_history(
     offset: Option<u32>,
     limit: Option<u32>,
     provider: Option<QueryProviderId>,
+    search: Option<String>,
 ) -> Result<QueryHistoryPageV1, String> {
     require_main_window(&window)?;
     state.query_history.list(
@@ -25,6 +26,7 @@ pub fn list_query_history(
             .unwrap_or(DEFAULT_QUERY_HISTORY_PAGE_SIZE)
             .clamp(1, MAX_QUERY_HISTORY_PAGE_SIZE),
         provider,
+        search,
     )
 }
 

@@ -8,6 +8,7 @@ import { useMeetings } from './useMeetings';
 const meetingMocks = vi.hoisted(() => ({
   getMeeting: vi.fn(),
   startMeeting: vi.fn(),
+  saveMeetingMetadata: vi.fn(),
 }));
 const eventMocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
@@ -26,6 +27,7 @@ vi.mock('../meetings', async (importOriginal) => {
     ...original,
     getMeeting: meetingMocks.getMeeting,
     startMeeting: meetingMocks.startMeeting,
+    saveMeetingMetadata: meetingMocks.saveMeetingMetadata,
     getMeetingStatus: vi.fn(async () => original.IDLE_MEETING_STATUS),
     getMeetingSummaryStatus: vi.fn(async () => original.IDLE_MEETING_SUMMARY_STATUS),
     getSystemAudioPermissionStatus: vi.fn(async () => 'granted'),
@@ -49,7 +51,7 @@ vi.mock('../meetings', async (importOriginal) => {
 function detail(id: string, speakerLabel: string): MeetingDetail {
   return {
     session: {
-      id, startedAtMs: 1, endedAtMs: 2, status: 'complete', modelName: 'base.en',
+      id, title: null, titleSource: null, attendees: [], startedAtMs: 1, endedAtMs: 2, status: 'complete', modelName: 'base.en',
       language: 'en', smartPunctuation: true, retainAudio: false, durationMs: 1,
       segmentCount: 1, preview: 'Evidence', errorCode: null,
     },
@@ -113,6 +115,7 @@ describe('useMeetings remote speaker refresh', () => {
     eventMocks.listeners.clear();
     meetingMocks.getMeeting.mockReset();
     meetingMocks.startMeeting.mockReset();
+    meetingMocks.saveMeetingMetadata.mockReset();
     await act(async () => root.render(<Harness />));
   });
 
@@ -143,6 +146,18 @@ describe('useMeetings remote speaker refresh', () => {
     expect(controller().detail?.remoteSpeakers[0].label).toBe('Second speaker');
   });
 
+  it('does not replace a newly selected meeting when an earlier metadata save completes', async () => {
+    const pending = deferred<MeetingDetail>();
+    meetingMocks.getMeeting.mockImplementation((id: string) => Promise.resolve(detail(id, 'Speaker')));
+    meetingMocks.saveMeetingMetadata.mockReturnValue(pending.promise);
+    await act(async () => controller().select('first'));
+    let saving: Promise<boolean> | undefined;
+    await act(async () => { saving = controller().saveMetadata({ sessionId: 'first', title: 'Saved', attendees: [] }); });
+    await act(async () => controller().select('second'));
+    await act(async () => { pending.resolve({ ...detail('first', 'Speaker'), session: { ...detail('first', 'Speaker').session, title: 'Saved', titleSource: 'manual' } }); await saving; });
+    expect(controller().detail?.session.id).toBe('second');
+  });
+
   it('freezes the diarization opt-in in the meeting start request', async () => {
     meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
     meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));
@@ -151,6 +166,30 @@ describe('useMeetings remote speaker refresh', () => {
     expect(meetingMocks.startMeeting).toHaveBeenCalledWith(expect.objectContaining({
       diarization: false,
     }));
+  });
+
+  it('passes only the accepted suggestion token into the normal meeting start path', async () => {
+    meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
+    meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));
+
+    await act(async () => controller().start('66666666-6666-4666-8666-666666666666'));
+
+    expect(meetingMocks.startMeeting).toHaveBeenCalledWith(expect.objectContaining({
+      suggestionToken: '66666666-6666-4666-8666-666666666666',
+    }));
+    expect(JSON.stringify(meetingMocks.startMeeting.mock.calls)).not.toContain('Product review');
+  });
+
+  it('propagates suggested-start failure with a stable manual recovery message', async () => {
+    meetingMocks.startMeeting.mockRejectedValue(new Error('private Calendar event title'));
+
+    await act(async () => {
+      await expect(controller().start('77777777-7777-4777-8777-777777777777'))
+        .rejects.toThrow('Notetaker could not start from that Calendar suggestion');
+    });
+
+    expect(controller().error).toContain('Start it manually');
+    expect(controller().error).not.toContain('private Calendar event title');
   });
 
   it('uses the latest Smart Auto policy after mount and drops it after a manual pin', async () => {

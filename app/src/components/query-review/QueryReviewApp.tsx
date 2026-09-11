@@ -165,7 +165,8 @@ export function QueryReviewApp() {
               <p aria-live="polite" className="mt-2 text-xs text-white/60">{driver.signInStatus}</p>
             )}
           </div>
-          <footer className="flex items-center justify-between border-t border-white/10 px-3 py-2">
+          {driver.followUpError && <p role="status" className="px-4 pb-2 text-xs text-amber-200">{driver.followUpError}</p>}
+          <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
               {footerText}
             </span>
@@ -178,6 +179,11 @@ export function QueryReviewApp() {
                   className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-wait disabled:opacity-50"
                 >
                   {driver.signInBusy ? 'Waiting…' : 'Sign in…'}
+                </button>
+              )}
+              {driver.state === 'ready' && (
+                <button type="button" disabled={driver.followUpBusy} onClick={() => void driver.followUp()} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-wait disabled:opacity-50">
+                  {driver.followUpBusy ? 'Starting…' : 'Ask follow-up'}
                 </button>
               )}
               {driver.state === 'ready' && (
