@@ -39,21 +39,24 @@ function entryContent(entry: KnowledgeEntry | null) {
   return '';
 }
 
-function CommandEditor({ entry, profiles, onClose, onSaved }: {
+function CommandEditor({ entry, duplicate, profiles, onClose, onSaved }: {
   entry: KnowledgeEntry | null;
+  duplicate: boolean;
   profiles: AppProfile[];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const editing = entry !== null && !duplicate;
   const initialKind = entryKind(entry);
   const [kind, setKind] = useState<VoiceCommandKind>(initialKind);
-  const [phrase, setPhrase] = useState(entryPhrase(entry));
+  const [phrase, setPhrase] = useState(duplicate ? '' : entryPhrase(entry));
   const [content, setContent] = useState(entryContent(entry));
   const [scopeKind, setScopeKind] = useState<'global' | 'app'>(entry?.scope.kind === 'app' ? 'app' : 'global');
   const [bundleId, setBundleId] = useState(entry?.scope.kind === 'app' ? entry.scope.bundleId : profiles[0]?.bundleId ?? '');
   const [enabled, setEnabled] = useState(entry?.enabled ?? true);
   const [allowClipboardRead, setAllowClipboardRead] = useState(entry?.voiceCommand?.allowClipboardRead ?? false);
-  const [previewText, setPreviewText] = useState(entryPhrase(entry));
+  const [previewText, setPreviewText] = useState(duplicate ? '' : entryPhrase(entry));
+  const [duplicatePreviewEdited, setDuplicatePreviewEdited] = useState(false);
   const [readClipboardPreview, setReadClipboardPreview] = useState(false);
   const [preview, setPreview] = useState<VoiceCommandPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,8 +67,7 @@ function CommandEditor({ entry, profiles, onClose, onSaved }: {
       ? { kind: 'app', bundleId: bundleId.trim() }
       : { kind: 'global' };
     return {
-      id: entry?.id,
-      expectedRevision: entry?.revision,
+      ...(editing && entry ? { id: entry.id, expectedRevision: entry.revision } : {}),
       payload: kind === 'snippet'
         ? { kind: 'snippet', trigger: phrase.trim(), body: content }
         : { kind: 'replacement_rule', source: phrase.trim(), replacement: content },
@@ -73,7 +75,7 @@ function CommandEditor({ entry, profiles, onClose, onSaved }: {
       scope,
       voiceCommand: { commandType: kind, allowClipboardRead: kind === 'snippet' && allowClipboardRead },
     };
-  }, [allowClipboardRead, bundleId, content, enabled, entry, kind, phrase, scopeKind]);
+  }, [allowClipboardRead, bundleId, content, editing, enabled, entry, kind, phrase, scopeKind]);
 
   const validate = () => {
     if (!phrase.trim()) return 'Enter a spoken phrase.';
@@ -124,7 +126,7 @@ function CommandEditor({ entry, profiles, onClose, onSaved }: {
       <div role="dialog" aria-modal="true" aria-labelledby="voice-command-editor-title" className="dialog-popover max-h-[88vh] w-full max-w-[620px] overflow-y-auto p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 id="voice-command-editor-title" className="text-base font-semibold text-on-surface">{entry ? 'Edit Voice Command' : 'Create Voice Command'}</h2>
+            <h2 id="voice-command-editor-title" className="text-base font-semibold text-on-surface">{duplicate ? 'Duplicate Voice Command' : entry ? 'Edit Voice Command' : 'Create Voice Command'}</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Matching and expansion stay local. Commands insert text only.</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close Voice Command editor" className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
@@ -156,7 +158,7 @@ function CommandEditor({ entry, profiles, onClose, onSaved }: {
           )}
 
           <label className="block text-xs font-medium text-on-surface">Spoken phrase
-            <input aria-label="Voice Command phrase" value={phrase} onChange={(event) => { setPhrase(event.target.value); if (!previewText) setPreviewText(event.target.value); }} maxLength={256} className={`${inputClass} mt-1`} placeholder="insert standup" />
+            <input aria-label="Voice Command phrase" value={phrase} onChange={(event) => { setPhrase(event.target.value); if (duplicate) { if (!duplicatePreviewEdited) setPreviewText(event.target.value); } else if (!previewText) setPreviewText(event.target.value); }} maxLength={256} className={`${inputClass} mt-1`} placeholder="insert standup" />
           </label>
 
           <label className="block text-xs font-medium text-on-surface">{kind === 'snippet' ? 'Snippet body' : 'Replacement text'}
@@ -185,7 +187,7 @@ function CommandEditor({ entry, profiles, onClose, onSaved }: {
 
           <div className="settings-card p-3">
             <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-medium text-on-surface">Test phrase and preview</p><p className="mt-0.5 text-[11px] text-on-surface-variant">Runs the real local matcher without copying or pasting.</p></div><button type="button" onClick={() => void runPreview()} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-semibold text-on-primary">Test</button></div>
-            <textarea aria-label="Voice Command test phrase" value={previewText} onChange={(event) => setPreviewText(event.target.value)} className={`${inputClass} mt-3 min-h-16 resize-y`} placeholder="Type an utterance containing the spoken phrase" />
+            <textarea aria-label="Voice Command test phrase" value={previewText} onChange={(event) => { setPreviewText(event.target.value); if (duplicate) setDuplicatePreviewEdited(true); }} className={`${inputClass} mt-3 min-h-16 resize-y`} placeholder="Type an utterance containing the spoken phrase" />
             {kind === 'snippet' && allowClipboardRead && content.includes('{{clipboard}}') && <label className="mt-2 flex items-center gap-2 text-xs text-on-surface"><input aria-label="Read clipboard for this preview" type="checkbox" checked={readClipboardPreview} onChange={(event) => setReadClipboardPreview(event.target.checked)} className="accent-primary" />Read current clipboard for this preview</label>}
             {preview && <div className="mt-3 rounded-lg bg-surface-container-lowest px-3 py-2"><p className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">Preview</p><pre className="mt-1 whitespace-pre-wrap break-words font-sans text-sm text-on-surface">{preview.output}</pre>{preview.clipboardRequired && !preview.clipboardRead && <p className="mt-2 text-xs text-primary">Phrase matched, but clipboard preview was not explicitly enabled or readable.</p>}</div>}
           </div>
@@ -200,7 +202,7 @@ function CommandEditor({ entry, profiles, onClose, onSaved }: {
 
 export function VoiceCommandsManager({ active, globallyEnabled, profiles }: Props) {
   const knowledge = useKnowledge({ voiceCommand: true }, active);
-  const [editing, setEditing] = useState<KnowledgeEntry | null | undefined>(undefined);
+  const [editing, setEditing] = useState<{ entry: KnowledgeEntry | null; duplicate: boolean } | undefined>(undefined);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -212,15 +214,15 @@ export function VoiceCommandsManager({ active, globallyEnabled, profiles }: Prop
   return (
     <div className="mt-4 space-y-3">
       {!globallyEnabled && <p className="rounded-lg border border-primary/70 bg-primary/10 px-3 py-2 text-xs text-on-surface">Commands are stored but will not run until the Voice Commands switch is enabled.</p>}
-      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-on-surface">Custom commands</p><p className="mt-1 text-xs text-on-surface-variant">Text-only local commands. App commands override a global command with the same phrase in that app.</p></div><button type="button" onClick={() => setEditing(null)} disabled={knowledge.status.availability === 'unavailable'} className="whitespace-nowrap rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">New command</button></div>
+      <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-on-surface">Custom commands</p><p className="mt-1 text-xs text-on-surface-variant">Text-only local commands. App commands override a global command with the same phrase in that app.</p></div><button type="button" onClick={() => setEditing({ entry: null, duplicate: false })} disabled={knowledge.status.availability === 'unavailable'} className="whitespace-nowrap rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">New command</button></div>
       {(error || knowledge.error) && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{error ?? knowledge.error}</p>}
       {knowledge.entries.length === 0 && !knowledge.loading ? <p className="rounded-lg border border-dashed border-outline-variant/40 px-3 py-6 text-center text-xs text-on-surface-variant">No custom Voice Commands yet.</p> : <ul className="space-y-2">{knowledge.entries.map((entry) => <li key={entry.id} className={`settings-card flex items-start gap-3 p-3 ${entry.enabled ? '' : 'opacity-60'}`}>
         <button type="button" role="switch" aria-checked={entry.enabled} aria-label={`${entry.enabled ? 'Disable' : 'Enable'} Voice Command ${payloadTitle(entry.payload)}`} onClick={() => void run(() => setKnowledgeEnabled(entry, !entry.enabled))} className={`relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full ${entry.enabled ? 'bg-primary' : 'bg-surface-container-highest'}`}><span className={`h-3.5 w-3.5 rounded-full shadow transition-transform ${entry.enabled ? 'translate-x-4 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} /></button>
-        <button type="button" onClick={() => setEditing(entry)} className="min-w-0 flex-1 text-left"><div className="flex flex-wrap items-center gap-2"><strong className="text-sm text-on-surface">“{payloadTitle(entry.payload)}”</strong><span className="rounded bg-surface-container px-1.5 py-0.5 text-[10px] uppercase text-on-surface-variant">{entry.voiceCommand?.commandType === 'snippet' ? 'Snippet' : 'Text'}</span>{entry.voiceCommand?.allowClipboardRead && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-on-surface">Clipboard access</span>}</div><p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-on-surface-variant">{payloadDetail(entry.payload) || '(empty replacement)'}</p><p className="mt-1 text-[11px] text-on-surface-variant">{entry.scope.kind === 'global' ? 'All apps' : `Only ${entry.scope.bundleId}`}</p></button>
-        <div className="flex shrink-0 gap-1"><button type="button" onClick={() => setEditing(entry)} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Edit</button><button type="button" onClick={() => confirmDelete === entry.id ? void run(() => deleteKnowledge(entry)).then(() => setConfirmDelete(null)) : setConfirmDelete(entry.id)} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">{confirmDelete === entry.id ? 'Confirm delete' : 'Delete'}</button></div>
+        <button type="button" onClick={() => setEditing({ entry, duplicate: false })} className="min-w-0 flex-1 text-left"><div className="flex flex-wrap items-center gap-2"><strong className="text-sm text-on-surface">“{payloadTitle(entry.payload)}”</strong><span className="rounded bg-surface-container px-1.5 py-0.5 text-[10px] uppercase text-on-surface-variant">{entry.voiceCommand?.commandType === 'snippet' ? 'Snippet' : 'Text'}</span>{entry.voiceCommand?.allowClipboardRead && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-on-surface">Clipboard access</span>}</div><p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-on-surface-variant">{payloadDetail(entry.payload) || '(empty replacement)'}</p><p className="mt-1 text-[11px] text-on-surface-variant">{entry.scope.kind === 'global' ? 'All apps' : `Only ${entry.scope.bundleId}`}</p></button>
+        <div className="flex shrink-0 gap-1"><button type="button" onClick={() => setEditing({ entry, duplicate: false })} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Edit</button><button type="button" onClick={() => setEditing({ entry, duplicate: true })} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Duplicate</button><button type="button" onClick={() => confirmDelete === entry.id ? void run(() => deleteKnowledge(entry)).then(() => setConfirmDelete(null)) : setConfirmDelete(entry.id)} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">{confirmDelete === entry.id ? 'Confirm delete' : 'Delete'}</button></div>
       </li>)}</ul>}
       {knowledge.nextOffset !== null && <button type="button" onClick={() => void knowledge.loadMore()} className="w-full rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-medium">Load more</button>}
-      {editing !== undefined && <CommandEditor entry={editing} profiles={profiles} onClose={() => setEditing(undefined)} onSaved={knowledge.refresh} />}
+      {editing !== undefined && <CommandEditor entry={editing.entry} duplicate={editing.duplicate} profiles={profiles} onClose={() => setEditing(undefined)} onSaved={knowledge.refresh} />}
     </div>
   );
 }
