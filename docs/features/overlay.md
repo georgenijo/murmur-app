@@ -284,3 +284,7 @@ The Appearance Theme Engine deliberately does not synchronize this window.
 Overlay glass remains always dark, and its body remains transparent in System,
 Light, and Dark modes. Appearance application must never set an `html` or
 `body` background that can override this invariant.
+
+The expanded Mode control shows an amber **Next: <Mode>** label while a one-recording
+override is pending. The regular resolved Mode label returns after consumption
+or explicit clearing, without changing the app binding. See [Modes](modes.md).

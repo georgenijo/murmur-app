@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The 199 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
+The 200 commands registered in `lib.rs` and exposed to the frontend via `invoke()`, grouped by source module under `app/src-tauri/src/`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -361,6 +361,7 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_mode_runtime_status` | — | `ModeRuntimeStatus` | Resolves the current context using temporary override → exact site binding → app binding → last manual Mode precedence. |
+| `set_next_recording_mode` | `modeId?: string` | `Result<ModeRuntimeStatus>` | Main-window-only: arm an enabled Mode for one real recording, or clear with null. Memory-only; frozen at acceptance. |
 | `cycle_mode` | — | `ModeRuntimeStatus` | Cycles enabled Modes without focusing Murmur; persists a manual selection outside bindings or creates a memory-only bundle override inside a site or app binding. |
 | `clear_temporary_mode_override` | — | `ModeRuntimeStatus` | Clears the app-scoped override and returns to its site binding, app binding, or last manual Mode. |
 
