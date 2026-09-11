@@ -445,6 +445,7 @@ pub fn run() {
             commands::meeting_summary::get_meeting_summary_status,
             commands::meeting_summary::cancel_meeting_summary,
             commands::export::save_text_export,
+            commands::mode_exchange::read_modes_file,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
             commands::settings_store::load_history_blob,

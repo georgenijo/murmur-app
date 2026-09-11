@@ -45,6 +45,43 @@ choose its binding without searching through Delivery settings. The return
 restores the Mode that was selected before app creation, including a custom
 Mode. Navigating elsewhere cancels the pending return.
 
+### Custom Mode files
+
+Settings → Modes can export custom Modes and preview a JSON import before
+applying it. Files use `{format: "murmur-modes", version: 1, modes,
+appBindings, browserSiteRules}`. `modes` contains every `MurmurMode` field,
+including `builtIn: false`. `appBindings` contains only `{bundleId, modeId}`
+references. Site rules retain `{id, browserBundleId, host, modeId, enabled}`.
+Only bindings and rules targeting custom Modes in the file are exported.
+Built-in templates, profile overrides, project roots, global settings,
+transcripts, vocabulary, and live browser observations are excluded.
+
+Export uses the existing atomic text export command. Import reads at most
+256 KiB of UTF-8 from a regular, non-symlink `.json` file in the main window.
+The version, exact field set, booleans, nullable policies, model and language
+references, browser allowlist, normalized hosts, and custom Mode references
+are validated before Settings changes. Unknown fields, duplicate JSON keys,
+comments, trailing commas, built-in IDs, and `builtIn: true` are rejected.
+Files allow at most 100 Modes, 100 app bindings, and 128 site rules. The merged
+settings must also fit the 100 Mode and 128 site-rule limits.
+
+The preview shows additions, exact duplicates, missing local app profiles,
+and conflicts. Exact duplicates are skipped. A shared Mode ID with different
+content rejects the whole import. An existing app binding to another Mode,
+ambiguous local app profiles, or a site rule with a conflicting ID or
+browser/host pair also rejects the whole import. Rules never change priority
+by overwriting an existing rule; accepted new rules append in file order.
+
+Imported bindings apply only to existing unbound app profiles. Missing apps
+are counted as skipped; import does not create profiles or enable project
+context on them. Existing profile fine-tuning and roots remain intact. The
+local browser-site activation switch retains its value, so importing rules
+never grants browser access. When activation is already enabled, confirmed
+new rules participate in normal resolution. Changes to Modes, profiles,
+rules, or that switch invalidate the preview and require a fresh file review.
+A file read once for preview stays in memory until confirmation or cancel;
+changing the file on disk cannot change the reviewed import.
+
 ## Native activation
 
 The overlay and tray display the currently resolved Mode without activating or

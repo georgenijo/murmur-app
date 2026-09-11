@@ -142,6 +142,7 @@ describe('Sonic Canvas component details', () => {
             duration: 3.1949375,
           }]}
           onClear={vi.fn()}
+          onDeleteEntries={vi.fn()}
           onUpdateEntry={vi.fn()}
         />,
       );
@@ -330,6 +331,7 @@ describe('Sonic Canvas component details', () => {
             duration: 3,
           }]}
           onClear={onClear}
+          onDeleteEntries={vi.fn()}
           onUpdateEntry={vi.fn()}
         />,
       );
@@ -364,7 +366,7 @@ describe('Sonic Canvas component details', () => {
       root.render(<HistoryPanel entries={[
         { id: 'older', text: 'older transcript', timestamp: 1, duration: 1 },
         { id: 'newer', text: 'newest transcript', timestamp: 2, duration: 1 },
-      ]} onClear={vi.fn()} onUpdateEntry={vi.fn()} />);
+      ]} onClear={vi.fn()} onDeleteEntries={vi.fn()} onUpdateEntry={vi.fn()} />);
     });
     const more = container.querySelector('[aria-label="More transcript actions"]') as HTMLButtonElement;
     await act(async () => more.click());

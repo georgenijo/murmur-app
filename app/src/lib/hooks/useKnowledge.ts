@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import {
   getKnowledgeStatus,
   listKnowledge,
@@ -23,21 +23,44 @@ export function useKnowledge(request: KnowledgeListRequest, active: boolean) {
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const generation = useRef(0);
+  const pending = useRef(false);
+  const requestKey = JSON.stringify([request.query, request.kind, request.enabled, request.scopeKind, request.voiceCommand]);
+  const currentScope = useRef({ requestKey, active });
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    currentScope.current = { requestKey, active };
+    return () => {
+      generation.current += 1;
+      pending.current = false;
+      currentScope.current = { requestKey, active: false };
+    };
+  }, [requestKey, active]);
 
   const refresh = useCallback(async () => {
-    if (!active) return;
+    if (!active || !currentScope.current.active || currentScope.current.requestKey !== requestKey) return;
+    const run = ++generation.current;
+    const isCurrent = () => generation.current === run && currentScope.current.active;
+    pending.current = true;
     setLoading(true);
     setError(null);
     try {
       const nextStatus = await getKnowledgeStatus();
+      if (!isCurrent()) return;
       setStatus(nextStatus);
       if (nextStatus.availability === 'unavailable') {
         setEntries([]);
         setTotal(0);
         setNextOffset(null);
+        setLoadedKey(requestKey);
         return;
       }
       const page = await listKnowledge({ ...request, limit: 50, offset: 0 });
+      if (!isCurrent()) return;
+      setLoadedKey(requestKey);
+      setLoadedRevision(page.storeRevision);
       setEntries(page.entries);
       setTotal(page.total);
       setNextOffset(page.nextOffset);
@@ -47,37 +70,52 @@ export function useKnowledge(request: KnowledgeListRequest, active: boolean) {
         storeRevision: page.storeRevision,
       }));
     } catch (cause) {
-      setError(String(cause));
+      if (isCurrent()) setError(String(cause));
     } finally {
-      setLoading(false);
+      if (isCurrent()) {
+        pending.current = false;
+        setLoading(false);
+      }
     }
-  }, [active, request.enabled, request.kind, request.query, request.scopeKind, request.voiceCommand]);
+  }, [active, requestKey, request.enabled, request.kind, request.query, request.scopeKind, request.voiceCommand]);
 
   const loadMore = useCallback(async () => {
-    if (loading || nextOffset === null) return;
+    if (!active || !currentScope.current.active || currentScope.current.requestKey !== requestKey
+      || pending.current || loadedKey !== requestKey || nextOffset === null) return;
+    const run = ++generation.current;
+    const isCurrent = () => generation.current === run && currentScope.current.active;
+    pending.current = true;
     setLoading(true);
     setError(null);
     try {
       const page = await listKnowledge({ ...request, limit: 50, offset: nextOffset });
+      if (!isCurrent()) return;
+      if (page.storeRevision !== loadedRevision) {
+        await refresh();
+        return;
+      }
       setEntries((current) => [...current, ...page.entries]);
       setTotal(page.total);
       setNextOffset(page.nextOffset);
       setStatus((current) => ({ ...current, storeRevision: page.storeRevision }));
     } catch (cause) {
-      setError(String(cause));
+      if (isCurrent()) setError(String(cause));
     } finally {
-      setLoading(false);
+      if (isCurrent()) {
+        pending.current = false;
+        setLoading(false);
+      }
     }
-  }, [loading, nextOffset, request.enabled, request.kind, request.query, request.scopeKind, request.voiceCommand]);
+  }, [active, loadedKey, nextOffset, refresh, requestKey, loadedRevision, request.enabled, request.kind, request.query, request.scopeKind, request.voiceCommand]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLayoutEffect(() => { void refresh(); }, [refresh]);
 
   return {
     status,
-    entries,
-    total,
-    nextOffset,
-    loading,
+    entries: loadedKey === requestKey && active ? entries : [],
+    total: loadedKey === requestKey && active ? total : 0,
+    nextOffset: loadedKey === requestKey && active ? nextOffset : null,
+    loading: active && loading,
     error,
     refresh,
     loadMore,
