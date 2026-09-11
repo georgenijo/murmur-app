@@ -127,10 +127,12 @@ impl DoubleTapDetector {
     }
 
     /// Process a keyboard event. Returns true if a double-tap was detected.
+    #[cfg(test)]
     fn handle_event(&mut self, event_type: &EventType) -> bool {
         self.handle_event_with_shortcut_modifiers(event_type, false)
     }
 
+    #[cfg(test)]
     fn handle_event_with_shortcut_modifiers(
         &mut self,
         event_type: &EventType,
@@ -2733,7 +2735,7 @@ mod tests {
 
             let mut hold = make_hold_detector(Key::F8);
             assert_eq!(
-                hold.handle_event_with_context(&press(Key::F8), modifiers.any(), true),
+                hold.handle_event_with_context(&press(Key::F8), modifiers.any(), false),
                 HoldDownEvent::None,
                 "{modifier:?}+F8 must not start a hold"
             );
@@ -2755,7 +2757,7 @@ mod tests {
             modifiers.update(&release(modifier));
             assert!(!modifiers.any(), "{modifier:?}");
             assert_eq!(
-                hold.handle_event_with_shortcut_modifiers(&press(Key::F8), modifiers.any()),
+                hold.handle_event_with_context(&press(Key::F8), modifiers.any(), true),
                 HoldDownEvent::None,
                 "releasing {modifier:?} must not reinterpret F8 autorepeat"
             );
