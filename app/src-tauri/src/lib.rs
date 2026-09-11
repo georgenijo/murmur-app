@@ -484,6 +484,7 @@ pub fn run() {
             commands::models::get_model_runtime_status,
             commands::models::get_model_hardware_guidance,
             commands::models::download_model,
+            commands::models::remove_model,
             commands::transform_model::transform_model_status,
             commands::transform_model::download_transform_model,
             commands::transform_model::remove_transform_model,

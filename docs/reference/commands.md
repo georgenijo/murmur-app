@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 213 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 214 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -253,6 +253,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
 | `get_model_hardware_guidance` | — | `ModelHardwareGuidance` | Read-once Apple chip tier and physical-memory guidance for model pickers, including the recommended model, presentation-only model-memory budget, and warned catalog identifiers. It does not select, install, load, unload, or hide models. |
 | `get_diarization_model_status` | — | `ModelStatus` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. |
+| `remove_model` | `model_name: String` | `Result<(), String>` | Removes only the exact managed catalog artifact (or documented FluidAudio v3 cache); refuses selected/active models, recording/transcription, concurrent model work, downloads, symbolic links, and external Whisper copies. Publishes NotInstalled immediately. |
 | `download_model` | `model_name: String` | `Result<(), String>` | Single-flight install with attempt-correlated `download-progress`, atomic publication, and Silero VAD co-download. Core ML setup runs behind a same-signed killable process boundary with a hard deadline, durable incomplete-repair detection, confirmed cleanup, validation, Retry, and fallback-ready terminal errors. |
 | `remove_diarization_model` | — | `Result<(), String>` | Cancels active diarization work, waits for model-use ownership, and removes the installed speaker-model directory after acquiring the shared model-cache lease. |
 

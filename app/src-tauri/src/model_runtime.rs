@@ -491,6 +491,61 @@ impl ModelRuntimeManager {
             .clone())
     }
 
+    /// Hold runtime ownership through deletion and publication. Never wait behind
+    /// inference/preparation and then delete a model after the request became stale.
+    pub fn remove_model_artifact(
+        &self,
+        app: Option<&tauri::AppHandle>,
+        model_name: &str,
+        selected_model: &str,
+        remove: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.remove_model_artifact_with_presence(app, model_name, selected_model, remove, || {
+            model_installed(model_name)
+        })
+    }
+
+    fn remove_model_artifact_with_presence(
+        &self,
+        app: Option<&tauri::AppHandle>,
+        model_name: &str,
+        selected_model: &str,
+        remove: impl FnOnce() -> Result<(), String>,
+        still_installed: impl FnOnce() -> bool,
+    ) -> Result<(), String> {
+        self.definition(model_name)?;
+        let _install_lock = self.install_lock(model_name)?;
+        let _install_guard = _install_lock
+            .try_lock()
+            .map_err(|_| "Wait for this model's download or removal to finish".to_string())?;
+        let inner = self
+            .inner
+            .try_lock_or_recover()
+            .ok_or("Wait for model preparation or transcription to finish")?;
+        if selected_model == model_name || inner.active_model.as_deref() == Some(model_name) {
+            return Err(
+                "Choose another model before removing the selected or active model".to_string(),
+            );
+        }
+        match self.current_install_state(model_name) {
+            InstallState::Installing | InstallState::Validating => {
+                return Err("Wait for this model's download to finish".to_string());
+            }
+            InstallState::Installed => {}
+            _ => return Err("This model is not installed".to_string()),
+        }
+        if let Err(error) = remove() {
+            // Recursive deletion can remove required files before another entry
+            // fails. Never retain a cached Installed snapshot for that bundle.
+            if !still_installed() {
+                self.set_install_state(app, model_name, InstallState::Invalid)?;
+            }
+            return Err(error);
+        }
+        self.statuses.lock_or_recover().remove(model_name);
+        self.set_install_state(app, model_name, InstallState::NotInstalled)
+    }
+
     pub fn begin_install(
         &self,
         app: Option<&tauri::AppHandle>,
@@ -784,6 +839,118 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn removal_refuses_unknown_selected_active_busy_and_installing_models() {
+        let manager = ModelRuntimeManager::default();
+        manager
+            .set_install_state(None, "tiny.en", InstallState::Installed)
+            .unwrap();
+        let forbidden = || -> Result<(), String> { panic!("removal must not run") };
+        for unknown in ["../tiny.en", "tiny.en/other", "unknown"] {
+            assert!(manager
+                .remove_model_artifact(None, unknown, "base.en", forbidden)
+                .is_err());
+        }
+        assert!(manager
+            .remove_model_artifact(None, "tiny.en", "tiny.en", forbidden)
+            .unwrap_err()
+            .contains("selected"));
+        manager.inner.lock_or_recover().active_model = Some("tiny.en".into());
+        assert!(manager
+            .remove_model_artifact(None, "tiny.en", "base.en", forbidden)
+            .unwrap_err()
+            .contains("active"));
+        manager.inner.lock_or_recover().active_model = None;
+        {
+            let _runtime = manager.inner.lock_or_recover();
+            assert!(manager
+                .remove_model_artifact(None, "tiny.en", "base.en", forbidden)
+                .unwrap_err()
+                .contains("preparation"));
+        }
+        {
+            let install = manager.install_lock("tiny.en").unwrap();
+            let _download = install.try_lock().unwrap();
+            assert!(manager
+                .remove_model_artifact(None, "tiny.en", "base.en", forbidden)
+                .unwrap_err()
+                .contains("download"));
+        }
+        for state in [
+            InstallState::Installing,
+            InstallState::Validating,
+            InstallState::NotInstalled,
+        ] {
+            manager.set_install_state(None, "tiny.en", state).unwrap();
+            assert!(manager
+                .remove_model_artifact(None, "tiny.en", "base.en", forbidden)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn removal_owns_runtime_and_install_until_not_installed_is_published() {
+        let manager = ModelRuntimeManager::default();
+        manager
+            .set_install_state(None, "tiny.en", InstallState::Installed)
+            .unwrap();
+        let generation = manager.snapshot("tiny.en").unwrap().generation;
+        manager
+            .remove_model_artifact(None, "tiny.en", "base.en", || {
+                assert!(manager.inner.try_lock_or_recover().is_none());
+                assert!(manager.install_lock("tiny.en").unwrap().try_lock().is_err());
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = manager.snapshot("tiny.en").unwrap();
+        assert_eq!(snapshot.install_state, InstallState::NotInstalled);
+        assert_eq!(snapshot.lifecycle_state, LifecycleState::Unloaded);
+        assert!(snapshot.generation > generation);
+        assert_eq!(
+            manager
+                .catalog()
+                .into_iter()
+                .find(|m| m.model_name == "tiny.en")
+                .unwrap()
+                .install_state,
+            InstallState::NotInstalled
+        );
+        manager
+            .set_install_state(None, "tiny.en", InstallState::Installed)
+            .unwrap();
+        assert!(manager
+            .remove_model_artifact_with_presence(
+                None,
+                "tiny.en",
+                "base.en",
+                || Err("preflight refused".into()),
+                || true,
+            )
+            .is_err());
+        assert_eq!(
+            manager.snapshot("tiny.en").unwrap().install_state,
+            InstallState::Installed
+        );
+        let present = std::cell::Cell::new(true);
+        assert!(manager
+            .remove_model_artifact_with_presence(
+                None,
+                "tiny.en",
+                "base.en",
+                || {
+                    present.set(false);
+                    Err("partial deletion failed".into())
+                },
+                || present.get(),
+            )
+            .is_err());
+        assert_eq!(
+            manager.snapshot("tiny.en").unwrap().install_state,
+            InstallState::Invalid
+        );
+        assert!(manager.install_lock("tiny.en").unwrap().try_lock().is_ok());
+    }
 
     #[test]
     fn shipped_catalog_is_unique_and_fail_closed() {
