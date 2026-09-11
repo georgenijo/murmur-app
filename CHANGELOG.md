@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-09-10
+
+### Fixed
+
+- Smart Auto now detects an open MacBook lid correctly and can select an
+  included built-in microphone instead of waiting indefinitely for lid status.
+
 ## [0.46.0] - 2026-09-10
 
 ### Added
