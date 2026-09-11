@@ -1,10 +1,11 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { KnowledgeEntry } from '../../lib/knowledge';
+import type { KnowledgeEntry, KnowledgeListResponse } from '../../lib/knowledge';
 import { KnowledgeManager } from './KnowledgeManager';
 
 const mocks = vi.hoisted(() => ({
+  list: vi.fn<() => Promise<KnowledgeListResponse>>(),
   refresh: vi.fn(async () => {}),
   loadMore: vi.fn(async () => {}),
   setStatus: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock('../../lib/hooks/useKnowledge', () => ({
 }));
 vi.mock('../../lib/knowledge', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../lib/knowledge')>(),
+  listKnowledge: mocks.list,
   upsertKnowledge: mocks.upsert,
   setKnowledgeEnabled: mocks.toggle,
   deleteKnowledge: mocks.remove,
@@ -73,6 +75,9 @@ describe('KnowledgeManager', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.list.mockReset().mockResolvedValue({ entries: [ENTRY], total: 1, nextOffset: null, storeRevision: 9 });
+    mocks.toggle.mockReset().mockResolvedValue();
+    mocks.remove.mockReset().mockResolvedValue(2);
     mocks.retry.mockResolvedValue({ availability: 'ready', schemaVersion: 2, recordCount: 1, storeRevision: 9, recoveryAtMs: null, message: null });
     mocks.inspectImport.mockResolvedValue({ total: 2, new: 1, duplicates: 1, conflicts: 0 });
     mocks.importFile.mockResolvedValue({ imported: 1, duplicates: 1, storeRevision: 10 });
@@ -141,5 +146,97 @@ describe('KnowledgeManager', () => {
     expect(button(container, 'Delete everything').disabled).toBe(false);
     await act(async () => button(container, 'Delete everything').click());
     expect(mocks.removeAll).toHaveBeenCalledWith(9);
+  });
+
+  it('uses current normalized filters and disables every match beyond the visible page', async () => {
+    const matches = Array.from({ length: 55 }, (_, index) => ({ ...ENTRY, id: `match-${index}`, revision: index + 1 }));
+    mocks.list.mockResolvedValueOnce({ entries: matches.slice(0, 50), total: 55, nextOffset: 50, storeRevision: 9 });
+    mocks.list.mockResolvedValueOnce({ entries: matches.slice(50), total: 55, nextOffset: null, storeRevision: 9 });
+    await act(async () => {
+      setValue(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')!, '  match  ');
+      setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter knowledge type"]')!, 'replacement_rule');
+      setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter enabled state"]')!, 'enabled');
+      setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter visibility"]')!, 'app');
+    });
+    await act(async () => button(container, 'Disable all shown').click());
+    expect(mocks.list.mock.calls).toEqual([
+      [{ query: 'match', kind: 'replacement_rule', enabled: true, scopeKind: 'app', limit: 50, offset: 0 }],
+      [{ query: 'match', kind: 'replacement_rule', enabled: true, scopeKind: 'app', limit: 50, offset: 50 }],
+    ]);
+    expect(mocks.toggle.mock.calls).toEqual(matches.map((entry) => [entry, false]));
+    expect(mocks.list.mock.invocationCallOrder[1]).toBeLessThan(mocks.toggle.mock.invocationCallOrder[0]);
+    expect(container.textContent).toContain('55 records disabled; 0 failed.');
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('requires typed DELETE for the captured scope and reports each failed record', async () => {
+    const second = { ...ENTRY, id: 'record-2', revision: 17 };
+    mocks.list.mockResolvedValueOnce({ entries: [ENTRY, second], total: 2, nextOffset: null, storeRevision: 9 });
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')!, 'Tory'));
+    await act(async () => button(container, 'Delete all shown…').click());
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('search: “Tory”');
+    expect(button(container, 'Delete 2 matching records').disabled).toBe(true);
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')?.disabled).toBe(true);
+    // A filter change behind the modal must not change the confirmed snapshot.
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')!, 'other'));
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Type DELETE to confirm matching records"]')!, 'DELETE'));
+    mocks.remove.mockRejectedValueOnce('Record changed; refresh before retrying.').mockResolvedValueOnce(10);
+    const confirm = button(container, 'Delete 2 matching records');
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.remove.mock.calls).toEqual([[ENTRY], [second]]);
+    expect(mocks.removeAll).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('1 records removed; 1 failed.');
+    expect(container.textContent).toContain('Tory · record-1: Record changed; refresh before retrying.');
+  });
+
+  it('cancels deletion without writes and collects the next scope afresh', async () => {
+    await act(async () => button(container, 'Delete all shown…').click());
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Type DELETE to confirm matching records"]')!, 'DELETE'));
+    await act(async () => button(container, 'Cancel').click());
+    expect(mocks.remove).not.toHaveBeenCalled();
+    await act(async () => setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter visibility"]')!, 'global'));
+    await act(async () => button(container, 'Delete all shown…').click());
+    expect(button(container, 'Delete 1 matching records').disabled).toBe(true);
+    expect(mocks.list).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKind: 'global' }));
+  });
+
+  it('locks repeated clicks and refuses store drift without any writes', async () => {
+    let resolvePage: ((value: KnowledgeListResponse) => void) | undefined;
+    mocks.list.mockImplementationOnce(() => new Promise((resolve) => { resolvePage = resolve; }));
+    mocks.list.mockResolvedValueOnce({ entries: [{ ...ENTRY, id: 'second' }], total: 2, nextOffset: null, storeRevision: 10 });
+    const enable = button(container, 'Enable all shown');
+    await act(async () => { enable.click(); enable.click(); });
+    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(button(container, 'Disable all shown').disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled).toBe(true);
+    await act(async () => resolvePage?.({ entries: [ENTRY], total: 2, nextOffset: 1, storeRevision: 9 }));
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Refresh and try again. No records were changed.');
+  });
+
+  it('does not write when deactivated during collection', async () => {
+    let resolvePage: ((value: KnowledgeListResponse) => void) | undefined;
+    mocks.list.mockImplementationOnce(() => new Promise((resolve) => { resolvePage = resolve; }));
+    await act(async () => button(container, 'Enable all shown').click());
+    await act(async () => root.render(<KnowledgeManager active={false} profiles={[]} />));
+    await act(async () => resolvePage?.({ entries: [ENTRY], total: 1, nextOffset: null, storeRevision: 9 }));
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    await act(async () => root.render(<KnowledgeManager active profiles={[]} />));
+    await act(async () => button(container, 'Disable all shown').click());
+    expect(mocks.toggle).toHaveBeenCalledWith(ENTRY, false);
+  });
+
+  it('stops further writes when unmounted during a batch', async () => {
+    let resolveWrite: (() => void) | undefined;
+    mocks.list.mockResolvedValueOnce({ entries: [ENTRY, { ...ENTRY, id: 'second' }], total: 2, nextOffset: null, storeRevision: 9 });
+    mocks.toggle.mockImplementationOnce(() => new Promise((resolve) => { resolveWrite = resolve; }));
+    await act(async () => button(container, 'Disable all shown').click());
+    expect(mocks.toggle).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(<div />));
+    await act(async () => resolveWrite?.());
+    expect(mocks.toggle).toHaveBeenCalledTimes(1);
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });
