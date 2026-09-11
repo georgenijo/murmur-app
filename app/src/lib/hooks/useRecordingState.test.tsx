@@ -326,6 +326,24 @@ describe('useRecordingState transition ordering', () => {
       mocks.listeners.get('auto-paste-failed')?.({ payload: 'Murmur could not paste into this app.' });
     });
     expect(current.error).toBe('Murmur could not paste into this app.');
+    expect(current.canRetryDelivery).toBe(false);
+    await act(async () => {
+      mocks.listeners.get('dictation-delivery-outcome')?.({
+        payload: { recordingId: 1, outcome: 'clipboardOnly' },
+      });
+    });
+    expect(current.canRetryDelivery).toBe(true);
+  });
+
+  it('does not offer Paste Last for an unconfirmed delivery failure', async () => {
+    await act(async () => {
+      mocks.listeners.get('auto-paste-failed')?.({ payload: 'Check the clipboard before pasting.' });
+      mocks.listeners.get('dictation-delivery-outcome')?.({
+        payload: { recordingId: 2, outcome: 'unconfirmed' },
+      });
+    });
+    expect(current.error).toBe('Check the clipboard before pasting.');
+    expect(current.canRetryDelivery).toBe(false);
   });
 
   it('does not let a stale start response resurrect an error after dismissal', async () => {
