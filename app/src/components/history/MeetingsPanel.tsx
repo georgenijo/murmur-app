@@ -192,10 +192,11 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-xs font-semibold text-on-surface">
-                    {new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                    {session.title || new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                   </span>
                   <span className="text-[10px] capitalize text-on-surface-variant">{session.status}</span>
                 </div>
+                {session.title && <p className="mt-1 text-xs text-on-surface-variant">{new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</p>}
                 <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-on-surface-variant">
                   {session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}
                 </p>
@@ -221,7 +222,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               <div className="flex shrink-0 items-center gap-2 border-b border-[var(--ui-hairline)] px-4 py-2.5">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-on-surface">
-                    {new Date(meetings.detail.session.startedAtMs).toLocaleString()}
+                    {meetings.detail.session.title || new Date(meetings.detail.session.startedAtMs).toLocaleString()}
                   </p>
                   <p className="mt-0.5 text-[10px] text-on-surface-variant">
                     {formatMeetingTimestamp(meetings.detail.session.durationMs)} · {meetings.detail.session.segmentCount} segments · {meetings.detail.session.retainAudio ? 'audio retained' : 'transcript only'}

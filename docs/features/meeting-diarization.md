@@ -31,7 +31,8 @@ The already-signed app executable runs a dedicated worker process. It verifies
 every model file against a pinned SHA-256 manifest and denies network access
 and writes to the pinned model directory before entering FluidAudio. The worker returns only bounded turn times,
 session-local integers and quality scores. Embeddings stay in the worker's
-memory. Neither turns, audio paths, speaker names nor embeddings enter logs.
+memory. Neither turns, audio paths, speaker names, meeting titles, attendees, nor
+embeddings enter logs.
 
 A pass starts only while the app is idle. Dictation takes priority: before
 capture or ASR begins, Murmur kills the exact child process group and confirms
@@ -59,8 +60,9 @@ parent-death cleanup. Its report contains content-free hashes and counts.
 
 Rust tests cover conservative attribution, microphone exclusion, raw transcript
 identity, bounded private audio cleanup, strict worker results and exact child
-preemption. Storage tests cover the v4 migration, transactional assignment,
-renaming, session isolation, export labels and cascading deletion. Native
+preemption. Storage tests cover the v4 speaker migration, the v5 meeting metadata
+migration, transactional assignment, renaming, session isolation, export labels,
+and cascading deletion. Native
 capture smoke remains a separate check.
 
 The debug test bundle also supports two opt-in proof paths through that script:

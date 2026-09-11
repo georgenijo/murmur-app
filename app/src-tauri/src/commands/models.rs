@@ -498,7 +498,7 @@ mod tests {
                 .unwrap();
         }
         assert!(
-            remove_whisper_artifact("tiny.en", &managed, &[external.clone()])
+            remove_whisper_artifact("tiny.en", &managed, std::slice::from_ref(&external))
                 .unwrap_err()
                 .contains("outside Murmur")
         );
@@ -513,7 +513,7 @@ mod tests {
             assert!(remove_whisper_artifact(name, &managed, &[]).is_err());
         }
         fs::remove_file(external.join(filename)).unwrap();
-        remove_whisper_artifact("tiny.en", &managed, &[managed.clone()]).unwrap();
+        remove_whisper_artifact("tiny.en", &managed, std::slice::from_ref(&managed)).unwrap();
         assert!(!managed.join(filename).exists());
         assert!(external.is_dir());
         fs::remove_dir_all(root).unwrap();

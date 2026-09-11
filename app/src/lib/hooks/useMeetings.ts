@@ -21,6 +21,7 @@ import {
   restoreMeetingReviewFromGenerated,
   saveMeetingExport,
   saveMeetingReview,
+  saveMeetingMetadata,
   startMeeting,
   startMeetingSummary,
   stopMeeting,
@@ -31,6 +32,7 @@ import {
   type MeetingSegment,
   type MeetingReviewExportFormat,
   type SaveMeetingReviewRequest,
+  type SaveMeetingMetadataRequest,
   type SystemAudioAccess,
   type SystemAudioPermissionState,
 } from '../meetings';
@@ -281,6 +283,24 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
+  const saveMetadata = useCallback(async (request: SaveMeetingMetadataRequest) => {
+    const ticket = selectionTicketRef.current;
+    setError(null);
+    try {
+      const next = await saveMeetingMetadata(request);
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === request.sessionId) {
+        setDetail(next);
+      }
+      await refresh();
+      return true;
+    } catch {
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === request.sessionId) {
+        setError('Meeting details could not be saved. Use a title and attendee names of at most 200 characters, with up to 100 attendees.');
+      }
+      return false;
+    }
+  }, [refresh]);
+
   const restoreReview = useCallback(async (
     sessionId: string,
     generatedRevision: number,
@@ -369,6 +389,7 @@ export function useMeetings(settings: Settings) {
     copy,
     exportReview,
     saveReview,
+    saveMetadata,
     restoreReview,
     renameRemoteSpeaker,
     remove,

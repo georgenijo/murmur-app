@@ -215,6 +215,30 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), MeetingDatabaseErro
             )
             .map_err(|error| MeetingDatabaseError::Sqlite(error, "Murmur could not migrate remote meeting speakers."))?;
     }
+    if schema_version(connection)? == 4 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE meeting_sessions ADD COLUMN title TEXT
+                   CHECK(title IS NULL OR length(title) BETWEEN 1 AND 200);
+                 ALTER TABLE meeting_sessions ADD COLUMN title_source TEXT
+                   CHECK(title_source IS NULL OR title_source IN ('manual','calendar','generated'));
+                 ALTER TABLE meeting_sessions ADD COLUMN attendees_json TEXT NOT NULL DEFAULT '[]';
+                 CREATE VIRTUAL TABLE meeting_sessions_fts USING fts5(
+                   session_id UNINDEXED,
+                   title,
+                   tokenize='unicode61 remove_diacritics 2'
+                 );
+                 PRAGMA user_version=5;
+                 COMMIT;",
+            )
+            .map_err(|error| {
+                MeetingDatabaseError::Sqlite(
+                    error,
+                    "Murmur could not migrate meeting titles and attendees.",
+                )
+            })?;
+    }
     validate_schema(connection)
 }
 
@@ -298,6 +322,7 @@ pub(super) fn validate_supported_schema(
             4,
             &["session_id", "speaker_id", "label"],
         ),
+        ("meeting_sessions_fts", 5, &["session_id", "title"]),
     ];
     for (table, introduced, columns) in tables {
         if version < *introduced {
@@ -352,6 +377,13 @@ pub(super) fn validate_supported_schema(
         {
             return Err(schema_error());
         }
+    }
+    if version >= 5 {
+        require_columns(
+            connection,
+            "meeting_sessions",
+            &["title", "title_source", "attendees_json"],
+        )?;
     }
     let mut statement = connection
         .prepare("PRAGMA foreign_key_check")
@@ -480,7 +512,17 @@ mod tests {
 
         migrate(&connection).unwrap();
 
-        assert_eq!(schema_version(&connection).unwrap(), 4);
+        assert_eq!(schema_version(&connection).unwrap(), 5);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title, title_source, attendees_json FROM meeting_sessions WHERE id='meeting'",
+                    [],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?)),
+                )
+                .unwrap(),
+            (None, None, "[]".to_string())
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -546,7 +588,17 @@ mod tests {
 
         migrate(&connection).unwrap();
 
-        assert_eq!(schema_version(&connection).unwrap(), 4);
+        assert_eq!(schema_version(&connection).unwrap(), 5);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title, title_source, attendees_json FROM meeting_sessions WHERE id='meeting'",
+                    [],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?)),
+                )
+                .unwrap(),
+            (None, None, "[]".to_string())
+        );
         assert_eq!(
             connection
                 .query_row(

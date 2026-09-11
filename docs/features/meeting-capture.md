@@ -148,9 +148,11 @@ live or recovery inference owns the meeting flag.
 
 The store lives under the app data directory in `meetings/`:
 
-- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v4.
+- `meetings.sqlite3` uses WAL, `synchronous=FULL`, foreign keys, and schema v5.
 - `meeting_sessions` stores start/end, status, selected model/language, frozen
-  punctuation/audio policy, and a stable content-free failure code.
+  punctuation/audio policy, optional title and title source, the ordered attendee
+  list, and a stable content-free failure code. Existing sessions migrate with no
+  title, no title source, and an empty attendee list.
 - `meeting_segments` stores speaker, per-channel sequence, relative timing,
   pending/final/failed status, text, and an optional relative spool path.
 - `meeting_artifacts` stores one validated schema-v1 derived result plus its
@@ -160,7 +162,9 @@ The store lives under the app data directory in `meetings/`:
   may reference a speaker in that same session; Me segments cannot.
 - `meeting_reviews` stores one revisioned reviewed snapshot and its bounded
   channel display labels. It never stores or mutates raw transcript evidence.
-- FTS5 indexes finalized segment text for bounded session search.
+- Separate FTS5 tables index finalized segment text and the current meeting title
+  for bounded session search. A metadata transaction replaces or removes the title
+  row when the title changes.
 - Checked SQLite backups are retained before migrations; corrupt databases are
   quarantined and restored from the newest valid backup when possible.
 
@@ -205,6 +209,12 @@ Each echo-cancellation transition also writes
 `meeting.echo_cancellation_state_changed` with only the prior and current
 state, typed reason, recovery episode and attempt, and meeting generation.
 Audio, device identity, transcript text, and session IDs are excluded.
+
+Meeting titles, title sources, and attendees follow the transcript privacy rule.
+The structured-event sanitizer removes their fields recursively for every event
+stream in debug and release builds. The remote shipper removes the same fields
+again before upload and continues to drop the entire `meeting` stream. Meeting
+metadata never enters diagnostics or stats.
 
 Meeting traces contain only allowlisted lifecycle phase, channel, generation,
 and stable error code. The sanitizer removes every other string in all builds.

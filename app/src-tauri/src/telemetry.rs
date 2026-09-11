@@ -1478,7 +1478,31 @@ fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
     }
 }
 
+pub(crate) fn strip_private_meeting_metadata(data: &mut serde_json::Value) -> bool {
+    match data {
+        serde_json::Value::Object(object) => {
+            let mut changed = false;
+            for key in ["title", "title_source", "titleSource", "attendees"] {
+                changed |= object.remove(key).is_some();
+            }
+            for value in object.values_mut() {
+                changed |= strip_private_meeting_metadata(value);
+            }
+            changed
+        }
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= strip_private_meeting_metadata(item);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
 fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: bool) {
+    strip_private_meeting_metadata(data);
     let Some(obj) = data.as_object_mut() else {
         return;
     };
@@ -3521,6 +3545,41 @@ mod tests {
         );
         assert_eq!(summary, "Meeting event");
         assert!(!summary.contains("SENTINEL"));
+    }
+
+    #[test]
+    fn every_event_stream_strips_private_meeting_metadata_recursively() {
+        const TITLE_SENTINEL: &str = "SENTINEL_PRIVATE_MEETING_TITLE";
+        const ATTENDEE_SENTINEL: &str = "SENTINEL_PRIVATE_ATTENDEE";
+        for stream in [
+            "audio",
+            "keyboard",
+            "meeting",
+            "pipeline",
+            "query",
+            "system",
+            "transform",
+        ] {
+            for debug_build in [true, false] {
+                let mut data = serde_json::json!({
+                    "event_code": "meeting.capture_started",
+                    "title": TITLE_SENTINEL,
+                    "titleSource": "manual",
+                    "attendees": [ATTENDEE_SENTINEL],
+                    "nested": {
+                        "title_source": "calendar",
+                        "attendees": [ATTENDEE_SENTINEL]
+                    }
+                });
+                sanitize_event_data(stream, &mut data, debug_build);
+                let encoded = serde_json::to_string(&data).unwrap();
+                assert!(!encoded.contains(TITLE_SENTINEL), "stream={stream}");
+                assert!(!encoded.contains(ATTENDEE_SENTINEL), "stream={stream}");
+                assert!(!encoded.contains("titleSource"), "stream={stream}");
+                assert!(!encoded.contains("title_source"), "stream={stream}");
+                assert!(!encoded.contains("attendees"), "stream={stream}");
+            }
+        }
     }
 
     #[test]
