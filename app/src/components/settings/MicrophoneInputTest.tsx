@@ -220,7 +220,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           </svg>
         </button>
       )}
-      <div id={smartAutoControlsId}>
+      <div id={smartAutoControlsId} className={smartAutoActive ? '' : 'mt-2'}>
         <SettingsBranch
           open={smartAutoActive && smartAutoControlsOpen}
           className={smartAutoActive && smartAutoControlsOpen ? 'mt-2' : ''}
