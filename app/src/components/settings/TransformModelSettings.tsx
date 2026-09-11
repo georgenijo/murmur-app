@@ -38,6 +38,7 @@ export function TransformModelSettings({
         Never auto-applies.
       </SettingsCallout>
       <SettingToggle
+        targetId="correction-shortcut"
         title="Correct last dictation shortcut"
         description="Press ⌘⇧E to speak a correction to your latest dictation. Press again to finish, then review and copy or replace a matching selection. Uses the local model below."
         checked={settings.correctionShortcutEnabled}
@@ -47,6 +48,7 @@ export function TransformModelSettings({
         <p className="text-xs text-on-surface-variant">Accessibility access is required for ⌘⇧E. You can also start correction from the ⌘K command palette.</p>
       )}
       <SettingToggle
+        targetId="transform-shortcut"
         title="Enable Transform Shortcut"
         description="Hold the transform key while text is selected to capture a rewrite instruction."
         checked={settings.transformHoldKey !== null}

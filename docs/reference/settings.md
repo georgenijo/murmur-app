@@ -29,6 +29,16 @@ Lab and Diagnostics remain in the Tools group. The search field routes matching
 rows to their owning page. Power-user controls are collapsed under **Advanced**
 disclosures.
 
+General links to a read-only **Keyboard Shortcuts** detail page. It derives five
+global shortcut rows from the current `Settings` object and four fixed
+main-window rows from `keyboardShortcuts.ts`. Each global row reports its live
+binding and availability, then links to the page that owns the setting. Returning
+from an owner restores focus to the source row. The same detail page is available
+from the `Settings: Keyboard Shortcuts` command in the command palette. When
+Murmur is disabled, the page marks recording, transform, Voice Query, and
+correction shortcuts as paused while retaining their configured binding labels.
+Paste Last remains available, matching the native listener behavior.
+
 Modes may optionally activate from exact browser hosts under Settings → Modes.
 The global switch is off by default. Each rule stores only a
 rule ID, allowed browser bundle ID, exact host, Mode ID, and enabled flag. Live

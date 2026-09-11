@@ -26,7 +26,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 | Recording | Start / Stop recording · Enable / Disable Murmur · Next recording: <Mode> · Clear next recording override |
 | History | Correct last dictation… · Paste Last / Retry Delivery · Search transcripts · Copy last transcript\* · Export history to a Markdown file\* |
 | Navigation | Go to Record · Go to Transcribe File |
-| Settings | One row per page: Modes, Recording, Transcription, Transform, Text & Vocabulary, Delivery, Benchmark, Performance, Appearance, General |
+| Settings | One row per main page, plus Keyboard Shortcuts: Modes, Recording, Transcription, Transform, Text & Vocabulary, Delivery, Benchmark, Performance, Appearance, General |
 | Diagnostics | Open performance diagnostics |
 | App | Check for updates · About Murmur · Re-run setup assistant |
 
@@ -34,7 +34,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
-Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, Modes, and Transforms requests retain a route back to that hub.
+Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, Modes, and Transforms requests retain a route back to that hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
 
 The next-recording rows use the backend enabled-Mode catalog. They arm one in-memory
 selection and show a pending hint; opening Murmur to choose it does not bind it
@@ -72,7 +72,8 @@ Tokens are **ANDed** — `settings del` narrows to the Delivery page rather than
 | File | Role |
 |------|------|
 | `app/src/lib/commandPalette.ts` | `PaletteCommand`, scoring tiers, `filterCommands`, `moveSelection` |
-| `app/src/lib/keyboardShortcuts.ts` | Pure `mainWindowShortcut` event→action mapping |
+| `app/src/lib/keyboardShortcuts.ts` | Pure `mainWindowShortcut` event→action mapping and shared fixed-binding metadata |
+| `app/src/components/settings/KeyboardShortcutsSettings.tsx` | Live read-only reference for global and main-window shortcuts |
 | `app/src/components/CommandPalette.tsx` | The dialog: input, list, keyboard handling |
 | `app/src/App.tsx` | The command registry and the window-level key listener |
 | `app/src/components/settings/SettingsPanel.tsx` | `pageRequest` handling and `resolvePage` |

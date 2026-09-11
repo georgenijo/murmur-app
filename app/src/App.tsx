@@ -599,6 +599,13 @@ function App() {
         keywords: ['questions', 'answers', 'agent', 'queries'],
         run: () => { closeSettings('programmatic'); setMainDestination('queries'); },
       },
+      {
+        id: 'settings-shortcuts',
+        title: 'Settings: Keyboard Shortcuts',
+        section: 'Settings',
+        keywords: ['hotkeys', 'bindings', 'keys'],
+        run: () => openSettingsPage('shortcuts'),
+      },
       ...SETTINGS_CATEGORIES.map((category) => ({
         id: `settings-${category.id}`,
         title: `Settings: ${category.label}`,

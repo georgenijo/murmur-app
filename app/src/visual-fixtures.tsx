@@ -318,6 +318,11 @@ const entries: HistoryEntry[] = [
   },
 ];
 
+const shortcutFixtureEnabled = requestedState === 'settings-shortcuts';
+const fixtureTransformHoldKey: Settings['transformHoldKey'] = shortcutFixtureEnabled ? 'alt_r' : null;
+const fixtureQueryHotkey: Settings['queryHotkey'] = shortcutFixtureEnabled ? 'ctrl_l' : null;
+const fixturePasteLastShortcut: Settings['pasteLastShortcut'] = shortcutFixtureEnabled ? 'command_option_v' : null;
+
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
   smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
@@ -329,6 +334,9 @@ const fixtureSettings = {
     ? ['fixture-built-in']
     : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
+  transformHoldKey: fixtureTransformHoldKey,
+  queryHotkey: fixtureQueryHotkey,
+  pasteLastShortcut: fixturePasteLastShortcut,
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
     browserBundleId: 'com.apple.Safari',
@@ -405,6 +413,7 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 function VisualFixture() {
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
+    || requestedState === 'settings-shortcuts'
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
   const meetings = useMeetings(fixtureSettings);
@@ -482,6 +491,9 @@ function VisualFixture() {
           onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
+          pageRequest={requestedState === 'settings-shortcuts'
+            ? { page: 'shortcuts', token: 1 }
+            : undefined}
         />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
