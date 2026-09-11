@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 /// Extensions this command is willing to produce. Anything else is refused —
 /// an export is a document, never an executable or a config file.
-const ALLOWED_EXTENSIONS: [&str; 3] = ["json", "md", "txt"];
+const ALLOWED_EXTENSIONS: [&str; 5] = ["json", "md", "txt", "srt", "vtt"];
 
 /// Hard ceiling on one export payload. Transcript history is capped well below
 /// this; the bound exists so a malformed caller cannot write an unbounded blob.
@@ -41,7 +41,7 @@ pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
         .ok_or_else(|| "Export file name must have an extension".to_string())?;
     if !ALLOWED_EXTENSIONS.contains(&extension.as_str()) {
         return Err(format!(
-            "Unsupported export type '.{extension}' (expected .json, .md or .txt)"
+            "Unsupported export type '.{extension}' (expected .json, .md, .txt, .srt or .vtt)"
         ));
     }
     let parent = path
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn accepts_each_allowed_extension_case_insensitively() {
         let dir = temp_dir("extensions");
-        for name in ["a.md", "b.TXT", "c.Json"] {
+        for name in ["a.md", "b.TXT", "c.Json", "d.SRT", "e.Vtt"] {
             let path = dir.join(name);
             assert!(
                 write_text_export(&path, "x").is_ok(),

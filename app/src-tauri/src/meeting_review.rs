@@ -5,6 +5,8 @@ use crate::meeting_store::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+mod subtitles;
+
 pub const MEETING_REVIEW_SCHEMA: &str = "murmur.meeting-review.v1";
 pub const MEETING_REVIEW_EXPORT_SCHEMA: &str = "murmur.meeting-review-export.v1";
 const MAX_LABEL_BYTES: usize = 80;
@@ -154,6 +156,20 @@ pub enum MeetingReviewExportFormat {
     Markdown,
     Text,
     Json,
+    Srt,
+    Vtt,
+}
+
+impl MeetingReviewExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Text => "txt",
+            Self::Json => "json",
+            Self::Srt => "srt",
+            Self::Vtt => "vtt",
+        }
+    }
 }
 
 fn valid_user_text(value: &str, maximum: usize) -> Option<String> {
@@ -441,6 +457,17 @@ pub fn render_export(
     workspace: &MeetingWorkspace,
     format: MeetingReviewExportFormat,
 ) -> Result<String, String> {
+    match format {
+        MeetingReviewExportFormat::Srt => {
+            return subtitles::render(workspace, subtitles::Format::Srt);
+        }
+        MeetingReviewExportFormat::Vtt => {
+            return subtitles::render(workspace, subtitles::Format::Vtt);
+        }
+        MeetingReviewExportFormat::Markdown
+        | MeetingReviewExportFormat::Text
+        | MeetingReviewExportFormat::Json => {}
+    }
     if format == MeetingReviewExportFormat::Json {
         let transcript = workspace
             .segments

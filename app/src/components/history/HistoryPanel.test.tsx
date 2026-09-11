@@ -674,7 +674,7 @@ describe('HistoryPanel', () => {
     const onTranscribeFile = vi.fn();
     await render({ onTranscribeFile });
     await act(async () => moreActions().click());
-    await act(async () => byText('Transcribe audio file…')!.click());
+    await act(async () => byText('Transcribe audio or video file…')!.click());
     expect(onTranscribeFile).toHaveBeenCalledOnce();
   });
 

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
-import { loadSettings, saveSettings, smartAutoMicrophoneRequest } from '../settings';
+import {
+  loadSettings,
+  recordingShortcutHint,
+  saveSettings,
+  smartAutoMicrophoneRequest,
+} from '../settings';
 import type { Settings, SmartAutoMicrophoneRequest } from '../settings';
 import { buildConfigureOptions } from '../dictation';
 
@@ -16,6 +21,7 @@ export interface UseOverlaySettingsMirrorArgs {
 export interface OverlaySettingsMirror {
   autoPaste: boolean;
   fileOutputEnabled: boolean;
+  recordingShortcutHint: string;
   overlayVerticalOffset: number;
   smartAuto: SmartAutoMicrophoneRequest | null;
   /** Re-reads localStorage and applies the snapshot. Stable identity. */
@@ -42,6 +48,12 @@ export function useOverlaySettingsMirror({
   const autoPasteOperation = useRef(0);
   const disabledOperation = useRef(0);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
+  const [shortcutHint, setShortcutHint] = useState(
+    () => {
+      const settings = loadSettings();
+      return recordingShortcutHint(settings.recordingMode, settings.doubleTapKey);
+    },
+  );
   const [overlayVerticalOffset, setOverlayVerticalOffset] = useState(
     () => loadSettings().overlayVerticalOffset,
   );
@@ -53,6 +65,7 @@ export function useOverlaySettingsMirror({
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
+    setShortcutHint(recordingShortcutHint(settings.recordingMode, settings.doubleTapKey));
     setOverlayVerticalOffset(settings.overlayVerticalOffset);
     setSmartAuto(smartAutoMicrophoneRequest(settings));
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
@@ -145,6 +158,7 @@ export function useOverlaySettingsMirror({
   return {
     autoPaste,
     fileOutputEnabled,
+    recordingShortcutHint: shortcutHint,
     overlayVerticalOffset,
     smartAuto,
     refresh,

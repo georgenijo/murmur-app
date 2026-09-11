@@ -5,9 +5,9 @@
 //! isolation (no Tauri, no React). A queue is an ordered list of items, each
 //! carrying its own per-file status so one file's failure never aborts the rest.
 
-const AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a'] as const;
+const TRANSCRIBABLE_EXTENSIONS = ['wav', 'mp3', 'm4a', 'mp4', 'mov'] as const;
 
-export const UNSUPPORTED_MESSAGE = 'Unsupported file type. Use WAV, MP3, or M4A.';
+export const UNSUPPORTED_MESSAGE = 'Unsupported file type. Use WAV, MP3, M4A, MP4, or MOV.';
 
 export type QueueItemStatus = 'queued' | 'transcribing' | 'done' | 'error';
 
@@ -25,10 +25,10 @@ export interface QueueItem {
   error?: string;
 }
 
-/** True when `path` ends in a supported audio extension (case-insensitive). */
-export function hasAudioExtension(path: string): boolean {
+/** True when `path` ends in a supported media extension (case-insensitive). */
+export function hasTranscribableExtension(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase();
-  return !!ext && (AUDIO_EXTENSIONS as readonly string[]).includes(ext);
+  return !!ext && (TRANSCRIBABLE_EXTENSIONS as readonly string[]).includes(ext);
 }
 
 /** Last path segment, tolerant of both `/` and `\` separators. */
@@ -37,7 +37,7 @@ export function baseName(path: string): string {
 }
 
 /**
- * Build queue items for the audio paths in `paths`, skipping non-audio files and
+ * Build queue items for supported paths, skipping other files and
  * any path already present in `existing` (dedupe across repeated drops/picks).
  * Ids are derived from the path plus a monotonic ordinal so duplicate basenames
  * across directories still get distinct React keys.
@@ -47,7 +47,7 @@ export function buildQueueItems(paths: string[], existing: QueueItem[] = []): Qu
   const items: QueueItem[] = [];
   let ordinal = existing.length;
   for (const path of paths) {
-    if (!hasAudioExtension(path)) continue;
+    if (!hasTranscribableExtension(path)) continue;
     if (seen.has(path)) continue;
     seen.add(path);
     items.push({
@@ -96,7 +96,7 @@ export function summarize(queue: QueueItem[]): QueueSummary {
   };
 }
 
-/** True when at least one supported audio file appears in `paths`. */
-export function hasAnyAudio(paths: string[]): boolean {
-  return paths.some(hasAudioExtension);
+/** True when at least one supported media file appears in `paths`. */
+export function hasAnyTranscribableFile(paths: string[]): boolean {
+  return paths.some(hasTranscribableExtension);
 }

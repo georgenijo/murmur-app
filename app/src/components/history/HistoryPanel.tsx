@@ -344,7 +344,7 @@ function HistoryPanelComponent({
                   onTranscribeFile();
                 }}
               >
-                Transcribe audio file…
+                Transcribe audio or video file…
               </AnimatedDropdownItem>
               <AnimatedDropdownSeparator />
               <p className="history-export-label">

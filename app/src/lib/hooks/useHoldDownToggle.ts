@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { DictationKey } from '../settings';
 
 interface UseHoldDownToggleProps {
   enabled: boolean;
   initialized: boolean;
   accessibilityGranted: boolean | null;
-  holdDownKey: string;
+  holdDownKey: DictationKey;
   onStart: () => void;
   onStop: () => void;
 }

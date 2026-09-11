@@ -519,7 +519,7 @@ function VisualFixture() {
         onClose={() => {}}
         commands={[
           { id: 'record', title: 'Start recording', section: 'Dictation', hint: '⇧ hold', run: () => {} },
-          { id: 'transcribe', title: 'Transcribe audio file…', section: 'Dictation', run: () => {} },
+          { id: 'transcribe', title: 'Transcribe audio or video file…', section: 'Dictation', run: () => {} },
           { id: 'history', title: 'Search transcripts', section: 'History', hint: '⌘F', run: () => {} },
           { id: 'insights', title: 'Open Insights', section: 'Navigate', run: () => {} },
           { id: 'settings', title: 'Open Settings', section: 'Navigate', hint: '⌘,', run: () => {} },

@@ -101,7 +101,18 @@ export interface SavedMeetingReview {
   document: MeetingReviewDocumentV1 | null;
 }
 export type ActiveReviewOrigin = 'generated' | 'reviewed';
-export type MeetingReviewExportFormat = 'markdown' | 'text' | 'json';
+export type MeetingReviewExportFormat = 'markdown' | 'text' | 'json' | 'srt' | 'vtt';
+export const MEETING_EXPORT_FORMATS: {
+  value: MeetingReviewExportFormat;
+  label: string;
+  extension: string;
+}[] = [
+  { value: 'markdown', label: 'Markdown', extension: 'md' },
+  { value: 'text', label: 'Plain text', extension: 'txt' },
+  { value: 'json', label: 'JSON', extension: 'json' },
+  { value: 'srt', label: 'SubRip (.srt)', extension: 'srt' },
+  { value: 'vtt', label: 'WebVTT (.vtt)', extension: 'vtt' },
+];
 export interface EditableReviewText { key: string; text: string }
 export interface EditableReviewAction extends EditableReviewText { owner: string | null; dueDate: string | null }
 export interface EditableReviewDocument {
@@ -282,7 +293,7 @@ export async function saveMeetingExport(
   startedAtMs: number,
   format: MeetingReviewExportFormat,
 ): Promise<string | null> {
-  const extension = format === 'markdown' ? 'md' : format === 'json' ? 'json' : 'txt';
+  const extension = format === 'markdown' ? 'md' : format === 'text' ? 'txt' : format;
   const stamp = new Date(startedAtMs).toISOString().slice(0, 10);
   const path = await save({
     defaultPath: `Murmur Meeting ${stamp}.${extension}`,

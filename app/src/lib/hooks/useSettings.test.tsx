@@ -5,7 +5,7 @@ import { DEFAULT_SETTINGS, type VocabularyEntry } from '../settings';
 
 const mocks = vi.hoisted(() => ({
   configure: vi.fn(),
-  emit: vi.fn(async () => {}),
+  emit: vi.fn<(event: string) => Promise<void>>(async () => {}),
   listen: vi.fn(async () => () => {}),
   invoke: vi.fn<(command?: string, args?: unknown) => Promise<unknown>>(async () => undefined),
   isEnabled: vi.fn(async () => false),
@@ -233,6 +233,16 @@ describe('useSettings configure rollback privacy', () => {
     const calls = mocks.configure.mock.calls;
     const lastArg = calls[calls.length - 1]?.[0];
     expect(lastArg).toMatchObject({ mirrorToNotchPill: true });
+  });
+
+  it('notifies the overlay when the recording gesture or function key changes', async () => {
+    await mountHarness();
+    mocks.emit.mockClear();
+
+    await act(async () => current.updateSettings({ doubleTapKey: 'f7' }));
+    await act(async () => current.updateSettings({ recordingMode: 'both' }));
+
+    expect(mocks.emit.mock.calls.filter(([event]) => event === 'settings-changed')).toHaveLength(2);
   });
 
   it('serializes probe policy writes and reads the latest desired policy after a pending enable', async () => {

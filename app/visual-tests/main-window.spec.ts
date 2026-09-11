@@ -722,6 +722,25 @@ test('meeting review keeps provenance, actions, and transcript evidence usable a
   await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
 });
 
+test('meeting captions explain segment timing and keep copy and export reachable', async ({ page }) => {
+  for (const [appearance, width, height, format] of [
+    ['light', 880, 720, 'srt'],
+    ['dark', 720, 560, 'vtt'],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await page.goto(`/visual-fixtures.html?state=meetings-review&appearance=${appearance}`);
+    await page.getByRole('combobox', { name: 'Meeting review export format' }).selectOption(format);
+    await expect(page.getByRole('button', { name: 'Copy captions' })).toBeVisible();
+    await expect(page.getByText('One caption per recorded speech segment', { exact: false })).toBeVisible();
+    const exportButton = page.getByRole('button', { name: 'Export…', exact: true });
+    await expect(exportButton).toBeVisible();
+    const bounds = await exportButton.boundingBox();
+    expect(bounds && bounds.x + bounds.width).toBeLessThanOrEqual(width);
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot(`${appearance}-meeting-captions.png`);
+  }
+});
+
 test('dashboard charts keep tooltip, plot, and seven weekday labels in stable regions', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
   const chart = page.locator('figure[aria-label="Words per day bar chart"]');

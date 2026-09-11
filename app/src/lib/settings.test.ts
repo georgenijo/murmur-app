@@ -18,11 +18,15 @@ import {
   AVAILABLE_MODEL_OPTIONS,
   BUILTIN_MODES,
   DEFAULT_SETTINGS,
+  DICTATION_KEY_OPTION_GROUPS,
+  DICTATION_KEY_OPTIONS,
+  dictationKeyLabel,
   LEGACY_OVERLAY_OFFSET_KEY,
   microphoneDeviceNameArg,
   MODEL_OPTIONS,
   pasteLastShortcutConflict,
   STORAGE_KEY,
+  recordingShortcutHint,
   WRITING_STYLE_OPTIONS,
   WRITING_STYLE_VALUES,
 } from './settings';
@@ -52,6 +56,50 @@ describe('WRITING_STYLE_VALUES', () => {
       .map(option => option.value)
       .filter(value => value !== 'inherit');
     expect(WRITING_STYLE_VALUES).toEqual(expected);
+  });
+});
+
+describe('dictation keys', () => {
+  it('keeps the three existing modifiers and F1 through F20 in one labeled catalog', () => {
+    expect(DICTATION_KEY_OPTION_GROUPS.map((group) => group.label)).toEqual([
+      'Modifier keys',
+      'Function keys',
+    ]);
+    expect(DICTATION_KEY_OPTIONS.map((option) => option.value)).toEqual([
+      'shift_l', 'alt_l', 'ctrl_r',
+      ...Array.from({ length: 20 }, (_, index) => `f${index + 1}`),
+    ]);
+    expect(DICTATION_KEY_OPTIONS.map((option) => option.label)).toEqual([
+      '⇧ Left Shift', '⌥ Left Option', '⌃ Right Control',
+      ...Array.from({ length: 20 }, (_, index) => `F${index + 1}`),
+    ]);
+  });
+
+  it('reloads function keys with the same labels and recording hints', () => {
+    saveSettings({ ...DEFAULT_SETTINGS, doubleTapKey: 'f20', recordingMode: 'both' });
+    const reloaded = loadSettings();
+
+    expect(reloaded.doubleTapKey).toBe('f20');
+    expect(dictationKeyLabel(reloaded.doubleTapKey)).toBe('F20');
+    expect(recordingShortcutHint(reloaded.recordingMode, reloaded.doubleTapKey))
+      .toBe('Hold or double-tap F20');
+  });
+
+  it('preserves legacy modifier values and rejects unsupported persisted keys', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      settingsVersion: 0,
+      doubleTapKey: 'alt_l',
+    }));
+    expect(dictationKeyLabel(loadSettings().doubleTapKey)).toBe('⌥ Left Option');
+
+    for (const bad of ['F1', 'f0', 'f21', 'space', 'shift_r', 'mouse_4', null, 8]) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        doubleTapKey: bad,
+      }));
+      expect(loadSettings().doubleTapKey).toBe(DEFAULT_SETTINGS.doubleTapKey);
+    }
   });
 });
 

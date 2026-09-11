@@ -161,7 +161,7 @@ export async function downloadModel(modelName: string): Promise<void> {
 }
 
 /**
- * Transcribe an existing audio file (WAV/MP3/M4A) via the Rust `transcribe_file`
+ * Transcribe an existing audio or video file (WAV/MP3/M4A/MP4/MOV) via the Rust `transcribe_file`
  * command. Unlike live recording this returns the text directly (no auto-paste).
  */
 export async function transcribeFile(filePath: string): Promise<DictationResponse> {

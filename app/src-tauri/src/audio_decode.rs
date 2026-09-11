@@ -1,12 +1,12 @@
 //! Audio file decoding for the "transcribe a file" feature.
 //!
-//! Decodes WAV/MP3/M4A via symphonia, downmixes to mono, and resamples to
-//! 16kHz so the result can feed the same Whisper pipeline as live capture.
+//! Decodes WAV/MP3/M4A and audio tracks from MP4/MOV via symphonia, downmixes
+//! to mono, and resamples to 16kHz for the same pipeline as live capture.
 
 use crate::state::WHISPER_SAMPLE_RATE;
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -16,7 +16,7 @@ use symphonia::core::probe::Hint;
 /// Decode an audio file to 16kHz mono `f32` samples.
 ///
 /// Supports the formats enabled in the symphonia feature set (WAV, MP3,
-/// and MP4/M4A containers carrying AAC or ALAC). Multi-channel audio is
+/// and MP4/M4A/MOV containers carrying AAC or ALAC). Multi-channel audio is
 /// downmixed to mono by averaging channels; the result is resampled to
 /// [`WHISPER_SAMPLE_RATE`] if the source rate differs.
 pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
@@ -35,27 +35,35 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
             &FormatOptions::default(),
             &MetadataOptions::default(),
         )
-        .map_err(|e| format!("Unsupported or corrupt audio file: {}", e))?;
+        .map_err(|e| format!("Unsupported or corrupt media file: {}", e))?;
     let mut format = probed.format;
 
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| "No decodable audio track found in file".to_string())?;
-    let track_id = track.id;
+    // The bundled registry contains only audio decoders. Missing sample-rate
+    // metadata alone cannot distinguish video from an unknown audio codec.
+    let mut selected = None;
+    for track in format.tracks() {
+        if let Ok(decoder) =
+            symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())
+        {
+            selected = Some((track.id, track.codec_params.clone(), decoder));
+            break;
+        }
+    }
 
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("No decoder for this audio codec: {}", e))?;
+    let (track_id, codec_params, mut decoder) = match selected {
+        Some(selected) => selected,
+        None => {
+            return Err(
+                "No supported audio track found. Use a file with PCM, MP3, AAC, or ALAC audio."
+                    .to_string(),
+            )
+        }
+    };
 
     // Source rate/channels are taken from the decoded buffers (authoritative),
     // falling back to track metadata for the initial values.
-    let mut source_rate = track
-        .codec_params
-        .sample_rate
-        .unwrap_or(WHISPER_SAMPLE_RATE);
-    let mut channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
+    let mut source_rate = codec_params.sample_rate.unwrap_or(WHISPER_SAMPLE_RATE);
+    let mut channels = codec_params.channels.map(|c| c.count()).unwrap_or(1);
     let mut interleaved: Vec<f32> = Vec::new();
 
     loop {
@@ -94,7 +102,7 @@ pub fn decode_to_mono_16k(path: &str) -> Result<Vec<f32>, String> {
     }
 
     if interleaved.is_empty() {
-        return Err("File contained no decodable audio".to_string());
+        return Err("Selected audio track contained no decodable audio".to_string());
     }
 
     // Downmix to mono by averaging channels.
@@ -189,5 +197,61 @@ mod tests {
     fn errors_on_missing_file() {
         let err = decode_to_mono_16k("/nonexistent/murmur/file.wav").unwrap_err();
         assert!(err.contains("Failed to open file"), "got {err}");
+    }
+
+    fn fixture(name: &str) -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/audio_decode")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn assert_decodes_fixture(name: &str) {
+        let out = decode_to_mono_16k(&fixture(name)).unwrap();
+        assert!(
+            (3_000..=6_000).contains(&out.len()),
+            "{name} decoded to {} samples",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn decodes_aac_from_video_first_mp4() {
+        assert_decodes_fixture("video-first-aac.mp4");
+    }
+
+    #[test]
+    fn decodes_aac_from_video_first_mov() {
+        assert_decodes_fixture("video-first-aac.mov");
+    }
+
+    #[test]
+    fn skips_unsupported_audio_track_for_later_supported_track() {
+        assert_decodes_fixture("unsupported-first-aac-second.mp4");
+    }
+
+    #[test]
+    fn rejects_video_without_audio() {
+        let err = decode_to_mono_16k(&fixture("video-only.mp4")).unwrap_err();
+        assert!(err.starts_with("No supported audio track found."));
+    }
+
+    #[test]
+    fn rejects_unsupported_audio_codec() {
+        let err = decode_to_mono_16k(&fixture("unsupported-opus.mp4")).unwrap_err();
+        assert_eq!(
+            err,
+            "No supported audio track found. Use a file with PCM, MP3, AAC, or ALAC audio."
+        );
+    }
+
+    #[test]
+    fn unknown_audio_sample_entry_does_not_claim_the_file_has_no_audio() {
+        let err = decode_to_mono_16k(&fixture("unsupported-ac3.mp4")).unwrap_err();
+        assert_eq!(
+            err,
+            "No supported audio track found. Use a file with PCM, MP3, AAC, or ALAC audio."
+        );
     }
 }

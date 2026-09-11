@@ -359,11 +359,7 @@ pub fn save_meeting_review_export(
     path: String,
     state: tauri::State<'_, State>,
 ) -> Result<u64, String> {
-    let expected = match format {
-        MeetingReviewExportFormat::Markdown => "md",
-        MeetingReviewExportFormat::Text => "txt",
-        MeetingReviewExportFormat::Json => "json",
-    };
+    let expected = format.extension();
     if std::path::Path::new(&path)
         .extension()
         .and_then(|extension| extension.to_str())

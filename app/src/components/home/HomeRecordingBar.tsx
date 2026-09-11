@@ -1,6 +1,10 @@
 import type { ReactNode } from 'react';
 import { Mic, Square } from 'lucide-react';
-import type { DoubleTapKey, RecordingMode } from '../../lib/settings';
+import {
+  dictationKeyLabel,
+  type DictationKey,
+  type RecordingMode,
+} from '../../lib/settings';
 import type { MeetingRuntimePhase } from '../../lib/meetings';
 import type { DictationStatus } from '../../lib/types';
 
@@ -9,26 +13,20 @@ interface HomeRecordingBarProps {
   initialized: boolean;
   recordingDuration: number;
   audioLevel: number;
-  triggerKey: DoubleTapKey;
+  triggerKey: DictationKey;
   recordingMode: RecordingMode;
   meetingPhase: MeetingRuntimePhase;
   onRecord: () => void;
   onStop: () => void;
 }
 
-const KEY_LABELS: Record<DoubleTapKey, string> = {
-  shift_l: '⇧ Shift',
-  alt_l: '⌥ Option',
-  ctrl_r: '⌃ Control',
-};
-
 function timer(seconds: number): string {
   const wholeSeconds = Math.max(0, Math.floor(seconds));
   return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, '0')}`;
 }
 
-function Shortcut({ triggerKey }: { triggerKey: DoubleTapKey }) {
-  return <kbd className="home-talk-key">{KEY_LABELS[triggerKey]}</kbd>;
+function Shortcut({ triggerKey }: { triggerKey: DictationKey }) {
+  return <kbd className="home-talk-key">{dictationKeyLabel(triggerKey)}</kbd>;
 }
 
 export function HomeRecordingBar({

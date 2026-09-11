@@ -53,6 +53,39 @@ describe('MeetingReviewWorkspace', () => {
     container.remove();
   });
 
+  it('copies and exports captions with the selected format and explains their scope', async () => {
+    const meetings = controller();
+    const onNotice = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting review export format"]');
+    if (!select) throw new Error('Missing export picker');
+    await act(async () => {
+      select.value = 'vtt';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('One caption per recorded speech segment');
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Copy captions')?.click());
+    expect(meetings.copy).toHaveBeenCalledWith('meeting', 'vtt');
+    expect(onNotice).toHaveBeenCalledWith('Meeting captions copied as vtt.');
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Export…')?.click());
+    expect(meetings.exportReview).toHaveBeenCalledWith('meeting', 1, 'vtt');
+  });
+
+  it('requires capture to stop before caption export', async () => {
+    const activeDetail: MeetingDetail = { ...detail, session: { ...detail.session, status: 'active' } };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: activeDetail })} segments={segments} captureBusy onNotice={() => {}} />));
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting review export format"]');
+    if (!select) throw new Error('Missing export picker');
+    await act(async () => {
+      select.value = 'srt';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('Stop this meeting before exporting captions.');
+    const buttons = [...container.querySelectorAll('button')].filter((button) => ['Copy captions', 'Export…'].includes(button.textContent ?? ''));
+    expect(buttons).toHaveLength(2);
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+  });
+
   it('moves focus from a sourced claim to immutable transcript evidence', async () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
 

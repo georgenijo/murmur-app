@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Choose F1–F20 as the recording shortcut in Settings or first-run setup, with
+  support for Hold Down, Double-Tap, and Both recording modes.
+- Copy or save meeting captions as SubRip (.srt) or WebVTT (.vtt), with saved
+  speaker names, original speech-segment timing, and visible transcription gaps.
+- Transcribe MP4 and MOV videos from the file picker or drag and drop. Murmur
+  selects a supported audio track locally and reports files without usable audio.
+
 ## [0.45.0] - 2026-09-10
 
 ### Added

@@ -10,11 +10,12 @@ import {
   AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
   DEFAULT_SETTINGS,
-  DOUBLE_TAP_KEY_OPTIONS,
+  DICTATION_KEY_OPTION_GROUPS,
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
   PASTE_LAST_SHORTCUT_OPTIONS,
   RECORDING_MODE_OPTIONS,
+  isFunctionDictationKey,
   pasteLastShortcutConflict,
   pasteLastShortcutLabel,
   type PasteLastShortcut,
@@ -832,8 +833,19 @@ export const SettingsPanel = memo(function SettingsPanel({
             )}
             <div data-setting-target="trigger-key" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="block text-sm font-medium text-on-surface">{keyLabel}</label>
-              <Select value={settings.doubleTapKey} onChange={(doubleTapKey) => onUpdateSettings({ doubleTapKey })} disabled={isRecording} items={DOUBLE_TAP_KEY_OPTIONS} />
+              <Select
+                value={settings.doubleTapKey}
+                onChange={(doubleTapKey) => onUpdateSettings({ doubleTapKey })}
+                disabled={isRecording}
+                items={DICTATION_KEY_OPTION_GROUPS}
+                aria-label="Dictation trigger key"
+              />
               <p className="text-xs text-on-surface-variant">{keyHelp}</p>
+              {isFunctionDictationKey(settings.doubleTapKey) && (
+                <p className="text-xs text-on-surface-variant">
+                  On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur observes the key without suppressing its normal system or app action.
+                </p>
+              )}
             </div>
             {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
             <div data-setting-target="sound-cues" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">

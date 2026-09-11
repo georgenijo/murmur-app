@@ -423,11 +423,11 @@ function App() {
   }, [closeSettings]);
 
   const fileTranscription = useFileTranscription({ addEntry });
-  const pickAudioFiles = useCallback(async () => {
+  const pickMediaFiles = useCallback(async () => {
     try {
       const selected = await open({
         multiple: true,
-        filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'm4a'] }],
+        filters: [{ name: 'Audio and video', extensions: ['wav', 'mp3', 'm4a', 'mp4', 'mov'] }],
       });
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (paths.length > 0) fileTranscription.enqueue(paths);
@@ -517,10 +517,10 @@ function App() {
       },
       {
         id: 'transcribe-file',
-        title: 'Transcribe audio file…',
+        title: 'Transcribe audio or video file…',
         section: 'Recording',
-        keywords: ['file', 'import', 'audio', 'wav', 'mp3', 'm4a'],
-        run: () => { void pickAudioFiles(); },
+        keywords: ['file', 'import', 'audio', 'video', 'wav', 'mp3', 'm4a', 'mp4', 'mov'],
+        run: () => { void pickMediaFiles(); },
       },
       {
         id: 'correct-last-dictation',
@@ -635,7 +635,7 @@ function App() {
     settings.smartAutoMicrophoneEnabled, settings.smartAutoApprovedDeviceIds,
     settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
     updateSettings, handleStart, handleStop,
-    focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickAudioFiles,
+    focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickMediaFiles,
     meetings,
   ]);
 
@@ -741,7 +741,7 @@ function App() {
                   onUpdateHistoryEntry={updateEntry}
                   onToggleHistoryPinned={togglePinned}
                   focusSearchToken={historySearchToken}
-                  onTranscribeFile={pickAudioFiles}
+                  onTranscribeFile={pickMediaFiles}
                   status={status}
                   initialized={initialized}
                   recordingDuration={recordingDuration}
@@ -796,7 +796,7 @@ function App() {
               <div className="text-center">
                 <span className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-primary/10 text-2xl text-on-surface">↓</span>
                 <p className="text-base font-semibold text-on-surface">Drop to transcribe</p>
-                <p className="mt-1 text-xs text-on-surface-variant">WAV, MP3, and M4A files</p>
+                <p className="mt-1 text-xs text-on-surface-variant">WAV, MP3, M4A, MP4, and MOV files</p>
               </div>
             </div>
           )}

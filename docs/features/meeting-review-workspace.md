@@ -107,6 +107,30 @@ prompts, discarded drafts, and hidden runtime metrics. Rust builds one validated
 snapshot and renders all formats from it. Clipboard rendering and the existing
 atomic `.md`/`.txt`/`.json` sink share the 8 MiB bound and never truncate evidence.
 
+### Meeting captions
+
+Choose **SubRip (.srt)** or **WebVTT (.vtt)** in the Format menu to copy captions
+or save a subtitle file. Stop the meeting first. Captions use the saved transcript
+and speaker names; they exclude review summaries, action items, and audio.
+
+Each recorded speech segment becomes one cue with its original start and end
+times relative to the meeting. These are segment timestamps, not word alignment.
+Simultaneous speakers retain overlapping cues, ordered by start time and segment
+ID. Named remote speakers use their saved name; uncertain passages keep the Them
+channel label. Empty final segments are omitted. Pending and failed segments
+appear as **[Transcription pending]** and **[Transcription unavailable]** so a
+subtitle file cannot silently hide a gap.
+
+Exports reject zero-length or reversed cue times, active meetings, and meetings
+with no transcribed speech. Caption text and labels escape markup and normalize
+whitespace to prevent embedded text from creating a new cue. Both formats use the
+same 8 MiB ceiling and atomic save path as document exports. Saving requires the
+extension that matches the selected format.
+
+Some SubRip readers display escaped `<`, `>`, and `&` as entity codes. Use
+WebVTT when the destination needs those characters literally; removing their
+escaping can cause subtitle readers to hide text or interpret it as formatting.
+
 ## Frontend ownership
 
 `useMeetings` owns a monotonically increasing selection ticket so a slow response

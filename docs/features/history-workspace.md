@@ -86,6 +86,14 @@ No entry count is shown at rest. While a filter or search is active, a line unde
 
 ## Transcript rows
 
+**Transcribe audio or video file…** in the history menu accepts WAV, MP3, M4A,
+MP4, and MOV. Drag and drop accepts the same formats and queues multiple files
+sequentially. Video files use the first audio track that Murmur's bundled decoder
+supports, including AAC and ALAC; video frames are not decoded. A video-only file
+or unsupported audio codec shows an error on that item while the queue continues.
+Imports produce transcript text rather than timed captions. Meeting captions use
+the separate [meeting export workflow](meeting-review-workspace.md#meeting-captions).
+
 Rows keep the transcript itself primary: their compact metadata contains only
 the timestamp, a file tag for imported audio (spoken entries carry no tag), and
 a star on pinned entries, without per-entry word counts, durations, or repeated
