@@ -67,6 +67,21 @@ class ReferenceDocsTests(unittest.TestCase):
             ):
                 validate_reference_docs(root)
 
+    def test_calendar_commands_are_part_of_the_checked_reference(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+        for command in (
+            "get_calendar_permission_status",
+            "request_calendar_permission",
+            "reset_calendar_permission",
+            "open_calendar_preferences",
+            "get_meeting_calendar_events",
+            "apply_meeting_calendar_event",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, commands)
+                self.assertIn(command, documented)
+
     def test_stale_human_facing_count_fails(self) -> None:
         for relative in (
             "CLAUDE.md",

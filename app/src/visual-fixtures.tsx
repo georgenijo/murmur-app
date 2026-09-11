@@ -180,6 +180,11 @@ mockIPC((command, payload) => {
     };
   }
   if (command === 'get_system_audio_permission_status') return 'granted';
+  if (command === 'get_calendar_permission_status') return query.get('calendar') === 'denied' ? 'denied' : 'granted';
+  if (command === 'get_meeting_calendar_events') return [
+    { selectionToken: 'first-event', title: 'Orion planning', attendees: ['Alex Example', 'Casey Example'], startMs: Date.UTC(2026, 7, 31, 14), endMs: Date.UTC(2026, 7, 31, 15) },
+    { selectionToken: 'second-event', title: 'Design review', attendees: ['Jordan Example'], startMs: Date.UTC(2026, 7, 31, 14, 30), endMs: Date.UTC(2026, 7, 31, 15, 30) },
+  ];
   if (command === 'get_meeting_summary_status') {
     return { generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null };
   }

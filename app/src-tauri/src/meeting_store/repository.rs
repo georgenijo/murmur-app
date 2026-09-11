@@ -503,6 +503,21 @@ impl MeetingRepository {
         &self,
         request: SaveMeetingMetadataRequest,
     ) -> Result<MeetingWorkspace, String> {
+        self.save_metadata_from(request, MeetingTitleSource::Manual)
+    }
+
+    pub(crate) fn save_calendar_metadata(
+        &self,
+        request: SaveMeetingMetadataRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        self.save_metadata_from(request, MeetingTitleSource::Calendar)
+    }
+
+    fn save_metadata_from(
+        &self,
+        request: SaveMeetingMetadataRequest,
+        source: MeetingTitleSource,
+    ) -> Result<MeetingWorkspace, String> {
         let session_id = request.session_id.trim().to_string();
         if !valid_session_id(&session_id) {
             return Err("The meeting metadata request is invalid.".into());
@@ -529,7 +544,7 @@ impl MeetingRepository {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let attendees_json = serde_json::to_string(&attendees).map_err(|_| storage_error())?;
-        let title_source = title.as_ref().map(|_| MeetingTitleSource::Manual);
+        let title_source = title.as_ref().map(|_| source);
         let mut connection = self.open_checked()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)

@@ -66,6 +66,9 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
   audio retention is enabled.
 - Requires macOS 14.2+ and optional System Audio permission. The tap exists only
   during an explicit permission check or active meeting.
+- [Name from calendar](features/meeting-calendar.md) finds events overlapping a
+  finished meeting after an explicit click. The user selects and confirms the
+  title and attendees. Calendar access is optional; manual naming remains available.
 - Copy or save speaker-labeled SRT/WebVTT captions using recorded segment times.
   Overlapping speech keeps its original timing and untranscribed sections are
   marked. Review summaries and audio are excluded from captions.
@@ -306,7 +309,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 202 registered commands |
+| Rust backend | `app/src-tauri/src/` — 208 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
