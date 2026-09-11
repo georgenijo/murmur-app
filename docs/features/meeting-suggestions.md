@@ -48,10 +48,14 @@ the worker's own completion does not create a repeated error retry loop.
 
 Dictation, every transform phase, active query capture or answer generation,
 meeting capture/recovery/summary, file transcription, microphone previews,
-benchmarks, shared backend changes, model loading/warming/unloading, speaker
+benchmarks, shared backend changes, model loading/warming/unloading, live
+dictation preview workers (including cancellation cleanup), speaker
 analysis, and disabled-app state suppress prompts. Model lifecycle and benchmark
-activity use nonblocking status reads; contention counts as busy. A
-suppressed event can still prompt after Murmur becomes idle if it remains current.
+activity use nonblocking status reads; contention counts as busy. Preview workers
+retain their exact recording lease until blocking work and owned preview resources
+finish, even if the awaiting task is cancelled; releasing that lease wakes the
+coordinator without clearing a current prompt. A suppressed event can still prompt
+after Murmur becomes idle if it remains current.
 Accepted transform and correction starts emit `transform-capture-starting`
 before arming the microphone. The coordinator clears a visible suggestion then,
 without waiting for a potentially slow AX selection or the first review event.

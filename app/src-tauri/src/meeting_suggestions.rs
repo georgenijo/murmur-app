@@ -227,7 +227,7 @@ struct Controller {
 pub(crate) struct MeetingSuggestions(Arc<Controller>);
 
 impl MeetingSuggestions {
-    fn wake(&self, invalidate_calendar: bool) {
+    pub(crate) fn wake(&self, invalidate_calendar: bool) {
         let mut state = self.0.state.lock_or_recover();
         if !state.enabled {
             return;
@@ -280,6 +280,11 @@ pub(crate) fn is_busy(state: &State) -> bool {
         state.query.status(),
         [
             state.transform_runtime.is_transform_busy()
+                || state
+                    .app_state
+                    .dictation_partial_in_flight_id
+                    .load(Ordering::SeqCst)
+                    != 0
                 || model_work_busy(state.app_state.model_runtime.lifecycle_states()),
             state.app_state.meeting_blocks_asr(),
             state.app_state.file_transcribing.load(Ordering::SeqCst),
@@ -586,6 +591,185 @@ mod tests {
         let plan = state.query_plan(1_000).unwrap();
         state.complete_query(&plan, Ok(events));
         state
+    }
+
+    fn take_wake(coordinator: &MeetingSuggestions) -> bool {
+        use std::future::Future;
+        let future = coordinator.0.changed.notified();
+        let mut future = std::pin::pin!(future);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        future.as_mut().poll(&mut context).is_ready()
+    }
+
+    // Asserts that the last preview Arc is destroyed while its lease is held.
+    struct PartialPreviewResource(tauri::AppHandle<tauri::test::MockRuntime>);
+    impl Drop for PartialPreviewResource {
+        fn drop(&mut self) {
+            let state = self.0.state::<State>();
+            assert_eq!(
+                state
+                    .app_state
+                    .dictation_partial_in_flight_id
+                    .load(Ordering::SeqCst),
+                41
+            );
+            assert!(!take_wake(&state.meeting_suggestions));
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_lease_survives_cancelled_wrapper_until_worker_cleanup_finishes() {
+        let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
+        let state = app.state::<State>();
+        let coordinator = &state.meeting_suggestions;
+        *coordinator.0.state.lock_or_recover() = ready(vec![event("live", 1_000, 100_000)]);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let resource = Arc::new(PartialPreviewResource(app.handle().clone()));
+        let wrapper = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                {
+                    let _lease = lease;
+                    let _resource = resource;
+                    started_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                finished_tx.send(()).unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        started_rx.await.unwrap();
+        state.app_state.cancel_recording(41);
+        state.app_state.dictation.lock_or_recover().status = crate::state::DictationStatus::Idle;
+        wrapper.abort();
+        assert!(wrapper.await.unwrap_err().is_cancelled());
+        assert!(is_busy(&state));
+        assert!(!take_wake(coordinator));
+        coordinator
+            .0
+            .state
+            .lock_or_recover()
+            .evaluate(2_000, Some("us.zoom.xos"), is_busy(&state));
+        assert!(coordinator.prompt().is_none());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), finished_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state
+                .app_state
+                .dictation_partial_in_flight_id
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert!(take_wake(coordinator));
+        assert!(!take_wake(coordinator));
+        assert!(!is_busy(&state));
+        coordinator
+            .0
+            .state
+            .lock_or_recover()
+            .evaluate(2_000, Some("us.zoom.xos"), is_busy(&state));
+        assert!(coordinator.prompt().is_some());
+    }
+
+    #[test]
+    fn partial_pre_spawn_exits_drop_preview_before_lease_before_and_after_preparation() {
+        fn prepare(lease: impl Send, preview: Arc<PartialPreviewResource>, no_context: bool) {
+            let (_transcription, _lease, _retained_preview) = {
+                let acquired_lease = lease;
+                let retained_preview = preview;
+                if no_context {
+                    return;
+                }
+                ((), acquired_lease, retained_preview)
+            };
+            // Returning here models too_short after the preparation tuple.
+        }
+        for no_context in [true, false] {
+            let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
+            let state = app.state::<State>();
+            state
+                .meeting_suggestions
+                .0
+                .state
+                .lock_or_recover()
+                .configure(true);
+            prepare(
+                lease,
+                Arc::new(PartialPreviewResource(app.handle().clone())),
+                no_context,
+            );
+            assert_eq!(
+                state
+                    .app_state
+                    .dictation_partial_in_flight_id
+                    .load(Ordering::SeqCst),
+                0
+            );
+            assert!(take_wake(&state.meeting_suggestions));
+            assert!(!take_wake(&state.meeting_suggestions));
+        }
+    }
+
+    #[test]
+    fn stale_partial_lease_neither_releases_nor_wakes_a_new_owner() {
+        let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
+        let state = app.state::<State>();
+        state
+            .meeting_suggestions
+            .0
+            .state
+            .lock_or_recover()
+            .configure(true);
+        state
+            .app_state
+            .dictation_partial_in_flight_id
+            .store(42, Ordering::SeqCst);
+        drop(lease);
+        assert_eq!(
+            state
+                .app_state
+                .dictation_partial_in_flight_id
+                .load(Ordering::SeqCst),
+            42
+        );
+        assert!(!take_wake(&state.meeting_suggestions));
+    }
+
+    #[tokio::test]
+    async fn partial_lease_releases_on_worker_early_return_and_panic_without_clearing_prompt() {
+        for panic in [false, true] {
+            let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
+            let state = app.state::<State>();
+            let coordinator = &state.meeting_suggestions;
+            let mut decision = ready(vec![event("live", 1_000, 100_000)]);
+            decision.evaluate(2_000, Some("us.zoom.xos"), false);
+            let token = decision.prompt().unwrap().token;
+            *coordinator.0.state.lock_or_recover() = decision;
+            let joined = tokio::task::spawn_blocking(move || {
+                let _lease = lease;
+                if panic {
+                    panic!("synthetic partial worker failure");
+                }
+                None::<String>
+            })
+            .await;
+            assert_eq!(joined.is_err(), panic);
+            assert_eq!(
+                state
+                    .app_state
+                    .dictation_partial_in_flight_id
+                    .load(Ordering::SeqCst),
+                0
+            );
+            assert!(take_wake(coordinator));
+            assert!(!take_wake(coordinator));
+            assert_eq!(coordinator.prompt().unwrap().token, token);
+        }
     }
 
     #[test]
