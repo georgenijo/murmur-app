@@ -113,8 +113,8 @@ describe('OverlayPill transient cues', () => {
     ));
 
     const status = container.querySelector<HTMLElement>('[role="status"]');
-    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture ready with USB Microphone. Verified recently; preferred included microphone.');
-    expect(status?.getAttribute('title')).toBe('Smart Auto: USB Microphone. Verified recently; preferred included microphone.');
+    expect(status?.getAttribute('aria-label')).toBe('Smart Auto next capture ready with USB Microphone. preferred included microphone.');
+    expect(status?.getAttribute('title')).toBe('Smart Auto: USB Microphone. preferred included microphone.');
     expect(status?.getAttribute('aria-live')).toBe('polite');
     expect(status?.textContent).not.toContain('usb-device-id');
   });

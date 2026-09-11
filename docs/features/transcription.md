@@ -68,8 +68,14 @@ The user explicitly approves stable IDs, can place approved IDs in a preference
 order, and may separately allow approved Continuity Capture devices. A newly
 connected input is never trusted automatically.
 
-Real capture requires a successful bounded signal check from the past 120
-seconds. The resolver retains the current verified input even when preferences
+With background checks off, pressing Record selects an approved, available
+input in preference order, then the approved macOS default, then the external
+and enabled Continuity fallbacks. No prior signal check is required. The
+request carries `requireRecentSignal`, derived from the background-checks
+setting, so each recording freezes the same policy that Settings displays.
+
+With background checks on, real capture requires a successful bounded signal
+check from the past 120 seconds. The resolver retains the current verified input even when preferences
 change. Otherwise it chooses the first verified eligible preferred input, then
 a verified approved macOS default, then the lexicographically stable verified
 external fallback. An approved Continuity input is the last fallback when
@@ -103,16 +109,21 @@ Meeting startup resolves Auto before pruning or creating a session or claiming
 meeting ownership. A failed meeting supervisor also revokes its input evidence
 before releasing the meeting's active flags.
 
-Selecting **Smart Auto** reveals an inline microphone submenu. Each detected
+Selecting **Smart Auto** opens its microphone controls for setup. An independent
+**Smart Auto microphones** disclosure expands or collapses these controls.
+Previously configured inputs start collapsed; collapsing changes no recording
+settings and leaves the current microphone preview active. Each detected
 input has an Included or Excluded state. Saved IDs remain in the submenu when
 their microphones disconnect, and reconnecting a microphone restores its
 saved state. The submenu also controls automatic signal checks. The live meter
 shows the current availability candidate, while the status row names the
-verified next-capture choice and its selection reason. If no included input is
+next-capture choice and its selection reason. Availability-only readiness has
+no signal-expiry deadline; the backend still rechecks inventory and lid state
+when recording starts. If no included input is
 eligible, Smart Auto waits instead of selecting a different microphone.
 
 The Settings UI does not ask the user to run a separate signal check.
-Consented automatic checks provide the evidence that Smart Auto requires. A
+When enabled, consented automatic checks provide the evidence Smart Auto uses. A
 live macOS-default preview does not grant per-device evidence because its
 physical resolution can change during startup. The backend accepts one check
 at a time, limits observations to five seconds, and allows another check ten

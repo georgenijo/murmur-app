@@ -220,10 +220,20 @@ mockIPC((command, payload) => {
   }
   if (command === 'cancel_microphone_preview') return false;
   if (command === 'get_smart_auto_microphone_status') {
-    if (requestedState === 'settings-smart-auto') {
+    if (requestedState === 'settings-smart-auto-empty') {
+      return { state: 'blocked', message: 'No included microphone has recent signal.' };
+    }
+    const smartAuto = payload && 'smartAuto' in payload ? payload.smartAuto : null;
+    const requireRecentSignal = smartAuto && typeof smartAuto === 'object' && 'requireRecentSignal' in smartAuto
+      ? smartAuto.requireRecentSignal
+      : null;
+    if (requireRecentSignal === true) {
       return { state: 'ready', deviceId: 'fixture-built-in', reason: 'preferred_approved', validForMs: 90_000 };
     }
-    return { state: 'blocked', message: 'No included microphone has recent signal.' };
+    if (requireRecentSignal === false) {
+      return { state: 'ready', deviceId: 'fixture-built-in', reason: 'preferred_approved', validForMs: null };
+    }
+    return { state: 'blocked', message: 'Smart Auto fixture received an invalid request.' };
   }
   if (command === 'get_audio_input_inventory') {
     return {
@@ -311,11 +321,11 @@ const entries: HistoryEntry[] = [
 const fixtureSettings = {
   ...DEFAULT_SETTINGS,
   smartAutoMicrophoneEnabled: requestedState.startsWith('settings-smart-auto'),
-  smartAutoProbeEnabled: requestedState.startsWith('settings-smart-auto'),
-  smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto'
+  smartAutoProbeEnabled: requestedState === 'settings-smart-auto',
+  smartAutoApprovedDeviceIds: requestedState === 'settings-smart-auto' || requestedState === 'settings-smart-auto-no-probes'
     ? ['fixture-built-in', 'fixture-anker', 'fixture-desk']
     : [],
-  smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto'
+  smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto' || requestedState === 'settings-smart-auto-no-probes'
     ? ['fixture-built-in']
     : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',

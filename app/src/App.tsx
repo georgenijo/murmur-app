@@ -191,6 +191,7 @@ function App() {
     settings.disabled,
     settings.microphone,
     settings.smartAutoMicrophoneEnabled,
+    settings.smartAutoProbeEnabled,
     settings.smartAutoApprovedDeviceIds,
     settings.smartAutoPreferredDeviceIds,
     settings.smartAutoAllowContinuity,

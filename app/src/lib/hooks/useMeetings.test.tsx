@@ -171,6 +171,7 @@ describe('useMeetings remote speaker refresh', () => {
         approvedDeviceIds: [],
         preferredDeviceIds: [],
         allowContinuity: false,
+        requireRecentSignal: false,
       },
     }));
 
@@ -186,6 +187,35 @@ describe('useMeetings remote speaker refresh', () => {
         approvedDeviceIds: ['usb', 'iphone'],
         preferredDeviceIds: ['iphone', 'usb'],
         allowContinuity: true,
+        requireRecentSignal: false,
+      },
+    }));
+
+    await renderSettings({
+      ...renderedSettings,
+      smartAutoProbeEnabled: true,
+    });
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      smartAuto: {
+        approvedDeviceIds: ['usb', 'iphone'],
+        preferredDeviceIds: ['iphone', 'usb'],
+        allowContinuity: true,
+        requireRecentSignal: true,
+      },
+    }));
+
+    await renderSettings({
+      ...renderedSettings,
+      smartAutoProbeEnabled: false,
+    });
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      smartAuto: {
+        approvedDeviceIds: ['usb', 'iphone'],
+        preferredDeviceIds: ['iphone', 'usb'],
+        allowContinuity: true,
+        requireRecentSignal: false,
       },
     }));
 

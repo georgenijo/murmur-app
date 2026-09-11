@@ -121,6 +121,13 @@ describe('MicrophoneInputTest', () => {
     return radio;
   }
 
+  function smartAutoDisclosure(): HTMLButtonElement {
+    const disclosure = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Smart Auto microphones');
+    if (!disclosure) throw new Error('Missing Smart Auto microphone disclosure');
+    return disclosure;
+  }
+
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.listeners.clear();
@@ -228,13 +235,22 @@ describe('MicrophoneInputTest', () => {
     expect(selected).toBe('system_default');
   });
 
-  it('reveals Smart Auto inclusion controls in context with explicit saved states', async () => {
+  it('starts configured Smart Auto compact and reveals its saved microphone options on request', async () => {
     includeSmartAuto = true;
     await render();
 
     const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
     expect(picker.textContent).toContain('Smart Auto · Available: USB Microphone');
+    const disclosure = smartAutoDisclosure();
+    const controlledRegion = document.getElementById(disclosure.getAttribute('aria-controls') ?? '');
+    expect(disclosure.tagName).toBe('BUTTON');
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(controlledRegion).toBeTruthy();
     const submenu = container.querySelector('[aria-label="Smart Auto microphone inclusion"]') as HTMLFieldSetElement;
+    expect(submenu.closest('[data-expanded]')?.getAttribute('data-expanded')).toBe('false');
+
+    await act(async () => disclosure.click());
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
     expect(submenu.closest('[data-expanded]')?.getAttribute('data-expanded')).toBe('true');
     expect(submenu.textContent).not.toContain('Built-in Speakers');
     expect(submenu.textContent).not.toContain('Legacy Audio Input');
@@ -247,8 +263,8 @@ describe('MicrophoneInputTest', () => {
     expect(submenu.querySelector('.settings-microphone-active-badge')?.textContent).toBe('Candidate');
     const backgroundChecks = submenu.querySelector('[aria-label="Check included microphones in the background"]') as HTMLElement;
     expect(backgroundChecks.getAttribute('aria-checked')).toBe('false');
-    expect(submenu.textContent).toContain('Briefly checks included inputs while Murmur is idle');
-    expect(submenu.textContent).toContain('never transcribed or saved');
+    expect(submenu.textContent).toContain('When off, Murmur chooses an included available microphone when recording starts');
+    expect(submenu.textContent).toContain('never transcribe or save audio');
     await act(async () => backgroundChecks.click());
     expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoProbeEnabled: true });
     const unavailableApproval = Array.from(submenu.querySelectorAll('label')).find((label) => label.textContent?.includes('saved preference'))?.querySelector('input') as HTMLInputElement;
@@ -263,12 +279,91 @@ describe('MicrophoneInputTest', () => {
     expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoPreferredDeviceIds: ['built-in', 'usb'] });
   });
 
-  it('explains when automatic checks are required without offering a manual check', async () => {
+  it('collapses and reopens Smart Auto controls without changing saved options or stopping preview', async () => {
+    includeSmartAuto = true;
+    await render();
+    const disclosure = smartAutoDisclosure();
+    const submenu = container.querySelector('[aria-label="Smart Auto microphone inclusion"]') as HTMLFieldSetElement;
+    const usbApproval = Array.from(submenu.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+      .find((input) => input.parentElement?.textContent?.includes('USB Microphone'));
+    const preferUsb = submenu.querySelector('[aria-label="Prefer USB Microphone for Smart Auto"]') as HTMLButtonElement;
+    const stopCallsBefore = mocks.invoke.mock.calls.filter(([command]) => command === 'stop_microphone_preview').length;
+    handleSmartAutoChange.mockClear();
+
+    await act(async () => disclosure.click());
+    expect(usbApproval?.checked).toBe(true);
+    expect(preferUsb.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => disclosure.click());
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => disclosure.click());
+
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    expect(usbApproval?.checked).toBe(true);
+    expect(preferUsb.getAttribute('aria-pressed')).toBe('true');
+    expect(handleSmartAutoChange).not.toHaveBeenCalled();
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'stop_microphone_preview')).toHaveLength(stopCallsBefore);
+  });
+
+  it('shows availability-based Smart Auto readiness while background checks stay off', async () => {
+    includeSmartAuto = true;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') return active;
+      if (command === 'update_microphone_preview_vad_sensitivity') return true;
+      if (command === 'cancel_microphone_preview') return true;
+      if (command === 'get_smart_auto_microphone_status') {
+        return { state: 'ready', deviceId: 'usb', reason: 'preferred_approved', validForMs: null };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+
+    expect(container.textContent).toContain('Smart Auto will use USB Microphone.');
+    expect(container.textContent).toContain('Why: your preferred included microphone.');
+    const disclosure = smartAutoDisclosure();
+    await act(async () => disclosure.click());
+    const submenu = container.querySelector('[aria-label="Smart Auto microphone inclusion"]') as HTMLFieldSetElement;
+    const backgroundChecks = submenu.querySelector('[aria-label="Check included microphones in the background"]') as HTMLElement;
+    const usbApproval = Array.from(submenu.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+      .find((input) => input.parentElement?.textContent?.includes('USB Microphone'));
+    expect(backgroundChecks.getAttribute('aria-checked')).toBe('false');
+    expect(usbApproval?.checked).toBe(true);
+
+    await act(async () => disclosure.click());
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(usbApproval?.checked).toBe(true);
+    expect(smartAuto.smartAutoApprovedDeviceIds).toEqual(['usb', 'built-in', 'missing-device']);
+    expect(handleSmartAutoChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Smart Auto disclosure independent from the microphone mode picker', async () => {
+    includeSmartAuto = true;
+    await render();
+    const disclosure = smartAutoDisclosure();
+    const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
+
+    await act(async () => picker.click());
+    await act(async () => microphoneMode('Smart Auto').click());
+    expect(picker.getAttribute('aria-expanded')).toBe('false');
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => disclosure.click());
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => picker.click());
+    expect(picker.getAttribute('aria-expanded')).toBe('true');
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => picker.click());
+    expect(picker.getAttribute('aria-expanded')).toBe('false');
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('shows the backend failure without treating optional background checks as required', async () => {
     includeSmartAuto = true;
     await render();
 
     expect(container.textContent).toContain('Live input from USB Microphone.');
-    expect(container.textContent).toContain('Smart Auto is not ready. Turn on Background signal checks');
+    expect(container.textContent).toContain('Smart Auto is not ready. No included microphone has recent signal.');
+    expect(container.textContent).not.toContain('Turn on Background signal checks');
     expect(container.textContent).not.toContain('Verify preview candidate');
     expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {
       deviceId: 'system_default',
@@ -277,6 +372,7 @@ describe('MicrophoneInputTest', () => {
         approvedDeviceIds: ['usb', 'built-in', 'missing-device'],
         preferredDeviceIds: ['usb', 'built-in'],
         allowContinuity: false,
+        requireRecentSignal: false,
       },
     });
 

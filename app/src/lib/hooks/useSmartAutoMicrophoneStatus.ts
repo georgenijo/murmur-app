@@ -31,10 +31,11 @@ export function useSmartAutoMicrophoneStatus(
   const approvedDeviceIds = smartAuto?.approvedDeviceIds;
   const preferredDeviceIds = smartAuto?.preferredDeviceIds;
   const allowContinuity = smartAuto?.allowContinuity;
+  const requireRecentSignal = smartAuto?.requireRecentSignal;
 
   const refreshWithCause = useCallback(async (cause: 'external' | 'deadline') => {
     const generation = ++requestGenerationRef.current;
-    if (!enabled || !approvedDeviceIds || !preferredDeviceIds || allowContinuity === undefined) {
+    if (!enabled || !approvedDeviceIds || !preferredDeviceIds || allowContinuity === undefined || requireRecentSignal === undefined) {
       if (mountedRef.current) setView({ kind: 'inactive' });
       return;
     }
@@ -42,6 +43,7 @@ export function useSmartAutoMicrophoneStatus(
       approvedDeviceIds,
       preferredDeviceIds,
       allowContinuity,
+      requireRecentSignal,
     };
     setView({ kind: 'loading' });
     const requestedAt = performance.now();
@@ -50,6 +52,10 @@ export function useSmartAutoMicrophoneStatus(
       if (mountedRef.current && requestGenerationRef.current === generation) {
         const elapsedMs = Math.max(0, performance.now() - requestedAt);
         if (status.state === 'ready') {
+          if (status.validForMs === null) {
+            setView({ kind: 'resolved', status });
+            return;
+          }
           const validForMs = Math.max(0, status.validForMs - elapsedMs);
           if (validForMs === 0) {
             if (cause === 'external') void refreshWithCause('deadline');
@@ -83,12 +89,12 @@ export function useSmartAutoMicrophoneStatus(
         setView({ kind: 'unavailable', message: String(error) });
       }
     }
-  }, [allowContinuity, approvedDeviceIds, enabled, preferredDeviceIds]);
+  }, [allowContinuity, approvedDeviceIds, enabled, preferredDeviceIds, requireRecentSignal]);
   const refresh = useCallback(() => refreshWithCause('external'), [refreshWithCause]);
 
   useEffect(() => {
     mountedRef.current = true;
-    if (!enabled || !approvedDeviceIds || !preferredDeviceIds || allowContinuity === undefined) {
+    if (!enabled || !approvedDeviceIds || !preferredDeviceIds || allowContinuity === undefined || requireRecentSignal === undefined) {
       requestGenerationRef.current += 1;
       setView({ kind: 'inactive' });
       return;
@@ -115,7 +121,7 @@ export function useSmartAutoMicrophoneStatus(
       requestGenerationRef.current += 1;
       for (const unlisten of unlistens) unlisten();
     };
-  }, [allowContinuity, approvedDeviceIds, enabled, preferredDeviceIds, refresh]);
+  }, [allowContinuity, approvedDeviceIds, enabled, preferredDeviceIds, requireRecentSignal, refresh]);
 
   useEffect(() => {
     if (view.kind !== 'resolved') return;

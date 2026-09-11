@@ -24,6 +24,7 @@ describe('Smart Auto microphone status boundary', () => {
       approvedDeviceIds: ['usb'],
       preferredDeviceIds: ['usb'],
       allowContinuity: false,
+      requireRecentSignal: true,
     };
 
     await expect(getSmartAutoMicrophoneStatus(smartAuto)).resolves.toEqual({
@@ -49,6 +50,14 @@ describe('Smart Auto microphone status boundary', () => {
     expect(parseSmartAutoMicrophoneStatus({
       state: 'blocked', message: 'Cooling down.', retryAfterMs: 900_001,
     })).toBeNull();
+  });
+
+  it('accepts availability without claiming verified signal or inventing an expiry', () => {
+    const available = { state: 'ready', deviceId: 'built-in', reason: 'preferred_approved', validForMs: null };
+    expect(parseSmartAutoMicrophoneStatus(available)).toEqual(available);
+    expect(parseSmartAutoMicrophoneStatus({ ...available, reason: 'current_verified' })).toBeNull();
+    expect(parseSmartAutoMicrophoneStatus({ ...available, validForMs: undefined })).toBeNull();
+    expect(parseSmartAutoMicrophoneStatus({ ...available, validForMs: 0 })).toBeNull();
   });
 
   it('normalizes untimed blocked responses and preserves valid cooldowns', () => {
@@ -91,7 +100,7 @@ describe('Smart Auto microphone status boundary', () => {
       smartAutoAllowContinuity: false,
     })).toEqual({
       enabled: true,
-      request: { approvedDeviceIds: ['usb'], preferredDeviceIds: ['usb'], allowContinuity: false },
+      request: { approvedDeviceIds: ['usb'], preferredDeviceIds: ['usb'], allowContinuity: false, requireRecentSignal: true },
     });
   });
 

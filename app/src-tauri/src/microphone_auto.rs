@@ -21,6 +21,7 @@ pub(crate) struct SmartAutoRequest {
     pub(crate) approved_device_ids: Vec<String>,
     pub(crate) preferred_device_ids: Vec<String>,
     pub(crate) allow_continuity: bool,
+    pub(crate) require_recent_signal: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +82,7 @@ pub(crate) enum SmartAutoStatus {
     Ready {
         device_id: String,
         reason: &'static str,
-        valid_for_ms: u64,
+        valid_for_ms: Option<u64>,
     },
     #[serde(rename_all = "camelCase")]
     Probing {
@@ -168,6 +169,10 @@ impl SmartAutoHealth {
         lid_state: ProductionLidState,
         now: Instant,
     ) -> Result<SmartAutoSelection, SmartAutoBlock> {
+        if !request.require_recent_signal {
+            return select(request, devices, default_input_id, lid_state)
+                .map_err(SmartAutoBlock::Unavailable);
+        }
         let approved = validate(request).map_err(SmartAutoBlock::Unavailable)?;
         let verified: Vec<_> = devices
             .iter()
@@ -223,7 +228,10 @@ impl SmartAutoHealth {
     ) -> SmartAutoStatus {
         match selection {
             Ok(selection) => SmartAutoStatus::Ready {
-                valid_for_ms: self.remaining(&selection.device_id, now).as_millis() as u64,
+                valid_for_ms: {
+                    let remaining = self.remaining(&selection.device_id, now);
+                    (!remaining.is_zero()).then_some(remaining.as_millis() as u64)
+                },
                 device_id: selection.device_id,
                 reason: selection.reason.as_str(),
             },
@@ -450,6 +458,7 @@ mod tests {
             approved_device_ids: approved.iter().map(|value| (*value).to_string()).collect(),
             preferred_device_ids: preferred.iter().map(|value| (*value).to_string()).collect(),
             allow_continuity: false,
+            require_recent_signal: true,
         }
     }
 
@@ -484,6 +493,43 @@ mod tests {
             "b"
         );
         assert!(routed(&health, &request(&["a"], &[]), now).is_err());
+    }
+
+    #[test]
+    fn recording_without_background_checks_uses_the_approved_available_microphone() {
+        let now = Instant::now();
+        let health = SmartAutoHealth::default();
+        let request = SmartAutoRequest {
+            require_recent_signal: false,
+            ..request(&["built-in"], &["built-in"])
+        };
+        let devices = [device("built-in", ProductionDeviceKind::BuiltIn)];
+        let selected = health.select(
+            &request,
+            &devices,
+            Some("built-in"),
+            ProductionLidState::Open,
+            now,
+        );
+        assert_eq!(selected.as_ref().unwrap().device_id, "built-in");
+        assert_eq!(
+            serde_json::to_value(health.status(selected, now)).unwrap(),
+            serde_json::json!({"state":"ready","deviceId":"built-in","reason":"preferred_approved","validForMs":null})
+        );
+        for lid in [ProductionLidState::Closed, ProductionLidState::Unknown] {
+            assert!(health
+                .select(&request, &devices, Some("built-in"), lid, now)
+                .is_err());
+        }
+        assert!(health
+            .select(
+                &request,
+                &[device("unapproved", ProductionDeviceKind::External)],
+                Some("unapproved"),
+                ProductionLidState::Open,
+                now
+            )
+            .is_err());
     }
 
     #[test]
@@ -640,7 +686,7 @@ mod tests {
             SmartAutoStatus::Ready {
                 device_id: "a".to_string(),
                 reason: "approved_external_fallback",
-                valid_for_ms: 1000,
+                valid_for_ms: Some(1000),
             }
         );
         assert!(health.current.is_none());
