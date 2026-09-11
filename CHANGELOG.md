@@ -6,13 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Added
+## [0.47.0] - 2026-09-11
+
+### Meetings
+
+- Meeting sessions now have private titles and attendee lists that appear in
+  lists, search, and exports (#716).
+- Meeting review can name a session from a matching Calendar event, with a
+  skippable onboarding step for Calendar access (#717).
+- Meetings can suggest starting Notetaker when an in-progress Calendar event
+  has a video-call link and a supported meeting app is frontmost (#718).
+- Meeting review can now play back retained audio by segment or in full, with
+  overlapping channels and silent gaps preserved (#724).
+
+### Modes/Settings
+
+- Modes now opens directly from Settings navigation, Customize, settings
+  search, and ⌘K (#720).
+- Settings includes a live Keyboard Shortcuts reference that opens the setting
+  behind each shortcut (#721).
+- Choose a Mode for just the next recording from ⌘K or the tray, without
+  changing the app's default binding (#722).
+
+### Voice Query
+
+- Ask a spoken follow-up from a Voice Query answer, carrying the previous
+  question and answer into a fresh bounded pass without saving a conversation (#733).
+- Query history is now searchable by question and answer text (#749).
+
+### Models
 
 - Onboarding and Settings now recommend a speech model from a read-once local
   Apple chip and physical-memory check, and flag higher-memory choices without
   hiding them or preventing selection (#732).
+- Remove an installed, unused transcription model directly from Settings (#748).
+
+### Delivery/Overlay
+
 - Clipboard-only delivery hints now include an inline Try again action in the
-  overlay and main window, with clear feedback for every retry outcome.
+  overlay and main window, with clear feedback for every retry outcome (#731).
+
+### Dictation
+
+- Whisper Tiny and Base can show provisional live dictation previews while
+  recording, ahead of the final transcript (#723).
+
+### Insights
+
+- Insights now shows total dictation time, estimated typing time saved,
+  most-used Mode, monthly meeting minutes, transform approval rate, and
+  corrections taught (#719).
+
+### Home
+
+- Home introduces a dismissible checklist and first-use hints that surface
+  new features after setup (#725).
+
+### Voice Commands
+
+- Duplicate an existing Voice Command to create a new one from its settings (#750).
 
 ## [0.46.2] - 2026-09-11
 

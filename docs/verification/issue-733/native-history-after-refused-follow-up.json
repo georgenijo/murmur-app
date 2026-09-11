@@ -1,0 +1,28 @@
+{
+  "syntheticInput": true,
+  "nativeAction": "Actual Ask follow-up button refused because query listener unavailable; original Ready answer retained",
+  "queryHistoryColumns": [
+    "id",
+    "record_version",
+    "timestamp_ms",
+    "provider",
+    "question",
+    "answer",
+    "tokens_json",
+    "duration_ms",
+    "error_code"
+  ],
+  "rows": [
+    {
+      "id": "a4ec9c1cd1c3fa367d4fb56c157e26b6",
+      "record_version": 1,
+      "timestamp_ms": 1789122136468,
+      "provider": "custom",
+      "question": "Name one memorable color for our project.",
+      "answer": "The code word is indigo. It is a blue-violet color.\n",
+      "tokens_json": null,
+      "duration_ms": 26,
+      "error_code": "auto_copy_disabled"
+    }
+  ]
+}

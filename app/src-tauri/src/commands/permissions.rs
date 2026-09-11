@@ -1,7 +1,7 @@
 use crate::{audio, injector};
 
 #[cfg(target_os = "macos")]
-fn open_system_preference_pane(pane: &str) -> Result<(), String> {
+pub(crate) fn open_system_preference_pane(pane: &str) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(format!(
             "x-apple.systempreferences:com.apple.preference.security?{}",
@@ -67,7 +67,7 @@ pub fn request_accessibility_permission() -> Result<(), String> {
 /// which is what TCC actually keys Accessibility entries on — not the static
 /// identifier from `tauri.conf.json`, which can be stale for rebuilt/dev bundles.
 #[cfg(target_os = "macos")]
-fn current_bundle_identifier() -> Option<String> {
+pub(crate) fn current_bundle_identifier() -> Option<String> {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2_foundation::NSString;

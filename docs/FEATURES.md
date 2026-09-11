@@ -66,6 +66,16 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
   audio retention is enabled.
 - Requires macOS 14.2+ and optional System Audio permission. The tap exists only
   during an explicit permission check or active meeting.
+- [Name from calendar](features/meeting-calendar.md) finds events overlapping a
+  finished meeting after an explicit click. The user selects and confirms the
+  title and attendees. Calendar access is optional; manual naming remains available.
+- Optional [meeting suggestions](features/meeting-suggestions.md) offer Start
+  Notetaker when a video-call event is in progress and a supported meeting app
+  or browser is frontmost. The setting defaults off and recording requires Accept.
+- [Retained audio playback](features/meeting-audio-playback.md) plays the full
+  Me/Them timeline or seeks from a selected segment on its canonical channel.
+  Playback pauses for recording and voice work; unretained sessions explain
+  why audio is unavailable.
 - Copy or save speaker-labeled SRT/WebVTT captions using recorded segment times.
   Overlapping speech keeps its original timing and untranscribed sections are
   marked. Review summaries and audio are excluded from captions.
@@ -179,6 +189,7 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 
 - Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
 - Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
+- Ask follow-up from a Ready popover to include its previous question and answer in a fresh bounded query, with no persistent conversation.
 - Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
 - Question, answer, and context stay out of telemetry, logs, stats, diagnostics, and file output. An off-by-default setting may retain only questions and answers in a separate bounded Rust-owned local history store. Successful final answers are copied once by default; users can disable automatic copy and use the review popover's manual Copy action instead. Voice Query never auto-pastes.
 
@@ -336,7 +347,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 201 registered commands |
+| Rust backend | `app/src-tauri/src/` — 217 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

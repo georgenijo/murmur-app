@@ -101,6 +101,32 @@ The popover never activates Murmur. It is created non-activating and stays that 
 
 Like the notch overlay, the answer popover is configured `visibleOnAllWorkspaces` so it joins every Space instead of staying pinned to the one it was created on. Its position still derives from the main window's monitor, so on a multi-display setup it follows that display rather than the active one.
 
+## Ask follow-up (#733)
+
+A Ready popover offers **Ask follow-up**. Speak the next question, then tap the
+query key once to finish. The next pass uses the current Voice Query settings
+and a fresh process, with the previous question and answer from that exact
+popover folded into the single literal prompt argument. Optional app context is
+captured anew according to that pass's settings. The previous exchange is
+labeled as untrusted reference data; fixed provider arguments remain separate.
+
+Only the immediately preceding question and answer are included, not a growing
+conversation or a saved composite prompt. The handoff is Rust-owned, ephemeral,
+and exact-pass fenced; Close, Escape, cancellation and a fresh shortcut query
+clear it. Disabling or reconfiguring the shortcut during handoff cancels the
+new reservation before capture starts. No CLI session/resume flags or persistent
+processes are added. Capture and pipeline blocking use the same normal states.
+
+The new question retains its 32 KiB UTF-8 byte limit. The entire folded prompt,
+including labels and optional context, counts against the existing final cap.
+An oversized previous answer therefore can prevent a follow-up: Murmur reports
+`query_too_large` and advises asking a shorter question or closing the popover
+and starting a new query. It never silently drops or truncates the prior turn.
+Opt-in history still stores each original spoken question and its answer as an
+independent record. It does not store the folded prompt as the question or add
+conversation fields; as before, a retained provider answer may quote its input.
+No content is added to telemetry, usage, diagnostics or event payloads.
+
 ## Provider presets and preflight
 
 Claude, Codex, Grok, Cursor, and Custom are data presets rather than alternate process-launch paths. A preset declares discovery candidates, recommended literal argv, an authentication probe, known authentication-failure signatures, an interactive sign-in command, and permitted config-directory environment names. Claude's recommended argv is `--print --verbose --output-format stream-json --include-partial-messages --safe-mode --tools "" --no-session-persistence`; `--verbose` is required by structured stream mode, while the remaining bounds prevent project instructions, plugins, hooks, MCP servers, built-in tools, and persisted sessions from becoming query overhead. Codex's starts with `exec --json`. Cursor uses non-mutating Ask mode and explicitly trusts only Murmur's private isolated workspace so its non-interactive request cannot stall at a workspace-trust prompt. Selecting a preset copies its discovered absolute executable and recommended argv into the editable configuration. If Voice Query is enabled, the switch temporarily disarms its shortcut, validates and preflights that exact immutable preset command, then restores the same shortcut only after success. A failed or superseded check leaves it off, and rapid switches cannot let an older provider re-enable itself. Switching while already disabled never auto-enables it. Editing the executable or arguments still disables the shortcut until that custom command is validated. Custom preserves the generic bridge and requires an explicit absolute executable plus fixed arguments.
@@ -159,8 +185,11 @@ statistics, performance diagnostics, and logs.
 
 The store retains the newest 200 records and prunes in the same transaction as
 each insert. History → Queries reads it through main-window-only, paged IPC and
-offers a provider filter. A failed record shows a readable explanation and a
-recovery step derived from its stable error code. Provider stderr remains
+offers a provider filter plus bounded, case-insensitive substring search over
+saved questions and answers. Search, provider, pagination, and the matching
+total compose at that same requester-gated boundary. Search text is never
+logged, exported, or included in telemetry. A failed record shows a readable
+explanation and a recovery step derived from its stable error code. Provider stderr remains
 ephemeral. A bounded partial answer remains available behind a disclosure. The
 **Delete all query history** action requires a second click within four seconds.
 Turning retention off stops future inserts but does not silently delete existing

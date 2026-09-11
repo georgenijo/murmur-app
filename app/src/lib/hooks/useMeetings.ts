@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
+import { applyMeetingCalendarEvent } from '../calendar';
 import { smartAutoMicrophoneRequest, type Settings } from '../settings';
 import {
   IDLE_MEETING_STATUS,
@@ -21,6 +22,7 @@ import {
   restoreMeetingReviewFromGenerated,
   saveMeetingExport,
   saveMeetingReview,
+  saveMeetingMetadata,
   startMeeting,
   startMeetingSummary,
   stopMeeting,
@@ -31,6 +33,7 @@ import {
   type MeetingSegment,
   type MeetingReviewExportFormat,
   type SaveMeetingReviewRequest,
+  type SaveMeetingMetadataRequest,
   type SystemAudioAccess,
   type SystemAudioPermissionState,
 } from '../meetings';
@@ -156,7 +159,7 @@ export function useMeetings(settings: Settings) {
     return () => window.clearInterval(timer);
   }, [status.phase]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (suggestionToken?: string) => {
     setError(null);
     setLiveSegments([]);
     try {
@@ -168,6 +171,7 @@ export function useMeetings(settings: Settings) {
         maxSessions: settings.meetingMaxSessions,
         echoCancellation: settings.meetingEchoCancellationEnabled,
         diarization: settings.meetingDiarization,
+        suggestionToken,
       });
       setPage((current) => ({
         ...current,
@@ -176,6 +180,11 @@ export function useMeetings(settings: Settings) {
       }));
       await select(session.id);
     } catch (cause) {
+      if (suggestionToken) {
+        const message = 'Notetaker could not start from that Calendar suggestion. Start it manually to continue.';
+        setError(message);
+        throw new Error(message);
+      }
       setError(String(cause));
     }
   }, [
@@ -281,6 +290,40 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
+  const saveMetadata = useCallback(async (request: SaveMeetingMetadataRequest) => {
+    const ticket = selectionTicketRef.current;
+    setError(null);
+    try {
+      const next = await saveMeetingMetadata(request);
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === request.sessionId) {
+        setDetail(next);
+      }
+      await refresh();
+      return true;
+    } catch {
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === request.sessionId) {
+        setError('Meeting details could not be saved. Use a title and attendee names of at most 200 characters, with up to 100 attendees.');
+      }
+      return false;
+    }
+  }, [refresh]);
+
+  const applyCalendarEvent = useCallback(async (sessionId: string, selectionToken: string) => {
+    const ticket = selectionTicketRef.current;
+    setError(null);
+    try {
+      const next = await applyMeetingCalendarEvent(sessionId, selectionToken);
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === sessionId) setDetail(next);
+      await refresh();
+      return true;
+    } catch {
+      if (ticket === selectionTicketRef.current && selectedIdRef.current === sessionId) {
+        setError('Calendar details could not be applied. Look up the event again, or name this meeting manually.');
+      }
+      return false;
+    }
+  }, [refresh]);
+
   const restoreReview = useCallback(async (
     sessionId: string,
     generatedRevision: number,
@@ -369,6 +412,8 @@ export function useMeetings(settings: Settings) {
     copy,
     exportReview,
     saveReview,
+    saveMetadata,
+    applyCalendarEvent,
     restoreReview,
     renameRemoteSpeaker,
     remove,

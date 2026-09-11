@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { echoCancellationNotice, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
+import { useMeetingAudio } from '../../lib/hooks/useMeetingAudio';
 
 interface MeetingsPanelProps {
   meetings: ReturnType<typeof useMeetings>;
+  playbackBusy: boolean;
 }
 
 function phaseLabel(phase: ReturnType<typeof useMeetings>['status']['phase']): string {
@@ -16,7 +18,7 @@ function phaseLabel(phase: ReturnType<typeof useMeetings>['status']['phase']): s
   return 'Ready for a meeting';
 }
 
-export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
+export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const [query, setQuery] = useState('');
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -25,6 +27,13 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = ['starting', 'recording', 'stopping'].includes(meetings.status.phase);
   const processing = meetings.status.phase === 'processing';
+  const captureBusy = active || processing || playbackBusy;
+  const meetingAudio = useMeetingAudio({
+    sessionId: meetings.detail?.session.retainAudio === true
+      ? meetings.detail.session.id
+      : null,
+    captureBusy,
+  });
   const visibleSegments = meetings.detail?.segments ?? (
     meetings.status.sessionId ? meetings.liveSegments.filter((segment) => segment.sessionId === meetings.status.sessionId) : []
   );
@@ -61,6 +70,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
       return;
     }
     setConfirmDelete(null);
+    meetingAudio.invalidate();
     if (await meetings.remove(id)) {
       showNotice('Meeting deleted from this Mac.');
     }
@@ -74,6 +84,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
       return;
     }
     setConfirmClear(false);
+    meetingAudio.invalidate();
     if (await meetings.clear()) {
       showNotice('All meeting transcripts deleted from this Mac.');
     }
@@ -192,10 +203,11 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-xs font-semibold text-on-surface">
-                    {new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                    {session.title || new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                   </span>
                   <span className="text-[10px] capitalize text-on-surface-variant">{session.status}</span>
                 </div>
+                {session.title && <p className="mt-1 text-xs text-on-surface-variant">{new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</p>}
                 <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-on-surface-variant">
                   {session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}
                 </p>
@@ -221,7 +233,7 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               <div className="flex shrink-0 items-center gap-2 border-b border-[var(--ui-hairline)] px-4 py-2.5">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-on-surface">
-                    {new Date(meetings.detail.session.startedAtMs).toLocaleString()}
+                    {meetings.detail.session.title || new Date(meetings.detail.session.startedAtMs).toLocaleString()}
                   </p>
                   <p className="mt-0.5 text-[10px] text-on-surface-variant">
                     {formatMeetingTimestamp(meetings.detail.session.durationMs)} · {meetings.detail.session.segmentCount} segments · {meetings.detail.session.retainAudio ? 'audio retained' : 'transcript only'}
@@ -239,7 +251,8 @@ export function MeetingsPanel({ meetings }: MeetingsPanelProps) {
               <MeetingReviewWorkspace
                 meetings={meetings}
                 segments={visibleSegments}
-                captureBusy={active || processing}
+                captureBusy={captureBusy}
+                meetingAudio={meetingAudio}
                 onNotice={showNotice}
               />
             </>

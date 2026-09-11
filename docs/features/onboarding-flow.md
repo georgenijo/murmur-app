@@ -6,7 +6,7 @@ permissions were a dismissible banner.
 
 ## Flow
 
-Seven steps with centered progress at the top and a shared bottom navigation
+Eight steps with centered progress at the top and a shared bottom navigation
 row after Welcome: Back stays left, while an optional Skip and the primary
 action stay right. Back remains visible but disabled while a model download is
 active, because leaving the step cannot cancel the underlying download safely:
@@ -22,23 +22,31 @@ active, because leaving the step cannot cancel the underlying download safely:
 4. **System Audio (optional)** — creates a short-lived native tap only after an
    explicit click, reports granted/denied/unsupported, and links a denial to
    Privacy & Security → Screen & System Audio Recording. Skippable.
-5. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
+5. **Calendar (optional)** — reads Calendar permission status only while this
+   step is visible. The native permission prompt requires an explicit click.
+   Denied and restricted states explain that manual meeting names still work;
+   recovery links to Privacy & Security → Calendars, with a reset action for a
+   denied TCC entry. Skippable.
+6. **Model** — embeds `ModelDownloadPanel` (shared with the standalone
    `ModelDownloader` gate); reads every offered model's install state from the
    shared runtime catalog and shows "already installed" on re-runs. Core ML
    setup reports bounded phases from a killable worker; terminal failure
    restores Back, Retry, and one-click Whisper Base / CPU Parakeet fallbacks.
-6. **Hotkey** — chooses Hold / Double-tap / Both and a trigger key. The grouped
+7. **Hotkey** — chooses Hold / Double-tap / Both and a trigger key. The grouped
    picker contains Left Shift, Left Option, Right Control, and F1 through F20.
    Selecting a function key explains the macOS Fn and standard-function-key
    setting and notes that Murmur does not suppress the key's normal action.
-7. **Done** — live summary of the checks plus a quick-start card derived from
+8. **Done** — live summary of the checks plus a quick-start card derived from
    the selected recording mode and trigger key.
 
 ## Permission-state handling
 
-Both permission steps poll every second (plus on window focus) for the whole
-wizard lifetime, so a grant made during the System Settings roundtrip flips the
-step live. The wishy-washy TCC states are handled explicitly:
+Microphone and Accessibility poll every second (plus on window focus) for the
+whole wizard lifetime, so a grant made during the System Settings roundtrip
+flips the step live. System Audio and Calendar status reads run only when their
+respective optional steps are visible. Calendar refreshes again on window focus
+while its step remains visible. Neither access request runs without an explicit
+click. The wishy-washy TCC states are handled explicitly:
 
 | State | UI |
 |-------|-----|
@@ -47,6 +55,9 @@ step live. The wishy-washy TCC states are handled explicitly:
 | accessibility not granted | Grant button (dialog + pane); after an attempt, a reset path for the listed-but-stale entry (common after reinstall/rebuild — see DEVELOPMENT.md) |
 | system audio `unknown` / `denied` | Explicit check button; denial links to Screen & System Audio Recording. Passive status reads never create a tap. |
 | system audio `unsupported` | Meeting capture requires macOS 14.2+, while the rest of Murmur remains available. |
+| calendar `notDetermined` | "Allow Calendar Access" opens the native prompt. No Calendar event query runs during onboarding. |
+| calendar `denied` | Manual naming explanation, Calendars settings link, and a reset action so macOS can ask again. |
+| calendar `restricted` / `unsupported` | Manual naming remains available; restricted access links to Calendars settings. |
 
 ## Gating and grandfathering
 

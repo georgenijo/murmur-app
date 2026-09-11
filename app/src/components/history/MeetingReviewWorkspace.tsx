@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
+import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
   formatMeetingTimestamp,
   MEETING_EXPORT_FORMATS,
@@ -12,11 +13,14 @@ import {
   type RemoteSpeakerLabel,
   type ReviewEditBase,
 } from '../../lib/meetings';
+import type { MeetingAudioController } from '../../lib/hooks/useMeetingAudio';
+import { MeetingAudioPlayer } from './MeetingAudioPlayer';
 
 interface MeetingReviewWorkspaceProps {
   meetings: ReturnType<typeof useMeetings>;
   segments: MeetingSegment[];
   captureBusy: boolean;
+  meetingAudio?: MeetingAudioController;
   onNotice: (message: string) => void;
 }
 
@@ -54,10 +58,12 @@ function SourceLinks({ label, ids, onActivate }: {
   );
 }
 
-function TranscriptRow({ segment, labels, remoteSpeakers }: {
+function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabled }: {
   segment: MeetingSegment;
   labels: { me: string; them: string };
   remoteSpeakers: RemoteSpeakerLabel[];
+  onPlay?: () => void;
+  playbackDisabled?: boolean;
 }) {
   const canonical = segment.speaker === 'me' ? 'Me' : 'Them';
   const display = meetingSegmentDisplayLabel(segment, labels, remoteSpeakers);
@@ -66,9 +72,21 @@ function TranscriptRow({ segment, labels, remoteSpeakers }: {
       id={`meeting-segment-${segment.id}`}
       tabIndex={-1}
       aria-label={`${canonical} channel, ${display}, at ${formatMeetingTimestamp(segment.startMs)}`}
-      className="grid scroll-m-20 grid-cols-[3.25rem_7rem_minmax(0,1fr)] gap-2 border-b border-[var(--ui-hairline)] py-2 text-sm last:border-0 focus-visible:rounded-[var(--ui-radius-control)] focus-visible:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+      className="grid scroll-m-20 grid-cols-[3.75rem_7rem_minmax(0,1fr)] gap-2 border-b border-[var(--ui-hairline)] py-2 text-sm last:border-0 focus-visible:rounded-[var(--ui-radius-control)] focus-visible:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
     >
-      <span className="font-mono text-[11px] tabular-nums text-on-surface-variant">{formatMeetingTimestamp(segment.startMs)}</span>
+      {onPlay ? (
+        <button
+          type="button"
+          disabled={playbackDisabled}
+          aria-label={`Play segment at ${formatMeetingTimestamp(segment.startMs)}, ${canonical} channel`}
+          onClick={onPlay}
+          className="w-fit rounded-[var(--ui-radius-control)] font-mono text-[11px] tabular-nums text-primary hover:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary disabled:text-on-surface-variant disabled:opacity-50"
+        >
+          ▶ {formatMeetingTimestamp(segment.startMs)}
+        </button>
+      ) : (
+        <span className="font-mono text-[11px] tabular-nums text-on-surface-variant">{formatMeetingTimestamp(segment.startMs)}</span>
+      )}
       <span className={`truncate text-xs font-bold ${segment.speaker === 'me' ? 'text-primary' : 'text-success'}`} title={`${display} (${canonical})`}>
         {display} <span className="font-normal text-on-surface-variant">({canonical})</span>
       </span>
@@ -79,7 +97,7 @@ function TranscriptRow({ segment, labels, remoteSpeakers }: {
   );
 }
 
-export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNotice }: MeetingReviewWorkspaceProps) {
+export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice }: MeetingReviewWorkspaceProps) {
   const detail = meetings.detail!;
   const activeWorkspace = useRef<WorkspaceActivation | null>(null);
   const [editing, setEditing] = useState(false);
@@ -269,6 +287,23 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
         </div>
       )}
 
+      <MeetingMetadataEditor
+        key={detail.session.id}
+        session={detail.session}
+        disabled={captureBusy}
+        onSave={meetings.saveMetadata}
+        onApplyCalendar={meetings.applyCalendarEvent}
+        onNotice={onNotice}
+      />
+
+      {detail.session.retainAudio && meetingAudio ? (
+        <MeetingAudioPlayer audio={meetingAudio} captureBusy={captureBusy} />
+      ) : !detail.session.retainAudio ? (
+        <p className="dialog-card mb-3 p-3 text-xs leading-relaxed text-on-surface-variant">
+          Audio was not retained for this meeting. Enable Keep Meeting Audio in Meetings settings to play future sessions.
+        </p>
+      ) : null}
+
       <div className="dialog-card mb-3 flex flex-wrap items-end gap-2 p-3">
         <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Me channel
           <input aria-label="Me speaker label" value={labels.me} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, me: event.target.value }))} className="mt-1 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs" />
@@ -352,7 +387,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
         </article>
       ) : <div className="mb-4 rounded-[var(--ui-radius-card)] border border-dashed border-[var(--ui-hairline-strong)] p-5 text-center"><p className="text-sm font-semibold">No review draft yet</p><p className="mt-1 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p></div>}
 
-      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} />)}</section>
+      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}</section>
     </div>
   );
 }

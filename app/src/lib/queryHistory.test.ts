@@ -5,11 +5,14 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import {
   QUERY_HISTORY_ERROR_CODES,
+  QUERY_HISTORY_MAX_SEARCH_CHARS,
+  boundQueryHistorySearchInput,
   clearQueryHistory,
   isQueryHistoryChanged,
   isQueryHistoryEntryV1,
   isQueryHistoryPageV1,
   listQueryHistory,
+  normalizeQueryHistorySearch,
 } from './queryHistory';
 
 const entry = {
@@ -121,13 +124,19 @@ describe('Voice Query history IPC boundary', () => {
       hasMore: false,
     }).mockResolvedValueOnce(undefined);
 
-    await listQueryHistory({ offset: -5, limit: 999, provider: 'codex' });
+    await listQueryHistory({
+      offset: -5,
+      limit: 999,
+      provider: 'codex',
+      search: '  PRIVATE answer  ',
+    });
     await clearQueryHistory();
 
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'list_query_history', {
       offset: 0,
       limit: 50,
       provider: 'codex',
+      search: 'PRIVATE answer',
     });
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, 'clear_query_history');
   });
@@ -139,7 +148,31 @@ describe('Voice Query history IPC boundary', () => {
       offset: 0,
       limit: 50,
       provider: null,
+      search: null,
     });
+  });
+
+  it('bounds search input and treats blank search as no filter', async () => {
+    mocks.invoke.mockResolvedValue(emptyPage());
+    const oversized = `${'🙂'.repeat(QUERY_HISTORY_MAX_SEARCH_CHARS + 3)} trailing`;
+    await listQueryHistory({ search: oversized });
+    expect(mocks.invoke).toHaveBeenCalledWith('list_query_history', {
+      offset: 0,
+      limit: 50,
+      provider: null,
+      search: '🙂'.repeat(QUERY_HISTORY_MAX_SEARCH_CHARS),
+    });
+
+    mocks.invoke.mockClear();
+    await listQueryHistory({ search: '   ' });
+    expect(mocks.invoke).toHaveBeenCalledWith('list_query_history', {
+      offset: 0,
+      limit: 50,
+      provider: null,
+      search: null,
+    });
+    expect(boundQueryHistorySearchInput('term ')).toBe('term ');
+    expect(normalizeQueryHistorySearch(null)).toBe('');
   });
 
   it('rejects a page whose returned offset differs from the bounded request', async () => {

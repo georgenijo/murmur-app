@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-pub const MEETING_STORE_SCHEMA_VERSION: u32 = 4;
+pub const MEETING_STORE_SCHEMA_VERSION: u32 = 5;
 pub const MAX_MEETING_PAGE_SIZE: u32 = 100;
+pub const MAX_MEETING_TITLE_CHARS: usize = 200;
+pub const MAX_MEETING_ATTENDEE_CHARS: usize = 200;
+pub const MAX_MEETING_ATTENDEES: usize = 100;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +57,33 @@ pub enum MeetingSessionStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MeetingTitleSource {
+    Manual,
+    Calendar,
+    Generated,
+}
+
+impl MeetingTitleSource {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Calendar => "calendar",
+            Self::Generated => "generated",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "manual" => Ok(Self::Manual),
+            "calendar" => Ok(Self::Calendar),
+            "generated" => Ok(Self::Generated),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
 impl MeetingSessionStatus {
     pub(crate) fn as_db(self) -> &'static str {
         match self {
@@ -98,6 +128,9 @@ impl MeetingSegmentStatus {
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSession {
     pub id: String,
+    pub title: Option<String>,
+    pub title_source: Option<MeetingTitleSource>,
+    pub attendees: Vec<String>,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub status: MeetingSessionStatus,
@@ -109,6 +142,14 @@ pub struct MeetingSession {
     pub segment_count: u64,
     pub preview: String,
     pub error_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveMeetingMetadataRequest {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub attendees: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

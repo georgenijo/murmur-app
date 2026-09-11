@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { DEFAULT_SETTINGS, type QueryKey, type SmartAutoMicrophoneRequest } from '../settings';
 import { validateQueryCommand, type QueryCommandConfig } from '../queryProviders';
 import { isQueryUsage } from '../queryUsage';
@@ -10,7 +10,7 @@ import { flog } from '../log';
 import { queryConfigurationMessage } from '../voiceQuerySettings';
 interface QueryTogglePayload {
   queryPassId: number;
-  action: 'start' | 'stop';
+  action: 'start' | 'stop' | 'follow_up';
 }
 
 interface TrackedQueryPass {
@@ -43,7 +43,7 @@ function isTogglePayload(value: unknown): value is QueryTogglePayload {
   if (!value || typeof value !== 'object') return false;
   const payload = value as Record<string, unknown>;
   return isValidPassId(payload.queryPassId)
-    && (payload.action === 'start' || payload.action === 'stop');
+    && (payload.action === 'start' || payload.action === 'stop' || payload.action === 'follow_up');
 }
 
 export function useQueryFlow({
@@ -59,6 +59,8 @@ export function useQueryFlow({
   onSetupStatusChange,
 }: UseQueryFlowProps) {
   const activePassRef = useRef<number | null>(null);
+  const pendingFollowUpsRef = useRef(0);
+  const cancelledHandoffsRef = useRef(new Set<number>());
   const trackedPassesRef = useRef(new Map<number, TrackedQueryPass>());
   const commandRef = useRef(command);
   const microphoneRef = useRef(microphone);
@@ -136,6 +138,7 @@ export function useQueryFlow({
         unlistenHidden = await listen<unknown>('query-review-hidden', (event) => {
           if (!ownsListeners() || !isHiddenPayload(event.payload)) return;
           const { queryPassId } = event.payload;
+          if (pendingFollowUpsRef.current > 0) cancelledHandoffsRef.current.add(queryPassId);
           if (!trackedPassesRef.current.has(queryPassId)) return;
           completeTrackedPass(queryPassId, {
             succeeded: false,
@@ -228,35 +231,71 @@ export function useQueryFlow({
         unlistenToggle = await listen<unknown>('query-toggle', (event) => {
           if (!ownsSetup() || !isTogglePayload(event.payload)) return;
           const { queryPassId, action } = event.payload;
-          if (action === 'start') {
+          if (action === 'start' || action === 'follow_up') {
+            // Snapshot Settings at this accepted action, before any IPC await.
             const immutableCommand = commandRef.current;
-            for (const [trackedPassId, tracked] of trackedPassesRef.current) {
-              if (tracked.completed && trackedPassId !== queryPassId) {
-                trackedPassesRef.current.delete(trackedPassId);
-              }
-            }
-            if (trackedPassesRef.current.has(queryPassId)) return;
-            activePassRef.current = queryPassId;
-            trackedPassesRef.current.set(queryPassId, {
-              provider: immutableCommand.provider,
-              completed: false,
-            });
             const selectedMicrophone = microphoneRef.current;
-            void invoke('start_query_capture', {
-              queryPassId,
-              deviceName: smartAutoRef.current ? null : selectedMicrophone && selectedMicrophone !== DEFAULT_SETTINGS.microphone
-                ? selectedMicrophone
-                : null,
-              ...(smartAutoRef.current ? { smartAuto: smartAutoRef.current } : {}),
-              automaticallyCopyAnswer: automaticallyCopyAnswersRef.current,
-              command: immutableCommand,
-            }).catch(() => {
-              flog.warn('query', 'start command failed', { query_pass_id: queryPassId });
-              void invoke('cancel_query', { queryPassId }).catch(() => {});
-            });
+            const selectedSmartAuto = smartAutoRef.current;
+            const automaticallyCopyAnswer = automaticallyCopyAnswersRef.current;
+            const start = async () => {
+              let nextPassId = queryPassId;
+              if (action === 'follow_up') {
+                pendingFollowUpsRef.current += 1;
+                try {
+                  nextPassId = await invoke<number>('allocate_query_follow_up', { queryPassId });
+                } catch {
+                  if (pendingFollowUpsRef.current === 1) cancelledHandoffsRef.current.clear();
+                  if (ownsSetup()) {
+                    void emitTo('query-review', 'query-follow-up-unavailable', { queryPassId }).catch(() => {});
+                  }
+                  return;
+                } finally {
+                  pendingFollowUpsRef.current -= 1;
+                }
+                const cancelledDuringHandoff = cancelledHandoffsRef.current.delete(nextPassId);
+                if (pendingFollowUpsRef.current === 0) cancelledHandoffsRef.current.clear();
+                // Disable, unmount or shortcut reconfiguration may win while
+                // allocation is in flight. Cancel that exact reservation even
+                // if cleanup only knew the preceding pass ID.
+                if (!ownsSetup() || cancelledDuringHandoff) {
+                  void invoke('cancel_query', { queryPassId: nextPassId }).catch(() => {});
+                  return;
+                }
+              }
+              for (const [trackedPassId, tracked] of trackedPassesRef.current) {
+                if (tracked.completed && trackedPassId !== nextPassId) {
+                  trackedPassesRef.current.delete(trackedPassId);
+                }
+              }
+              if (trackedPassesRef.current.has(nextPassId)) return;
+              activePassRef.current = nextPassId;
+              trackedPassesRef.current.set(nextPassId, {
+                provider: immutableCommand.provider,
+                completed: false,
+              });
+              void invoke('start_query_capture', {
+                queryPassId: nextPassId,
+                deviceName: selectedSmartAuto ? null : selectedMicrophone && selectedMicrophone !== DEFAULT_SETTINGS.microphone
+                  ? selectedMicrophone
+                  : null,
+                ...(selectedSmartAuto ? { smartAuto: selectedSmartAuto } : {}),
+                automaticallyCopyAnswer,
+                command: immutableCommand,
+              }).catch(() => {
+                flog.warn('query', 'start command failed', { query_pass_id: nextPassId });
+                void invoke('cancel_query', { queryPassId: nextPassId }).catch(() => {});
+              });
+            };
+            void start();
             return;
           }
-          if (activePassRef.current !== queryPassId) return;
+          if (activePassRef.current !== queryPassId) {
+            // The allocator reserves Connecting before its IPC response. A
+            // single tap in that interval must cancel, never get lost and
+            // allow capture to start later.
+            if (pendingFollowUpsRef.current > 0) cancelledHandoffsRef.current.add(queryPassId);
+            return;
+          }
           void invoke('finish_query_capture', { queryPassId }).catch(() => {
             flog.warn('query', 'finish command failed', { query_pass_id: queryPassId });
             void invoke('cancel_query', { queryPassId }).catch(() => {});

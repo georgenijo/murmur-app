@@ -31,6 +31,7 @@ import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useLocalStats } from './lib/hooks/useLocalStats';
 import { useMeetings } from './lib/hooks/useMeetings';
+import { useMeetingSuggestionAcceptance } from './lib/hooks/useMeetingSuggestionAcceptance';
 import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
@@ -132,6 +133,9 @@ function App() {
   const pasteLastShortcutGenerationRef = useRef(0);
   const lastWorkingPasteLastShortcutRef = useRef<typeof settings.pasteLastShortcut>(null);
   const meetings = useMeetings(settings);
+  useMeetingSuggestionAcceptance(meetings.start, (message) => {
+    presentDeliveryRecoveryNotice({ message, retryable: false });
+  });
   useSoundCues(settings, meetings.status.phase);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
     if (downloadedModel !== settings.model) {
@@ -919,7 +923,7 @@ function App() {
                     description="Local meeting transcripts and summaries."
                     back={{ label: 'Back to Home', onActivate: backToHome }}
                   />
-                  <MeetingsPanel meetings={meetings} />
+                  <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
                 </section>
               ) : mainDestination === 'queries' ? (
                 <section className="main-secondary-view" aria-labelledby="queries-view-title">
