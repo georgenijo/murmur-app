@@ -221,7 +221,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 201 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 202 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -249,6 +249,7 @@ stay local and never reach logs or telemetry. See
 | `dictation_diagnostics.rs` | Explicit one-shot private dictation capture store with bounded text, retention, deletion, and upload |
 | `dictation_diagnostics_contract.rs` | Cross-path tests for diagnostic arming, exact recording ownership, content bounds, revocation, and corrupt-data removal |
 | `dictation_telemetry.rs` | Stable content-free lifecycle telemetry and error classification for accepted live dictations |
+| `commands/mode_exchange.rs` | Main-window-only bounded JSON file reader for custom Mode imports |
 | `commands/export.rs` | `save_text_export`: validated, atomic sink for user-chosen text exports |
 | `commands/corpus.rs` | Guided capture-only personal corpus recording, WAV integrity checks, quality reports, and benchmark fixture loading |
 | `commands/dictation_diagnostics.rs` | Window-gated arm, status, list, read, delete, and upload commands for private dictation captures |
@@ -466,7 +467,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-201 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+202 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
