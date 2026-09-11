@@ -125,6 +125,7 @@ const longUpdateNotes = `## New Features
 
 const meetingFixture = {
   session: {
+    title: null, titleSource: null, attendees: [],
     id: 'meeting-fixture', startedAtMs: Date.UTC(2026, 7, 31, 14, 30), endedAtMs: Date.UTC(2026, 7, 31, 14, 48),
     status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true,
     retainAudio: false, durationMs: 1_080_000, segmentCount: 2,

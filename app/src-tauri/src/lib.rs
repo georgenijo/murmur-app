@@ -414,6 +414,7 @@ pub fn run() {
             commands::meeting::get_meeting_store_status,
             commands::meeting::list_meetings,
             commands::meeting::get_meeting,
+            commands::meeting::save_meeting_metadata,
             commands::meeting::save_meeting_review,
             commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,

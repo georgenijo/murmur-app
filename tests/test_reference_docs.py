@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from scripts.validate_reference_docs import (
+    command_count_mentions,
     documented_commands,
     registered_commands,
     validate_reference_docs,
@@ -31,6 +32,16 @@ class ReferenceDocsTests(unittest.TestCase):
     def test_repository_reference_docs_match_registered_commands(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
         self.assertEqual(validate_reference_docs(), len(commands))
+        for relative in (
+            "CLAUDE.md",
+            "docs/reference/commands.md",
+            "docs/ARCHITECTURE.md",
+            "docs/FEATURES.md",
+        ):
+            with self.subTest(relative=relative):
+                mentions = command_count_mentions((ROOT / relative).read_text())
+                self.assertTrue(mentions)
+                self.assertEqual(set(mentions), {len(commands)})
 
     def test_model_hardware_guidance_command_is_registered_and_documented(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
@@ -57,7 +68,12 @@ class ReferenceDocsTests(unittest.TestCase):
                 validate_reference_docs(root)
 
     def test_stale_human_facing_count_fails(self) -> None:
-        for relative in ("CLAUDE.md", "docs/ARCHITECTURE.md", "docs/FEATURES.md"):
+        for relative in (
+            "CLAUDE.md",
+            "docs/reference/commands.md",
+            "docs/ARCHITECTURE.md",
+            "docs/FEATURES.md",
+        ):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 copy_reference_fixture(root)
