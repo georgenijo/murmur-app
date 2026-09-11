@@ -40,6 +40,10 @@ const DICTATION_SLO_CONTRACT: u64 = 1;
 const PARTIAL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(700);
 const PARTIAL_MIN_SAMPLES: usize = 16_000 * 800 / 1_000;
 const PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 20;
+const WHISPER_PARTIAL_WINDOW_SAMPLES: usize = 16_000 * 6;
+const WHISPER_PARTIAL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1500);
+const WHISPER_PARTIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+type WhisperPreview = Arc<Mutex<Option<transcriber::whisper::WhisperPreviewBackend>>>;
 
 struct SuccessfulPrivateCapture<'a> {
     raw_text: &'a str,
@@ -99,7 +103,8 @@ fn emit_dictation_terminal_with_capture(
 }
 
 fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool {
-    app_state.recording_id.load(Ordering::SeqCst) == recording_id
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
         && app_state.dictation.lock_or_recover().status == DictationStatus::Recording
         && !app_state.is_cancelled(recording_id)
 }
@@ -141,32 +146,44 @@ fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_
 }
 
 fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
-    let supported = app
-        .state::<State>()
-        .app_state
-        .active_context(recording_id)
-        .is_some_and(|context| {
-            crate::transcriber::is_coreml_model(&context.transcription.model_name)
-        });
-    if !supported {
+    let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
+        return;
+    };
+    let model = &context.transcription.model_name;
+    let whisper = transcriber::whisper::supports_live_preview(model);
+    if !whisper && !transcriber::is_coreml_model(model) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
         return;
     }
-
+    let interval = if whisper {
+        WHISPER_PARTIAL_INTERVAL
+    } else {
+        PARTIAL_INTERVAL
+    };
+    let preview: WhisperPreview = Arc::new(Mutex::new(None));
     drop(tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(PARTIAL_INTERVAL).await;
-            if !decode_one_dictation_partial(&app, recording_id).await {
+            tokio::time::sleep(interval).await;
+            if !dictation_partial_is_current(&app.state::<State>().app_state, recording_id) {
                 break;
             }
+            // Do not await a decode: ticks skip the global single-flight lease,
+            // and stop/hide must not wait for inference or model initialization.
+            let tick_app = app.clone();
+            let tick_preview = preview.clone();
+            drop(tauri::async_runtime::spawn(async move {
+                decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
+            }));
         }
-        // The preview is scoped to exactly this recording: whatever ended the
-        // loop (stop, cancel, a newer generation), the card goes away with it.
         crate::commands::dictation_preview::hide_for_recording(&app, recording_id);
     }));
 }
 
-async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64) -> bool {
+async fn decode_one_dictation_partial(
+    app: &tauri::AppHandle,
+    recording_id: u64,
+    preview: WhisperPreview,
+) -> bool {
     let transcription = {
         let state = app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
@@ -183,8 +200,14 @@ async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64)
         };
         context.transcription.clone()
     };
-    let samples = audio_lifecycle::peek_dictation_samples(recording_id, PARTIAL_WINDOW_SAMPLES)
-        .unwrap_or_default();
+    let whisper = transcriber::whisper::supports_live_preview(&transcription.model_name);
+    let window_limit = if whisper {
+        WHISPER_PARTIAL_WINDOW_SAMPLES
+    } else {
+        PARTIAL_WINDOW_SAMPLES
+    };
+    let samples =
+        audio_lifecycle::peek_dictation_samples(recording_id, window_limit).unwrap_or_default();
     let sample_count = samples.len();
     if sample_count < PARTIAL_MIN_SAMPLES {
         finish_dictation_partial(&app.state::<State>().app_state, recording_id);
@@ -198,23 +221,47 @@ async fn decode_one_dictation_partial(app: &tauri::AppHandle, recording_id: u64)
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return None;
         }
-        let (raw, _) = state
-            .app_state
-            .model_runtime
-            .with_ready_backend(
-                Some(&worker_app),
-                &transcription.model_name,
-                PreparationReason::Pipeline,
-                |backend| {
-                    backend.transcribe(
-                        &window,
-                        &transcription.language,
-                        transcription.prompt.as_deref(),
-                        transcription.smart_punctuation,
-                    )
-                },
-            )
-            .ok()?;
+        let raw = if whisper {
+            let mut preview = preview.lock_or_recover();
+            if preview.is_none() {
+                *preview =
+                    transcriber::whisper::WhisperPreviewBackend::load(&transcription.model_name)
+                        .ok();
+            }
+            let deadline = std::time::Instant::now() + WHISPER_PARTIAL_DEADLINE;
+            preview
+                .as_mut()?
+                .transcribe(
+                    &window,
+                    &transcription.language,
+                    transcription.prompt.as_deref(),
+                    transcription.smart_punctuation,
+                    || {
+                        !dictation_partial_is_current(&state.app_state, recording_id)
+                            || std::time::Instant::now() >= deadline
+                    },
+                )
+                .ok()?
+        } else {
+            let (raw, _) = state
+                .app_state
+                .model_runtime
+                .with_ready_backend(
+                    Some(&worker_app),
+                    &transcription.model_name,
+                    PreparationReason::Pipeline,
+                    |backend| {
+                        backend.transcribe(
+                            &window,
+                            &transcription.language,
+                            transcription.prompt.as_deref(),
+                            transcription.smart_punctuation,
+                        )
+                    },
+                )
+                .ok()?;
+            raw
+        };
         let cleaned = raw.trim().to_string();
         (!cleaned.is_empty()).then_some(cleaned)
     })
@@ -5663,6 +5710,53 @@ mod tests {
             .store(recording_id + 1, Ordering::SeqCst);
         finish_dictation_partial(&app_state, recording_id);
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
+    }
+
+    #[test]
+    fn stopped_partial_cannot_publish_or_release_a_new_recording_lease() {
+        let app_state = AppState::default();
+        app_state.recording_id.store(41, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(try_begin_dictation_partial(&app_state, 41));
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        assert!(!dictation_partial_is_current(&app_state, 41));
+        app_state.recording_id.store(42, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(!dictation_partial_is_current(&app_state, 41));
+        // A stale decode still owns the global slot until it actually finishes.
+        assert!(!try_begin_dictation_partial(&app_state, 42));
+        finish_dictation_partial(&app_state, 41);
+        assert!(try_begin_dictation_partial(&app_state, 42));
+        finish_dictation_partial(&app_state, 41);
+        assert!(!try_begin_dictation_partial(&app_state, 42));
+        app_state.cancel_recording(42);
+        assert!(!dictation_partial_is_current(&app_state, 42));
+        finish_dictation_partial(&app_state, 42);
+    }
+
+    #[test]
+    fn concurrent_preview_ticks_admit_exactly_one_decode() {
+        let app_state = Arc::new(AppState::default());
+        app_state.recording_id.store(7, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let state = app_state.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    try_begin_dictation_partial(&state, 7)
+                })
+            })
+            .collect();
+        let admitted = workers
+            .into_iter()
+            .map(|worker| usize::from(worker.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(admitted, 1);
+        finish_dictation_partial(&app_state, 7);
+        assert!(try_begin_dictation_partial(&app_state, 7));
     }
 
     fn failed_capture_completion() -> DictationPerformanceCompletion {

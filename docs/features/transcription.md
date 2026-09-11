@@ -471,15 +471,23 @@ is then delivered exactly once.
 
 ### Live preview
 
-Core ML dictation also offers a display-only live preview while capture remains
-in `Recording`. A 700ms ticker snapshots at most the trailing 20 seconds of
-16kHz audio, waits for at least 800ms of speech, and permits only one decode in
-flight. Both the backend and the preview window re-check the monotonic recording
+Core ML and Whisper Tiny/Base offer a display-only live preview while capture
+remains in `Recording`. The shared ticker waits for at least 800ms of audio
+and permits only one decode in flight across recording generations, skipping
+busy ticks. Core ML snapshots at most the trailing 20 seconds every 700ms.
+Whisper snapshots the trailing six seconds every 1.5 seconds; it uses a separate
+recording-local CPU context with two threads and a three-second decode deadline.
+Stop, cancellation, or a newer generation aborts that provisional decode. Final
+Metal inference never waits for the preview worker or its context, and preview
+tokens never enter the final decoder state. The extra CPU model is released when
+the recording ticker and its last worker finish. Both the backend and the preview window re-check the monotonic recording
 ID, and the window clears its provisional text whenever a newer generation
 starts. The targeted `dictation-partial` event is never copied, pasted,
 transformed, persisted, exported, logged, or counted; final stop-time delivery
-remains the only authoritative transcript. Whisper and CPU Parakeet do not run
-live previews so their slower decodes cannot compete with final delivery.
+remains the only authoritative transcript. Whisper Small, Medium, Large v3 Turbo,
+and CPU Parakeet previews stay disabled. There is no automatic model substitution.
+CPU cancellation is cooperative at inference abort checkpoints; model loading is
+not interruptible, but neither loading nor cleanup holds the final runtime lock.
 
 The preview renders in its own `dictation-preview` window. The non-activating,
 click-through glass card is centered under the notch and mirrors the Voice

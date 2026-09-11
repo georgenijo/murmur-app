@@ -160,6 +160,99 @@ impl WhisperBackend {
     }
 }
 
+/// Only the small, measured-preview candidates are enabled. Larger models stay
+/// off until their provisional decode can keep up without competing with final ASR.
+pub fn supports_live_preview(model_name: &str) -> bool {
+    matches!(model_name, "tiny.en" | "base.en")
+}
+
+/// A recording-local CPU context. It never borrows the authoritative Metal
+/// context/state or runtime lock, so stop can begin final ASR immediately and
+/// provisional tokens cannot seed the final decoder's history.
+pub struct WhisperPreviewBackend {
+    state: WhisperState,
+    _context: WhisperContext,
+}
+
+impl WhisperPreviewBackend {
+    pub fn load(model_name: &str) -> Result<Self, String> {
+        if !supports_live_preview(model_name) {
+            return Err("Live preview is disabled for this Whisper model".to_string());
+        }
+        suppress_whisper_logs();
+        let path = get_model_path(model_name)?;
+        let mut params = WhisperContextParameters::default();
+        params.use_gpu(false);
+        let context =
+            WhisperContext::new_with_params(path.to_str().ok_or("Invalid model path")?, params)
+                .map_err(|_| "Preview model initialization failed".to_string())?;
+        let state = context
+            .create_state()
+            .map_err(|_| "Preview state initialization failed".to_string())?;
+        Ok(Self {
+            state,
+            _context: context,
+        })
+    }
+
+    pub fn transcribe<F: FnMut() -> bool>(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+        mut should_abort: F,
+    ) -> Result<String, String> {
+        if should_abort() {
+            return Err("Preview cancelled".to_string());
+        }
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(whisper_language_param(language));
+        params.set_n_threads(2);
+        params.set_no_context(true);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_single_segment(true);
+        if let Some(prompt) = initial_prompt {
+            params.set_initial_prompt(prompt);
+        }
+        // whisper-rs 0.15's safe abort wrapper leaks its allocation and casts a
+        // boxed trait object as F. Keep a correctly typed, stack-owned callback
+        // alive for the entire synchronous full() invocation instead.
+        unsafe extern "C" fn abort<F: FnMut() -> bool>(data: *mut std::ffi::c_void) -> bool {
+            // SAFETY: data points to the live F below; full() calls synchronously.
+            unsafe { (&mut *data.cast::<F>())() }
+        }
+        unsafe {
+            params.set_abort_callback(Some(abort::<F>));
+            params.set_abort_callback_user_data((&mut should_abort as *mut F).cast());
+        }
+        self.state
+            .full(params, samples)
+            .map_err(|_| "Preview decode cancelled or failed".to_string())?;
+        if should_abort() {
+            return Err("Preview cancelled".to_string());
+        }
+        let mut text = String::new();
+        for i in 0..self.state.full_n_segments() {
+            let segment = self.state.get_segment(i).ok_or("Missing preview segment")?;
+            append_segment(
+                &mut text,
+                segment.to_str().map_err(|_| "Invalid preview text")?,
+            );
+        }
+        let trimmed = text.trim();
+        Ok(if smart_punctuation {
+            trimmed.to_string()
+        } else {
+            strip_punctuation(trimmed)
+        })
+    }
+}
+
 fn should_use_single_segment(sample_count: usize) -> bool {
     sample_count <= SINGLE_SEGMENT_MAX_SAMPLES
 }
@@ -336,6 +429,70 @@ mod tests {
         whisper_language_param, WhisperBackend, SINGLE_SEGMENT_MAX_SAMPLES,
     };
     use crate::transcriber::{parse_wav_to_samples, TranscriptionBackend};
+
+    #[test]
+    fn preview_policy_excludes_slow_and_unknown_models() {
+        for model in ["tiny.en", "base.en"] {
+            assert!(super::supports_live_preview(model));
+        }
+        for model in ["small.en", "medium.en", "large-v3-turbo", "unknown"] {
+            assert!(!super::supports_live_preview(model));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires installed base.en; exercises CPU preview and Metal final inference"]
+    fn base_preview_is_provisional_cancellable_and_leaves_final_unchanged() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        let samples = parse_wav_to_samples(include_bytes!("../../../../bench/audio/medium.wav"))
+            .expect("public fixture decodes");
+        assert!(
+            specific_model_exists("base.en"),
+            "install Base before running this check"
+        );
+        let mut final_backend = WhisperBackend::new();
+        final_backend.load_model("base.en").unwrap();
+        let baseline = final_backend
+            .transcribe(&samples, "en", None, true)
+            .unwrap();
+        let mut preview = super::WhisperPreviewBackend::load("base.en").unwrap();
+        let window = samples[samples.len().saturating_sub(6 * 16_000)..].to_vec();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let partial = preview
+            .transcribe(&window, "en", None, true, || {
+                std::time::Instant::now() >= deadline
+            })
+            .expect("Base preview meets decode deadline");
+        assert!(!partial.is_empty());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut entered_tx = Some(entered_tx);
+            preview.transcribe(&window, "en", None, true, || {
+                if let Some(tx) = entered_tx.take() {
+                    tx.send(()).unwrap();
+                }
+                worker_cancelled.load(Ordering::SeqCst)
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        cancelled.store(true, Ordering::SeqCst);
+        // Final decode does not join the partial worker or acquire its context.
+        let after_preview = final_backend
+            .transcribe(&samples, "en", None, true)
+            .unwrap();
+        assert_eq!(baseline, after_preview);
+        assert!(
+            worker.join().unwrap().is_err(),
+            "stop cancels the provisional decode"
+        );
+    }
 
     // --- append_segment ----------------------------------------------------
 
