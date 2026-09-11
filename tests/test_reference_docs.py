@@ -32,6 +32,13 @@ class ReferenceDocsTests(unittest.TestCase):
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
         self.assertEqual(validate_reference_docs(), len(commands))
 
+    def test_model_hardware_guidance_command_is_registered_and_documented(self) -> None:
+        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
+        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
+
+        self.assertIn("get_model_hardware_guidance", commands)
+        self.assertIn("get_model_hardware_guidance", documented)
+
     def test_missing_command_row_fails_even_when_prose_count_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
