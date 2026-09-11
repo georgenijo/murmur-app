@@ -20,7 +20,7 @@ interface UseRecordingStateProps {
   smartAuto?: SmartAutoMicrophoneRequest | null;
 }
 
-type RecordingErrorKind = 'cleanup' | 'other';
+type RecordingErrorKind = 'cleanup' | 'delivery' | 'other';
 
 interface RecordingErrorPresentation {
   id: number;
@@ -55,6 +55,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const nextErrorIdRef = useRef(0);
   const errorProducerEpochRef = useRef(0);
   const dismissedErrorRef = useRef<{ message: string; recordingId?: number } | null>(null);
+  const pendingAutoPasteErrorIdRef = useRef<number | null>(null);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   useEffect(() => { smartAutoRef.current = smartAuto; }, [smartAuto]);
@@ -275,19 +276,49 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const pasteErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     let cancelled = false;
-    let unlisten: (() => void) | null = null;
+    const unlistens: (() => void)[] = [];
     listen<string>('auto-paste-failed', (event) => {
       const errorId = presentError(event.payload);
+      pendingAutoPasteErrorIdRef.current = errorId;
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
       if (errorId !== null) {
         pasteErrorTimerRef.current = setTimeout(() => clearError(errorId), 5000);
       }
     }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    listen<unknown>('dictation-delivery-outcome', (event) => {
+      const payload = event.payload as Record<string, unknown> | null;
+      const recordingId = payload?.recordingId;
+      const outcome = payload?.outcome;
+      if (
+        typeof recordingId !== 'number'
+        || !Number.isSafeInteger(recordingId)
+        || recordingId <= 0
+        || typeof outcome !== 'string'
+      ) return;
+      const pendingErrorId = pendingAutoPasteErrorIdRef.current;
+      pendingAutoPasteErrorIdRef.current = null;
+      const current = currentErrorRef.current;
+      if (
+        outcome !== 'clipboardOnly'
+        || pendingErrorId === null
+        || current?.id !== pendingErrorId
+      ) return;
+      const retryable: RecordingErrorPresentation = {
+        ...current,
+        kind: 'delivery',
+        recordingId,
+      };
+      currentErrorRef.current = retryable;
+      setErrorPresentation(retryable);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistens.forEach((fn) => fn());
+      pendingAutoPasteErrorIdRef.current = null;
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
     };
   }, [clearError, presentError]);
@@ -298,6 +329,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<string>('file-output-failed', (event) => {
+      pendingAutoPasteErrorIdRef.current = null;
       const errorId = presentError(event.payload);
       if (pasteErrorTimerRef.current) clearTimeout(pasteErrorTimerRef.current);
       if (errorId !== null) {
@@ -497,6 +529,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     transcription,
     recordingDuration,
     error: errorPresentation?.message ?? '',
+    canRetryDelivery: errorPresentation?.kind === 'delivery',
     dismissError,
     handleStart,
     handleHoldStart,
