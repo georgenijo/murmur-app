@@ -361,6 +361,8 @@ export interface Settings {
   meetingDiarization: boolean;
   /** Opt in to helper-side acoustic echo cancellation for Meeting Capture. */
   meetingEchoCancellationEnabled: boolean;
+  /** Opt in to bounded Calendar checks that can suggest starting Notetaker. */
+  meetingSuggestionsEnabled: boolean;
   /** Delete completed meetings older than this many days; 0 keeps them by age. */
   meetingRetentionDays: number;
   /** Maximum completed/interrupted meeting sessions retained in SQLite. */
@@ -637,6 +639,7 @@ export const DEFAULT_SETTINGS: Settings = {
   meetingRetainAudio: false,
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
+  meetingSuggestionsEnabled: false,
   meetingRetentionDays: 0,
   meetingMaxSessions: 100,
   saveTranscript: false,
@@ -1273,6 +1276,9 @@ export function loadSettings(): Settings {
       }
       if (typeof parsed.meetingEchoCancellationEnabled !== 'boolean') {
         parsed.meetingEchoCancellationEnabled = DEFAULT_SETTINGS.meetingEchoCancellationEnabled;
+      }
+      if (typeof parsed.meetingSuggestionsEnabled !== 'boolean') {
+        parsed.meetingSuggestionsEnabled = DEFAULT_SETTINGS.meetingSuggestionsEnabled;
       }
       if (
         typeof parsed.meetingRetentionDays !== 'number'

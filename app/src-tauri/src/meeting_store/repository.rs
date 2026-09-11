@@ -444,19 +444,23 @@ impl MeetingRepository {
             let fts_query = fts_query(query)?;
             let total = connection
                 .query_row(
-                    "SELECT COUNT(*) FROM meeting_sessions s WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)",
-                    [&fts_query],
+                    "SELECT COUNT(*) FROM meeting_sessions s
+                     WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)
+                        OR s.id IN (SELECT session_id FROM meeting_sessions_fts WHERE meeting_sessions_fts MATCH ?)",
+                    params![fts_query, fts_query],
                     |row| row.get::<_, i64>(0),
                 )
                 .map_err(db_error)?;
             let sql = format!(
-                "{} WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?) ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ? OFFSET ?",
+                "{} WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)
+                        OR s.id IN (SELECT session_id FROM meeting_sessions_fts WHERE meeting_sessions_fts MATCH ?)
+                     ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ? OFFSET ?",
                 session_query()
             );
             let mut statement = connection.prepare(&sql).map_err(db_error)?;
             let sessions = statement
                 .query_map(
-                    params![fts_query, i64::from(limit), to_i64(offset)?],
+                    params![fts_query, fts_query, i64::from(limit), to_i64(offset)?],
                     row_to_session,
                 )
                 .map_err(db_error)?
@@ -493,6 +497,88 @@ impl MeetingRepository {
         let connection = self.open_checked()?;
         session_by_id(&connection, id)?
             .ok_or_else(|| "The meeting transcript no longer exists.".to_string())
+    }
+
+    pub fn save_metadata(
+        &self,
+        request: SaveMeetingMetadataRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        self.save_metadata_from(request, MeetingTitleSource::Manual)
+    }
+
+    pub(crate) fn save_calendar_metadata(
+        &self,
+        request: SaveMeetingMetadataRequest,
+    ) -> Result<MeetingWorkspace, String> {
+        self.save_metadata_from(request, MeetingTitleSource::Calendar)
+    }
+
+    fn save_metadata_from(
+        &self,
+        request: SaveMeetingMetadataRequest,
+        source: MeetingTitleSource,
+    ) -> Result<MeetingWorkspace, String> {
+        let session_id = request.session_id.trim().to_string();
+        if !valid_session_id(&session_id) {
+            return Err("The meeting metadata request is invalid.".into());
+        }
+        let title = validate_optional_metadata_text(
+            request.title,
+            MAX_MEETING_TITLE_CHARS,
+            "The meeting title is invalid.",
+        )?;
+        if request.attendees.len() > MAX_MEETING_ATTENDEES {
+            return Err(format!(
+                "A meeting can have at most {MAX_MEETING_ATTENDEES} attendees."
+            ));
+        }
+        let attendees = request
+            .attendees
+            .into_iter()
+            .map(|attendee| {
+                validate_required_metadata_text(
+                    attendee,
+                    MAX_MEETING_ATTENDEE_CHARS,
+                    "A meeting attendee is invalid.",
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let attendees_json = serde_json::to_string(&attendees).map_err(|_| storage_error())?;
+        let title_source = title.as_ref().map(|_| source);
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE meeting_sessions SET title=?, title_source=?, attendees_json=? WHERE id=?",
+                params![
+                    title.as_deref(),
+                    title_source.map(MeetingTitleSource::as_db),
+                    attendees_json,
+                    session_id
+                ],
+            )
+            .map_err(db_error)?;
+        if changed != 1 {
+            return Err("The meeting transcript no longer exists.".into());
+        }
+        transaction
+            .execute(
+                "DELETE FROM meeting_sessions_fts WHERE session_id=?",
+                [&session_id],
+            )
+            .map_err(db_error)?;
+        if let Some(title) = title.as_deref() {
+            transaction
+                .execute(
+                    "INSERT INTO meeting_sessions_fts(session_id, title) VALUES (?, ?)",
+                    params![session_id, title],
+                )
+                .map_err(db_error)?;
+        }
+        transaction.commit().map_err(db_error)?;
+        self.workspace(&session_id)
     }
 
     pub fn detail(&self, id: &str) -> Result<MeetingDetail, String> {
@@ -950,17 +1036,24 @@ impl MeetingRepository {
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
-        let connection = self.open_checked()?;
+        let mut connection = self.open_checked()?;
         let paths = audio_paths_for_session(&connection, id)?;
-        connection
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        transaction
             .execute("DELETE FROM meeting_segments_fts WHERE session_id=?", [id])
             .map_err(db_error)?;
-        let changed = connection
+        transaction
+            .execute("DELETE FROM meeting_sessions_fts WHERE session_id=?", [id])
+            .map_err(db_error)?;
+        let changed = transaction
             .execute("DELETE FROM meeting_sessions WHERE id=?", [id])
             .map_err(db_error)?;
         if changed == 0 {
             return Err("The meeting transcript no longer exists.".to_string());
         }
+        transaction.commit().map_err(db_error)?;
         for relative in paths {
             if let Some(path) = owned_audio_path(&self.root, &relative) {
                 let _ = fs::remove_file(path);
@@ -976,7 +1069,7 @@ impl MeetingRepository {
         let connection = self.open_checked()?;
         connection
             .execute_batch(
-                "BEGIN IMMEDIATE; DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions; COMMIT; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
+                "BEGIN IMMEDIATE; DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions_fts; DELETE FROM meeting_sessions; COMMIT; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;",
             )
             .map_err(db_error)?;
         let audio_root = self.root.join("audio");
@@ -1147,8 +1240,29 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<MeetingSession> {
     let duration_ms = ended_at_ms
         .unwrap_or_else(now_ms)
         .saturating_sub(started_at_ms);
+    let title = row.get::<_, Option<String>>(11)?;
+    let title_source = row
+        .get::<_, Option<String>>(12)?
+        .map(|value| MeetingTitleSource::from_db(&value))
+        .transpose()?;
+    let attendees = serde_json::from_str::<Vec<String>>(&row.get::<_, String>(13)?)
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if title.is_some() != title_source.is_some()
+        || title
+            .as_deref()
+            .is_some_and(|value| !valid_stored_metadata_text(value, MAX_MEETING_TITLE_CHARS))
+        || attendees.len() > MAX_MEETING_ATTENDEES
+        || attendees
+            .iter()
+            .any(|value| !valid_stored_metadata_text(value, MAX_MEETING_ATTENDEE_CHARS))
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     Ok(MeetingSession {
         id: row.get(0)?,
+        title,
+        title_source,
+        attendees,
         started_at_ms,
         ended_at_ms,
         status: MeetingSessionStatus::from_db(&row.get::<_, String>(3)?)?,
@@ -1167,8 +1281,38 @@ fn session_query() -> &'static str {
     "SELECT s.id, s.started_at_ms, s.ended_at_ms, s.status, s.model_name, s.language, s.smart_punctuation, s.retain_audio,
             (SELECT COUNT(*) FROM meeting_segments g WHERE g.session_id=s.id AND g.status='final'),
             COALESCE((SELECT substr(text, 1, 240) FROM meeting_segments g WHERE g.session_id=s.id AND g.status='final' AND text!='' ORDER BY start_ms ASC, id ASC LIMIT 1), ''),
-            s.error_code
+            s.error_code, s.title, s.title_source, s.attendees_json
      FROM meeting_sessions s"
+}
+
+fn validate_optional_metadata_text(
+    value: Option<String>,
+    maximum_chars: usize,
+    message: &str,
+) -> Result<Option<String>, String> {
+    value
+        .map(|value| validate_required_metadata_text(value, maximum_chars, message))
+        .transpose()
+}
+
+fn validate_required_metadata_text(
+    value: String,
+    maximum_chars: usize,
+    message: &str,
+) -> Result<String, String> {
+    let value = value.trim();
+    if !valid_stored_metadata_text(value, maximum_chars) {
+        Err(message.to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn valid_stored_metadata_text(value: &str, maximum_chars: usize) -> bool {
+    !value.is_empty()
+        && value.trim() == value
+        && value.chars().count() <= maximum_chars
+        && !value.chars().any(char::is_control)
 }
 
 fn session_by_id(connection: &Connection, id: &str) -> Result<Option<MeetingSession>, String> {
@@ -1375,6 +1519,10 @@ mod tests {
              CREATE INDEX meeting_segments_session_time_idx ON meeting_segments(session_id, start_ms, id);
              CREATE INDEX meeting_segments_pending_idx ON meeting_segments(status, id);
              DROP TABLE meeting_remote_speakers;
+             DROP TABLE meeting_sessions_fts;
+             ALTER TABLE meeting_sessions DROP COLUMN attendees_json;
+             ALTER TABLE meeting_sessions DROP COLUMN title_source;
+             ALTER TABLE meeting_sessions DROP COLUMN title;
              PRAGMA user_version=3;
              COMMIT;
              PRAGMA foreign_keys=ON;
@@ -1427,6 +1575,50 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".meeting-recovery-")));
+    }
+
+    #[test]
+    fn corrupted_main_recovers_private_metadata_from_a_v5_backup() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("backups")).unwrap();
+        let backup = root.path().join("backups/meetings-v5-metadata.sqlite3");
+        let (_source_root, source) = repository();
+        source
+            .create_session("metadata-recovery", "base.en", "en", true, false)
+            .unwrap();
+        source
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-recovery".into(),
+                title: Some("Private planning title".into()),
+                attendees: vec!["Alex".into(), "Casey".into()],
+            })
+            .unwrap();
+        source
+            .finish_session("metadata-recovery", MeetingSessionStatus::Complete, None)
+            .unwrap();
+        let expected = source.workspace("metadata-recovery").unwrap();
+        source
+            .open_checked()
+            .unwrap()
+            .backup(MAIN_DB, &backup, None)
+            .unwrap();
+        fs::write(root.path().join(DATABASE_NAME), b"corrupt database").unwrap();
+
+        let (recovered, outcome) =
+            MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(outcome, InitializationOutcome::Recovered);
+        assert_eq!(
+            recovered.workspace("metadata-recovery").unwrap().session,
+            expected.session
+        );
+        assert_eq!(
+            recovered
+                .list_sessions(Some("planning"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
     }
 
     #[test]
@@ -1979,6 +2171,122 @@ mod tests {
         assert!(!detail.segments[0].audio_available);
         repository.delete_session("session-1").unwrap();
         assert_eq!(repository.list_sessions(None, 0, 20).unwrap().total, 0);
+    }
+
+    #[test]
+    fn metadata_save_is_bounded_transactional_and_refreshes_title_search() {
+        let (_temp, repository) = repository();
+        repository
+            .create_session("metadata-session", "base.en", "en", true, false)
+            .unwrap();
+        let segment = final_segment(
+            &repository,
+            "metadata-session",
+            MeetingSpeaker::Me,
+            0,
+            "Immutable transcript evidence",
+        );
+        repository
+            .finish_session("metadata-session", MeetingSessionStatus::Complete, None)
+            .unwrap();
+
+        let saved = repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: Some("  Project Atlas  ".into()),
+                attendees: vec!["  Alex  ".into(), "Casey".into()],
+            })
+            .unwrap();
+        assert_eq!(saved.session.title.as_deref(), Some("Project Atlas"));
+        assert_eq!(saved.session.title_source, Some(MeetingTitleSource::Manual));
+        assert_eq!(
+            saved.session.attendees,
+            vec!["Alex".to_string(), "Casey".to_string()]
+        );
+        assert_eq!(saved.segments[0].id, segment);
+        assert_eq!(saved.segments[0].text, "Immutable transcript evidence");
+        assert!(saved.review.is_none());
+        assert_eq!(
+            repository
+                .list_sessions(Some("Atlas"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+
+        repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: Some("Project Borealis".into()),
+                attendees: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_sessions(Some("Atlas"), 0, 10)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            repository
+                .list_sessions(Some("Borealis"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+
+        let cleared = repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: None,
+                attendees: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(cleared.session.title, None);
+        assert_eq!(cleared.session.title_source, None);
+        assert!(cleared.session.attendees.is_empty());
+        assert_eq!(
+            repository
+                .list_sessions(Some("Borealis"), 0, 10)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            repository
+                .list_sessions(Some("Immutable"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+
+        let too_long = "x".repeat(MAX_MEETING_TITLE_CHARS + 1);
+        assert!(repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: Some(too_long),
+                attendees: Vec::new(),
+            })
+            .is_err());
+        assert!(repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: None,
+                attendees: vec!["x".repeat(MAX_MEETING_ATTENDEE_CHARS + 1)],
+            })
+            .is_err());
+        assert!(repository
+            .save_metadata(SaveMeetingMetadataRequest {
+                session_id: "metadata-session".into(),
+                title: None,
+                attendees: vec!["attendee".into(); MAX_MEETING_ATTENDEES + 1],
+            })
+            .is_err());
+        assert_eq!(
+            repository.get_session("metadata-session").unwrap(),
+            cleared.session
+        );
     }
 
     #[test]

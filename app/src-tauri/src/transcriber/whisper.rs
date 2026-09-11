@@ -39,7 +39,7 @@ fn debug_models_dir_override() -> Option<PathBuf> {
 }
 
 /// Get all potential model directories to search.
-fn get_model_search_paths() -> Vec<PathBuf> {
+pub(crate) fn get_model_search_paths() -> Vec<PathBuf> {
     #[cfg(debug_assertions)]
     if let Some(path) = debug_models_dir_override() {
         return vec![path];

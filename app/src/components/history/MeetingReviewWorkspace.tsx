@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
+import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
   formatMeetingTimestamp,
   MEETING_EXPORT_FORMATS,
@@ -268,6 +269,15 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, onNoti
                   : 'Draft generation is stopping…'}
         </div>
       )}
+
+      <MeetingMetadataEditor
+        key={detail.session.id}
+        session={detail.session}
+        disabled={captureBusy}
+        onSave={meetings.saveMetadata}
+        onApplyCalendar={meetings.applyCalendarEvent}
+        onNotice={onNotice}
+      />
 
       <div className="dialog-card mb-3 flex flex-wrap items-end gap-2 p-3">
         <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Me channel

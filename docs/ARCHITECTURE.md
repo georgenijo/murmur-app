@@ -118,6 +118,25 @@ derived claim against stored segment IDs, and atomically replaces the session's
 schema-v1 artifact. Summary generation is cancellable and owns the heavy runtime.
 See [Meeting Capture](features/meeting-capture.md).
 
+Calendar naming is an explicit review action, separate from capture. The main
+window requests Calendar permission, then `commands/meeting_calendar.rs` reads
+the stored session interval. `calendar/native.rs` owns a short-lived EventKit
+store and enumerates overlapping events off the main thread. Apply repeats the
+query and matches a digest of the displayed occurrence and metadata before the
+shared metadata transaction writes a title, attendees, and `calendar` source.
+No event objects or lookup cache survive the operation. Calendar identifiers,
+notes, and URLs never enter the meeting database. See [Calendar naming](features/meeting-calendar.md).
+
+The separate `meeting_suggestions.rs` coordinator stays dormant until explicitly
+enabled. It keeps a bounded, in-memory snapshot of video-call events and wakes
+at event boundaries or native activity changes. A native EventKit store lives
+only while enabled to receive Calendar changes; queried event objects remain
+scoped to their query. The overlay presents a suggestion without claiming audio
+or preparing a model. Accept sends an opaque token to the main window's normal
+`start_meeting` call, which rechecks the native frontmost bundle ID and all busy
+owners under `recording_transition` before consuming it and saving the title.
+See [Meeting suggestions](features/meeting-suggestions.md).
+
 ### Selected-text transform
 
 ```text
@@ -221,7 +240,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 203 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 214 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -466,7 +485,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-203 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+214 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

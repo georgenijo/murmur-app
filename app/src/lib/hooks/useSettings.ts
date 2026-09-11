@@ -14,6 +14,11 @@ import {
   smartAutoProbePolicy,
   type SmartAutoProbePolicy,
 } from '../smartAutoMicrophone';
+import {
+  getCalendarPermissionStatus,
+  requestCalendarPermission,
+} from '../calendar';
+import { configureMeetingSuggestions } from '../meetingSuggestions';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
@@ -27,10 +32,20 @@ export function useSettings() {
   const desiredProbePolicyVersionRef = useRef(0);
   const attemptedProbePolicyVersionRef = useRef(-1);
   const probeWriterRunningRef = useRef(false);
+  const meetingSuggestionVersionRef = useRef(0);
+  const confirmedMeetingSuggestionsEnabledRef = useRef(settings.meetingSuggestionsEnabled);
+  const meetingSuggestionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [microphoneMigrationPending, setMicrophoneMigrationPending] = useState(
     () => !settings.microphoneIdMigrationComplete,
   );
   const audioInventory = useAudioInputInventory(microphoneMigrationPending);
+
+  const persistSettings = useCallback((next: Settings) => {
+    saveSettings({
+      ...next,
+      meetingSuggestionsEnabled: confirmedMeetingSuggestionsEnabledRef.current,
+    });
+  }, []);
 
   const scheduleProbePolicyWrite = useCallback(() => {
     if (!isTauri() || probeWriterRunningRef.current) return;
@@ -48,7 +63,7 @@ export function useSettings() {
               const disabled = { ...current, smartAutoProbeEnabled: false };
               settingsRef.current = disabled;
               setSettings(disabled);
-              saveSettings(disabled);
+              persistSettings(disabled);
               desiredProbePolicyRef.current = { enabled: false };
               desiredProbePolicyVersionRef.current += 1;
               void emit('settings-changed');
@@ -62,11 +77,106 @@ export function useSettings() {
       }
       probeWriterRunningRef.current = false;
     })();
-  }, []);
+  }, [persistSettings]);
 
   useEffect(() => {
     scheduleProbePolicyWrite();
   }, [scheduleProbePolicyWrite]);
+
+  // Restore the persisted opt-in in the main window. Hydration never requests
+  // Calendar permission; only a fresh user toggle may open the native prompt.
+  useEffect(() => {
+    if (!isTauri()) return;
+    const enabled = settingsRef.current.meetingSuggestionsEnabled;
+    const version = meetingSuggestionVersionRef.current;
+    const configureHydratedSetting = async () => {
+      if (version !== meetingSuggestionVersionRef.current) return;
+      try {
+        await configureMeetingSuggestions(enabled);
+        confirmedMeetingSuggestionsEnabledRef.current = enabled;
+      } catch {
+        if (version !== meetingSuggestionVersionRef.current) return;
+        confirmedMeetingSuggestionsEnabledRef.current = false;
+        const reverted = { ...settingsRef.current, meetingSuggestionsEnabled: false };
+        settingsRef.current = reverted;
+        setSettings(reverted);
+        persistSettings(reverted);
+        setConfigureError('Meeting suggestions could not be configured. The previous setting was restored.');
+      }
+    };
+    meetingSuggestionQueueRef.current = meetingSuggestionQueueRef.current.then(
+      configureHydratedSetting,
+      configureHydratedSetting,
+    );
+  }, [persistSettings]);
+
+  const enqueueMeetingSuggestionChange = useCallback((
+    requestedEnabled: boolean,
+    version: number,
+  ) => {
+    const applyRequestedSetting = async () => {
+      if (version !== meetingSuggestionVersionRef.current) return;
+
+      if (requestedEnabled) {
+        let permission;
+        try {
+          permission = await getCalendarPermissionStatus();
+          if (version !== meetingSuggestionVersionRef.current) return;
+          if (permission === 'notDetermined') {
+            permission = await requestCalendarPermission();
+          }
+        } catch {
+          if (version !== meetingSuggestionVersionRef.current) return;
+          const reverted = {
+            ...settingsRef.current,
+            meetingSuggestionsEnabled: confirmedMeetingSuggestionsEnabledRef.current,
+          };
+          settingsRef.current = reverted;
+          setSettings(reverted);
+          persistSettings(reverted);
+          setConfigureError('Calendar access could not be checked. Keep naming meetings manually, or review Calendar access in System Settings.');
+          return;
+        }
+        if (version !== meetingSuggestionVersionRef.current) return;
+        if (permission !== 'granted') {
+          const reverted = {
+            ...settingsRef.current,
+            meetingSuggestionsEnabled: confirmedMeetingSuggestionsEnabledRef.current,
+          };
+          settingsRef.current = reverted;
+          setSettings(reverted);
+          persistSettings(reverted);
+          setConfigureError('Meeting suggestions need Calendar access. Enable Murmur under Privacy & Security → Calendars, or keep naming meetings manually.');
+          return;
+        }
+      }
+
+      try {
+        await configureMeetingSuggestions(requestedEnabled);
+      } catch {
+        if (version !== meetingSuggestionVersionRef.current) return;
+        const reverted = {
+          ...settingsRef.current,
+          meetingSuggestionsEnabled: confirmedMeetingSuggestionsEnabledRef.current,
+        };
+        settingsRef.current = reverted;
+        setSettings(reverted);
+        persistSettings(reverted);
+        setConfigureError('Meeting suggestions could not be configured. The previous setting was restored.');
+        return;
+      }
+
+      confirmedMeetingSuggestionsEnabledRef.current = requestedEnabled;
+      if (version !== meetingSuggestionVersionRef.current) return;
+      persistSettings(settingsRef.current);
+      setConfigureError(null);
+    };
+
+    meetingSuggestionQueueRef.current = meetingSuggestionQueueRef.current.then(
+      applyRequestedSetting,
+      applyRequestedSetting,
+    );
+  }, [persistSettings]);
 
   // Native tray and overlay changes also mirror disabled state. On initial
   // launch the persisted disabled flag must gate consent before backend init;
@@ -96,8 +206,8 @@ export function useSettings() {
     const migrated = { ...current, microphone, microphoneIdMigrationComplete: true };
     settingsRef.current = migrated;
     setSettings(migrated);
-    saveSettings(migrated);
-  }, [audioInventory.inventory, microphoneMigrationPending]);
+    persistSettings(migrated);
+  }, [audioInventory.inventory, microphoneMigrationPending, persistSettings]);
 
   // Sync launchAtLogin with OS state on mount.
   // Handles the case where a user removed the login item from System Settings.
@@ -109,12 +219,12 @@ export function useSettings() {
         const synced = { ...settingsRef.current, launchAtLogin: osEnabled };
         settingsRef.current = synced;
         setSettings(synced);
-        saveSettings(synced);
+        persistSettings(synced);
       }
     }).catch((err) => {
       console.error('Failed to check autostart status:', err);
     });
-  }, []);
+  }, [persistSettings]);
 
   // Native overlay/tray cycling owns the immediate runtime transition. Mirror
   // manual selections into durable Settings without replaying the command.
@@ -127,13 +237,13 @@ export function useSettings() {
       const next = { ...settingsRef.current, activeModeId: modeId };
       settingsRef.current = next;
       setSettings(next);
-      saveSettings(next);
+      persistSettings(next);
       void emit('settings-changed');
     }).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  }, [persistSettings]);
 
   // Persist backend-driven disabled changes (the tray's "Disable Murmur" item).
   // The equality guard makes this window's own set_app_disabled echo a no-op.
@@ -147,12 +257,12 @@ export function useSettings() {
       const next = { ...prev, disabled: event.payload };
       settingsRef.current = next;
       setSettings(next);
-      saveSettings(next);
+      persistSettings(next);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  }, [persistSettings]);
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setConfigureError(null);
@@ -162,6 +272,11 @@ export function useSettings() {
       ...updates,
       ...('microphone' in updates ? { microphoneIdMigrationComplete: true } : {}),
     };
+    const meetingSuggestionsChanged = 'meetingSuggestionsEnabled' in updates
+      && newSettings.meetingSuggestionsEnabled !== previousSettings.meetingSuggestionsEnabled;
+    const meetingSuggestionVersion = meetingSuggestionsChanged
+      ? ++meetingSuggestionVersionRef.current
+      : null;
     settingsRef.current = newSettings;
     const probePolicyChanged = 'disabled' in updates
       || 'microphone' in updates
@@ -176,7 +291,11 @@ export function useSettings() {
       setProbeConfigureError(null);
     }
     setSettings(newSettings);
-    saveSettings(newSettings);
+    persistSettings(newSettings);
+
+    if (meetingSuggestionsChanged && meetingSuggestionVersion !== null) {
+      enqueueMeetingSuggestionChange(newSettings.meetingSuggestionsEnabled, meetingSuggestionVersion);
+    }
 
     if ('microphone' in updates && updates.microphone !== previousSettings.microphone) {
       // A picker-originated value is already based on an authoritative inventory.
@@ -195,7 +314,7 @@ export function useSettings() {
           const reverted = { ...settingsRef.current, launchAtLogin: previousSettings.launchAtLogin };
           settingsRef.current = reverted;
           setSettings(reverted);
-          saveSettings(reverted);
+          persistSettings(reverted);
         }
       });
     }
@@ -254,14 +373,14 @@ export function useSettings() {
             };
             settingsRef.current = reverted;
             setSettings(reverted);
-            saveSettings(reverted);
+            persistSettings(reverted);
             setConfigureError(
               'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
             );
           }
         });
     }
-  }, [scheduleProbePolicyWrite]);
+  }, [enqueueMeetingSuggestionChange, persistSettings, scheduleProbePolicyWrite]);
 
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a
@@ -277,7 +396,7 @@ export function useSettings() {
     const next = { ...prev, disabled: fresh.disabled, autoPaste: fresh.autoPaste };
     settingsRef.current = next;
     setSettings(next);
-    saveSettings(next);
+    persistSettings(next);
 
     if (disabledChanged) {
       // Idempotent: the overlay also calls this directly for a snappy gate.
@@ -291,7 +410,7 @@ export function useSettings() {
         setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
       });
     }
-  }, []);
+  }, [persistSettings]);
 
   return {
     settings,

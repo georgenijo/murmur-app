@@ -166,6 +166,18 @@ describe('loadSettings', () => {
   it('returns defaults when localStorage is empty', () => {
     const settings = loadSettings();
     expect(settings).toEqual(DEFAULT_SETTINGS);
+    expect(settings.meetingSuggestionsEnabled).toBe(false);
+  });
+
+  it('persists the explicit meeting-suggestion opt-in and rejects malformed consent', () => {
+    saveSettings({ ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true });
+    expect(loadSettings().meetingSuggestionsEnabled).toBe(true);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      meetingSuggestionsEnabled: 'yes',
+    }));
+    expect(loadSettings().meetingSuggestionsEnabled).toBe(false);
   });
 
   it('keeps Smart Auto opt-in and retains only bounded approved stable IDs', () => {

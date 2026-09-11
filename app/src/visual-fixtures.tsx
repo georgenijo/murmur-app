@@ -24,6 +24,8 @@ import { toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { OverlayMeetingSuggestion } from './components/overlay/OverlayMeetingSuggestion';
+import overlayGeometryFixture from './components/overlay/overlay-geometry.fixture.json';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -126,6 +128,7 @@ const longUpdateNotes = `## New Features
 
 const meetingFixture = {
   session: {
+    title: null, titleSource: null, attendees: [],
     id: 'meeting-fixture', startedAtMs: Date.UTC(2026, 7, 31, 14, 30), endedAtMs: Date.UTC(2026, 7, 31, 14, 48),
     status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true,
     retainAudio: false, durationMs: 1_080_000, segmentCount: 2,
@@ -180,6 +183,11 @@ mockIPC((command, payload) => {
     };
   }
   if (command === 'get_system_audio_permission_status') return 'granted';
+  if (command === 'get_calendar_permission_status') return query.get('calendar') === 'denied' ? 'denied' : 'granted';
+  if (command === 'get_meeting_calendar_events') return [
+    { selectionToken: 'first-event', title: 'Orion planning', attendees: ['Alex Example', 'Casey Example'], startMs: Date.UTC(2026, 7, 31, 14), endMs: Date.UTC(2026, 7, 31, 15) },
+    { selectionToken: 'second-event', title: 'Design review', attendees: ['Jordan Example'], startMs: Date.UTC(2026, 7, 31, 14, 30), endMs: Date.UTC(2026, 7, 31, 15, 30) },
+  ];
   if (command === 'get_meeting_summary_status') {
     return { generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null };
   }
@@ -635,12 +643,56 @@ function DictationPreviewFixture() {
   );
 }
 
+function MeetingSuggestionOverlayFixture() {
+  const geometry = overlayGeometryFixture.meetingSuggestionNotched;
+  return (
+    <div
+      data-visual-ready="true"
+      data-fixture-synthetic="meeting-suggestion"
+      className="flex min-h-screen items-start justify-center bg-[radial-gradient(circle_at_top,#526274,#20252c_70%)] pt-8"
+    >
+      <div
+        className="overlay-island overflow-hidden text-on-surface shadow-2xl"
+        style={{
+          width: geometry.windowW,
+          height: geometry.expandedH,
+          borderRadius: '0 0 12px 12px',
+          background: 'rgba(20, 20, 20, 0.92)',
+          backdropFilter: 'blur(40px)',
+        }}
+      >
+        <div className="flex items-center justify-between px-3" style={{ height: geometry.collapsedH }}>
+          <span className="h-2 w-2 rounded-full bg-on-surface/40" aria-hidden="true" />
+          <span className="text-[9px] font-medium uppercase tracking-wider text-on-surface/35">Murmur</span>
+          <span className="h-2 w-2" aria-hidden="true" />
+        </div>
+        <OverlayMeetingSuggestion
+          geometry={geometry}
+          expanded
+          suggestion={{
+            token: '88888888-8888-4888-8888-888888888888',
+            title: 'Synthetic calendar: Product review',
+            startMs: 1,
+            endMs: 2,
+          }}
+          busy={false}
+          error={null}
+          onAccept={() => {}}
+          onDismiss={() => {}}
+        />
+      </div>
+    </div>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     {requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
     ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />
+    ) : requestedState === 'overlay-meeting-suggestion' ? (
+      <MeetingSuggestionOverlayFixture />
     ) : requestedState === 'settings-appearance' ? (
       <AppearanceProvider>
         <VisualFixture />

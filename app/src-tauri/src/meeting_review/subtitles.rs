@@ -111,6 +111,9 @@ mod tests {
         MeetingWorkspace {
             session: MeetingSession {
                 id: "caption-test".into(),
+                title: None,
+                title_source: None,
+                attendees: Vec::new(),
                 started_at_ms: 1_789_000_000_000,
                 ended_at_ms: Some(1_789_004_000_000),
                 status: MeetingSessionStatus::Complete,

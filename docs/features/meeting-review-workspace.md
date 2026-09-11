@@ -10,7 +10,8 @@ provenance, or letting regeneration erase reviewed work.
 ## Usage
 
 The Notetaker loads one Rust-owned workspace snapshot for the selected meeting.
-The user can rename the two capture channels, edit existing generated claims,
+The user can name the meeting, maintain its attendee list, rename the two capture
+channels, edit existing generated claims,
 reorder or remove list items, save the review, follow a source to the transcript,
 regenerate a separate draft, deliberately restore that draft, and copy or export
 the reviewed meeting as Markdown, plain text, or JSON.
@@ -33,7 +34,10 @@ Schema v3 adds a monotonic `revision` to `meeting_artifacts` and one
 the generated revision it was based on, bounded `Me` and `Them` display labels,
 an optional strict review document, and an update timestamp. It references the
 session with `ON DELETE CASCADE`. Default labels are derived when no review row
-exists. Search remains limited to finalized raw transcript text.
+exists. Schema v5 adds an optional title, a typed `manual`, `calendar`, or
+`generated` title source, an ordered attendee list, and a separate title FTS table.
+Existing sessions have no title or source and an empty attendee list. Search covers
+both the current title and finalized raw transcript text.
 
 ```rust
 pub struct MeetingWorkspace {
@@ -42,6 +46,24 @@ pub struct MeetingWorkspace {
     pub generated: StoredGeneratedArtifact,
     pub review: StoredMeetingReview,
     pub active_document: ActiveReviewDocument,
+}
+
+pub struct MeetingSession {
+    pub title: Option<String>,
+    pub title_source: Option<MeetingTitleSource>,
+    pub attendees: Vec<String>,
+}
+
+pub enum MeetingTitleSource {
+    Manual,
+    Calendar,
+    Generated,
+}
+
+pub struct SaveMeetingMetadataRequest {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub attendees: Vec<String>,
 }
 
 pub struct SaveMeetingReviewRequest {
@@ -76,10 +98,11 @@ validates all bounds and dates, checks the expected revisions, then commits labe
 and the complete review document in one `BEGIN IMMEDIATE` transaction. New claims
 are out of scope until a source-selection workflow exists.
 
-The repository exposes four deep capabilities:
+The repository exposes five deep capabilities:
 
 ```rust
 fn workspace(id: &MeetingSessionId) -> Result<MeetingWorkspace, MeetingReviewError>;
+fn save_metadata(request: SaveMeetingMetadataRequest) -> Result<MeetingWorkspace, String>;
 fn save_review(edit: ValidatedReviewEdit) -> Result<MeetingWorkspace, MeetingReviewError>;
 fn restore_review_from_generated(request: ValidatedRestoreRequest)
     -> Result<MeetingWorkspace, MeetingReviewError>;
@@ -92,17 +115,28 @@ checks, provenance reconstruction, active-document precedence, and transactions.
 React never parses persisted JSON or decides whether generated or reviewed content
 is authoritative.
 
+`save_meeting_metadata` accepts only `sessionId`, `title`, and `attendees` from
+the main window. Rust trims and validates every value, limits titles and attendee
+names to 200 characters, and accepts at most 100 attendees. A non-null title gets
+the `manual` source on the server. Clearing the title also clears its source. The
+same immediate transaction updates the session row and title FTS row without
+changing transcript evidence or review revisions. [Calendar naming](meeting-calendar.md)
+uses a separate confirmed apply command to assign `calendar`. A later manual
+rename assigns `manual` again.
+
 ## Export contract
 
 All three formats represent one fixed scope named a reviewed meeting:
 
-- bounded session metadata and both canonical/display speaker labels;
+- optional title, title source, ordered attendees, and both canonical/display
+  speaker labels;
 - the active reviewed document, or the generated draft when no review exists;
 - every ordered transcript segment and explicit failed/pending gaps;
 - source references for every artifact claim.
 
 Markdown uses transcript anchors, plain text names segment IDs and timestamps, and
-JSON uses `murmur.meeting-review-export.v1`. Exports exclude audio, local paths,
+JSON uses `murmur.meeting-review-export.v2`. Markdown, text, and JSON include the
+title and attendees. Exports exclude audio, local paths,
 prompts, discarded drafts, and hidden runtime metrics. Rust builds one validated
 snapshot and renders all formats from it. Clipboard rendering and the existing
 atomic `.md`/`.txt`/`.json` sink share the 8 MiB bound and never truncate evidence.
@@ -169,8 +203,8 @@ frontend-owned export rendering were rejected.
 
 ## Verification
 
-- Migration tests cover v2 backup, v3 columns/foreign key, deletion, pruning, and
-  raw-only search.
+- Migration tests cover older backups, v3 and v4 changes, v5 metadata defaults,
+  deletion, pruning, transcript search, and title search.
 - Repository tests cover invalid labels, revision conflicts, key forgery,
   source rehydration, reorder/removal, regeneration preservation, and restore.
 - Export goldens prove equivalent scope and provenance across all three formats.
