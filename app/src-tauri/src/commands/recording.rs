@@ -803,11 +803,17 @@ impl Drop for FileTranscribeGuard<'_> {
     }
 }
 
-struct SharedBackendChangeGuard(Arc<crate::benchmark::BenchmarkCoordinator>);
+struct SharedBackendChangeGuard(
+    Arc<crate::benchmark::BenchmarkCoordinator>,
+    Option<tauri::AppHandle>,
+);
 
 impl Drop for SharedBackendChangeGuard {
     fn drop(&mut self) {
         self.0.finish_shared_backend_change();
+        if let Some(app) = &self.1 {
+            crate::meeting_suggestions::busy_changed(app);
+        }
     }
 }
 
@@ -3000,7 +3006,11 @@ pub async fn configure_dictation(
                     .to_string(),
             );
         }
-        Some(SharedBackendChangeGuard(state.benchmark.clone()))
+        crate::meeting_suggestions::busy_changed(&app_handle);
+        Some(SharedBackendChangeGuard(
+            state.benchmark.clone(),
+            Some(app_handle.clone()),
+        ))
     } else {
         None
     };
@@ -6246,6 +6256,7 @@ mod tests {
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
@@ -6373,6 +6384,7 @@ mod tests {
                 knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
@@ -7188,7 +7200,7 @@ mod tests {
         let coordinator = Arc::new(crate::benchmark::BenchmarkCoordinator::new());
         assert!(coordinator.try_start_shared_backend_change());
         {
-            let _guard = SharedBackendChangeGuard(coordinator.clone());
+            let _guard = SharedBackendChangeGuard(coordinator.clone(), None);
             assert!(!coordinator.try_start());
         }
         assert!(coordinator.try_start());

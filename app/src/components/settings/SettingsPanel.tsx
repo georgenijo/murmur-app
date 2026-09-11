@@ -72,6 +72,7 @@ import {
   type DiagnosticsTab,
 } from '../log-viewer/DiagnosticsWorkspace';
 import { SettingToggle } from './SettingToggle';
+import { openCalendarPreferences } from '../../lib/calendar';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
   const [draft, setDraft] = useState(value);
@@ -316,6 +317,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const { byName: runtimeByName } = useModelRuntimeCatalog();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
+  const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
   const [targetRequest, setTargetRequest] = useState<string | null>(null);
@@ -1167,6 +1169,33 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsCallout title="Stored separately from dictation">
               Meeting transcripts use the crash-safe local store and never appear in dictation history.
             </SettingsCallout>
+            <div className="settings-stack">
+              <SettingToggle
+                targetId="meeting-suggestions"
+                title="Suggest Notetaker for Calendar Meetings"
+                description="Off by default. While enabled, Murmur reads upcoming Calendar events and offers to start Notetaker when a supported meeting app is frontmost. Nothing records until you accept."
+                checked={settings.meetingSuggestionsEnabled}
+                onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
+              />
+              <p className="text-xs leading-relaxed text-on-surface-variant">
+                Supports Zoom, Microsoft Teams, Slack, Webex, FaceTime, Safari, Chrome, Firefox, Edge, Brave, Arc, and Chromium. Browser suggestions cannot verify the active tab because Murmur does not read URLs or window titles.
+              </p>
+              <button
+                type="button"
+                className="w-fit text-xs font-medium text-on-surface-variant underline hover:text-primary"
+                onClick={() => {
+                  setCalendarSettingsError(null);
+                  void openCalendarPreferences().catch(() => {
+                    setCalendarSettingsError('Calendar settings could not be opened. Open Privacy & Security → Calendars in System Settings.');
+                  });
+                }}
+              >
+                Open Calendar Settings
+              </button>
+              {calendarSettingsError && (
+                <p role="alert" className="text-xs text-error">{calendarSettingsError}</p>
+              )}
+            </div>
             <SettingToggle
               targetId="meeting-audio"
               title="Keep Meeting Audio"

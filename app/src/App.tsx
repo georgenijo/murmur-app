@@ -30,6 +30,7 @@ import { useInitialization } from './lib/hooks/useInitialization';
 import { useSettings } from './lib/hooks/useSettings';
 import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useMeetings } from './lib/hooks/useMeetings';
+import { useMeetingSuggestionAcceptance } from './lib/hooks/useMeetingSuggestionAcceptance';
 import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
@@ -108,6 +109,7 @@ function App() {
   const pasteLastShortcutGenerationRef = useRef(0);
   const lastWorkingPasteLastShortcutRef = useRef<typeof settings.pasteLastShortcut>(null);
   const meetings = useMeetings(settings);
+  useMeetingSuggestionAcceptance(meetings.start, setDeliveryRecoveryMessage);
   useSoundCues(settings, meetings.status.phase);
   const markModelReady = useCallback((downloadedModel: typeof settings.model) => {
     if (downloadedModel !== settings.model) {

@@ -18,9 +18,11 @@ import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
 import { IDLE_MEETING_STATUS, type MeetingRuntimePhase, type MeetingRuntimeStatus } from '../lib/meetings';
 import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib/smartAutoMicrophone';
+import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
+import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
+import type { OverlayContent } from '../lib/overlayGeometry';
 
 export function OverlayWidget() {
-  const geometry = useOverlayGeometry();
   const [calibrating, setCalibrating] = useState(false);
 
   // Shared mutable state written synchronously by both useOverlayRuntime's
@@ -39,6 +41,18 @@ export function OverlayWidget() {
   const [meetingPhase, setMeetingPhase] = useState<MeetingRuntimePhase>('idle');
   const [stillConnecting, setStillConnecting] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
+  const meetingSuggestion = useMeetingSuggestion();
+  const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
+  const showMeetingSuggestion = meetingSuggestion.suggestion !== null
+    && status === 'idle'
+    && !meetingBusy
+    && !transforming
+    && !disabled
+    && !calibrating;
+  const overlayContent: OverlayContent = showMeetingSuggestion
+    ? 'meeting_suggestion'
+    : 'controls';
+  const geometry = useOverlayGeometry(overlayContent);
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
   const smartAutoStatus = useSmartAutoMicrophoneStatus(settingsMirror.smartAuto);
@@ -85,7 +99,7 @@ export function OverlayWidget() {
   // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
   // the single cursor poller. It is the only writer to the native resize path.
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
-    useOverlayExpansion();
+    useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent });
 
   const waveform = useWaveform(status);
   const modeRuntime = useModeRuntime();
@@ -154,6 +168,11 @@ export function OverlayWidget() {
   }, [status]);
 
   useEffect(() => {
+    if (status === 'idle' && !meetingBusy && !transforming && !disabled && !calibrating) return;
+    meetingSuggestion.clear();
+  }, [status, meetingBusy, transforming, disabled, calibrating, meetingSuggestion.clear]);
+
+  useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen('audio-initialization-stalled', () => {
@@ -205,8 +224,11 @@ export function OverlayWidget() {
   // Only the genuinely off/idle surface tucks the empty right wing beneath the
   // notch. Recording and processing keep the full top bar even without hover so
   // their right-side indicators never disappear.
-  const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
-  const compactIdle = status === 'idle' && !meetingBusy && !expanded && !calibrating;
+  const compactIdle = status === 'idle'
+    && !meetingBusy
+    && !expanded
+    && !calibrating
+    && !showMeetingSuggestion;
   const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
   const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
@@ -214,9 +236,9 @@ export function OverlayWidget() {
     <div
       className="relative flex h-full w-full"
       style={{ background: 'transparent' }}
-      onMouseDown={calibrating || meetingBusy ? undefined : recordingControls.handleMouseDown}
-      onDoubleClick={calibrating || meetingBusy ? undefined : recordingControls.handleDoubleClick}
-      onClick={calibrating || meetingBusy ? undefined : recordingControls.handleClick}
+      onMouseDown={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleMouseDown}
+      onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
+      onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
       onMouseEnter={calibrating ? undefined : onHoverStart}
       onMouseMove={calibrating ? undefined : onHoverStart}
     >
@@ -251,25 +273,37 @@ export function OverlayWidget() {
           barRefs={waveform.barRefs}
           smartAutoSummary={smartAutoSummary}
         />
-        <OverlayDropdown
-          geometry={geometry}
-          expanded={expanded}
-          status={status}
-          stillConnecting={stillConnecting}
-          showTapMissed={visual.showTapMissedLabel}
-          disabled={runtime.disabled}
-          autoPaste={settingsMirror.autoPaste}
-          fileOutputEnabled={settingsMirror.fileOutputEnabled}
-          recordingShortcutHint={settingsMirror.recordingShortcutHint}
-          mode={modeRuntime.status}
-          onCycleMode={(event) => {
-            event.stopPropagation();
-            void modeRuntime.cycle();
-          }}
-          onToggleDisabled={settingsMirror.handleToggleDisabled}
-          onToggleAutoPaste={settingsMirror.handleToggleAutoPaste}
-          onOpenSettings={settingsMirror.handleOpenSettings}
-        />
+        {showMeetingSuggestion && meetingSuggestion.suggestion ? (
+          <OverlayMeetingSuggestion
+            geometry={geometry}
+            expanded={expanded}
+            suggestion={meetingSuggestion.suggestion}
+            busy={meetingSuggestion.busy}
+            error={meetingSuggestion.error}
+            onAccept={() => void meetingSuggestion.accept()}
+            onDismiss={() => void meetingSuggestion.dismiss()}
+          />
+        ) : (
+          <OverlayDropdown
+            geometry={geometry}
+            expanded={expanded}
+            status={status}
+            stillConnecting={stillConnecting}
+            showTapMissed={visual.showTapMissedLabel}
+            disabled={runtime.disabled}
+            autoPaste={settingsMirror.autoPaste}
+            fileOutputEnabled={settingsMirror.fileOutputEnabled}
+            recordingShortcutHint={settingsMirror.recordingShortcutHint}
+            mode={modeRuntime.status}
+            onCycleMode={(event) => {
+              event.stopPropagation();
+              void modeRuntime.cycle();
+            }}
+            onToggleDisabled={settingsMirror.handleToggleDisabled}
+            onToggleAutoPaste={settingsMirror.handleToggleAutoPaste}
+            onOpenSettings={settingsMirror.handleOpenSettings}
+          />
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,38 @@
+[
+  {
+    "check": "fmt",
+    "exit": 0,
+    "seconds": 0.73
+  },
+  {
+    "check": "cargo-check",
+    "exit": 0,
+    "seconds": 13.67
+  },
+  {
+    "check": "clippy",
+    "exit": 0,
+    "seconds": 37.06
+  },
+  {
+    "check": "cargo-test",
+    "exit": 0,
+    "seconds": 82.87
+  },
+  {
+    "check": "tsc",
+    "exit": 0,
+    "seconds": 7.12
+  },
+  {
+    "check": "npm-test",
+    "exit": 0,
+    "seconds": 30.3,
+    "rerun": "After semantic fixture color fix; 1400 tests passed"
+  },
+  {
+    "check": "reference-docs-and-release-artifacts",
+    "exit": 0,
+    "tests": 54
+  }
+]

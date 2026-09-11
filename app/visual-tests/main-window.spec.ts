@@ -368,6 +368,17 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 
+test('synthetic meeting suggestion overlay keeps its prompt and actions visible', async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 260 });
+  await page.goto('/visual-fixtures.html?state=overlay-meeting-suggestion&appearance=dark');
+
+  const fixture = page.locator('[data-fixture-synthetic="meeting-suggestion"]');
+  await expect(page.getByText('Synthetic calendar: Product review started. Start Notetaker?')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Accept' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+  await expect(fixture).toHaveScreenshot('synthetic-meeting-suggestion-overlay.png');
+});
+
 test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
   await page.getByRole('button', { name: 'Text & Vocabulary', exact: true }).click();

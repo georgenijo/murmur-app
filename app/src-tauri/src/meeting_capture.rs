@@ -481,6 +481,7 @@ impl MeetingCoordinator {
                     .app_state
                     .meeting_inference_active
                     .store(false, Ordering::SeqCst);
+                crate::meeting_suggestions::busy_changed(&app_for_thread);
             });
         if spawned.is_err() {
             state

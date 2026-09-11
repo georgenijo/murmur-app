@@ -77,6 +77,9 @@ class ReferenceDocsTests(unittest.TestCase):
             "open_calendar_preferences",
             "get_meeting_calendar_events",
             "apply_meeting_calendar_event",
+            "configure_meeting_suggestions",
+            "get_meeting_suggestion",
+            "dismiss_meeting_suggestion",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, commands)

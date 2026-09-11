@@ -168,6 +168,30 @@ describe('useMeetings remote speaker refresh', () => {
     }));
   });
 
+  it('passes only the accepted suggestion token into the normal meeting start path', async () => {
+    meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
+    meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));
+
+    await act(async () => controller().start('66666666-6666-4666-8666-666666666666'));
+
+    expect(meetingMocks.startMeeting).toHaveBeenCalledWith(expect.objectContaining({
+      suggestionToken: '66666666-6666-4666-8666-666666666666',
+    }));
+    expect(JSON.stringify(meetingMocks.startMeeting.mock.calls)).not.toContain('Product review');
+  });
+
+  it('propagates suggested-start failure with a stable manual recovery message', async () => {
+    meetingMocks.startMeeting.mockRejectedValue(new Error('private Calendar event title'));
+
+    await act(async () => {
+      await expect(controller().start('77777777-7777-4777-8777-777777777777'))
+        .rejects.toThrow('Notetaker could not start from that Calendar suggestion');
+    });
+
+    expect(controller().error).toContain('Start it manually');
+    expect(controller().error).not.toContain('private Calendar event title');
+  });
+
   it('uses the latest Smart Auto policy after mount and drops it after a manual pin', async () => {
     meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
     meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));

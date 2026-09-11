@@ -23,6 +23,8 @@ import { toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { OverlayMeetingSuggestion } from './components/overlay/OverlayMeetingSuggestion';
+import overlayGeometryFixture from './components/overlay/overlay-geometry.fixture.json';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -608,12 +610,56 @@ function DictationPreviewFixture() {
   );
 }
 
+function MeetingSuggestionOverlayFixture() {
+  const geometry = overlayGeometryFixture.meetingSuggestionNotched;
+  return (
+    <div
+      data-visual-ready="true"
+      data-fixture-synthetic="meeting-suggestion"
+      className="flex min-h-screen items-start justify-center bg-[radial-gradient(circle_at_top,#526274,#20252c_70%)] pt-8"
+    >
+      <div
+        className="overlay-island overflow-hidden text-on-surface shadow-2xl"
+        style={{
+          width: geometry.windowW,
+          height: geometry.expandedH,
+          borderRadius: '0 0 12px 12px',
+          background: 'rgba(20, 20, 20, 0.92)',
+          backdropFilter: 'blur(40px)',
+        }}
+      >
+        <div className="flex items-center justify-between px-3" style={{ height: geometry.collapsedH }}>
+          <span className="h-2 w-2 rounded-full bg-on-surface/40" aria-hidden="true" />
+          <span className="text-[9px] font-medium uppercase tracking-wider text-on-surface/35">Murmur</span>
+          <span className="h-2 w-2" aria-hidden="true" />
+        </div>
+        <OverlayMeetingSuggestion
+          geometry={geometry}
+          expanded
+          suggestion={{
+            token: '88888888-8888-4888-8888-888888888888',
+            title: 'Synthetic calendar: Product review',
+            startMs: 1,
+            endMs: 2,
+          }}
+          busy={false}
+          error={null}
+          onAccept={() => {}}
+          onDismiss={() => {}}
+        />
+      </div>
+    </div>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     {requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
     ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />
+    ) : requestedState === 'overlay-meeting-suggestion' ? (
+      <MeetingSuggestionOverlayFixture />
     ) : requestedState === 'settings-appearance' ? (
       <AppearanceProvider>
         <VisualFixture />

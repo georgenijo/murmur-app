@@ -402,6 +402,24 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('discloses Calendar reads and browser limits before enabling meeting suggestions', async () => {
+    const meetings = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Meetings',
+    ) as HTMLButtonElement;
+    await act(async () => meetings.click());
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Suggest Notetaker for Calendar Meetings"]',
+    );
+    expect(toggle?.getAttribute('aria-checked')).toBe('false');
+    expect(container.textContent).toContain('reads upcoming Calendar events');
+    expect(container.textContent).toContain('Zoom, Microsoft Teams, Slack, Webex, FaceTime');
+    expect(container.textContent).toContain('does not read URLs or window titles');
+
+    await act(async () => toggle?.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSuggestionsEnabled: true });
+  });
+
   it('opens Voice Query as a focused AI & Models drill-down', async () => {
     const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'AI & Models') as HTMLButtonElement;
     await act(async () => button.click());

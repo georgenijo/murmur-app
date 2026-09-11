@@ -14,6 +14,38 @@ use std::time::{Duration, Instant};
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 
+thread_local! {
+    static SUGGESTION_OBSERVER_STORE: std::cell::RefCell<Option<Retained<EKEventStore>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) async fn set_suggestion_observation(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let result = catch(AssertUnwindSafe(|| {
+            SUGGESTION_OBSERVER_STORE.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if enabled {
+                    permission_status().require_read_access()?;
+                    if slot.is_none() {
+                        *slot = Some(unsafe { EKEventStore::new() });
+                    }
+                } else {
+                    *slot = None;
+                }
+                Ok(())
+            })
+        }))
+        .map_err(|_| UNAVAILABLE.to_string())
+        .and_then(|result| result);
+        let _ = sender.send(result);
+    })
+    .map_err(|_| UNAVAILABLE.to_string())?;
+    receiver.await.map_err(|_| UNAVAILABLE.to_string())?
+}
+
 pub(crate) fn permission_status() -> CalendarPermissionStatus {
     catch(|| unsafe {
         CalendarPermissionStatus::from_native(
@@ -65,7 +97,7 @@ pub(crate) async fn query_events(
         // A timed-out native query keeps ownership until its worker returns.
         // Repeated UI requests therefore cannot accumulate blocked workers.
         let _operation = operation;
-        let events = read_events(window)?;
+        let events = read_events(window, false, None)?;
         permission_status().require_read_access()?;
         candidates(&session_id, window, events)
     });
@@ -75,10 +107,49 @@ pub(crate) async fn query_events(
         .map_err(|_| UNAVAILABLE.to_string())?
 }
 
-fn read_events(window: CalendarWindow) -> Result<Vec<CalendarEvent>, String> {
+pub(crate) async fn query_suggestion_events(
+    window: CalendarWindow,
+    permit: Arc<AtomicBool>,
+) -> Result<Vec<SuggestionEvent>, String> {
+    let operation = CalendarOperation::acquire()?;
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        if !permit.load(Ordering::Acquire) {
+            return Err(UNAVAILABLE.into());
+        }
+        let events = read_events(window, true, Some(permit.clone()))?;
+        if !permit.load(Ordering::Acquire) {
+            return Err(UNAVAILABLE.into());
+        }
+        permission_status().require_read_access()?;
+        suggestion_events(window, events)
+    });
+    tokio::time::timeout(QUERY_TIMEOUT, task)
+        .await
+        .map_err(|_| UNAVAILABLE.to_string())?
+        .map_err(|_| UNAVAILABLE.to_string())?
+}
+
+fn read_events(
+    window: CalendarWindow,
+    only_video: bool,
+    permit: Option<Arc<AtomicBool>>,
+) -> Result<Vec<CalendarEvent>, String> {
+    if permit
+        .as_ref()
+        .is_some_and(|permit| !permit.load(Ordering::Acquire))
+    {
+        return Err(UNAVAILABLE.into());
+    }
     permission_status().require_read_access()?;
     autoreleasepool(|_| {
         catch(AssertUnwindSafe(|| unsafe {
+            if permit
+                .as_ref()
+                .is_some_and(|permit| !permit.load(Ordering::Acquire))
+            {
+                return Err(UNAVAILABLE.into());
+            }
             let store = EKEventStore::new();
             let start = NSDate::dateWithTimeIntervalSince1970(window.start_ms as f64 / 1_000.0);
             let end = NSDate::dateWithTimeIntervalSince1970(window.end_ms as f64 / 1_000.0);
@@ -89,16 +160,24 @@ fn read_events(window: CalendarWindow) -> Result<Vec<CalendarEvent>, String> {
             let started = Instant::now();
             let callback = RcBlock::new(move |event: NonNull<EKEvent>, mut stop: NonNull<Bool>| {
                 let mut result = result.lock_or_recover();
-                if started.elapsed() >= QUERY_TIMEOUT {
+                if started.elapsed() >= QUERY_TIMEOUT
+                    || permit
+                        .as_ref()
+                        .is_some_and(|permit| !permit.load(Ordering::Acquire))
+                {
                     *result = Err(UNAVAILABLE.to_string());
                 } else if let Ok(events) = result.as_mut() {
                     if events.len() >= MAX_CALENDAR_EVENTS {
                         *result = Err(INVALID_EVENT.to_string());
                     } else {
-                        let converted =
-                            catch(AssertUnwindSafe(|| extract_event(event.as_ref(), window)))
-                                .map_err(|_| UNAVAILABLE.to_string())
-                                .and_then(|event| event);
+                        let converted = catch(AssertUnwindSafe(|| {
+                            if only_video && !event_has_video_link(event.as_ref()) {
+                                return Ok(None);
+                            }
+                            extract_event(event.as_ref(), window)
+                        }))
+                        .map_err(|_| UNAVAILABLE.to_string())
+                        .and_then(|event| event);
                         match converted {
                             Ok(Some(event)) => events.push(event),
                             Ok(None) => {}
@@ -120,6 +199,26 @@ fn read_events(window: CalendarWindow) -> Result<Vec<CalendarEvent>, String> {
         }))
         .map_err(|_| UNAVAILABLE.to_string())?
     })
+}
+
+unsafe fn event_has_video_link(event: &EKEvent) -> bool {
+    if event.isAllDay() {
+        return false;
+    }
+    if let Some(url) = event.URL().and_then(|url| url.absoluteString()) {
+        if url.length() <= 2_048 && contains_video_link(&url.to_string()) {
+            return true;
+        }
+    }
+    for value in [event.location(), event.notes()].into_iter().flatten() {
+        if value.length() <= 16_384 {
+            let text = value.to_string();
+            if text.len() <= 16_384 && contains_video_link(&text) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn date_ms(date: &NSDate) -> Result<u64, String> {
