@@ -35,9 +35,14 @@ Settings → Knowledge provides:
 - server-bounded search and filters for type, enabled state, and scope
 - pages of 50 records, with at most 100 returned per repository request
 - create, inspect, edit, enable/disable, and individually confirmed delete
+- enable, disable, or delete every record matching the current search and type, enabled-state, and scope filters, including unloaded pages
 - visible scope, provenance, and update time per record
 - atomic JSON export and inspected import preview
-- typed `DELETE` confirmation for delete-all
+- typed `DELETE` confirmation for filtered bulk deletion and delete-all
+
+Bulk actions collect the complete filtered set in pages of 50 before changing any record. If the store revision changes between pages, the action stops without writes and asks you to refresh. The delete dialog shows the captured count and filters; changing a filter cannot expand that captured set. Canceling the dialog makes no changes. Filters and record controls stay disabled during collection, confirmation, and writes.
+
+Each bulk write uses the captured record revision through the existing enable/disable or delete command. A concurrent edit makes that record fail without overwriting it; the batch continues with the remaining records and never retries with a newer revision. Records already in the requested enabled state are left unchanged, preserving their update time and correction precedence. Results show success, unchanged, and failure counts and identify each failed record in the local UI. Leaving Knowledge stops further writes after any command already in flight. Filtered deletion removes only captured records; the separate delete-all action retains its recovery-backup cleanup behavior.
 
 Import files are limited to 8 MiB and 10,000 records. Validation happens before writes. Semantic duplicates are skipped; same-ID/different-content conflicts reject the entire import; existing records are never overwritten. Export writes a temporary sibling before atomic rename. Delete-all removes records, SQLite free pages, recovery backups, and quarantined databases, but never touches an export outside the store.
 
