@@ -26,7 +26,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 | Recording | Start / Stop recording · Enable / Disable Murmur |
 | History | Correct last dictation… · Paste Last / Retry Delivery · Search transcripts · Copy last transcript\* · Export history to a Markdown file\* |
 | Navigation | Go to Record · Go to Transcribe File |
-| Settings | One row per page: Recording, Transcription, Transform, Text & Vocabulary, Delivery, Benchmark, Performance, Appearance, General |
+| Settings | One row per page: Modes, Recording, Transcription, Transform, Text & Vocabulary, Delivery, Benchmark, Performance, Appearance, General |
 | Diagnostics | Open performance diagnostics |
 | App | Check for updates · About Murmur · Re-run setup assistant |
 
@@ -34,7 +34,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
-Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, and Transforms requests retain a route back to that hub.
+Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, Modes, and Transforms requests retain a route back to that hub.
 
 ## Matching and ranking
 

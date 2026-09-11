@@ -172,7 +172,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('opens on a single customization hub before the direct settings destinations', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Customize', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
+      'Customize', 'Modes', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
@@ -182,6 +182,7 @@ describe('SettingsPanel information architecture', () => {
       expect.stringContaining('Text & Vocabulary'),
       expect.stringContaining('Voice Commands'),
       expect.stringContaining('Styles'),
+      expect.stringContaining('Modes'),
       expect.stringContaining('Transforms'),
     ]);
     expect(resolvePage(undefined)).toBe('customize');
@@ -196,6 +197,7 @@ describe('SettingsPanel information architecture', () => {
       ['Text & Vocabulary', 'Text & Vocabulary'],
       ['Voice Commands', 'Voice Commands'],
       ['Styles', 'Delivery'],
+      ['Modes', 'Modes'],
       ['Transforms', 'Selected-Text Rewrite'],
     ] as const) {
       const row = hubButton(label);
@@ -209,6 +211,19 @@ describe('SettingsPanel information architecture', () => {
       expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
       expect(document.activeElement).toBe(hubButton(label));
     }
+  });
+
+  it('shows Modes and browser site rules on their own page', async () => {
+    const modes = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .find((button) => button.textContent === 'Modes') as HTMLButtonElement;
+
+    await act(async () => modes.click());
+
+    expect(container.querySelector('h1')?.textContent).toBe('Modes');
+    const browserSites = Array.from(container.querySelectorAll('legend'))
+      .find((legend) => legend.textContent === 'Browser sites');
+    expect(browserSites).toBeDefined();
+    expect(browserSites?.closest('details')).toBeNull();
   });
 
   it('commits keyboard changes to voice-detection sensitivity', async () => {
