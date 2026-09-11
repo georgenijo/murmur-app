@@ -7,6 +7,7 @@ import { SettingToggle } from './SettingToggle';
 import { SettingsBranch } from './SettingsBranch';
 import { SettingsCallout } from './SettingsLayout';
 import { SettingsSection } from './SettingsSection';
+import { TransformPractice } from './TransformPractice';
 
 interface TransformModelSettingsProps {
   settings: Settings;
@@ -38,6 +39,7 @@ export function TransformModelSettings({
         Never auto-applies.
       </SettingsCallout>
       <SettingToggle
+        targetId="correction-shortcut"
         title="Correct last dictation shortcut"
         description="Press ⌘⇧E to speak a correction to your latest dictation. Press again to finish, then review and copy or replace a matching selection. Uses the local model below."
         checked={settings.correctionShortcutEnabled}
@@ -47,6 +49,7 @@ export function TransformModelSettings({
         <p className="text-xs text-on-surface-variant">Accessibility access is required for ⌘⇧E. You can also start correction from the ⌘K command palette.</p>
       )}
       <SettingToggle
+        targetId="transform-shortcut"
         title="Enable Transform Shortcut"
         description="Hold the transform key while text is selected to capture a rewrite instruction."
         checked={settings.transformHoldKey !== null}
@@ -80,6 +83,10 @@ export function TransformModelSettings({
           )}
         </div>
       </SettingsBranch>
+      <TransformPractice
+        transformHoldKey={settings.transformHoldKey}
+        modelReady={vm.transformModel?.state === 'ready'}
+      />
       <div>
         <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
         <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">

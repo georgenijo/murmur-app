@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
     contextSummary: null as string | null,
     cancel: vi.fn(),
     copy: vi.fn(),
+    followUp: vi.fn(async () => undefined),
+    followUpBusy: false,
+    followUpError: null,
     signIn: vi.fn(async () => undefined),
   },
 }));
@@ -58,6 +61,18 @@ describe('QueryReviewApp', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('offers Ask follow-up only on Ready and invokes the explicit action', async () => {
+    await act(async () => { root.render(<QueryReviewApp />); });
+    expect(container.textContent).not.toContain('Ask follow-up');
+    mocks.driver.state = 'ready';
+    mocks.driver.errorCode = null;
+    await act(async () => { root.render(<QueryReviewApp />); });
+    const button = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Ask follow-up');
+    expect(button).toBeDefined();
+    await act(async () => { button?.click(); });
+    expect(mocks.driver.followUp).toHaveBeenCalledOnce();
   });
 
   it('maps typed provider failures without exposing their detail in the event', () => {

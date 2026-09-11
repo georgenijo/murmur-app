@@ -1,10 +1,11 @@
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import { OverlayPill, type OverlaySmartAutoSummary } from './OverlayPill';
 import { BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayIndicator } from './deriveVisual';
+import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 
 const geometry: OverlayGeometry = {
   windowW: 257,
@@ -18,7 +19,21 @@ const geometry: OverlayGeometry = {
   wingW: 36,
 };
 
-function CuePill({ indicator, smartAutoSummary }: { indicator: OverlayIndicator; smartAutoSummary?: OverlaySmartAutoSummary }) {
+function CuePill({
+  indicator,
+  smartAutoSummary,
+  deliveryCue,
+  onRetryDelivery,
+  onPauseDeliveryTimer,
+  onResumeDeliveryTimer,
+}: {
+  indicator: OverlayIndicator;
+  smartAutoSummary?: OverlaySmartAutoSummary;
+  deliveryCue?: OverlayDeliveryCue;
+  onRetryDelivery?: () => void;
+  onPauseDeliveryTimer?: () => void;
+  onResumeDeliveryTimer?: () => void;
+}) {
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   return (
     <OverlayPill
@@ -31,6 +46,10 @@ function CuePill({ indicator, smartAutoSummary }: { indicator: OverlayIndicator;
       status="idle"
       barRefs={barRefs}
       smartAutoSummary={smartAutoSummary}
+      deliveryCue={deliveryCue}
+      onRetryDelivery={onRetryDelivery}
+      onPauseDeliveryTimer={onPauseDeliveryTimer}
+      onResumeDeliveryTimer={onResumeDeliveryTimer}
     />
   );
 }
@@ -50,14 +69,59 @@ describe('OverlayPill transient cues', () => {
     container.remove();
   });
 
-  it('renders an accessible, non-interactive manual-paste status', async () => {
-    await act(async () => root.render(<CuePill indicator={{ kind: 'clipboardOnly' }} />));
+  it('renders an accessible manual-paste status with a non-focusing retry action', async () => {
+    const onRetryDelivery = vi.fn();
+    const onPauseDeliveryTimer = vi.fn();
+    const onResumeDeliveryTimer = vi.fn();
+    await act(async () => root.render(
+      <CuePill
+        indicator={{ kind: 'clipboardOnly' }}
+        deliveryCue={{ kind: 'confirmed_clipboard', message: 'Text copied. Try again.' }}
+        onRetryDelivery={onRetryDelivery}
+        onPauseDeliveryTimer={onPauseDeliveryTimer}
+        onResumeDeliveryTimer={onResumeDeliveryTimer}
+      />,
+    ));
 
     const status = container.querySelector<HTMLElement>('[role="status"]');
     expect(status?.textContent).toBe('⌘V');
     expect(status?.getAttribute('aria-live')).toBe('polite');
-    expect(status?.getAttribute('aria-label')).toBe('Text copied to clipboard. Paste manually.');
-    expect(container.querySelector('button')).toBeNull();
+    expect(status?.getAttribute('aria-label')).toBe('Text copied. Try again.');
+    const action = container.querySelector<HTMLButtonElement>('[aria-label="Try delivery again"]')!;
+    expect(action.textContent).toBe('Try again');
+    expect(action.tabIndex).toBe(-1);
+    expect(action.style.fontSize).toBe('8px');
+    expect(action.style.fontWeight).toBe('600');
+    expect(action.style.lineHeight).toBe('1');
+    expect(action.style.letterSpacing).toBe('-0.03em');
+    const pointerDown = new MouseEvent('pointerdown', { bubbles: true, cancelable: true });
+    action.dispatchEvent(pointerDown);
+    expect(pointerDown.defaultPrevented).toBe(true);
+    expect(onPauseDeliveryTimer).toHaveBeenCalledOnce();
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    action.dispatchEvent(mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    await act(async () => action.click());
+    expect(onRetryDelivery).toHaveBeenCalledOnce();
+
+    action.dispatchEvent(new MouseEvent('pointerout', { bubbles: true }));
+    expect(onResumeDeliveryTimer).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [{ kind: 'auto_pasted', message: 'Pasted.' } as const, '✓', 'Pasted', false],
+    [{ kind: 'retrying', message: 'Trying.' } as const, '…', 'Trying…', false],
+    [{ kind: 'clipboard_only', message: 'Clipboard changed.' } as const, '↻', 'Try again', true],
+    [{ kind: 'empty', message: 'Nothing.' } as const, '—', 'Nothing', false],
+    [{ kind: 'busy', message: 'Busy.' } as const, '…', 'Try again', true],
+    [{ kind: 'failed', message: 'Failed.' } as const, '!', 'Try again', true],
+  ])('renders a sensible %s delivery result', async (deliveryCue, icon, label, retryable) => {
+    await act(async () => root.render(
+      <CuePill indicator={{ kind: 'clipboardOnly' }} deliveryCue={deliveryCue} />,
+    ));
+    expect(container.querySelector<HTMLElement>('[role="status"]')?.textContent).toBe(icon);
+    expect(container.textContent).toContain(label);
+    expect(Boolean(container.querySelector('[aria-label="Try delivery again"]'))).toBe(retryable);
   });
 
   it('renders an actionable, non-interactive mic-off status for an unavailable device', async () => {
@@ -130,7 +194,7 @@ describe('OverlayPill transient cues', () => {
       <CuePill indicator={{ kind: 'clipboardOnly' }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: null }} />,
     ));
     expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
-      .toBe('Text copied to clipboard. Paste manually.');
+      .toBe('Text copied to clipboard. Paste manually or try again.');
   });
 
   it('describes a background probe without presenting it as a manual preview', async () => {

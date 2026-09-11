@@ -120,6 +120,7 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
   const middleCard = page.locator('.home-history .transcript-card').nth(1);
   const feedback = middleCard.locator('.transcript-copy-feedback');
   const copyAction = middleCard.locator('[data-action-id="copy"]');
+  await middleCard.scrollIntoViewIfNeeded();
   const before = await middleCard.boundingBox();
   const shadowBefore = await middleCard.evaluate((element) => getComputedStyle(element).boxShadow);
 
@@ -355,7 +356,7 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice Commands' });
   await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
-  await expect(customizationList.getByRole('button')).toHaveCount(4);
+  await expect(customizationList.getByRole('button')).toHaveCount(5);
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
 
   await voiceCommands.click();
@@ -552,8 +553,7 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
-  await page.getByRole('button', { name: 'Delivery', exact: true }).click();
-  await page.locator('details[data-setting-target="app-overrides"] > summary').click();
+  await page.getByRole('button', { name: 'Modes', exact: true }).click();
   await page.getByRole('button', { name: /Technical Built-in/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
@@ -684,33 +684,40 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights.png');
 });
 
-test('populated Insights fits the default window with chart dates visible', async ({ page }) => {
+test('populated Insights keeps all tiles and charts reachable in the default window', async ({ page }) => {
   await page.setViewportSize({ width: 1120, height: 820 });
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
 
   const view = page.locator('.insights-view');
   const fit = await view.evaluate((element) => {
-    const viewBottom = element.getBoundingClientRect().bottom;
+    const viewBounds = element.getBoundingClientRect();
     const dateLabels = Array.from(element.querySelectorAll('.ui-day-chart-axis span'));
     const heatmapCell = element.querySelector('.ui-day-chart-heatmap button');
     const sections = Array.from(element.querySelectorAll('.usage-analytics-section'));
     return {
-      clientHeight: element.clientHeight,
-      scrollHeight: element.scrollHeight,
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
-      datesVisible: dateLabels.every((label) => label.getBoundingClientRect().bottom <= viewBottom),
+      datesContained: dateLabels.every((label) => {
+        const bounds = label.getBoundingClientRect();
+        return bounds.left >= viewBounds.left && bounds.right <= viewBounds.right;
+      }),
       heatmapCellWidth: heatmapCell?.getBoundingClientRect().width ?? Number.POSITIVE_INFINITY,
       sectionBottoms: sections.map((section) => section.getBoundingClientRect().bottom),
     };
   });
 
-  expect(fit.scrollHeight).toBeLessThanOrEqual(fit.clientHeight);
+  await expect(view).toHaveCSS('overflow-y', 'auto');
   expect(fit.scrollWidth).toBe(fit.clientWidth);
-  expect(fit.datesVisible).toBe(true);
+  expect(fit.datesContained).toBe(true);
   expect(fit.heatmapCellWidth).toBeLessThanOrEqual(32);
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
   expect(fit.sectionBottoms[2]).toBe(fit.sectionBottoms[3]);
+  const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
+  await expect(tiles).toHaveCount(10);
+  for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
+    await item.scrollIntoViewIfNeeded();
+    await expect(item).toBeInViewport({ ratio: 1 });
+  }
   await expect(page.locator('[data-query-note="failures"]')).toContainText('provider not authenticated 1');
   await expect(page.locator('.usage-analytics-section').first()).toHaveCSS('border-top-width', '1px');
 });
@@ -918,7 +925,37 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
+  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(7);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
+});
+
+test('discovery checklist and contextual hint remain readable together', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
+  await expect(page.getByRole('heading', { name: 'Try what is ready when you are' })).toBeVisible();
+  await expect(page.getByText('Use a Mode for this site', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-discovery-hint.png');
+});
+
+test('checklist feature names and pitches stay readable beside the Insights rail', async ({ page }) => {
+  for (const [width, height] of [[1120, 820], [880, 720], [720, 560]]) {
+    await page.setViewportSize({ width, height });
+    await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+    const labels = page.locator('.discovery-checklist-items strong, .discovery-checklist-items small');
+    await expect(labels).toHaveCount(14);
+    const clipped = await labels.evaluateAll((elements) => elements
+      .filter((element) => element.scrollWidth > element.clientWidth + 1
+        || element.scrollHeight > element.clientHeight + 1)
+      .map((element) => element.textContent));
+    expect(clipped, `Checklist text at ${width}x${height}`).toEqual([]);
+  }
+});
+
+test('Transform practice shows the real hold-flow instructions', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings-transform-practice&appearance=light');
+  await expect(page.getByRole('heading', { name: 'Practice on sample text' })).toBeVisible();
+  await page.getByRole('button', { name: 'Select sample text' }).click();
+  await expect(page.locator('.transform-practice [role="status"]')).toContainText('make this shorter');
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-settings-transform-practice.png');
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {

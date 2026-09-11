@@ -2050,6 +2050,10 @@ pub fn stop_query_listener() {
     }
 }
 
+pub(crate) fn query_listener_active() -> bool {
+    QUERY_ACTIVE.load(Ordering::SeqCst)
+}
+
 pub fn set_query_recording_state(recording: bool) {
     let mut detector = QUERY_DETECTOR.lock_or_recover();
     if let Some(detector) = detector.as_mut() {
