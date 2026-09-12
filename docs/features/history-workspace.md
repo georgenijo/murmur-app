@@ -124,6 +124,11 @@ change to the search, filters, or matching entries disarms it so the confirmed
 scope always matches the displayed count. Pinned matches are deleted with the
 rest of the set; nonmatching entries and their pin state stay intact.
 
+Each transcript card's overflow menu also includes **Delete**. Click it once to
+arm **Confirm delete**, then click again to remove only that transcript. This
+action is available whether or not search or filters are active; other entries,
+including pinned entries, remain unchanged.
+
 ## Export
 
 The **Export** menu acts on **exactly what is currently shown** — filters and search included — so "copy today's CLI notes" is a search plus two clicks.
