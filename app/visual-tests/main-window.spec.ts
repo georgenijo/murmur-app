@@ -713,7 +713,7 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
   expect(fit.sectionBottoms[2]).toBe(fit.sectionBottoms[3]);
   const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
-  await expect(tiles).toHaveCount(11);
+  await expect(tiles).toHaveCount(12);
   await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(1);
   for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
     await item.scrollIntoViewIfNeeded();
