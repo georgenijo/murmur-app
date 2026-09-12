@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-12
+
 ### Settings and appearance
 
 - Settings has clearer navigation and Mode selection in light and dark themes,
