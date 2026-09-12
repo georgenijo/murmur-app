@@ -210,7 +210,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           aria-expanded={smartAutoControlsOpen}
           aria-controls={smartAutoControlsId}
           onClick={() => setSmartAutoControlsOpen((current) => !current)}
-          className="mt-2 flex w-full items-center justify-between gap-3 rounded-(--ui-radius-control) px-2 py-1.5 text-left text-xs font-medium text-on-surface transition-colors hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-(--ui-radius-control) px-1.5 py-1 text-left text-[11px] font-medium text-on-surface-variant transition-colors hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <span>Smart Auto microphones</span>
           <svg aria-hidden="true" viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${smartAutoControlsOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -305,6 +305,7 @@ export function MicrophoneInputTest({
   const [autoStartSuspended, setAutoStartSuspended] = useState(false);
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [vadError, setVadError] = useState<string | null>(null);
   const [probeRetryError, setProbeRetryError] = useState<string | null>(null);
   const statusRef = useRef(status);
   const mountedRef = useRef(true);
@@ -327,6 +328,7 @@ export function MicrophoneInputTest({
     if (!mountedRef.current) return;
     const currentId = statusRef.current.previewId;
     if (currentId !== null && next.previewId !== null && next.previewId < currentId) return;
+    if (next.previewId !== currentId || next.state !== 'active') setVadError(null);
     statusRef.current = next;
     setStatus(next);
     if (next.state === 'error') {
@@ -353,7 +355,7 @@ export function MicrophoneInputTest({
           && statusRef.current.previewId === previewId
           && vadSensitivityRef.current === sensitivity
         ) {
-          setActionError('Voice detection is unavailable.');
+          setVadError('Voice detection is unavailable.');
         }
       }
     };
@@ -396,9 +398,9 @@ export function MicrophoneInputTest({
             return;
           }
           if (event.payload.decision === 'unavailable') {
-            setActionError('Voice detection is unavailable.');
+            setVadError('Voice detection is unavailable.');
           } else {
-            setActionError((current) => current === 'Voice detection is unavailable.' ? null : current);
+            setVadError(null);
           }
         },
       );
@@ -478,6 +480,10 @@ export function MicrophoneInputTest({
   useEffect(() => {
     if (status.previewId !== null) syncVadSensitivity(status.previewId, vadSensitivity);
   }, [status.previewId, syncVadSensitivity, vadSensitivity]);
+
+  useEffect(() => {
+    setVadError(null);
+  }, [vadSensitivity]);
 
   useEffect(() => {
     if (status.previewId !== null) return;
@@ -649,10 +655,11 @@ export function MicrophoneInputTest({
   const retryPreview = () => {
     if (statusRef.current.previewId !== null) return;
     setActionError(null);
+    setVadError(null);
     applyStatus(IDLE_MICROPHONE_PREVIEW);
     setAutoStartSuspended(false);
   };
-  const helperText = actionError ?? status.message ?? (
+  const helperText = actionError ?? vadError ?? status.message ?? (
     dictationBusy
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'
       : !ready
@@ -801,7 +808,7 @@ export function MicrophoneInputTest({
             <div ref={peakRef} className="absolute inset-y-0 left-0 w-0.5 bg-on-surface" aria-hidden="true" />
           </div>
         </div>
-        <p className={`mt-2 text-xs ${actionError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || status.message ? 'alert' : undefined}>
+        <p className={`mt-2 text-xs ${actionError || vadError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || vadError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
         {autoStartSuspended && status.previewId === null && monitoringActive && (

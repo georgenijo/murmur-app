@@ -959,8 +959,33 @@ describe('MicrophoneInputTest', () => {
     });
     expect(container.textContent).not.toContain('Speech detected · kept');
 
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 60, decision: 'unavailable' },
+      });
+    });
+    expect(container.textContent).toContain('Voice detection is unavailable.');
+
     await emitStatus(idle);
     expect(container.textContent).not.toContain('Listening');
+    expect(container.textContent).not.toContain('Voice detection is unavailable.');
+  });
+
+  it('clears an unavailable VAD error when sensitivity is disabled so pause guidance remains visible', async () => {
+    await render();
+    await emitStatus(active);
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 60, decision: 'unavailable' },
+      });
+    });
+    expect(container.textContent).toContain('Voice detection is unavailable.');
+
+    vadSensitivity = 0;
+    dictationBusy = true;
+    await render();
+    expect(container.textContent).toContain('Level monitoring pauses while Murmur records and resumes automatically.');
+    expect(container.textContent).not.toContain('Voice detection is unavailable.');
   });
 
   it('keeps recording-paused guidance while hiding the redundant VAD summary', async () => {
