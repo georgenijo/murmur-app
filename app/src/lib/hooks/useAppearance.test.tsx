@@ -1,4 +1,5 @@
 import { StrictMode } from 'react';
+import { ThemeLibrary } from '../../components/settings/ThemeLibrary';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -109,6 +110,47 @@ describe('appearance runtime hooks', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.useRealTimers();
+  });
+
+  function themeButton(label: string) {
+    const button = container.querySelector(`button[aria-label="${label}"]`);
+    if (!(button instanceof HTMLButtonElement)) throw new Error(`Missing theme action: ${label}`);
+    return button;
+  }
+
+  it('duplicates a saved card without selecting it and keeps the source intact after copy edits', async () => {
+    await act(async () => root.render(<Provider><Consumer /><ThemeLibrary onBrowse={() => {}} onImport={() => {}} onCustomize={() => {}} /></Provider>));
+    const source = makeLocalThemeEntry('ocean', 'Ocean', {
+      version: 1, presetId: 'custom', accent: '#175fa3', background: '#f0f5ff',
+    }, ['light']);
+    await act(async () => { await controller!.library.install([source]); });
+    const before = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    await act(async () => themeButton('Duplicate Ocean').click());
+    expect(localStorage.getItem(APPEARANCE_STORAGE_KEY)).toBe(before);
+    expect(controller!.library.document.themes).toHaveLength(2);
+    const copy = controller!.library.document.themes[1]!;
+    expect(copy).toMatchObject({ id: 'copy-of-ocean', label: 'Copy of Ocean', modes: ['light'], theme: source.theme, source: { kind: 'local' } });
+    expect(container.querySelector('[data-theme-collection="Ocean"]')).not.toBeNull();
+    expect(container.querySelector('[data-theme-collection="Copy of Ocean"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Duplicate Sonic"]')).toBeNull();
+    await act(async () => themeButton('Use Copy of Ocean theme').click());
+    await act(async () => { await controller!.updateTheme({ accent: '#cc3366' }); });
+    expect(controller!.document.theme.accent).toBe('#cc3366');
+    expect(controller!.library.document.themes[0]).toEqual(source);
+    expect(controller!.library.document.themes[1]).toEqual(copy);
+    await act(async () => themeButton('Duplicate Ocean').click());
+    expect(controller!.library.document.themes.map((entry) => entry.id)).toEqual(['ocean', 'copy-of-ocean', 'copy-of-ocean-2']);
+  });
+
+  it('shows the library-full error when a saved card cannot be duplicated', async () => {
+    await act(async () => root.render(<Provider><Consumer /><ThemeLibrary onBrowse={() => {}} onImport={() => {}} onCustomize={() => {}} /></Provider>));
+    const themes = Array.from({ length: 128 }, (_, index) => makeLocalThemeEntry(`theme-${index}`, `Theme ${index}`, { version: 1, presetId: 'sonic' }));
+    await act(async () => { await controller!.library.install(themes); });
+    const before = localStorage.getItem(THEME_LIBRARY_STORAGE_KEY);
+    await act(async () => themeButton('Duplicate Theme 0').click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('at most 128 themes');
+    expect(localStorage.getItem(THEME_LIBRARY_STORAGE_KEY)).toBe(before);
+    expect(controller!.library.document.themes).toEqual(themes);
   });
 
   it('maps modes to native setTheme and emits revisioned writes', async () => {
