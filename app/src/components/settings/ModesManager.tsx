@@ -171,7 +171,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
       <ModeFileActions settings={{ modes, appProfiles: profiles, browserSiteRules: siteRules, siteModeLookupEnabled: siteLookupEnabled }} onChange={onChange} />
       <div className="mt-4 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
         <div className="space-y-1" role="list" aria-label="Modes">
-          {allModes.map((mode) => <button key={mode.id} type="button" onClick={() => setSelectedId(mode.id)} className={`w-full rounded-lg px-3 py-2 text-left text-xs ${mode.id === selected.id ? 'bg-primary-container text-on-primary-container' : 'text-on-surface hover:bg-surface-container'}`}><span className="block font-semibold">{mode.name}</span><span className="block truncate text-[10px] opacity-70">{mode.builtIn ? 'Built-in' : mode.enabled ? 'Enabled' : 'Disabled'}</span></button>)}
+          {allModes.map((mode) => <button key={mode.id} type="button" aria-pressed={mode.id === selected.id} onClick={() => setSelectedId(mode.id)} className={`settings-mode-row w-full rounded-lg px-3 py-2 text-left text-xs ${mode.id === selected.id ? 'text-on-surface' : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'}`}><span className="block font-semibold">{mode.name}</span><span className="block truncate text-[10px] opacity-70">{mode.builtIn ? 'Built-in' : mode.enabled ? 'Enabled' : 'Disabled'}</span></button>)}
         </div>
         <div className="min-w-0 space-y-4">
           <div className="flex flex-wrap gap-2">

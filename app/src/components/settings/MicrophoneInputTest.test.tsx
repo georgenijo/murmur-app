@@ -218,7 +218,7 @@ describe('MicrophoneInputTest', () => {
     expect(paintedLevel).toBeGreaterThan(0);
     expect(paintedLevel).toBeLessThan(20);
     expect(meter.getAttribute('aria-valuetext')).toContain('Signal detected');
-    expect(container.textContent).toContain('Signal detected');
+    expect(container.textContent).not.toContain('Signal detected');
   });
 
   it('shows that automatic mode follows the currently resolved macOS input', async () => {
@@ -304,7 +304,7 @@ describe('MicrophoneInputTest', () => {
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'stop_microphone_preview')).toHaveLength(stopCallsBefore);
   });
 
-  it('shows availability-based Smart Auto readiness while background checks stay off', async () => {
+  it('keeps successful Smart Auto checks quiet while background checks stay off', async () => {
     includeSmartAuto = true;
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'get_microphone_preview_status') return idle;
@@ -318,8 +318,8 @@ describe('MicrophoneInputTest', () => {
     });
     await render();
 
-    expect(container.textContent).toContain('Smart Auto will use USB Microphone.');
-    expect(container.textContent).toContain('Why: your preferred included microphone.');
+    expect(container.textContent).not.toContain('Smart Auto will use USB Microphone.');
+    expect(container.textContent).not.toContain('Why: your preferred included microphone.');
     const disclosure = smartAutoDisclosure();
     await act(async () => disclosure.click());
     const submenu = container.querySelector('[aria-label="Smart Auto microphone inclusion"]') as HTMLFieldSetElement;
@@ -376,12 +376,7 @@ describe('MicrophoneInputTest', () => {
       },
     });
 
-    const pinButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === 'Use USB Microphone only');
-    await act(async () => pinButton?.click());
-    expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoMicrophoneEnabled: false });
-    expect(mocks.invoke).toHaveBeenCalledWith('stop_microphone_preview', { previewId: 7 });
-    expect(selected).toBe('usb');
+    expect(container.textContent).not.toContain('Use USB Microphone only');
   });
 
   it('renders an automatic probe separately from the visible manual preview', async () => {
@@ -406,7 +401,7 @@ describe('MicrophoneInputTest', () => {
     expect(container.textContent).not.toContain('Next capture ready');
   });
 
-  it('rereads the backend when evidence expires and shows a different fresh candidate', async () => {
+  it('rereads the backend when Smart Auto evidence expires', async () => {
     vi.useFakeTimers();
     includeSmartAuto = true;
     let statusCalls = 0;
@@ -426,12 +421,12 @@ describe('MicrophoneInputTest', () => {
     await render();
 
     expect(container.textContent).toContain('Smart Auto · Available: USB Microphone');
-    expect(container.textContent).toContain('Smart Auto will use Built-in Microphone.');
-    expect(container.textContent).toContain('Why: previously active with recent signal');
+    expect(container.textContent).not.toContain('Smart Auto will use Built-in Microphone.');
+    expect(container.textContent).not.toContain('Why: previously active with recent signal');
 
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(container.textContent).toContain('Smart Auto will use USB Microphone.');
-    expect(container.textContent).toContain('Why: your preferred included microphone');
+    expect(container.textContent).not.toContain('Smart Auto will use USB Microphone.');
+    expect(container.textContent).not.toContain('Why: your preferred included microphone');
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'get_smart_auto_microphone_status')).toHaveLength(2);
     vi.useRealTimers();
   });
@@ -761,8 +756,6 @@ describe('MicrophoneInputTest', () => {
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'stop_microphone_preview')).toHaveLength(0);
     expect(mocks.invoke.mock.calls.filter(([command]) => command === 'cancel_microphone_preview')).toHaveLength(0);
     expect(container.textContent).toContain('The microphone format is unsupported.');
-    expect(container.textContent).toContain('Voice detection · 55%');
-    expect(container.textContent).toContain('Unavailable');
     expect(container.textContent).not.toContain('Listening…');
 
     const retry = Array.from(container.querySelectorAll('button'))
@@ -781,7 +774,7 @@ describe('MicrophoneInputTest', () => {
       message: null,
     });
 
-    expect(container.textContent).toContain('Stopping…');
+    expect(container.textContent).toContain('Waiting for the microphone worker to close…');
     expect(container.textContent).not.toContain('Starting…');
     expect(container.textContent).not.toContain('Listening…');
   });
@@ -906,7 +899,7 @@ describe('MicrophoneInputTest', () => {
         payload: { previewId: 7, sensitivity: 60, decision: 'no_speech' },
       });
     });
-    expect(container.textContent).toContain('No speech · filtered');
+    expect(container.textContent).not.toContain('No speech · filtered');
 
     vadSensitivity = 20;
     await render();
@@ -921,7 +914,7 @@ describe('MicrophoneInputTest', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(container.textContent).toContain('Listening');
+    expect(container.textContent).not.toContain('Listening');
     expect(mocks.invoke).toHaveBeenLastCalledWith(
       'update_microphone_preview_vad_sensitivity',
       { previewId: 7, vadSensitivity: 20 },
@@ -932,7 +925,21 @@ describe('MicrophoneInputTest', () => {
         payload: { previewId: 7, sensitivity: 20, decision: 'speech_detected' },
       });
     });
-    expect(container.textContent).toContain('Speech detected · kept');
+    expect(container.textContent).not.toContain('Speech detected · kept');
+
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 20, decision: 'unavailable' },
+      });
+    });
+    expect(container.textContent).toContain('Voice detection is unavailable.');
+
+    await act(async () => {
+      mocks.listeners.get('microphone-preview-vad')?.({
+        payload: { previewId: 7, sensitivity: 20, decision: 'speech_detected' },
+      });
+    });
+    expect(container.textContent).not.toContain('Voice detection is unavailable.');
   });
 
   it('ignores a VAD decision from another preview generation and resets after stop', async () => {
@@ -943,27 +950,28 @@ describe('MicrophoneInputTest', () => {
         payload: { previewId: 8, sensitivity: 60, decision: 'speech_detected' },
       });
     });
-    expect(container.textContent).toContain('Listening');
+    expect(container.textContent).not.toContain('Listening');
 
     await act(async () => {
       mocks.listeners.get('microphone-preview-vad')?.({
         payload: { previewId: 7, sensitivity: 60, decision: 'speech_detected' },
       });
     });
-    expect(container.textContent).toContain('Speech detected · kept');
+    expect(container.textContent).not.toContain('Speech detected · kept');
 
     await emitStatus(idle);
-    expect(container.textContent).toContain('Listening');
+    expect(container.textContent).not.toContain('Listening');
   });
 
-  it('shows explicit Off and recording-paused VAD states', async () => {
+  it('keeps recording-paused guidance while hiding the redundant VAD summary', async () => {
     vadSensitivity = 0;
     await render();
-    expect(container.textContent).toContain('Off · all audio kept');
+    expect(container.textContent).not.toContain('Off · all audio kept');
 
     vadSensitivity = 60;
     dictationBusy = true;
     await render();
-    expect(container.textContent).toContain('Paused while recording');
+    expect(container.textContent).toContain('Level monitoring pauses while Murmur records and resumes automatically.');
+    expect(container.textContent).not.toContain('Voice detection ·');
   });
 });
