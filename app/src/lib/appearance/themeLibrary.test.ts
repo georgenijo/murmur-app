@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   MAX_THEME_LIBRARY_BYTES,
+  MAX_THEME_LIBRARY_ENTRIES,
+  availableThemeId,
   THEME_LIBRARY_STORAGE_KEY,
   appearanceSelection,
   composeThemeSelection,
@@ -62,6 +64,51 @@ function collectionTheme(
 }
 
 describe('theme library storage', () => {
+  it('installs independent duplicates with fresh IDs, source palettes, and supported modes', () => {
+    const storage = new MemoryStorage();
+    const source = makeLocalThemeEntry('paper', 'Paper', localTheme('paper').theme, ['light']);
+    let library = installThemeLibraryEntries(0, [source], storage);
+    for (const expectedId of ['copy-of-paper', 'copy-of-paper-2']) {
+      const copy = makeLocalThemeEntry(
+        availableThemeId('Copy of Paper', new Set(library.themes.map((entry) => entry.id))),
+        'Copy of Paper', source.theme, source.modes,
+      );
+      expect(copy.id).toBe(expectedId);
+      expect(copy.theme).toEqual(source.theme);
+      expect(copy.modes).toEqual(['light']);
+      library = installThemeLibraryEntries(library.revision, [copy], storage);
+    }
+    expect(library.themes[0]).toEqual(source);
+    expect(loadThemeLibrary(storage).document).toEqual(library);
+    const withoutCopy = removeThemeLibraryEntries(library.revision, ['copy-of-paper'], storage);
+    expect(withoutCopy.themes.map((entry) => entry.id)).toEqual(['paper', 'copy-of-paper-2']);
+    expect(withoutCopy.themes[0]).toEqual(source);
+  });
+
+  it('allows the last library slot and refuses another duplicate without partial writes', () => {
+    const storage = new MemoryStorage();
+    const source = localTheme('paper', 'Paper');
+    const themes = Array.from({ length: MAX_THEME_LIBRARY_ENTRIES - 1 }, (_, index) => ({ ...source, id: `theme-${index}` }));
+    const library = installThemeLibraryEntries(0, themes, storage);
+    const copy = makeLocalThemeEntry(availableThemeId('Copy of Paper', new Set(themes.map((entry) => entry.id))), 'Copy of Paper', source.theme, source.modes);
+    const full = installThemeLibraryEntries(library.revision, [copy], storage);
+    expect(full.themes).toHaveLength(MAX_THEME_LIBRARY_ENTRIES);
+    const before = storage.value;
+    const nextCopy = makeLocalThemeEntry(availableThemeId(copy.label, new Set(full.themes.map((entry) => entry.id))), copy.label, source.theme, source.modes);
+    expect(() => installThemeLibraryEntries(full.revision, [nextCopy], storage)).toThrow(/at most 128 themes/);
+    expect(storage.value).toBe(before);
+  });
+
+  it('refuses duplication into oversized storage without replacing it', () => {
+    const storage = new MemoryStorage();
+    storage.value = ' '.repeat(MAX_THEME_LIBRARY_BYTES + 1);
+    const before = storage.value;
+    const source = localTheme('paper');
+    const copy = makeLocalThemeEntry(availableThemeId('Copy of Paper', new Set([source.id])), 'Copy of Paper', source.theme, source.modes);
+    expect(() => installThemeLibraryEntries(0, [copy], storage)).toThrow(/1 MiB/);
+    expect(storage.value).toBe(before);
+  });
+
   it('loads an empty library and round-trips canonical entries', () => {
     const storage = new MemoryStorage();
     expect(loadThemeLibrary(storage)).toEqual({
