@@ -22,6 +22,15 @@ The Settings editor creates global entries. The persisted schema also has typed 
 
 Older comma/newline-separated `customVocabulary` strings migrate to enabled global entries with no aliases. Their written terms continue to feed the Whisper prompt and Smart Correction, preserving prior behavior.
 
+## Backup and transfer
+
+Use `Export saved spellings` in Settings → Text & Vocabulary to save every
+global, app-scoped, and project-scoped entry as a versioned JSON file. `Import
+saved spellings` validates the complete file locally, then shows new entries,
+exact duplicates, and conflicts before applying anything. Conflicting IDs or
+written terms are never overwritten; invalid, corrupted, or oversized files
+are rejected without changing Settings.
+
 ## Preview and privacy
 
 Settings includes a local in-memory preview that uses the production Rust matcher and can optionally include final CLI formatting. Preview input, output, aliases, canonical terms, bundle identifiers, and project roots are never logged. Configuration telemetry contains counts and booleans only. Alias processing does not read the clipboard or screen and does not change final-only clipboard/paste delivery.

@@ -3,6 +3,7 @@ import type { VocabularyEntry, VoiceCommand } from '../../lib/settings';
 import { vocabularyPrompt } from '../../lib/settings';
 import { previewVocabularyAliases } from '../../lib/dictation';
 import { validateVocabularyEntries } from '../../lib/vocabulary';
+import { VocabularyFileActions } from './VocabularyFileActions';
 
 function newEntryId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `vocabulary-${Date.now()}-${Math.random()}`;
@@ -91,6 +92,11 @@ export function VocabularyAliasesEditor({
           + Add spelling
         </button>
       </div>
+
+      <VocabularyFileActions
+        settings={{ vocabularyEntries: draft, voiceCommands }}
+        onChange={({ vocabularyEntries }) => update(vocabularyEntries)}
+      />
 
       {draft.length === 0 ? (
         <div className="mt-3 rounded-xl border border-dashed border-outline-variant/40 bg-surface-container-lowest px-4 py-5 text-center">

@@ -172,9 +172,9 @@ export interface VocabularyEntry {
   scope: VocabularyScope;
 }
 
-const MAX_VOCABULARY_ENTRIES = 500;
-const MAX_VOCABULARY_ALIASES = 16;
-const MAX_VOCABULARY_VALUE_CHARS = 256;
+export const MAX_VOCABULARY_ENTRIES = 500;
+export const MAX_VOCABULARY_ALIASES = 16;
+export const MAX_VOCABULARY_VALUE_CHARS = 256;
 
 function truncateVocabularyValue(value: string): string {
   return Array.from(value).slice(0, MAX_VOCABULARY_VALUE_CHARS).join('');
