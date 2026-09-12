@@ -8,7 +8,7 @@ it('shows a pending one-recording Mode and restores the bound Mode after consump
   const props = {
     geometry: { dropdownH: 34 } as OverlayGeometry, expanded: true,
     status: 'idle' as const, stillConnecting: false, showTapMissed: false,
-    disabled: false, autoPaste: true, fileOutputEnabled: false, recordingShortcutHint: 'Hold Fn',
+    disabled: false, autoPaste: true, fileOutputEnabled: false,
     onToggleDisabled: vi.fn(), onToggleAutoPaste: vi.fn(), onOpenSettings: vi.fn(),
   };
   const mode = { id: 'builtin.email', name: 'Email', source: 'app_binding' as const };
@@ -19,5 +19,28 @@ it('shows a pending one-recording Mode and restores the bound Mode after consump
   await act(async () => root.render(<OverlayDropdown {...props} mode={{ ...mode, pending: null }} />));
   expect(container.textContent).not.toContain('Next: Verbatim');
   expect(container.querySelector('[aria-label="Mode: Email. Click to cycle"]')?.textContent).toBe('Email');
+  await act(async () => root.unmount());
+});
+
+it('does not render recording shortcut guidance in the idle quick-controls row', async () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  await act(async () => root.render(
+    <OverlayDropdown
+      geometry={{ dropdownH: 34 } as OverlayGeometry}
+      expanded
+      status="idle"
+      stillConnecting={false}
+      showTapMissed={false}
+      disabled={false}
+      autoPaste
+      fileOutputEnabled={false}
+      onToggleDisabled={vi.fn()}
+      onToggleAutoPaste={vi.fn()}
+      onOpenSettings={vi.fn()}
+    />,
+  ));
+
+  expect(container.textContent).toBe('Everyday');
   await act(async () => root.unmount());
 });

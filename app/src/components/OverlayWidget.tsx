@@ -298,7 +298,6 @@ export function OverlayWidget() {
             disabled={runtime.disabled}
             autoPaste={settingsMirror.autoPaste}
             fileOutputEnabled={settingsMirror.fileOutputEnabled}
-            recordingShortcutHint={settingsMirror.recordingShortcutHint}
             mode={modeRuntime.status}
             onCycleMode={(event) => {
               event.stopPropagation();
