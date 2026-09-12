@@ -73,4 +73,22 @@ describe('useHistoryManagement retention boundary', () => {
     expect(current.historyEntries).toEqual([]);
     expect(localStorage.getItem('dictation-history')).toBeNull();
   });
+
+  it('deletes an exact pinned subset and frees its pin slot', async () => {
+    saveHistory(Array.from({ length: 21 }, (_, index) => ({
+      ...storedEntry(`entry-${index}`, `entry ${index}`),
+      pinned: index < 20,
+    })));
+    await render(true);
+
+    const removed = current.historyEntries[0];
+    await act(async () => current.deleteEntries([removed]));
+
+    expect(current.historyEntries.map((entry) => entry.id)).not.toContain('entry-0');
+    expect(current.historyEntries.filter((entry) => entry.pinned)).toHaveLength(19);
+    const newlyPinned = current.historyEntries.find((entry) => entry.id === 'entry-20')!;
+    await act(async () => current.togglePinned(newlyPinned));
+    expect(current.historyEntries.filter((entry) => entry.pinned)).toHaveLength(20);
+    expect(JSON.parse(localStorage.getItem('dictation-history') ?? '[]')).toEqual(current.historyEntries);
+  });
 });

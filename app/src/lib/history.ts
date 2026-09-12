@@ -164,6 +164,15 @@ export function updateHistoryEntry(
   return entries.map((entry) => entry.id === id ? { ...entry, text } : entry);
 }
 
+/** Remove the exact entry objects selected from the current history. */
+export function removeHistoryEntries(
+  entries: HistoryEntry[],
+  targets: readonly HistoryEntry[],
+): HistoryEntry[] {
+  const removed = new Set(targets);
+  return trimHistory(entries.filter((entry) => !removed.has(entry)));
+}
+
 export interface TogglePinnedResult {
   entries: HistoryEntry[];
   changed: boolean;

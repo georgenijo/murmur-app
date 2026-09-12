@@ -9,6 +9,7 @@ import {
   saveHistory,
   addHistoryEntry,
   updateHistoryEntry,
+  removeHistoryEntries,
   clearHistory as clearPersistedHistory,
   toggleHistoryEntryPinned,
 } from '../history';
@@ -46,10 +47,19 @@ export function useHistoryManagement(retainHistory = true) {
     });
   }, []);
 
+  const deleteEntries = useCallback((targets: readonly HistoryEntry[]) => {
+    setHistoryEntries(prev => {
+      const next = removeHistoryEntries(prev, targets);
+      if (next.length === prev.length) return prev;
+      saveHistory(next);
+      return next;
+    });
+  }, []);
+
   const clearHistory = useCallback(() => {
     setHistoryEntries([]);
     clearPersistedHistory();
   }, []);
 
-  return { historyEntries, addEntry, updateEntry, togglePinned, clearHistory };
+  return { historyEntries, addEntry, updateEntry, togglePinned, deleteEntries, clearHistory };
 }
