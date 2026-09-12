@@ -10,7 +10,6 @@ import {
 import type { Settings } from '../../lib/settings';
 import {
   retrySmartAutoProbe,
-  smartAutoMicrophoneReasonLabel,
   smartAutoProbePhaseLabel,
 } from '../../lib/smartAutoMicrophone';
 import { useSmartAutoMicrophoneStatus } from '../../lib/hooks/useSmartAutoMicrophoneStatus';
@@ -28,7 +27,6 @@ import {
   type MicrophonePreviewLevel,
   type MicrophonePreviewStatus,
   type MicrophonePreviewVad,
-  type MicrophonePreviewVadDecision,
   type MicrophoneSignalClassification,
 } from '../../lib/microphonePreview';
 import { Select } from '../ui/Select';
@@ -212,7 +210,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           aria-expanded={smartAutoControlsOpen}
           aria-controls={smartAutoControlsId}
           onClick={() => setSmartAutoControlsOpen((current) => !current)}
-          className="mt-2 flex w-full items-center justify-between gap-3 rounded-(--ui-radius-control) px-2 py-1.5 text-left text-xs font-medium text-on-surface transition-colors hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-(--ui-radius-control) px-1.5 py-1 text-left text-[11px] font-medium text-on-surface-variant transition-colors hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <span>Smart Auto microphones</span>
           <svg aria-hidden="true" viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${smartAutoControlsOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -307,8 +305,8 @@ export function MicrophoneInputTest({
   const [autoStartSuspended, setAutoStartSuspended] = useState(false);
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [vadError, setVadError] = useState<string | null>(null);
   const [probeRetryError, setProbeRetryError] = useState<string | null>(null);
-  const [vadDecision, setVadDecision] = useState<MicrophonePreviewVadDecision | 'listening'>('listening');
   const statusRef = useRef(status);
   const mountedRef = useRef(true);
   const operationRef = useRef<Promise<void> | null>(null);
@@ -321,8 +319,6 @@ export function MicrophoneInputTest({
   const meterRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const peakRef = useRef<HTMLDivElement>(null);
-  const classificationRef = useRef<HTMLSpanElement>(null);
-  const paintedClassificationRef = useRef<MicrophoneSignalClassification>('no_signal');
   const displayedLevelRef = useRef(0);
   const displayedPeakRef = useRef(0);
   const lastPaintAtRef = useRef<number | null>(null);
@@ -332,6 +328,7 @@ export function MicrophoneInputTest({
     if (!mountedRef.current) return;
     const currentId = statusRef.current.previewId;
     if (currentId !== null && next.previewId !== null && next.previewId < currentId) return;
+    if (next.previewId !== currentId || next.state !== 'active') setVadError(null);
     statusRef.current = next;
     setStatus(next);
     if (next.state === 'error') {
@@ -358,7 +355,7 @@ export function MicrophoneInputTest({
           && statusRef.current.previewId === previewId
           && vadSensitivityRef.current === sensitivity
         ) {
-          setVadDecision('unavailable');
+          setVadError('Voice detection is unavailable.');
         }
       }
     };
@@ -400,7 +397,11 @@ export function MicrophoneInputTest({
             syncVadSensitivity(event.payload.previewId, vadSensitivityRef.current);
             return;
           }
-          setVadDecision(event.payload.decision);
+          if (event.payload.decision === 'unavailable') {
+            setVadError('Voice detection is unavailable.');
+          } else {
+            setVadError(null);
+          }
         },
       );
       const versionBeforeSnapshot = eventVersionRef.current;
@@ -469,12 +470,6 @@ export function MicrophoneInputTest({
             `${microphoneClassificationLabel(level.classification)}, level ${accessibleLevel} percent, peak ${accessiblePeak} percent`,
           );
         }
-        if (paintedClassificationRef.current !== level.classification) {
-          paintedClassificationRef.current = level.classification;
-          if (classificationRef.current) {
-            classificationRef.current.textContent = microphoneClassificationLabel(level.classification);
-          }
-        }
       }
       frame = requestAnimationFrame(paint);
     };
@@ -483,9 +478,12 @@ export function MicrophoneInputTest({
   }, []);
 
   useEffect(() => {
-    setVadDecision('listening');
     if (status.previewId !== null) syncVadSensitivity(status.previewId, vadSensitivity);
   }, [status.previewId, syncVadSensitivity, vadSensitivity]);
+
+  useEffect(() => {
+    setVadError(null);
+  }, [vadSensitivity]);
 
   useEffect(() => {
     if (status.previewId !== null) return;
@@ -498,9 +496,6 @@ export function MicrophoneInputTest({
     if (peakRef.current) peakRef.current.style.left = '0%';
     meterRef.current?.setAttribute('aria-valuenow', '0');
     meterRef.current?.setAttribute('aria-valuetext', 'Microphone test inactive');
-    paintedClassificationRef.current = 'no_signal';
-    if (classificationRef.current) classificationRef.current.textContent = 'No signal';
-    setVadDecision('listening');
   }, [status.previewId]);
 
   const runExclusive = useCallback(async (task: () => Promise<void>) => {
@@ -660,53 +655,11 @@ export function MicrophoneInputTest({
   const retryPreview = () => {
     if (statusRef.current.previewId !== null) return;
     setActionError(null);
+    setVadError(null);
     applyStatus(IDLE_MICROPHONE_PREVIEW);
     setAutoStartSuspended(false);
   };
-  const vadUnavailable = !monitoringActive
-    || !ready
-    || missingDevice
-    || smartAutoUnavailable
-    || !inventoryAvailable
-    || status.state === 'error'
-    || (autoStartSuspended && !ownsPreview);
-  const vadLabel = dictationBusy
-    ? 'Paused while recording'
-    : vadSensitivity === 0
-      ? 'Off · all audio kept'
-      : vadUnavailable
-        ? 'Unavailable'
-        : operation === 'switching' || status.state === 'stopping'
-          ? 'Stopping…'
-          : operation === 'starting' || status.state === 'connecting'
-            ? 'Starting…'
-            : status.state !== 'active'
-              ? 'Preview inactive'
-              : vadDecision === 'speech_detected'
-                ? 'Speech detected · kept'
-                : vadDecision === 'no_speech'
-                  ? 'No speech · filtered'
-                  : vadDecision === 'unavailable'
-                    ? 'Voice detection unavailable'
-                    : 'Listening…';
-  const showVadDecision = !dictationBusy && vadSensitivity > 0 && status.state === 'active';
-  const vadDotClass = showVadDecision && vadDecision === 'speech_detected'
-    ? 'bg-success'
-    : showVadDecision && vadDecision === 'no_speech'
-      ? 'bg-warning'
-      : showVadDecision && vadDecision === 'unavailable'
-        ? 'bg-error'
-        : 'bg-on-surface-variant/45';
-  const vadTextClass = showVadDecision && vadDecision === 'speech_detected'
-    ? 'text-success'
-    : showVadDecision && vadDecision === 'no_speech'
-      ? 'text-warning'
-      : showVadDecision && vadDecision === 'unavailable'
-        ? 'text-error'
-        : vadUnavailable
-          ? 'text-error'
-          : 'text-on-surface-variant';
-  const helperText = actionError ?? status.message ?? (
+  const helperText = actionError ?? vadError ?? status.message ?? (
     dictationBusy
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'
       : !ready
@@ -732,24 +685,14 @@ export function MicrophoneInputTest({
       : null;
   const defaultDevice = devices.find((device) => device.id === defaultInputId) ?? null;
   const deviceOptions = audioDeviceSelectOptions(devices);
-  const previewCandidateLabel = smartAutoSelection
-    ? deviceOptions.find((device) => device.value === smartAutoSelection.device.id)?.label
-      ?? smartAutoSelection.device.name
-    : null;
-  const readyStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready'
-    ? smartAutoStatus.status
-    : null;
   const probingStatus = smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'probing'
     ? smartAutoStatus.status
-    : null;
-  const readyDeviceLabel = readyStatus
-    ? deviceOptions.find((device) => device.value === readyStatus.deviceId)?.label
-      ?? 'ready microphone'
     : null;
   const probingDeviceLabel = probingStatus
     ? deviceOptions.find((device) => device.value === probingStatus.deviceId)?.label
       ?? 'included microphone'
     : null;
+  const showSmartAutoFeedback = smartAutoStatus.kind !== 'resolved' || smartAutoStatus.status.state !== 'ready';
   const automaticHelperText = smartAutoActive
     ? null
     : microphone === 'system_default' && inventoryAvailable
@@ -800,7 +743,7 @@ export function MicrophoneInputTest({
         >
           {selectorHelperText}
         </p>
-      ) : smartAutoActive ? (
+      ) : smartAutoActive && showSmartAutoFeedback ? (
         <div id={selectorHelperId} className="mt-2 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant" aria-live="polite">
           {smartAutoStatus.kind === 'loading' ? (
             <p>Checking which included microphone is ready…</p>
@@ -808,11 +751,6 @@ export function MicrophoneInputTest({
             <p className="text-primary">
               <span className="font-medium">Checking {probingDeviceLabel}: </span>
               {smartAutoProbePhaseLabel(probingStatus.phase)}. Audio is not transcribed or saved.
-            </p>
-          ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'ready' ? (
-            <p className="text-success">
-              <span className="font-medium">Smart Auto will use {readyDeviceLabel}. </span>
-              Why: {smartAutoMicrophoneReasonLabel(smartAutoStatus.status.reason)}.
             </p>
           ) : smartAutoStatus.kind === 'resolved' && smartAutoStatus.status.state === 'blocked' ? (
             <>
@@ -846,19 +784,6 @@ export function MicrophoneInputTest({
           ) : smartAutoStatus.kind === 'unavailable' ? (
             <p className="text-warning">Murmur could not confirm an included microphone. Smart Auto will wait instead of recording from another input.</p>
           ) : null}
-          {previewCandidateLabel && (
-            <button
-              type="button"
-              className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-on-surface disabled:opacity-50"
-              disabled={busy}
-              onClick={() => {
-                onSmartAutoChange?.({ smartAutoMicrophoneEnabled: false });
-                switchDevice(previewMicrophone);
-              }}
-            >
-              Use {previewCandidateLabel} only
-            </button>
-          )}
         </div>
       ) : selectorHelperText || automaticHelperText ? (
         <p id={selectorHelperId} className="mt-2 text-xs text-on-surface-variant">
@@ -882,11 +807,8 @@ export function MicrophoneInputTest({
             <div ref={fillRef} className="h-full w-0 rounded-full bg-on-surface-variant/35 transition-colors" />
             <div ref={peakRef} className="absolute inset-y-0 left-0 w-0.5 bg-on-surface" aria-hidden="true" />
           </div>
-          <span ref={classificationRef} aria-live="polite" className="w-24 text-right text-xs font-medium text-on-surface">
-            No signal
-          </span>
         </div>
-        <p className={`mt-2 text-xs ${actionError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || status.message ? 'alert' : undefined}>
+        <p className={`mt-2 text-xs ${actionError || vadError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || vadError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
         {autoStartSuspended && status.previewId === null && monitoringActive && (
@@ -899,15 +821,6 @@ export function MicrophoneInputTest({
             Retry microphone preview
           </button>
         )}
-        <div className="mt-2 flex items-center justify-between gap-3 border-t border-outline-variant/15 pt-2 text-xs">
-          <span className="text-on-surface-variant">
-            Voice detection · {vadSensitivity === 0 ? 'Off' : `${vadSensitivity}%`}
-          </span>
-          <span className="inline-flex items-center gap-1.5 font-medium" aria-live="polite" aria-atomic="true">
-            <span className={`h-1.5 w-1.5 rounded-full ${vadDotClass}`} aria-hidden="true" />
-            <span className={vadTextClass}>{vadLabel}</span>
-          </span>
-        </div>
       </div>
     </div>
   );

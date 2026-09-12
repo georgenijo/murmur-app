@@ -420,8 +420,8 @@ test('recording settings show Smart Auto inclusion and selection status', async 
   const submenu = page.getByRole('group', { name: 'Smart Auto microphone inclusion' });
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
   await expect(submenu).toBeHidden();
-  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toBeVisible();
-  await expect(page.getByText(/Why: your preferred included microphone/)).toBeVisible();
+  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toHaveCount(0);
+  await expect(page.getByText(/Why: your preferred included microphone/)).toHaveCount(0);
   await expect(page.getByText(/Live input from MacBook Pro Microphone/)).toBeVisible();
   await expect(page.getByRole('button', { name: /Verify signal/ })).toHaveCount(0);
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
@@ -489,7 +489,7 @@ test('recording settings keep Smart Auto ready when background checks are off', 
   const disclosure = page.getByRole('button', { name: 'Smart Auto microphones' });
   const submenu = page.getByRole('group', { name: 'Smart Auto microphone inclusion' });
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toBeVisible();
+  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toHaveCount(0);
   await disclosure.click();
   await expect(submenu.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
   await expect(submenu.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
@@ -500,7 +500,7 @@ test('recording settings keep Smart Auto ready when background checks are off', 
   await disclosure.click();
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
   await expect(submenu).toBeHidden();
-  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toBeVisible();
+  await expect(page.getByText('Smart Auto will use MacBook Pro Microphone.')).toHaveCount(0);
 });
 
 test('settings rows keep the shared spacing contract and aligned controls', async ({ page }) => {
@@ -713,7 +713,7 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
   expect(fit.sectionBottoms[2]).toBe(fit.sectionBottoms[3]);
   const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
-  await expect(tiles).toHaveCount(11);
+  await expect(tiles).toHaveCount(12);
   await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(1);
   for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
     await item.scrollIntoViewIfNeeded();

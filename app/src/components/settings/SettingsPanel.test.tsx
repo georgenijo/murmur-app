@@ -208,7 +208,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('opens on a single customization hub before the direct settings destinations', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Customize', 'Modes', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
+      'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Modes', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));

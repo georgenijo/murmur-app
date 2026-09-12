@@ -60,6 +60,7 @@
 
 .settings-nav-item {
   position: relative;
+  border: 1px solid transparent;
   border-radius: var(--settings-radius-control);
   font-weight: 550;
   letter-spacing: var(--settings-track-tight);
@@ -67,7 +68,8 @@
 }
 
 .settings-nav-item[aria-current='page'] {
-  background: var(--settings-tint-raised);
+  background: color-mix(in srgb, var(--murmur-primary) 11%, var(--settings-tint-raised));
+  border: 1px solid color-mix(in srgb, var(--murmur-primary) 46%, var(--settings-hairline));
   box-shadow: var(--settings-shadow-1);
   font-weight: 650;
 }
@@ -86,6 +88,18 @@
   margin-top: -8px;
   border-radius: var(--settings-radius-pill);
   background: var(--murmur-primary);
+}
+
+.settings-mode-row {
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.settings-mode-row[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--murmur-primary) 13%, var(--settings-tint-raised));
+  border-color: color-mix(in srgb, var(--murmur-primary) 48%, var(--settings-hairline));
+  box-shadow: inset 3px 0 0 var(--murmur-primary);
+  font-weight: 650;
 }
 
 .settings-tools-eyebrow {
@@ -511,6 +525,7 @@
   .settings-quiet-btn,
   .settings-segmented-btn,
   .settings-hub-card,
+  .settings-mode-row,
   .settings-workspace button[role='combobox'],
   .settings-workspace input[type],
   .settings-workspace input:not([type]),

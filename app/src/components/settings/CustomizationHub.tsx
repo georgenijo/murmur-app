@@ -89,10 +89,6 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
           </li>
         ))}
       </ol>
-
-      <p className="mt-4 text-xs leading-relaxed text-on-surface-variant">
-        Everything is stored and processed on this Mac.
-      </p>
     </section>
   );
 }

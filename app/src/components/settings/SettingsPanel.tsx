@@ -175,16 +175,18 @@ interface SettingsPanelProps {
 }
 
 export const SETTINGS_CATEGORIES = [
-  { id: 'customize', label: 'Customize', icon: 'customize' },
-  { id: 'modes', label: 'Modes', icon: 'modes' },
   { id: 'general', label: 'General', icon: 'general' },
   { id: 'recording', label: 'Recording', icon: 'recording' },
+  { id: 'customize', label: 'Customize', icon: 'customize' },
   { id: 'delivery', label: 'Delivery', icon: 'delivery' },
   { id: 'meetings', label: 'Meetings', icon: 'meetings' },
   { id: 'text', label: 'Text & Vocabulary', icon: 'text' },
   { id: 'ai', label: 'AI & Models', icon: 'ai' },
+  { id: 'modes', label: 'Modes', icon: 'modes' },
   { id: 'appearance', label: 'Appearance', icon: 'appearance' },
 ] as const;
+
+const DEFAULT_SETTINGS_PAGE = 'customize';
 
 export const SETTINGS_TOOLS = [
   { id: 'performance', label: 'Performance Lab', icon: 'performance' },
@@ -243,7 +245,7 @@ export function resolvePage(page: string | undefined): string {
   if (page === 'transform') return 'ai-transform';
   if (page === 'voice-query' || page === 'query') return 'ai-query';
   if (page === 'app') return 'general';
-  return SETTINGS_CATEGORIES[0].id;
+  return DEFAULT_SETTINGS_PAGE;
 }
 
 export function settingsLatencyView(page: string | undefined): string {
@@ -282,11 +284,11 @@ const SETTINGS_SEARCH_ITEMS = [
 
 function SettingsNavIcon({ icon }: { icon: string }) {
   const paths: Record<string, React.ReactNode> = {
-    customize: <><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></>,
+    customize: <><path d="m14.8 4.2 5 5M4 20l3.8-1 10.9-10.9a2.1 2.1 0 0 0-3-3L4.8 16z" /><path d="m13.2 5.8 5 5" /></>,
     general: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></>,
     recording: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" /></>,
     delivery: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="m9 12 2 2 4-5" /></>,
-    modes: <><path d="M5 7h8M17 7h2M5 17h2M11 17h8" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></>,
+    modes: <><rect x="4" y="5" width="11" height="7" rx="1.5" /><rect x="9" y="12" width="11" height="7" rx="1.5" /><path d="M7 8.5h5M12 15.5h5" /></>,
     meetings: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
     text: <><path d="M5 5h14M8 5v14M5 19h6M15 10h4M15 14h4" /></>,
     ai: <><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></>,
@@ -814,7 +816,6 @@ export const SettingsPanel = memo(function SettingsPanel({
               </button>
             );
           })}
-          <p className="mt-3 flex items-center gap-2 px-3 text-[11px] text-on-surface-variant"><span className="h-1.5 w-1.5 rounded-full bg-success" />Processing locally</p>
         </div>
       </aside>
 

@@ -19,6 +19,8 @@ describe('InsightsView transform tile', () => {
     expect(tile('Most-used transform')).toContain('0 runs');
     expect(tile('Most-used Mode')).toContain('None yet');
     expect(tile('Transforms this month')).toContain('0% approved');
+    expect(tile('Paste Last')).toContain('0');
+    expect(tile('Paste Last')).toContain('successful uses');
   });
 
   it('displays the saved transform name and all-time run count', () => {
@@ -26,5 +28,12 @@ describe('InsightsView transform tile', () => {
     updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Weekly notes' });
     expect(tile('Most-used transform')).toContain('Weekly notes');
     expect(tile('Most-used transform')).toContain('2 runs');
+  });
+
+  it('displays the successful Paste Last count', () => {
+    updateActivityStats({ kind: 'paste_last' });
+    updateActivityStats({ kind: 'paste_last' });
+    expect(tile('Paste Last')).toContain('2');
+    expect(tile('Paste Last')).toContain('successful uses');
   });
 });

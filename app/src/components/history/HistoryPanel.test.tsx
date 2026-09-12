@@ -337,6 +337,31 @@ describe('HistoryPanel', () => {
     expect(deleteShown()?.textContent).toContain('Hold to delete 1 shown');
   });
 
+  it('confirms and deletes only the selected transcript from its card', async () => {
+    const target = entry({ id: 'target', text: 'delete this transcript', pinned: true });
+    const other = entry({ id: 'other', text: 'keep this transcript', pinned: true });
+    const onDeleteEntries = vi.fn();
+    await render({ entries: [target, other], onDeleteEntries });
+
+    const targetCard = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="transcript-card"]'))
+      .find((card) => card.textContent?.includes('delete this transcript'))!;
+    const targetActions = targetCard.querySelector('[aria-label="More transcript actions"]') as HTMLButtonElement;
+    await act(async () => targetActions.click());
+
+    const deleteAction = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent === 'Delete')!;
+    await act(async () => deleteAction.click());
+    expect(onDeleteEntries).not.toHaveBeenCalled();
+
+    await act(async () => targetActions.click());
+    const confirmAction = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent === 'Confirm delete')!;
+    await act(async () => confirmAction.click());
+
+    expect(onDeleteEntries).toHaveBeenCalledOnce();
+    expect(onDeleteEntries).toHaveBeenCalledWith([target]);
+  });
+
   it('deletes the exact filtered subset, including a pin, without matching duplicate ids', async () => {
     vi.useFakeTimers();
     const matching = entry({ id: 'duplicate', text: 'remove alpha', pinned: true });

@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Settings and appearance
+
+- Settings has clearer navigation and Mode selection in light and dark themes,
+  with quieter Smart Auto microphone controls and a simpler live meter (#769).
+- Duplicate a saved Appearance theme into an independent library entry (#759).
+
+### History and vocabulary
+
+- Delete one transcript directly from its History card (#764), or delete the
+  complete filtered result with Delete shown (#728).
+- Export saved Vocabulary spellings as JSON and review imported spellings before
+  adding them to the existing list (#766).
+- Export and import custom Modes as JSON with validation before saving (#729).
+- Apply enable, disable, and delete actions to all filtered Knowledge records (#730).
+
+### Transforms and Insights
+
+- Duplicate a saved transform into an independent draft (#757).
+- Insights now shows Paste Last usage (#765) and the most-used transform (#758).
+
+### Overlay
+
+- Remove the idle shortcut hint that overlapped the Mode control in the expanded
+  notch. Recording and recovery status labels remain available (#767).
+
 ## [0.47.0] - 2026-09-11
 
 ### Meetings
