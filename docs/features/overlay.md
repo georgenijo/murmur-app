@@ -214,6 +214,10 @@ An 800ms red-X flash, triggered by `recording-cancelled`. Takes priority over ev
 ### Hotkey Timing Miss (optional, transient)
 When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected` for an expired second-tap window, the pill shows an amber outlined exclamation (`!`) in the left wing plus an amber border glow. The `Tap missed` text label renders in the dropdown row (below notch height, since text is wider than a wing) and is therefore visible while the card is expanded; the `!` and border glow are the always-visible transient cue. Takes priority over every indicator except cancelled. The setting is off by default.
 
+The idle dropdown intentionally omits shortcut guidance so its independently
+centered Mode control cannot collide with a left-anchored label. Recording,
+connection, recovery, and hotkey-miss feedback still use the status slot.
+
 **Styling:** Dark background (`rgba(20, 20, 20, 0.92)`), 40px backdrop blur, rounded bottom corners.
 
 ## Reload recovery
