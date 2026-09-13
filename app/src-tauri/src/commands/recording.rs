@@ -5834,6 +5834,7 @@ pub(crate) mod tests {
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
+                assistant: crate::assistant::AssistantStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
@@ -6324,6 +6325,7 @@ pub(crate) mod tests {
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
+                assistant: crate::assistant::AssistantStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
@@ -6452,6 +6454,7 @@ pub(crate) mod tests {
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
+                assistant: crate::assistant::AssistantStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(

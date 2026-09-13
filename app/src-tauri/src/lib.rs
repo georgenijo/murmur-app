@@ -8,6 +8,7 @@ mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
+mod assistant;
 pub mod benchmark;
 mod browser_site;
 mod calendar;
@@ -184,6 +185,7 @@ pub(crate) struct State {
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) query_history: query_history::QueryHistoryStore,
+    pub(crate) assistant: assistant::AssistantStore,
     pub(crate) dictation_diagnostics: dictation_diagnostics::DictationDiagnostics,
     pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
@@ -293,6 +295,7 @@ pub fn run() {
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
             query_history: query_history::QueryHistoryStore::default(),
+            assistant: assistant::AssistantStore::default(),
             dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
@@ -377,6 +380,16 @@ pub fn run() {
             transform_flow::cancel_transform,
             transform_flow::undo_transform_and_close,
             query_flow::start_query_capture,
+            query_flow::get_assistant_connection,
+            query_flow::connect_assistant,
+            query_flow::disconnect_assistant,
+            query_flow::list_assistant_conversations,
+            query_flow::create_assistant_conversation,
+            query_flow::get_assistant_conversation,
+            query_flow::delete_assistant_conversation,
+            query_flow::send_assistant_message,
+            query_flow::start_assistant_voice,
+            query_flow::open_query_in_assistant,
             query_flow::finish_query_capture,
             query_flow::cancel_query,
             query_flow::copy_query_answer,
@@ -528,6 +541,7 @@ pub fn run() {
                 if window.label() == "main" || window.label() == "diagnostics" {
                     api.prevent_close();
                     if window.label() == "main" {
+                        query_flow::cancel_assistant_for_window_close(window.app_handle().clone());
                         commands::microphone_preview::cancel_for_window_close(
                             window.app_handle().clone(),
                         );
@@ -590,6 +604,11 @@ pub fn run() {
                 );
             }
             let query_history_root = app.path().app_data_dir()?.join("query-history");
+            if app.state::<State>().assistant.initialize(
+                app.path().app_data_dir()?.join("assistant"), Some(app.handle().clone())
+            ).is_err() {
+                tracing::warn!(target: "system", "Assistant local store is unavailable");
+            }
             if let Err(error) = app
                 .state::<State>()
                 .query_history
