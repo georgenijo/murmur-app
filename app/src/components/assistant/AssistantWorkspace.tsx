@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
+import { ArrowUp, Check, Mic, MoreHorizontal, Plus, Settings2, Square } from 'lucide-react';
 
 export interface AssistantThreadSummary {
   id: string;
@@ -41,11 +42,19 @@ export interface AssistantWorkspaceProps {
 }
 
 function MicrophoneIcon() {
-  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></svg>;
+  return <Mic aria-hidden="true" strokeWidth={1.7} />;
+}
+
+function dismissDetails(event: KeyboardEvent<HTMLDetailsElement>) {
+  if (event.key !== 'Escape' || !event.currentTarget.open) return;
+  event.preventDefault();
+  event.stopPropagation();
+  event.currentTarget.open = false;
+  event.currentTarget.querySelector('summary')?.focus();
 }
 
 const PHASE_LABELS: Record<AssistantPhase, string> = {
-  idle: 'Read-only tools · no light controls',
+  idle: 'Read-only tools',
   connecting: 'Connecting microphone…',
   listening: 'Listening — finish when you’re ready',
   transcribing: 'Transcribing on this Mac…',
@@ -57,14 +66,17 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const keepChatRef = useRef<HTMLButtonElement>(null);
+  const chatOptionsRef = useRef<HTMLElement>(null);
   const busy = props.phase !== 'idle' || props.pending;
 
   useEffect(() => { setDraft(''); setDeleteId(null); }, [props.selectedId]);
+  useEffect(() => { if (deleteId) keepChatRef.current?.focus(); }, [deleteId]);
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
   }, [props.messages]);
   useEffect(() => {
-    const cancel = (event: KeyboardEvent) => {
+    const cancel = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape' && props.phase !== 'idle') {
         event.preventDefault();
         void props.onStop();
@@ -102,7 +114,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
 
   return <section className="assistant-workspace" aria-label="Pi Assistant conversations">
     <aside className="assistant-thread-rail" aria-label="Conversations">
-      <button type="button" className="assistant-new" aria-label="New chat" disabled={busy || props.loading} onClick={() => void props.onNew()}><span aria-hidden="true">＋</span> New chat</button>
+      <button type="button" className="assistant-new" aria-label="New chat" disabled={busy || props.loading} onClick={() => void props.onNew()}><Plus aria-hidden="true" /> New chat</button>
       <div className="assistant-thread-list">
         {props.loading && <p role="status" className="assistant-muted">Loading conversations…</p>}
         {!props.loading && props.conversations.length === 0 && <p className="assistant-muted">Your conversations will appear here.</p>}
@@ -114,17 +126,29 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
           <time dateTime={new Date(thread.updatedAtMs).toISOString()}>{new Date(thread.updatedAtMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</time>
         </button>)}
       </div>
-      <p className="assistant-retention-note">Saved on this Mac and in Pi’s private sessions.</p>
-      <button type="button" className="assistant-text-button" disabled={busy} onClick={() => void props.onDisconnect()}>Disconnect assistant</button>
+      <details className="assistant-connection" onKeyDown={dismissDetails}>
+        <summary><Settings2 aria-hidden="true" /> Connection</summary>
+        <div className="assistant-connection-panel">
+          <h3>Connected to Pi</h3>
+          <p>Saved on this Mac and in Pi’s private sessions. No new tools or light controls are enabled.</p>
+          <button type="button" className="assistant-text-button" onClick={props.onSettings}>Voice Query settings</button>
+          <button type="button" className="assistant-text-button" disabled={busy} onClick={() => void props.onDisconnect()}>Disconnect assistant</button>
+        </div>
+      </details>
     </aside>
     <div className="assistant-conversation">
       <header className="assistant-conversation-header">
-        <div><h2>Pi Assistant</h2><p role="status"><span className="assistant-status-dot" data-busy={busy} />{PHASE_LABELS[props.phase]}</p></div>
-        {props.selectedId && <button type="button" className="assistant-text-button" disabled={busy} onClick={() => setDeleteId(props.selectedId)}>Delete chat…</button>}
+        <div className="assistant-conversation-heading"><h2>Pi Assistant</h2><p role="status"><span className="assistant-status-dot" data-busy={busy} />{PHASE_LABELS[props.phase]}</p></div>
+        {props.selectedId && <details className="assistant-chat-options" onKeyDown={dismissDetails}>
+          <summary ref={chatOptionsRef} aria-label="Chat options" title="Chat options"><MoreHorizontal aria-hidden="true" /></summary>
+          <div className="assistant-chat-options-panel">
+            <button type="button" className="assistant-text-button" disabled={busy} onClick={(event) => { setDeleteId(props.selectedId); event.currentTarget.closest('details')?.removeAttribute('open'); }}>Delete chat…</button>
+          </div>
+        </details>}
       </header>
       {deleteId && <div className="assistant-delete-confirm" role="group" aria-label="Confirm local conversation deletion">
         <p>Delete this conversation from Murmur? Pi’s saved session on Ubuntu is not deleted.</p>
-        <button type="button" className="assistant-text-button" onClick={() => setDeleteId(null)}>Keep chat</button>
+        <button ref={keepChatRef} type="button" className="assistant-text-button" onClick={() => { setDeleteId(null); chatOptionsRef.current?.focus(); }}>Keep chat</button>
         <button type="button" className="assistant-text-button" disabled={busy} onClick={async () => { await props.onDelete(deleteId); setDeleteId(null); }}>Delete from this Mac</button>
       </div>}
       <div className="assistant-message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text">
@@ -141,7 +165,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
             ? <p className="assistant-user-text">{message.text}</p>
             : <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{message.text}</Markdown>}
           </div>
-          {message.status === 'running' && <span className="assistant-muted">Responding…</span>}
+          {message.status === 'running' && <span className="assistant-muted assistant-turn-status">Responding…</span>}
           {message.status === 'cancelled' && <p className="assistant-muted">Stopped. This response may be incomplete.</p>}
           {message.status === 'failed' && <p className="assistant-error">This response did not complete. You can send another message.</p>}
         </article>)}
@@ -151,15 +175,15 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
       <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="assistant-message">Message Pi Assistant</label>
         <textarea id="assistant-message" ref={composerRef} placeholder="Ask Pi anything…" value={draft} maxLength={32000} disabled={!props.selectedId || busy}
-          onChange={(event) => setDraft(event.target.value)} rows={3}
+          onChange={(event) => setDraft(event.target.value)} rows={2}
           onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
         <div className="assistant-composer-actions">
-          <p>{props.phase === 'listening' ? 'Your voice will be sent to this conversation.' : 'Enter to send · Shift + Enter for a new line'}</p>
+          <p>{props.phase === 'listening' ? 'Listening to your question' : props.phase === 'idle' ? 'Enter to send · Shift + Enter for a new line' : 'Escape to stop'}</p>
           <div>
             {props.phase === 'idle' && <button type="button" className="assistant-microphone" aria-label="Talk to Pi" title={props.voiceAvailable ? 'Talk to Pi' : 'Microphone and transcription must be ready'} disabled={!props.selectedId || !props.voiceAvailable || busy} onClick={() => void props.onVoice()}><MicrophoneIcon /></button>}
-            {props.phase === 'listening' && <button type="button" className="assistant-primary" onClick={() => void props.onFinishVoice()}>Finish speaking</button>}
-            {props.phase !== 'idle' && <button type="button" className="assistant-secondary" onClick={() => void props.onStop()}>Stop</button>}
-            {props.phase === 'idle' && <button type="submit" className="assistant-primary" disabled={!draft.trim() || !props.selectedId || busy}>Send</button>}
+            {props.phase === 'listening' && <button type="button" className="assistant-primary" onClick={() => void props.onFinishVoice()}><Check aria-hidden="true" />Finish speaking</button>}
+            {props.phase !== 'idle' && <button type="button" className="assistant-secondary" onClick={() => void props.onStop()}><Square aria-hidden="true" />Stop</button>}
+            {props.phase === 'idle' && <button type="submit" className="assistant-primary assistant-send" aria-label="Send" title="Send message" disabled={!draft.trim() || !props.selectedId || busy}><ArrowUp aria-hidden="true" /></button>}
           </div>
         </div>
       </form>

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Improved
+- Simplified Assistant chat layout with aligned text, flatter surfaces, a compact conversation list and integrated voice/message controls.
+
 ### Assistant conversations
 
 - Talk or type to a connected Pi Assistant in a dedicated workspace, with

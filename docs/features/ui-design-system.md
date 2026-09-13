@@ -80,6 +80,7 @@ Use these before creating a feature-local control or surface.
 | Correct & Teach | Compact muted action on the newest entry only |
 | Insights | Durable local analytics use the full content width; Voice Query totals/providers use fixed label/value columns and notes occupy separate rows |
 | Secondary pages | Insights, Notetaker, and Assistant use one page header with a visible Back action that returns focus to Home navigation; Assistant retains legacy query history in Previous queries |
+| Assistant | Flat transparent reading surface, no nested message shading; one shared left text gutter across speaker labels, bodies, header and composer text. Compact thread rail uses an outlined selection; connection and delete controls live in keyboard-accessible disclosures. Escape dismisses an open disclosure before canceling a turn. |
 | Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, and tooltips never move the plot |
 
 ## Review and verification

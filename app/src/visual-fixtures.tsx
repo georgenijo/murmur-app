@@ -561,10 +561,14 @@ function VisualFixture() {
                   description="Talk, type, and pick up where you left off."
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
+                <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
+                  <button type="button" aria-pressed="true">Conversations</button>
+                  <button type="button" aria-pressed="false">Previous queries</button>
+                </div>
                 <AssistantWorkspace
                   connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
                   conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
-                  selectedId="fixture" messages={[
+                  selectedId="fixture" messages={requestedState === 'assistant-empty' ? [] : [
                     { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete' },
                     { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete' },
                   ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
