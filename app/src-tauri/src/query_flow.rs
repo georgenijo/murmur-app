@@ -1635,7 +1635,8 @@ fn admit_assistant(
 ) -> Result<(AssistantReceipt, ValidatedQueryCommand), String> {
     assistant_consent(consent)?;
     let mut command = validate_command_for_app(app, config.clone()).map_err(str::to_string)?;
-    if !state.assistant.connected(&assistant_binding(&command)?) {
+    let binding = assistant_binding(&command)?;
+    if !state.assistant.connected(&binding) {
         return Err("assistant_not_connected".into());
     }
     command.context_level = QueryContextLevel::None;
@@ -1653,7 +1654,10 @@ fn admit_assistant(
         None,
         &state.performance,
     );
-    let request_id = match state.assistant.begin(&conversation_id, pass_id, message) {
+    let request_id = match state
+        .assistant
+        .begin(&conversation_id, pass_id, message, &binding)
+    {
         Ok(id) => id,
         Err(error) => {
             state.query.set_status(pass_id, QueryStatus::Failed);
@@ -1808,15 +1812,13 @@ pub(crate) fn open_query_in_assistant(
         .clone()
         .filter(|s| s.pass_id == query_pass_id)
         .ok_or("That query is no longer available.")?;
-    if !state
-        .assistant
-        .connected(&assistant_binding(&session.command)?)
-    {
+    let binding = assistant_binding(&session.command)?;
+    if !state.assistant.connected(&binding) {
         return Err("assistant_not_connected".into());
     }
     let conversation = state
         .assistant
-        .create(Some((prior.question, prior.answer)))?;
+        .import(prior.question, prior.answer, &binding)?;
     let _ = app_handle.emit_to(
         "main",
         "assistant-open-conversation",

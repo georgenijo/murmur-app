@@ -242,9 +242,29 @@ impl AssistantStore {
             .ok_or_else(|| "assistant_conversation_unavailable".into())
     }
     pub(crate) fn create(&self, prior: Option<(String, String)>) -> Result<Conversation, String> {
+        self.create_checked(prior, None)
+    }
+
+    pub(crate) fn import(
+        &self,
+        question: String,
+        answer: String,
+        expected_binding: &str,
+    ) -> Result<Conversation, String> {
+        self.create_checked(Some((question, answer)), Some(expected_binding))
+    }
+
+    fn create_checked(
+        &self,
+        prior: Option<(String, String)>,
+        expected_binding: Option<&str>,
+    ) -> Result<Conversation, String> {
         self.mutate(|s| {
             if s.binding.is_none() {
                 return Err("assistant_not_connected".into());
+            }
+            if expected_binding.is_some_and(|expected| s.binding.as_deref() != Some(expected)) {
+                return Err("assistant_connection_changed".into());
             }
             if s.conversations.len() >= MAX_CONVERSATIONS {
                 return Err("assistant_history_full".into());
@@ -301,8 +321,15 @@ impl AssistantStore {
         conversation_id: &str,
         pass_id: u64,
         message: &str,
+        expected_binding: &str,
     ) -> Result<String, String> {
         self.mutate(|s| {
+            // Queue admission is the consent boundary. Compare the frozen
+            // dispatch command to both bindings under this one store lock;
+            // a reconnect after command validation cannot redirect a turn.
+            if s.binding.as_deref() != Some(expected_binding) {
+                return Err("assistant_connection_changed".into());
+            }
             if serde_json::to_vec(s).map_err(|_| STORAGE_ERROR)?.len() > MAX_STORE - 2 * 1024 * 1024
             {
                 return Err("assistant_history_full".into());
@@ -312,7 +339,7 @@ impl AssistantStore {
                 .iter_mut()
                 .find(|c| c.id == conversation_id)
                 .ok_or("assistant_conversation_unavailable")?;
-            if c.connection_binding.is_none() || c.connection_binding != s.binding {
+            if c.connection_binding.as_deref() != Some(expected_binding) {
                 return Err("assistant_connection_changed".into());
             }
             if c.active_pass_id.is_some() || c.messages.len() + 2 > MAX_MESSAGES {
@@ -474,7 +501,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
         let c = s.create(None).unwrap();
-        s.begin(&c.id, 7, "question").unwrap();
+        s.begin(&c.id, 7, "question", "bridge").unwrap();
         s.prompt(7, "question").unwrap();
         s.update(7, "partial", None).unwrap();
         let restored = store(temp.path().join("assistant"));
@@ -488,7 +515,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
         let c = s.create(None).unwrap();
-        s.begin(&c.id, 7, "question").unwrap();
+        s.begin(&c.id, 7, "question", "bridge").unwrap();
         assert!(s.delete(&c.id).is_err());
         s.update(6, "wrong", None).unwrap();
         assert_eq!(s.get(&c.id).unwrap().messages[1].content, "");
@@ -506,12 +533,12 @@ mod tests {
         let c = s
             .create(Some(("question".into(), "answer".into())))
             .unwrap();
-        s.begin(&c.id, 8, "next").unwrap();
+        s.begin(&c.id, 8, "next", "bridge").unwrap();
         let prompt = s.prompt(8, "next").unwrap();
         assert!(prompt.contains("seedMessages"));
         assert!(prompt.starts_with("MURMUR_ASSISTANT_V1\n"));
         s.update(8, "reply", Some(("ready", None))).unwrap();
-        s.begin(&c.id, 9, "later").unwrap();
+        s.begin(&c.id, 9, "later", "bridge").unwrap();
         assert!(!s.prompt(9, "later").unwrap().contains("seedMessages"));
         assert!(s
             .create(Some(("question".into(), "x".repeat(65536))))
@@ -549,11 +576,11 @@ mod tests {
         let c = s
             .create(Some(("seed question".into(), "seed answer".into())))
             .unwrap();
-        s.begin(&c.id, 1, "first").unwrap();
+        s.begin(&c.id, 1, "first", "bridge").unwrap();
         let first = s.prompt(1, "first").unwrap();
         s.update(1, "partial", Some(("failed", Some("exit_nonzero"))))
             .unwrap();
-        s.begin(&c.id, 2, "second").unwrap();
+        s.begin(&c.id, 2, "second", "bridge").unwrap();
         let second = s.prompt(2, "second").unwrap();
         let first: serde_json::Value =
             serde_json::from_str(first.split_once('\n').unwrap().1).unwrap();
@@ -570,7 +597,7 @@ mod tests {
         let root = temp.path().join("assistant");
         let s = store(root.clone());
         let c = s.create(None).unwrap();
-        s.begin(&c.id, 1, "question").unwrap();
+        s.begin(&c.id, 1, "question", "bridge").unwrap();
         s.prompt(1, "question").unwrap();
         fs::rename(&root, temp.path().join("moved")).unwrap();
         assert!(s
@@ -588,7 +615,7 @@ mod tests {
         let root = temp.path().join("assistant");
         let s = store(root.clone());
         let c = s.create(None).unwrap();
-        assert!(s.begin(&c.id, 1, &"x".repeat(32769)).is_err());
+        assert!(s.begin(&c.id, 1, &"x".repeat(32769), "bridge").is_err());
         assert!(s.get(&c.id).unwrap().messages.is_empty());
         assert!(s.get("../../outside").is_err());
         #[cfg(unix)]
@@ -616,11 +643,58 @@ mod tests {
         let c = s.create(None).unwrap();
         s.connect(Some("different bridge".into())).unwrap();
         assert_eq!(
-            s.begin(&c.id, 1, "new message").unwrap_err(),
+            s.begin(&c.id, 1, "new message", "different bridge")
+                .unwrap_err(),
             "assistant_connection_changed"
         );
         assert!(s.get(&c.id).unwrap().messages.is_empty());
         s.connect(Some("bridge".into())).unwrap();
-        assert!(s.begin(&c.id, 2, "new message").is_ok());
+        assert!(s.begin(&c.id, 2, "new message", "bridge").is_ok());
+    }
+
+    #[test]
+    fn reconnect_between_validation_and_admission_rejects_frozen_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let s = store(temp.path().join("assistant"));
+        let original = s.create(None).unwrap();
+        s.connect(Some("other bridge".into())).unwrap();
+        let other = s.create(None).unwrap();
+        let frozen_binding = "other bridge";
+        assert!(s.connected(frozen_binding));
+
+        // Another command reconnects to the target conversation's original
+        // bridge after the dispatch command was validated. Global and
+        // conversation bindings now agree, but the frozen command does not.
+        s.connect(Some("bridge".into())).unwrap();
+        assert_eq!(
+            s.begin(&original.id, 1, "private message", frozen_binding)
+                .unwrap_err(),
+            "assistant_connection_changed"
+        );
+        assert!(s.get(&original.id).unwrap().messages.is_empty());
+        assert_eq!(s.get(&original.id).unwrap().active_pass_id, None);
+        assert!(s.get(&other.id).unwrap().messages.is_empty());
+
+        // Revocation in the same interval also rejects queue admission.
+        s.connect(None).unwrap();
+        assert!(s
+            .begin(&other.id, 2, "private message", frozen_binding)
+            .is_err());
+    }
+
+    #[test]
+    fn reconnect_between_popover_validation_and_import_cannot_rebind_private_seed() {
+        let temp = tempfile::tempdir().unwrap();
+        let s = store(temp.path().join("assistant"));
+        assert!(s.connected("bridge"));
+        s.connect(Some("other bridge".into())).unwrap();
+        assert!(
+            matches!(s.import("private question".into(), "private answer".into(), "bridge"), Err(error) if error == "assistant_connection_changed")
+        );
+        assert!(s.list().unwrap().is_empty());
+        s.connect(Some("bridge".into())).unwrap();
+        assert!(s
+            .import("private question".into(), "private answer".into(), "bridge")
+            .is_ok());
     }
 }
