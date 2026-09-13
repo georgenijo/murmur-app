@@ -11,6 +11,8 @@ import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
+import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
+import './components/assistant/assistant.css';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
@@ -451,7 +453,7 @@ function VisualFixture() {
   const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
-    requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
+    requestedState === 'insights' ? 'insights' : requestedState.startsWith('assistant') ? 'queries' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
   const homeNavigationRef = React.useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = React.useRef(false);
@@ -558,6 +560,16 @@ function VisualFixture() {
                   titleId="queries-view-title"
                   description="Talk, type, and pick up where you left off."
                   back={{ label: 'Back to Home', onActivate: backToHome }}
+                />
+                <AssistantWorkspace
+                  connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
+                  conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
+                  selectedId="fixture" messages={[
+                    { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete' },
+                    { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete' },
+                  ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
+                  onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
+                  onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}} onSettings={() => {}}
                 />
               </section>
             ) : (
