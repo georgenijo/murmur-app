@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useQueryReviewDriver } from '../../lib/hooks/useQueryReviewDriver';
@@ -72,6 +72,8 @@ function queryFooterText(
 
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
+  const [confirmAssistant, setConfirmAssistant] = useState(false);
+  useEffect(() => { if (driver.state !== 'ready') setConfirmAssistant(false); }, [driver.state]);
   const errorMessage = useMemo(
     () => queryErrorMessage(driver.errorCode, driver.errorDetail),
     [driver.errorCode, driver.errorDetail],
@@ -166,11 +168,18 @@ export function QueryReviewApp() {
             )}
           </div>
           {driver.followUpError && <p role="status" className="px-4 pb-2 text-xs text-amber-200">{driver.followUpError}</p>}
+          {driver.assistantOpenError && <p role="status" className="px-4 pb-2 text-xs text-amber-200">{driver.assistantOpenError} Open Assistant in Murmur to set up the connection.</p>}
+          {confirmAssistant && driver.canOpenInAssistant && <div className="px-4 pb-2 text-xs text-white/70" role="group" aria-label="Save conversation consent">
+            <p>Save this exchange in Murmur and continue it with your connected Pi Assistant? Follow-ups are also retained in Pi’s private sessions on Ubuntu.</p>
+            <button type="button" className="rounded-lg bg-white/10 px-3 py-1.5 font-semibold" disabled={driver.assistantBusy} onClick={() => void driver.openInAssistant()}>Save and open</button>
+            <button type="button" className="px-3 py-1.5" onClick={() => setConfirmAssistant(false)}>Not now</button>
+          </div>}
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 px-3 py-2">
             <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
               {footerText}
             </span>
             <div className="flex gap-2">
+              {driver.canOpenInAssistant && <button type="button" disabled={driver.assistantBusy} onClick={() => setConfirmAssistant(true)} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50">Open in Assistant</button>}
               {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
                 <button
                   type="button"

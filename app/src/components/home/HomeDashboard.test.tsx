@@ -81,7 +81,7 @@ describe('home dashboard interactions', () => {
 
     expect(onNavigate).toHaveBeenCalledWith('insights');
     expect(Array.from(container.querySelectorAll('nav button')).map((item) => item.getAttribute('aria-label'))).toEqual([
-      'Home', 'Notetaker', 'Queries', 'Insights',
+      'Home', 'Notetaker', 'Assistant', 'Insights',
     ]);
     expect(container.textContent).not.toContain('Customize');
     expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Dictation stays on this Mac.');
