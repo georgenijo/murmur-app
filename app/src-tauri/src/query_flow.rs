@@ -465,6 +465,7 @@ pub(crate) struct QueryCoordinator {
     shutting_down: AtomicBool,
     pass_sequence: AtomicU64,
     active_pass_id: AtomicU64,
+    assistant_pass_id: AtomicU64,
     cancelled_pass_id: AtomicU64,
     partial_in_flight_pass: AtomicU64,
     worker_pass_id: AtomicU64,
@@ -485,6 +486,7 @@ impl Default for QueryCoordinator {
             shutting_down: AtomicBool::new(false),
             pass_sequence: AtomicU64::new(0),
             active_pass_id: AtomicU64::new(0),
+            assistant_pass_id: AtomicU64::new(0),
             cancelled_pass_id: AtomicU64::new(0),
             partial_in_flight_pass: AtomicU64::new(0),
             worker_pass_id: AtomicU64::new(0),
@@ -532,6 +534,10 @@ impl QueryCoordinator {
     /// Called only from the shared rdev callback. A terminal review can be
     /// superseded; an in-flight pass is never replaced.
     pub(crate) fn allocate_keyboard_pass(&self) -> Option<u64> {
+        self.allocate_pass(false)
+    }
+
+    fn allocate_pass(&self, reserve: bool) -> Option<u64> {
         let _ownership = self.ownership.lock_or_recover();
         if self.shutting_down.load(Ordering::SeqCst) {
             return None;
@@ -557,6 +563,9 @@ impl QueryCoordinator {
         *self.tracker.lock_or_recover() = None;
         self.worker_pass_id.store(0, Ordering::SeqCst);
         self.active_pass_id.store(pass_id, Ordering::SeqCst);
+        if reserve {
+            *self.status.lock_or_recover() = QueryStatus::Connecting;
+        }
         Some(pass_id)
     }
 
@@ -1499,6 +1508,330 @@ fn require_window(window: &tauri::WebviewWindow, expected: &str) -> Result<(), S
     require_window_label(window.label(), expected)
 }
 
+fn assistant_binding(command: &ValidatedQueryCommand) -> Result<String, String> {
+    use sha2::Digest;
+    if command.provider != QueryProviderId::Custom {
+        return Err("assistant_requires_custom_pi_bridge".into());
+    }
+    let bytes = serde_json::to_vec(&(command.executable.to_string_lossy(), &command.arguments))
+        .map_err(|_| "assistant_not_connected".to_string())?;
+    // Persist only the consent fingerprint, never executable paths or argv
+    // (a user-supplied Custom argument could itself contain a credential).
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
+
+fn assistant_consent(consent: bool) -> Result<(), String> {
+    if consent {
+        Ok(())
+    } else {
+        Err("assistant_consent_required".into())
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct AssistantConnection {
+    enabled: bool,
+}
+
+#[tauri::command]
+pub(crate) fn get_assistant_connection(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    command: QueryCommandConfig,
+) -> Result<AssistantConnection, String> {
+    require_window(&window, "main")?;
+    let enabled = validate_command_for_app(&app_handle, command)
+        .ok()
+        .and_then(|c| assistant_binding(&c).ok())
+        .is_some_and(|b| state.assistant.connected(&b));
+    Ok(AssistantConnection { enabled })
+}
+
+#[tauri::command]
+pub(crate) fn connect_assistant(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    command: QueryCommandConfig,
+    consent: bool,
+) -> Result<(), String> {
+    require_window(&window, "main")?;
+    assistant_consent(consent)?;
+    let command = validate_command_for_app(&app_handle, command).map_err(str::to_string)?;
+    state.assistant.connect(Some(assistant_binding(&command)?))
+}
+
+#[tauri::command]
+pub(crate) fn disconnect_assistant(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+) -> Result<(), String> {
+    require_window(&window, "main")?;
+    state.assistant.connect(None)
+}
+
+#[tauri::command]
+pub(crate) fn list_assistant_conversations(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+) -> Result<Vec<crate::assistant::ConversationSummary>, String> {
+    require_window(&window, "main")?;
+    state.assistant.list()
+}
+
+#[tauri::command]
+pub(crate) fn create_assistant_conversation(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    consent: bool,
+) -> Result<crate::assistant::Conversation, String> {
+    require_window(&window, "main")?;
+    assistant_consent(consent)?;
+    state.assistant.create(None)
+}
+
+#[tauri::command]
+pub(crate) fn get_assistant_conversation(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    conversation_id: String,
+) -> Result<crate::assistant::Conversation, String> {
+    require_window(&window, "main")?;
+    let mut conversation = state.assistant.get(&conversation_id)?;
+    if conversation.active_pass_id.is_some()
+        && conversation.active_pass_id == state.query.active_pass_id()
+    {
+        conversation.live_state = Some(state.query.status().as_str().to_string());
+    }
+    Ok(conversation)
+}
+
+#[tauri::command]
+pub(crate) fn delete_assistant_conversation(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    conversation_id: String,
+) -> Result<(), String> {
+    require_window(&window, "main")?;
+    state.assistant.delete(&conversation_id)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AssistantReceipt {
+    query_pass_id: u64,
+    conversation_id: String,
+    request_id: String,
+}
+
+fn admit_assistant(
+    app: &tauri::AppHandle,
+    state: &crate::State,
+    conversation_id: String,
+    message: &str,
+    config: &QueryCommandConfig,
+    consent: bool,
+) -> Result<(AssistantReceipt, ValidatedQueryCommand), String> {
+    assistant_consent(consent)?;
+    let mut command = validate_command_for_app(app, config.clone()).map_err(str::to_string)?;
+    let binding = assistant_binding(&command)?;
+    if !state.assistant.connected(&binding) {
+        return Err("assistant_not_connected".into());
+    }
+    command.context_level = QueryContextLevel::None;
+    let pass_id = state.query.allocate_pass(true).ok_or("busy")?;
+    state
+        .query
+        .assistant_pass_id
+        .store(pass_id, Ordering::SeqCst);
+    // Establish shared ownership before touching the durable queue; validation
+    // failures terminalize the reservation without allowing another worker to race it.
+    state.query.initialize_start_lifecycle(
+        pass_id,
+        QueryProviderId::Custom,
+        false,
+        None,
+        &state.performance,
+    );
+    let request_id = match state
+        .assistant
+        .begin(&conversation_id, pass_id, message, &binding)
+    {
+        Ok(id) => id,
+        Err(error) => {
+            state.query.set_status(pass_id, QueryStatus::Failed);
+            finalize_query_pass(state, pass_id, QueryTerminal::Failed("process_failed"));
+            return Err(error);
+        }
+    };
+    state.assistant.emit_changed(&conversation_id, pass_id);
+    Ok((
+        AssistantReceipt {
+            query_pass_id: pass_id,
+            conversation_id,
+            request_id,
+        },
+        command,
+    ))
+}
+
+#[tauri::command]
+pub(crate) async fn send_assistant_message(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    conversation_id: String,
+    message: String,
+    command: QueryCommandConfig,
+    consent: bool,
+) -> Result<AssistantReceipt, String> {
+    require_window(&window, "main")?;
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return Err("empty_query".into());
+    }
+    let _transition = state.app_state.recording_transition.lock().await;
+    if state.benchmark.is_running()
+        || state.app_state.meeting_blocks_asr()
+        || state.app_state.transform_status().blocks_recording()
+        || state.transform_runtime.is_transform_busy()
+        || crate::keyboard::is_app_disabled()
+    {
+        return Err("busy".into());
+    }
+    #[cfg(feature = "internal-benchmark")]
+    if state.corpus.is_active() {
+        return Err("busy".into());
+    }
+    let (receipt, command) = admit_assistant(
+        &app_handle,
+        &state,
+        conversation_id,
+        &message,
+        &command,
+        consent,
+    )?;
+    let pass_id = receipt.query_pass_id;
+    let identity = crate::frontmost::query_frontmost_app_identity();
+    let context = crate::commands::recording::resolve_live_context(
+        &state.app_state,
+        &state.knowledge,
+        &identity,
+        &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+        None,
+        crate::dictation_context::SessionOverrides::default(),
+    );
+    let session = QuerySession {
+        pass_id,
+        context,
+        query_context: QueryContextSnapshot::default(),
+        command,
+        automatically_copy_answer: false,
+        answer: String::new(),
+        usage: None,
+        error_detail: None,
+    };
+    if !state.query.install_session(pass_id, session.clone()) {
+        return Err("cancelled".into());
+    }
+    state
+        .query
+        .mark_transcription_finished(pass_id, Some(message.clone()), true);
+    let prompt = match state.assistant.prompt(pass_id, &message) {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            fail_query(&app_handle, &state, pass_id, "query_too_large");
+            return Err(error);
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        let state = app_handle.state::<crate::State>();
+        let _ = run_query_prompt(app_handle.clone(), state.inner(), pass_id, session, prompt).await;
+    });
+    Ok(receipt)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_assistant_voice(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    conversation_id: String,
+    mut command: QueryCommandConfig,
+    consent: bool,
+    device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
+) -> Result<AssistantReceipt, String> {
+    require_window(&window, "main")?;
+    let (receipt, _) =
+        admit_assistant(&app_handle, &state, conversation_id, "", &command, consent)?;
+    command.context_level = QueryContextLevel::None;
+    command.retain_query_history = false;
+    let pass_id = receipt.query_pass_id;
+    tauri::async_runtime::spawn(async move {
+        let state = app_handle.state::<crate::State>();
+        let _ = start_query_capture_internal(
+            app_handle.clone(),
+            state,
+            device_name,
+            smart_auto,
+            pass_id,
+            false,
+            command,
+            true,
+        )
+        .await;
+    });
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub(crate) fn open_query_in_assistant(
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::State>,
+    query_pass_id: u64,
+    consent: bool,
+) -> Result<crate::assistant::Conversation, String> {
+    require_window(&window, "query-review")?;
+    assistant_consent(consent)?;
+    if state.query.assistant_pass_id.load(Ordering::SeqCst) == query_pass_id {
+        return Err("assistant_workspace_only".into());
+    }
+    let _ownership = state.query.ownership.lock_or_recover();
+    let prior = state
+        .query
+        .ready_prior_turn_locked(query_pass_id)
+        .ok_or("That query is no longer available.")?;
+    let session = state
+        .query
+        .session
+        .lock_or_recover()
+        .clone()
+        .filter(|s| s.pass_id == query_pass_id)
+        .ok_or("That query is no longer available.")?;
+    let binding = assistant_binding(&session.command)?;
+    if !state.assistant.connected(&binding) {
+        return Err("assistant_not_connected".into());
+    }
+    let conversation = state
+        .assistant
+        .import(prior.question, prior.answer, &binding)?;
+    let _ = app_handle.emit_to(
+        "main",
+        "assistant-open-conversation",
+        serde_json::json!({"conversationId":conversation.id}),
+    );
+    if let Some(main) = app_handle.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+    let _ = crate::commands::query_popover::hide_internal(&app_handle);
+    Ok(conversation)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueryCommandValidation {
@@ -1648,6 +1981,16 @@ fn emit_state_with_usage(
     error_code: Option<&'static str>,
     usage: Option<QueryUsage>,
 ) {
+    if let Some(conversation_id) = app.state::<crate::State>().assistant.for_pass(pass_id) {
+        let _ = app.emit_to(
+            "main",
+            "assistant-state-changed",
+            serde_json::json!({
+                "conversationId": conversation_id, "queryPassId": pass_id,
+                "state": status.as_str(), "errorCode": error_code,
+            }),
+        );
+    }
     let _ = app.emit(
         "query-state-changed",
         serde_json::json!({
@@ -1730,8 +2073,10 @@ fn fail_query(
     if state.query.set_status(pass_id, QueryStatus::Failed) {
         // Validation and ownership refusals happen before the normal compact
         // popover show, so terminal failures must make themselves visible too.
-        let _ = crate::commands::query_popover::show_internal(app, true);
-        let _ = crate::commands::query_popover::set_expanded_internal(app, true);
+        if state.assistant.for_pass(pass_id).is_none() {
+            let _ = crate::commands::query_popover::show_internal(app, true);
+            let _ = crate::commands::query_popover::set_expanded_internal(app, true);
+        }
         emit_state(app, pass_id, QueryStatus::Failed, Some(error_code));
         finalize_query_pass(state, pass_id, QueryTerminal::Failed(error_code));
     }
@@ -1812,6 +2157,20 @@ fn finalize_query_pass(state: &crate::State, pass_id: u64, fallback: QueryTermin
     // an unconfirmed-teardown failure can never race into a stale Cancelled
     // diagnostic after the worker begins terminalization.
     let terminal = snapshot.terminal_intent.unwrap_or(fallback);
+    if state.assistant.for_pass(pass_id).is_some() {
+        let (status, error) = match terminal {
+            QueryTerminal::Ready { .. } => ("ready", None),
+            QueryTerminal::Cancelled => ("cancelled", Some("cancelled")),
+            QueryTerminal::Failed(code) => ("failed", Some(code)),
+        };
+        if state
+            .assistant
+            .update(pass_id, &snapshot.answer, Some((status, error)))
+            .is_err()
+        {
+            tracing::warn!(target: "system", "Assistant terminal conversation could not be persisted");
+        }
+    }
     let process = QueryProcessSummaryV1 {
         exit_code: snapshot.exit_code,
         stderr_present: snapshot.stderr_present,
@@ -1998,18 +2357,43 @@ pub(crate) async fn start_query_capture(
     command: QueryCommandConfig,
 ) -> Result<(), String> {
     require_window(&window, "main")?;
+    start_query_capture_internal(
+        app_handle,
+        state,
+        device_name,
+        smart_auto,
+        query_pass_id,
+        automatically_copy_answer,
+        command,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_query_capture_internal(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::State>,
+    device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
+    query_pass_id: u64,
+    automatically_copy_answer: bool,
+    command: QueryCommandConfig,
+    assistant_admitted: bool,
+) -> Result<(), String> {
     let provider = command.provider;
     let retain_history = command.retain_query_history;
     let history_epoch = retain_history
         .then(|| state.query_history.clear_epoch())
         .flatten();
-    if state.query.initialize_start_lifecycle(
-        query_pass_id,
-        provider,
-        retain_history,
-        history_epoch,
-        &state.performance,
-    ) != QueryLifecycleStart::Created
+    if !assistant_admitted
+        && state.query.initialize_start_lifecycle(
+            query_pass_id,
+            provider,
+            retain_history,
+            history_epoch,
+            &state.performance,
+        ) != QueryLifecycleStart::Created
     {
         return Ok(());
     }
@@ -2043,6 +2427,7 @@ pub(crate) async fn start_query_capture(
     let allowed = {
         let dictation = state.app_state.dictation.lock_or_recover();
         dictation.status == crate::state::DictationStatus::Idle
+            && (!assistant_admitted || !state.app_state.meeting_blocks_asr())
             && !state.app_state.file_transcribing.load(Ordering::SeqCst)
             && !state.benchmark.is_running()
             && !state.app_state.transform_status().blocks_recording()
@@ -2081,7 +2466,9 @@ pub(crate) async fn start_query_capture(
     {
         return Ok(());
     }
-    let _ = crate::commands::query_popover::show_internal(&app_handle, false);
+    if state.assistant.for_pass(query_pass_id).is_none() {
+        let _ = crate::commands::query_popover::show_internal(&app_handle, false);
+    }
     emit_state(&app_handle, query_pass_id, QueryStatus::Connecting, None);
     prepare_model(
         app_handle.clone(),
@@ -2287,6 +2674,16 @@ async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool 
             state.query.finish_partial(pass_id);
             if let Some(text) = text {
                 if state.query.is_listening(pass_id) {
+                    if let Some(conversation_id) = state.assistant.for_pass(pass_id) {
+                        let _ = app.emit_to(
+                            "main",
+                            "assistant-partial",
+                            serde_json::json!({
+                                "conversationId":conversation_id,"queryPassId":pass_id,"text":text,
+                            }),
+                        );
+                        return true;
+                    }
                     let _ = crate::commands::query_popover::set_expanded_internal(app, true);
                     let _ = app.emit_to(
                         "query-review",
@@ -2587,17 +2984,26 @@ fn accept_answer_updates(
         if !text.is_empty() {
             app.state::<crate::State>().query.mark_first_chunk(pass_id);
         }
-        let _ = crate::commands::query_popover::set_expanded_internal(app, true);
-        let _ = app.emit_to(
-            "query-review",
-            "query-answer-chunk",
-            serde_json::json!({
-                "queryPassId": pass_id,
-                "sequence": *sequence,
-                "text": text,
-                "replace": replace,
-            }),
-        );
+        let state = app.state::<crate::State>();
+        if state.assistant.for_pass(pass_id).is_some() {
+            let answer = state.query.answer(pass_id).ok_or("cancelled")?;
+            state
+                .assistant
+                .update(pass_id, &answer, None)
+                .map_err(|_| "process_failed")?;
+        } else {
+            let _ = crate::commands::query_popover::set_expanded_internal(app, true);
+            let _ = app.emit_to(
+                "query-review",
+                "query-answer-chunk",
+                serde_json::json!({
+                    "queryPassId": pass_id,
+                    "sequence": *sequence,
+                    "text": text,
+                    "replace": replace,
+                }),
+            );
+        }
         *sequence += 1;
     }
     Ok(())
@@ -3133,13 +3539,31 @@ pub(crate) async fn finish_query_capture(
     };
     set_query_diagnostic_stage(&state, query_pass_id, PerformanceStageV1::SidecarSpawnLoad);
     let prior = state.query.take_prior_turn(query_pass_id);
-    let prompt = match build_query_prompt(query, prior.as_ref(), &session.query_context) {
+    let prompt_result = if state.assistant.for_pass(query_pass_id).is_some() {
+        state
+            .assistant
+            .prompt(query_pass_id, &query)
+            .map_err(|_| "query_too_large")
+    } else {
+        build_query_prompt(query, prior.as_ref(), &session.query_context)
+    };
+    let prompt = match prompt_result {
         Ok(prompt) => prompt,
         Err(error_code) => {
             fail_query(&app_handle, &state, query_pass_id, error_code);
             return Ok(());
         }
     };
+    run_query_prompt(app_handle, state.inner(), query_pass_id, session, prompt).await
+}
+
+async fn run_query_prompt(
+    app_handle: tauri::AppHandle,
+    state: &crate::State,
+    query_pass_id: u64,
+    session: QuerySession,
+    prompt: String,
+) -> Result<(), String> {
     if !state.query.set_status(query_pass_id, QueryStatus::Running) {
         return Ok(());
     }
@@ -3180,7 +3604,7 @@ pub(crate) async fn finish_query_capture(
                 Some("termination_unconfirmed"),
             );
         }
-        finish_cancelled_query(&app_handle, &state, query_pass_id);
+        finish_cancelled_query(&app_handle, state, query_pass_id);
         return Ok(());
     }
     match result {
@@ -3193,10 +3617,13 @@ pub(crate) async fn finish_query_capture(
                 |answer| crate::injector::write_clipboard_text(answer).map_err(|_| ()),
             );
             if ready_outcome == QueryReadyOutcome::EmptyAnswer {
-                fail_query(&app_handle, &state, query_pass_id, "empty_answer");
+                fail_query(&app_handle, state, query_pass_id, "empty_answer");
             } else if ready_outcome != QueryReadyOutcome::Stale {
                 let clipboard_error = ready_outcome.error_code();
-                let _ = crate::commands::query_popover::set_expanded_internal(&app_handle, true);
+                if state.assistant.for_pass(query_pass_id).is_none() {
+                    let _ =
+                        crate::commands::query_popover::set_expanded_internal(&app_handle, true);
+                }
                 emit_state(
                     &app_handle,
                     query_pass_id,
@@ -3204,7 +3631,7 @@ pub(crate) async fn finish_query_capture(
                     clipboard_error,
                 );
                 finalize_query_pass(
-                    &state,
+                    state,
                     query_pass_id,
                     QueryTerminal::Ready {
                         error_code: clipboard_error,
@@ -3215,7 +3642,7 @@ pub(crate) async fn finish_query_capture(
         Err(error) if error.code == "cancelled" => {}
         Err(error) => {
             state.query.set_error_detail(query_pass_id, error.detail);
-            fail_query(&app_handle, &state, query_pass_id, error.code);
+            fail_query(&app_handle, state, query_pass_id, error.code);
         }
     }
     Ok(())
@@ -3297,6 +3724,27 @@ pub(crate) fn cancel_query(
     Ok(())
 }
 
+/// Closing the persistent main window hides its webview rather than unmounting
+/// React. Snapshot its exact Assistant owner here and use the normal confirmed
+/// teardown off the AppKit thread; a later query can never become its target.
+pub(crate) fn cancel_assistant_for_window_close(app: tauri::AppHandle) {
+    let pass_id = {
+        let state = app.state::<crate::State>();
+        state.query.active_pass_id().filter(|pass_id| {
+            state.query.assistant_pass_id.load(Ordering::SeqCst) == *pass_id
+                && state.assistant.for_pass(*pass_id).is_some()
+        })
+    };
+    if let Some(pass_id) = pass_id {
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Some(window) = app.get_webview_window("main") {
+                let state = app.state::<crate::State>();
+                let _ = cancel_query(app.clone(), window, state, pass_id, None);
+            }
+        });
+    }
+}
+
 /// The review window requests only an exact pass ID; private content stays in
 /// Rust. Main owns the current configuration and whether the listener is armed.
 #[tauri::command]
@@ -3307,6 +3755,9 @@ pub(crate) fn request_query_follow_up(
     query_pass_id: u64,
 ) -> Result<(), String> {
     require_window(&window, "query-review")?;
+    if state.query.assistant_pass_id.load(Ordering::SeqCst) == query_pass_id {
+        return Err("assistant_workspace_only".into());
+    }
     if !crate::keyboard::query_listener_active() || !state.query.request_follow_up(query_pass_id) {
         return Err(
             "That query is no longer ready for a follow-up. Try again or ask a new query.".into(),
@@ -3336,6 +3787,9 @@ pub(crate) fn allocate_query_follow_up(
     query_pass_id: u64,
 ) -> Result<u64, String> {
     require_window(&window, "main")?;
+    if state.query.assistant_pass_id.load(Ordering::SeqCst) == query_pass_id {
+        return Err("assistant_workspace_only".into());
+    }
     if !crate::keyboard::query_listener_active() {
         return Err("Enable Voice Query in Settings before asking a follow-up.".into());
     }
@@ -3356,6 +3810,9 @@ pub(crate) fn copy_query_answer(
     query_pass_id: u64,
 ) -> Result<(), String> {
     require_window(&window, "query-review")?;
+    if state.query.assistant_pass_id.load(Ordering::SeqCst) == query_pass_id {
+        return Err("assistant_workspace_only".into());
+    }
     state
         .query
         .copy_ready_answer(query_pass_id, crate::injector::write_clipboard_text)
@@ -3370,6 +3827,9 @@ pub(crate) fn get_query_review_content(
         return QueryReviewContent::default();
     }
     let query_pass_id = state.query.active_pass_id();
+    if query_pass_id == Some(state.query.assistant_pass_id.load(Ordering::SeqCst)) {
+        return QueryReviewContent::default();
+    }
     let session = query_pass_id.and_then(|pass_id| state.query.session(pass_id));
     QueryReviewContent {
         query_pass_id,
@@ -3404,6 +3864,46 @@ pub(crate) fn get_query_review_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_admission_reserves_global_owner_before_async_start() {
+        let query = QueryCoordinator::default();
+        let pass = query.allocate_pass(true).unwrap();
+        assert_eq!(query.status(), QueryStatus::Connecting);
+        assert_eq!(query.allocate_pass(true), None);
+        assert_eq!(query.allocate_keyboard_pass(), None);
+        assert!(query.status().blocks_capture());
+        assert!(query.set_status(pass, QueryStatus::Running));
+        assert!(!query.status().blocks_capture());
+        assert!(query.status().blocks_pipeline());
+        assert_eq!(query.allocate_keyboard_pass(), None);
+    }
+
+    #[test]
+    fn legacy_command_deserialization_does_not_grant_assistant_consent() {
+        let config: QueryCommandConfig = serde_json::from_value(serde_json::json!({
+            "executable":"/bin/echo","timeoutSeconds":30,"retainQueryHistory":true,
+        }))
+        .unwrap();
+        assert!(config.retain_query_history);
+        let store = crate::assistant::AssistantStore::default();
+        assert!(!store.connected("/bin/echo"));
+        assert!(assistant_consent(false).is_err());
+    }
+
+    #[test]
+    fn assistant_binding_changes_with_command_and_refuses_other_providers() {
+        let config: QueryCommandConfig = serde_json::from_value(serde_json::json!({
+            "provider":"custom","executable":"/bin/echo","arguments":[],"timeoutSeconds":30,
+        }))
+        .unwrap();
+        let mut command = validate_command(config, vec![], std::env::temp_dir()).unwrap();
+        let original = assistant_binding(&command).unwrap();
+        command.arguments.push("changed".into());
+        assert_ne!(original, assistant_binding(&command).unwrap());
+        command.provider = QueryProviderId::Claude;
+        assert!(assistant_binding(&command).is_err());
+    }
 
     fn test_dictation_context() -> Arc<DictationContextSnapshot> {
         Arc::new(crate::dictation_context::resolve(

@@ -70,7 +70,7 @@ Use these before creating a feature-local control or surface.
 | Native chrome | Traffic lights, status, updates, and Settings share one row; recording actions live in the dashboard |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
-| Sidebar | 160px normally, 56px icon rail below 760px; it contains only Home, Notetaker, Queries, and Insights; selection is a surface state, never elevation |
+| Sidebar | 160px normally, 56px icon rail below 760px; it contains only Home, Notetaker, Assistant, and Insights; selection is a surface state, never elevation |
 | Customize | The gear and `⌘,` open one ordered five-row hub; detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
@@ -79,7 +79,7 @@ Use these before creating a feature-local control or surface.
 | Copy | The non-interactive card surface copies its full transcript; Enter and Space do the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
 | Insights | Durable local analytics use the full content width; Voice Query totals/providers use fixed label/value columns and notes occupy separate rows |
-| Secondary pages | Insights, Notetaker, and Queries use one page header with a visible Back action that returns focus to Home navigation |
+| Secondary pages | Insights, Notetaker, and Assistant use one page header with a visible Back action that returns focus to Home navigation; Assistant retains legacy query history in Previous queries |
 | Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, and tooltips never move the plot |
 
 ## Review and verification

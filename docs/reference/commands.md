@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 218 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 228 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -191,6 +191,23 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `retry_last_delivery` | — | `Result<RetryResult, String>` | Re-delivers the latest process-memory final text through the normal secure injector. Returns explicit `auto_pasted`, `clipboard_only`, `empty`, `busy`, or `failed` feedback without recording, retranscription, History, statistics, or learning changes. |
 
 ## Voice Query (`query_flow.rs`)
+
+Assistant commands reuse the same coordinator, local ASR, and managed CLI ownership.
+All are main-window-only except the exact-pass `open_query_in_assistant` handoff
+from query-review. Local deletion does not erase Pi's separately retained remote session.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_assistant_connection` | `command: QueryCommandConfig` | `Result<AssistantConnection, String>` | Checks explicit consent against the current canonical Custom executable and fixed argv. |
+| `connect_assistant` | `command: QueryCommandConfig`, `consent: bool` | `Result<(), String>` | Saves explicit Mac and remote Pi persistence consent for the configured Custom Pi bridge. |
+| `disconnect_assistant` | — | `Result<(), String>` | Revokes future Assistant dispatch; retains conversations. |
+| `list_assistant_conversations` | — | `Result<Vec<ConversationSummary>, String>` | Lists bounded local conversations newest-first. |
+| `create_assistant_conversation` | `consent: bool` | `Result<Conversation, String>` | Creates a local UUID conversation after explicit connection. |
+| `get_assistant_conversation` | `conversation_id: String` | `Result<Conversation, String>` | Hydrates messages and exact active pass from the private native mirror. |
+| `delete_assistant_conversation` | `conversation_id: String` | `Result<(), String>` | Deletes only the local inactive conversation; refuses active ownership. |
+| `send_assistant_message` | `conversation_id: String`, `message: String`, `command: QueryCommandConfig`, `consent: bool` | `Result<AssistantReceipt, String>` | Queues a bounded typed message and runs the connected Pi bridge asynchronously without opening the popover or changing clipboard. |
+| `start_assistant_voice` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantReceipt, String>` | Starts the shared real capture pipeline for a thread. Finish and cancellation use existing exact-pass commands. |
+| `open_query_in_assistant` | `query_pass_id: u64`, `consent: bool` | `Result<Conversation, String>` | Imports the exact Ready exchange from the connected Custom Pi bridge, focuses main, and navigates to that conversation. |
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|

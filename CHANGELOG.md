@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Assistant conversations
+
+- Talk or type to a connected Pi Assistant in a dedicated workspace, with
+  streaming replies, saved conversations, follow-ups, and a Stop control.
+- Continue a completed Custom Voice Query in Assistant after explicit saving
+  consent. Previous queries remain available in their own history view.
+- Keep conversation storage private and separate from diagnostics, bind chats
+  to their configured bridge, and mark interrupted turns without auto-resending.
+- Requires the updated Pi Personal conversation bridge. No new household
+  actions or light-control permissions are enabled.
+
 ## [0.48.0] - 2026-09-12
 
 ### Settings and appearance

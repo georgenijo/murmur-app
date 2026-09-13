@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
 import { isQueryUsage, type QueryUsage } from '../queryUsage';
 import { pollQuerySignIn } from '../queryProviders';
+import { assistantError } from '../assistant';
 import {
   isHiddenPayload,
   isQueryStatePayload,
@@ -58,6 +59,9 @@ export function useQueryReviewDriver() {
   const [signInBusy, setSignInBusy] = useState(false);
   const [contextSummary, setContextSummary] = useState<string | null>(null);
   const [capabilitySummary, setCapabilitySummary] = useState<string | null>(null);
+  const [isCustomProvider, setIsCustomProvider] = useState(false);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantOpenError, setAssistantOpenError] = useState<string | null>(null);
   const passIdRef = useRef<number | null>(null);
   const stateRef = useRef<QueryReviewState>('idle');
   const nextSequenceRef = useRef(0);
@@ -91,6 +95,7 @@ export function useQueryReviewDriver() {
         ) {
           setContextSummary(typeof content.contextSummary === 'string' ? content.contextSummary : null);
           setCapabilitySummary(typeof content.capabilitySummary === 'string' ? content.capabilitySummary : null);
+          setIsCustomProvider(content.provider === 'custom');
         }
       } catch {
         flog.warn('query-review', 'could not refresh query context');
@@ -110,6 +115,7 @@ export function useQueryReviewDriver() {
           && typeof content.answer === 'string'
         ) {
           setAnswer(content.answer);
+          setIsCustomProvider(content.provider === 'custom');
           setErrorDetail(typeof content.errorDetail === 'string' ? content.errorDetail : null);
           setUsage(isQueryUsage(content.usage) ? content.usage : null);
           setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
@@ -135,6 +141,7 @@ export function useQueryReviewDriver() {
           terminalPassIdRef.current = null;
           terminalAnswerSnapshotRef.current = false;
           setAnswer('');
+          setIsCustomProvider(false); setAssistantOpenError(null);
           followUpAttemptRef.current += 1;
           followUpSourceRef.current = null;
           followUpPendingRef.current = false;
@@ -365,6 +372,15 @@ export function useQueryReviewDriver() {
     }
   }, [errorCode]);
 
+  const openInAssistant = useCallback(async () => {
+    const pass = passIdRef.current;
+    if (!pass || stateRef.current !== 'ready' || assistantBusy) return;
+    setAssistantBusy(true); setAssistantOpenError(null);
+    try { await invoke('open_query_in_assistant', { queryPassId: pass, consent: true }); }
+    catch (error) { if (passIdRef.current === pass) setAssistantOpenError(assistantError(error)); }
+    finally { setAssistantBusy(false); }
+  }, [assistantBusy]);
+
   return {
     state,
     errorCode,
@@ -377,6 +393,10 @@ export function useQueryReviewDriver() {
     signInBusy,
     contextSummary,
     capabilitySummary,
+    canOpenInAssistant: isCustomProvider && state === 'ready',
+    openInAssistant,
+    assistantBusy,
+    assistantOpenError,
     followUp,
     followUpBusy,
     followUpError,

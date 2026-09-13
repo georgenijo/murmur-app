@@ -80,9 +80,9 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate }: HomeSidebarPr
           </FluidTooltip.Root>
           <FluidTooltip.Root id="home-nav-queries" side="right">
             <FluidTooltip.Trigger>
-              <MainNavItem label="Queries" icon={<NavIcon name="query" />} selected={active === 'queries'} onActivate={() => onNavigate('queries')} />
+              <MainNavItem label="Assistant" icon={<NavIcon name="query" />} selected={active === 'queries'} onActivate={() => onNavigate('queries')} />
             </FluidTooltip.Trigger>
-            <FluidTooltip.Content>Queries</FluidTooltip.Content>
+            <FluidTooltip.Content>Assistant</FluidTooltip.Content>
           </FluidTooltip.Root>
           <FluidTooltip.Root id="home-nav-insights" side="right">
             <FluidTooltip.Trigger>

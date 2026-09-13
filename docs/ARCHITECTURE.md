@@ -248,7 +248,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 218 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 228 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -295,6 +295,7 @@ stay local and never reach logs or telemetry. See
 | `query_adapter.rs` | Incremental Claude/Codex JSONL answer, typed failure, and pass-scoped usage extraction with non-duplicating raw fallback |
 | `query_provider.rs` | Voice Query preset/discovery data, bounded auth preflight, known auth repair, and Rust-owned declared config-directory environment values |
 | `query_history/` | Off-by-default bounded SQLite question/answer store with main-window-only paging and purge |
+| `assistant.rs` | Explicitly connected Pi conversation mirror; bounded private atomic store, restart interruption, exact-pass partials and local deletion |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |
@@ -458,7 +459,7 @@ Seven streams (tracing targets): `pipeline`, `audio`, `keyboard`, `transform`, `
 
 ### Local storage
 
-Four SQLite databases, all local-only:
+Four SQLite databases and the Assistant mirror, all stored locally:
 
 | Store | File | Retention |
 |-------|------|-----------|
@@ -466,6 +467,7 @@ Four SQLite databases, all local-only:
 | Performance diagnostics | `diagnostics/performance.sqlite3` | 200 completed runs, 600 resource samples, 8 follow-ups per run |
 | Meetings | `meetings/meetings.sqlite3` | User-managed searchable sessions; age/count caps applied before start; audio off by default |
 | Voice Query history | `query-history/query-history.sqlite3` | Off by default; newest 200 question/answer records; direct user purge |
+| Assistant conversations | `assistant/conversations-v1.json` | Explicit Pi connection consent; at most 100 conversations, 200 messages each, 16 MiB total; owner-only, atomic; separate remote Pi retention |
 
 Transform diagnostic captures (explicitly consented, content-bearing) live under `diagnostics/transforms/transform-captures/` in a `0700` directory with `0600` files: max 3 retained, 7-day expiry, symlink targets refused, no export path.
 
@@ -494,7 +496,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-218 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+228 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
