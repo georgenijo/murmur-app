@@ -12,7 +12,7 @@ export function AssistantPage(props: Props) {
     loading={state.loading} pending={state.pending} conversations={state.conversations} selectedId={state.conversation?.id ?? null}
     messages={(state.conversation?.messages ?? []).map((m) => ({ id: m.id, role: m.role, text: m.content,
       status: m.status === 'ready' ? 'complete' : m.status === 'pending' ? 'running' : m.status === 'interrupted' ? 'cancelled' : m.status }))}
-    phase={state.phase} error={state.error} voiceAvailable={props.voiceAvailable}
+    phase={state.phase} error={state.error} voiceAvailable={props.voiceAvailable} dictation={state.dictation}
     onConnect={state.connect} onDisconnect={state.disconnect} onNew={state.newConversation} onSelect={state.select} onDelete={state.remove}
     onSend={state.send} onVoice={state.voice} onFinishVoice={state.finishVoice} onStop={state.stop} onSettings={props.onSettings}
   />;

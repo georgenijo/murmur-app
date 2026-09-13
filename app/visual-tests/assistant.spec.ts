@@ -9,6 +9,8 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(page.getByRole('heading', { name: 'Assistant', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Finish speaking', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: 'Message Pi Assistant' })).toHaveValue('What needs my attention tomorrow?');
+      await expect(page.getByRole('textbox', { name: 'Message Pi Assistant' })).toHaveAttribute('readonly');
       for (const locator of [page.locator('.assistant-workspace'), page.locator('.assistant-composer'), page.getByRole('button', { name: 'Stop', exact: true })]) {
         const bounds = await locator.boundingBox();
         expect(bounds).not.toBeNull();

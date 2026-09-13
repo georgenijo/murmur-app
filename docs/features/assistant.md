@@ -11,6 +11,27 @@ open the quick-query popover, capture app context, copy the clipboard, or paste.
 Leaving the workspace or closing the main window cancels its owned active query;
 it never starts background tasks. Completed conversations remain available.
 
+## Dictate, review, then send
+
+The Assistant microphone dictates a **local composer draft**, not a request to
+Pi. Live Core ML Parakeet transcription appears directly in the text box; it does not
+open the floating transcript or quick-query popover. Other existing ASR models
+provide the final transcript if live partials are unavailable.
+Live previews use the existing bounded 20-second trailing decode window for
+long speech; Finish replaces that provisional preview with the full transcript.
+
+Finish speaking stops recording and finalizes local ASR. The composer becomes
+editable, and only an explicit Enter or Send starts the Pi bridge. Dictation
+appends to any text already in the composer; Stop or Escape cancels the speech
+and restores that typed prefix. Drafts are ephemeral and are not added to chat
+history, Pi sessions, logs, or the clipboard. Leaving the page cancels capture.
+
+This uses main-only `start_assistant_dictation` / `finish_assistant_dictation`
+commands and pass-scoped `assistant-draft-state` / `assistant-draft-partial`
+events. A draft pass is refused at provider-child spawn and legacy finish
+boundaries. The separate quick Voice Query shortcut retains its original
+record-and-submit behavior.
+
 ## Setup and data boundaries
 
 Configure a Custom executable that supports the Pi Personal Assistant V1 bridge

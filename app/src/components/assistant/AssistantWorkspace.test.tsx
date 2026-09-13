@@ -99,4 +99,34 @@ describe('Assistant workspace', () => {
     expect(container.textContent).toContain('Stopped. This response may be incomplete.');
     expect(container.querySelector('strong')?.textContent).toBe('On');
   });
+  it('dictates into the composer, preserves typed prefix and sends only on explicit submit', async () => {
+    const p = props(); await render(p);
+    const input = container.querySelector('textarea')!;
+    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+    await act(async () => { set.call(input, 'My typed note'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => (container.querySelector('[aria-label="Dictate message"]') as HTMLButtonElement).click());
+    await render({ ...p, phase: 'listening', dictation: { passId: 5, text: 'Live speech', status: 'partial' } });
+    expect(input.value).toBe('My typed note\nLive speech');
+    expect(input.readOnly).toBe(true);
+    expect(p.onSend).not.toHaveBeenCalled();
+    await act(async () => button('Finish speaking').click());
+    expect(p.onFinishVoice).toHaveBeenCalledOnce();
+    await render({ ...p, dictation: { passId: 5, text: 'Final speech', status: 'final' } });
+    expect(input.readOnly).toBe(false);
+    expect(input.value).toBe('My typed note\nFinal speech');
+    expect(p.onSend).not.toHaveBeenCalled();
+    await act(async () => container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(p.onSend).toHaveBeenCalledWith('My typed note\nFinal speech');
+  });
+  it('restores the typed draft when dictation is cancelled', async () => {
+    const p = props(); await render(p);
+    const input = container.querySelector('textarea')!;
+    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+    await act(async () => { set.call(input, 'Keep me'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => (container.querySelector('[aria-label="Dictate message"]') as HTMLButtonElement).click());
+    await render({ ...p, phase: 'listening', dictation: { passId: 5, text: 'Discard me', status: 'partial' } });
+    await render({ ...p, dictation: { passId: 5, text: '', status: 'cancelled' } });
+    expect(input.value).toBe('Keep me');
+    expect(p.onSend).not.toHaveBeenCalled();
+  });
 });

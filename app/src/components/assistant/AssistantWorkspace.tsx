@@ -17,6 +17,7 @@ export interface AssistantThreadMessage {
 }
 
 export type AssistantPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'running';
+export interface AssistantDictationUpdate { passId: number; text: string; status: 'partial' | 'final' | 'cancelled' }
 
 export interface AssistantWorkspaceProps {
   connected: boolean;
@@ -29,6 +30,7 @@ export interface AssistantWorkspaceProps {
   phase: AssistantPhase;
   error: string | null;
   voiceAvailable: boolean;
+  dictation?: AssistantDictationUpdate | null;
   onConnect: () => Promise<void>;
   onDisconnect: () => Promise<void>;
   onNew: () => Promise<void>;
@@ -68,9 +70,21 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const keepChatRef = useRef<HTMLButtonElement>(null);
   const chatOptionsRef = useRef<HTMLElement>(null);
+  const voiceBaseRef = useRef('');
   const busy = props.phase !== 'idle' || props.pending;
+  const capturing = ['connecting', 'listening', 'transcribing'].includes(props.phase);
 
   useEffect(() => { setDraft(''); setDeleteId(null); }, [props.selectedId]);
+  useEffect(() => {
+    const update = props.dictation;
+    if (!update) return;
+    const prefix = voiceBaseRef.current;
+    setDraft(update.status === 'cancelled' ? prefix : `${prefix}${prefix && update.text ? '\n' : ''}${update.text}`);
+    if (update.status !== 'partial') composerRef.current?.focus();
+  }, [props.dictation]);
+  useEffect(() => {
+    if (props.dictation?.status === 'partial' && composerRef.current) composerRef.current.scrollTop = composerRef.current.scrollHeight;
+  }, [draft, props.dictation]);
   useEffect(() => { if (deleteId) keepChatRef.current?.focus(); }, [deleteId]);
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
@@ -174,13 +188,13 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
       {props.error && <p role="alert" className="assistant-error assistant-inline-notice">{props.error}</p>}
       <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="assistant-message">Message Pi Assistant</label>
-        <textarea id="assistant-message" ref={composerRef} placeholder="Ask Pi anything…" value={draft} maxLength={32000} disabled={!props.selectedId || busy}
+        <textarea id="assistant-message" ref={composerRef} placeholder={capturing ? 'Your words will appear here…' : 'Ask Pi anything…'} value={draft} maxLength={32000} disabled={!props.selectedId || props.phase === 'running'} readOnly={capturing || props.pending}
           onChange={(event) => setDraft(event.target.value)} rows={2}
           onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
         <div className="assistant-composer-actions">
-          <p>{props.phase === 'listening' ? 'Listening to your question' : props.phase === 'idle' ? 'Enter to send · Shift + Enter for a new line' : 'Escape to stop'}</p>
+          <p>{props.phase === 'listening' ? 'Dictating locally · finish to review' : props.phase === 'idle' ? 'Enter to send · Shift + Enter for a new line' : 'Escape to stop'}</p>
           <div>
-            {props.phase === 'idle' && <button type="button" className="assistant-microphone" aria-label="Talk to Pi" title={props.voiceAvailable ? 'Talk to Pi' : 'Microphone and transcription must be ready'} disabled={!props.selectedId || !props.voiceAvailable || busy} onClick={() => void props.onVoice()}><MicrophoneIcon /></button>}
+            {props.phase === 'idle' && <button type="button" className="assistant-microphone" aria-label="Dictate message" title={props.voiceAvailable ? 'Dictate a draft — review before sending' : 'Microphone and transcription must be ready'} disabled={!props.selectedId || !props.voiceAvailable || busy} onClick={() => { voiceBaseRef.current = draft; void props.onVoice(); }}><MicrophoneIcon /></button>}
             {props.phase === 'listening' && <button type="button" className="assistant-primary" onClick={() => void props.onFinishVoice()}><Check aria-hidden="true" />Finish speaking</button>}
             {props.phase !== 'idle' && <button type="button" className="assistant-secondary" onClick={() => void props.onStop()}><Square aria-hidden="true" />Stop</button>}
             {props.phase === 'idle' && <button type="submit" className="assistant-primary assistant-send" aria-label="Send" title="Send message" disabled={!draft.trim() || !props.selectedId || busy}><ArrowUp aria-hidden="true" /></button>}

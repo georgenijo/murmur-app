@@ -572,6 +572,7 @@ function VisualFixture() {
                     { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete' },
                     { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete' },
                   ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
+                  dictation={requestedState === 'assistant-listening' ? { passId: 1, text: 'What needs my attention tomorrow?', status: 'partial' } : null}
                   onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
                   onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}} onSettings={() => {}}
                 />
