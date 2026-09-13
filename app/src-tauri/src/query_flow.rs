@@ -3604,7 +3604,7 @@ async fn run_query_prompt(
                 Some("termination_unconfirmed"),
             );
         }
-        finish_cancelled_query(&app_handle, &state, query_pass_id);
+        finish_cancelled_query(&app_handle, state, query_pass_id);
         return Ok(());
     }
     match result {
@@ -3617,7 +3617,7 @@ async fn run_query_prompt(
                 |answer| crate::injector::write_clipboard_text(answer).map_err(|_| ()),
             );
             if ready_outcome == QueryReadyOutcome::EmptyAnswer {
-                fail_query(&app_handle, &state, query_pass_id, "empty_answer");
+                fail_query(&app_handle, state, query_pass_id, "empty_answer");
             } else if ready_outcome != QueryReadyOutcome::Stale {
                 let clipboard_error = ready_outcome.error_code();
                 if state.assistant.for_pass(query_pass_id).is_none() {
@@ -3631,7 +3631,7 @@ async fn run_query_prompt(
                     clipboard_error,
                 );
                 finalize_query_pass(
-                    &state,
+                    state,
                     query_pass_id,
                     QueryTerminal::Ready {
                         error_code: clipboard_error,
@@ -3642,7 +3642,7 @@ async fn run_query_prompt(
         Err(error) if error.code == "cancelled" => {}
         Err(error) => {
             state.query.set_error_detail(query_pass_id, error.detail);
-            fail_query(&app_handle, &state, query_pass_id, error.code);
+            fail_query(&app_handle, state, query_pass_id, error.code);
         }
     }
     Ok(())

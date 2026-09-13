@@ -554,9 +554,9 @@ function VisualFixture() {
             ) : destination === 'queries' ? (
               <section className="main-secondary-view" aria-labelledby="queries-view-title">
                 <WorkspacePageHeader
-                  title="Queries"
+                  title="Assistant"
                   titleId="queries-view-title"
-                  description="Questions and answers retained explicitly on this Mac."
+                  description="Talk, type, and pick up where you left off."
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
               </section>

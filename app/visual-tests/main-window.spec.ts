@@ -755,7 +755,7 @@ test('secondary destinations share Back behavior and restore focus to Home navig
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const home = page.getByRole('button', { name: 'Home', exact: true });
 
-  for (const destination of ['Notetaker', 'Queries', 'Insights'] as const) {
+  for (const destination of ['Notetaker', 'Assistant', 'Insights'] as const) {
     await page.getByRole('button', { name: destination, exact: true }).click();
     await expect(page.getByRole('heading', { name: destination, exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
