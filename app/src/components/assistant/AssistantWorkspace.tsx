@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { ArrowUp, Check, Mic, MoreHorizontal, Plus, Settings2, Square } from 'lucide-react';
+import type { AssistantAction } from '../../lib/assistant';
+import { AssistantActionCard } from './AssistantActionCard';
+import { AssistantActivityMark } from './AssistantActivityMark';
 
 export interface AssistantThreadSummary {
   id: string;
@@ -14,6 +17,7 @@ export interface AssistantThreadMessage {
   role: 'user' | 'assistant';
   text: string;
   status: 'complete' | 'running' | 'cancelled' | 'failed';
+  actions: AssistantAction[];
 }
 
 export type AssistantPhase = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'running';
@@ -27,6 +31,7 @@ export interface AssistantWorkspaceProps {
   conversations: AssistantThreadSummary[];
   selectedId: string | null;
   messages: AssistantThreadMessage[];
+  confirmationOutcomeUnknownActionIds: string[];
   phase: AssistantPhase;
   error: string | null;
   voiceAvailable: boolean;
@@ -40,6 +45,9 @@ export interface AssistantWorkspaceProps {
   onVoice: () => Promise<void>;
   onFinishVoice: () => Promise<void>;
   onStop: () => Promise<void>;
+  onConfirmAction: (actionId: string) => Promise<void>;
+  onCancelAction: (actionId: string) => Promise<void>;
+  onRefreshAction: (actionId: string) => Promise<void>;
   onSettings: () => void;
 }
 
@@ -56,7 +64,7 @@ function dismissDetails(event: KeyboardEvent<HTMLDetailsElement>) {
 }
 
 const PHASE_LABELS: Record<AssistantPhase, string> = {
-  idle: 'Read-only tools',
+  idle: 'Actions require confirmation',
   connecting: 'Connecting microphone…',
   listening: 'Listening — finish when you’re ready',
   transcribing: 'Transcribing on this Mac…',
@@ -115,7 +123,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
         <h3>Your assistant, your connection</h3>
         <p>Uses the Custom executable configured in Voice Query. It must support the Pi Assistant conversation bridge.</p>
         <p>Conversations are saved on this Mac and in Pi’s private sessions on Ubuntu. Pi may send messages and tool results to its model provider. This is separate from Voice Query history.</p>
-        <p>Connecting does not grant new tools or permission to control your lights. Ordinary dictation stays local and unchanged.</p>
+        <p>Pi may propose allowlisted light changes. Only Confirm in Murmur can run one. Ordinary dictation stays local and unchanged.</p>
       </div>
       {props.error && <p role="alert" className="assistant-error">{props.error}</p>}
       <button type="button" className="assistant-primary" disabled={props.pending || props.loading || !props.configured} onClick={() => void props.onConnect()}>
@@ -144,7 +152,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
         <summary><Settings2 aria-hidden="true" /> Connection</summary>
         <div className="assistant-connection-panel">
           <h3>Connected to Pi</h3>
-          <p>Saved on this Mac and in Pi’s private sessions. No new tools or light controls are enabled.</p>
+          <p>Saved on this Mac and in Pi’s private sessions. Light changes always require confirmation here.</p>
           <button type="button" className="assistant-text-button" onClick={props.onSettings}>Voice Query settings</button>
           <button type="button" className="assistant-text-button" disabled={busy} onClick={() => void props.onDisconnect()}>Disconnect assistant</button>
         </div>
@@ -179,7 +187,10 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
             ? <p className="assistant-user-text">{message.text}</p>
             : <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{message.text}</Markdown>}
           </div>
-          {message.status === 'running' && <span className="assistant-muted assistant-turn-status">Responding…</span>}
+          {message.actions.map((action) => <AssistantActionCard key={action.action_id} action={action}
+            confirmationOutcomeUnknown={props.confirmationOutcomeUnknownActionIds.includes(action.action_id)}
+            disabled={busy} onConfirm={props.onConfirmAction} onCancel={props.onCancelAction} onRefresh={props.onRefreshAction} />)}
+          {message.status === 'running' && <span className="assistant-muted assistant-turn-status"><AssistantActivityMark active />Pi is working…</span>}
           {message.status === 'cancelled' && <p className="assistant-muted">Stopped. This response may be incomplete.</p>}
           {message.status === 'failed' && <p className="assistant-error">This response did not complete. You can send another message.</p>}
         </article>)}

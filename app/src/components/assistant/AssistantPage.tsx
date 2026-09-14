@@ -10,10 +10,13 @@ export function AssistantPage(props: Props) {
   return <AssistantWorkspace
     connected={state.connected} configured={props.command.provider === 'custom' && !!props.command.executable.trim()}
     loading={state.loading} pending={state.pending} conversations={state.conversations} selectedId={state.conversation?.id ?? null}
-    messages={(state.conversation?.messages ?? []).map((m) => ({ id: m.id, role: m.role, text: m.content,
+    confirmationOutcomeUnknownActionIds={state.conversation?.confirmationOutcomeUnknownActionIds ?? []}
+    messages={(state.conversation?.messages ?? []).map((m) => ({ id: m.id, role: m.role, text: m.content, actions: m.actions,
       status: m.status === 'ready' ? 'complete' : m.status === 'pending' ? 'running' : m.status === 'interrupted' ? 'cancelled' : m.status }))}
     phase={state.phase} error={state.error} voiceAvailable={props.voiceAvailable} dictation={state.dictation}
     onConnect={state.connect} onDisconnect={state.disconnect} onNew={state.newConversation} onSelect={state.select} onDelete={state.remove}
-    onSend={state.send} onVoice={state.voice} onFinishVoice={state.finishVoice} onStop={state.stop} onSettings={props.onSettings}
+    onSend={state.send} onVoice={state.voice} onFinishVoice={state.finishVoice} onStop={state.stop}
+    onConfirmAction={state.confirmAction} onCancelAction={state.cancelAction} onSettings={props.onSettings}
+    onRefreshAction={state.refreshAction}
   />;
 }
