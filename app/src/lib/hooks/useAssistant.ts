@@ -33,6 +33,7 @@ export function useAssistant({ command, deviceName, smartAuto, requestedId }: Op
   const bufferedDraft = useRef<DraftEvent[]>([]);
   const finishingDraft = useRef<number | null>(null);
   const cancellingDraft = useRef<number | null>(null);
+  const recoveredActions = useRef(new Set<string>());
   const commandKey = JSON.stringify(command);
   const commandRef = useRef(command); commandRef.current = command;
 
@@ -256,5 +257,41 @@ export function useAssistant({ command, deviceName, smartAuto, requestedId }: Op
       }
     } finally { if (finishingDraft.current === pass) finishingDraft.current = null; }
   }, []);
-  return { connected, loading, pending: pending || (connected && !listenersReady), conversations, conversation, phase, error, dictation, select, connect, disconnect, newConversation, remove, stop, finishVoice, send: (text: string) => start('text', text), voice: async () => { await start('voice'); } };
+  const operateAction = useCallback(async (commandName: 'confirm_assistant_action' | 'cancel_assistant_action' | 'refresh_assistant_action', actionId: string) => {
+    await mutate(async () => {
+      if (!listenersReady || !isConversationId(actionId)) throw new Error('invalid_assistant_action');
+      const id = selected.current;
+      if (!id) throw new Error('assistant_conversation_unavailable');
+      setPhase('running');
+      let receipt: AssistantReceipt;
+      try {
+        receipt = await invoke<AssistantReceipt>(commandName, { actionId });
+      } catch (actionError) {
+        setPhase('idle');
+        throw actionError;
+      }
+      if (!isConversationId(receipt?.conversationId) || receipt.conversationId !== id
+        || !Number.isSafeInteger(receipt.queryPassId) || receipt.queryPassId <= 0) throw new Error('invalid_assistant_response');
+      activePass.current = receipt.queryPassId;
+      setPhase(lastState.current?.pass === receipt.queryPassId ? lastState.current.phase : 'running');
+      await hydrate(id);
+      await refreshList();
+    });
+  }, [hydrate, listenersReady, mutate, refreshList]);
+  useEffect(() => {
+    if (!conversation || phase !== 'idle' || pending || !listenersReady) return;
+    const recoverable = conversation.messages
+      .flatMap((message) => message.actions)
+      .find((action) => ['proposed', 'executing'].includes(action.status) && !recoveredActions.current.has(action.action_id));
+    if (!recoverable) return;
+    recoveredActions.current.add(recoverable.action_id);
+    void operateAction('refresh_assistant_action', recoverable.action_id);
+  }, [conversation, listenersReady, operateAction, pending, phase]);
+  return {
+    connected, loading, pending: pending || (connected && !listenersReady), conversations, conversation, phase, error, dictation,
+    select, connect, disconnect, newConversation, remove, stop, finishVoice,
+    send: (text: string) => start('text', text), voice: async () => { await start('voice'); },
+    confirmAction: async (actionId: string) => { await operateAction('confirm_assistant_action', actionId); },
+    cancelAction: async (actionId: string) => { await operateAction('cancel_assistant_action', actionId); },
+  };
 }

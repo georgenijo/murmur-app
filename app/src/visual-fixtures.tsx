@@ -569,12 +569,13 @@ function VisualFixture() {
                   connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
                   conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
                   selectedId="fixture" messages={requestedState === 'assistant-empty' ? [] : [
-                    { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete' },
-                    { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete' },
+                    { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete', actions: [] },
+                    { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete', actions: [] },
                   ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
                   dictation={requestedState === 'assistant-listening' ? { passId: 1, text: 'What needs my attention tomorrow?', status: 'partial' } : null}
                   onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
-                  onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}} onSettings={() => {}}
+                  onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}}
+                  onConfirmAction={async () => {}} onCancelAction={async () => {}} onSettings={() => {}}
                 />
               </section>
             ) : (

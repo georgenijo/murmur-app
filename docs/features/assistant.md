@@ -97,3 +97,9 @@ Stop/Escape and popover handoff in the built app. Release and deployment receipt
 must distinguish these observations from unit tests and CI. This change requires
 a Murmur application release and a Pi bridge update, but no new AgentOS or CPA
 deployment. Household actions remain out of scope.
+
+Assistant work-in-progress uses the 3-by-3 activity mark from Whoop Coach's
+`apps/web/src/components/coach/CoachActivityMark.tsx`: a staggered 650 ms
+opacity/scale wave whose animation stops under reduced motion. Murmur ports the
+motion into its own spacing and color tokens and keeps the conversation surface
+flat.

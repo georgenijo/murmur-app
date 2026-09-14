@@ -8,7 +8,8 @@ function props(overrides: Partial<AssistantWorkspaceProps> = {}): AssistantWorks
     connected: true, configured: true, loading: false, pending: false,
     conversations: [{ id: 'thread', title: 'Bedroom lights', updatedAtMs: 1700000000000 }], selectedId: 'thread', messages: [], phase: 'idle', error: null, voiceAvailable: true,
     onConnect: vi.fn(async () => {}), onDisconnect: vi.fn(async () => {}), onNew: vi.fn(async () => {}), onSelect: vi.fn(async () => {}), onDelete: vi.fn(async () => {}),
-    onSend: vi.fn(async () => true), onVoice: vi.fn(async () => {}), onFinishVoice: vi.fn(async () => {}), onStop: vi.fn(async () => {}), onSettings: vi.fn(), ...overrides,
+    onSend: vi.fn(async () => true), onVoice: vi.fn(async () => {}), onFinishVoice: vi.fn(async () => {}), onStop: vi.fn(async () => {}),
+    onConfirmAction: vi.fn(async () => {}), onCancelAction: vi.fn(async () => {}), onSettings: vi.fn(), ...overrides,
   };
 }
 describe('Assistant workspace', () => {
@@ -65,7 +66,7 @@ describe('Assistant workspace', () => {
     expect(details.open).toBe(false);
     await act(async () => details.querySelector('summary')!.click());
     expect(details.open).toBe(true);
-    expect(details.textContent).toContain('No new tools or light controls');
+    expect(details.textContent).toContain('Light changes always require confirmation here');
     expect(p.onDisconnect).not.toHaveBeenCalled();
     await act(async () => details.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(details.open).toBe(false);
@@ -94,7 +95,7 @@ describe('Assistant workspace', () => {
     expect(p.onDelete).not.toHaveBeenCalled();
   });
   it('renders saved turns with incomplete status and never loads model-supplied images or links', async () => {
-    await render(props({ messages: [{ id: 'answer', role: 'assistant', text: '![track](https://example.invalid/pixel) [click](https://example.invalid/) **On**', status: 'cancelled' }] }));
+    await render(props({ messages: [{ id: 'answer', role: 'assistant', text: '![track](https://example.invalid/pixel) [click](https://example.invalid/) **On**', status: 'cancelled', actions: [] }] }));
     expect(container.querySelector('img')).toBeNull(); expect(container.querySelector('a')).toBeNull();
     expect(container.textContent).toContain('Stopped. This response may be incomplete.');
     expect(container.querySelector('strong')?.textContent).toBe('On');

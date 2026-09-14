@@ -2,13 +2,176 @@
 //! Content is emitted only to the main webview; IDs never become filesystem paths.
 use crate::MutexExt;
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Write, path::PathBuf, sync::Mutex};
+use sha2::Digest;
+use std::{collections::HashSet, fs, io::Write, path::PathBuf, sync::Mutex};
 use tauri::Emitter;
 
 const MAX_STORE: usize = 16 * 1024 * 1024;
 const MAX_CONVERSATIONS: usize = 100;
 const MAX_MESSAGES: usize = 200;
+const MAX_CONNECTIONS: usize = 100;
+const MAX_ACTIONS_PER_MESSAGE: usize = 16;
+const MAX_STREAM_BYTES: usize = 512 * 1024;
 const STORAGE_ERROR: &str = "assistant_storage_unavailable";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ActionTarget {
+    pub entity_id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ActionParameters {
+    pub power: String,
+    pub brightness_pct: Option<u8>,
+    pub rgb_color: Option<[u8; 3]>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ActionReceipt {
+    pub execution_id: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub write_attempted: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LightState {
+    On,
+    Off,
+    Unknown,
+    Unavailable,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LightAvailability {
+    Available,
+    Unknown,
+    Unavailable,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FreshnessStatus {
+    Fresh,
+    Stale,
+    Unknown,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FreshnessBasis {
+    LastReported,
+    LastUpdated,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct LightFreshness {
+    pub status: FreshnessStatus,
+    pub basis: Option<FreshnessBasis>,
+    pub age_seconds: Option<f64>,
+    pub stale_after_seconds: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct LightCapabilities {
+    pub on_off: bool,
+    pub brightness: Option<bool>,
+    pub supported_color_modes: Option<Vec<String>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct LightAttributes {
+    pub brightness: Option<u8>,
+    pub color_mode: Option<String>,
+    pub rgb_color: Option<[u8; 3]>,
+    pub rgbw_color: Option<[u8; 4]>,
+    pub rgbww_color: Option<[u8; 5]>,
+    pub hs_color: Option<[f64; 2]>,
+    pub xy_color: Option<[f64; 2]>,
+    pub color_temp_kelvin: Option<u32>,
+    pub min_color_temp_kelvin: Option<u32>,
+    pub max_color_temp_kelvin: Option<u32>,
+    pub color_temp: Option<u32>,
+    pub min_mireds: Option<u32>,
+    pub max_mireds: Option<u32>,
+    pub supported_features: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct Light {
+    pub entity_id: String,
+    pub aliases: Vec<String>,
+    pub name: Option<String>,
+    pub state: LightState,
+    pub availability: LightAvailability,
+    pub observed_at: Option<String>,
+    pub last_changed: Option<String>,
+    pub last_updated: Option<String>,
+    pub last_reported: Option<String>,
+    pub freshness: LightFreshness,
+    pub capabilities: LightCapabilities,
+    pub attributes: LightAttributes,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct ActionVerification {
+    pub source: String,
+    pub verified_at: String,
+    pub matched: Option<bool>,
+    pub states: Vec<Light>,
+    pub message: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ActionStatus {
+    Proposed,
+    Cancelled,
+    Expired,
+    Executing,
+    Completed,
+    Failed,
+    Uncertain,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) struct AssistantAction {
+    pub schema_version: u32,
+    pub action_id: String,
+    pub idempotency_key: String,
+    pub kind: String,
+    pub actor_id: String,
+    pub connection_id: String,
+    pub conversation_id: String,
+    pub request_id: String,
+    pub targets: Vec<ActionTarget>,
+    pub parameters: ActionParameters,
+    pub created_at: String,
+    pub expires_at: String,
+    pub parameter_digest: String,
+    pub status: ActionStatus,
+    pub receipt: Option<ActionReceipt>,
+    pub verification: Option<ActionVerification>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredConnection {
+    binding: String,
+    connection_id: String,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -20,6 +183,8 @@ pub(crate) struct Message {
     pub created_at_ms: i64,
     pub status: String,
     pub error_code: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<AssistantAction>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -34,6 +199,10 @@ pub(crate) struct Conversation {
     /// Hydrated at the command boundary only, never trusted from the disk.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub live_state: Option<String>,
+    #[serde(default)]
+    connection_id: Option<String>,
+    #[serde(default)]
+    active_action_id: Option<String>,
     #[serde(default)]
     seed_pending: bool,
     #[serde(default)]
@@ -55,6 +224,8 @@ pub(crate) struct ConversationSummary {
 struct Snapshot {
     version: u32,
     binding: Option<String>,
+    #[serde(default)]
+    connections: Vec<StoredConnection>,
     conversations: Vec<Conversation>,
 }
 impl Default for Snapshot {
@@ -62,6 +233,7 @@ impl Default for Snapshot {
         Self {
             version: 1,
             binding: None,
+            connections: vec![],
             conversations: vec![],
         }
     }
@@ -76,6 +248,111 @@ struct Inner {
 #[derive(Default)]
 pub(crate) struct AssistantStore(Mutex<Inner>);
 
+#[derive(Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+enum WireRecord {
+    #[serde(rename = "text_delta")]
+    TextDelta { schema_version: u32, text: String },
+    #[serde(rename = "action")]
+    Action {
+        schema_version: u32,
+        action: AssistantAction,
+    },
+    #[serde(rename = "done")]
+    Done { schema_version: u32 },
+}
+
+pub(crate) enum AssistantStreamUpdate {
+    Text(String),
+    Action(AssistantAction),
+}
+
+pub(crate) struct AssistantStreamParser {
+    buffer: Vec<u8>,
+    total_bytes: usize,
+    done: bool,
+    action_count: usize,
+}
+
+impl AssistantStreamParser {
+    pub(crate) fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            total_bytes: 0,
+            done: false,
+            action_count: 0,
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<Vec<AssistantStreamUpdate>, &'static str> {
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
+        if self.total_bytes > MAX_STREAM_BYTES {
+            return Err("output_too_large");
+        }
+        self.buffer.extend_from_slice(bytes);
+        let mut updates = Vec::new();
+        while let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<_> = self.buffer.drain(..=newline).collect();
+            self.parse_line(&line[..line.len() - 1], &mut updates)?;
+        }
+        Ok(updates)
+    }
+
+    pub(crate) fn finish(mut self) -> Result<(Vec<AssistantStreamUpdate>, usize), &'static str> {
+        let mut updates = Vec::new();
+        if !self.buffer.is_empty() {
+            let line = std::mem::take(&mut self.buffer);
+            self.parse_line(&line, &mut updates)?;
+        }
+        if !self.done {
+            return Err("invalid_assistant_response");
+        }
+        Ok((updates, self.action_count))
+    }
+
+    fn parse_line(
+        &mut self,
+        line: &[u8],
+        updates: &mut Vec<AssistantStreamUpdate>,
+    ) -> Result<(), &'static str> {
+        if line.is_empty() || self.done {
+            return Err("invalid_assistant_response");
+        }
+        let record: WireRecord =
+            serde_json::from_slice(line).map_err(|_| "invalid_assistant_response")?;
+        match record {
+            WireRecord::TextDelta {
+                schema_version: 2,
+                text,
+            } if !text.is_empty() => updates.push(AssistantStreamUpdate::Text(text)),
+            WireRecord::Action {
+                schema_version: 2,
+                action,
+            } => {
+                validate_action(&action).map_err(|_| "invalid_assistant_response")?;
+                self.action_count += 1;
+                if self.action_count > MAX_ACTIONS_PER_MESSAGE {
+                    return Err("output_too_large");
+                }
+                updates.push(AssistantStreamUpdate::Action(action));
+            }
+            WireRecord::Done { schema_version: 2 } => self.done = true,
+            _ => return Err("invalid_assistant_response"),
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct ActionDispatch {
+    pub conversation_id: String,
+    pub request_id: String,
+    pub connection_id: String,
+    pub parameter_digest: String,
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -89,12 +366,233 @@ fn id() -> String {
 fn valid_id(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id)
 }
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+fn valid_entity_id(value: &str) -> bool {
+    let Some(id) = value.strip_prefix("light.") else {
+        return false;
+    };
+    !id.is_empty()
+        && id.len() <= 255
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+fn valid_timestamp(value: &str) -> bool {
+    value.len() <= 64
+        && value.ends_with('Z')
+        && chrono::DateTime::parse_from_rfc3339(value)
+            .is_ok_and(|time| time.offset().local_minus_utc() == 0)
+}
+fn valid_color_mode(value: &str) -> bool {
+    matches!(
+        value,
+        "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white"
+    )
+}
+fn valid_optional_color(value: Option<&String>) -> bool {
+    value.is_none_or(|mode| valid_color_mode(mode))
+}
+fn valid_point(point: Option<&[f64; 2]>, first_max: f64, second_max: f64) -> bool {
+    point.is_none_or(|point| {
+        point[0].is_finite()
+            && point[1].is_finite()
+            && (0.0..=first_max).contains(&point[0])
+            && (0.0..=second_max).contains(&point[1])
+    })
+}
+fn validate_light(light: &Light) -> bool {
+    valid_entity_id(&light.entity_id)
+        && light.aliases.len() <= 64
+        && light.aliases.iter().all(|alias| alias.len() <= 256)
+        && light.name.as_ref().is_none_or(|name| name.len() <= 256)
+        && [
+            light.observed_at.as_ref(),
+            light.last_changed.as_ref(),
+            light.last_updated.as_ref(),
+            light.last_reported.as_ref(),
+        ]
+        .into_iter()
+        .all(|time| time.is_none_or(|time| valid_timestamp(time)))
+        && light
+            .freshness
+            .age_seconds
+            .is_none_or(|age| age.is_finite() && age >= 0.0)
+        && light.freshness.stale_after_seconds == 300
+        && light.capabilities.on_off
+        && light
+            .capabilities
+            .supported_color_modes
+            .as_ref()
+            .is_none_or(|modes| {
+                modes.len() <= 16 && modes.iter().all(|mode| valid_color_mode(mode))
+            })
+        && valid_optional_color(light.attributes.color_mode.as_ref())
+        && valid_point(light.attributes.hs_color.as_ref(), 360.0, 100.0)
+        && valid_point(light.attributes.xy_color.as_ref(), 1.0, 1.0)
+}
+fn canonical_json(value: &serde_json::Value, output: &mut String) -> Result<(), String> {
+    match value {
+        serde_json::Value::Null => output.push_str("null"),
+        serde_json::Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        serde_json::Value::Number(value) => output.push_str(&value.to_string()),
+        serde_json::Value::String(value) => output
+            .push_str(&serde_json::to_string(value).map_err(|_| "invalid_assistant_response")?),
+        serde_json::Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                canonical_json(value, output)?;
+            }
+            output.push(']');
+        }
+        serde_json::Value::Object(values) => {
+            output.push('{');
+            let mut keys: Vec<_> = values.keys().collect();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                output.push_str(
+                    &serde_json::to_string(key).map_err(|_| "invalid_assistant_response")?,
+                );
+                output.push(':');
+                canonical_json(&values[key], output)?;
+            }
+            output.push('}');
+        }
+    }
+    Ok(())
+}
+fn action_digest(action: &AssistantAction) -> Result<String, String> {
+    let immutable = serde_json::json!({
+        "schema_version": action.schema_version,
+        "action_id": action.action_id,
+        "idempotency_key": action.idempotency_key,
+        "kind": action.kind,
+        "actor_id": action.actor_id,
+        "connection_id": action.connection_id,
+        "conversation_id": action.conversation_id,
+        "request_id": action.request_id,
+        "targets": action.targets,
+        "parameters": action.parameters,
+        "created_at": action.created_at,
+        "expires_at": action.expires_at,
+    });
+    let mut canonical = String::new();
+    canonical_json(&immutable, &mut canonical)?;
+    Ok(format!("{:x}", sha2::Sha256::digest(canonical.as_bytes())))
+}
+fn validate_action(action: &AssistantAction) -> Result<(), String> {
+    let target_ids: Vec<_> = action
+        .targets
+        .iter()
+        .map(|target| target.entity_id.as_str())
+        .collect();
+    let mut sorted_ids = target_ids.clone();
+    sorted_ids.sort_unstable();
+    let target_set: HashSet<_> = target_ids.iter().copied().collect();
+    let valid_parameters = match action.parameters.power.as_str() {
+        "off" => {
+            action.parameters.brightness_pct.is_none() && action.parameters.rgb_color.is_none()
+        }
+        "on" => action
+            .parameters
+            .brightness_pct
+            .is_none_or(|value| (1..=100).contains(&value)),
+        _ => false,
+    };
+    if action.schema_version != 1
+        || !valid_id(&action.action_id)
+        || !valid_digest(&action.idempotency_key)
+        || action.kind != "lights.set"
+        || action.actor_id.is_empty()
+        || action.actor_id.len() > 256
+        || !valid_id(&action.connection_id)
+        || !valid_id(&action.conversation_id)
+        || !valid_id(&action.request_id)
+        || action.targets.is_empty()
+        || action.targets.len() > 16
+        || target_ids != sorted_ids
+        || target_set.len() != target_ids.len()
+        || action.targets.iter().any(|target| {
+            !valid_entity_id(&target.entity_id)
+                || target.name.as_ref().is_some_and(|name| name.len() > 256)
+        })
+        || !valid_parameters
+        || !valid_timestamp(&action.created_at)
+        || !valid_timestamp(&action.expires_at)
+        || !valid_digest(&action.parameter_digest)
+        || action.receipt.as_ref().is_some_and(|receipt| {
+            !valid_id(&receipt.execution_id)
+                || !valid_timestamp(&receipt.started_at)
+                || receipt
+                    .finished_at
+                    .as_ref()
+                    .is_some_and(|time| !valid_timestamp(time))
+        })
+        || action.verification.as_ref().is_some_and(|verification| {
+            verification.source != "home_assistant_reported"
+                || !valid_timestamp(&verification.verified_at)
+                || verification.message.len() > 4096
+                || verification.states.len() > 16
+                || verification
+                    .states
+                    .iter()
+                    .any(|light| !validate_light(light))
+        })
+        || action_digest(action)? != action.parameter_digest
+    {
+        return Err("invalid_assistant_response".into());
+    }
+    Ok(())
+}
 fn validate(snapshot: &Snapshot) -> Result<(), String> {
-    if snapshot.version != 1 || snapshot.conversations.len() > MAX_CONVERSATIONS {
+    if snapshot.version != 1
+        || snapshot.conversations.len() > MAX_CONVERSATIONS
+        || snapshot.connections.len() > MAX_CONNECTIONS
+        || snapshot
+            .binding
+            .as_ref()
+            .is_some_and(|binding| !valid_digest(binding))
+    {
+        return Err(STORAGE_ERROR.into());
+    }
+    let mut connection_ids = HashSet::new();
+    let mut connection_bindings = HashSet::new();
+    for connection in &snapshot.connections {
+        if !valid_digest(&connection.binding)
+            || !valid_id(&connection.connection_id)
+            || !connection_ids.insert(connection.connection_id.as_str())
+            || !connection_bindings.insert(connection.binding.as_str())
+        {
+            return Err(STORAGE_ERROR.into());
+        }
+    }
+    if snapshot
+        .binding
+        .as_ref()
+        .is_some_and(|binding| !connection_bindings.contains(binding.as_str()))
+    {
         return Err(STORAGE_ERROR.into());
     }
     for c in &snapshot.conversations {
-        if !valid_id(&c.id) || c.title.len() > 256 || c.messages.len() > MAX_MESSAGES {
+        if !valid_id(&c.id)
+            || c.title.len() > 256
+            || c.messages.len() > MAX_MESSAGES
+            || c.connection_binding
+                .as_ref()
+                .is_some_and(|binding| !valid_digest(binding))
+            || c.connection_id.as_ref().is_some_and(|id| !valid_id(id))
+            || c.active_action_id.as_ref().is_some_and(|id| !valid_id(id))
+        {
             return Err(STORAGE_ERROR.into());
         }
         for m in &c.messages {
@@ -109,6 +607,10 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
                 || m.error_code.as_ref().is_some_and(|e| {
                     e.len() > 64 || !e.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
                 })
+                || m.actions.len() > MAX_ACTIONS_PER_MESSAGE
+                || m.actions
+                    .iter()
+                    .any(|action| validate_action(action).is_err())
             {
                 return Err(STORAGE_ERROR.into());
             }
@@ -145,9 +647,49 @@ impl AssistantStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Snapshot::default(),
             Err(_) => return Err(STORAGE_ERROR.into()),
         };
+        let mut legacy_bindings = Vec::new();
+        if let Some(binding) = snapshot.binding.as_ref() {
+            legacy_bindings.push(binding.clone());
+        }
+        legacy_bindings.extend(
+            snapshot
+                .conversations
+                .iter()
+                .filter_map(|conversation| conversation.connection_binding.clone()),
+        );
+        legacy_bindings.sort();
+        legacy_bindings.dedup();
+        for binding in legacy_bindings {
+            if !snapshot
+                .connections
+                .iter()
+                .any(|connection| connection.binding == binding)
+            {
+                snapshot.connections.push(StoredConnection {
+                    binding,
+                    connection_id: id(),
+                });
+            }
+        }
+        for conversation in &mut snapshot.conversations {
+            if conversation.connection_id.is_none() {
+                conversation.connection_id =
+                    conversation
+                        .connection_binding
+                        .as_ref()
+                        .and_then(|binding| {
+                            snapshot
+                                .connections
+                                .iter()
+                                .find(|connection| &connection.binding == binding)
+                                .map(|connection| connection.connection_id.clone())
+                        });
+            }
+        }
         validate(&snapshot)?;
         for c in &mut snapshot.conversations {
             c.active_pass_id = None;
+            c.active_action_id = None;
             for m in &mut c.messages {
                 if matches!(m.status.as_str(), "pending" | "running") {
                     m.status = "interrupted".into();
@@ -206,12 +748,33 @@ impl AssistantStore {
     }
     pub(crate) fn connect(&self, binding: Option<String>) -> Result<(), String> {
         self.mutate(|s| {
+            if let Some(binding) = binding.as_ref() {
+                if !valid_digest(binding) {
+                    return Err("assistant_connection_changed".into());
+                }
+                if !s
+                    .connections
+                    .iter()
+                    .any(|connection| &connection.binding == binding)
+                {
+                    if s.connections.len() >= MAX_CONNECTIONS {
+                        return Err("assistant_history_full".into());
+                    }
+                    s.connections.push(StoredConnection {
+                        binding: binding.clone(),
+                        connection_id: id(),
+                    });
+                }
+            }
             s.binding = binding;
             Ok(())
         })
     }
     pub(crate) fn connected(&self, binding: &str) -> bool {
         self.0.lock_or_recover().snapshot.binding.as_deref() == Some(binding)
+    }
+    pub(crate) fn current_binding(&self) -> Option<String> {
+        self.0.lock_or_recover().snapshot.binding.clone()
     }
     pub(crate) fn list(&self) -> Result<Vec<ConversationSummary>, String> {
         let inner = self.0.lock_or_recover();
@@ -270,6 +833,16 @@ impl AssistantStore {
                 return Err("assistant_history_full".into());
             }
             let timestamp = now();
+            let connection_id = s
+                .binding
+                .as_ref()
+                .and_then(|binding| {
+                    s.connections
+                        .iter()
+                        .find(|connection| &connection.binding == binding)
+                })
+                .map(|connection| connection.connection_id.clone())
+                .ok_or("assistant_not_connected")?;
             let mut c = Conversation {
                 id: id(),
                 title: "New conversation".into(),
@@ -278,6 +851,8 @@ impl AssistantStore {
                 messages: vec![],
                 active_pass_id: None,
                 live_state: None,
+                connection_id: Some(connection_id),
+                active_action_id: None,
                 seed_pending: prior.is_some(),
                 connection_binding: s.binding.clone(),
             };
@@ -293,6 +868,7 @@ impl AssistantStore {
                         created_at_ms: timestamp,
                         status: "ready".into(),
                         error_code: None,
+                        actions: vec![],
                     });
                 }
                 // Validate seed bound before saving an unusable import.
@@ -339,6 +915,15 @@ impl AssistantStore {
         if conversation.connection_binding.as_deref() != Some(binding) {
             return Err("assistant_connection_changed".into());
         }
+        let current_connection = inner
+            .snapshot
+            .connections
+            .iter()
+            .find(|connection| connection.binding == binding)
+            .map(|connection| connection.connection_id.as_str());
+        if conversation.connection_id.as_deref() != current_connection {
+            return Err("assistant_connection_changed".into());
+        }
         if conversation.active_pass_id.is_some() {
             return Err("busy".into());
         }
@@ -363,12 +948,20 @@ impl AssistantStore {
             {
                 return Err("assistant_history_full".into());
             }
+            let current_connection = s
+                .connections
+                .iter()
+                .find(|connection| connection.binding == expected_binding)
+                .map(|connection| connection.connection_id.clone());
             let c = s
                 .conversations
                 .iter_mut()
                 .find(|c| c.id == conversation_id)
                 .ok_or("assistant_conversation_unavailable")?;
             if c.connection_binding.as_deref() != Some(expected_binding) {
+                return Err("assistant_connection_changed".into());
+            }
+            if c.connection_id.as_ref() != current_connection.as_ref() {
                 return Err("assistant_connection_changed".into());
             }
             if c.active_pass_id.is_some() || c.messages.len() + 2 > MAX_MESSAGES {
@@ -386,6 +979,7 @@ impl AssistantStore {
                     created_at_ms: timestamp,
                     status: "pending".into(),
                     error_code: None,
+                    actions: vec![],
                 });
             }
             if c.messages.len() == 2 && !message.is_empty() {
@@ -429,6 +1023,132 @@ impl AssistantStore {
             Ok(prompt)
         })
     }
+    pub(crate) fn begin_action(
+        &self,
+        action_id: &str,
+        pass_id: u64,
+        operation: &str,
+    ) -> Result<ActionDispatch, String> {
+        if !valid_id(action_id) || !matches!(operation, "confirm" | "cancel" | "status") {
+            return Err("invalid_assistant_action".into());
+        }
+        self.mutate(|snapshot| {
+            let binding = snapshot
+                .binding
+                .as_ref()
+                .ok_or("assistant_not_connected")?
+                .clone();
+            let current_connection = snapshot
+                .connections
+                .iter()
+                .find(|connection| connection.binding == binding)
+                .map(|connection| connection.connection_id.clone())
+                .ok_or("assistant_not_connected")?;
+            let conversation = snapshot
+                .conversations
+                .iter_mut()
+                .find(|conversation| {
+                    conversation.messages.iter().any(|message| {
+                        message
+                            .actions
+                            .iter()
+                            .any(|action| action.action_id == action_id)
+                    })
+                })
+                .ok_or("assistant_action_unavailable")?;
+            if conversation.connection_binding.as_deref() != Some(binding.as_str())
+                || conversation.connection_id.as_deref() != Some(current_connection.as_str())
+                || conversation.active_pass_id.is_some()
+            {
+                return Err(if conversation.active_pass_id.is_some() {
+                    "busy"
+                } else {
+                    "assistant_connection_changed"
+                }
+                .into());
+            }
+            let action = conversation
+                .messages
+                .iter()
+                .flat_map(|message| &message.actions)
+                .find(|action| action.action_id == action_id)
+                .ok_or("assistant_action_unavailable")?;
+            validate_action(action)?;
+            if action.connection_id != current_connection
+                || action.conversation_id != conversation.id
+            {
+                return Err("assistant_connection_changed".into());
+            }
+            let dispatch = ActionDispatch {
+                conversation_id: conversation.id.clone(),
+                request_id: id(),
+                connection_id: current_connection,
+                parameter_digest: action.parameter_digest.clone(),
+            };
+            conversation.active_pass_id = Some(pass_id);
+            conversation.active_action_id = Some(action_id.to_string());
+            conversation.updated_at_ms = now();
+            Ok(dispatch)
+        })
+    }
+
+    pub(crate) fn record_action(
+        &self,
+        pass_id: u64,
+        action: AssistantAction,
+    ) -> Result<(), String> {
+        validate_action(&action)?;
+        let conversation_id = self.mutate(|snapshot| {
+            let conversation = snapshot
+                .conversations
+                .iter_mut()
+                .find(|conversation| conversation.active_pass_id == Some(pass_id))
+                .ok_or("cancelled")?;
+            if conversation.connection_id.as_deref() != Some(action.connection_id.as_str())
+                || conversation.id != action.conversation_id
+            {
+                return Err("invalid_assistant_response".into());
+            }
+            if let Some(expected_action_id) = conversation.active_action_id.as_deref() {
+                if expected_action_id != action.action_id {
+                    return Err("invalid_assistant_response".into());
+                }
+            } else {
+                let request_id = conversation
+                    .messages
+                    .last()
+                    .map(|message| message.request_id.as_str())
+                    .ok_or(STORAGE_ERROR)?;
+                if request_id != action.request_id {
+                    return Err("invalid_assistant_response".into());
+                }
+            }
+            if let Some(existing) = conversation
+                .messages
+                .iter_mut()
+                .flat_map(|message| &mut message.actions)
+                .find(|existing| existing.action_id == action.action_id)
+            {
+                if existing.parameter_digest != action.parameter_digest {
+                    return Err("invalid_assistant_response".into());
+                }
+                *existing = action;
+            } else {
+                if conversation.active_action_id.is_some() {
+                    return Err("invalid_assistant_response".into());
+                }
+                let message = conversation.messages.last_mut().ok_or(STORAGE_ERROR)?;
+                if message.role != "assistant" || message.actions.len() >= MAX_ACTIONS_PER_MESSAGE {
+                    return Err("output_too_large".into());
+                }
+                message.actions.push(action);
+            }
+            conversation.updated_at_ms = now();
+            Ok(conversation.id.clone())
+        })?;
+        self.emit_changed(&conversation_id, pass_id);
+        Ok(())
+    }
     pub(crate) fn update(
         &self,
         pass_id: u64,
@@ -445,23 +1165,32 @@ impl AssistantStore {
             else {
                 return Ok(());
             };
-            let m = c.messages.last_mut().ok_or(STORAGE_ERROR)?;
-            m.content = answer.into();
-            if let Some((status, error)) = terminal {
-                m.status = status.into();
-                m.error_code = error.map(str::to_string);
-                c.active_pass_id = None;
-                if status == "ready" {
-                    c.seed_pending = false;
+            if c.active_action_id.is_some() {
+                if terminal.is_some() {
+                    c.active_pass_id = None;
+                    c.active_action_id = None;
                 }
-                for user in c.messages.iter_mut().filter(|m| m.status == "pending") {
-                    user.status = status.into();
-                }
+                c.updated_at_ms = now();
+                c.id.clone()
             } else {
-                m.status = "running".into();
+                let m = c.messages.last_mut().ok_or(STORAGE_ERROR)?;
+                m.content = answer.into();
+                if let Some((status, error)) = terminal {
+                    m.status = status.into();
+                    m.error_code = error.map(str::to_string);
+                    c.active_pass_id = None;
+                    if status == "ready" {
+                        c.seed_pending = false;
+                    }
+                    for user in c.messages.iter_mut().filter(|m| m.status == "pending") {
+                        user.status = status.into();
+                    }
+                } else {
+                    m.status = "running".into();
+                }
+                c.updated_at_ms = now();
+                c.id.clone()
             }
-            c.updated_at_ms = now();
-            c.id.clone()
         };
         let result = Self::write(&inner, &next);
         // A disk failure must stop dispatch, but cannot leave an already
@@ -499,8 +1228,15 @@ fn envelope(c: &Conversation, request_id: &str, message: &str) -> Result<String,
     if message.len() > 32768 || message.contains('\0') {
         return Err("query_too_large".into());
     }
-    let mut payload =
-        serde_json::json!({ "conversationId": c.id, "requestId": request_id, "message": message });
+    let connection_id = c
+        .connection_id
+        .as_ref()
+        .filter(|connection_id| valid_id(connection_id))
+        .ok_or("assistant_connection_changed")?;
+    let mut payload = serde_json::json!({
+        "type": "message", "conversationId": c.id, "requestId": request_id,
+        "message": message, "connectionId": connection_id,
+    });
     if c.seed_pending {
         payload["seedMessages"] = serde_json::json!(c
             .messages
@@ -509,20 +1245,50 @@ fn envelope(c: &Conversation, request_id: &str, message: &str) -> Result<String,
             .map(|m| serde_json::json!({"role":m.role,"content":m.content}))
             .collect::<Vec<_>>());
     }
-    let prompt = format!("MURMUR_ASSISTANT_V1\n{}", payload);
+    let prompt = format!("MURMUR_ASSISTANT_V2\n{}", payload);
     if prompt.len() > 65536 {
         return Err("query_too_large".into());
     }
     Ok(prompt)
 }
 
+pub(crate) fn action_envelope(
+    operation: &str,
+    action_id: &str,
+    dispatch: &ActionDispatch,
+) -> Result<String, String> {
+    if !matches!(operation, "confirm" | "cancel" | "status")
+        || !valid_id(action_id)
+        || !valid_id(&dispatch.conversation_id)
+        || !valid_id(&dispatch.request_id)
+        || !valid_id(&dispatch.connection_id)
+        || !valid_digest(&dispatch.parameter_digest)
+    {
+        return Err("invalid_assistant_action".into());
+    }
+    let payload = serde_json::json!({
+        "type": operation,
+        "conversationId": dispatch.conversation_id,
+        "requestId": dispatch.request_id,
+        "connectionId": dispatch.connection_id,
+        "actionId": action_id,
+        "parameterDigest": dispatch.parameter_digest,
+    });
+    let prompt = format!("MURMUR_ASSISTANT_V2\n{payload}");
+    (prompt.len() <= 65536)
+        .then_some(prompt)
+        .ok_or_else(|| "query_too_large".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    const BINDING: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const OTHER_BINDING: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     fn store(root: PathBuf) -> AssistantStore {
         let s = AssistantStore::default();
         s.initialize(root, None).unwrap();
-        s.connect(Some("bridge".into())).unwrap();
+        s.connect(Some(BINDING.into())).unwrap();
         s
     }
     #[test]
@@ -533,7 +1299,7 @@ mod tests {
         let c = s.create(None).unwrap();
         let path = root.join("conversations-v1.json");
         let before = fs::read(&path).unwrap();
-        assert!(s.validate_draft(&c.id, "bridge").is_ok());
+        assert!(s.validate_draft(&c.id, BINDING).is_ok());
         assert_eq!(fs::read(&path).unwrap(), before);
         let unchanged = s.get(&c.id).unwrap();
         assert!(unchanged.messages.is_empty());
@@ -541,19 +1307,19 @@ mod tests {
         assert_eq!(unchanged.updated_at_ms, c.updated_at_ms);
         assert!(s.for_pass(42).is_none());
         assert!(s.prompt(42, "unsent draft").is_err());
-        assert!(s.validate_draft("missing", "bridge").is_err());
-        assert!(s.validate_draft(&c.id, "other").is_err());
-        s.connect(Some("other".into())).unwrap();
-        assert!(s.validate_draft(&c.id, "other").is_err());
+        assert!(s.validate_draft("missing", BINDING).is_err());
+        assert!(s.validate_draft(&c.id, OTHER_BINDING).is_err());
+        s.connect(Some(OTHER_BINDING.into())).unwrap();
+        assert!(s.validate_draft(&c.id, OTHER_BINDING).is_err());
         s.connect(None).unwrap();
-        assert!(s.validate_draft(&c.id, "bridge").is_err());
+        assert!(s.validate_draft(&c.id, BINDING).is_err());
     }
     #[test]
     fn restart_preserves_partial_and_terminalizes_without_redispatch() {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
         let c = s.create(None).unwrap();
-        s.begin(&c.id, 7, "question", "bridge").unwrap();
+        s.begin(&c.id, 7, "question", BINDING).unwrap();
         s.prompt(7, "question").unwrap();
         s.update(7, "partial", None).unwrap();
         let restored = store(temp.path().join("assistant"));
@@ -567,7 +1333,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
         let c = s.create(None).unwrap();
-        s.begin(&c.id, 7, "question", "bridge").unwrap();
+        s.begin(&c.id, 7, "question", BINDING).unwrap();
         assert!(s.delete(&c.id).is_err());
         s.update(6, "wrong", None).unwrap();
         assert_eq!(s.get(&c.id).unwrap().messages[1].content, "");
@@ -585,12 +1351,12 @@ mod tests {
         let c = s
             .create(Some(("question".into(), "answer".into())))
             .unwrap();
-        s.begin(&c.id, 8, "next", "bridge").unwrap();
+        s.begin(&c.id, 8, "next", BINDING).unwrap();
         let prompt = s.prompt(8, "next").unwrap();
         assert!(prompt.contains("seedMessages"));
-        assert!(prompt.starts_with("MURMUR_ASSISTANT_V1\n"));
+        assert!(prompt.starts_with("MURMUR_ASSISTANT_V2\n"));
         s.update(8, "reply", Some(("ready", None))).unwrap();
-        s.begin(&c.id, 9, "later", "bridge").unwrap();
+        s.begin(&c.id, 9, "later", BINDING).unwrap();
         assert!(!s.prompt(9, "later").unwrap().contains("seedMessages"));
         assert!(s
             .create(Some(("question".into(), "x".repeat(65536))))
@@ -628,11 +1394,11 @@ mod tests {
         let c = s
             .create(Some(("seed question".into(), "seed answer".into())))
             .unwrap();
-        s.begin(&c.id, 1, "first", "bridge").unwrap();
+        s.begin(&c.id, 1, "first", BINDING).unwrap();
         let first = s.prompt(1, "first").unwrap();
         s.update(1, "partial", Some(("failed", Some("exit_nonzero"))))
             .unwrap();
-        s.begin(&c.id, 2, "second", "bridge").unwrap();
+        s.begin(&c.id, 2, "second", BINDING).unwrap();
         let second = s.prompt(2, "second").unwrap();
         let first: serde_json::Value =
             serde_json::from_str(first.split_once('\n').unwrap().1).unwrap();
@@ -649,7 +1415,7 @@ mod tests {
         let root = temp.path().join("assistant");
         let s = store(root.clone());
         let c = s.create(None).unwrap();
-        s.begin(&c.id, 1, "question", "bridge").unwrap();
+        s.begin(&c.id, 1, "question", BINDING).unwrap();
         s.prompt(1, "question").unwrap();
         fs::rename(&root, temp.path().join("moved")).unwrap();
         assert!(s
@@ -667,7 +1433,7 @@ mod tests {
         let root = temp.path().join("assistant");
         let s = store(root.clone());
         let c = s.create(None).unwrap();
-        assert!(s.begin(&c.id, 1, &"x".repeat(32769), "bridge").is_err());
+        assert!(s.begin(&c.id, 1, &"x".repeat(32769), BINDING).is_err());
         assert!(s.get(&c.id).unwrap().messages.is_empty());
         assert!(s.get("../../outside").is_err());
         #[cfg(unix)]
@@ -693,15 +1459,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
         let c = s.create(None).unwrap();
-        s.connect(Some("different bridge".into())).unwrap();
+        s.connect(Some(OTHER_BINDING.into())).unwrap();
         assert_eq!(
-            s.begin(&c.id, 1, "new message", "different bridge")
-                .unwrap_err(),
+            s.begin(&c.id, 1, "new message", OTHER_BINDING).unwrap_err(),
             "assistant_connection_changed"
         );
         assert!(s.get(&c.id).unwrap().messages.is_empty());
-        s.connect(Some("bridge".into())).unwrap();
-        assert!(s.begin(&c.id, 2, "new message", "bridge").is_ok());
+        s.connect(Some(BINDING.into())).unwrap();
+        assert!(s.begin(&c.id, 2, "new message", BINDING).is_ok());
     }
 
     #[test]
@@ -709,15 +1474,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
         let original = s.create(None).unwrap();
-        s.connect(Some("other bridge".into())).unwrap();
+        s.connect(Some(OTHER_BINDING.into())).unwrap();
         let other = s.create(None).unwrap();
-        let frozen_binding = "other bridge";
+        let frozen_binding = OTHER_BINDING;
         assert!(s.connected(frozen_binding));
 
         // Another command reconnects to the target conversation's original
         // bridge after the dispatch command was validated. Global and
         // conversation bindings now agree, but the frozen command does not.
-        s.connect(Some("bridge".into())).unwrap();
+        s.connect(Some(BINDING.into())).unwrap();
         assert_eq!(
             s.begin(&original.id, 1, "private message", frozen_binding)
                 .unwrap_err(),
@@ -738,15 +1503,112 @@ mod tests {
     fn reconnect_between_popover_validation_and_import_cannot_rebind_private_seed() {
         let temp = tempfile::tempdir().unwrap();
         let s = store(temp.path().join("assistant"));
-        assert!(s.connected("bridge"));
-        s.connect(Some("other bridge".into())).unwrap();
+        assert!(s.connected(BINDING));
+        s.connect(Some(OTHER_BINDING.into())).unwrap();
         assert!(
-            matches!(s.import("private question".into(), "private answer".into(), "bridge"), Err(error) if error == "assistant_connection_changed")
+            matches!(s.import("private question".into(), "private answer".into(), BINDING), Err(error) if error == "assistant_connection_changed")
         );
         assert!(s.list().unwrap().is_empty());
-        s.connect(Some("bridge".into())).unwrap();
+        s.connect(Some(BINDING.into())).unwrap();
         assert!(s
-            .import("private question".into(), "private answer".into(), "bridge")
+            .import("private question".into(), "private answer".into(), BINDING)
             .is_ok());
+    }
+
+    fn action_fixture(name: &str) -> AssistantAction {
+        // Copied from AgentOS backend/capabilities/tests/fixtures/action_responses.json
+        // at the frozen 2026-09-14 action contract revision.
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/assistant-action-responses.json"
+        ))
+        .unwrap();
+        serde_json::from_value(fixture[name]["result"].clone()).unwrap()
+    }
+
+    #[test]
+    fn v2_parser_accepts_agentos_proposed_completed_and_uncertain_records() {
+        for name in ["proposed", "completed", "uncertain"] {
+            let action = action_fixture(name);
+            let line = serde_json::to_vec(&serde_json::json!({
+                "schema_version": 2, "type": "action", "action": action,
+            }))
+            .unwrap();
+            let mut parser = AssistantStreamParser::new();
+            let split = line.len() / 2;
+            assert!(parser.push(&line[..split]).unwrap().is_empty());
+            let mut second = line[split..].to_vec();
+            second.extend_from_slice(b"\n{\"schema_version\":2,\"type\":\"done\"}\n");
+            let updates = parser.push(&second).unwrap();
+            assert!(matches!(
+                updates.as_slice(),
+                [AssistantStreamUpdate::Action(_)]
+            ));
+            let (tail, count) = parser.finish().unwrap();
+            assert!(tail.is_empty());
+            assert_eq!(count, 1);
+        }
+    }
+
+    #[test]
+    fn v2_parser_rejects_prose_bad_digest_duplicate_done_and_missing_done() {
+        let mut prose = AssistantStreamParser::new();
+        assert!(matches!(
+            prose.push(b"please confirm\n"),
+            Err("invalid_assistant_response")
+        ));
+
+        let mut value = serde_json::to_value(action_fixture("proposed")).unwrap();
+        value["parameter_digest"] = serde_json::json!("0".repeat(64));
+        let bad = format!(
+            "{}\n",
+            serde_json::json!({"schema_version":2,"type":"action","action":value})
+        );
+        assert!(matches!(
+            AssistantStreamParser::new().push(bad.as_bytes()),
+            Err("invalid_assistant_response")
+        ));
+
+        let mut duplicate = AssistantStreamParser::new();
+        duplicate
+            .push(b"{\"schema_version\":2,\"type\":\"done\"}\n")
+            .unwrap();
+        assert!(matches!(
+            duplicate.push(b"{\"schema_version\":2,\"type\":\"done\"}\n"),
+            Err("invalid_assistant_response")
+        ));
+        assert!(matches!(
+            AssistantStreamParser::new().finish(),
+            Err("invalid_assistant_response")
+        ));
+    }
+
+    #[test]
+    fn stored_action_dispatch_uses_only_bound_ids_and_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("assistant");
+        let s = store(root.clone());
+        let conversation = s.create(None).unwrap();
+        let request_id = s
+            .begin(&conversation.id, 7, "make it blue", BINDING)
+            .unwrap();
+        let mut action = action_fixture("proposed");
+        action.conversation_id = conversation.id.clone();
+        action.connection_id = conversation.connection_id.clone().unwrap();
+        action.request_id = request_id;
+        action.parameter_digest = action_digest(&action).unwrap();
+        let action_id = action.action_id.clone();
+        s.record_action(7, action).unwrap();
+        s.update(7, "", Some(("ready", None))).unwrap();
+
+        let restored = store(root);
+        let dispatch = restored.begin_action(&action_id, 8, "confirm").unwrap();
+        let prompt = action_envelope("confirm", &action_id, &dispatch).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(payload["actionId"], action_id);
+        assert_eq!(payload["parameterDigest"], dispatch.parameter_digest);
+        assert!(payload.get("targets").is_none());
+        assert!(payload.get("parameters").is_none());
+        assert_eq!(payload.as_object().unwrap().len(), 6);
     }
 }
