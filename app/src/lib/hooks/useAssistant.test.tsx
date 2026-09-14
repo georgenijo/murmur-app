@@ -10,7 +10,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 const id = '01234567-89ab-4cde-8fab-0123456789ab';
 const requestId = '11234567-89ab-4cde-8fab-0123456789ab';
 const options = { command: { provider: 'custom' as const, executable: '/test/pi', arguments: [], timeoutSeconds: 300, contextLevel: 'none' as const, retainQueryHistory: false }, deviceName: null, smartAuto: null };
-const empty = (): AssistantConversation => ({ id, title: 'Existing chat', createdAtMs: 1, updatedAtMs: 2, messages: [], activePassId: null, liveState: null });
+const empty = (): AssistantConversation => ({ id, title: 'Existing chat', createdAtMs: 1, updatedAtMs: 2, messages: [], activePassId: null, liveState: null, confirmationOutcomeUnknownActionIds: [] });
 const action = (status: AssistantActionStatus): AssistantAction => ({
   schema_version: 1, action_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', idempotency_key: '0'.repeat(64), kind: 'lights.set', actor_id: 'george',
   connection_id: '11111111-1111-4111-8111-111111111111', conversation_id: id, request_id: requestId,
@@ -155,6 +155,21 @@ describe('Assistant conversation orchestration', () => {
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
     expect(mocks.invoke).toHaveBeenCalledWith('refresh_assistant_action', { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
     expect(mocks.invoke.mock.calls.some(([name]) => name === 'confirm_assistant_action')).toBe(false);
+  });
+  it('preserves a reopened unknown confirmation when status transport also fails', async () => {
+    snapshot = {
+      ...withAction('proposed'),
+      confirmationOutcomeUnknownActionIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+    };
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((name, args) => name === 'refresh_assistant_action'
+      ? Promise.reject(new Error('transport_failed'))
+      : original(name, args));
+    await mount();
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    expect(mocks.invoke).toHaveBeenCalledWith('refresh_assistant_action', { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'confirm_assistant_action')).toBe(false);
+    expect(state.conversation?.confirmationOutcomeUnknownActionIds).toEqual(['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);
   });
   it('falls back to status after a failed Confirm without retrying Confirm', async () => {
     snapshot = withAction('failed');

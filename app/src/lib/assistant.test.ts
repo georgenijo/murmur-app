@@ -3,7 +3,7 @@ import { assistantError, isAssistantConversation, isConversationId } from './ass
 const id = '01234567-89ab-4cde-8fab-0123456789ab';
 describe('assistant native boundary', () => {
   it('accepts native conversation shape without inventing summary-only fields', () => {
-    expect(isAssistantConversation({ id, title: 'New chat', createdAtMs: 1, updatedAtMs: 1, messages: [], activePassId: null })).toBe(true);
+    expect(isAssistantConversation({ id, title: 'New chat', createdAtMs: 1, updatedAtMs: 1, messages: [], activePassId: null, confirmationOutcomeUnknownActionIds: [] })).toBe(true);
   });
   it('rejects paths, invalid states, malformed content and pass IDs', () => {
     expect(isConversationId('/etc/passwd')).toBe(false);

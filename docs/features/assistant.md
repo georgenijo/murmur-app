@@ -70,7 +70,11 @@ The action record reports `proposed`, `cancelled`, `expired`, `executing`,
 `completed`, `failed`, or `uncertain`. A completed card states that Home Assistant
 reported the requested state. That read-back does not prove the physical state.
 Murmur asks for status after reopening a proposed or executing action. If Confirm
-fails after admission, Murmur asks for status and never sends Confirm again.
+fails after admission, Murmur durably marks the confirmation outcome unknown,
+shows the last known AgentOS state, and permits only status refresh until an
+authoritative action response clears the marker. It never sends Confirm again
+while that marker remains. The marker is local recovery metadata; it does not
+alter the AgentOS action status or fabricate a receipt.
 
 Only main-window commands can read/mutate the store. Content updates are targeted
 to that window. No conversation text belongs in diagnostic logs. Rendered

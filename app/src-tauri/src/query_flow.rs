@@ -3366,7 +3366,7 @@ fn accept_assistant_updates(
             }
             crate::assistant::AssistantStreamUpdate::Action(action) => {
                 app.state::<crate::State>().query.mark_first_chunk(pass_id);
-                pending_actions.push(action);
+                pending_actions.push(*action);
             }
         }
     }

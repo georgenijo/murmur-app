@@ -204,6 +204,8 @@ pub(crate) struct Conversation {
     #[serde(default)]
     active_action_id: Option<String>,
     #[serde(default)]
+    pub confirmation_outcome_unknown_action_ids: Vec<String>,
+    #[serde(default)]
     seed_pending: bool,
     #[serde(default)]
     connection_binding: Option<String>,
@@ -256,7 +258,7 @@ enum WireRecord {
     #[serde(rename = "action")]
     Action {
         schema_version: u32,
-        action: AssistantAction,
+        action: Box<AssistantAction>,
     },
     #[serde(rename = "done")]
     Done { schema_version: u32 },
@@ -264,7 +266,7 @@ enum WireRecord {
 
 pub(crate) enum AssistantStreamUpdate {
     Text(String),
-    Action(AssistantAction),
+    Action(Box<AssistantAction>),
 }
 
 pub(crate) struct AssistantStreamParser {
@@ -687,6 +689,15 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
                 .is_some_and(|binding| !valid_digest(binding))
             || c.connection_id.as_ref().is_some_and(|id| !valid_id(id))
             || c.active_action_id.as_ref().is_some_and(|id| !valid_id(id))
+            || c.confirmation_outcome_unknown_action_ids.len() > MAX_ACTIONS_PER_MESSAGE
+            || c.confirmation_outcome_unknown_action_ids
+                .iter()
+                .any(|id| !valid_id(id))
+            || c.confirmation_outcome_unknown_action_ids
+                .iter()
+                .collect::<HashSet<_>>()
+                .len()
+                != c.confirmation_outcome_unknown_action_ids.len()
         {
             return Err(STORAGE_ERROR.into());
         }
@@ -713,6 +724,14 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
             {
                 return Err(STORAGE_ERROR.into());
             }
+        }
+        if c.confirmation_outcome_unknown_action_ids.iter().any(|id| {
+            !c.messages
+                .iter()
+                .flat_map(|message| &message.actions)
+                .any(|action| &action.action_id == id)
+        }) {
+            return Err(STORAGE_ERROR.into());
         }
     }
     Ok(())
@@ -952,6 +971,7 @@ impl AssistantStore {
                 live_state: None,
                 connection_id: Some(connection_id),
                 active_action_id: None,
+                confirmation_outcome_unknown_action_ids: vec![],
                 seed_pending: prior.is_some(),
                 connection_binding: s.binding.clone(),
             };
@@ -1172,6 +1192,14 @@ impl AssistantStore {
                 .flat_map(|message| &message.actions)
                 .find(|action| action.action_id == action_id)
                 .ok_or("assistant_action_unavailable")?;
+            if conversation
+                .confirmation_outcome_unknown_action_ids
+                .iter()
+                .any(|id| id == action_id)
+                && operation != "status"
+            {
+                return Err("assistant_action_status_required".into());
+            }
             validate_action(action)?;
             if action.connection_id != current_connection
                 || action.conversation_id != conversation.id
@@ -1186,6 +1214,11 @@ impl AssistantStore {
             };
             conversation.active_pass_id = Some(pass_id);
             conversation.active_action_id = Some(action_id.to_string());
+            if operation == "confirm" {
+                conversation
+                    .confirmation_outcome_unknown_action_ids
+                    .push(action_id.to_string());
+            }
             conversation.updated_at_ms = now();
             Ok(dispatch)
         })
@@ -1231,11 +1264,18 @@ impl AssistantStore {
                     },
                 );
                 if let Some((message_index, action_index)) = existing_location {
-                    let existing = &mut conversation.messages[message_index].actions[action_index];
-                    if existing.parameter_digest != action.parameter_digest {
-                        return Err("invalid_assistant_response".into());
+                    let action_id = action.action_id.clone();
+                    {
+                        let existing =
+                            &mut conversation.messages[message_index].actions[action_index];
+                        if existing.parameter_digest != action.parameter_digest {
+                            return Err("invalid_assistant_response".into());
+                        }
+                        *existing = action;
                     }
-                    *existing = action;
+                    conversation
+                        .confirmation_outcome_unknown_action_ids
+                        .retain(|unknown| unknown != &action_id);
                     continue;
                 }
                 if conversation.active_action_id.is_some() {
@@ -1809,6 +1849,47 @@ mod tests {
             s.get(&conversation.id).unwrap().messages[1].actions[0].status,
             ActionStatus::Completed
         );
+    }
+
+    #[test]
+    fn interrupted_confirmation_stays_unknown_across_restart_until_status_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("assistant");
+        let s = store(root.clone());
+        let conversation = s.create(None).unwrap();
+        let request_id = s.begin(&conversation.id, 7, "lights", BINDING).unwrap();
+        let mut proposed = action_fixture("proposed");
+        proposed.conversation_id = conversation.id.clone();
+        proposed.connection_id = conversation.connection_id.unwrap();
+        proposed.request_id = request_id;
+        proposed.parameter_digest = action_digest(&proposed).unwrap();
+        let action_id = proposed.action_id.clone();
+        s.record_action(7, proposed.clone()).unwrap();
+        s.update(7, "", Some(("ready", None))).unwrap();
+
+        s.begin_action(&action_id, 8, "confirm").unwrap();
+        s.update(8, "", Some(("failed", Some("process_failed"))))
+            .unwrap();
+        let restored = store(root);
+        assert_eq!(
+            restored
+                .get(&conversation.id)
+                .unwrap()
+                .confirmation_outcome_unknown_action_ids,
+            vec![action_id.clone()]
+        );
+        assert!(matches!(
+            restored.begin_action(&action_id, 9, "confirm"),
+            Err(error) if error == "assistant_action_status_required"
+        ));
+
+        restored.begin_action(&action_id, 10, "status").unwrap();
+        restored.record_action(10, proposed).unwrap();
+        assert!(restored
+            .get(&conversation.id)
+            .unwrap()
+            .confirmation_outcome_unknown_action_ids
+            .is_empty());
     }
 
     #[test]

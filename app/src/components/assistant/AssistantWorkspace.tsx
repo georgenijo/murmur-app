@@ -31,6 +31,7 @@ export interface AssistantWorkspaceProps {
   conversations: AssistantThreadSummary[];
   selectedId: string | null;
   messages: AssistantThreadMessage[];
+  confirmationOutcomeUnknownActionIds: string[];
   phase: AssistantPhase;
   error: string | null;
   voiceAvailable: boolean;
@@ -186,7 +187,9 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
             ? <p className="assistant-user-text">{message.text}</p>
             : <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{message.text}</Markdown>}
           </div>
-          {message.actions.map((action) => <AssistantActionCard key={action.action_id} action={action} disabled={busy} onConfirm={props.onConfirmAction} onCancel={props.onCancelAction} onRefresh={props.onRefreshAction} />)}
+          {message.actions.map((action) => <AssistantActionCard key={action.action_id} action={action}
+            confirmationOutcomeUnknown={props.confirmationOutcomeUnknownActionIds.includes(action.action_id)}
+            disabled={busy} onConfirm={props.onConfirmAction} onCancel={props.onCancelAction} onRefresh={props.onRefreshAction} />)}
           {message.status === 'running' && <span className="assistant-muted assistant-turn-status"><AssistantActivityMark active />Pi is working…</span>}
           {message.status === 'cancelled' && <p className="assistant-muted">Stopped. This response may be incomplete.</p>}
           {message.status === 'failed' && <p className="assistant-error">This response did not complete. You can send another message.</p>}

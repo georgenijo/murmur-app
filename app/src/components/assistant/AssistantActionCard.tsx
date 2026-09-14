@@ -27,17 +27,19 @@ function setting(action: AssistantAction): string {
   return details.length ? `Turn on · ${details.join(' · ')}` : 'Turn on';
 }
 
-export function AssistantActionCard({ action, disabled, onConfirm, onCancel, onRefresh }: {
+export function AssistantActionCard({ action, confirmationOutcomeUnknown, disabled, onConfirm, onCancel, onRefresh }: {
   action: AssistantAction;
+  confirmationOutcomeUnknown: boolean;
   disabled: boolean;
   onConfirm: (actionId: string) => Promise<void>;
   onCancel: (actionId: string) => Promise<void>;
   onRefresh: (actionId: string) => Promise<void>;
 }) {
-  return <section className="assistant-action-card" data-status={action.status} aria-label={`Light action: ${STATUS_LABELS[action.status]}`}>
+  const statusLabel = confirmationOutcomeUnknown ? 'Confirmation outcome unknown' : STATUS_LABELS[action.status];
+  return <section className="assistant-action-card" data-status={confirmationOutcomeUnknown ? 'confirmation-unknown' : action.status} aria-label={`Light action: ${statusLabel}`}>
     <header>
       <div><p>Light action</p><strong>{setting(action)}</strong></div>
-      <span className="assistant-action-status">{STATUS_LABELS[action.status]}</span>
+      <span className="assistant-action-status">{statusLabel}</span>
     </header>
     <ul className="assistant-action-targets">
       {action.targets.map((target) => <li key={target.entity_id}>
@@ -45,11 +47,14 @@ export function AssistantActionCard({ action, disabled, onConfirm, onCancel, onR
         <code>{target.entity_id}</code>
       </li>)}
     </ul>
-    {action.status === 'proposed' && <div className="assistant-action-buttons">
+    {confirmationOutcomeUnknown && <p className="assistant-action-verification">
+      Last known server state: {STATUS_LABELS[action.status]}. Refresh status before taking another action.
+    </p>}
+    {action.status === 'proposed' && !confirmationOutcomeUnknown && <div className="assistant-action-buttons">
       <button type="button" className="assistant-primary" disabled={disabled} onClick={() => void onConfirm(action.action_id)}>Confirm</button>
       <button type="button" className="assistant-secondary" disabled={disabled} onClick={() => void onCancel(action.action_id)}>Cancel</button>
     </div>}
-    {['proposed', 'executing', 'failed', 'uncertain'].includes(action.status) && <div className="assistant-action-buttons">
+    {(confirmationOutcomeUnknown || ['proposed', 'executing', 'failed', 'uncertain'].includes(action.status)) && <div className="assistant-action-buttons">
       <button type="button" className="assistant-secondary" disabled={disabled} onClick={() => void onRefresh(action.action_id)}>Refresh status</button>
     </div>}
     {action.verification && <p className="assistant-action-verification">

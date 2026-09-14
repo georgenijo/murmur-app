@@ -29,7 +29,12 @@ export interface AssistantMessage {
   status: 'pending' | 'running' | 'ready' | 'failed' | 'cancelled' | 'interrupted'; errorCode: string | null;
   actions: AssistantAction[];
 }
-export interface AssistantConversation extends Omit<AssistantSummary, 'messageCount'> { messages: AssistantMessage[]; activePassId: number | null; liveState?: string | null }
+export interface AssistantConversation extends Omit<AssistantSummary, 'messageCount'> {
+  messages: AssistantMessage[];
+  activePassId: number | null;
+  liveState?: string | null;
+  confirmationOutcomeUnknownActionIds: string[];
+}
 export interface AssistantReceipt { queryPassId: number; conversationId: string; requestId: string }
 export const isConversationId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const isCanonicalId = (value: unknown): value is string => isConversationId(value) && value === value.toLowerCase();
@@ -63,14 +68,22 @@ export function isAssistantSummary(value: unknown): value is AssistantSummary {
     && finiteTime(value.createdAtMs) && finiteTime(value.updatedAtMs) && finiteTime(value.messageCount);
 }
 export function isAssistantConversation(value: unknown): value is AssistantConversation {
-  return isRecord(value) && isConversationId(value.id) && typeof value.title === 'string' && value.title.length <= 512 && finiteTime(value.createdAtMs) && finiteTime(value.updatedAtMs)
+  if (!(isRecord(value) && isConversationId(value.id) && typeof value.title === 'string' && value.title.length <= 512 && finiteTime(value.createdAtMs) && finiteTime(value.updatedAtMs)
     && (value.activePassId === null || (finiteTime(value.activePassId) && value.activePassId > 0)) && Array.isArray(value.messages) && value.messages.length <= 200 && value.messages.every((message) => (
     isRecord(message) && typeof message.id === 'string' && isConversationId(message.requestId) && ['user', 'assistant'].includes(String(message.role))
     && typeof message.content === 'string' && message.content.length <= 2 * 1024 * 1024 && finiteTime(message.createdAtMs)
     && ['pending', 'running', 'ready', 'failed', 'cancelled', 'interrupted'].includes(String(message.status))
     && (message.errorCode === null || typeof message.errorCode === 'string') && Array.isArray(message.actions) && message.actions.length <= 16
     && message.actions.every(isAssistantAction)
-  ));
+  )))) return false;
+  const messages = value.messages as unknown[];
+  const unknown = value.confirmationOutcomeUnknownActionIds;
+  return Array.isArray(unknown) && unknown.length <= 16 && unknown.every(isCanonicalId)
+    && new Set(unknown).size === unknown.length
+    && unknown.every((actionId) => messages.some((message) => (
+      isRecord(message) && Array.isArray(message.actions)
+      && message.actions.some((action) => isRecord(action) && action.action_id === actionId)
+    )));
 }
 export async function listAssistant(): Promise<AssistantSummary[]> {
   const value = await invoke<unknown>('list_assistant_conversations');

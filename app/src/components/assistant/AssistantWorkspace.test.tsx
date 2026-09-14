@@ -26,7 +26,7 @@ const action = (status: AssistantActionStatus = 'proposed'): AssistantAction => 
 function props(overrides: Partial<AssistantWorkspaceProps> = {}): AssistantWorkspaceProps {
   return {
     connected: true, configured: true, loading: false, pending: false,
-    conversations: [{ id: 'thread', title: 'Bedroom lights', updatedAtMs: 1700000000000 }], selectedId: 'thread', messages: [], phase: 'idle', error: null, voiceAvailable: true,
+    conversations: [{ id: 'thread', title: 'Bedroom lights', updatedAtMs: 1700000000000 }], selectedId: 'thread', messages: [], confirmationOutcomeUnknownActionIds: [], phase: 'idle', error: null, voiceAvailable: true,
     onConnect: vi.fn(async () => {}), onDisconnect: vi.fn(async () => {}), onNew: vi.fn(async () => {}), onSelect: vi.fn(async () => {}), onDelete: vi.fn(async () => {}),
     onSend: vi.fn(async () => true), onVoice: vi.fn(async () => {}), onFinishVoice: vi.fn(async () => {}), onStop: vi.fn(async () => {}),
     onConfirmAction: vi.fn(async () => {}), onCancelAction: vi.fn(async () => {}), onRefreshAction: vi.fn(async () => {}), onSettings: vi.fn(), ...overrides,
@@ -175,5 +175,18 @@ describe('Assistant workspace', () => {
     await act(async () => button('Refresh status').click());
     expect(uncertain.onRefreshAction).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
     expect(uncertain.onConfirmAction).not.toHaveBeenCalled();
+  });
+  it('keeps an interrupted confirmation visibly unknown and permits only status refresh', async () => {
+    const p = props({
+      confirmationOutcomeUnknownActionIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      messages: [{ id: 'answer', role: 'assistant', text: '', status: 'complete', actions: [action()] }],
+    });
+    await render(p);
+    expect(container.textContent).toContain('Confirmation outcome unknown');
+    expect(container.textContent).toContain('Last known server state: Pending approval');
+    expect(button('Confirm')).toBeUndefined();
+    expect(button('Cancel')).toBeUndefined();
+    await act(async () => button('Refresh status').click());
+    expect(p.onRefreshAction).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   });
 });
