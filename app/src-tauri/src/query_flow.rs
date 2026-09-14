@@ -345,6 +345,7 @@ enum QueryReadyOutcome {
     AutoCopyUnavailable,
     ClipboardSuperseded,
     ClipboardUnavailable,
+    AllowedEmpty,
     EmptyAnswer,
     Stale,
 }
@@ -357,7 +358,7 @@ impl QueryReadyOutcome {
             Self::AutoCopyUnavailable => Some("auto_copy_unavailable"),
             Self::ClipboardSuperseded => Some("clipboard_superseded"),
             Self::ClipboardUnavailable => Some("clipboard_unavailable"),
-            Self::EmptyAnswer | Self::Stale => None,
+            Self::AllowedEmpty | Self::EmptyAnswer | Self::Stale => None,
         }
     }
 }
@@ -1102,6 +1103,7 @@ impl QueryCoordinator {
         pass_id: u64,
         clipboard_generation: Option<u64>,
         auto_copy_eligible: bool,
+        allow_empty_answer: bool,
         current_generation: CurrentGeneration,
         write_clipboard: WriteClipboard,
     ) -> QueryReadyOutcome
@@ -1125,7 +1127,14 @@ impl QueryCoordinator {
             return QueryReadyOutcome::Stale;
         };
         if session.answer.trim().is_empty() {
-            return QueryReadyOutcome::EmptyAnswer;
+            if !allow_empty_answer {
+                return QueryReadyOutcome::EmptyAnswer;
+            }
+            // A validated Assistant action record can be the complete response.
+            // Publish its terminal coordinator state under the same ownership
+            // fence without inspecting or writing the clipboard.
+            *status = QueryStatus::Ready;
+            return QueryReadyOutcome::AllowedEmpty;
         }
 
         let outcome = if !session.automatically_copy_answer {
@@ -4140,10 +4149,11 @@ async fn run_query_prompt(
                 query_pass_id,
                 clipboard_generation,
                 completion.auto_copy_eligible,
+                completion.allow_empty_answer,
                 crate::injector::clipboard_write_generation,
                 |answer| crate::injector::write_clipboard_text(answer).map_err(|_| ()),
             );
-            if ready_outcome == QueryReadyOutcome::EmptyAnswer && !completion.allow_empty_answer {
+            if ready_outcome == QueryReadyOutcome::EmptyAnswer {
                 fail_query(&app_handle, state, query_pass_id, "empty_answer");
             } else if ready_outcome != QueryReadyOutcome::Stale {
                 let clipboard_error = ready_outcome.error_code();
@@ -4632,6 +4642,7 @@ mod tests {
             pass_id,
             Some(7),
             true,
+            false,
             || 7,
             |answer| {
                 assert_eq!(answer, "bounded answer");
@@ -4643,6 +4654,7 @@ mod tests {
             pass_id,
             Some(7),
             true,
+            false,
             || 7,
             |_| {
                 writes.set(writes.get() + 1);
@@ -4666,6 +4678,7 @@ mod tests {
             pass_id,
             None,
             true,
+            false,
             || panic!("disabled auto-copy must not inspect clipboard ownership"),
             |_| panic!("disabled auto-copy must not write the clipboard"),
         );
@@ -4684,6 +4697,7 @@ mod tests {
             pass_id,
             Some(7),
             true,
+            false,
             || 8,
             |_| panic!("a superseded answer must not write"),
         );
@@ -4698,6 +4712,7 @@ mod tests {
             pass_id,
             Some(9),
             true,
+            false,
             || 9,
             |_| {
                 writes.set(writes.get() + 1);
@@ -4718,6 +4733,7 @@ mod tests {
             pass_id,
             Some(4),
             false,
+            false,
             || panic!("an ineligible fallback must not inspect clipboard ownership"),
             |_| panic!("an ineligible fallback must not write"),
         );
@@ -4732,11 +4748,13 @@ mod tests {
                 pass_id,
                 Some(1),
                 true,
+                false,
                 || panic!("empty output must not inspect clipboard ownership"),
                 |_| panic!("empty output must not write"),
             ),
             QueryReadyOutcome::EmptyAnswer
         );
+        assert_eq!(empty.status(), QueryStatus::Running);
 
         let cancelled = QueryCoordinator::default();
         let pass_id = cancelled.allocate_keyboard_pass().unwrap();
@@ -4747,11 +4765,45 @@ mod tests {
                 pass_id,
                 Some(1),
                 true,
+                false,
                 || panic!("cancelled output must not inspect clipboard ownership"),
                 |_| panic!("cancelled output must not write"),
             ),
             QueryReadyOutcome::Stale
         );
+    }
+
+    #[test]
+    fn empty_action_completion_releases_the_next_assistant_action() {
+        let query = QueryCoordinator::default();
+        let status_pass = query.allocate_assistant_action().unwrap();
+        query.assistant_pass_id.store(status_pass, Ordering::SeqCst);
+        assert!(query.begin_tracking(status_pass, QueryProviderId::Custom, false, None));
+        install_test_query_session(&query, status_pass, false, "");
+        let completion = QueryRunCompletion {
+            auto_copy_eligible: true,
+            allow_empty_answer: true,
+        };
+
+        let outcome = query.finalize_ready_answer(
+            status_pass,
+            None,
+            completion.auto_copy_eligible,
+            completion.allow_empty_answer,
+            || panic!("an action-only completion must not inspect clipboard ownership"),
+            |_| panic!("an action-only completion must not write the clipboard"),
+        );
+        assert_eq!(outcome, QueryReadyOutcome::AllowedEmpty);
+        assert!(completion.allow_empty_answer);
+        assert!(query.claim_terminal(status_pass).is_some());
+        assert_eq!(query.status(), QueryStatus::Ready);
+
+        let next_cancel = query
+            .allocate_assistant_action()
+            .expect("a completed automatic status pass must release action admission");
+        query.assistant_pass_id.store(next_cancel, Ordering::SeqCst);
+        assert_eq!(query.status(), QueryStatus::Connecting);
+        assert_eq!(query.allocate_assistant_action(), None);
     }
 
     #[test]
@@ -4772,6 +4824,7 @@ mod tests {
                 pass_id,
                 None,
                 true,
+                false,
                 || panic!("disabled auto-copy must not inspect clipboard ownership"),
                 |_| panic!("disabled auto-copy must not write"),
             ),
