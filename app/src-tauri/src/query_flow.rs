@@ -3847,7 +3847,7 @@ fn run_cli(
     app.state::<crate::State>().query.clear_child(pass_id);
     let (usage, failure, used_structured_output, allow_empty_answer, pending_actions) =
         match adapter {
-            CliResponseAdapter::Voice(adapter) => {
+            CliResponseAdapter::Voice(mut adapter) => {
                 let completion = adapter
                     .finish()
                     .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;

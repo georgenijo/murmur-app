@@ -1789,7 +1789,6 @@ mod tests {
         proposed.connection_id = conversation.connection_id.clone().unwrap();
         proposed.request_id = original_request.clone();
         proposed.parameter_digest = action_digest(&proposed).unwrap();
-        let action_id = proposed.action_id.clone();
         s.record_action(7, proposed).unwrap();
         s.update(7, "", Some(("ready", None))).unwrap();
 
@@ -1797,10 +1796,11 @@ mod tests {
             .unwrap();
         s.update(8, "another answer", Some(("ready", None)))
             .unwrap();
-        let dispatch = s.begin_action(&action_id, 9, "status").unwrap();
+        s.begin(&conversation.id, 9, "what happened", BINDING)
+            .unwrap();
         let mut completed = action_fixture("completed");
         completed.conversation_id = conversation.id.clone();
-        completed.connection_id = dispatch.connection_id;
+        completed.connection_id = conversation.connection_id.unwrap();
         completed.request_id = original_request;
         completed.parameter_digest = action_digest(&completed).unwrap();
 
