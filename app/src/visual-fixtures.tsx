@@ -12,6 +12,7 @@ import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
 import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
+import { QueryReviewView } from './components/query-review/QueryReviewApp';
 import './components/assistant/assistant.css';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
@@ -718,7 +719,20 @@ function MeetingSuggestionOverlayFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'update-flow' ? (
+    {requestedState === 'query-review' ? (
+      <div className="h-screen w-full">
+      <QueryReviewView driver={{
+        state: 'ready', errorCode: 'auto_copy_disabled', question: 'Is the living-room light on?',
+        answer: query.has('long') ? 'This is a long answer.\n\n'.repeat(80) : 'Yes—the living-room light is on.',
+        partial: '', errorDetail: null, usage: null, signInFix: null, signInStatus: null,
+        signInBusy: false, contextSummary: 'Context: T3 Code — window title · no readable selection',
+        capabilitySummary: 'Restricted · no trusted workspace · CLI inference may use network',
+        canOpenInAssistant: true, assistantBusy: false, assistantOpenError: null,
+        followUpBusy: false, followUpError: null, cancel: () => {}, copy: () => {},
+        followUp: async () => {}, signIn: async () => {}, openInAssistant: async () => {},
+      }} />
+      </div>
+    ) : requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
     ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />

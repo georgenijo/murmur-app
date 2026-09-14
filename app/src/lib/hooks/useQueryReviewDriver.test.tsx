@@ -90,6 +90,60 @@ describe('useQueryReviewDriver ownership', () => {
     });
   }
 
+  it('shows only the current pass question and clears it on hide', async () => {
+    let old!: (value: unknown) => void;
+    mocks.invoke.mockReturnValueOnce(new Promise(resolve => { old = resolve; }));
+    await mount();
+    await act(async () => mocks.listeners['query-state-changed']({ payload: { queryPassId: 1, state: 'running', errorCode: null } }));
+    mocks.invoke.mockResolvedValue({ ...content(2, ''), question: 'Current question' });
+    await act(async () => mocks.listeners['query-state-changed']({ payload: { queryPassId: 2, state: 'running', errorCode: null } }));
+    expect(current?.question).toBe('Current question');
+    await act(async () => old({ ...content(1, ''), question: 'Old question' }));
+    expect(current?.question).toBe('Current question');
+    await act(async () => mocks.listeners['query-review-hidden']({ payload: { queryPassId: 2 } }));
+    expect(current?.question).toBe('');
+  });
+
+  it('hands off once, including same-tick double clicks and after success before hide', async () => {
+    let finish!: () => void;
+    mocks.invoke.mockImplementation((name: string) => name === 'open_query_in_assistant'
+      ? new Promise<void>(resolve => { finish = resolve; })
+      : Promise.resolve({ ...content(41, 'answer'), provider: 'custom', question: 'Question' }));
+    await mount();
+    await act(async () => current?.openInAssistant());
+    expect(mocks.invoke).not.toHaveBeenCalledWith('open_query_in_assistant', expect.anything());
+    await act(async () => mocks.listeners['query-state-changed']({ payload: { queryPassId: 41, state: 'ready', errorCode: null } }));
+    await act(async () => { void current?.openInAssistant(); void current?.openInAssistant(); });
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === 'open_query_in_assistant')).toEqual([
+      ['open_query_in_assistant', { queryPassId: 41, consent: true }],
+    ]);
+    await act(async () => finish());
+    await act(async () => current?.openInAssistant());
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === 'open_query_in_assistant')).toHaveLength(1);
+    expect(current?.assistantBusy).toBe(true);
+    await act(async () => mocks.listeners['query-review-hidden']({ payload: { queryPassId: 41 } }));
+    expect(current?.assistantBusy).toBe(false);
+  });
+
+  it('allows retry after handoff rejection but ignores a rejection from an older pass', async () => {
+    let rejectOld!: (reason: string) => void;
+    mocks.invoke.mockImplementation((name: string) => name === 'open_query_in_assistant'
+      ? new Promise<void>((_resolve, reject) => { rejectOld = reject; })
+      : Promise.resolve({ ...content(41, 'answer'), provider: 'custom' }));
+    await mount();
+    await act(async () => mocks.listeners['query-state-changed']({ payload: { queryPassId: 41, state: 'ready', errorCode: null } }));
+    await act(async () => { void current?.openInAssistant(); });
+    await act(async () => rejectOld('assistant_not_connected'));
+    expect(current?.assistantBusy).toBe(false);
+    expect(current?.assistantOpenError).toBeTruthy();
+    await act(async () => { void current?.openInAssistant(); });
+    expect(current?.assistantBusy).toBe(true);
+    await act(async () => mocks.listeners['query-state-changed']({ payload: { queryPassId: 42, state: 'listening', errorCode: null } }));
+    await act(async () => rejectOld('assistant_not_connected'));
+    expect(current?.assistantOpenError).toBeNull();
+    expect(current?.assistantBusy).toBe(false);
+  });
+
   it('requests only an exact Ready pass ID and ignores duplicate clicks while pending', async () => {
     let finishRequest!: () => void;
     mocks.invoke.mockImplementation((name: string) => name === 'request_query_follow_up'

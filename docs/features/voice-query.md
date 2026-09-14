@@ -83,6 +83,14 @@ installed CLI's `--help` for its current enforcement contract.
 
 ## Query lifecycle
 
+The popover shows the original transcribed question above the answer, retrieved
+through the same requester-gated, exact-pass content command. It never displays
+the context-appended provider prompt as the question. Question text clears when
+the popover hides or a new pass starts. Appearance follows Murmur's saved theme.
+Capability, context and usage summaries live in collapsed **Details**; a compact
+context-included indicator remains visible when context was attached. Copy stays
+explicitly available without an automatic-copy preference line.
+
 The shared `rdev` listener owns a third detector for the query shortcut (`alt_r`, `ctrl_l`, or `shift_r`). It uses the same double-tap timing as toggle dictation but has no spoken-keyword path. A query and selected-text transform cannot use the same physical key.
 
 Each accepted press allocates a monotonic `query_pass_id`. Capture, ASR, process ownership, streamed chunks, listening partials, completion, Copy, Escape, and cancellation carry that exact ID. Stale continuations no-op.
@@ -126,7 +134,7 @@ is streamed as the answer. The configured bridge remains trusted external softwa
 Pi owns remote session continuity and enforces its existing read-only tool policy.
 Murmur does not grant additional tools or introduce a background agent daemon.
 
-**Open in Assistant** requires explicit consent and an exact Ready exchange from
+**Open in Assistant** is an explicit one-click retention action requiring an exact Ready exchange from
 the connected Custom Pi bridge. It imports that exchange into a new conversation
 and seeds the remote context on the next send. An unchanged seed can be repeated
 after failed or cancelled dispatch; Pi validates its hash and imports it only once.
@@ -197,7 +205,7 @@ Custom, Grok, and Cursor retain raw stdout behavior. If a Claude or Codex line i
 
 ## Token and usage monitoring
 
-After a pass reaches Ready, the query popover footer shows provider-reported input and output tokens and cost when the provider supplied one. Custom, Grok, Cursor, malformed-JSON raw fallback, and provider versions that omit usage remain valid passes and simply show no token summary. Cache and reasoning counts stay in the typed pass record but are not presented as answer content.
+After a pass reaches Ready, the query popover's collapsed Details shows provider-reported input and output tokens and cost when the provider supplied one. Custom, Grok, Cursor, malformed-JSON raw fallback, and provider versions that omit usage remain valid passes and simply show no token summary. Cache and reasoning counts stay in the typed pass record but are not presented as answer content.
 
 The main window folds each exact terminal pass into the existing durable local statistics blob once: completed queries, successes/failures, input/output tokens, provider split, provider-reported cost, and failures by stable error code. The Insights popover presents those all-time counters. Reset Stats clears query counters with dictation statistics. The stats schema accepts only known provider IDs, known error codes, and finite non-negative numbers; arbitrary strings and unknown fields are discarded, so questions, answers, stderr, paths, commands, and credentials cannot become usage-stat fields.
 

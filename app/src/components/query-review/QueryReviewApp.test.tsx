@@ -8,6 +8,12 @@ const mocks = vi.hoisted(() => ({
     state: 'failed' as 'failed' | 'ready' | 'listening',
     errorCode: 'provider_not_authenticated' as string | null,
     answer: 'partial stdout must not mask failure',
+    question: '',
+    capabilitySummary: null as string | null,
+    canOpenInAssistant: false,
+    assistantBusy: false,
+    assistantOpenError: null as string | null,
+    openInAssistant: vi.fn(async () => undefined),
     partial: '',
     errorDetail: 'Error: Not logged in' as string | null,
     usage: null as null | {
@@ -46,6 +52,12 @@ describe('QueryReviewApp', () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.driver.question = '';
+    mocks.driver.canOpenInAssistant = false;
+    mocks.driver.assistantBusy = false;
+    mocks.driver.assistantOpenError = null;
+    mocks.driver.capabilitySummary = null;
     mocks.driver.state = 'failed';
     mocks.driver.errorCode = 'provider_not_authenticated';
     mocks.driver.answer = 'partial stdout must not mask failure';
@@ -140,7 +152,7 @@ describe('QueryReviewApp', () => {
     expect(container.textContent).not.toContain('ENOENT');
   });
 
-  it('shows pass-scoped usage in the Ready footer', async () => {
+  it('keeps pass-scoped usage in collapsed Details, not the footer', async () => {
     mocks.driver.state = 'ready';
     mocks.driver.errorCode = null;
     mocks.driver.answer = 'answer';
@@ -156,10 +168,12 @@ describe('QueryReviewApp', () => {
     await act(async () => root.render(<QueryReviewApp />));
 
     expect(container.textContent).toContain('21 in · 13 out · $0.0004');
-    expect(container.textContent).toContain('Never auto-pasted');
+    expect(container.querySelector('.query-review-details')?.textContent).toContain('21 in · 13 out · $0.0004');
+    expect(container.querySelector('details')?.open).toBe(false);
+    expect(container.querySelector('footer')?.textContent).not.toContain('21 in');
   });
 
-  it('keeps disabled and unavailable automatic copy states truthful and actionable', async () => {
+  it('keeps Copy available without automatic-copy boilerplate', async () => {
     mocks.driver.state = 'ready';
     mocks.driver.errorCode = 'auto_copy_disabled';
     mocks.driver.answer = 'answer';
@@ -167,13 +181,13 @@ describe('QueryReviewApp', () => {
     await act(async () => root.render(<QueryReviewApp />));
 
     expect(container.textContent).toContain('Answer ready');
-    expect(container.textContent).toContain('Automatic copy off');
-    expect(container.textContent).toContain('press Copy for the answer');
+    expect(container.textContent).not.toContain('Automatic copy off');
+    expect(container.querySelector('[aria-label="Copy answer"]')).not.toBeNull();
     expect(container.textContent).not.toContain('Answer copied to clipboard');
 
     mocks.driver.errorCode = 'auto_copy_unavailable';
     await act(async () => root.render(<QueryReviewApp />));
-    expect(container.textContent).toContain('Automatic copy unavailable');
+    expect(container.textContent).not.toContain('Automatic copy unavailable');
     expect(container.textContent).not.toContain('Answer copied to clipboard');
   });
 
@@ -188,5 +202,39 @@ describe('QueryReviewApp', () => {
     const heard = container.querySelector('[aria-label="Heard so far"]');
     expect(heard?.textContent).toBe('what is the weather');
     expect(container.querySelector('[aria-label="Query answer"]')).toBeNull();
+  });
+
+  it('shows the original question as text and opens Assistant with one explicit click', async () => {
+    mocks.driver.state = 'ready';
+    mocks.driver.errorCode = 'auto_copy_disabled';
+    mocks.driver.question = 'Is <b>this</b> on?';
+    mocks.driver.answer = 'It is on.';
+    mocks.driver.canOpenInAssistant = true;
+    mocks.driver.capabilitySummary = 'Restricted · no trusted workspace';
+    mocks.driver.contextSummary = 'Context: T3 Code — window title';
+    await act(async () => root.render(<QueryReviewApp />));
+    const question = container.querySelector('[aria-label="Your question"]');
+    expect(question?.textContent).toContain('Is <b>this</b> on?');
+    expect(question?.querySelector('b')).toBeNull();
+    expect(container.querySelector('header')?.textContent).not.toContain('Restricted');
+    expect(container.querySelector('header')?.textContent).not.toContain('T3 Code');
+    expect(container.querySelector('details')?.open).toBe(false);
+    expect(mocks.driver.openInAssistant).not.toHaveBeenCalled();
+    const open = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Open in Assistant');
+    await act(async () => open?.click());
+    expect(mocks.driver.openInAssistant).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain('Save and open');
+    expect(container.textContent).not.toContain('Not now');
+  });
+
+  it('shows handoff progress and blocks conflicting actions while opening', async () => {
+    mocks.driver.state = 'ready';
+    mocks.driver.canOpenInAssistant = true;
+    mocks.driver.assistantBusy = true;
+    await act(async () => root.render(<QueryReviewApp />));
+    const buttons = Array.from(container.querySelectorAll('button'));
+    expect(buttons.find(b => b.textContent === 'Opening…')?.disabled).toBe(true);
+    expect(buttons.find(b => b.textContent === 'Ask follow-up')?.disabled).toBe(true);
+    expect(buttons.find(b => b.getAttribute('aria-label') === 'Close')?.disabled).toBe(false);
   });
 });

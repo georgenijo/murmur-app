@@ -1505,6 +1505,7 @@ impl QueryCoordinator {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QueryReviewContent {
     query_pass_id: Option<u64>,
+    question: String,
     answer: String,
     error_detail: Option<String>,
     provider: Option<QueryProviderId>,
@@ -1512,6 +1513,64 @@ pub(crate) struct QueryReviewContent {
     sign_in_fix: Option<&'static str>,
     context_summary: Option<String>,
     capability_summary: Option<String>,
+}
+
+fn query_review_content(query: &QueryCoordinator, requester_label: &str) -> QueryReviewContent {
+    if requester_label != "query-review" {
+        return QueryReviewContent::default();
+    }
+    let _ownership = query.ownership.lock_or_recover();
+    let Some(query_pass_id) = query.active_pass_id() else {
+        return QueryReviewContent::default();
+    };
+    if query.assistant_pass_id.load(Ordering::SeqCst) == query_pass_id {
+        return QueryReviewContent::default();
+    }
+    let active = query.is_active(query_pass_id);
+    let session = active
+        .then(|| query.session.lock_or_recover().clone())
+        .flatten()
+        .filter(|session| session.pass_id == query_pass_id);
+    let question = active
+        .then(|| {
+            query
+                .tracker
+                .lock_or_recover()
+                .as_ref()
+                .filter(|tracker| tracker.pass_id == query_pass_id)
+                .and_then(|tracker| tracker.original_question.clone())
+        })
+        .flatten()
+        .unwrap_or_default();
+    QueryReviewContent {
+        query_pass_id: Some(query_pass_id),
+        question,
+        answer: session
+            .as_ref()
+            .map(|session| session.answer.clone())
+            .unwrap_or_default(),
+        error_detail: session
+            .as_ref()
+            .and_then(|session| session.error_detail.clone()),
+        provider: session.as_ref().map(|session| session.command.provider),
+        usage: session.as_ref().and_then(|session| session.usage),
+        sign_in_fix: session
+            .as_ref()
+            .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),
+        context_summary: session
+            .as_ref()
+            .and_then(|session| session.query_context.summary()),
+        capability_summary: session.map(|session| {
+            if session.command.trusted_workspace.is_some() {
+                format!(
+                    "Trusted read-only · {} · web, commands, MCP and plugins off",
+                    session.command.working_directory.display()
+                )
+            } else {
+                "Restricted · no trusted workspace · CLI inference may use network".to_string()
+            }
+        }),
+    }
 }
 
 fn validate_command(
@@ -4364,42 +4423,7 @@ pub(crate) fn get_query_review_content(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::State>,
 ) -> QueryReviewContent {
-    if window.label() != "query-review" {
-        return QueryReviewContent::default();
-    }
-    let query_pass_id = state.query.active_pass_id();
-    if query_pass_id == Some(state.query.assistant_pass_id.load(Ordering::SeqCst)) {
-        return QueryReviewContent::default();
-    }
-    let session = query_pass_id.and_then(|pass_id| state.query.session(pass_id));
-    QueryReviewContent {
-        query_pass_id,
-        answer: session
-            .as_ref()
-            .map(|session| session.answer.clone())
-            .unwrap_or_default(),
-        error_detail: session
-            .as_ref()
-            .and_then(|session| session.error_detail.clone()),
-        provider: session.as_ref().map(|session| session.command.provider),
-        usage: session.as_ref().and_then(|session| session.usage),
-        sign_in_fix: session
-            .as_ref()
-            .and_then(|session| crate::query_provider::auth_fix(session.command.provider)),
-        context_summary: session
-            .as_ref()
-            .and_then(|session| session.query_context.summary()),
-        capability_summary: session.map(|session| {
-            if session.command.trusted_workspace.is_some() {
-                format!(
-                    "Trusted read-only · {} · web, commands, MCP and plugins off",
-                    session.command.working_directory.display()
-                )
-            } else {
-                "Restricted · no trusted workspace · CLI inference may use network".to_string()
-            }
-        }),
-    }
+    query_review_content(&state.query, window.label())
 }
 
 #[cfg(test)]
@@ -4522,12 +4546,28 @@ mod tests {
         automatically_copy_answer: bool,
         answer: &str,
     ) {
+        install_test_query_session_with_context(
+            query,
+            pass_id,
+            automatically_copy_answer,
+            answer,
+            QueryContextSnapshot::default(),
+        );
+    }
+
+    fn install_test_query_session_with_context(
+        query: &QueryCoordinator,
+        pass_id: u64,
+        automatically_copy_answer: bool,
+        answer: &str,
+        query_context: QueryContextSnapshot,
+    ) {
         assert!(query.install_session(
             pass_id,
             QuerySession {
                 pass_id,
                 context: test_dictation_context(),
-                query_context: QueryContextSnapshot::default(),
+                query_context,
                 command: ValidatedQueryCommand {
                     provider: QueryProviderId::Custom,
                     executable: PathBuf::from("/usr/bin/printf"),
@@ -4545,6 +4585,89 @@ mod tests {
             },
         ));
         assert!(query.set_status(pass_id, QueryStatus::Running));
+    }
+
+    #[test]
+    fn query_review_exposes_only_the_pass_owned_original_question() {
+        let query = QueryCoordinator::default();
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Custom, false, None));
+        let original_question = "Summarize what I selected.";
+        let private_context = "PRIVATE_CONTEXT_MUST_NOT_APPEAR_IN_QUESTION";
+        let query_context = QueryContextSnapshot {
+            level: QueryContextLevel::Selection,
+            excluded: false,
+            application_name: Some("Notes".into()),
+            window_title: Some("Private note".into()),
+            selection: Some(private_context.into()),
+            selection_truncated: false,
+        };
+        let provider_prompt = query_context
+            .build_prompt(original_question.to_string())
+            .unwrap();
+        assert!(provider_prompt.contains(private_context));
+        query.mark_transcription_finished(pass_id, Some(original_question.into()), true);
+        install_test_query_session_with_context(
+            &query,
+            pass_id,
+            false,
+            "A concise answer.",
+            query_context,
+        );
+
+        let content = query_review_content(&query, "query-review");
+        assert_eq!(content.query_pass_id, Some(pass_id));
+        assert_eq!(content.question, original_question);
+        assert_eq!(content.answer, "A concise answer.");
+        assert!(!content.question.contains(private_context));
+        assert_ne!(content.question, provider_prompt);
+        assert!(content.context_summary.is_some());
+    }
+
+    #[test]
+    fn query_review_question_obeys_requester_stale_and_assistant_gates() {
+        let query = QueryCoordinator::default();
+        let empty = query_review_content(&query, "query-review");
+        assert_eq!(empty.query_pass_id, None);
+        assert!(empty.question.is_empty());
+
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(pass_id, QueryProviderId::Custom, false, None));
+        query.mark_transcription_finished(pass_id, Some("Private question".into()), true);
+        install_test_query_session(&query, pass_id, false, "Private answer");
+
+        let wrong_requester = query_review_content(&query, "main");
+        assert_eq!(wrong_requester.query_pass_id, None);
+        assert!(wrong_requester.question.is_empty());
+        assert!(wrong_requester.answer.is_empty());
+
+        assert!(query.begin_cancel(pass_id));
+        let stale = query_review_content(&query, "query-review");
+        assert_eq!(stale.query_pass_id, Some(pass_id));
+        assert!(stale.question.is_empty());
+        assert!(stale.answer.is_empty());
+        assert!(stale.provider.is_none());
+        assert!(query.claim_terminal(pass_id).is_some());
+        assert!(query.complete_cancel(pass_id));
+        let cleared = query_review_content(&query, "query-review");
+        assert_eq!(cleared.query_pass_id, None);
+        assert!(cleared.question.is_empty());
+
+        let assistant_pass = query.allocate_keyboard_pass().unwrap();
+        assert!(query.begin_tracking(assistant_pass, QueryProviderId::Custom, false, None));
+        query.mark_transcription_finished(
+            assistant_pass,
+            Some("Assistant workspace question".into()),
+            true,
+        );
+        install_test_query_session(&query, assistant_pass, false, "Assistant answer");
+        query
+            .assistant_pass_id
+            .store(assistant_pass, Ordering::SeqCst);
+        let assistant = query_review_content(&query, "query-review");
+        assert_eq!(assistant.query_pass_id, None);
+        assert!(assistant.question.is_empty());
+        assert!(assistant.answer.is_empty());
     }
 
     #[test]

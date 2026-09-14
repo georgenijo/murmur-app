@@ -101,13 +101,17 @@ compatible. Deploy the reviewed bridge before enabling this workspace.
 
 ## Quick query handoff
 
-A completed Custom-provider popover offers Open in Assistant. Save and open
-explicitly retains the displayed exchange and opens a conversation in the main
+A completed Custom-provider popover offers **Open in Assistant**. This one click
+explicitly retains the displayed question and answer and opens a conversation in the main
 window; the next message seeds that exchange into a new Pi conversation once.
 It does not recover arbitrary older popover sessions or unseen tool transcripts.
 Subsequent workspace follow-ups use the same conversation ID. The source must
 match the explicitly connected Pi bridge; generic providers are not silently
 treated as Pi.
+
+No second save dialog is shown: the connected Assistant already explains its
+retention, and the explicit handoff is described in the button tooltip and query
+Details. Closing a quick query still does not opt it into conversation retention.
 
 ## Verification and release
 

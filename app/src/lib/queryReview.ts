@@ -35,6 +35,7 @@ export interface QueryHiddenPayload {
 
 export interface QueryContent {
   queryPassId: number | null;
+  question: string;
   answer: string;
   errorDetail: string | null;
   provider: QueryProviderId | null;
