@@ -1,96 +1,61 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { ArrowUpRight, Copy, X } from 'lucide-react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
+import { DashboardAction } from '../ui/DashboardPrimitives';
 import { useQueryReviewDriver } from '../../lib/hooks/useQueryReviewDriver';
 import { isIncompleteCodexDetail, queryErrorMessage } from '../../lib/queryErrorPresentation';
 import { formatQueryCost, type QueryUsage } from '../../lib/queryUsage';
 import type { QueryReviewState } from '../../lib/queryReview';
+import './query-review.css';
 
 export { queryErrorMessage };
 
-export function statusLabel(state: QueryReviewState, errorCode: string | null): string {
+export function statusLabel(state: QueryReviewState, _errorCode: string | null): string {
   switch (state) {
     case 'connecting': return 'Connecting microphone…';
-    case 'listening': return 'Listening — tap the query key once when done';
-    case 'transcribing': return 'Transcribing locally…';
-    case 'running': return 'Agent is answering…';
-    case 'ready':
-      if (errorCode === 'clipboard_unavailable') return 'Answer ready';
-      if (errorCode === 'clipboard_superseded') return 'Answer ready — clipboard left alone';
-      if (errorCode === 'auto_copy_disabled' || errorCode === 'auto_copy_unavailable') return 'Answer ready';
-      return 'Answer copied to clipboard';
-    case 'failed': return 'Voice query failed';
+    case 'listening': return 'Listening…';
+    case 'transcribing': return 'Transcribing…';
+    case 'running': return 'Thinking…';
+    case 'ready': return 'Answer ready';
+    case 'failed': return 'Couldn’t finish';
     default: return 'Voice Query';
   }
 }
 
 export function queryListeningPartial(state: QueryReviewState, partial: string): string | null {
-  const text = partial.trim() ? partial : '';
-  return state === 'listening' && text ? text : null;
+  return state === 'listening' && partial.trim() ? partial : null;
 }
 
 export function formatQueryUsage(usage: QueryUsage | null): string | null {
   if (!usage) return null;
-  const parts = [
-    `${usage.inputTokens.toLocaleString()} in`,
-    `${usage.outputTokens.toLocaleString()} out`,
-  ];
+  const parts = [`${usage.inputTokens.toLocaleString()} in`, `${usage.outputTokens.toLocaleString()} out`];
   if (usage.costUsd !== null) parts.push(formatQueryCost(usage.costUsd));
   return parts.join(' · ');
 }
 
-function queryFooterText(
-  state: QueryReviewState,
-  errorCode: string | null,
-  usageText: string | null,
-): string {
-  if (errorCode === 'clipboard_unavailable') {
-    return usageText
-      ? `Clipboard unavailable · ${usageText} · never auto-pasted`
-      : 'Clipboard unavailable · never auto-pasted';
-  }
-  if (errorCode === 'clipboard_superseded') {
-    return usageText
-      ? `Clipboard left as-is · ${usageText} · press Copy for the answer`
-      : 'Clipboard left as-is · press Copy for the answer';
-  }
-  if (errorCode === 'auto_copy_disabled') {
-    return usageText
-      ? `Automatic copy off · ${usageText} · press Copy for the answer`
-      : 'Automatic copy off · press Copy for the answer';
-  }
-  if (errorCode === 'auto_copy_unavailable') {
-    return usageText
-      ? `Automatic copy unavailable · ${usageText} · press Copy for the answer`
-      : 'Automatic copy unavailable · press Copy for the answer';
-  }
-  if (state === 'ready') {
-    return usageText ? `${usageText} · Never auto-pasted` : 'Never auto-pasted';
-  }
-  return 'Esc to cancel';
-}
-
 export function QueryReviewApp() {
   const driver = useQueryReviewDriver();
-  const [confirmAssistant, setConfirmAssistant] = useState(false);
-  useEffect(() => { if (driver.state !== 'ready') setConfirmAssistant(false); }, [driver.state]);
+  return <QueryReviewView driver={driver} />;
+}
+
+export function QueryReviewView({ driver }: { driver: ReturnType<typeof useQueryReviewDriver> }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
   const errorMessage = useMemo(
     () => queryErrorMessage(driver.errorCode, driver.errorDetail),
     [driver.errorCode, driver.errorDetail],
   );
-  const listeningPartial = useMemo(
-    () => queryListeningPartial(driver.state, driver.partial),
-    [driver.state, driver.partial],
-  );
+  const listeningPartial = queryListeningPartial(driver.state, driver.partial);
   const terminal = driver.state === 'ready' || driver.state === 'failed';
-  const showErrorDetail = driver.state === 'failed'
-    && driver.errorDetail
-    && !isIncompleteCodexDetail(driver.errorDetail);
+  const showErrorDetail = driver.state === 'failed' && driver.errorDetail && !isIncompleteCodexDetail(driver.errorDetail);
   const usageText = driver.state === 'ready' ? formatQueryUsage(driver.usage) : null;
   const primaryText = driver.state === 'failed'
     ? errorMessage ?? 'The voice query could not be completed.'
     : driver.answer || errorMessage || (terminal ? 'No answer was returned.' : '');
-  const footerText = queryFooterText(driver.state, driver.errorCode, usageText);
+
+  useEffect(() => {
+    if (detailsRef.current) detailsRef.current.open = false;
+  }, [driver.state]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -98,6 +63,7 @@ export function QueryReviewApp() {
         event.preventDefault();
         driver.cancel();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && driver.state === 'ready') {
+        if (window.getSelection()?.toString()) return;
         event.preventDefault();
         driver.copy();
       }
@@ -107,108 +73,61 @@ export function QueryReviewApp() {
   }, [driver.cancel, driver.copy, driver.state]);
 
   return (
-    <main
-      className="query-review-surface flex h-full w-full select-none flex-col overflow-hidden rounded-[16px] border border-white/10 bg-[#141414]/95 text-white shadow-2xl backdrop-blur-3xl"
-      aria-label="Voice Query"
-    >
-      <header className="flex min-h-[64px] items-center gap-3 px-4 py-3">
-        <span
-          aria-hidden="true"
-          className={`h-2.5 w-2.5 shrink-0 rounded-full ${driver.state === 'failed' ? 'bg-red-400' : driver.state === 'ready' ? 'bg-emerald-400' : 'animate-pulse bg-violet-400'}`}
-        />
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/45">Voice Query</p>
-          <p aria-live="polite" className="mt-0.5 truncate text-[13px] font-medium text-white/90">
-            {statusLabel(driver.state, driver.errorCode)}
-          </p>
-          {driver.capabilitySummary && <p aria-label="Query capabilities" className="mt-0.5 text-[10px] text-violet-200/70">{driver.capabilitySummary}</p>}
-          {driver.contextSummary && (
-            <p aria-label="Query context" className="mt-0.5 truncate text-[10px] font-medium text-violet-200/70">
-              {driver.contextSummary}
-            </p>
-          )}
+    <main className="query-review-surface" aria-label="Voice Query" data-state={driver.state}>
+      <header className="query-review-header">
+        <div className="query-review-heading">
+          <span className="query-review-dot" aria-hidden="true" />
+          <span className="query-review-title">Voice Query</span>
+          <span className="query-review-status" role="status">{statusLabel(driver.state, driver.errorCode)}</span>
         </div>
-        {!terminal && (
-          <button type="button" onClick={driver.cancel} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-white/60 hover:bg-white/10 hover:text-white">
-            Cancel
-          </button>
-        )}
+        <button type="button" className="ui-icon-button" onClick={driver.cancel} aria-label={terminal ? 'Close' : 'Cancel'} title={terminal ? 'Close (Esc)' : 'Cancel (Esc)'}>
+          <X aria-hidden="true" />
+        </button>
       </header>
-
-      {(listeningPartial || driver.answer || errorMessage || terminal) && (
-        <section className="flex min-h-0 flex-1 flex-col border-t border-white/10">
-          <div
-            aria-label={listeningPartial ? 'Heard so far' : 'Query answer'}
-            aria-live="polite"
-            className="min-h-0 flex-1 select-text overflow-y-auto break-words px-4 py-3 text-[13px] leading-relaxed text-white/85 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:text-violet-300 [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-white/20 [&_blockquote]:pl-3 [&_blockquote]:text-white/70 [&_code]:rounded [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[12px] [&_em]:italic [&_h1]:mb-1 [&_h1]:mt-3 [&_h1]:text-[15px] [&_h1]:font-semibold [&_h1]:text-white [&_h2]:mb-1 [&_h2]:mt-3 [&_h2]:text-[14px] [&_h2]:font-semibold [&_h2]:text-white [&_h3]:mb-1 [&_h3]:mt-2 [&_h3]:text-[13px] [&_h3]:font-semibold [&_h3]:text-white [&_hr]:my-3 [&_hr]:border-white/10 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-black/40 [&_pre]:p-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_strong]:text-white [&_table]:my-2 [&_table]:w-full [&_td]:pr-3 [&_th]:pr-3 [&_th]:text-left [&_th]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
-          >
-            {listeningPartial
-              ? <p className="whitespace-pre-wrap text-white/70">{listeningPartial}</p>
-              : driver.state === 'failed'
-              ? <p className="whitespace-pre-wrap">{primaryText}</p>
-              : driver.answer
-                ? <Markdown rehypePlugins={[rehypeSanitize]}>{driver.answer}</Markdown>
-                : <p className="whitespace-pre-wrap">{primaryText}</p>}
-            {driver.state === 'running' && <span aria-hidden="true" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-white/60 align-middle" />}
-            {showErrorDetail && (
-              <div className="mt-3 rounded-lg border border-red-300/15 bg-red-950/30 p-2.5">
-                <p className="select-none text-[10px] font-semibold uppercase tracking-[0.12em] text-red-200/55">
-                  Provider detail
-                </p>
-                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-red-100/75">
-                  {driver.errorDetail}
-                </pre>
-              </div>
-            )}
-            {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
-              <p className="mt-3 text-xs text-amber-100/80">{driver.signInFix}</p>
-            )}
-            {driver.signInStatus && (
-              <p aria-live="polite" className="mt-2 text-xs text-white/60">{driver.signInStatus}</p>
-            )}
-          </div>
-          {driver.followUpError && <p role="status" className="px-4 pb-2 text-xs text-amber-200">{driver.followUpError}</p>}
-          {driver.assistantOpenError && <p role="status" className="px-4 pb-2 text-xs text-amber-200">{driver.assistantOpenError} Open Assistant in Murmur to set up the connection.</p>}
-          {confirmAssistant && driver.canOpenInAssistant && <div className="px-4 pb-2 text-xs text-white/70" role="group" aria-label="Save conversation consent">
-            <p>Save this exchange in Murmur and continue it with your connected Pi Assistant? Follow-ups are also retained in Pi’s private sessions on Ubuntu.</p>
-            <button type="button" className="rounded-lg bg-white/10 px-3 py-1.5 font-semibold" disabled={driver.assistantBusy} onClick={() => void driver.openInAssistant()}>Save and open</button>
-            <button type="button" className="px-3 py-1.5" onClick={() => setConfirmAssistant(false)}>Not now</button>
-          </div>}
-          <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 px-3 py-2">
-            <span className={`text-[10px] ${driver.errorCode === 'clipboard_unavailable' ? 'text-amber-300/80' : 'text-white/35'}`}>
-              {footerText}
-            </span>
-            <div className="flex gap-2">
-              {driver.canOpenInAssistant && <button type="button" disabled={driver.assistantBusy} onClick={() => setConfirmAssistant(true)} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-50">Open in Assistant</button>}
-              {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && (
-                <button
-                  type="button"
-                  disabled={driver.signInBusy}
-                  onClick={() => void driver.signIn()}
-                  className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-wait disabled:opacity-50"
-                >
-                  {driver.signInBusy ? 'Waiting…' : 'Sign in…'}
-                </button>
-              )}
-              {driver.state === 'ready' && (
-                <button type="button" disabled={driver.followUpBusy} onClick={() => void driver.followUp()} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-wait disabled:opacity-50">
-                  {driver.followUpBusy ? 'Starting…' : 'Ask follow-up'}
-                </button>
-              )}
-              {driver.state === 'ready' && (
-                <button type="button" onClick={driver.copy} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/15">
-                  Copy
-                </button>
-              )}
-              {terminal && (
-                <button type="button" onClick={driver.cancel} className="rounded-lg bg-violet-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-400">
-                  Close
-                </button>
-              )}
+      <div className="query-review-content">
+        {listeningPartial ? (
+          <p aria-label="Heard so far" aria-live="polite" className="query-review-plain">{listeningPartial}</p>
+        ) : <>
+          {driver.question && <section aria-label="Your question" className="query-review-message">
+            <h2>You</h2>
+            <p className="query-review-plain">{driver.question}</p>
+          </section>}
+          {(driver.answer || errorMessage || terminal) && <section aria-label="Query answer" className="query-review-message" data-speaker="assistant">
+            <h2>Assistant</h2>
+            <div className="query-review-markdown" aria-live="polite">
+              {driver.state !== 'failed' && driver.answer
+                ? <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null }}>{driver.answer}</Markdown>
+                : <p className="query-review-plain">{primaryText}</p>}
             </div>
-          </footer>
-        </section>
-      )}
+            {showErrorDetail && <details className="query-review-provider-detail">
+              <summary>Provider detail</summary><pre>{driver.errorDetail}</pre>
+            </details>}
+            {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && <p className="query-review-notice">{driver.signInFix}</p>}
+            {driver.signInStatus && <p role="status" className="query-review-notice">{driver.signInStatus}</p>}
+          </section>}
+        </>}
+        {driver.state === 'listening' && <p className="query-review-hint">Tap the query key to finish.</p>}
+        {driver.followUpError && <p role="status" className="query-review-notice">{driver.followUpError}</p>}
+        {driver.assistantOpenError && <p role="status" className="query-review-notice">{driver.assistantOpenError} Open Assistant in Murmur to check the connection.</p>}
+        {driver.state === 'ready' && driver.errorCode === 'clipboard_unavailable' && <p role="status" className="query-review-notice">Couldn’t copy. Try Copy again.</p>}
+        <details ref={detailsRef} className="query-review-details">
+          <summary>{driver.contextSummary ? 'Details · context included' : 'Details'}</summary>
+          {driver.capabilitySummary && <p aria-label="Query capabilities">{driver.capabilitySummary}</p>}
+          {driver.contextSummary && <p aria-label="Query context">{driver.contextSummary}</p>}
+          {usageText && <p>{usageText}</p>}
+          {driver.canOpenInAssistant && <p>Open in Assistant keeps this exchange in Murmur. Follow-ups use Pi’s private sessions.</p>}
+        </details>
+      </div>
+      {terminal && <footer className="query-review-footer">
+        <div className="query-review-actions">
+          {driver.canOpenInAssistant && <button type="button" className="ui-dashboard-action" data-action="primary" disabled={driver.assistantBusy || driver.followUpBusy} onClick={() => void driver.openInAssistant()} title="Keep this exchange and continue in Assistant">
+            {driver.assistantBusy ? 'Opening…' : 'Open in Assistant'}<ArrowUpRight aria-hidden="true" />
+          </button>}
+          {driver.errorCode === 'provider_not_authenticated' && driver.signInFix && <DashboardAction variant="secondary" disabled={driver.signInBusy} onActivate={() => void driver.signIn()}>{driver.signInBusy ? 'Waiting…' : 'Sign in…'}</DashboardAction>}
+          {driver.state === 'ready' && <DashboardAction variant="quiet" disabled={driver.followUpBusy || driver.assistantBusy} onActivate={() => void driver.followUp()}>{driver.followUpBusy ? 'Starting…' : 'Ask follow-up'}</DashboardAction>}
+        </div>
+        {driver.state === 'ready' && <button type="button" className="ui-icon-button" onClick={driver.copy} aria-label="Copy answer" title="Copy answer"><Copy aria-hidden="true" /></button>}
+      </footer>}
     </main>
   );
 }
