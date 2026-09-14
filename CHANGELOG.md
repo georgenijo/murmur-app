@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-14
+
+### Assistant
+
+- Pi Assistant now presents explicit confirmation cards for supported light
+  actions, with status refresh and recovery handling when confirmation is
+  uncertain. These actions require a configured Pi Personal/AgentOS bridge.
+- Assistant dictation remains an editable local draft until you explicitly
+  send it.
+- Assistant shows a compact animated activity mark while Pi is working,
+  adapted from the Whoop Coach activity animation and honoring reduced motion.
+
 ## [0.49.0] - 2026-09-13
 
 ### Improved
