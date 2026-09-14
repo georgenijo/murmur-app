@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-13
+
 ### Improved
 - Assistant microphone now transcribes into an editable local draft. Review your words and press Enter or Send when ready; finishing dictation no longer automatically submits a question.
 - Simplified Assistant chat layout with aligned text, flatter surfaces, a compact conversation list and integrated voice/message controls.
