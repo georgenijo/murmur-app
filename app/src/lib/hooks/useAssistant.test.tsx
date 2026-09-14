@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAssistant } from './useAssistant';
-import type { AssistantConversation } from '../assistant';
+import type { AssistantAction, AssistantConversation, AssistantActionStatus } from '../assistant';
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -11,6 +11,15 @@ const id = '01234567-89ab-4cde-8fab-0123456789ab';
 const requestId = '11234567-89ab-4cde-8fab-0123456789ab';
 const options = { command: { provider: 'custom' as const, executable: '/test/pi', arguments: [], timeoutSeconds: 300, contextLevel: 'none' as const, retainQueryHistory: false }, deviceName: null, smartAuto: null };
 const empty = (): AssistantConversation => ({ id, title: 'Existing chat', createdAtMs: 1, updatedAtMs: 2, messages: [], activePassId: null, liveState: null });
+const action = (status: AssistantActionStatus): AssistantAction => ({
+  schema_version: 1, action_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', idempotency_key: '0'.repeat(64), kind: 'lights.set', actor_id: 'george',
+  connection_id: '11111111-1111-4111-8111-111111111111', conversation_id: id, request_id: requestId,
+  targets: [{ entity_id: 'light.govee_bulb_149d', name: 'Living room bulb' }], parameters: { power: 'on', brightness_pct: 30, rgb_color: [0, 0, 255] },
+  created_at: '2026-09-14T04:00:00Z', expires_at: '2026-09-14T04:05:00Z', parameter_digest: '1'.repeat(64), status, receipt: null, verification: null,
+});
+const withAction = (status: AssistantActionStatus): AssistantConversation => ({
+  ...empty(), messages: [{ id: requestId, requestId, role: 'assistant', content: '', createdAtMs: 2, status: 'ready', errorCode: null, actions: [action(status)] }],
+});
 
 describe('Assistant conversation orchestration', () => {
   let root: Root; let container: HTMLDivElement; let state: ReturnType<typeof useAssistant>;
@@ -135,5 +144,45 @@ describe('Assistant conversation orchestration', () => {
     expect(state.phase).toBe('idle');
     expect(state.dictation?.status).toBe('cancelled');
     expect(mocks.invoke.mock.calls.some(([name]) => name === 'send_assistant_message')).toBe(false);
+  });
+  it('recovers a reopened proposal through status using only its action ID', async () => {
+    snapshot = withAction('proposed');
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((name, args) => name === 'refresh_assistant_action'
+      ? Promise.resolve({ conversationId: id, queryPassId: 8, requestId })
+      : original(name, args));
+    await mount();
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    expect(mocks.invoke).toHaveBeenCalledWith('refresh_assistant_action', { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'confirm_assistant_action')).toBe(false);
+  });
+  it('falls back to status after a failed Confirm without retrying Confirm', async () => {
+    snapshot = withAction('failed');
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((name, args) => {
+      if (name === 'confirm_assistant_action') return Promise.reject(new Error('transport_failed'));
+      if (name === 'refresh_assistant_action') return Promise.resolve({ conversationId: id, queryPassId: 9, requestId });
+      return original(name, args);
+    });
+    await mount();
+    await act(async () => { await state.confirmAction('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'); });
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === 'confirm_assistant_action')).toHaveLength(1);
+    expect(mocks.invoke).toHaveBeenCalledWith('confirm_assistant_action', { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    expect(mocks.invoke).toHaveBeenCalledWith('refresh_assistant_action', { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  });
+  it('uses status after an admitted Confirm later reports transport failure', async () => {
+    snapshot = withAction('proposed');
+    const original = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation((name, args) => {
+      if (name === 'confirm_assistant_action') return Promise.resolve({ conversationId: id, queryPassId: 10, requestId });
+      if (name === 'refresh_assistant_action') return Promise.resolve({ conversationId: id, queryPassId: 11, requestId });
+      return original(name, args);
+    });
+    await mount();
+    await act(async () => { await state.confirmAction('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'); });
+    await act(async () => { listeners.get('assistant-state-changed')!({ payload: { conversationId: id, queryPassId: 10, state: 'failed' } }); });
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === 'confirm_assistant_action')).toHaveLength(1);
+    expect(mocks.invoke.mock.calls.some(([name]) => name === 'refresh_assistant_action')).toBe(true);
   });
 });

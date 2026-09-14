@@ -34,11 +34,12 @@ record-and-submit behavior.
 
 ## Setup and data boundaries
 
-Configure a Custom executable that supports the Pi Personal Assistant V1 bridge
+Configure a Custom executable that supports the Pi Personal Assistant V2 bridge
 in Voice Query settings. Connect Pi Assistant explains persistence before consent:
 the Mac stores a private conversation mirror and the configured Pi host stores
 native model sessions. The model provider may receive question/tool content.
-Connecting grants no new tools; existing Pi policy remains authoritative.
+Connecting exposes the bounded light-proposal tool. Pi cannot confirm or cancel
+an action. Those operations start only from the action card in Murmur.
 
 Consent is bound to the canonical executable and fixed arguments. Each saved
 conversation is also bound to that connection. Reconfiguring the provider cannot
@@ -53,6 +54,24 @@ localStorage or diagnostic telemetry. On restart unfinished messages become
 interrupted and are never automatically resent. Delete from this Mac does not
 erase Pi's private remote session; the confirmation says so explicitly.
 
+Each connection has a native-generated UUID. Murmur binds each conversation and
+action to that UUID and to the configured executable fingerprint. The store keeps
+the complete validated action record and its parameter digest. The frontend sends
+only `actionId` when the user selects **Confirm**, **Cancel**, or **Refresh status**.
+Rust loads the stored digest and builds the transport request.
+
+## Review and confirm light actions
+
+Pi can propose one bounded `lights.set` action for exact allowlisted entity IDs.
+The action card shows every entity ID, the requested power state, brightness, and
+RGB value. **Confirm** and **Cancel** are disabled while a request is active.
+
+The action record reports `proposed`, `cancelled`, `expired`, `executing`,
+`completed`, `failed`, or `uncertain`. A completed card states that Home Assistant
+reported the requested state. That read-back does not prove the physical state.
+Murmur asks for status after reopening a proposed or executing action. If Confirm
+fails after admission, Murmur asks for status and never sends Confirm again.
+
 Only main-window commands can read/mutate the store. Content updates are targeted
 to that window. No conversation text belongs in diagnostic logs. Rendered
 Markdown is sanitized; remote images and clickable model-generated links are
@@ -60,13 +79,15 @@ disabled in the workspace.
 
 ## Bridge and context continuity
 
-The Custom executable still receives one literal final argument, never a shell
-command. Assistant messages use `MURMUR_ASSISTANT_V1\n` followed by JSON with
-opaque UUID `conversationId`, `requestId`, and `message`. Completed popover
+The Custom executable receives fixed arguments without a shell. Native Assistant
+requests add the Rust-owned `--murmur-assistant-v2` argument immediately before
+the final V2 frame. User-configured arguments cannot contain that reserved value.
+Assistant messages use `MURMUR_ASSISTANT_V2\n` followed by JSON with
+opaque UUID `connectionId`, `conversationId`, and `requestId`. Completed popover
 promotion additionally seeds exactly one user/assistant pair. Native bounds are
 32 KiB per new message and 64 KiB for the complete encoded frame.
 
-Pi Personal PR #7 supplies this opt-in protocol. It resumes a native Pi JSONL
+Pi Personal supplies this opt-in protocol. It resumes a native Pi JSONL
 session across processes while reapplying current tool/provider restrictions.
 Only settled successful turns advance its committed context. Kernel locking
 prevents simultaneous writers and completed request IDs replay without executing
@@ -86,17 +107,16 @@ treated as Pi.
 
 ## Verification and release
 
-Frontend tests cover explicit setup, composer behavior, safe Markdown, deletion
-wording, microphone phase ordering, listener failure, and cancellation during
-pending IPC. Native tests cover private store/restart recovery, bounds, exact
-pass ownership, bridge binding and reconnect races. Pi tests cover actual native
-session continuation against an offline model fixture, idempotency and cleanup.
+Frontend tests cover explicit setup, composer behavior, safe Markdown, action
+cards, status recovery, microphone phase ordering, and cancellation during pending
+IPC. Native tests cover private store recovery, V2 parsing, action digest and
+connection binding, exact pass ownership, and bridge reconnect races. Pi tests
+cover native session continuation, action idempotency, and cleanup.
 
 Native UI acceptance additionally checks typed follow-up, reopen/restart, voice,
 Stop/Escape and popover handoff in the built app. Release and deployment receipts
 must distinguish these observations from unit tests and CI. This change requires
-a Murmur application release and a Pi bridge update, but no new AgentOS or CPA
-deployment. Household actions remain out of scope.
+a Murmur application release plus matching Pi and AgentOS action deployments.
 
 Assistant work-in-progress uses the 3-by-3 activity mark from Whoop Coach's
 `apps/web/src/components/coach/CoachActivityMark.tsx`: a staggered 650 ms

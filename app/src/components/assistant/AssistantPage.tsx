@@ -16,5 +16,6 @@ export function AssistantPage(props: Props) {
     onConnect={state.connect} onDisconnect={state.disconnect} onNew={state.newConversation} onSelect={state.select} onDelete={state.remove}
     onSend={state.send} onVoice={state.voice} onFinishVoice={state.finishVoice} onStop={state.stop}
     onConfirmAction={state.confirmAction} onCancelAction={state.cancelAction} onSettings={props.onSettings}
+    onRefreshAction={state.refreshAction}
   />;
 }

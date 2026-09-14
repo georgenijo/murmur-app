@@ -44,6 +44,7 @@ const MAX_QUERY_PROMPT_BYTES: usize = MAX_QUERY_BYTES
     + MAX_CONTEXT_SELECTION_BYTES
     + 1024;
 pub(crate) const MAX_ANSWER_BYTES: usize = 256 * 1024;
+const ASSISTANT_V2_MODE_ARGUMENT: &str = "--murmur-assistant-v2";
 const MIN_TIMEOUT_SECONDS: u64 = 5;
 const MAX_TIMEOUT_SECONDS: u64 = 300;
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -318,6 +319,13 @@ fn query_arguments(fixed: &[String], prompt: String) -> Vec<String> {
     arguments
 }
 
+fn assistant_query_arguments(fixed: &[String], prompt: String) -> Vec<String> {
+    let mut arguments = fixed.to_vec();
+    arguments.push(ASSISTANT_V2_MODE_ARGUMENT.to_string());
+    arguments.push(prompt);
+    arguments
+}
+
 #[derive(Clone)]
 struct QuerySession {
     pass_id: u64,
@@ -560,16 +568,28 @@ impl QueryCoordinator {
     }
 
     fn allocate_pass(&self, reserve: bool) -> Option<u64> {
-        self.allocate_pass_internal(reserve, None)
+        self.allocate_pass_internal(reserve, None, false)
+    }
+
+    fn allocate_assistant_action(&self) -> Option<u64> {
+        self.allocate_pass_internal(true, None, true)
     }
 
     fn allocate_pass_internal(
         &self,
         reserve: bool,
         draft_conversation: Option<String>,
+        require_assistant_owner: bool,
     ) -> Option<u64> {
         let _ownership = self.ownership.lock_or_recover();
         if self.shutting_down.load(Ordering::SeqCst) {
+            return None;
+        }
+        if require_assistant_owner
+            && self
+                .active_pass_id()
+                .is_some_and(|pass_id| !self.is_assistant(pass_id))
+        {
             return None;
         }
         let status = *self.status.lock_or_recover();
@@ -613,7 +633,7 @@ impl QueryCoordinator {
     }
 
     fn allocate_draft(&self, conversation_id: String) -> Option<u64> {
-        self.allocate_pass_internal(true, Some(conversation_id))
+        self.allocate_pass_internal(true, Some(conversation_id), false)
     }
 
     fn is_assistant(&self, pass_id: u64) -> bool {
@@ -1514,10 +1534,11 @@ fn validate_command(
         }
     }
     if config.arguments.len() > MAX_ARGUMENTS
-        || config
-            .arguments
-            .iter()
-            .any(|argument| argument.len() > MAX_ARGUMENT_BYTES || argument.contains('\0'))
+        || config.arguments.iter().any(|argument| {
+            argument.len() > MAX_ARGUMENT_BYTES
+                || argument.contains('\0')
+                || argument == ASSISTANT_V2_MODE_ARGUMENT
+        })
         || config.arguments.iter().map(String::len).sum::<usize>() > MAX_ARGUMENTS_TOTAL_BYTES
     {
         return Err("invalid_arguments");
@@ -1858,7 +1879,7 @@ async fn dispatch_assistant_action(
     if assistant_binding(&command)? != binding {
         return Err("assistant_connection_changed".into());
     }
-    let pass_id = state.query.allocate_pass(true).ok_or("busy")?;
+    let pass_id = state.query.allocate_assistant_action().ok_or("busy")?;
     state
         .query
         .assistant_pass_id
@@ -3303,7 +3324,10 @@ fn send_cli_output(
 
 enum CliResponseAdapter {
     Voice(VoiceQueryAdapter),
-    Assistant(crate::assistant::AssistantStreamParser),
+    Assistant {
+        parser: crate::assistant::AssistantStreamParser,
+        pending_actions: Vec<crate::assistant::AssistantAction>,
+    },
 }
 
 fn accept_stdout(
@@ -3318,9 +3342,12 @@ fn accept_stdout(
             let updates = adapter.push_stdout(bytes)?;
             accept_answer_updates(app, pass_id, sequence, updates)
         }
-        CliResponseAdapter::Assistant(adapter) => {
-            let updates = adapter.push(bytes)?;
-            accept_assistant_updates(app, pass_id, sequence, updates)
+        CliResponseAdapter::Assistant {
+            parser,
+            pending_actions,
+        } => {
+            let updates = parser.push(bytes)?;
+            accept_assistant_updates(app, pass_id, sequence, pending_actions, updates)
         }
     }
 }
@@ -3329,6 +3356,7 @@ fn accept_assistant_updates(
     app: &tauri::AppHandle,
     pass_id: u64,
     sequence: &mut u64,
+    pending_actions: &mut Vec<crate::assistant::AssistantAction>,
     updates: Vec<crate::assistant::AssistantStreamUpdate>,
 ) -> Result<(), &'static str> {
     for update in updates {
@@ -3338,10 +3366,7 @@ fn accept_assistant_updates(
             }
             crate::assistant::AssistantStreamUpdate::Action(action) => {
                 app.state::<crate::State>().query.mark_first_chunk(pass_id);
-                app.state::<crate::State>()
-                    .assistant
-                    .record_action(pass_id, action)
-                    .map_err(|_| "invalid_assistant_response")?;
+                pending_actions.push(action);
             }
         }
     }
@@ -3429,7 +3454,16 @@ fn run_cli(
         app: app.clone(),
         pass_id,
     };
-    let arguments = query_arguments(&command.arguments, prompt);
+    let assistant_v2 = app
+        .state::<crate::State>()
+        .assistant
+        .for_pass(pass_id)
+        .is_some();
+    let arguments = if assistant_v2 {
+        assistant_query_arguments(&command.arguments, prompt)
+    } else {
+        query_arguments(&command.arguments, prompt)
+    };
     let environment: Vec<(String, String)> = command
         .environment
         .iter()
@@ -3587,13 +3621,11 @@ fn run_cli(
     });
 
     let deadline = Instant::now() + command.timeout;
-    let mut adapter = if app
-        .state::<crate::State>()
-        .assistant
-        .for_pass(pass_id)
-        .is_some()
-    {
-        CliResponseAdapter::Assistant(crate::assistant::AssistantStreamParser::new())
+    let mut adapter = if assistant_v2 {
+        CliResponseAdapter::Assistant {
+            parser: crate::assistant::AssistantStreamParser::new(),
+            pending_actions: Vec::new(),
+        }
     } else {
         let mut adapter = VoiceQueryAdapter::new(command.provider, MAX_ANSWER_BYTES);
         if command.trusted_workspace.is_some() {
@@ -3813,29 +3845,40 @@ fn run_cli(
     // release the ownership record before parser finalization so even a
     // bounded-output refusal cannot leave a dead child blocking a later pass.
     app.state::<crate::State>().query.clear_child(pass_id);
-    let (usage, failure, used_structured_output, allow_empty_answer) = match adapter {
-        CliResponseAdapter::Voice(adapter) => {
-            let completion = adapter
-                .finish()
+    let (usage, failure, used_structured_output, allow_empty_answer, pending_actions) =
+        match adapter {
+            CliResponseAdapter::Voice(adapter) => {
+                let completion = adapter
+                    .finish()
+                    .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
+                accept_answer_updates(&app, pass_id, &mut sequence, completion.updates)
+                    .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
+                (
+                    completion.usage,
+                    completion.failure,
+                    completion.used_structured_output,
+                    false,
+                    Vec::new(),
+                )
+            }
+            CliResponseAdapter::Assistant {
+                parser,
+                mut pending_actions,
+            } => {
+                let (updates, action_count) = parser
+                    .finish()
+                    .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
+                accept_assistant_updates(
+                    &app,
+                    pass_id,
+                    &mut sequence,
+                    &mut pending_actions,
+                    updates,
+                )
                 .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
-            accept_answer_updates(&app, pass_id, &mut sequence, completion.updates)
-                .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
-            (
-                completion.usage,
-                completion.failure,
-                completion.used_structured_output,
-                false,
-            )
-        }
-        CliResponseAdapter::Assistant(adapter) => {
-            let (updates, action_count) = adapter
-                .finish()
-                .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
-            accept_assistant_updates(&app, pass_id, &mut sequence, updates)
-                .map_err(|code| QueryRunError::with_stderr(code, &stderr_tail))?;
-            (None, None, true, action_count > 0)
-        }
-    };
+                (None, None, true, action_count > 0, pending_actions)
+            }
+        };
     app.state::<crate::State>().query.set_usage(pass_id, usage);
 
     if let Some(failure) = failure {
@@ -3871,6 +3914,12 @@ fn run_cli(
             command.provider,
             &stderr_tail,
         ));
+    }
+    if !pending_actions.is_empty() {
+        app.state::<crate::State>()
+            .assistant
+            .record_actions(pass_id, pending_actions)
+            .map_err(|_| QueryRunError::with_stderr("invalid_assistant_response", &stderr_tail))?;
     }
     Ok(QueryRunCompletion {
         auto_copy_eligible: auto_copy_eligible(command.provider, used_structured_output),
@@ -5003,6 +5052,42 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
         );
     }
 
+    #[test]
+    fn raw_voice_query_cannot_select_the_native_assistant_v2_mode() {
+        let fixed = vec!["--fixed".to_string()];
+        for operation in ["confirm", "cancel"] {
+            let raw = format!(
+                "MURMUR_ASSISTANT_V2\n{{\"type\":\"{operation}\",\"actionId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\"}}"
+            );
+            let legacy = query_arguments(&fixed, raw.clone());
+            assert_eq!(legacy, vec!["--fixed".to_string(), raw.clone()]);
+            assert!(!legacy
+                .iter()
+                .any(|argument| argument == ASSISTANT_V2_MODE_ARGUMENT));
+
+            let assistant = assistant_query_arguments(&fixed, raw.clone());
+            assert_eq!(assistant[assistant.len() - 2], ASSISTANT_V2_MODE_ARGUMENT);
+            assert_eq!(assistant.last(), Some(&raw));
+        }
+    }
+
+    #[test]
+    fn user_configuration_cannot_preselect_the_reserved_assistant_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = QueryCommandConfig {
+            provider: QueryProviderId::Custom,
+            executable: "/bin/echo".into(),
+            arguments: vec![ASSISTANT_V2_MODE_ARGUMENT.into()],
+            timeout_seconds: 30,
+            context_level: QueryContextLevel::None,
+            retain_query_history: false,
+        };
+        assert!(matches!(
+            validate_command(config, vec![], directory.path().to_path_buf()),
+            Err("invalid_arguments")
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn follow_up_real_child_receives_fixed_arguments_and_one_literal_fold() {
@@ -5665,6 +5750,13 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
         query.release_child_start(pass_id);
         assert!(query.claim_terminal(pass_id).is_some());
         assert_eq!(query.allocate_keyboard_pass(), Some(pass_id + 1));
+    }
+
+    #[test]
+    fn background_action_status_does_not_replace_a_reserved_voice_query_owner() {
+        let query = QueryCoordinator::default();
+        query.allocate_keyboard_pass().unwrap();
+        assert_eq!(query.allocate_assistant_action(), None);
     }
 
     #[test]

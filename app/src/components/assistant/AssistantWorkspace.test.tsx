@@ -2,6 +2,26 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AssistantWorkspace, type AssistantWorkspaceProps } from './AssistantWorkspace';
+import type { AssistantAction, AssistantActionStatus } from '../../lib/assistant';
+
+const action = (status: AssistantActionStatus = 'proposed'): AssistantAction => ({
+  schema_version: 1,
+  action_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  idempotency_key: '0'.repeat(64),
+  kind: 'lights.set',
+  actor_id: 'george',
+  connection_id: '11111111-1111-4111-8111-111111111111',
+  conversation_id: '22222222-2222-4222-8222-222222222222',
+  request_id: '33333333-3333-4333-8333-333333333333',
+  targets: [{ entity_id: 'light.govee_bulb_149d', name: 'Living room bulb' }],
+  parameters: { power: 'on', brightness_pct: 30, rgb_color: [0, 0, 255] },
+  created_at: '2026-09-14T04:00:00Z',
+  expires_at: '2026-09-14T04:05:00Z',
+  parameter_digest: '1'.repeat(64),
+  status,
+  receipt: null,
+  verification: null,
+});
 
 function props(overrides: Partial<AssistantWorkspaceProps> = {}): AssistantWorkspaceProps {
   return {
@@ -9,7 +29,7 @@ function props(overrides: Partial<AssistantWorkspaceProps> = {}): AssistantWorks
     conversations: [{ id: 'thread', title: 'Bedroom lights', updatedAtMs: 1700000000000 }], selectedId: 'thread', messages: [], phase: 'idle', error: null, voiceAvailable: true,
     onConnect: vi.fn(async () => {}), onDisconnect: vi.fn(async () => {}), onNew: vi.fn(async () => {}), onSelect: vi.fn(async () => {}), onDelete: vi.fn(async () => {}),
     onSend: vi.fn(async () => true), onVoice: vi.fn(async () => {}), onFinishVoice: vi.fn(async () => {}), onStop: vi.fn(async () => {}),
-    onConfirmAction: vi.fn(async () => {}), onCancelAction: vi.fn(async () => {}), onSettings: vi.fn(), ...overrides,
+    onConfirmAction: vi.fn(async () => {}), onCancelAction: vi.fn(async () => {}), onRefreshAction: vi.fn(async () => {}), onSettings: vi.fn(), ...overrides,
   };
 }
 describe('Assistant workspace', () => {
@@ -129,5 +149,31 @@ describe('Assistant workspace', () => {
     await render({ ...p, dictation: { passId: 5, text: '', status: 'cancelled' } });
     expect(input.value).toBe('Keep me');
     expect(p.onSend).not.toHaveBeenCalled();
+  });
+  it('shows exact proposed action details and sends only the action ID to Confirm or Cancel', async () => {
+    const p = props({ messages: [{ id: 'answer', role: 'assistant', text: '', status: 'complete', actions: [action()] }] });
+    await render(p);
+    expect(container.textContent).toContain('Pending approval');
+    expect(container.textContent).toContain('Blue (RGB 0, 0, 255)');
+    expect(container.textContent).toContain('light.govee_bulb_149d');
+    await act(async () => button('Confirm').click());
+    await act(async () => button('Cancel').click());
+    expect(p.onConfirmAction).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(p.onCancelAction).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  });
+  it('disables duplicate action clicks while busy and offers status-only recovery', async () => {
+    const p = props({ pending: true, messages: [{ id: 'answer', role: 'assistant', text: '', status: 'complete', actions: [action()] }] });
+    await render(p);
+    expect(button('Confirm').disabled).toBe(true);
+    expect(button('Cancel').disabled).toBe(true);
+    await act(async () => button('Confirm').click());
+    expect(p.onConfirmAction).not.toHaveBeenCalled();
+
+    const uncertain = props({ messages: [{ id: 'answer', role: 'assistant', text: '', status: 'complete', actions: [action('uncertain')] }] });
+    await render(uncertain);
+    expect(container.textContent).toContain('Uncertain');
+    await act(async () => button('Refresh status').click());
+    expect(uncertain.onRefreshAction).toHaveBeenCalledWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(uncertain.onConfirmAction).not.toHaveBeenCalled();
   });
 });

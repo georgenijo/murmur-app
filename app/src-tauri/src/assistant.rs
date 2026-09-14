@@ -114,7 +114,7 @@ pub(crate) struct Light {
     pub name: Option<String>,
     pub state: LightState,
     pub availability: LightAvailability,
-    pub observed_at: Option<String>,
+    pub observed_at: String,
     pub last_changed: Option<String>,
     pub last_updated: Option<String>,
     pub last_reported: Option<String>,
@@ -133,7 +133,7 @@ pub(crate) struct ActionVerification {
     pub message: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ActionStatus {
     Proposed,
@@ -377,21 +377,57 @@ fn valid_entity_id(value: &str) -> bool {
         return false;
     };
     !id.is_empty()
-        && id.len() <= 255
+        && id.len() <= 128
         && id
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 fn valid_timestamp(value: &str) -> bool {
-    value.len() <= 64
-        && value.ends_with('Z')
-        && chrono::DateTime::parse_from_rfc3339(value)
-            .is_ok_and(|time| time.offset().local_minus_utc() == 0)
+    use chrono::Timelike;
+
+    if value.len() > 64 || !value.ends_with('Z') {
+        return false;
+    }
+    chrono::DateTime::parse_from_rfc3339(value).is_ok_and(|time| {
+        if time.offset().local_minus_utc() != 0 {
+            return false;
+        }
+        let utc = time.with_timezone(&chrono::Utc);
+        let canonical = if utc.nanosecond() == 0 {
+            utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        } else {
+            utc.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+        };
+        canonical == value
+    })
+}
+fn timestamp(value: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    if !valid_timestamp(value) {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(value).ok()
+}
+fn valid_alias(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && value.len() <= 64
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
 }
 fn valid_color_mode(value: &str) -> bool {
     matches!(
         value,
-        "onoff" | "brightness" | "color_temp" | "hs" | "xy" | "rgb" | "rgbw" | "rgbww" | "white"
+        "onoff"
+            | "brightness"
+            | "color_temp"
+            | "hs"
+            | "xy"
+            | "rgb"
+            | "rgbw"
+            | "rgbww"
+            | "white"
+            | "unknown"
     )
 }
 fn valid_optional_color(value: Option<&String>) -> bool {
@@ -407,11 +443,11 @@ fn valid_point(point: Option<&[f64; 2]>, first_max: f64, second_max: f64) -> boo
 }
 fn validate_light(light: &Light) -> bool {
     valid_entity_id(&light.entity_id)
-        && light.aliases.len() <= 64
-        && light.aliases.iter().all(|alias| alias.len() <= 256)
+        && light.aliases.len() <= 512
+        && light.aliases.iter().all(|alias| valid_alias(alias))
         && light.name.as_ref().is_none_or(|name| name.len() <= 256)
+        && valid_timestamp(&light.observed_at)
         && [
-            light.observed_at.as_ref(),
             light.last_changed.as_ref(),
             light.last_updated.as_ref(),
             light.last_reported.as_ref(),
@@ -421,7 +457,7 @@ fn validate_light(light: &Light) -> bool {
         && light
             .freshness
             .age_seconds
-            .is_none_or(|age| age.is_finite() && age >= 0.0)
+            .is_none_or(|age| age.is_finite())
         && light.freshness.stale_after_seconds == 300
         && light.capabilities.on_off
         && light
@@ -429,11 +465,29 @@ fn validate_light(light: &Light) -> bool {
             .supported_color_modes
             .as_ref()
             .is_none_or(|modes| {
-                modes.len() <= 16 && modes.iter().all(|mode| valid_color_mode(mode))
+                modes.len() <= 10 && modes.iter().all(|mode| valid_color_mode(mode))
             })
         && valid_optional_color(light.attributes.color_mode.as_ref())
         && valid_point(light.attributes.hs_color.as_ref(), 360.0, 100.0)
         && valid_point(light.attributes.xy_color.as_ref(), 1.0, 1.0)
+        && [
+            light.attributes.color_temp_kelvin,
+            light.attributes.min_color_temp_kelvin,
+            light.attributes.max_color_temp_kelvin,
+        ]
+        .into_iter()
+        .all(|value| value.is_none_or(|value| (1..=100_000).contains(&value)))
+        && [
+            light.attributes.color_temp,
+            light.attributes.min_mireds,
+            light.attributes.max_mireds,
+        ]
+        .into_iter()
+        .all(|value| value.is_none_or(|value| (1..=10_000).contains(&value)))
+        && light
+            .attributes
+            .supported_features
+            .is_none_or(|value| value <= 2_147_483_647)
 }
 fn canonical_json(value: &serde_json::Value, output: &mut String) -> Result<(), String> {
     match value {
@@ -509,12 +563,44 @@ fn validate_action(action: &AssistantAction) -> Result<(), String> {
             .is_none_or(|value| (1..=100).contains(&value)),
         _ => false,
     };
+    let receipt = action.receipt.as_ref();
+    let verification = action.verification.as_ref();
+    let verification_ids: Vec<_> = verification
+        .into_iter()
+        .flat_map(|value| &value.states)
+        .map(|light| light.entity_id.as_str())
+        .collect();
+    let mut sorted_verification_ids = verification_ids.clone();
+    sorted_verification_ids.sort_unstable();
+    let verification_set: HashSet<_> = verification_ids.iter().copied().collect();
+    let terminal_shape_valid = match &action.status {
+        ActionStatus::Proposed | ActionStatus::Cancelled => {
+            receipt.is_none() && verification.is_none()
+        }
+        ActionStatus::Executing => receipt.is_some_and(|value| value.finished_at.is_none()),
+        ActionStatus::Completed => {
+            receipt.is_some_and(|value| value.finished_at.is_some() && value.write_attempted)
+                && verification.is_some_and(|value| value.matched == Some(true))
+                && sorted_verification_ids == target_ids
+        }
+        ActionStatus::Failed => {
+            receipt.is_some_and(|value| value.finished_at.is_some() && !value.write_attempted)
+        }
+        ActionStatus::Uncertain => receipt.is_some_and(|value| value.finished_at.is_some()),
+        ActionStatus::Expired => true,
+    };
+    let created = timestamp(&action.created_at);
+    let expires = timestamp(&action.expires_at);
     if action.schema_version != 1
         || !valid_id(&action.action_id)
         || !valid_digest(&action.idempotency_key)
         || action.kind != "lights.set"
         || action.actor_id.is_empty()
-        || action.actor_id.len() > 256
+        || action.actor_id.len() > 128
+        || action
+            .actor_id
+            .bytes()
+            .any(|byte| !(33..=126).contains(&byte))
         || !valid_id(&action.connection_id)
         || !valid_id(&action.conversation_id)
         || !valid_id(&action.request_id)
@@ -524,11 +610,16 @@ fn validate_action(action: &AssistantAction) -> Result<(), String> {
         || target_set.len() != target_ids.len()
         || action.targets.iter().any(|target| {
             !valid_entity_id(&target.entity_id)
-                || target.name.as_ref().is_some_and(|name| name.len() > 256)
+                || target.name.as_ref().is_some_and(|name| {
+                    name.len() > 256 || name.chars().any(|character| character < ' ')
+                })
         })
         || !valid_parameters
-        || !valid_timestamp(&action.created_at)
-        || !valid_timestamp(&action.expires_at)
+        || created.is_none()
+        || expires.is_none()
+        || expires.zip(created).is_none_or(|(expires, created)| {
+            expires.signed_duration_since(created) != chrono::Duration::seconds(300)
+        })
         || !valid_digest(&action.parameter_digest)
         || action.receipt.as_ref().is_some_and(|receipt| {
             !valid_id(&receipt.execution_id)
@@ -541,13 +632,17 @@ fn validate_action(action: &AssistantAction) -> Result<(), String> {
         || action.verification.as_ref().is_some_and(|verification| {
             verification.source != "home_assistant_reported"
                 || !valid_timestamp(&verification.verified_at)
-                || verification.message.len() > 4096
                 || verification.states.len() > 16
+                || verification_set.len() != verification_ids.len()
+                || verification_ids
+                    .iter()
+                    .any(|entity_id| !target_set.contains(entity_id))
                 || verification
                     .states
                     .iter()
                     .any(|light| !validate_light(light))
         })
+        || !terminal_shape_valid
         || action_digest(action)? != action.parameter_digest
     {
         return Err("invalid_assistant_response".into());
@@ -608,9 +703,13 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
                     e.len() > 64 || !e.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
                 })
                 || m.actions.len() > MAX_ACTIONS_PER_MESSAGE
-                || m.actions
-                    .iter()
-                    .any(|action| validate_action(action).is_err())
+                || (m.role == "user" && !m.actions.is_empty())
+                || m.actions.iter().any(|action| {
+                    validate_action(action).is_err()
+                        || action.conversation_id != c.id
+                        || action.request_id != m.request_id
+                        || c.connection_id.as_deref() != Some(action.connection_id.as_str())
+                })
             {
                 return Err(STORAGE_ERROR.into());
             }
@@ -1092,49 +1191,62 @@ impl AssistantStore {
         })
     }
 
-    pub(crate) fn record_action(
+    pub(crate) fn record_actions(
         &self,
         pass_id: u64,
-        action: AssistantAction,
+        actions: Vec<AssistantAction>,
     ) -> Result<(), String> {
-        validate_action(&action)?;
+        if actions.is_empty() || actions.len() > MAX_ACTIONS_PER_MESSAGE {
+            return Err("invalid_assistant_response".into());
+        }
+        for action in &actions {
+            validate_action(action)?;
+        }
         let conversation_id = self.mutate(|snapshot| {
             let conversation = snapshot
                 .conversations
                 .iter_mut()
                 .find(|conversation| conversation.active_pass_id == Some(pass_id))
                 .ok_or("cancelled")?;
-            if conversation.connection_id.as_deref() != Some(action.connection_id.as_str())
-                || conversation.id != action.conversation_id
-            {
-                return Err("invalid_assistant_response".into());
-            }
-            if let Some(expected_action_id) = conversation.active_action_id.as_deref() {
-                if expected_action_id != action.action_id {
+            for action in actions {
+                if conversation.connection_id.as_deref() != Some(action.connection_id.as_str())
+                    || conversation.id != action.conversation_id
+                {
                     return Err("invalid_assistant_response".into());
                 }
-            } else {
+                if conversation
+                    .active_action_id
+                    .as_ref()
+                    .is_some_and(|expected| expected != &action.action_id)
+                {
+                    return Err("invalid_assistant_response".into());
+                }
+                let existing_location = conversation.messages.iter().enumerate().find_map(
+                    |(message_index, message)| {
+                        message
+                            .actions
+                            .iter()
+                            .position(|existing| existing.action_id == action.action_id)
+                            .map(|action_index| (message_index, action_index))
+                    },
+                );
+                if let Some((message_index, action_index)) = existing_location {
+                    let existing = &mut conversation.messages[message_index].actions[action_index];
+                    if existing.parameter_digest != action.parameter_digest {
+                        return Err("invalid_assistant_response".into());
+                    }
+                    *existing = action;
+                    continue;
+                }
+                if conversation.active_action_id.is_some() {
+                    return Err("invalid_assistant_response".into());
+                }
                 let request_id = conversation
                     .messages
                     .last()
                     .map(|message| message.request_id.as_str())
                     .ok_or(STORAGE_ERROR)?;
                 if request_id != action.request_id {
-                    return Err("invalid_assistant_response".into());
-                }
-            }
-            if let Some(existing) = conversation
-                .messages
-                .iter_mut()
-                .flat_map(|message| &mut message.actions)
-                .find(|existing| existing.action_id == action.action_id)
-            {
-                if existing.parameter_digest != action.parameter_digest {
-                    return Err("invalid_assistant_response".into());
-                }
-                *existing = action;
-            } else {
-                if conversation.active_action_id.is_some() {
                     return Err("invalid_assistant_response".into());
                 }
                 let message = conversation.messages.last_mut().ok_or(STORAGE_ERROR)?;
@@ -1148,6 +1260,11 @@ impl AssistantStore {
         })?;
         self.emit_changed(&conversation_id, pass_id);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn record_action(&self, pass_id: u64, action: AssistantAction) -> Result<(), String> {
+        self.record_actions(pass_id, vec![action])
     }
     pub(crate) fn update(
         &self,
@@ -1550,6 +1667,37 @@ mod tests {
     }
 
     #[test]
+    fn action_validation_matches_agentos_light_and_terminal_bounds() {
+        let mut completed = action_fixture("completed");
+        completed.verification.as_mut().unwrap().states[0]
+            .capabilities
+            .supported_color_modes = Some(vec!["unknown".into()]);
+        completed.verification.as_mut().unwrap().states[0]
+            .attributes
+            .color_mode = Some("unknown".into());
+        assert!(validate_action(&completed).is_ok());
+
+        let mut missing_observation = serde_json::to_value(&completed).unwrap();
+        missing_observation["verification"]["states"][0]["observed_at"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<AssistantAction>(missing_observation).is_err());
+
+        let mut bad_alias = completed.clone();
+        bad_alias.verification.as_mut().unwrap().states[0].aliases = vec!["Bad alias".into()];
+        assert!(validate_action(&bad_alias).is_err());
+
+        let mut too_many_features = completed.clone();
+        too_many_features.verification.as_mut().unwrap().states[0]
+            .attributes
+            .supported_features = Some(2_147_483_648);
+        assert!(validate_action(&too_many_features).is_err());
+
+        let mut impossible_failure = completed;
+        impossible_failure.status = ActionStatus::Failed;
+        impossible_failure.verification = None;
+        assert!(validate_action(&impossible_failure).is_err());
+    }
+
+    #[test]
     fn v2_parser_rejects_prose_bad_digest_duplicate_done_and_missing_done() {
         let mut prose = AssistantStreamParser::new();
         assert!(matches!(
@@ -1610,5 +1758,70 @@ mod tests {
         assert!(payload.get("targets").is_none());
         assert!(payload.get("parameters").is_none());
         assert_eq!(payload.as_object().unwrap().len(), 6);
+
+        let mut completed = action_fixture("completed");
+        completed.conversation_id = conversation.id;
+        completed.connection_id = dispatch.connection_id;
+        completed.request_id = s
+            .get(&dispatch.conversation_id)
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .request_id
+            .clone();
+        completed.parameter_digest = action_digest(&completed).unwrap();
+        s.record_action(8, completed).unwrap();
+        assert_eq!(
+            s.get(&dispatch.conversation_id).unwrap().messages[1].actions[0].status,
+            ActionStatus::Completed
+        );
+    }
+
+    #[test]
+    fn action_batch_is_atomic_when_a_later_record_breaks_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let s = store(temp.path().join("assistant"));
+        let conversation = s.create(None).unwrap();
+        let request_id = s.begin(&conversation.id, 7, "lights", BINDING).unwrap();
+        let mut first = action_fixture("proposed");
+        first.action_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into();
+        first.conversation_id = conversation.id.clone();
+        first.connection_id = conversation.connection_id.clone().unwrap();
+        first.request_id = request_id.clone();
+        first.parameter_digest = action_digest(&first).unwrap();
+        let mut second = first.clone();
+        second.action_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into();
+        second.connection_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+        second.parameter_digest = action_digest(&second).unwrap();
+        assert!(s.record_actions(7, vec![first, second]).is_err());
+        assert!(s.get(&conversation.id).unwrap().messages[1]
+            .actions
+            .is_empty());
+    }
+
+    #[test]
+    fn active_action_cannot_update_a_different_stored_action() {
+        let temp = tempfile::tempdir().unwrap();
+        let s = store(temp.path().join("assistant"));
+        let conversation = s.create(None).unwrap();
+        let request_id = s.begin(&conversation.id, 7, "lights", BINDING).unwrap();
+        let mut first = action_fixture("proposed");
+        first.action_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into();
+        first.conversation_id = conversation.id.clone();
+        first.connection_id = conversation.connection_id.clone().unwrap();
+        first.request_id = request_id.clone();
+        first.parameter_digest = action_digest(&first).unwrap();
+        let mut second = first.clone();
+        second.action_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into();
+        second.parameter_digest = action_digest(&second).unwrap();
+        s.record_actions(7, vec![first.clone(), second.clone()])
+            .unwrap();
+        s.update(7, "", Some(("ready", None))).unwrap();
+        s.begin_action(&first.action_id, 8, "confirm").unwrap();
+
+        assert!(s.record_action(8, second).is_err());
+        let stored = s.get(&conversation.id).unwrap();
+        assert_eq!(stored.messages[1].actions[1].status, ActionStatus::Proposed);
     }
 }

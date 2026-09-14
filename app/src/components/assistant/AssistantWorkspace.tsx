@@ -46,6 +46,7 @@ export interface AssistantWorkspaceProps {
   onStop: () => Promise<void>;
   onConfirmAction: (actionId: string) => Promise<void>;
   onCancelAction: (actionId: string) => Promise<void>;
+  onRefreshAction: (actionId: string) => Promise<void>;
   onSettings: () => void;
 }
 
@@ -121,7 +122,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
         <h3>Your assistant, your connection</h3>
         <p>Uses the Custom executable configured in Voice Query. It must support the Pi Assistant conversation bridge.</p>
         <p>Conversations are saved on this Mac and in Pi’s private sessions on Ubuntu. Pi may send messages and tool results to its model provider. This is separate from Voice Query history.</p>
-        <p>Connecting does not grant new tools or permission to control your lights. Ordinary dictation stays local and unchanged.</p>
+        <p>Pi may propose allowlisted light changes. Only Confirm in Murmur can run one. Ordinary dictation stays local and unchanged.</p>
       </div>
       {props.error && <p role="alert" className="assistant-error">{props.error}</p>}
       <button type="button" className="assistant-primary" disabled={props.pending || props.loading || !props.configured} onClick={() => void props.onConnect()}>
@@ -185,7 +186,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
             ? <p className="assistant-user-text">{message.text}</p>
             : <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{message.text}</Markdown>}
           </div>
-          {message.actions.map((action) => <AssistantActionCard key={action.action_id} action={action} disabled={busy} onConfirm={props.onConfirmAction} onCancel={props.onCancelAction} />)}
+          {message.actions.map((action) => <AssistantActionCard key={action.action_id} action={action} disabled={busy} onConfirm={props.onConfirmAction} onCancel={props.onCancelAction} onRefresh={props.onRefreshAction} />)}
           {message.status === 'running' && <span className="assistant-muted assistant-turn-status"><AssistantActivityMark active />Pi is working…</span>}
           {message.status === 'cancelled' && <p className="assistant-muted">Stopped. This response may be incomplete.</p>}
           {message.status === 'failed' && <p className="assistant-error">This response did not complete. You can send another message.</p>}

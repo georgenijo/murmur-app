@@ -27,11 +27,12 @@ function setting(action: AssistantAction): string {
   return details.length ? `Turn on · ${details.join(' · ')}` : 'Turn on';
 }
 
-export function AssistantActionCard({ action, disabled, onConfirm, onCancel }: {
+export function AssistantActionCard({ action, disabled, onConfirm, onCancel, onRefresh }: {
   action: AssistantAction;
   disabled: boolean;
   onConfirm: (actionId: string) => Promise<void>;
   onCancel: (actionId: string) => Promise<void>;
+  onRefresh: (actionId: string) => Promise<void>;
 }) {
   return <section className="assistant-action-card" data-status={action.status} aria-label={`Light action: ${STATUS_LABELS[action.status]}`}>
     <header>
@@ -47,6 +48,9 @@ export function AssistantActionCard({ action, disabled, onConfirm, onCancel }: {
     {action.status === 'proposed' && <div className="assistant-action-buttons">
       <button type="button" className="assistant-primary" disabled={disabled} onClick={() => void onConfirm(action.action_id)}>Confirm</button>
       <button type="button" className="assistant-secondary" disabled={disabled} onClick={() => void onCancel(action.action_id)}>Cancel</button>
+    </div>}
+    {['proposed', 'executing', 'failed', 'uncertain'].includes(action.status) && <div className="assistant-action-buttons">
+      <button type="button" className="assistant-secondary" disabled={disabled} onClick={() => void onRefresh(action.action_id)}>Refresh status</button>
     </div>}
     {action.verification && <p className="assistant-action-verification">
       {action.verification.message} Reported by Home Assistant; physical state not independently verified.

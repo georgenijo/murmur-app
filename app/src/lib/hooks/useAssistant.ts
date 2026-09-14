@@ -33,7 +33,12 @@ export function useAssistant({ command, deviceName, smartAuto, requestedId }: Op
   const bufferedDraft = useRef<DraftEvent[]>([]);
   const finishingDraft = useRef<number | null>(null);
   const cancellingDraft = useRef<number | null>(null);
-  const recoveredActions = useRef(new Set<string>());
+  const recoveryAttempts = useRef(new Map<string, number>());
+  const activeActionOperation = useRef<{
+    commandName: 'confirm_assistant_action' | 'cancel_assistant_action' | 'refresh_assistant_action';
+    actionId: string;
+    passId: number | null;
+  } | null>(null);
   const commandKey = JSON.stringify(command);
   const commandRef = useRef(command); commandRef.current = command;
 
@@ -136,7 +141,16 @@ export function useAssistant({ command, deviceName, smartAuto, requestedId }: Op
           if (['connecting', 'listening', 'transcribing', 'running'].includes(next)) {
             lastState.current = { pass: payload.queryPassId, phase: next as AssistantPhase };
             setPhase(next as AssistantPhase); activePass.current = payload.queryPassId;
-          } else { lastState.current = { pass: payload.queryPassId, phase: 'idle' }; setPhase('idle'); activePass.current = null; }
+          } else {
+            const operation = activeActionOperation.current;
+            if (operation && (operation.passId === null || operation.passId === payload.queryPassId)) {
+              if (next === 'failed' && operation.commandName !== 'refresh_assistant_action') {
+                recoveryAttempts.current.set(operation.actionId, 0);
+              }
+              activeActionOperation.current = null;
+            }
+            lastState.current = { pass: payload.queryPassId, phase: 'idle' }; setPhase('idle'); activePass.current = null;
+          }
         }
         void refresh();
       }).then((unlisten) => {
@@ -258,20 +272,31 @@ export function useAssistant({ command, deviceName, smartAuto, requestedId }: Op
     } finally { if (finishingDraft.current === pass) finishingDraft.current = null; }
   }, []);
   const operateAction = useCallback(async (commandName: 'confirm_assistant_action' | 'cancel_assistant_action' | 'refresh_assistant_action', actionId: string) => {
-    await mutate(async () => {
+    return mutate(async () => {
       if (!listenersReady || !isConversationId(actionId)) throw new Error('invalid_assistant_action');
       const id = selected.current;
       if (!id) throw new Error('assistant_conversation_unavailable');
       setPhase('running');
+      const operation: {
+        commandName: 'confirm_assistant_action' | 'cancel_assistant_action' | 'refresh_assistant_action';
+        actionId: string;
+        passId: number | null;
+      } = { commandName, actionId, passId: null };
+      activeActionOperation.current = operation;
       let receipt: AssistantReceipt;
       try {
         receipt = await invoke<AssistantReceipt>(commandName, { actionId });
       } catch (actionError) {
+        activeActionOperation.current = null;
         setPhase('idle');
         throw actionError;
       }
       if (!isConversationId(receipt?.conversationId) || receipt.conversationId !== id
-        || !Number.isSafeInteger(receipt.queryPassId) || receipt.queryPassId <= 0) throw new Error('invalid_assistant_response');
+        || !Number.isSafeInteger(receipt.queryPassId) || receipt.queryPassId <= 0) {
+        activeActionOperation.current = null;
+        throw new Error('invalid_assistant_response');
+      }
+      operation.passId = receipt.queryPassId;
       activePass.current = receipt.queryPassId;
       setPhase(lastState.current?.pass === receipt.queryPassId ? lastState.current.phase : 'running');
       await hydrate(id);
@@ -282,16 +307,34 @@ export function useAssistant({ command, deviceName, smartAuto, requestedId }: Op
     if (!conversation || phase !== 'idle' || pending || !listenersReady) return;
     const recoverable = conversation.messages
       .flatMap((message) => message.actions)
-      .find((action) => ['proposed', 'executing'].includes(action.status) && !recoveredActions.current.has(action.action_id));
+      .find((action) => {
+        const attempts = recoveryAttempts.current.get(action.action_id) ?? 0;
+        const limit = action.status === 'executing' ? 3 : action.status === 'proposed' ? 1 : 0;
+        return attempts < limit;
+      });
     if (!recoverable) return;
-    recoveredActions.current.add(recoverable.action_id);
-    void operateAction('refresh_assistant_action', recoverable.action_id);
+    const attempts = recoveryAttempts.current.get(recoverable.action_id) ?? 0;
+    recoveryAttempts.current.set(recoverable.action_id, attempts + 1);
+    const timer = window.setTimeout(() => {
+      void operateAction('refresh_assistant_action', recoverable.action_id);
+    }, attempts === 0 ? 0 : 750);
+    return () => window.clearTimeout(timer);
   }, [conversation, listenersReady, operateAction, pending, phase]);
   return {
     connected, loading, pending: pending || (connected && !listenersReady), conversations, conversation, phase, error, dictation,
     select, connect, disconnect, newConversation, remove, stop, finishVoice,
     send: (text: string) => start('text', text), voice: async () => { await start('voice'); },
-    confirmAction: async (actionId: string) => { await operateAction('confirm_assistant_action', actionId); },
+    confirmAction: async (actionId: string) => {
+      const accepted = await operateAction('confirm_assistant_action', actionId);
+      if (!accepted) {
+        recoveryAttempts.current.set(actionId, 1);
+        await operateAction('refresh_assistant_action', actionId);
+      }
+    },
     cancelAction: async (actionId: string) => { await operateAction('cancel_assistant_action', actionId); },
+    refreshAction: async (actionId: string) => {
+      recoveryAttempts.current.delete(actionId);
+      await operateAction('refresh_assistant_action', actionId);
+    },
   };
 }

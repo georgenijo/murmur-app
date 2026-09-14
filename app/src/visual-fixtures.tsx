@@ -575,7 +575,7 @@ function VisualFixture() {
                   dictation={requestedState === 'assistant-listening' ? { passId: 1, text: 'What needs my attention tomorrow?', status: 'partial' } : null}
                   onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
                   onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}}
-                  onConfirmAction={async () => {}} onCancelAction={async () => {}} onSettings={() => {}}
+                  onConfirmAction={async () => {}} onCancelAction={async () => {}} onRefreshAction={async () => {}} onSettings={() => {}}
                 />
               </section>
             ) : (
