@@ -1771,9 +1771,42 @@ mod tests {
             .request_id
             .clone();
         completed.parameter_digest = action_digest(&completed).unwrap();
-        s.record_action(8, completed).unwrap();
+        restored.record_action(8, completed).unwrap();
         assert_eq!(
-            s.get(&dispatch.conversation_id).unwrap().messages[1].actions[0].status,
+            restored.get(&dispatch.conversation_id).unwrap().messages[1].actions[0].status,
+            ActionStatus::Completed
+        );
+    }
+
+    #[test]
+    fn action_status_can_update_an_old_proposal_after_a_later_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let s = store(temp.path().join("assistant"));
+        let conversation = s.create(None).unwrap();
+        let original_request = s.begin(&conversation.id, 7, "lights", BINDING).unwrap();
+        let mut proposed = action_fixture("proposed");
+        proposed.conversation_id = conversation.id.clone();
+        proposed.connection_id = conversation.connection_id.clone().unwrap();
+        proposed.request_id = original_request.clone();
+        proposed.parameter_digest = action_digest(&proposed).unwrap();
+        let action_id = proposed.action_id.clone();
+        s.record_action(7, proposed).unwrap();
+        s.update(7, "", Some(("ready", None))).unwrap();
+
+        s.begin(&conversation.id, 8, "another question", BINDING)
+            .unwrap();
+        s.update(8, "another answer", Some(("ready", None)))
+            .unwrap();
+        let dispatch = s.begin_action(&action_id, 9, "status").unwrap();
+        let mut completed = action_fixture("completed");
+        completed.conversation_id = conversation.id.clone();
+        completed.connection_id = dispatch.connection_id;
+        completed.request_id = original_request;
+        completed.parameter_digest = action_digest(&completed).unwrap();
+
+        s.record_action(9, completed).unwrap();
+        assert_eq!(
+            s.get(&conversation.id).unwrap().messages[1].actions[0].status,
             ActionStatus::Completed
         );
     }
