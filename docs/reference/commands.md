@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 230 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 233 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -206,6 +206,9 @@ from query-review. Local deletion does not erase Pi's separately retained remote
 | `get_assistant_conversation` | `conversation_id: String` | `Result<Conversation, String>` | Hydrates messages and exact active pass from the private native mirror. |
 | `delete_assistant_conversation` | `conversation_id: String` | `Result<(), String>` | Deletes only the local inactive conversation; refuses active ownership. |
 | `send_assistant_message` | `conversation_id: String`, `message: String`, `command: QueryCommandConfig`, `consent: bool` | `Result<AssistantReceipt, String>` | Queues a bounded typed message and runs the connected Pi bridge asynchronously without opening the popover or changing clipboard. |
+| `confirm_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Loads the durable action and its bound connection, conversation, request, and parameter digest before dispatching a native-authorized confirmation through the V2 bridge. |
+| `cancel_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Loads the same durable bound action fields before dispatching cancellation through the V2 bridge. |
+| `refresh_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Requests the bound action's current status without confirming or retrying its write. |
 | `start_assistant_voice` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantReceipt, String>` | Starts the shared real capture pipeline for a thread. Finish and cancellation use existing exact-pass commands. |
 | `start_assistant_dictation` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantDraftReceipt, String>` | Main-only local composer capture; returns `{queryPassId, conversationId}`. Validates connection binding, reserves the shared microphone/ASR owner, and emits only main-targeted `assistant-draft-state` and `assistant-draft-partial`. Creates no messages and never starts Pi or the popover. |
 | `finish_assistant_dictation` | `query_pass_id: u64` | `Result<AssistantDraftText, String>` | Main-only exact-pass stop and local transcription; returns `{text}` and releases ownership to Idle. Text remains an editable unsent composer draft; no history, session text, provider dispatch, or clipboard write. Cancellation uses `cancel_query`. |
