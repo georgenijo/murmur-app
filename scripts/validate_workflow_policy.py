@@ -233,6 +233,8 @@ def validate_release_build(workflow: str) -> int:
     assert "self-hosted" not in workflow
     assert "contents: write" not in workflow
     assert "tests/test_release_version.py" in workflow
+    assert "group: release-build-${{ github.sha }}" in workflow
+    assert "group: release-build-${{ github.ref }}" not in workflow
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
     for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
