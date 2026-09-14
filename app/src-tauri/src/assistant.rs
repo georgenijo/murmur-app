@@ -316,6 +316,35 @@ impl AssistantStore {
             Ok(())
         })
     }
+    /// Read-only admission for local composer capture. No message, request,
+    /// activity marker, timestamp, or durable write is created until Send.
+    pub(crate) fn validate_draft(
+        &self,
+        conversation_id: &str,
+        binding: &str,
+    ) -> Result<(), String> {
+        let inner = self.0.lock_or_recover();
+        if inner.root.is_none() {
+            return Err(STORAGE_ERROR.into());
+        }
+        if inner.snapshot.binding.as_deref() != Some(binding) {
+            return Err("assistant_connection_changed".into());
+        }
+        let conversation = inner
+            .snapshot
+            .conversations
+            .iter()
+            .find(|c| c.id == conversation_id)
+            .ok_or("assistant_conversation_unavailable")?;
+        if conversation.connection_binding.as_deref() != Some(binding) {
+            return Err("assistant_connection_changed".into());
+        }
+        if conversation.active_pass_id.is_some() {
+            return Err("busy".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn begin(
         &self,
         conversation_id: &str,
@@ -495,6 +524,29 @@ mod tests {
         s.initialize(root, None).unwrap();
         s.connect(Some("bridge".into())).unwrap();
         s
+    }
+    #[test]
+    fn draft_admission_is_read_only_and_enforces_connection_and_conversation_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("assistant");
+        let s = store(root.clone());
+        let c = s.create(None).unwrap();
+        let path = root.join("conversations-v1.json");
+        let before = fs::read(&path).unwrap();
+        assert!(s.validate_draft(&c.id, "bridge").is_ok());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let unchanged = s.get(&c.id).unwrap();
+        assert!(unchanged.messages.is_empty());
+        assert_eq!(unchanged.active_pass_id, None);
+        assert_eq!(unchanged.updated_at_ms, c.updated_at_ms);
+        assert!(s.for_pass(42).is_none());
+        assert!(s.prompt(42, "unsent draft").is_err());
+        assert!(s.validate_draft("missing", "bridge").is_err());
+        assert!(s.validate_draft(&c.id, "other").is_err());
+        s.connect(Some("other".into())).unwrap();
+        assert!(s.validate_draft(&c.id, "other").is_err());
+        s.connect(None).unwrap();
+        assert!(s.validate_draft(&c.id, "bridge").is_err());
     }
     #[test]
     fn restart_preserves_partial_and_terminalizes_without_redispatch() {

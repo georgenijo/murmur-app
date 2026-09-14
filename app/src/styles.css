@@ -82,6 +82,14 @@
   --ui-radius-inset: 0.5rem;
   --ui-control-compact: 1.75rem;   /* 28px, was 26px */
   --ui-control-standard: 2rem;     /* 32px, was 28px */
+  /* Assistant reading geometry: shared text gutter and compact composer. */
+  --ui-assistant-rail: 11rem;
+  --ui-assistant-rail-compact: 8.5rem;
+  --ui-assistant-gutter: 1.5rem;
+  --ui-assistant-gutter-compact: 1rem;
+  --ui-assistant-turn-gap: 1.75rem;
+  --ui-assistant-icon: 1rem;
+  --ui-assistant-details-width: 18rem;
 
   /* Sona-modern surface ramp: soft hairlines, layered low-alpha shadows,
      tinted surfaces, and the caps/tight/title tracking scale. Every value

@@ -389,6 +389,8 @@ pub fn run() {
             query_flow::delete_assistant_conversation,
             query_flow::send_assistant_message,
             query_flow::start_assistant_voice,
+            query_flow::start_assistant_dictation,
+            query_flow::finish_assistant_dictation,
             query_flow::open_query_in_assistant,
             query_flow::finish_query_capture,
             query_flow::cancel_query,
