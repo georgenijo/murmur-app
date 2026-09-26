@@ -36,7 +36,7 @@ profiles and every stored field retain their values across the Settings redesign
 | Inherit | Preserves the current global/profile behavior byte-for-byte. |
 | Conversational | Removes filler and repeated words, tidies capitalization, keeps wording, and disables automatic command formatting. |
 | Polished prose | Applies conversational cleanup, deterministic vocabulary correction, and explicitly cued prose structure. |
-| Code / technical | Preserves technical surface text, activates enabled developer vocabulary, enables deterministic vocabulary correction, and enables reviewed command formatting. |
+| Code / technical | Preserves technical surface text, activates enabled developer vocabulary, enables deterministic vocabulary correction, and automatically formats recognized commands while preserving ordinary prose punctuation. |
 | Verbatim | Bypasses cleanup, spoken commands, correction, prose formatting, and command formatting. |
 | Notes | Removes filler without forcing sentence capitalization, applies deterministic correction, and formats explicitly cued lists, paragraphs, lines, and symbols. |
 

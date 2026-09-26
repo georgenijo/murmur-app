@@ -668,7 +668,10 @@ impl StylePolicy {
                 voice_commands_enabled: Some(false),
                 correction_enabled: Some(true),
                 smart_formatting_enabled: Some(false),
-                cli_formatting_mode: Some(CliFormattingMode::Enabled),
+                // Technical prose and commands share this style. Only Terminal
+                // mode or an explicit Commands On override forces every line
+                // through the CLI grammar, which strips prose punctuation.
+                cli_formatting_mode: Some(CliFormattingMode::Auto),
                 ..inherit
             },
             WritingStyle::Verbatim => Self {
@@ -832,6 +835,109 @@ mod tests {
             assert!(!snapshot.transformations.cleanup_enabled);
             assert!(snapshot.matched_profile.is_none());
         }
+    }
+
+    #[test]
+    fn technical_mode_preserves_prose_punctuation_through_the_pipeline() {
+        let global = DictationState {
+            manual_mode_id: "builtin.technical".to_string(),
+            ..DictationState::default()
+        };
+        let snapshot = resolve_test(&global, None, SessionOverrides::default());
+        assert_eq!(
+            snapshot.transformations.cli_formatting_mode,
+            CliFormattingMode::Auto
+        );
+        for raw in [
+            "Can you inspect this? It is not loading.",
+            "The first sentence. The next sentence!",
+            "Go with your recommendation.",
+            "Explain the API. Then show me the UI.",
+            "Keep café and 日本語. Does this work?",
+            "Use slash command chat, then continue.",
+        ] {
+            let expected = raw.replace("slash command chat", "/chat");
+            assert_eq!(transform_with_snapshot(raw, &snapshot), expected, "{raw}");
+        }
+        for (raw, expected) in [
+            ("NPM run Tauri dev.", "npm run tauri dev"),
+            (
+                "git checkout dash b feature slash punctuation",
+                "git checkout -b feature/punctuation",
+            ),
+            ("command mytool dash dash help", "mytool --help"),
+        ] {
+            assert_eq!(transform_with_snapshot(raw, &snapshot), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn technical_style_is_auto_but_explicit_command_overrides_still_win() {
+        let mut global = DictationState::default();
+        let mut app = profile("com.example.Editor", None, None);
+        app.writing_style = Some(WritingStyle::CodeTechnical);
+        global.app_profiles = vec![app];
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+        let prose = "Please inspect this. Is it ready?";
+        assert_eq!(transform_with_snapshot(prose, &snapshot), prose);
+
+        global.app_profiles[0].cli_formatting_override = Some(true);
+        let forced = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(
+            forced.transformations.cli_formatting_mode,
+            CliFormattingMode::Enabled
+        );
+        assert_eq!(
+            transform_with_snapshot("mytool dash dash help", &forced),
+            "mytool --help"
+        );
+
+        global.app_profiles[0].cli_formatting_override = Some(false);
+        let disabled = resolve_test(
+            &global,
+            Some("com.example.Editor"),
+            SessionOverrides::default(),
+        );
+        assert_eq!(
+            disabled.transformations.cli_formatting_mode,
+            CliFormattingMode::Disabled
+        );
+        assert_eq!(
+            transform_with_snapshot("git status.", &disabled),
+            "git status."
+        );
+        assert_eq!(
+            transform_with_snapshot("command mytool dash dash help", &disabled),
+            "mytool --help"
+        );
+
+        let terminal = resolve_test(
+            &global,
+            None,
+            SessionOverrides {
+                mode: builtin_mode("builtin.terminal"),
+                ..SessionOverrides::default()
+            },
+        );
+        assert_eq!(
+            terminal.transformations.cli_formatting_mode,
+            CliFormattingMode::Enabled
+        );
+        assert_eq!(
+            transform_with_snapshot("mytool dash dash help", &terminal),
+            "mytool --help"
+        );
+
+        // A later settings change must not alter the accepted recording.
+        assert_eq!(transform_with_snapshot(prose, &snapshot), prose);
     }
 
     #[test]
@@ -1354,7 +1460,7 @@ mod tests {
         assert!(snapshot.transformations.correction_enabled);
         assert_eq!(
             snapshot.transformations.cli_formatting_mode,
-            CliFormattingMode::Enabled
+            CliFormattingMode::Auto
         );
         assert!(snapshot.transformations.cli_formatting_enabled);
         assert_eq!(snapshot.transcription.model_name, "small.en");
