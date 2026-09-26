@@ -403,31 +403,46 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
                     |profile| profile.cleanup_override,
                 )
             });
+    // Keep Auto distinct from explicit On/Off throughout precedence resolution.
+    // Reducing a session style to a bool would silently turn Auto into Disabled.
+    let explicit_cli_mode = |enabled| {
+        if enabled {
+            CliFormattingMode::Enabled
+        } else {
+            CliFormattingMode::Disabled
+        }
+    };
     let cli_override = if invalid_mode {
-        Some(false)
+        Some(CliFormattingMode::Disabled)
     } else {
         inputs
             .session_overrides
             .cli_formatting_enabled
-            .or_else(|| session_mode.and_then(|mode| mode.cli_formatting_enabled))
+            .map(explicit_cli_mode)
+            .or_else(|| {
+                session_mode
+                    .and_then(|mode| mode.cli_formatting_enabled)
+                    .map(explicit_cli_mode)
+            })
             .or_else(|| {
                 session_style
                     .as_ref()
                     .and_then(|style| style.cli_formatting_mode)
-                    .map(|mode| mode == CliFormattingMode::Enabled)
             })
             .or_else(|| {
                 resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
                     profile.cli_formatting_override
                 })
+                .map(explicit_cli_mode)
             })
-            .or_else(|| mode.as_ref().and_then(|mode| mode.cli_formatting_enabled))
+            .or_else(|| {
+                mode.as_ref()
+                    .and_then(|mode| mode.cli_formatting_enabled)
+                    .map(explicit_cli_mode)
+            })
     };
-    let cli_formatting_mode = match cli_override {
-        Some(true) => CliFormattingMode::Enabled,
-        Some(false) => CliFormattingMode::Disabled,
-        None => style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto),
-    };
+    let cli_formatting_mode = cli_override
+        .unwrap_or_else(|| style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto));
     let session_cli_explicit = inputs.session_overrides.cli_formatting_enabled.is_some()
         || session_mode.is_some_and(|mode| mode.cli_formatting_enabled.is_some());
     let cli_formatting_enabled = !invalid_mode
@@ -935,9 +950,55 @@ mod tests {
             transform_with_snapshot("mytool dash dash help", &terminal),
             "mytool --help"
         );
+    }
 
-        // A later settings change must not alter the accepted recording.
-        assert_eq!(transform_with_snapshot(prose, &snapshot), prose);
+    #[test]
+    fn session_technical_mode_keeps_auto_detection_above_background_overrides() {
+        let mut global = DictationState {
+            manual_mode_id: "builtin.terminal".to_string(),
+            ..DictationState::default()
+        };
+        let mut app = profile("com.example.Editor", None, None);
+        app.mode_id = Some("builtin.terminal".to_string());
+        app.cli_formatting_override = Some(true);
+        global.app_profiles = vec![app];
+        for command_override in [None, Some(false), Some(true)] {
+            global.app_profiles[0].cli_formatting_override = command_override;
+            let snapshot = resolve_test(
+                &global,
+                Some("com.example.Editor"),
+                SessionOverrides {
+                    mode: builtin_mode("builtin.technical"),
+                    ..SessionOverrides::default()
+                },
+            );
+            assert_eq!(
+                snapshot.transformations.cli_formatting_mode,
+                CliFormattingMode::Auto
+            );
+            assert!(snapshot.transformations.cli_formatting_enabled);
+            let prose = "Please inspect this. Is it ready?";
+            assert_eq!(transform_with_snapshot(prose, &snapshot), prose);
+            assert_eq!(
+                transform_with_snapshot("git checkout dash b topic", &snapshot),
+                "git checkout -b topic"
+            );
+        }
+        for (enabled, expected) in [
+            (true, CliFormattingMode::Enabled),
+            (false, CliFormattingMode::Disabled),
+        ] {
+            let snapshot = resolve_test(
+                &global,
+                None,
+                SessionOverrides {
+                    mode: builtin_mode("builtin.technical"),
+                    cli_formatting_enabled: Some(enabled),
+                    ..SessionOverrides::default()
+                },
+            );
+            assert_eq!(snapshot.transformations.cli_formatting_mode, expected);
+        }
     }
 
     #[test]

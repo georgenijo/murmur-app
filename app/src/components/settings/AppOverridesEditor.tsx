@@ -37,7 +37,7 @@ const WRITING_STYLE_SUMMARIES: Record<WritingStyleChoice, string> = {
   inherit: 'Uses your global behavior and the explicit overrides below.',
   conversational: 'Removes filler and repeated words, tidies capitalization, keeps your wording.',
   polished: 'Cleans speech and applies explicitly spoken lists, punctuation, symbols, corrections.',
-  code_technical: 'Preserves technical wording and enables deterministic command formatting.',
+  code_technical: 'Preserves prose punctuation and automatically formats recognized commands. Use Terminal mode or Command formatting On to dictate unknown tools.',
   verbatim: 'Leaves recognized text unchanged, including filler, spacing, and spoken command words.',
   notes: 'Removes filler, keeps note-like capitalization, and turns explicit list, paragraph, line cues into structure.',
 };
@@ -46,7 +46,7 @@ const WRITING_STYLE_CATEGORIES: Record<WritingStyleChoice, string> = {
   inherit: 'Cleanup, corrections, structured writing, and command formatting all inherit.',
   conversational: 'Cleanup on · Structured writing off Automatic command formatting',
   polished: 'Cleanup on · Preferred spellings Structured writing Automatic command formatting off',
-  code_technical: 'Cleanup off · Preferred spellings on Structured writing Command formatting',
+  code_technical: 'Cleanup off · Preferred spellings on · Structured writing off · Command detection automatic',
   verbatim: 'Cleanup, corrections, structured writing, and command formatting all off',
   notes: 'Cleanup on · Preferred spellings Structured writing Automatic command formatting off',
 };

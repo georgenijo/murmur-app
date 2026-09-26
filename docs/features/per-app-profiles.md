@@ -40,6 +40,10 @@ profiles and every stored field retain their values across the Settings redesign
 | Verbatim | Bypasses cleanup, spoken commands, correction, prose formatting, and command formatting. |
 | Notes | Removes filler without forcing sentence capitalization, applies deterministic correction, and formats explicitly cued lists, paragraphs, lines, and symbols. |
 
+Code / technical now uses automatic command detection. Existing profiles that
+relied on forced formatting for unknown tools can select Terminal mode, set
+Commands On, or use an explicit `command` cue. Stored profile values are unchanged.
+
 These policies use only Murmur's existing reviewed local formatting APIs. They do not call a cloud service or perform open-ended rewriting. The per-profile Clean, Prose, and Commands controls apply after the preset, so users can visibly fine-tune a category. One-session overrides remain highest precedence.
 
 Existing stored profile objects remain valid; missing, `null`, or malformed styles and overrides mean Inherit. CLI defaults to conservative automatic detection; Commands On enables command-shaped unknown tools for that profile, while Off disables implicit detection but preserves the explicit spoken `command` trigger. Verbatim bypasses the command stage entirely unless a later explicit profile/session CLI override fine-tunes it. The settings UI prevents duplicates, but persisted or programmatic configuration can contain them. To preserve legacy behavior exactly, each field uses the first matching profile that provides that field; a `null` value falls through to the next duplicate.
