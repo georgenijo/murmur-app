@@ -12,6 +12,14 @@ Murmur ships seven code-owned Modes with stable IDs: Everyday, Messages,
 Email, Notes, Technical, Terminal, and Verbatim. User Modes are stored in the
 versioned Settings document; built-ins are not duplicated into user data.
 
+Technical uses conservative automatic CLI detection: ordinary prose keeps the
+recognizer's punctuation and spacing, while recognized command-shaped lines and
+explicit `command` triggers are formatted. Terminal shares the technical
+vocabulary policy but explicitly enables forced CLI formatting. Profile Commands On/Off overrides beat the selected style; a next-recording
+Mode beats the profile, and explicit session On/Off beats that Mode. These
+policies are frozen at
+recording start; no stored settings or previous history are rewritten.
+
 Resolution order is global settings → selected Mode → matching profile
 fine-tuning → one-session overrides. A legacy profile with no `modeId` follows
 the pre-Mode resolver path unchanged. An unknown Mode ID, a spoofed built-in,
