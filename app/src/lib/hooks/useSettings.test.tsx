@@ -17,7 +17,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../dictation', () => ({
   initDictation: mocks.initDictation,
-  configure: mocks.configure,
+  configure: async (options: unknown, settlement?: { onSuccess?: () => void; onError?: () => void }) => {
+    try {
+      const result = await mocks.configure(options);
+      settlement?.onSuccess?.();
+      return result;
+    } catch (error) {
+      settlement?.onError?.();
+      throw error;
+    }
+  },
   buildConfigureOptions: vi.fn((settings) => settings),
 }));
 vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));

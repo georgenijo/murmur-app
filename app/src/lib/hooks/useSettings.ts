@@ -244,13 +244,14 @@ export function useSettings() {
       persistSettings(next);
       // A pending full configure may still carry the previous mode. Reapply
       // only the native-selected mode after that queue drains.
-      void configure({ activeModeId: modeId }).then(() => {
-        confirmedConfigureSettingsRef.current = {
-          ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
-        };
-      }).catch(() => {
-        console.error('Failed to synchronize the selected mode.');
-      });
+      void configure({ activeModeId: modeId }, {
+        onSuccess: () => {
+          confirmedConfigureSettingsRef.current = {
+            ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
+          };
+        },
+        onError: () => { console.error('Failed to synchronize the selected mode.'); },
+      }).catch(() => {});
       void emit('settings-changed');
     }).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
@@ -349,9 +350,9 @@ export function useSettings() {
 
     if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
-      configure(buildConfigureOptions(newSettings))
-        .then(() => { confirmedConfigureSettingsRef.current = newSettings; })
-        .catch(() => {
+      void configure(buildConfigureOptions(newSettings), {
+        onSuccess: () => { confirmedConfigureSettingsRef.current = newSettings; },
+        onError: () => {
           console.error('Failed to configure settings; previous values restored.');
           if (configureVersionRef.current === version) {
             const confirmed = confirmedConfigureSettingsRef.current;
@@ -393,7 +394,8 @@ export function useSettings() {
               'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
             );
           }
-        });
+        },
+      }).catch(() => {});
     }
   }, [enqueueMeetingSuggestionChange, persistSettings, scheduleProbePolicyWrite]);
 
@@ -424,12 +426,13 @@ export function useSettings() {
       confirmedConfigureSettingsRef.current = {
         ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
       };
-      configure(buildConfigureOptions(next)).then(() => {
-        confirmedConfigureSettingsRef.current = next;
-      }).catch(() => {
-        console.error('Failed to configure externally changed settings.');
-        setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
-      });
+      void configure(buildConfigureOptions(next), {
+        onSuccess: () => { confirmedConfigureSettingsRef.current = next; },
+        onError: () => {
+          console.error('Failed to configure externally changed settings.');
+          setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
+        },
+      }).catch(() => {});
     }
   }, [persistSettings]);
 
