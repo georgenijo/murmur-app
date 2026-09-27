@@ -15,6 +15,7 @@ pub struct OverlayGeometry {
     pub pill_margin_active: f64,
     pub dropdown_h: f64,
     pub wing_w: f64,
+    pub floating: bool,
 }
 
 /// The window frame `set_overlay_expanded` actually applied. Returned so the
@@ -38,10 +39,24 @@ pub enum OverlayContent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DisplaySnapshot {
-    pub(crate) notch_info: Option<(f64, f64)>,
+    pub(crate) notch_info: Option<NotchInfo>,
     monitor_position: Option<(i32, i32)>,
     monitor_size: Option<(u32, u32)>,
+    monitor_work_area: Option<(i32, i32, u32, u32)>,
     scale_factor: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NotchInfo {
+    width: f64,
+    height: f64,
+    physical_notch: bool,
+}
+
+impl NotchInfo {
+    pub(crate) fn height(self) -> f64 {
+        self.height
+    }
 }
 
 // Private geometry constants — the ONLY place these magic numbers live.
@@ -60,7 +75,11 @@ pub(crate) struct DisplaySnapshot {
 // WING = 36 fits both with a little slack. Anything wider than a wing
 // (recording timer, "Tap missed" label) renders below notch height instead.
 const WING: f64 = 36.0;
-const DROPDOWN_H: f64 = 44.0;
+const DROPDOWN_H: f64 = 64.0;
+const FLOATING_W: f64 = 280.0;
+const FLOATING_TOP_H: f64 = 36.0;
+const FLOATING_GAP: f64 = 8.0;
+const POPOVER_GAP: f64 = 6.0;
 const MEETING_SUGGESTION_MIN_W: f64 = 320.0;
 const MEETING_SUGGESTION_DROPDOWN_H: f64 = 136.0;
 const FALLBACK_NOTCH_W: f64 = 80.0;
@@ -79,29 +98,46 @@ fn clamp_vertical_offset(offset: f64) -> f64 {
     }
 }
 
-fn geometry_for(notch: Option<(f64, f64)>) -> OverlayGeometry {
-    let (notch_w, notch_h) = notch.unwrap_or((FALLBACK_NOTCH_W, FALLBACK_NOTCH_H));
-    let window_w = notch_w + 2.0 * WING;
+fn geometry_for(notch: Option<NotchInfo>) -> OverlayGeometry {
+    let notch_w = notch.map_or(FALLBACK_NOTCH_W, |info| info.width);
+    let notch_h = notch.map_or(FALLBACK_NOTCH_H, |info| info.height);
+    // When native screen measurement is unavailable, use the spacious
+    // floating surface. A synthetic 80pt center cannot fit quick controls.
+    let floating = notch.is_none_or(|info| !info.physical_notch);
+    let window_w = if floating {
+        FLOATING_W
+    } else {
+        notch_w + 2.0 * WING
+    };
     OverlayGeometry {
         window_w,
-        collapsed_h: notch_h,
-        expanded_h: notch_h + DROPDOWN_H,
+        collapsed_h: if floating { FLOATING_TOP_H } else { notch_h },
+        expanded_h: if floating {
+            FLOATING_TOP_H + DROPDOWN_H
+        } else {
+            notch_h + DROPDOWN_H
+        },
         // Idle ends at the notch's right edge; active reveals the right wing.
-        pill_idle_w: notch_w + WING,
+        pill_idle_w: if floating { FLOATING_W } else { notch_w + WING },
         pill_active_w: window_w,
         pill_margin_idle: 0.0,
         pill_margin_active: 0.0,
         dropdown_h: DROPDOWN_H,
         wing_w: WING,
+        floating,
     }
 }
 
-fn geometry_for_content(notch: Option<(f64, f64)>, content: OverlayContent) -> OverlayGeometry {
+fn geometry_for_content(notch: Option<NotchInfo>, content: OverlayContent) -> OverlayGeometry {
     let mut geometry = geometry_for(notch);
     if content == OverlayContent::MeetingSuggestion {
         let normal_width = geometry.window_w;
         geometry.window_w = normal_width.max(MEETING_SUGGESTION_MIN_W);
-        geometry.pill_margin_idle = (geometry.window_w - normal_width) / 2.0;
+        geometry.pill_margin_idle = if geometry.floating {
+            (geometry.window_w - geometry.pill_idle_w) / 2.0
+        } else {
+            (geometry.window_w - normal_width) / 2.0
+        };
         geometry.pill_active_w = geometry.window_w;
         geometry.dropdown_h = MEETING_SUGGESTION_DROPDOWN_H;
         geometry.expanded_h = geometry.collapsed_h + geometry.dropdown_h;
@@ -110,7 +146,7 @@ fn geometry_for_content(notch: Option<(f64, f64)>, content: OverlayContent) -> O
 }
 
 fn surface_for_content(
-    notch: Option<(f64, f64)>,
+    notch: Option<NotchInfo>,
     expanded: bool,
     content: OverlayContent,
 ) -> AppliedSurface {
@@ -122,16 +158,13 @@ fn surface_for_content(
     applied_surface_for(&geometry_for_content(notch, content), expanded)
 }
 
-fn resized_physical_position(
-    current_position: (i32, i32),
-    current_width: u32,
-    target_width: u32,
-) -> (i32, i32) {
-    // Symmetric integer division keeps opposite width transitions reversible
-    // even on 1x screens where an odd width difference has no exact pixel center.
-    let shift = (i64::from(current_width) - i64::from(target_width)) / 2;
+fn resized_logical_position(
+    current_position: (f64, f64),
+    current_width: f64,
+    target_width: f64,
+) -> (f64, f64) {
     (
-        (i64::from(current_position.0) + shift) as i32,
+        current_position.0 + (current_width - target_width) / 2.0,
         current_position.1,
     )
 }
@@ -162,7 +195,7 @@ fn notch_info_from_screen_measurements(
     safe_top: f64,
     auxiliary_left_w: f64,
     auxiliary_right_w: f64,
-) -> (f64, f64) {
+) -> NotchInfo {
     let visible_top_gap = (frame_top - visible_frame_top).max(0.0);
     let measured_menu_bar_h = safe_top.max(visible_top_gap);
     let menu_bar_h = if measured_menu_bar_h.is_finite()
@@ -175,29 +208,96 @@ fn notch_info_from_screen_measurements(
     };
 
     let measured_notch_w = screen_w - auxiliary_left_w - auxiliary_right_w;
-    let notch_w = if safe_top.is_finite()
+    let physical_notch = safe_top.is_finite()
         && safe_top > 0.0
         && measured_notch_w.is_finite()
         && measured_notch_w > 0.0
-        && measured_notch_w < screen_w
-    {
+        && measured_notch_w < screen_w;
+    let notch_w = if physical_notch {
         measured_notch_w
     } else {
         FALLBACK_NOTCH_W
     };
 
-    (notch_w, menu_bar_h)
+    NotchInfo {
+        width: notch_w,
+        height: menu_bar_h,
+        physical_notch,
+    }
 }
 
-fn centered_physical_position(
+fn centered_logical_position(
     monitor_position: (i32, i32),
     monitor_size: (u32, u32),
     scale_factor: f64,
     overlay_w: f64,
-) -> (i32, i32) {
-    let overlay_physical_w = overlay_w * scale_factor;
-    let x = monitor_position.0 as f64 + (monitor_size.0 as f64 - overlay_physical_w) / 2.0;
-    (x.round() as i32, monitor_position.1)
+) -> (f64, f64) {
+    let x = monitor_position.0 as f64 / scale_factor
+        + (monitor_size.0 as f64 / scale_factor - overlay_w) / 2.0;
+    (x, monitor_position.1 as f64 / scale_factor)
+}
+
+fn floating_logical_position(
+    centered_x: f64,
+    work_area: (i32, i32, u32, u32),
+    window_size: (f64, f64),
+    scale_factor: f64,
+    vertical_offset: f64,
+) -> (f64, f64) {
+    let (work_x, work_y, work_w, work_h) = work_area;
+    let left = work_x as f64 / scale_factor;
+    let top = work_y as f64 / scale_factor;
+    let rightmost_x = (left + work_w as f64 / scale_factor - window_size.0).max(left);
+    let bottommost_y = (top + work_h as f64 / scale_factor - window_size.1).max(top);
+    let desired_y = top + FLOATING_GAP + vertical_offset;
+    (
+        centered_x.clamp(left, rightmost_x),
+        desired_y.clamp(top, bottommost_y),
+    )
+}
+
+/// Reserve enough vertical space for expanded controls on the selected display,
+/// even if the pill is currently collapsed or calibration is applied later.
+pub(crate) fn overlay_popover_fit(
+    app: &tauri::AppHandle,
+    monitor: &tauri::Monitor,
+    popover_height: f64,
+) -> Option<(f64, f64)> {
+    let primary = app.primary_monitor().ok().flatten()?;
+    if primary.position() != monitor.position() || primary.size() != monitor.size() {
+        return None;
+    }
+    let state = app.try_state::<crate::State>()?;
+    let geometry = geometry_for(*state.notch_info.lock_or_recover());
+    let scale = monitor.scale_factor();
+    let screen_top = monitor.position().y as f64 / scale;
+    let work_top = monitor.work_area().position.y as f64 / scale;
+    let work_bottom =
+        (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
+    Some(overlay_popover_fit_for_geometry(
+        screen_top,
+        work_top,
+        work_bottom,
+        popover_height,
+        &geometry,
+    ))
+}
+
+fn overlay_popover_fit_for_geometry(
+    screen_top: f64,
+    work_top: f64,
+    work_bottom: f64,
+    popover_height: f64,
+    geometry: &OverlayGeometry,
+) -> (f64, f64) {
+    let overlay_top = if geometry.floating {
+        work_top + FLOATING_GAP
+    } else {
+        screen_top
+    };
+    let below_overlay = overlay_top + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
+    let top = below_overlay.clamp(work_top, work_bottom);
+    (top, popover_height.min((work_bottom - top).max(0.0)))
 }
 
 /// WindowServer applies frame changes asynchronously. Reading `outer_position`
@@ -238,20 +338,37 @@ async fn settled_outer_position(
 /// Detect notch width and configure the overlay as a notch-level window.
 /// Uses native NSScreen APIs — no subprocess needed.
 #[cfg(target_os = "macos")]
-pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
+pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
     // Returns (notch_or_synthetic_center_width, actual_menu_bar_height) in
     // logical points.
     use objc2_app_kit::NSScreen;
-    use objc2_foundation::MainThreadMarker;
+    use objc2_foundation::{MainThreadMarker, NSNumber, NSString};
 
     // SAFETY: callers are Tauri's setup callback and the screen-change observer
     // registered on NSOperationQueue::mainQueue. MainThreadMarker requires
     // exactly that main-thread confinement.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    // AppKit guarantees the first screen is the one containing the menu bar.
-    // `mainScreen()` can instead follow the key window, which would make the
-    // overlay jump to a secondary display after the main app window moves.
-    let screen = NSScreen::screens(mtm).firstObject()?;
+    // Match by CoreGraphics display ID, which also backs Tauri's primary
+    // monitor. Resolution matching is ambiguous with identical externals and
+    // `mainScreen()` can follow the key window instead of the menu-bar display.
+    let screens = NSScreen::screens(mtm);
+    let main_display_id = core_graphics::display::CGDisplay::main().id;
+    let screen_number = NSString::from_str("NSScreenNumber");
+    let matched = screens.iter().find(|screen| {
+        screen
+            .deviceDescription()
+            .objectForKey(&screen_number)
+            .and_then(|value| {
+                value
+                    .downcast_ref::<NSNumber>()
+                    .map(|number| number.unsignedIntValue())
+            })
+            == Some(main_display_id)
+    });
+    if matched.is_none() {
+        tracing::warn!(target: "system", "main display ID not found in AppKit screens; using menu-bar screen order");
+    }
+    let screen = matched.or_else(|| screens.firstObject())?;
     let insets = screen.safeAreaInsets();
     let frame = screen.frame();
     let visible_frame = screen.visibleFrame();
@@ -270,8 +387,8 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
     tracing::info!(
         target: "system",
         "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}",
-        info.0,
-        info.1,
+        info.width,
+        info.height,
         insets.top,
         (frame_top - visible_frame_top).max(0.0),
         frame.size.width
@@ -280,13 +397,13 @@ pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn detect_notch_info() -> Option<(f64, f64)> {
+pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
     None
 }
 
 pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> DisplaySnapshot {
-    let notch_info = detect_notch_info();
     let monitor = app_handle.primary_monitor().ok().flatten();
+    let notch_info = detect_notch_info();
     DisplaySnapshot {
         notch_info,
         monitor_position: monitor.as_ref().map(|monitor| {
@@ -296,6 +413,15 @@ pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> Display
         monitor_size: monitor.as_ref().map(|monitor| {
             let size = monitor.size();
             (size.width, size.height)
+        }),
+        monitor_work_area: monitor.as_ref().map(|monitor| {
+            let area = monitor.work_area();
+            (
+                area.position.x,
+                area.position.y,
+                area.size.width,
+                area.size.height,
+            )
         }),
         scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
     }
@@ -427,7 +553,7 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
 #[cfg(target_os = "macos")]
 pub(crate) fn position_overlay_default(
     overlay: &tauri::WebviewWindow,
-    notch_info: Option<(f64, f64)>,
+    notch_info: Option<NotchInfo>,
     reason: &'static str,
 ) {
     let g = geometry_for(notch_info);
@@ -440,8 +566,9 @@ pub(crate) fn position_overlay_default(
 
     // Target the primary/menu-bar display explicitly. `current_monitor()` is
     // determined by the overlay's old frame and can keep it stranded on a
-    // disconnected or secondary display. Use physical coordinates so mixed
-    // Retina/non-Retina layouts and non-zero monitor origins stay exact.
+    // disconnected or secondary display. Pass logical coordinates to Tao:
+    // physical inputs would be divided by the window's stale scale during a
+    // 1x/2x display move.
     let monitor = overlay
         .app_handle()
         .primary_monitor()
@@ -454,35 +581,51 @@ pub(crate) fn position_overlay_default(
         let monitor_x = position.x;
         let monitor_y = position.y;
         let sf = monitor.scale_factor();
-        let physical_w = (overlay_w * sf).round().max(1.0) as u32;
-        let physical_h = (overlay_h * sf).round().max(1.0) as u32;
-        let (x, y) = centered_physical_position(
+        let (centered_x, centered_y) = centered_logical_position(
             (position.x, position.y),
             (size.width, size.height),
             sf,
             overlay_w,
         );
+        let (x, y) = if g.floating {
+            let area = monitor.work_area();
+            floating_logical_position(
+                centered_x,
+                (
+                    area.position.x,
+                    area.position.y,
+                    area.size.width,
+                    area.size.height,
+                ),
+                (overlay_w, overlay_h),
+                sf,
+                0.0,
+            )
+        } else {
+            (centered_x, centered_y)
+        };
 
-        if let Err(e) = overlay.set_size(tauri::PhysicalSize::new(physical_w, physical_h)) {
-            tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", physical_w, physical_h, e);
+        if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+            tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
         }
         tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
-        if let Err(e) = overlay.set_position(tauri::PhysicalPosition::new(x, y)) {
+        if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, y)) {
             tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
         } else {
             let overlay = overlay.clone();
             let app = overlay.app_handle().clone();
+            let target = ((x * sf).round() as i32, (y * sf).round() as i32);
             tauri::async_runtime::spawn(async move {
-                match settled_outer_position(app, overlay, (x, y)).await {
+                match settled_outer_position(app, overlay, target).await {
                     Ok(actual) => tracing::info!(
                         target: "system",
                         event_code = "overlay.position_default",
                         reason,
-                        target_x_physical = x,
-                        target_y_physical = y,
+                        target_x_physical = target.0,
+                        target_y_physical = target.1,
                         actual_x_physical = actual.0,
                         actual_y_physical = actual.1,
-                        matches_target = actual == (x, y),
+                        matches_target = actual == target,
                         monitor_x_physical = monitor_x,
                         monitor_y_physical = monitor_y,
                         scale_factor = sf,
@@ -494,8 +637,8 @@ pub(crate) fn position_overlay_default(
                         target: "system",
                         event_code = "overlay.position_read_failed",
                         reason,
-                        target_x_physical = x,
-                        target_y_physical = y,
+                        target_x_physical = target.0,
+                        target_y_physical = target.1,
                         error = %error,
                         "Overlay default position applied, but its resulting frame could not be read"
                     ),
@@ -585,15 +728,15 @@ pub async fn set_overlay_expanded(
                     .map_err(|error| error.to_string())?;
                 let size = overlay.outer_size().map_err(|error| error.to_string())?;
                 let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
-                let target_width = (applied.window_w * scale).round().max(1.0) as u32;
-                let target_height = (applied.window_h * scale).round().max(1.0) as u32;
+                let logical_position = (position.x as f64 / scale, position.y as f64 / scale);
+                let current_width = size.width as f64 / scale;
                 let (x, y) =
-                    resized_physical_position((position.x, position.y), size.width, target_width);
+                    resized_logical_position(logical_position, current_width, applied.window_w);
                 overlay
-                    .set_size(tauri::PhysicalSize::new(target_width, target_height))
+                    .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
                     .map_err(|error| error.to_string())?;
                 overlay
-                    .set_position(tauri::PhysicalPosition::new(x, y))
+                    .set_position(tauri::LogicalPosition::new(x, y))
                     .map_err(|error| error.to_string())?;
                 Ok(applied)
             })();
@@ -645,24 +788,45 @@ pub async fn set_overlay_vertical_offset(
         let monitor_x = position.x;
         let monitor_y = position.y;
         let overlay_to_move = overlay.clone();
+        let floating = geometry_for(*state.notch_info.lock_or_recover()).floating;
+        let area = monitor.work_area();
+        let work_area = (
+            area.position.x,
+            area.position.y,
+            area.size.width,
+            area.size.height,
+        );
         let (tx, rx) = tokio::sync::oneshot::channel();
         app.run_on_main_thread(move || {
             let result = (|| {
-                let width = overlay_to_move
-                    .outer_size()
-                    .map_err(|error| error.to_string())?
-                    .width;
-                let (x, base_y) = centered_physical_position(
-                    monitor_position,
-                    monitor_size,
-                    scale_factor,
-                    f64::from(width) / scale_factor,
-                );
-                let y = base_y + (offset * scale_factor).round() as i32;
-                overlay_to_move
-                    .set_position(tauri::PhysicalPosition::new(x, y))
+                let current_scale = overlay_to_move
+                    .scale_factor()
                     .map_err(|error| error.to_string())?;
-                Ok::<_, String>((x, y))
+                let current_size = overlay_to_move
+                    .outer_size()
+                    .map_err(|error| error.to_string())?;
+                let width = current_size.width as f64 / current_scale;
+                let height = current_size.height as f64 / current_scale;
+                let (centered_x, top_y) =
+                    centered_logical_position(monitor_position, monitor_size, scale_factor, width);
+                let (x, y) = if floating {
+                    floating_logical_position(
+                        centered_x,
+                        work_area,
+                        (width, height),
+                        scale_factor,
+                        offset,
+                    )
+                } else {
+                    (centered_x, top_y + offset)
+                };
+                overlay_to_move
+                    .set_position(tauri::LogicalPosition::new(x, y))
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((
+                    (x * scale_factor).round() as i32,
+                    (y * scale_factor).round() as i32,
+                ))
             })();
             let _ = tx.send(result);
         })
@@ -742,13 +906,32 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn notched(width: f64, height: f64) -> NotchInfo {
+        NotchInfo {
+            width,
+            height,
+            physical_notch: true,
+        }
+    }
+
+    fn external(height: f64) -> NotchInfo {
+        NotchInfo {
+            width: FALLBACK_NOTCH_W,
+            height,
+            physical_notch: false,
+        }
+    }
+
     #[test]
     fn invariants() {
         for g in [
-            geometry_for(Some((185.0, 32.0))),
-            geometry_for(Some((FALLBACK_NOTCH_W, 30.0))),
+            geometry_for(Some(notched(185.0, 32.0))),
+            geometry_for(Some(external(30.0))),
             geometry_for(None),
-            geometry_for_content(Some((185.0, 32.0)), OverlayContent::MeetingSuggestion),
+            geometry_for_content(
+                Some(notched(185.0, 32.0)),
+                OverlayContent::MeetingSuggestion,
+            ),
             geometry_for_content(None, OverlayContent::MeetingSuggestion),
         ] {
             assert!(g.window_w >= g.pill_active_w + g.pill_margin_active);
@@ -762,7 +945,7 @@ mod tests {
 
     #[test]
     fn characterization() {
-        let g = geometry_for(Some((185.0, 32.0)));
+        let g = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
             (
                 g.window_w,
@@ -775,46 +958,48 @@ mod tests {
                 g.dropdown_h,
                 g.wing_w,
             ),
-            (257.0, 32.0, 76.0, 221.0, 257.0, 0.0, 0.0, 44.0, 36.0)
+            (257.0, 32.0, 96.0, 221.0, 257.0, 0.0, 0.0, 64.0, 36.0)
         );
     }
 
     #[test]
     fn external_display_uses_its_measured_menu_bar_height() {
         let info = notch_info_from_screen_measurements(2560.0, 1440.0, 1410.0, 0.0, 0.0, 0.0);
-        assert_eq!(info, (FALLBACK_NOTCH_W, 30.0));
+        assert_eq!(info, external(30.0));
 
         let g = geometry_for(Some(info));
-        assert_eq!(g.window_w, 152.0);
-        assert_eq!(g.pill_idle_w, 116.0);
-        assert_eq!(g.pill_active_w, 152.0);
-        assert_eq!(g.collapsed_h, 30.0);
-        assert_eq!(g.expanded_h, 74.0);
+        assert_eq!(g.window_w, 280.0);
+        assert_eq!(g.pill_idle_w, 280.0);
+        assert_eq!(g.pill_margin_idle, 0.0);
+        assert_eq!(g.pill_active_w, 280.0);
+        assert_eq!(g.collapsed_h, 36.0);
+        assert_eq!(g.expanded_h, 100.0);
+        assert!(g.floating);
     }
 
     #[test]
     fn notched_display_prefers_safe_area_and_auxiliary_widths() {
         let info = notch_info_from_screen_measurements(1512.0, 982.0, 950.0, 32.0, 663.5, 663.5);
-        assert_eq!(info, (185.0, 32.0));
+        assert_eq!(info, notched(185.0, 32.0));
     }
 
     #[test]
     fn invalid_native_measurements_fail_closed_to_geometry_defaults() {
         assert_eq!(
             notch_info_from_screen_measurements(2560.0, 1440.0, 1440.0, f64::NAN, 0.0, 0.0,),
-            (FALLBACK_NOTCH_W, FALLBACK_NOTCH_H)
+            external(FALLBACK_NOTCH_H)
         );
     }
 
     #[test]
-    fn physical_centering_includes_monitor_origin_and_scale() {
+    fn logical_centering_includes_monitor_origin_and_scale() {
         assert_eq!(
-            centered_physical_position((5120, 128), (2560, 1440), 1.0, 152.0),
-            (6324, 128)
+            centered_logical_position((5120, 128), (2560, 1440), 1.0, 152.0),
+            (6324.0, 128.0)
         );
         assert_eq!(
-            centered_physical_position((0, 0), (5120, 2880), 2.0, 152.0),
-            (2408, 0)
+            centered_logical_position((0, 0), (5120, 2880), 2.0, 152.0),
+            (1204.0, 0.0)
         );
     }
 
@@ -830,15 +1015,16 @@ mod tests {
     #[test]
     fn complete_display_snapshot_detects_every_geometry_dimension() {
         let baseline = DisplaySnapshot {
-            notch_info: Some((185.0, 32.0)),
+            notch_info: Some(notched(185.0, 32.0)),
             monitor_position: Some((0, 0)),
             monitor_size: Some((3024, 1964)),
+            monitor_work_area: Some((0, 48, 3024, 1916)),
             scale_factor: Some(2.0),
         };
         assert_eq!(baseline, baseline.clone());
         for changed in [
             DisplaySnapshot {
-                notch_info: Some((184.0, 32.0)),
+                notch_info: Some(notched(184.0, 32.0)),
                 ..baseline.clone()
             },
             DisplaySnapshot {
@@ -847,6 +1033,10 @@ mod tests {
             },
             DisplaySnapshot {
                 monitor_size: Some((2560, 1440)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_work_area: Some((0, 52, 3024, 1912)),
                 ..baseline.clone()
             },
             DisplaySnapshot {
@@ -859,24 +1049,72 @@ mod tests {
     }
 
     #[test]
+    fn floating_position_uses_selected_display_work_area_at_both_scales() {
+        assert_eq!(
+            floating_logical_position(1204.0, (0, 60, 5120, 2820), (280.0, 100.0), 2.0, 0.0),
+            (1204.0, 38.0),
+        );
+        assert_eq!(
+            floating_logical_position(-1960.0, (-2560, 30, 2560, 1410), (280.0, 100.0), 1.0, 0.0),
+            (-1960.0, 38.0),
+        );
+        assert_eq!(
+            floating_logical_position(5000.0, (0, 60, 5120, 2820), (280.0, 100.0), 2.0, -12.0),
+            (2280.0, 30.0),
+        );
+    }
+
+    #[test]
+    fn floating_popovers_clear_expanded_overlay_and_stay_in_work_area() {
+        let geometry = geometry_for(Some(external(30.0)));
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 104.0, &geometry),
+            (156.0, 104.0)
+        );
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 340.0, &geometry),
+            (156.0, 340.0)
+        );
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 30.0, 400.0, 340.0, &geometry),
+            (156.0, 244.0)
+        );
+        let notched = geometry_for(Some(notched(185.0, 32.0)));
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched),
+            (114.0, 104.0)
+        );
+    }
+
+    #[test]
     fn matches_fixture() {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct F {
             notched: OverlayGeometry,
+            external: OverlayGeometry,
             fallback: OverlayGeometry,
             meeting_suggestion_notched: OverlayGeometry,
+            meeting_suggestion_external: OverlayGeometry,
             meeting_suggestion_fallback: OverlayGeometry,
         }
         let f: F = serde_json::from_str(include_str!(
             "../../../src/components/overlay/overlay-geometry.fixture.json"
         ))
         .unwrap();
-        assert_eq!(geometry_for(Some((185.0, 32.0))), f.notched);
+        assert_eq!(geometry_for(Some(notched(185.0, 32.0))), f.notched);
+        assert_eq!(geometry_for(Some(external(30.0))), f.external);
         assert_eq!(geometry_for(None), f.fallback);
         assert_eq!(
-            geometry_for_content(Some((185.0, 32.0)), OverlayContent::MeetingSuggestion),
+            geometry_for_content(
+                Some(notched(185.0, 32.0)),
+                OverlayContent::MeetingSuggestion
+            ),
             f.meeting_suggestion_notched,
+        );
+        assert_eq!(
+            geometry_for_content(Some(external(30.0)), OverlayContent::MeetingSuggestion),
+            f.meeting_suggestion_external,
         );
         assert_eq!(
             geometry_for_content(None, OverlayContent::MeetingSuggestion),
@@ -908,9 +1146,9 @@ mod tests {
     fn suggestion_profile_preserves_notch_and_restores_controls_on_collapse() {
         for notch in [
             None,
-            Some((185.0, 32.0)),
-            Some((80.0, 30.0)),
-            Some((300.0, 37.0)),
+            Some(notched(185.0, 32.0)),
+            Some(external(30.0)),
+            Some(notched(300.0, 37.0)),
         ] {
             let controls = geometry_for(notch);
             let suggestion = geometry_for_content(notch, OverlayContent::MeetingSuggestion);
@@ -922,10 +1160,17 @@ mod tests {
             assert_eq!(suggestion.collapsed_h, controls.collapsed_h);
             assert_eq!(suggestion.expanded_h, controls.collapsed_h + 136.0);
             assert_eq!(suggestion.pill_idle_w, controls.pill_idle_w);
-            assert_eq!(
-                suggestion.pill_margin_idle + controls.window_w / 2.0,
-                suggestion.window_w / 2.0,
-            );
+            if controls.floating {
+                assert_eq!(
+                    suggestion.pill_margin_idle + suggestion.pill_idle_w / 2.0,
+                    suggestion.window_w / 2.0
+                );
+            } else {
+                assert_eq!(
+                    suggestion.pill_margin_idle + controls.window_w / 2.0,
+                    suggestion.window_w / 2.0
+                );
+            }
             assert_eq!(
                 surface_for_content(notch, true, OverlayContent::MeetingSuggestion),
                 applied_surface_for(&suggestion, true),
@@ -940,27 +1185,29 @@ mod tests {
     #[test]
     fn width_transitions_preserve_calibrated_top_and_do_not_drift() {
         for scale in [1.0, 2.0] {
-            for notch in [None, Some((185.0, 32.0))] {
+            for notch in [None, Some(notched(185.0, 32.0)), Some(external(30.0))] {
                 let controls = geometry_for(notch);
                 let suggestion = geometry_for_content(notch, OverlayContent::MeetingSuggestion);
-                let normal_width = (controls.window_w * scale) as u32;
-                let suggestion_width = (suggestion.window_w * scale) as u32;
-                for original in [(5120, -24), (-2560, 140)] {
+                let normal_width = controls.window_w;
+                let suggestion_width = suggestion.window_w;
+                for original in [
+                    (5120.0 / scale, -24.0 / scale),
+                    (-2560.0 / scale, 140.0 / scale),
+                ] {
                     let mut current = original;
                     for _ in 0..20 {
                         let expanded =
-                            resized_physical_position(current, normal_width, suggestion_width);
+                            resized_logical_position(current, normal_width, suggestion_width);
                         assert_eq!(expanded.1, original.1);
-                        let old_center_twice = i64::from(current.0) * 2 + i64::from(normal_width);
-                        let new_center_twice =
-                            i64::from(expanded.0) * 2 + i64::from(suggestion_width);
-                        assert!((old_center_twice - new_center_twice).abs() <= 1);
+                        let old_center = current.0 + normal_width / 2.0;
+                        let new_center = expanded.0 + suggestion_width / 2.0;
+                        assert_eq!(old_center, new_center);
                         assert_eq!(
-                            resized_physical_position(expanded, suggestion_width, suggestion_width),
+                            resized_logical_position(expanded, suggestion_width, suggestion_width),
                             expanded,
                         );
                         current =
-                            resized_physical_position(expanded, suggestion_width, normal_width);
+                            resized_logical_position(expanded, suggestion_width, normal_width);
                         assert_eq!(current, original);
                     }
                 }
@@ -970,7 +1217,7 @@ mod tests {
 
     #[test]
     fn applied_surface_tracks_notched_and_fallback_geometry_states() {
-        let notched = geometry_for(Some((185.0, 32.0)));
+        let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
             applied_surface_for(&notched, false),
             AppliedSurface {
@@ -982,7 +1229,7 @@ mod tests {
             applied_surface_for(&notched, true),
             AppliedSurface {
                 window_w: 257.0,
-                window_h: 76.0,
+                window_h: 96.0,
             }
         );
 
@@ -990,15 +1237,15 @@ mod tests {
         assert_eq!(
             applied_surface_for(&fallback, false),
             AppliedSurface {
-                window_w: 152.0,
-                window_h: 37.0,
+                window_w: 280.0,
+                window_h: 36.0,
             }
         );
         assert_eq!(
             applied_surface_for(&fallback, true),
             AppliedSurface {
-                window_w: 152.0,
-                window_h: 81.0,
+                window_w: 280.0,
+                window_h: 100.0,
             }
         );
     }

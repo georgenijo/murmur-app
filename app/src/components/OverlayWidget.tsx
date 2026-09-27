@@ -254,14 +254,16 @@ export function OverlayWidget() {
         onMouseLeave={calibrating ? undefined : onHoverEnd}
         style={{
           position: 'relative',
-          borderRadius: '0 0 12px 12px',
+          borderRadius: geometry.floating ? 14 : '0 0 12px 12px',
           // Left anchored: idle tucks only the empty right wing beneath the
           // notch; hover grows that edge back to the full active rectangle.
           width: pillW,
           height: topH + (expanded ? geometry.dropdownH : 0),
           marginLeft: pillMargin,
           background: 'rgba(20, 20, 20, 0.92)',
-          boxShadow: visual.showTapMissedLabel ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)' : 'none',
+          boxShadow: visual.showTapMissedLabel
+            ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)'
+            : geometry.floating ? '0 5px 18px rgba(0,0,0,0.28)' : 'none',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
           transition: OVERLAY_ISLAND_TRANSITION,

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { OverlayDropdown } from './OverlayDropdown';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
+import fixture from './overlay-geometry.fixture.json';
 
 it('shows a pending one-recording Mode and restores the bound Mode after consumption', async () => {
   const props = {
@@ -44,3 +45,42 @@ it('does not render recording shortcut guidance in the idle quick-controls row',
   expect(container.textContent).toBe('Everyday');
   await act(async () => root.unmount());
 });
+
+it.each(
+  (['notched', 'external', 'fallback'] as const).flatMap((display) =>
+    (['recording', 'starting', 'recovering'] as const).map((status) =>
+      ({ display, status, geometry: fixture[display] })),
+  ),
+)(
+  'keeps $status status separate from controls ($display)',
+  async ({ status, geometry }) => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => root.render(
+      <OverlayDropdown
+        geometry={geometry}
+        expanded
+        status={status}
+        stillConnecting={status === 'starting'}
+        showTapMissed={false}
+        disabled={false}
+        autoPaste
+        fileOutputEnabled={false}
+        mode={{ id: 'long-mode', name: 'A long Mode name', source: 'manual' }}
+        onToggleDisabled={vi.fn()}
+        onToggleAutoPaste={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    ));
+    const controls = container.querySelector('[data-testid="overlay-controls-row"]');
+    const message = controls?.nextElementSibling;
+    expect(controls).not.toBeNull();
+    expect(controls?.querySelectorAll('button')).toHaveLength(4);
+    expect(message?.parentElement).toBe(controls?.parentElement);
+    expect(controls?.contains(message ?? null)).toBe(false);
+    expect(message?.getAttribute('role')).toBe(status === 'recording' ? null : 'status');
+    expect(message?.textContent).toBe(status === 'recording'
+      ? '0:00' : status === 'starting' ? 'Still connecting' : 'Audio recovering');
+    await act(async () => root.unmount());
+  },
+);

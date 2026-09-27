@@ -202,7 +202,7 @@ fn active_screen_visible_frame(app: &tauri::AppHandle, state: &State) -> Rect {
     let menu_bar_h = state
         .notch_info
         .lock_or_recover()
-        .map(|(_, h)| h)
+        .map(|info| info.height())
         .unwrap_or(FALLBACK_MENU_BAR_H);
 
     let monitor = app
