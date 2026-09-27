@@ -191,7 +191,7 @@ pub(crate) struct State {
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
     /// primary NSScreen. Refreshed on the main thread after display changes.
-    pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
+    pub(crate) notch_info: Mutex<Option<commands::overlay::NotchInfo>>,
     /// Complete primary-display snapshot used to coalesce native screen
     /// notifications and skip geometrically identical updates.
     pub(crate) display_snapshot: Mutex<Option<commands::overlay::DisplaySnapshot>>,

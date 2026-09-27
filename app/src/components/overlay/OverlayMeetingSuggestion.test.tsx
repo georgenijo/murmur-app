@@ -14,6 +14,7 @@ const geometry: OverlayGeometry = {
   pillMarginActive: 0,
   dropdownH: 136,
   wingW: 36,
+  floating: false,
 };
 
 describe('OverlayMeetingSuggestion', () => {

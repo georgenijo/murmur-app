@@ -37,12 +37,9 @@ const FALLBACK_NOTCH_H: f64 = 37.0;
 /// menu-bar display, tucked directly under the notch (or menu bar on displays
 /// without one).
 ///
-/// The anchor is deliberately the primary monitor, not the main window's
-/// monitor. `notch_info` is measured from `NSScreen::screens().firstObject()`
-/// — always the built-in/menu-bar display — and the recording overlay lives on
-/// that same notch. Anchoring to the main window instead would put the card on
-/// an external display while offsetting it by the *built-in* display's notch
-/// height, so it would sit neither under a notch nor next to the overlay.
+/// The anchor is deliberately the primary monitor, matching the overlay's
+/// selected display. On a floating display, reserve the overlay's full expanded
+/// height even if it is currently collapsed so hover cannot cover the preview.
 fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
     let top_inset = top_inset_for(notch_h);
     let monitor = app.primary_monitor().ok().flatten();
@@ -51,8 +48,10 @@ fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
             let scale = monitor.scale_factor();
             let x = monitor.position().x as f64 / scale
                 + (monitor.size().width as f64 / scale - WIDTH) / 2.0;
-            let y = monitor.position().y as f64 / scale + top_inset;
-            (x, y, WIDTH, HEIGHT)
+            let base_y = monitor.position().y as f64 / scale + top_inset;
+            let (y, height) = super::overlay::overlay_popover_fit(app, &monitor, HEIGHT)
+                .unwrap_or((base_y, HEIGHT));
+            (x, y, WIDTH, height)
         }
         None => (300.0, top_inset, WIDTH, HEIGHT),
     }
@@ -70,7 +69,7 @@ fn top_inset_for(notch_h: Option<f64>) -> f64 {
 
 fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
     app.try_state::<crate::State>()
-        .and_then(|state| state.notch_info.lock_or_recover().map(|(_, h)| h))
+        .and_then(|state| state.notch_info.lock_or_recover().map(|info| info.height()))
 }
 
 /// Show the preview under the notch. Idempotent: repositioning a window that is
