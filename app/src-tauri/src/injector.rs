@@ -423,11 +423,12 @@ pub(crate) fn inject_text(
         // `focused_field_state` for the false-negative bias.
         let mut focus_ms = 0_u64;
         let mut clipboard_ms = 0_u64;
+        let target_is_finder = delivery_target_is_finder(delivery_target);
         let preflight = first_paste_preflight(
             || crate::frontmost::verify_delivery_target(delivery_target, true),
             || {
                 let started = Instant::now();
-                let state = focused_field_state();
+                let state = scope_non_editable_to_finder(focused_field_state(), target_is_finder);
                 focus_ms = started.elapsed().as_millis() as u64;
                 state
             },
@@ -477,7 +478,8 @@ pub(crate) fn inject_text(
                 let (retry_outcome, retry_verification) = retry_paste_if_safe(
                     || {
                         let started = Instant::now();
-                        let state = focused_field_state();
+                        let state =
+                            scope_non_editable_to_finder(focused_field_state(), target_is_finder);
                         focus_ms = focus_ms.saturating_add(started.elapsed().as_millis() as u64);
                         state
                     },
@@ -771,6 +773,37 @@ fn focused_field_state() -> FocusedFieldState {
     classify_focused_role(&role)
 }
 
+const FINDER_BUNDLE_ID: &str = "com.apple.finder";
+
+/// Whether the recording's frozen delivery target is Finder. Cmd+V is posted
+/// only after the preflight re-verifies this exact target, so the paste policy
+/// keys off it rather than a separate, racy frontmost sample.
+fn delivery_target_is_finder(target: &crate::frontmost::DeliveryTargetSnapshot) -> bool {
+    matches!(
+        target,
+        crate::frontmost::DeliveryTargetSnapshot::Complete(identity)
+            if identity.bundle_id == FINDER_BUNDLE_ID
+    )
+}
+
+/// Keep a `NonEditable` verdict only when the delivery target is Finder.
+///
+/// The denylist exists for Finder (#195), where a synthetic Cmd+V on the
+/// desktop or a file view drops a stray `.textClipping`. Other apps ignore a
+/// paste that lands on a non-text element, while web-backed editors (e.g. Meta's
+/// Muse) can report denylisted roles such as `AXScrollArea` for a working
+/// input. Outside Finder, fail open like every other uncertain case.
+fn scope_non_editable_to_finder(
+    state: FocusedFieldState,
+    target_is_finder: bool,
+) -> FocusedFieldState {
+    if state == FocusedFieldState::NonEditable && !target_is_finder {
+        FocusedFieldState::Unknown
+    } else {
+        state
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn is_native_ax_timeout(error: &str) -> bool {
     // kAXErrorCannotComplete is returned when the target app does not answer
@@ -798,7 +831,7 @@ fn frontmost_application_is_finder() -> Option<bool> {
     Some(
         application
             .bundleIdentifier()
-            .is_some_and(|bundle_id| bundle_id.to_string() == "com.apple.finder"),
+            .is_some_and(|bundle_id| bundle_id.to_string() == FINDER_BUNDLE_ID),
     )
 }
 
@@ -1382,6 +1415,53 @@ mod focus_tests {
         // System Events reports canonical AX casing; anything else is not denied.
         assert!(!is_non_editable_desktop_role("axbutton"));
         assert!(!is_non_editable_desktop_role("AXBUTTON"));
+    }
+
+    #[test]
+    fn non_editable_verdict_is_kept_only_for_a_finder_delivery_target() {
+        assert_eq!(
+            scope_non_editable_to_finder(FocusedFieldState::NonEditable, true),
+            FocusedFieldState::NonEditable
+        );
+        // Web-backed editors outside Finder (e.g. Muse reporting a denylisted
+        // role for its input) must fail open.
+        assert_eq!(
+            scope_non_editable_to_finder(FocusedFieldState::NonEditable, false),
+            FocusedFieldState::Unknown
+        );
+        for state in [FocusedFieldState::Editable, FocusedFieldState::Unknown] {
+            for target_is_finder in [true, false] {
+                assert_eq!(scope_non_editable_to_finder(state, target_is_finder), state);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_complete_finder_delivery_target_counts_as_finder() {
+        use crate::frontmost::{
+            AppTransitionSnapshot, DeliveryTargetIdentity, DeliveryTargetSnapshot,
+            ProcessInstanceToken,
+        };
+        let target = |bundle_id: &str| {
+            DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+                bundle_id: bundle_id.to_string(),
+                process_id: 42,
+                process_instance: ProcessInstanceToken::for_test(1),
+                window_token: None,
+                transitions: AppTransitionSnapshot {
+                    activation_generation: 0,
+                    space_generation: 0,
+                },
+            })
+        };
+        assert!(delivery_target_is_finder(&target("com.apple.finder")));
+        assert!(!delivery_target_is_finder(&target("com.meta.endo")));
+        assert!(!delivery_target_is_finder(
+            &DeliveryTargetSnapshot::Incomplete
+        ));
+        assert!(!delivery_target_is_finder(
+            &DeliveryTargetSnapshot::SelfTarget
+        ));
     }
 
     #[test]
