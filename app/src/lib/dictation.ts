@@ -99,8 +99,16 @@ export interface ConfigureOptions {
   correctionFuzzy?: boolean;
 }
 
-export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
-  return await invoke('configure_dictation', { options });
+// Each call replaces the full native configuration. Keep requests in UI order
+// so a slower earlier edit cannot restore an older vocabulary matcher.
+let lastConfigure: Promise<void> = Promise.resolve();
+
+export function configure(options: ConfigureOptions | (() => ConfigureOptions)): Promise<DictationResponse> {
+  const result = lastConfigure.then(() => invoke<DictationResponse>('configure_dictation', {
+    options: typeof options === 'function' ? options() : options,
+  }));
+  lastConfigure = result.then(() => {}, () => {});
+  return result;
 }
 
 /**
