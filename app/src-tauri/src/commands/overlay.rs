@@ -103,7 +103,7 @@ fn geometry_for(notch: Option<NotchInfo>) -> OverlayGeometry {
     let notch_h = notch.map_or(FALLBACK_NOTCH_H, |info| info.height);
     // When native screen measurement is unavailable, use the spacious
     // floating surface. A synthetic 80pt center cannot fit quick controls.
-    let floating = notch.map_or(true, |info| !info.physical_notch);
+    let floating = notch.is_none_or(|info| !info.physical_notch);
     let window_w = if floating {
         FLOATING_W
     } else {
