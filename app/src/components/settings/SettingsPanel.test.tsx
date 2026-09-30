@@ -564,6 +564,23 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSuggestionsEnabled: true });
   });
 
+  it('keeps meeting auto-export off by default and reveals the default folder when enabled', async () => {
+    const meetings = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Meetings',
+    ) as HTMLButtonElement;
+    await act(async () => meetings.click());
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Auto-Export Completed Meetings"]',
+    );
+    expect(toggle?.getAttribute('aria-checked')).toBe('false');
+    await act(async () => toggle?.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ meetingAutoExportEnabled: true });
+
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingAutoExportEnabled: true }));
+    expect(container.textContent).toContain('~/Meetings/inbox (default)');
+  });
+
   it('opens Voice Query as a focused AI & Models drill-down', async () => {
     const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'AI & Models') as HTMLButtonElement;
     await act(async () => button.click());

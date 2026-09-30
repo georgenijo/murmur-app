@@ -168,6 +168,25 @@ describe('useMeetings remote speaker refresh', () => {
     }));
   });
 
+  it('freezes the auto-export folder only when auto-export is enabled', async () => {
+    meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
+    meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      autoExportDir: null,
+    }));
+
+    await renderSettings({
+      ...DEFAULT_SETTINGS,
+      meetingAutoExportEnabled: true,
+      meetingAutoExportDir: '/Users/test/Meetings/inbox',
+    });
+    await act(async () => controller().start());
+    expect(meetingMocks.startMeeting).toHaveBeenLastCalledWith(expect.objectContaining({
+      autoExportDir: '/Users/test/Meetings/inbox',
+    }));
+  });
+
   it('passes only the accepted suggestion token into the normal meeting start path', async () => {
     meetingMocks.startMeeting.mockResolvedValue(detail('first', 'Speaker 1').session);
     meetingMocks.getMeeting.mockResolvedValue(detail('first', 'Speaker 1'));

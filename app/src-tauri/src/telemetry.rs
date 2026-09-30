@@ -255,6 +255,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "meeting.permission_probe_started" => Some("meeting.permission_probe_started"),
         "meeting.permission_probe_finished" => Some("meeting.permission_probe_finished"),
         "meeting.permission_probe_failed" => Some("meeting.permission_probe_failed"),
+        "meeting.auto_export_written" => Some("meeting.auto_export_written"),
+        "meeting.auto_export_skipped" => Some("meeting.auto_export_skipped"),
+        "meeting.auto_export_failed" => Some("meeting.auto_export_failed"),
         "query.pass_state" => Some("query.pass_state"),
         "query.partial_tick" => Some("query.partial_tick"),
         "updater.check_current" => Some("updater.check_current"),
@@ -1668,6 +1671,17 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
                         | "spool_failed"
                         | "store_unavailable"
                         | "transcription_failed"
+                        | "already_exported"
+                        | "not_complete"
+                        | "session_unavailable"
+                        | "invalid_session"
+                        | "marker_unavailable"
+                        | "render_failed"
+                        | "directory_unavailable"
+                        | "name_unavailable"
+                        | "write_failed"
+                        | "export_panicked"
+                        | "thread_unavailable"
                         | "none"
                 ),
                 _ => false,
@@ -3546,6 +3560,30 @@ mod tests {
         });
         sanitize_event_data("meeting", &mut spoofed, true);
         assert!(spoofed.get("permission").is_none());
+    }
+
+    #[test]
+    fn meeting_auto_export_events_keep_only_codes() {
+        let mut data = serde_json::json!({
+            "generation": 7,
+            "event_code": "meeting.auto_export_failed",
+            "error_code": "write_failed",
+            "path": "/Users/private/Meetings/inbox/SENTINEL.md",
+            "title": "SENTINEL_PRIVATE_TITLE",
+            "session_id": "private-session-id"
+        });
+        sanitize_event_data("meeting", &mut data, true);
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert_eq!(data["event_code"], "meeting.auto_export_failed");
+        assert_eq!(data["error_code"], "write_failed");
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("/Users/private"));
+        assert!(!encoded.contains("private-session"));
+        for code in ["meeting.auto_export_written", "meeting.auto_export_skipped"] {
+            let mut data = serde_json::json!({ "event_code": code });
+            sanitize_event_data("meeting", &mut data, true);
+            assert_eq!(data["event_code"], code);
+        }
     }
 
     #[test]
