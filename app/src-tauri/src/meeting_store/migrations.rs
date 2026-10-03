@@ -239,6 +239,35 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), MeetingDatabaseErro
                 )
             })?;
     }
+    if schema_version(connection)? == 5 {
+        let upgrade = (|| -> Result<(), MeetingDatabaseError> {
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+             CREATE VIRTUAL TABLE meeting_review_fts USING fts5(
+               session_id UNINDEXED, field UNINDEXED, text,
+               tokenize='unicode61 remove_diacritics 2'
+             );",
+                )
+                .map_err(MeetingDatabaseError::from)?;
+            let ids = {
+                let mut statement = connection.prepare("SELECT id FROM meeting_sessions")?;
+                let ids = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                ids
+            };
+            for id in ids {
+                super::search::index_document(connection, &id)?;
+            }
+            connection.execute_batch("PRAGMA user_version=6; COMMIT;")?;
+            Ok(())
+        })();
+        if upgrade.is_err() {
+            let _ = connection.execute_batch("ROLLBACK;");
+        }
+        upgrade?;
+    }
     validate_schema(connection)
 }
 
@@ -323,6 +352,7 @@ pub(super) fn validate_supported_schema(
             &["session_id", "speaker_id", "label"],
         ),
         ("meeting_sessions_fts", 5, &["session_id", "title"]),
+        ("meeting_review_fts", 6, &["session_id", "field", "text"]),
     ];
     for (table, introduced, columns) in tables {
         if version < *introduced {
@@ -458,6 +488,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_v6_table_creation_rolls_back_and_leaves_v5_usable() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate(&connection).unwrap();
+        connection.execute_batch("PRAGMA user_version=5;").unwrap();
+        assert!(migrate(&connection).is_err());
+        assert!(connection.is_autocommit());
+        assert_eq!(schema_version(&connection).unwrap(), 5);
+        quick_check(&connection).unwrap();
+        validate_supported_schema(&connection).unwrap();
+    }
+
+    #[test]
     fn operational_sqlite_failures_never_classify_as_invalid_backup_data() {
         for code in [
             rusqlite::ffi::SQLITE_IOERR_READ,
@@ -512,7 +554,10 @@ mod tests {
 
         migrate(&connection).unwrap();
 
-        assert_eq!(schema_version(&connection).unwrap(), 5);
+        assert_eq!(
+            schema_version(&connection).unwrap(),
+            MEETING_STORE_SCHEMA_VERSION
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -588,7 +633,10 @@ mod tests {
 
         migrate(&connection).unwrap();
 
-        assert_eq!(schema_version(&connection).unwrap(), 5);
+        assert_eq!(
+            schema_version(&connection).unwrap(),
+            MEETING_STORE_SCHEMA_VERSION
+        );
         assert_eq!(
             connection
                 .query_row(

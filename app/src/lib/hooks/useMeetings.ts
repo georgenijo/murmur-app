@@ -38,7 +38,7 @@ import {
   type SystemAudioPermissionState,
 } from '../meetings';
 
-const EMPTY_PAGE: MeetingPage = { sessions: [], total: 0, offset: 0, limit: 50 };
+const EMPTY_PAGE: MeetingPage = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
 const MAX_LIVE_SEGMENTS = 200;
 
 export function useMeetings(settings: Settings) {
@@ -52,18 +52,25 @@ export function useMeetings(settings: Settings) {
   const [error, setError] = useState<string | null>(null);
   const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
+  const [appliedQuery, setAppliedQuery] = useState('');
+  const searchTicketRef = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
   const selectionTicketRef = useRef(0);
 
   const refresh = useCallback(async (query = queryRef.current) => {
     queryRef.current = query;
+    const ticket = ++searchTicketRef.current;
+    setLoading(true);
     try {
-      setPage(await listMeetings(query));
+      const next = await listMeetings(query);
+      if (ticket !== searchTicketRef.current) return;
+      setPage(next);
+      setAppliedQuery(query.trim());
       setError(null);
     } catch (cause) {
-      setError(String(cause));
+      if (ticket === searchTicketRef.current) setError(String(cause));
     } finally {
-      setLoading(false);
+      if (ticket === searchTicketRef.current) setLoading(false);
     }
   }, []);
 
@@ -126,8 +133,9 @@ export function useMeetings(settings: Settings) {
       ),
       listen<MeetingSummaryStatus>('meeting-summary-status-changed', (event) => {
         setSummaryStatus(event.payload);
-        if (event.payload.phase === 'complete' && selectedIdRef.current === event.payload.sessionId) {
-          void select(event.payload.sessionId);
+        if (event.payload.phase === 'complete') {
+          void refresh();
+          if (selectedIdRef.current === event.payload.sessionId) void select(event.payload.sessionId);
         }
       }),
       listen<{ sessionId: string }>('meeting-speakers-updated', (event) => {
@@ -283,12 +291,13 @@ export function useMeetings(settings: Settings) {
     try {
       const next = await saveMeetingReview(request);
       if (selectedIdRef.current === request.sessionId) setDetail(next);
+      await refresh();
       return true;
     } catch (cause) {
       setError(String(cause));
       return false;
     }
-  }, []);
+  }, [refresh]);
 
   const saveMetadata = useCallback(async (request: SaveMeetingMetadataRequest) => {
     const ticket = selectionTicketRef.current;
@@ -337,12 +346,13 @@ export function useMeetings(settings: Settings) {
         expectedReviewRevision,
       );
       if (selectedIdRef.current === sessionId) setDetail(next);
+      await refresh();
       return true;
     } catch (cause) {
       setError(String(cause));
       return false;
     }
-  }, []);
+  }, [refresh]);
 
   const renameRemoteSpeaker = useCallback(async (
     sessionId: string,
@@ -397,7 +407,7 @@ export function useMeetings(settings: Settings) {
     status,
     permission,
     access,
-    page,
+    page, appliedQuery,
     detail,
     liveSegments,
     loading,

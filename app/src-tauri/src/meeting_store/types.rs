@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const MEETING_STORE_SCHEMA_VERSION: u32 = 5;
+pub const MEETING_STORE_SCHEMA_VERSION: u32 = 6;
 pub const MAX_MEETING_PAGE_SIZE: u32 = 100;
 pub const MAX_MEETING_TITLE_CHARS: usize = 200;
 pub const MAX_MEETING_ATTENDEE_CHARS: usize = 200;
@@ -195,9 +195,35 @@ pub struct PendingMeetingSegment {
 #[serde(rename_all = "camelCase")]
 pub struct MeetingPage {
     pub sessions: Vec<MeetingSession>,
+    pub search_matches: std::collections::BTreeMap<String, Vec<MeetingSearchField>>,
     pub total: u64,
     pub offset: u64,
     pub limit: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingSearchField {
+    Summary,
+    Decision,
+    ActionItem,
+    OpenQuestion,
+    Transcript,
+    Title,
+}
+
+impl MeetingSearchField {
+    pub(super) fn from_db(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "summary" => Ok(Self::Summary),
+            "decision" => Ok(Self::Decision),
+            "action_item" => Ok(Self::ActionItem),
+            "open_question" => Ok(Self::OpenQuestion),
+            "transcript" => Ok(Self::Transcript),
+            "title" => Ok(Self::Title),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

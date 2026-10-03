@@ -198,8 +198,8 @@ mockIPC((command, payload) => {
   }
   if (command === 'list_meetings') {
     return requestedState === 'meetings-empty'
-      ? { sessions: [], total: 0, offset: 0, limit: 50 }
-      : { sessions: [meetingFixture.session], total: 1, offset: 0, limit: 50 };
+      ? { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 }
+      : { sessions: [meetingFixture.session], searchMatches: {}, total: 1, offset: 0, limit: 50 };
   }
   if (command === 'get_meeting') return meetingFixture;
   if (command === 'get_meeting_audio_capture_busy') return false;
