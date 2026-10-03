@@ -195,6 +195,8 @@ pub struct MeetingCaptureConfig {
     pub device_id: Option<String>,
     pub echo_cancellation: EchoCancellationMode,
     pub diarization: bool,
+    /// Folder for the optional post-meeting Markdown hand-off, resolved at start.
+    pub auto_export_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -369,14 +371,36 @@ impl MeetingCoordinator {
                     config_for_thread.generation,
                     result.as_ref().err(),
                 );
-                if let Ok(Some(audio)) = result {
-                    crate::meeting_diarization::schedule(
+                // Auto-export runs on its own thread once speaker labels settle,
+                // or immediately when no speaker pass was scheduled.
+                let auto_export = config_for_thread
+                    .auto_export_dir
+                    .clone()
+                    .filter(|_| result.is_ok())
+                    .map(|directory| {
+                        let repository = repository_for_thread.clone();
+                        let session_id = config_for_thread.session_id.clone();
+                        let generation = config_for_thread.generation;
+                        Box::new(move || {
+                            crate::meeting_auto_export::spawn(
+                                repository, session_id, directory, generation,
+                            )
+                        }) as crate::meeting_diarization::FinishedHook
+                    });
+                match result {
+                    Ok(Some(audio)) => crate::meeting_diarization::schedule(
                         app_for_thread.clone(),
                         repository_for_thread.clone(),
                         config_for_thread.session_id.clone(),
                         config_for_thread.generation,
                         audio,
-                    );
+                        auto_export,
+                    ),
+                    _ => {
+                        if let Some(export) = auto_export {
+                            export();
+                        }
+                    }
                 }
                 completion.finish();
             });

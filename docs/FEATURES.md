@@ -69,6 +69,9 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 - [Name from calendar](features/meeting-calendar.md) finds events overlapping a
   finished meeting after an explicit click. The user selects and confirms the
   title and attendees. Calendar access is optional; manual naming remains available.
+- Optional [auto-export](features/meeting-auto-export.md) writes each completed
+  meeting as Markdown with YAML front matter to a local folder after speaker
+  labels settle. The setting defaults off.
 - Optional [meeting suggestions](features/meeting-suggestions.md) offer Start
   Notetaker when a video-call event is in progress and a supported meeting app
   or browser is frontmost. The setting defaults off and recording requires Accept.

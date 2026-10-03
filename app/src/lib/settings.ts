@@ -363,6 +363,10 @@ export interface Settings {
   meetingEchoCancellationEnabled: boolean;
   /** Opt in to bounded Calendar checks that can suggest starting Notetaker. */
   meetingSuggestionsEnabled: boolean;
+  /** Write each completed meeting as Markdown into `meetingAutoExportDir`. */
+  meetingAutoExportEnabled: boolean;
+  /** Auto-export destination. Empty = `~/Meetings/inbox`. */
+  meetingAutoExportDir: string;
   /** Delete completed meetings older than this many days; 0 keeps them by age. */
   meetingRetentionDays: number;
   /** Maximum completed/interrupted meeting sessions retained in SQLite. */
@@ -640,6 +644,8 @@ export const DEFAULT_SETTINGS: Settings = {
   meetingDiarization: false,
   meetingEchoCancellationEnabled: false,
   meetingSuggestionsEnabled: false,
+  meetingAutoExportEnabled: false,
+  meetingAutoExportDir: '',
   meetingRetentionDays: 0,
   meetingMaxSessions: 100,
   saveTranscript: false,
@@ -1279,6 +1285,13 @@ export function loadSettings(): Settings {
       }
       if (typeof parsed.meetingSuggestionsEnabled !== 'boolean') {
         parsed.meetingSuggestionsEnabled = DEFAULT_SETTINGS.meetingSuggestionsEnabled;
+      }
+      if (typeof parsed.meetingAutoExportEnabled !== 'boolean') {
+        parsed.meetingAutoExportEnabled = DEFAULT_SETTINGS.meetingAutoExportEnabled;
+      }
+      // meetingAutoExportDir feeds a filesystem path on the Rust side.
+      if (typeof parsed.meetingAutoExportDir !== 'string') {
+        parsed.meetingAutoExportDir = DEFAULT_SETTINGS.meetingAutoExportDir;
       }
       if (
         typeof parsed.meetingRetentionDays !== 'number'

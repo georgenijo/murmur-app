@@ -264,6 +264,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites.', keywords: 'style profiles browser host site rules' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting Audio', detail: 'Choose whether source audio is retained.', keywords: 'capture wav keep delete' },
   { page: 'meetings', target: 'meeting-speakers', title: 'Remote Speaker Labels', detail: 'Install and enable local per-speaker meeting labels.', keywords: 'diarization speaker names model local system audio' },
+  { page: 'meetings', target: 'meeting-auto-export', title: 'Auto-Export Meetings', detail: 'Write each completed meeting to a folder as Markdown.', keywords: 'export markdown folder inbox watcher transcript file' },
   { page: 'meetings', target: 'meeting-retention', title: 'Meeting Retention', detail: 'Set age and session limits.', keywords: 'history days sessions sqlite' },
   { page: 'ai-transcription', target: 'transcription-model', title: 'Speech-to-Text Model', detail: 'Select and manage the local recognition model.', keywords: 'whisper parakeet core ml download speech model' },
   { page: 'ai-transcription', target: 'language', title: 'Transcription Language', detail: 'Choose a fixed language or automatic detection.', keywords: 'multilingual auto detect' },
@@ -448,6 +449,15 @@ export const SettingsPanel = memo(function SettingsPanel({
     try {
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected === 'string') onUpdateSettings({ outputDir: selected });
+    } catch {
+      // Cancellation leaves the stored folder untouched.
+    }
+  };
+
+  const chooseMeetingExportFolder = async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') onUpdateSettings({ meetingAutoExportDir: selected });
     } catch {
       // Cancellation leaves the stored folder untouched.
     }
@@ -1362,6 +1372,21 @@ export const SettingsPanel = memo(function SettingsPanel({
               enabled={settings.meetingDiarization}
               onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
             />
+            <div data-setting-target="meeting-auto-export" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
+              <SettingToggle
+                title="Auto-Export Completed Meetings"
+                description="Off by default. After each completed meeting and its speaker labels, Murmur writes a Markdown transcript with YAML front matter to this folder. Applies to meetings started after enabling."
+                checked={settings.meetingAutoExportEnabled}
+                onChange={() => onUpdateSettings({ meetingAutoExportEnabled: !settings.meetingAutoExportEnabled })}
+              />
+              <SettingsBranch open={settings.meetingAutoExportEnabled}>
+                <div className="settings-field">
+                  <p className="text-xs text-on-surface-variant">Export Folder</p>
+                  <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.meetingAutoExportDir || '~/Meetings/inbox (default)'}</p>
+                  <div className="flex gap-3"><button type="button" onClick={() => void chooseMeetingExportFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.meetingAutoExportDir && <button type="button" onClick={() => onUpdateSettings({ meetingAutoExportDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
+                </div>
+              </SettingsBranch>
+            </div>
             <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="text-sm font-medium text-on-surface">
                 Keep transcripts by age
