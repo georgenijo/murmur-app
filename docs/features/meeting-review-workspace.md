@@ -42,7 +42,21 @@ session with `ON DELETE CASCADE`. Default labels are derived when no review row
 exists. Schema v5 adds an optional title, a typed `manual`, `calendar`, or
 `generated` title source, an ordered attendee list, and a separate title FTS table.
 Existing sessions have no title or source and an empty attendee list. Search covers
-both the current title and finalized raw transcript text.
+the current title, finalized raw transcript text, and the active document. Schema
+v6 adds `meeting_review_fts` rows for summary, decisions, action items (including
+owner and due date), and open questions. A saved review document supersedes the
+generated draft; a labels-only review still searches the draft. Upgrades backfill
+the index through the existing backup and integrity-check path. Invalid stored
+documents are unavailable and are not indexed.
+
+Review saves, draft replacement, and restore update the derived index in the same
+transaction as their source. Deletion and pruning clear its rows. Searches retain
+the existing literal, tokenized AND query semantics: all query terms must match
+one title, transcript segment, summary, decision, action item, or open question.
+The paginated response includes deduplicated `searchMatches` field identifiers
+for returned sessions only (`title`, `transcript`, `summary`, `decision`,
+`action_item`, `open_question`). The meeting list shows these labels without
+adding snippets. Queries and results stay local and never enter logs or telemetry.
 
 ```rust
 pub struct MeetingWorkspace {

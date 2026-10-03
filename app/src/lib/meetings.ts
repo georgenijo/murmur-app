@@ -153,7 +153,15 @@ export const IDLE_MEETING_SUMMARY_STATUS: MeetingSummaryStatus = {
   totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null,
 };
 
+export type MeetingSearchField = 'summary' | 'decision' | 'action_item' | 'open_question' | 'transcript' | 'title';
+
+export const MEETING_SEARCH_FIELD_LABELS: Record<MeetingSearchField, string> = {
+  summary: 'Summary', decision: 'Decision', action_item: 'Action item',
+  open_question: 'Open question', transcript: 'Transcript', title: 'Title',
+};
+
 export interface MeetingPage {
+  searchMatches: Record<string, MeetingSearchField[]>;
   sessions: MeetingSession[];
   total: number;
   offset: number;

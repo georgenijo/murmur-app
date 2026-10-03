@@ -438,37 +438,48 @@ impl MeetingRepository {
         limit: u32,
     ) -> Result<MeetingPage, String> {
         let limit = limit.clamp(1, MAX_MEETING_PAGE_SIZE);
-        let connection = self.open_checked()?;
+        let mut connection = self.open_checked()?;
+        let transaction = connection.transaction().map_err(db_error)?;
         let query = query.map(str::trim).filter(|query| !query.is_empty());
+        let mut search_matches = std::collections::BTreeMap::new();
         let (total, sessions) = if let Some(query) = query {
             let fts_query = fts_query(query)?;
-            let total = connection
-                .query_row(
-                    "SELECT COUNT(*) FROM meeting_sessions s
-                     WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)
-                        OR s.id IN (SELECT session_id FROM meeting_sessions_fts WHERE meeting_sessions_fts MATCH ?)",
-                    params![fts_query, fts_query],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(db_error)?;
+            let cte = super::search::MATCHES_CTE;
+            let total = transaction.query_row(
+                &format!("{cte} SELECT COUNT(*) FROM meeting_sessions WHERE id IN (SELECT session_id FROM matches)"),
+                [&fts_query], |row| row.get::<_, i64>(0),
+            ).map_err(db_error)?;
             let sql = format!(
-                "{} WHERE s.id IN (SELECT session_id FROM meeting_segments_fts WHERE meeting_segments_fts MATCH ?)
-                        OR s.id IN (SELECT session_id FROM meeting_sessions_fts WHERE meeting_sessions_fts MATCH ?)
-                     ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ? OFFSET ?",
+                "{cte} {} WHERE s.id IN (SELECT session_id FROM matches)
+                 ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ?2 OFFSET ?3",
                 session_query()
             );
-            let mut statement = connection.prepare(&sql).map_err(db_error)?;
+            let mut statement = transaction.prepare(&sql).map_err(db_error)?;
             let sessions = statement
                 .query_map(
-                    params![fts_query, fts_query, i64::from(limit), to_i64(offset)?],
+                    params![fts_query, i64::from(limit), to_i64(offset)?],
                     row_to_session,
                 )
                 .map_err(db_error)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db_error)?;
+            // Return indicators only for this page. No snippets, drafts, or queries
+            // enter this response metadata or any diagnostics.
+            let sql = format!("{cte} SELECT field FROM matches WHERE session_id=?2 ORDER BY field");
+            let mut fields = transaction.prepare(&sql).map_err(db_error)?;
+            for session in &sessions {
+                let matched = fields
+                    .query_map(params![fts_query, session.id], |row| {
+                        MeetingSearchField::from_db(&row.get::<_, String>(0)?)
+                    })
+                    .map_err(db_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db_error)?;
+                search_matches.insert(session.id.clone(), matched);
+            }
             (to_u64(total).map_err(db_error)?, sessions)
         } else {
-            let total = connection
+            let total = transaction
                 .query_row("SELECT COUNT(*) FROM meeting_sessions", [], |row| {
                     row.get::<_, i64>(0)
                 })
@@ -477,7 +488,7 @@ impl MeetingRepository {
                 "{} ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ? OFFSET ?",
                 session_query()
             );
-            let mut statement = connection.prepare(&sql).map_err(db_error)?;
+            let mut statement = transaction.prepare(&sql).map_err(db_error)?;
             let sessions = statement
                 .query_map(params![i64::from(limit), to_i64(offset)?], row_to_session)
                 .map_err(db_error)?
@@ -485,8 +496,10 @@ impl MeetingRepository {
                 .map_err(db_error)?;
             (to_u64(total).map_err(db_error)?, sessions)
         };
+        transaction.commit().map_err(db_error)?;
         Ok(MeetingPage {
             sessions,
+            search_matches,
             total,
             offset,
             limit,
@@ -997,8 +1010,11 @@ impl MeetingRepository {
             return Err(storage_error());
         }
         let json = serde_json::to_string(artifact).map_err(|_| storage_error())?;
-        let connection = self.open_checked()?;
-        connection
+        let mut connection = self.open_checked()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        transaction
             .execute(
                 "INSERT INTO meeting_artifacts(session_id, artifact_json, created_at_ms, runtime_ms, peak_rss_mb, revision)
                  VALUES(?,?,?,?,?,1)
@@ -1006,7 +1022,8 @@ impl MeetingRepository {
                 params![session_id, json, to_i64(now_ms())?, to_i64(runtime_ms)?, to_i64(peak_rss_mb)?],
             )
             .map_err(db_error)?;
-        Ok(())
+        super::search::refresh_document_index(&transaction, session_id).map_err(db_error)?;
+        transaction.commit().map_err(db_error)
     }
 
     pub fn save_review(
@@ -1058,7 +1075,9 @@ impl MeetingRepository {
             _ => return Err("The meeting review request is incomplete.".into()),
         };
         let mut connection = self.open_checked()?;
-        let transaction = connection.transaction().map_err(db_error)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
         let current_revision = transaction
             .query_row(
                 "SELECT revision FROM meeting_reviews WHERE session_id=?",
@@ -1114,6 +1133,7 @@ impl MeetingRepository {
                 params![session_id, to_i64(next_revision)?, based_on.map(to_i64).transpose()?, labels.me, labels.them, json, to_i64(now_ms())?],
             )
             .map_err(db_error)?;
+        super::search::refresh_document_index(&transaction, &session_id).map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
         self.workspace(&session_id)
     }
@@ -1193,6 +1213,9 @@ impl MeetingRepository {
         transaction
             .execute("DELETE FROM meeting_sessions_fts WHERE session_id=?", [id])
             .map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM meeting_review_fts WHERE session_id=?", [id])
+            .map_err(db_error)?;
         let changed = transaction
             .execute("DELETE FROM meeting_sessions WHERE id=?", [id])
             .map_err(db_error)?;
@@ -1222,7 +1245,7 @@ impl MeetingRepository {
             .map_err(db_error)?;
         transaction
             .execute_batch(
-                "DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions_fts; DELETE FROM meeting_sessions;",
+                "DELETE FROM meeting_segments_fts; DELETE FROM meeting_sessions_fts; DELETE FROM meeting_review_fts; DELETE FROM meeting_sessions;",
             )
             .map_err(db_error)?;
         let audio_root = self.root.join("audio");
@@ -1694,6 +1717,7 @@ mod tests {
              CREATE INDEX meeting_segments_pending_idx ON meeting_segments(status, id);
              DROP TABLE meeting_remote_speakers;
              DROP TABLE meeting_sessions_fts;
+             DROP TABLE meeting_review_fts;
              ALTER TABLE meeting_sessions DROP COLUMN attendees_json;
              ALTER TABLE meeting_sessions DROP COLUMN title_source;
              ALTER TABLE meeting_sessions DROP COLUMN title;
@@ -1749,6 +1773,137 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".meeting-recovery-")));
+    }
+
+    #[test]
+    fn v5_upgrade_backs_up_and_indexes_active_documents() {
+        let (root, repository) = repository();
+        repository
+            .create_session("upgrade", "base.en", "en", true, false)
+            .unwrap();
+        let source = final_segment(
+            &repository,
+            "upgrade",
+            MeetingSpeaker::Me,
+            0,
+            "raw evidence",
+        );
+        repository
+            .finish_session("upgrade", MeetingSessionStatus::Complete, None)
+            .unwrap();
+        let artifact = crate::meeting_artifact::MeetingArtifactV1 {
+            schema: crate::meeting_artifact::MEETING_ARTIFACT_SCHEMA.into(),
+            summary: crate::meeting_artifact::SourcedMeetingText {
+                text: "draftonly".into(),
+                source_segment_ids: vec![source],
+            },
+            decisions: vec![],
+            action_items: vec![],
+            open_questions: vec![],
+        };
+        repository
+            .save_artifact("upgrade", &artifact, 0, 0)
+            .unwrap();
+        let workspace = repository.workspace("upgrade").unwrap();
+        repository
+            .save_review(SaveMeetingReviewRequest {
+                session_id: "upgrade".into(),
+                expected_review_revision: None,
+                base: ReviewEditBase::Generated {
+                    generated_revision: 1,
+                },
+                labels: workspace.labels,
+                document: Some(crate::meeting_review::EditableReviewDocument {
+                    summary: crate::meeting_review::EditableReviewText {
+                        key: workspace.active_document.unwrap().summary.key,
+                        text: "reviewonly".into(),
+                    },
+                    decisions: vec![],
+                    action_items: vec![],
+                    open_questions: vec![],
+                }),
+            })
+            .unwrap();
+        repository
+            .create_session("rawonly", "base.en", "en", true, false)
+            .unwrap();
+        final_segment(
+            &repository,
+            "rawonly",
+            MeetingSpeaker::Me,
+            0,
+            "transcriptonly",
+        );
+        repository
+            .create_session("generatedonly", "base.en", "en", true, false)
+            .unwrap();
+        let source = final_segment(
+            &repository,
+            "generatedonly",
+            MeetingSpeaker::Me,
+            0,
+            "evidence",
+        );
+        let mut artifact = artifact;
+        artifact.summary.source_segment_ids = vec![source];
+        repository
+            .save_artifact("generatedonly", &artifact, 0, 0)
+            .unwrap();
+        let connection = repository.open_checked().unwrap();
+        connection
+            .execute_batch("DROP TABLE meeting_review_fts; PRAGMA user_version=5;")
+            .unwrap();
+        drop(connection);
+        let (upgraded, _) = MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
+        assert_eq!(upgraded.status().unwrap().schema_version, 6);
+        assert_eq!(
+            upgraded
+                .list_sessions(Some("reviewonly"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+        assert_eq!(
+            upgraded
+                .list_sessions(Some("draftonly"), 0, 10)
+                .unwrap()
+                .sessions[0]
+                .id,
+            "generatedonly"
+        );
+        assert_eq!(
+            upgraded
+                .list_sessions(Some("transcriptonly"), 0, 10)
+                .unwrap()
+                .total,
+            1
+        );
+        let backup = fs::read_dir(root.path().join("backups"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("meetings-v5-")
+            })
+            .unwrap();
+        let before = Connection::open(backup.path()).unwrap();
+        assert_eq!(migrations::schema_version(&before).unwrap(), 5);
+        migrations::quick_check(&before).unwrap();
+        assert_eq!(
+            before
+                .query_row("SELECT COUNT(*) FROM meeting_reviews", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let check = upgraded.open_checked().unwrap();
+        migrations::quick_check(&check).unwrap();
+        check
+            .execute_batch("DROP TABLE meeting_review_fts;")
+            .unwrap();
+        assert!(migrations::validate_schema(&check).is_err());
     }
 
     #[test]
@@ -2134,7 +2289,7 @@ mod tests {
             } else {
                 let connection = Connection::open(&bad).unwrap();
                 let sql = match fault {
-                    "future" => "PRAGMA user_version=5",
+                    "future" => "PRAGMA user_version=999",
                     "missing_column" => "ALTER TABLE meeting_reviews DROP COLUMN me_label",
                     "migration_conflict" => {
                         "CREATE TABLE meeting_remote_speakers(unexpected INTEGER)"
@@ -2773,3 +2928,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod search_tests;

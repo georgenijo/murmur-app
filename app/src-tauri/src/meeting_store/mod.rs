@@ -1,5 +1,6 @@
 mod migrations;
 mod repository;
+mod search;
 mod types;
 
 pub use repository::{InitializationOutcome, MeetingRepository};
