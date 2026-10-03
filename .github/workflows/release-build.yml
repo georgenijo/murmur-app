@@ -11,7 +11,9 @@ on:
         default: false
 
 concurrency:
-  group: release-build-${{ github.ref }}
+  # Each commit gets its own group so a no-op main push cannot cancel an
+  # in-flight trusted release build for a different commit.
+  group: release-build-${{ github.sha }}
   cancel-in-progress: true
 
 permissions:
