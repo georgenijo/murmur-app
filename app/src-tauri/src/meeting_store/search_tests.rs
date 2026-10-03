@@ -339,3 +339,43 @@ fn literal_unicode_queries_and_session_deletion_clean_search_results() {
         .search_matches
         .is_empty());
 }
+
+#[test]
+fn failed_index_insert_rolls_back_generated_content_and_previous_index_rows() {
+    let (_root, repository) = repository();
+    let source = session(&repository, "atomic-index", "ordinary evidence");
+    repository
+        .save_artifact("atomic-index", &artifact(source), 1, 1)
+        .unwrap();
+    let connection = repository.open_checked().unwrap();
+    let before: (String, i64) = connection
+        .query_row(
+            "SELECT artifact_json, revision FROM meeting_artifacts WHERE session_id='atomic-index'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // Same schema columns, but a deterministic insertion failure after DELETE.
+    connection.execute_batch(
+        "DROP TABLE meeting_review_fts;
+         CREATE TABLE meeting_review_fts(session_id TEXT, field TEXT CHECK(field!='summary'), text TEXT);
+         INSERT INTO meeting_review_fts VALUES('atomic-index','decision','previous index row');",
+    ).unwrap();
+    let mut replacement = artifact(source);
+    replacement.summary.text = "replacement-only".into();
+    let error = repository
+        .save_artifact("atomic-index", &replacement, 1, 1)
+        .unwrap_err();
+    assert!(!error.contains("replacement-only"));
+    assert_eq!(connection.query_row(
+        "SELECT artifact_json, revision FROM meeting_artifacts WHERE session_id='atomic-index'", [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    ).unwrap(), before);
+    assert_eq!(
+        connection
+            .query_row("SELECT text FROM meeting_review_fts", [], |row| row
+                .get::<_, String>(0))
+            .unwrap(),
+        "previous index row"
+    );
+}

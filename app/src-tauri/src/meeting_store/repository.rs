@@ -465,17 +465,30 @@ impl MeetingRepository {
                 .map_err(db_error)?;
             // Return indicators only for this page. No snippets, drafts, or queries
             // enter this response metadata or any diagnostics.
-            let sql = format!("{cte} SELECT field FROM matches WHERE session_id=?2 ORDER BY field");
+            let sql = format!(
+                "{cte} SELECT session_id, field FROM matches WHERE session_id IN (
+                   SELECT s.id FROM meeting_sessions s WHERE s.id IN (SELECT session_id FROM matches)
+                   ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ?2 OFFSET ?3
+                 ) ORDER BY session_id, field"
+            );
             let mut fields = transaction.prepare(&sql).map_err(db_error)?;
-            for session in &sessions {
-                let matched = fields
-                    .query_map(params![fts_query, session.id], |row| {
-                        MeetingSearchField::from_db(&row.get::<_, String>(0)?)
-                    })
-                    .map_err(db_error)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(db_error)?;
-                search_matches.insert(session.id.clone(), matched);
+            let matched = fields
+                .query_map(
+                    params![fts_query, i64::from(limit), to_i64(offset)?],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            MeetingSearchField::from_db(&row.get::<_, String>(1)?)?,
+                        ))
+                    },
+                )
+                .map_err(db_error)?;
+            for item in matched {
+                let (id, field) = item.map_err(db_error)?;
+                search_matches
+                    .entry(id)
+                    .or_insert_with(Vec::new)
+                    .push(field);
             }
             (to_u64(total).map_err(db_error)?, sessions)
         } else {

@@ -12,6 +12,11 @@ pub(super) const MATCHES_CTE: &str =
 
 pub(super) fn refresh_document_index(connection: &Connection, id: &str) -> rusqlite::Result<()> {
     connection.execute("DELETE FROM meeting_review_fts WHERE session_id=?", [id])?;
+    index_document(connection, id)
+}
+
+// The migration starts with an empty table, so it needs only inserts.
+pub(super) fn index_document(connection: &Connection, id: &str) -> rusqlite::Result<()> {
     // A labels-only review has no document and must still use the generated draft.
     let reviewed = connection
         .query_row(
@@ -23,19 +28,25 @@ pub(super) fn refresh_document_index(connection: &Connection, id: &str) -> rusql
         .flatten();
     let allowed = {
         let mut statement = connection.prepare(
-            "SELECT id FROM meeting_segments WHERE session_id=? AND status='final' AND trim(text)!=''",
+            "SELECT id, text FROM meeting_segments WHERE session_id=? AND status='final'",
         )?;
         let ids = statement
-            .query_map([id], |row| row.get::<_, i64>(0))?
-            .collect::<Result<std::collections::HashSet<_>, _>>()?;
+            .query_map([id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|(_, text)| !text.trim().is_empty())
+            .map(|(id, _)| id)
+            .collect::<std::collections::HashSet<_>>();
         ids
     };
     let document = if let Some(json) = reviewed {
         serde_json::from_str::<MeetingReviewDocumentV1>(&json)
             .ok()
-            .filter(|document| {
-                let mut document = document.clone();
+            .and_then(|mut document| {
                 crate::meeting_review::validate_document(&mut document, &allowed)
+                    .then_some(document)
             })
     } else {
         let generated = connection
