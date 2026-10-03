@@ -27,6 +27,7 @@ export function useSettings() {
   const [configureError, setConfigureError] = useState<string | null>(null);
   const [probeConfigureError, setProbeConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
+  const confirmedConfigureSettingsRef = useRef(settings);
   const configureVersionRef = useRef(0);
   const desiredProbePolicyRef = useRef<SmartAutoProbePolicy>(smartAutoProbePolicy(settings));
   const desiredProbePolicyVersionRef = useRef(0);
@@ -236,8 +237,21 @@ export function useSettings() {
       if (typeof modeId !== 'string' || settingsRef.current.activeModeId === modeId) return;
       const next = { ...settingsRef.current, activeModeId: modeId };
       settingsRef.current = next;
+      confirmedConfigureSettingsRef.current = {
+        ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
+      };
       setSettings(next);
       persistSettings(next);
+      // A pending full configure may still carry the previous mode. Reapply
+      // only the native-selected mode after that queue drains.
+      void configure({ activeModeId: modeId }, {
+        onSuccess: () => {
+          confirmedConfigureSettingsRef.current = {
+            ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
+          };
+        },
+        onError: () => { console.error('Failed to synchronize the selected mode.'); },
+      }).catch(() => {});
       void emit('settings-changed');
     }).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
@@ -336,40 +350,42 @@ export function useSettings() {
 
     if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
-      configure(buildConfigureOptions(newSettings))
-        .catch(() => {
+      void configure(buildConfigureOptions(newSettings), {
+        onSuccess: () => { confirmedConfigureSettingsRef.current = newSettings; },
+        onError: () => {
           console.error('Failed to configure settings; previous values restored.');
           if (configureVersionRef.current === version) {
+            const confirmed = confirmedConfigureSettingsRef.current;
             const reverted = {
               ...settingsRef.current,
-              model: previousSettings.model,
-              language: previousSettings.language,
-              autoPaste: previousSettings.autoPaste,
-              autoPasteDelayMs: previousSettings.autoPasteDelayMs,
-              vadSensitivity: previousSettings.vadSensitivity,
-              idleTimeoutMinutes: previousSettings.idleTimeoutMinutes,
-              customVocabulary: previousSettings.customVocabulary,
-              vocabularyEntries: previousSettings.vocabularyEntries,
-              smartPunctuation: previousSettings.smartPunctuation,
-              saveTranscript: previousSettings.saveTranscript,
-              saveAudio: previousSettings.saveAudio,
-              mirrorToNotchPill: previousSettings.mirrorToNotchPill,
-              outputDir: previousSettings.outputDir,
-              appProfiles: previousSettings.appProfiles,
-              modes: previousSettings.modes,
-              activeModeId: previousSettings.activeModeId,
-              siteModeLookupEnabled: previousSettings.siteModeLookupEnabled,
-              browserSiteRules: previousSettings.browserSiteRules,
-              voiceCommandsEnabled: previousSettings.voiceCommandsEnabled,
-              voiceCommands: previousSettings.voiceCommands,
-              cleanupEnabled: previousSettings.cleanupEnabled,
-              smartFormattingEnabled: previousSettings.smartFormattingEnabled,
-              cleanupRemoveFiller: previousSettings.cleanupRemoveFiller,
-              cleanupCapitalize: previousSettings.cleanupCapitalize,
-              codeVocabEnabled: previousSettings.codeVocabEnabled,
-              codeVocabFolder: previousSettings.codeVocabFolder,
-              correctionEnabled: previousSettings.correctionEnabled,
-              correctionFuzzy: previousSettings.correctionFuzzy,
+              model: confirmed.model,
+              language: confirmed.language,
+              autoPaste: confirmed.autoPaste,
+              autoPasteDelayMs: confirmed.autoPasteDelayMs,
+              vadSensitivity: confirmed.vadSensitivity,
+              idleTimeoutMinutes: confirmed.idleTimeoutMinutes,
+              customVocabulary: confirmed.customVocabulary,
+              vocabularyEntries: confirmed.vocabularyEntries,
+              smartPunctuation: confirmed.smartPunctuation,
+              saveTranscript: confirmed.saveTranscript,
+              saveAudio: confirmed.saveAudio,
+              mirrorToNotchPill: confirmed.mirrorToNotchPill,
+              outputDir: confirmed.outputDir,
+              appProfiles: confirmed.appProfiles,
+              modes: confirmed.modes,
+              activeModeId: confirmed.activeModeId,
+              siteModeLookupEnabled: confirmed.siteModeLookupEnabled,
+              browserSiteRules: confirmed.browserSiteRules,
+              voiceCommandsEnabled: confirmed.voiceCommandsEnabled,
+              voiceCommands: confirmed.voiceCommands,
+              cleanupEnabled: confirmed.cleanupEnabled,
+              smartFormattingEnabled: confirmed.smartFormattingEnabled,
+              cleanupRemoveFiller: confirmed.cleanupRemoveFiller,
+              cleanupCapitalize: confirmed.cleanupCapitalize,
+              codeVocabEnabled: confirmed.codeVocabEnabled,
+              codeVocabFolder: confirmed.codeVocabFolder,
+              correctionEnabled: confirmed.correctionEnabled,
+              correctionFuzzy: confirmed.correctionFuzzy,
             };
             settingsRef.current = reverted;
             setSettings(reverted);
@@ -378,7 +394,8 @@ export function useSettings() {
               'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
             );
           }
-        });
+        },
+      }).catch(() => {});
     }
   }, [enqueueMeetingSuggestionChange, persistSettings, scheduleProbePolicyWrite]);
 
@@ -405,15 +422,23 @@ export function useSettings() {
       });
     }
     if (autoPasteChanged) {
-      configure(buildConfigureOptions(next)).catch(() => {
-        console.error('Failed to configure externally changed settings.');
-        setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
-      });
+      // The overlay has already applied this one field to native state.
+      confirmedConfigureSettingsRef.current = {
+        ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
+      };
+      void configure(buildConfigureOptions(next), {
+        onSuccess: () => { confirmedConfigureSettingsRef.current = next; },
+        onError: () => {
+          console.error('Failed to configure externally changed settings.');
+          setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
+        },
+      }).catch(() => {});
     }
   }, [persistSettings]);
 
   return {
     settings,
+    getCurrentSettings: () => settingsRef.current,
     updateSettings,
     applyExternalSettings,
     configureError: probeConfigureError ?? configureError,

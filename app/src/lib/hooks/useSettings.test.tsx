@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, type VocabularyEntry } from '../settings';
 
 const mocks = vi.hoisted(() => ({
+  initDictation: vi.fn(),
   configure: vi.fn(),
   emit: vi.fn<(event: string) => Promise<void>>(async () => {}),
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn<(...args: unknown[]) => Promise<() => void>>(async () => () => {}),
   invoke: vi.fn<(command?: string, args?: unknown) => Promise<unknown>>(async () => undefined),
   isEnabled: vi.fn(async () => false),
   enable: vi.fn(async () => {}),
@@ -15,7 +16,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../dictation', () => ({
-  configure: mocks.configure,
+  initDictation: mocks.initDictation,
+  configure: async (options: unknown, settlement?: { onSuccess?: () => void; onError?: () => void }) => {
+    try {
+      const result = await mocks.configure(options);
+      settlement?.onSuccess?.();
+      return result;
+    } catch (error) {
+      settlement?.onError?.();
+      throw error;
+    }
+  },
   buildConfigureOptions: vi.fn((settings) => settings),
 }));
 vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
@@ -27,6 +38,7 @@ vi.mock('@tauri-apps/plugin-autostart', () => ({
 }));
 
 import { useSettings } from './useSettings';
+import { useInitialization } from './useInitialization';
 
 type SettingsState = ReturnType<typeof useSettings>;
 
@@ -45,6 +57,7 @@ describe('useSettings configure rollback privacy', () => {
     vi.clearAllMocks();
     localStorage.clear();
     mocks.configure.mockResolvedValue(undefined);
+    mocks.initDictation.mockResolvedValue(undefined);
     mocks.invoke.mockResolvedValue(undefined);
     mocks.isTauri.mockReturnValue(false);
     container = document.createElement('div');
@@ -120,6 +133,125 @@ describe('useSettings configure rollback privacy', () => {
     expect(current.configureError).not.toContain(secret);
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain(secret);
     expect(localStorage.getItem('dictation-settings')).not.toContain(secret);
+  });
+
+  it('rolls back consecutive invalid alias edits to the last native-confirmed state', async () => {
+    await mountHarness();
+    const entry = (alias: string): VocabularyEntry => ({
+      id: 'term', written: 'Tauri', aliases: [alias], enabled: true,
+      scope: { kind: 'global' },
+    });
+    mocks.configure.mockRejectedValue(new Error('invalid alias'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => {
+      current.updateSettings({ vocabularyEntries: [entry('wrong one')], customVocabulary: 'Tauri' });
+      current.updateSettings({ vocabularyEntries: [entry('wrong two')], customVocabulary: 'Tauri' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.vocabularyEntries).toEqual([]);
+    expect(current.settings.customVocabulary).toBe('');
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').vocabularyEntries).toEqual([]);
+  });
+
+  it('preserves a native-selected mode when a later alias edit is rejected', async () => {
+    let onModeChanged: ((event: { payload: { modeId: string } }) => void) | null = null;
+    mocks.listen.mockImplementation(async (event, callback) => {
+      if (event === 'mode-manual-changed') {
+        onModeChanged = callback as (event: { payload: { modeId: string } }) => void;
+      }
+      return () => {};
+    });
+    await mountHarness();
+    await act(async () => {
+      onModeChanged?.({ payload: { modeId: 'builtin.technical' } });
+      await Promise.resolve();
+    });
+    expect(mocks.configure).toHaveBeenCalledWith({ activeModeId: 'builtin.technical' });
+
+    mocks.configure.mockRejectedValueOnce(new Error('invalid alias'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await act(async () => {
+      current.updateSettings({ vocabularyEntries: [{
+        id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
+        scope: { kind: 'global' },
+      }], customVocabulary: 'Tauri' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(current.settings.activeModeId).toBe('builtin.technical');
+    expect(current.settings.vocabularyEntries).toEqual([]);
+  });
+
+  it('keeps the native-selected mode after an older full configure completes', async () => {
+    let onModeChanged: ((event: { payload: { modeId: string } }) => void) | null = null;
+    mocks.listen.mockImplementation(async (event, callback) => {
+      if (event === 'mode-manual-changed') {
+        onModeChanged = callback as (event: { payload: { modeId: string } }) => void;
+      }
+      return () => {};
+    });
+    await mountHarness();
+    const oldConfigure = deferred<void>();
+    const modeConfigure = deferred<void>();
+    mocks.configure
+      .mockReturnValueOnce(oldConfigure.promise)
+      .mockReturnValueOnce(modeConfigure.promise)
+      .mockRejectedValueOnce(new Error('invalid alias'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    current.updateSettings({ language: 'fr' });
+    await act(async () => onModeChanged?.({ payload: { modeId: 'builtin.technical' } }));
+    await act(async () => {
+      oldConfigure.resolve(undefined);
+      await Promise.resolve();
+      modeConfigure.resolve(undefined);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      current.updateSettings({ vocabularyEntries: [{
+        id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
+        scope: { kind: 'global' },
+      }], customVocabulary: 'Tauri' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.activeModeId).toBe('builtin.technical');
+    expect(current.settings.language).toBe('fr');
+    expect(current.settings.vocabularyEntries).toEqual([]);
+  });
+
+  it('configures the latest saved alias when startup completes after an edit', async () => {
+    const init = deferred<void>();
+    mocks.initDictation.mockReturnValue(init.promise);
+    mocks.configure.mockImplementation(async (options) => (
+      typeof options === 'function' ? options() : options
+    ));
+    function Harness() {
+      current = useSettings();
+      useInitialization(current.getCurrentSettings);
+      return null;
+    }
+    await act(async () => root.render(<Harness />));
+
+    const entry: VocabularyEntry = {
+      id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
+      scope: { kind: 'global' },
+    };
+    await act(async () => current.updateSettings({ vocabularyEntries: [entry], customVocabulary: 'Tauri' }));
+    await act(async () => {
+      init.resolve(undefined);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.configure.mock.calls).toHaveLength(2);
+    expect(mocks.configure.mock.calls[0][0].vocabularyEntries).toEqual([entry]);
+    expect((mocks.configure.mock.calls[1][0] as () => { vocabularyEntries: VocabularyEntry[] })().vocabularyEntries).toEqual([entry]);
   });
 
   it('migrates a unique legacy microphone name during app settings initialization', async () => {

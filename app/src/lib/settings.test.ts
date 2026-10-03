@@ -960,6 +960,22 @@ describe('loadSettings', () => {
     expect(settings.customVocabulary).toBe('Tauri, API Gateway, München');
   });
 
+  it('reloads an explicit alias with its enabled state and scope after restart', () => {
+    const entry = {
+      id: 'term', written: 'Tauri', aliases: ['Tori', 'Tory'], enabled: true,
+      scope: { kind: 'app' as const, bundleId: 'com.example.Editor' },
+    };
+    saveSettings({
+      ...DEFAULT_SETTINGS,
+      vocabularyEntries: [entry],
+      customVocabulary: '',
+    });
+
+    const reloaded = loadSettings();
+    expect(reloaded.vocabularyEntries).toEqual([entry]);
+    expect(reloaded.customVocabulary).toBe('');
+  });
+
   it('sanitizes structured vocabulary and derives the legacy prompt mirror', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

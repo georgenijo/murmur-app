@@ -122,7 +122,7 @@ function App() {
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  const { settings, updateSettings, applyExternalSettings, configureError } = useSettings();
+  const { settings, getCurrentSettings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
   useEffect(() => {
     setQuerySetupStatus(null);
@@ -145,7 +145,7 @@ function App() {
     }
     setModelReady(true);
   }, [settings.model, updateSettings]);
-  const { initialized, error: initError } = useInitialization(settings);
+  const { initialized, error: initError } = useInitialization(getCurrentSettings);
   const [mainDestination, setMainDestination] = useState<MainDestination>('home');
   const [assistantTab, setAssistantTab] = useState<'chat' | 'history'>('chat');
   const [requestedAssistantId, setRequestedAssistantId] = useState<string | null>(null);
