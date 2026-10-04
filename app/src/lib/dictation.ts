@@ -99,8 +99,34 @@ export interface ConfigureOptions {
   correctionFuzzy?: boolean;
 }
 
-export async function configure(options: ConfigureOptions): Promise<DictationResponse> {
-  return await invoke('configure_dictation', { options });
+// Settings sends full snapshots; other callers may send partial updates. Keep
+// requests from this webview in order so an older edit cannot restore a prior
+// vocabulary matcher. Settle UI confirmation or rollback before the next job.
+let lastConfigure: Promise<void> = Promise.resolve();
+
+export interface ConfigureSettlement {
+  onSuccess?: () => void;
+  onError?: () => void;
+}
+
+export function configure(
+  options: ConfigureOptions | (() => ConfigureOptions),
+  settlement?: ConfigureSettlement,
+): Promise<DictationResponse> {
+  const result = lastConfigure.then(async () => {
+    try {
+      const response = await invoke<DictationResponse>('configure_dictation', {
+        options: typeof options === 'function' ? options() : options,
+      });
+      settlement?.onSuccess?.();
+      return response;
+    } catch (error) {
+      settlement?.onError?.();
+      throw error;
+    }
+  });
+  lastConfigure = result.then(() => {}, () => {});
+  return result;
 }
 
 /**

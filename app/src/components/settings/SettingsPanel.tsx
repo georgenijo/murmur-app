@@ -1216,7 +1216,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
                 </div>
               </SettingsBranch>
-              <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply names, terms, and developer vocabulary after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+              <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
                 <SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
               </SettingsBranch>
