@@ -121,7 +121,9 @@ decision**, **New action item**, or **New open question**. Enter the claim text
 and optional action owner/due date, then **Save review**. The selected sources
 are fixed for that new claim; choosing other rows creates a separate claim.
 Selection and unsaved claims are transient. **Cancel** discards them, and a failed
-save keeps them available to retry. Generate a review draft first if none exists.
+save leaves them in the current editor. Reloading after a revision conflict or a
+new generated revision resets the editor; copy any unsaved text before reloading.
+Generate a review draft first if none exists.
 
 New claims use a separate typed `newClaims` field on the same save request; they
 have no client-supplied key. Rust assigns deterministic opaque keys from the

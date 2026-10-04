@@ -499,7 +499,7 @@ pub fn append_new_claims(
     }
     validate_document(document, allowed)
         .then_some(())
-        .ok_or_else(|| "Every new claim needs non-empty text and at least one source from this meeting, with valid action details.".into())
+        .ok_or_else(|| "New claims must fit the review limits: non-empty text up to 16,384 UTF-8 bytes, 1–200 sources from this meeting, up to 200 items per section, owners up to 256 bytes, and YYYY-MM-DD due dates.".into())
 }
 
 fn speaker_label<'a>(workspace: &'a MeetingWorkspace, segment: &MeetingSegment) -> &'a str {

@@ -93,7 +93,7 @@ async function clickInAct(element: HTMLElement) {
 async function selectSegments(ids: number[]) {
   await act(async () => {
     for (const id of ids) {
-      const checkbox = document.querySelector<HTMLInputElement>(`[aria-label^="Select transcript segment ${id} at"]`);
+      const checkbox = document.querySelector<HTMLInputElement>(`[aria-label^="Use as source: transcript segment ${id} at"]`);
       if (!checkbox) throw new Error(`Missing source checkbox for segment ${id}`);
       checkbox.click();
     }
@@ -587,15 +587,15 @@ describe('MeetingReviewWorkspace', () => {
 
     await selectSegments([11, 13]);
     await clickInAct(getButton('New decision'));
-    expect(getTextArea('New decision text').value).toBe('');
-    await act(async () => setTextAreaValue(getTextArea('New decision text'), 'Keep the current plan'));
+    expect(getTextArea('New decision 1 text').value).toBe('');
+    await act(async () => setTextAreaValue(getTextArea('New decision 1 text'), 'Keep the current plan'));
 
     await selectSegments([12, 13]);
     await clickInAct(getButton('New action item'));
     await act(async () => {
-      setTextAreaValue(getTextArea('New action item text'), 'Send the follow-up');
-      const owner = document.querySelector<HTMLInputElement>('[aria-label="New action owner"]');
-      const dueDate = document.querySelector<HTMLInputElement>('[aria-label="New action due date"]');
+      setTextAreaValue(getTextArea('New action item 1 text'), 'Send the follow-up');
+      const owner = document.querySelector<HTMLInputElement>('[aria-label="New action owner 1"]');
+      const dueDate = document.querySelector<HTMLInputElement>('[aria-label="New action due date 1"]');
       if (!owner || !dueDate) throw new Error('Missing new action item fields');
       setInputValue(owner, 'Casey');
       setInputValue(dueDate, '2026-10-10');
@@ -603,8 +603,8 @@ describe('MeetingReviewWorkspace', () => {
 
     await selectSegments([11]);
     await clickInAct(getButton('New open question'));
-    await act(async () => setTextAreaValue(getTextArea('New open question text'), 'When will the rollout begin?'));
-    expect(container.querySelectorAll('[aria-label^="Select transcript segment"]:checked')).toHaveLength(0);
+    await act(async () => setTextAreaValue(getTextArea('New open question 1 text'), 'When will the rollout begin?'));
+    expect(container.querySelectorAll('[aria-label^="Use as source: transcript segment"]:checked')).toHaveLength(0);
 
     await clickInAct(getButton('Save review'));
 
@@ -662,7 +662,7 @@ describe('MeetingReviewWorkspace', () => {
     await clickInAct(getButton('New decision'));
 
     expect(onNotice).toHaveBeenCalledWith('Select at least one transcript segment before creating a claim.');
-    expect(container.querySelector('[aria-label="New decision text"]')).toBeNull();
+    expect(container.querySelector('[aria-label="New decision 1 text"]')).toBeNull();
     expect(saveReview).not.toHaveBeenCalled();
   });
 
@@ -676,7 +676,7 @@ describe('MeetingReviewWorkspace', () => {
 
     expect(saveReview).not.toHaveBeenCalled();
     expect(onNotice).toHaveBeenCalledWith('Every new claim needs text and at least one selected transcript source.');
-    expect(getTextArea('New open question text')).not.toBeNull();
+    expect(getTextArea('New open question 1 text')).not.toBeNull();
   });
 
   it('cancels claim drafts without saving and resets transient selection and claims on session or revision changes', async () => {
@@ -684,10 +684,10 @@ describe('MeetingReviewWorkspace', () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
     await selectSegments([11, 12]);
     await clickInAct(getButton('New decision'));
-    await act(async () => setTextAreaValue(getTextArea('New decision text'), 'Discard this claim'));
+    await act(async () => setTextAreaValue(getTextArea('New decision 1 text'), 'Discard this claim'));
     await clickInAct(getButton('Cancel'));
     expect(saveReview).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="New decision text"]')).toBeNull();
+    expect(container.querySelector('[aria-label="New decision 1 text"]')).toBeNull();
     expect(container.textContent).toContain('0 transcript sources selected');
 
     await selectSegments([13]);
@@ -697,7 +697,7 @@ describe('MeetingReviewWorkspace', () => {
       session: { ...detail.session, id: 'next-session' },
     };
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: nextSession, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    expect(container.querySelector('[aria-label="New action item text"]')).toBeNull();
+    expect(container.querySelector('[aria-label="New action item 1 text"]')).toBeNull();
     expect(container.textContent).toContain('0 transcript sources selected');
 
     await selectSegments([11]);
@@ -707,7 +707,7 @@ describe('MeetingReviewWorkspace', () => {
       review: { ...nextSession.review!, revision: 2 },
     };
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: nextRevision, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    expect(container.querySelector('[aria-label="New decision text"]')).toBeNull();
+    expect(container.querySelector('[aria-label="New decision 1 text"]')).toBeNull();
     expect(container.textContent).toContain('0 transcript sources selected');
     expect(saveReview).not.toHaveBeenCalled();
   });
@@ -718,10 +718,10 @@ describe('MeetingReviewWorkspace', () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
     await selectSegments([12, 13]);
     await clickInAct(getButton('New decision'));
-    await act(async () => setTextAreaValue(getTextArea('New decision text'), 'Retain this sourced decision'));
+    await act(async () => setTextAreaValue(getTextArea('New decision 1 text'), 'Retain this sourced decision'));
     await clickInAct(getButton('Save review'));
 
-    expect(getTextArea('New decision text').value).toBe('Retain this sourced decision');
+    expect(getTextArea('New decision 1 text').value).toBe('Retain this sourced decision');
     expect(saveReview).toHaveBeenCalledTimes(1);
 
     const savedDocument = {
@@ -745,18 +745,41 @@ describe('MeetingReviewWorkspace', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
   });
 
+  it('distinguishes multiple unsaved claims for assistive controls and bounds their inputs', async () => {
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    for (const source of [11, 12]) {
+      await selectSegments([source]);
+      await clickInAct(getButton('New decision'));
+    }
+    const first = getTextArea('New decision 1 text');
+    const second = getTextArea('New decision 2 text');
+    expect(first).not.toBe(second);
+    expect(first.maxLength).toBe(16_384);
+    expect(container.querySelector('[aria-label="Remove new decision 1"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Remove new decision 2"]')).not.toBeNull();
+    const checkbox = container.querySelector<HTMLInputElement>('article input[type="checkbox"]');
+    expect(checkbox?.getAttribute('aria-label')).toContain('Use as source');
+    await selectSegments([13]);
+    await clickInAct(getButton('New action item'));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="New action owner 1"]')?.maxLength).toBe(256);
+    const source = container.querySelector<HTMLButtonElement>('[aria-label="New decision 2 source 1 of 1, transcript segment 12"]');
+    if (!source) throw new Error('Missing numbered source link');
+    await clickInAct(source);
+    expect(document.activeElement).toBe(container.querySelector('#meeting-segment-12'));
+  });
+
   it('disables repeat saves while the first review save is pending', async () => {
     let resolveSave: ((saved: boolean) => void) | undefined;
     const saveReview = vi.fn(() => new Promise<boolean>((resolve) => {
       resolveSave = resolve;
     }));
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    const source = container.querySelector<HTMLInputElement>('[aria-label^="Select transcript segment 11 at"]');
+    const source = container.querySelector<HTMLInputElement>('[aria-label^="Use as source: transcript segment 11 at"]');
     const addClaim = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === 'New decision');
     if (!source || !addClaim) throw new Error('Missing source or claim creation control');
     await act(async () => source.click());
     await clickInAct(addClaim);
-    const text = container.querySelector<HTMLTextAreaElement>('[aria-label="New decision text"]');
+    const text = container.querySelector<HTMLTextAreaElement>('[aria-label="New decision 1 text"]');
     if (!text) throw new Error('Missing new decision text field');
     await act(async () => setTextAreaValue(text, 'A single save'));
     const form = container.querySelector<HTMLFormElement>('form[aria-label="Edit meeting review"]');

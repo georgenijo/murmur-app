@@ -722,3 +722,42 @@ fn new_claim_creation_rejects_a_stale_generated_base_and_keeps_draft_and_index()
     );
     assert!(fields(&repository, "zircon", "stale-new-claim").is_empty());
 }
+
+#[test]
+fn new_claim_bounds_fail_with_actionable_limits_and_without_writes() {
+    use crate::meeting_review::NewReviewClaim;
+    let (_root, repository) = repository();
+    let source = session(&repository, "claim-bounds", "Synthetic source");
+    repository
+        .save_artifact("claim-bounds", &artifact(source), 0, 0)
+        .unwrap();
+    let action = |text: String, owner: Option<String>, due_date: Option<String>| {
+        NewReviewClaim::ActionItem {
+            text,
+            owner,
+            due_date,
+            source_segment_ids: vec![source],
+        }
+    };
+    let inputs = [
+        vec![action("x".repeat(16_385), None, None)],
+        vec![action("Valid text".into(), Some("x".repeat(257)), None)],
+        vec![action("Valid text".into(), None, Some("tomorrow".into()))],
+        // The draft already has one action: 200 additions exceed the section limit.
+        vec![action("Valid text".into(), None, None); 200],
+    ];
+    for claims in inputs {
+        let mut request = new_claim_request(&repository, "claim-bounds", vec![source]);
+        request.new_claims = claims;
+        assert!(repository
+            .save_review(request)
+            .unwrap_err()
+            .contains("review limits"));
+        assert!(repository
+            .workspace("claim-bounds")
+            .unwrap()
+            .review
+            .is_none());
+        assert!(fields(&repository, "Valid", "claim-bounds").is_empty());
+    }
+}
