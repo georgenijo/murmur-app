@@ -156,6 +156,7 @@ fn labels_only_review_keeps_generated_fallback_searchable() {
         .unwrap();
     repository
         .save_review(SaveMeetingReviewRequest {
+            new_claims: Vec::new(),
             session_id: "labels-only".into(),
             expected_review_revision: None,
             base: ReviewEditBase::LabelsOnly,
@@ -186,6 +187,7 @@ fn review_overrides_draft_reindex_hides_old_generated_content_and_restore_activa
         .unwrap();
     repository
         .save_review(SaveMeetingReviewRequest {
+            new_claims: Vec::new(),
             session_id: "active-review".into(),
             expected_review_revision: None,
             base: ReviewEditBase::Generated {
@@ -249,6 +251,7 @@ fn edited_claim_removal_and_page_totals_are_stable_and_deduplicated() {
     document.summary.text = "sharedword summary also matches".into();
     repository
         .save_review(SaveMeetingReviewRequest {
+            new_claims: Vec::new(),
             session_id: "page-first".into(),
             expected_review_revision: None,
             base: ReviewEditBase::Generated {
@@ -378,4 +381,383 @@ fn failed_index_insert_rolls_back_generated_content_and_previous_index_rows() {
             .unwrap(),
         "previous index row"
     );
+}
+
+fn new_claim_request(
+    repository: &MeetingRepository,
+    id: &str,
+    sources: Vec<i64>,
+) -> SaveMeetingReviewRequest {
+    SaveMeetingReviewRequest {
+        session_id: id.into(),
+        expected_review_revision: None,
+        base: ReviewEditBase::Generated {
+            generated_revision: 1,
+        },
+        labels: MeetingSpeakerLabels::default(),
+        document: Some(edit_from_generated(repository, id, "decision nebula")),
+        new_claims: vec![crate::meeting_review::NewReviewClaim::ActionItem {
+            text: "Verify zircon prototype".into(),
+            owner: Some("Fixture owner".into()),
+            due_date: Some("2026-10-04".into()),
+            source_segment_ids: sources,
+        }],
+    }
+}
+
+fn editable_saved(
+    document: &crate::meeting_review::MeetingReviewDocumentV1,
+) -> EditableReviewDocument {
+    EditableReviewDocument {
+        summary: EditableReviewText {
+            key: document.summary.key.clone(),
+            text: document.summary.text.clone(),
+        },
+        decisions: document
+            .decisions
+            .iter()
+            .map(|i| EditableReviewText {
+                key: i.key.clone(),
+                text: i.text.clone(),
+            })
+            .collect(),
+        action_items: document
+            .action_items
+            .iter()
+            .map(|i| EditableReviewAction {
+                key: i.key.clone(),
+                text: i.text.clone(),
+                owner: i.owner.clone(),
+                due_date: i.due_date.clone(),
+            })
+            .collect(),
+        open_questions: document
+            .open_questions
+            .iter()
+            .map(|i| EditableReviewText {
+                key: i.key.clone(),
+                text: i.text.clone(),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn new_claims_persist_exact_sources_rehydrate_and_export_and_search_all_kinds() {
+    use crate::meeting_review::{render_export, MeetingReviewExportFormat, NewReviewClaim};
+    let (root, repository) = repository();
+    let first = session(&repository, "new-claims", "Synthetic first passage");
+    let relative = "audio/new-claims/me-0.wav";
+    fs::write(repository.root().join(relative), b"synthetic").unwrap();
+    let second = repository
+        .insert_pending_segment("new-claims", MeetingSpeaker::Me, 0, 1_000, 1_500, relative)
+        .unwrap();
+    repository
+        .finalize_segment(second, "Synthetic selected second passage", false)
+        .unwrap();
+    let relative = "audio/new-claims/me-1.wav";
+    fs::write(repository.root().join(relative), b"synthetic").unwrap();
+    let third = repository
+        .insert_pending_segment("new-claims", MeetingSpeaker::Me, 1, 2_000, 2_500, relative)
+        .unwrap();
+    repository
+        .finalize_segment(third, "Synthetic unselected passage", false)
+        .unwrap();
+    repository
+        .finish_session("new-claims", MeetingSessionStatus::Complete, None)
+        .unwrap();
+    repository
+        .save_artifact("new-claims", &artifact(first), 0, 0)
+        .unwrap();
+    let before = repository.workspace("new-claims").unwrap().segments;
+    let mut request = new_claim_request(&repository, "new-claims", vec![second, first]);
+    request.new_claims.push(NewReviewClaim::Decision {
+        text: "Choose emerald prototype".into(),
+        source_segment_ids: vec![second],
+    });
+    request.new_claims.push(NewReviewClaim::OpenQuestion {
+        text: "When is heliotrope ready?".into(),
+        source_segment_ids: vec![first, second],
+    });
+    let retry = request.clone();
+    let saved = repository.save_review(request).unwrap();
+    let document = saved.active_document.as_ref().unwrap();
+    let action = document.action_items.last().unwrap();
+    assert_eq!(action.source_segment_ids, vec![first, second]);
+    assert_eq!(
+        document.decisions.last().unwrap().source_segment_ids,
+        vec![second]
+    );
+    assert_eq!(
+        document.open_questions.last().unwrap().source_segment_ids,
+        vec![first, second]
+    );
+    assert!(action.key.starts_with("claim:"));
+    assert!(!action.key.contains("new-claims"));
+    assert_ne!(action.key, document.decisions.last().unwrap().key);
+    assert_eq!(
+        serde_json::to_value(&saved.segments).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert!(repository
+        .save_review(retry)
+        .unwrap_err()
+        .contains("changed"));
+    for (word, field) in [
+        ("zircon", MeetingSearchField::ActionItem),
+        ("emerald", MeetingSearchField::Decision),
+        ("heliotrope", MeetingSearchField::OpenQuestion),
+    ] {
+        assert_eq!(fields(&repository, word, "new-claims"), vec![field]);
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&render_export(&saved, MeetingReviewExportFormat::Json).unwrap())
+            .unwrap();
+    let serialized = serde_json::to_string(&json).unwrap();
+    assert!(serialized.contains("Verify zircon prototype"));
+    // Every format includes the selected references alongside the new claim.
+    for format in [
+        MeetingReviewExportFormat::Markdown,
+        MeetingReviewExportFormat::Text,
+    ] {
+        let output = render_export(&saved, format).unwrap();
+        let claim_line = output
+            .lines()
+            .find(|l| l.contains("Verify zircon prototype"))
+            .unwrap();
+        assert!(claim_line.contains(&format!("segments: {first}, {second}")));
+        assert!(!claim_line.contains(&format!(", {third}")));
+    }
+    assert_eq!(
+        json["review"]["actionItems"][1]["sourceSegmentIds"],
+        serde_json::json!([first, second])
+    );
+    let (reopened, _) = MeetingRepository::initialize(root.path().canonicalize().unwrap()).unwrap();
+    let reloaded = reopened.workspace("new-claims").unwrap();
+    assert_eq!(reloaded.active_document.as_ref().unwrap(), document);
+    let mut edit = editable_saved(document);
+    edit.action_items.last_mut().unwrap().text = "Verify updated zircon prototype".into();
+    let edited = reopened
+        .save_review(SaveMeetingReviewRequest {
+            session_id: "new-claims".into(),
+            expected_review_revision: Some(1),
+            base: ReviewEditBase::Review { review_revision: 1 },
+            labels: reloaded.labels,
+            document: Some(edit),
+            new_claims: vec![],
+        })
+        .unwrap();
+    let updated = edited.active_document.unwrap().action_items.pop().unwrap();
+    assert_eq!(updated.key, action.key);
+    assert_eq!(updated.source_segment_ids, vec![first, second]);
+    assert_eq!(
+        fields(&reopened, "updated zircon", "new-claims"),
+        vec![MeetingSearchField::ActionItem]
+    );
+}
+
+#[test]
+fn new_claims_reject_empty_foreign_cross_session_pending_and_blank_sources_atomically() {
+    let (_root, repository) = repository();
+    let source = session(&repository, "claim-validation", "Synthetic source");
+    let foreign = session(&repository, "other-meeting", "Synthetic foreign source");
+    repository
+        .save_artifact("claim-validation", &artifact(source), 0, 0)
+        .unwrap();
+    fs::write(
+        repository.root().join("audio/claim-validation/me-0.wav"),
+        b"synthetic",
+    )
+    .unwrap();
+    let pending = repository
+        .insert_pending_segment(
+            "claim-validation",
+            MeetingSpeaker::Me,
+            0,
+            1_000,
+            1_500,
+            "audio/claim-validation/me-0.wav",
+        )
+        .unwrap();
+    fs::write(
+        repository.root().join("audio/claim-validation/me-1.wav"),
+        b"synthetic",
+    )
+    .unwrap();
+    let blank = repository
+        .insert_pending_segment(
+            "claim-validation",
+            MeetingSpeaker::Me,
+            1,
+            2_000,
+            2_500,
+            "audio/claim-validation/me-1.wav",
+        )
+        .unwrap();
+    repository.finalize_segment(blank, " ", false).unwrap();
+    for ids in [
+        vec![],
+        vec![999999],
+        vec![foreign],
+        vec![source, foreign],
+        vec![pending],
+        vec![blank],
+    ] {
+        let mut request = new_claim_request(&repository, "claim-validation", ids);
+        request.labels.me = "Changed label".into();
+        assert!(repository
+            .save_review(request)
+            .unwrap_err()
+            .contains("source"));
+        let workspace = repository.workspace("claim-validation").unwrap();
+        assert!(workspace.review.is_none());
+        assert_eq!(workspace.labels, MeetingSpeakerLabels::default());
+        assert!(fields(&repository, "zircon", "claim-validation").is_empty());
+    }
+    let mut request = new_claim_request(&repository, "claim-validation", vec![source]);
+    request.base = ReviewEditBase::LabelsOnly;
+    request.document = None;
+    assert!(repository
+        .save_review(request)
+        .unwrap_err()
+        .contains("editable"));
+}
+
+#[test]
+fn new_claim_keys_cannot_be_forged_rebound_duplicated_or_moved_between_sections() {
+    let (_root, repository) = repository();
+    let source = session(&repository, "opaque-claims", "Synthetic source");
+    repository
+        .save_artifact("opaque-claims", &artifact(source), 0, 0)
+        .unwrap();
+    let saved = repository
+        .save_review(new_claim_request(
+            &repository,
+            "opaque-claims",
+            vec![source],
+        ))
+        .unwrap();
+    let document = saved.active_document.unwrap();
+    let action = document.action_items.last().unwrap();
+    let base_request = SaveMeetingReviewRequest {
+        session_id: "opaque-claims".into(),
+        expected_review_revision: Some(1),
+        base: ReviewEditBase::Review { review_revision: 1 },
+        labels: saved.labels,
+        document: Some(editable_saved(&document)),
+        new_claims: vec![],
+    };
+    for variant in 0..3 {
+        let mut request = base_request.clone();
+        let edit = request.document.as_mut().unwrap();
+        match variant {
+            0 => edit.action_items.last_mut().unwrap().key = "claim:forged".into(),
+            1 => edit
+                .action_items
+                .push(edit.action_items.last().unwrap().clone()),
+            _ => edit.decisions.push(EditableReviewText {
+                key: action.key.clone(),
+                text: "Moved claim".into(),
+            }),
+        }
+        assert!(repository
+            .save_review(request)
+            .unwrap_err()
+            .contains("changed"));
+        assert_eq!(
+            repository
+                .workspace("opaque-claims")
+                .unwrap()
+                .review
+                .unwrap()
+                .revision,
+            1
+        );
+    }
+    assert!(serde_json::from_value::<crate::meeting_review::NewReviewClaim>(serde_json::json!({
+        "kind":"action_item", "key":action.key, "text":"Forged mapping", "owner":null, "dueDate":null, "sourceSegmentIds":[source]
+    })).is_err());
+    assert!(serde_json::from_value::<EditableReviewAction>(serde_json::json!({
+        "key":action.key, "text":"Forged mapping", "owner":null, "dueDate":null, "sourceSegmentIds":[source]
+    })).is_err());
+    let mut stale = base_request.clone();
+    stale.expected_review_revision = None;
+    stale.new_claims = new_claim_request(&repository, "opaque-claims", vec![source]).new_claims;
+    assert!(repository
+        .save_review(stale)
+        .unwrap_err()
+        .contains("changed"));
+    let mut stale = new_claim_request(&repository, "opaque-claims", vec![source]);
+    let source2 = session(&repository, "different-session", "Other evidence");
+    repository
+        .save_artifact("different-session", &artifact(source2), 0, 0)
+        .unwrap();
+    stale.session_id = "different-session".into();
+    assert!(repository.save_review(stale).is_err());
+}
+
+#[test]
+fn new_claim_creation_rejects_a_stale_generated_base_and_keeps_draft_and_index() {
+    let (_root, repository) = repository();
+    let source = session(&repository, "stale-new-claim", "Synthetic source");
+    repository
+        .save_artifact("stale-new-claim", &artifact(source), 0, 0)
+        .unwrap();
+    let request = new_claim_request(&repository, "stale-new-claim", vec![source]);
+    let mut regenerated = artifact(source);
+    regenerated.summary.text = "Fresh generated ivory".into();
+    repository
+        .save_artifact("stale-new-claim", &regenerated, 0, 0)
+        .unwrap();
+    assert!(repository
+        .save_review(request)
+        .unwrap_err()
+        .contains("generated draft changed"));
+    let workspace = repository.workspace("stale-new-claim").unwrap();
+    assert!(workspace.review.is_none());
+    assert_eq!(workspace.generated.unwrap().revision, 2);
+    assert_eq!(
+        fields(&repository, "ivory", "stale-new-claim"),
+        vec![MeetingSearchField::Summary]
+    );
+    assert!(fields(&repository, "zircon", "stale-new-claim").is_empty());
+}
+
+#[test]
+fn new_claim_bounds_fail_with_actionable_limits_and_without_writes() {
+    use crate::meeting_review::NewReviewClaim;
+    let (_root, repository) = repository();
+    let source = session(&repository, "claim-bounds", "Synthetic source");
+    repository
+        .save_artifact("claim-bounds", &artifact(source), 0, 0)
+        .unwrap();
+    let action = |text: String, owner: Option<String>, due_date: Option<String>| {
+        NewReviewClaim::ActionItem {
+            text,
+            owner,
+            due_date,
+            source_segment_ids: vec![source],
+        }
+    };
+    let inputs = [
+        vec![action("x".repeat(16_385), None, None)],
+        vec![action("Valid text".into(), Some("x".repeat(257)), None)],
+        vec![action("Valid text".into(), None, Some("tomorrow".into()))],
+        // The draft already has one action: 200 additions exceed the section limit.
+        vec![action("Valid text".into(), None, None); 200],
+    ];
+    for claims in inputs {
+        let mut request = new_claim_request(&repository, "claim-bounds", vec![source]);
+        request.new_claims = claims;
+        assert!(repository
+            .save_review(request)
+            .unwrap_err()
+            .contains("review limits"));
+        assert!(repository
+            .workspace("claim-bounds")
+            .unwrap()
+            .review
+            .is_none());
+        assert!(fields(&repository, "Valid", "claim-bounds").is_empty());
+    }
 }
