@@ -17,6 +17,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_release_build_concurrency_is_commit_scoped(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        self.assertIn("group: release-build-${{ github.sha }}", workflow)
+        mutated = workflow.replace(
+            "group: release-build-${{ github.sha }}",
+            "group: release-build-${{ github.ref }}",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_release_build(mutated)
+
     def test_ci_rust_filter_includes_root_rustfmt_config(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         without_rust_path = workflow.replace("              - 'rustfmt.toml'\n", "", 1)
