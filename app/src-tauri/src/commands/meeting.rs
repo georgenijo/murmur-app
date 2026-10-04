@@ -43,6 +43,9 @@ pub struct StartMeetingRequest {
     pub diarization: bool,
     #[serde(default)]
     pub suggestion_token: Option<String>,
+    /// Present only when auto-export is enabled; empty selects the default folder.
+    #[serde(default)]
+    pub auto_export_dir: Option<String>,
 }
 
 fn default_max_sessions() -> u32 {
@@ -265,6 +268,10 @@ fn prepare_meeting_session(
         } else {
             murmur_capture_helper_protocol::EchoCancellationMode::Disabled
         },
+        auto_export_dir: request
+            .auto_export_dir
+            .as_deref()
+            .and_then(crate::meeting_auto_export::resolve_directory),
     };
     Ok((repository, session, config))
 }
@@ -291,6 +298,7 @@ mod admission_tests {
                 echo_cancellation: false,
                 diarization: false,
                 suggestion_token: None,
+                auto_export_dir: None,
             };
             let result = prepare_meeting_session(
                 &request,

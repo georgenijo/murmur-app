@@ -180,6 +180,22 @@ describe('loadSettings', () => {
     expect(loadSettings().meetingSuggestionsEnabled).toBe(false);
   });
 
+  it('defaults meeting auto-export off and rejects malformed values', () => {
+    expect(DEFAULT_SETTINGS.meetingAutoExportEnabled).toBe(false);
+    expect(DEFAULT_SETTINGS.meetingAutoExportDir).toBe('');
+    saveSettings({ ...DEFAULT_SETTINGS, meetingAutoExportEnabled: true, meetingAutoExportDir: '/tmp/inbox' });
+    expect(loadSettings().meetingAutoExportEnabled).toBe(true);
+    expect(loadSettings().meetingAutoExportDir).toBe('/tmp/inbox');
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      meetingAutoExportEnabled: 'yes',
+      meetingAutoExportDir: 42,
+    }));
+    expect(loadSettings().meetingAutoExportEnabled).toBe(false);
+    expect(loadSettings().meetingAutoExportDir).toBe('');
+  });
+
   it('keeps Smart Auto opt-in and retains only bounded approved stable IDs', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       ...DEFAULT_SETTINGS,
