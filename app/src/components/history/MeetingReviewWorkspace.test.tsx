@@ -59,6 +59,47 @@ function audioController(overrides: Partial<MeetingAudioController> = {}): Meeti
   };
 }
 
+function setTextAreaValue(element: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('Missing textarea value setter');
+  setter.call(element, value);
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function setInputValue(element: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('Missing input value setter');
+  setter.call(element, value);
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function getButton(label: string) {
+  const button = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((candidate) => candidate.textContent?.trim() === label);
+  if (!button) throw new Error(`Missing button: ${label}`);
+  return button;
+}
+
+function getTextArea(label: string) {
+  const textarea = document.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`);
+  if (!textarea) throw new Error(`Missing textarea: ${label}`);
+  return textarea;
+}
+
+async function clickInAct(element: HTMLElement) {
+  await act(async () => element.click());
+}
+
+async function selectSegments(ids: number[]) {
+  await act(async () => {
+    for (const id of ids) {
+      const checkbox = document.querySelector<HTMLInputElement>(`[aria-label^="Select transcript segment ${id} at"]`);
+      if (!checkbox) throw new Error(`Missing source checkbox for segment ${id}`);
+      checkbox.click();
+    }
+  });
+}
+
 describe('MeetingReviewWorkspace', () => {
   let root: Root;
   let container: HTMLDivElement;
@@ -537,5 +578,197 @@ describe('MeetingReviewWorkspace', () => {
 
     expect((container.querySelector('[aria-label="Remote speaker 1 label"]') as HTMLInputElement).value).toBe('Alex');
     expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('submits exact multi-selection for each new claim kind separately from the editable document', async () => {
+    const saveReview = vi.fn().mockResolvedValue(true);
+    const meetings = controller({ saveReview });
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
+
+    await selectSegments([11, 13]);
+    await clickInAct(getButton('New decision'));
+    expect(getTextArea('New decision text').value).toBe('');
+    await act(async () => setTextAreaValue(getTextArea('New decision text'), 'Keep the current plan'));
+
+    await selectSegments([12, 13]);
+    await clickInAct(getButton('New action item'));
+    await act(async () => {
+      setTextAreaValue(getTextArea('New action item text'), 'Send the follow-up');
+      const owner = document.querySelector<HTMLInputElement>('[aria-label="New action owner"]');
+      const dueDate = document.querySelector<HTMLInputElement>('[aria-label="New action due date"]');
+      if (!owner || !dueDate) throw new Error('Missing new action item fields');
+      setInputValue(owner, 'Casey');
+      setInputValue(dueDate, '2026-10-10');
+    });
+
+    await selectSegments([11]);
+    await clickInAct(getButton('New open question'));
+    await act(async () => setTextAreaValue(getTextArea('New open question text'), 'When will the rollout begin?'));
+    expect(container.querySelectorAll('[aria-label^="Select transcript segment"]:checked')).toHaveLength(0);
+
+    await clickInAct(getButton('Save review'));
+
+    expect(saveReview).toHaveBeenCalledOnce();
+    expect(saveReview).toHaveBeenCalledWith(expect.objectContaining({
+      document: {
+        summary: { key: 'summary', text: 'Reviewed' },
+        decisions: [],
+        actionItems: [],
+        openQuestions: [],
+      },
+      newClaims: [
+        { kind: 'decision', text: 'Keep the current plan', sourceSegmentIds: [11, 13] },
+        { kind: 'action_item', text: 'Send the follow-up', owner: 'Casey', dueDate: '2026-10-10', sourceSegmentIds: [12, 13] },
+        { kind: 'open_question', text: 'When will the rollout begin?', sourceSegmentIds: [11] },
+      ],
+    }));
+    expect(JSON.stringify(saveReview.mock.calls[0][0].document)).not.toContain('sourceSegmentIds');
+  });
+
+  it('keeps existing editable keys while stripping their source links from the save document', async () => {
+    const keyedDocument = {
+      schema: 'murmur.meeting-review.v1' as const,
+      summary: { key: 'summary-key', text: 'Reviewed', sourceSegmentIds: [11] },
+      decisions: [{ key: 'decision-key', text: 'Existing decision', sourceSegmentIds: [12] }],
+      actionItems: [{ key: 'action-key', text: 'Existing action', owner: 'Casey', dueDate: null, sourceSegmentIds: [13] }],
+      openQuestions: [{ key: 'question-key', text: 'Existing question', sourceSegmentIds: [11, 12] }],
+    };
+    const keyedDetail: MeetingDetail = {
+      ...detail,
+      review: { ...detail.review!, document: keyedDocument },
+      activeDocument: keyedDocument,
+    };
+    const saveReview = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: keyedDetail, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await clickInAct(getButton('Edit review'));
+    await clickInAct(getButton('Save review'));
+
+    expect(saveReview).toHaveBeenCalledWith(expect.objectContaining({
+      document: {
+        summary: { key: 'summary-key', text: 'Reviewed' },
+        decisions: [{ key: 'decision-key', text: 'Existing decision' }],
+        actionItems: [{ key: 'action-key', text: 'Existing action', owner: 'Casey', dueDate: null }],
+        openQuestions: [{ key: 'question-key', text: 'Existing question' }],
+      },
+    }));
+    expect(JSON.stringify(saveReview.mock.calls[0][0].document)).not.toContain('sourceSegmentIds');
+  });
+
+  it('shows a clear notice and creates no claim when no transcript source is selected', async () => {
+    const onNotice = vi.fn();
+    const saveReview = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+
+    await clickInAct(getButton('New decision'));
+
+    expect(onNotice).toHaveBeenCalledWith('Select at least one transcript segment before creating a claim.');
+    expect(container.querySelector('[aria-label="New decision text"]')).toBeNull();
+    expect(saveReview).not.toHaveBeenCalled();
+  });
+
+  it('blocks save when a new claim has blank text', async () => {
+    const onNotice = vi.fn();
+    const saveReview = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    await selectSegments([12]);
+    await clickInAct(getButton('New open question'));
+    await clickInAct(getButton('Save review'));
+
+    expect(saveReview).not.toHaveBeenCalled();
+    expect(onNotice).toHaveBeenCalledWith('Every new claim needs text and at least one selected transcript source.');
+    expect(getTextArea('New open question text')).not.toBeNull();
+  });
+
+  it('cancels claim drafts without saving and resets transient selection and claims on session or revision changes', async () => {
+    const saveReview = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await selectSegments([11, 12]);
+    await clickInAct(getButton('New decision'));
+    await act(async () => setTextAreaValue(getTextArea('New decision text'), 'Discard this claim'));
+    await clickInAct(getButton('Cancel'));
+    expect(saveReview).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="New decision text"]')).toBeNull();
+    expect(container.textContent).toContain('0 transcript sources selected');
+
+    await selectSegments([13]);
+    await clickInAct(getButton('New action item'));
+    const nextSession: MeetingDetail = {
+      ...detail,
+      session: { ...detail.session, id: 'next-session' },
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: nextSession, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    expect(container.querySelector('[aria-label="New action item text"]')).toBeNull();
+    expect(container.textContent).toContain('0 transcript sources selected');
+
+    await selectSegments([11]);
+    await clickInAct(getButton('New decision'));
+    const nextRevision: MeetingDetail = {
+      ...nextSession,
+      review: { ...nextSession.review!, revision: 2 },
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: nextRevision, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    expect(container.querySelector('[aria-label="New decision text"]')).toBeNull();
+    expect(container.textContent).toContain('0 transcript sources selected');
+    expect(saveReview).not.toHaveBeenCalled();
+  });
+
+  it('retains new claim draft after failed save and allows its saved source link to focus the original row', async () => {
+    const saveReview = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const meetings = controller({ saveReview });
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await selectSegments([12, 13]);
+    await clickInAct(getButton('New decision'));
+    await act(async () => setTextAreaValue(getTextArea('New decision text'), 'Retain this sourced decision'));
+    await clickInAct(getButton('Save review'));
+
+    expect(getTextArea('New decision text').value).toBe('Retain this sourced decision');
+    expect(saveReview).toHaveBeenCalledTimes(1);
+
+    const savedDocument = {
+      schema: 'murmur.meeting-review.v1' as const,
+      summary: { key: 'summary', text: 'Reviewed', sourceSegmentIds: [11] },
+      decisions: [{ key: 'saved-decision', text: 'Retain this sourced decision', sourceSegmentIds: [12, 13] }],
+      actionItems: [],
+      openQuestions: [],
+    };
+    const savedDetail: MeetingDetail = {
+      ...detail,
+      review: { revision: 2, basedOnGeneratedRevision: 2, document: savedDocument },
+      activeDocument: savedDocument,
+    };
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: savedDetail })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    const source = container.querySelector<HTMLButtonElement>('[aria-label="Decisions source 2 of 2, transcript segment 13"]');
+    if (!source) throw new Error('Missing persisted decision source link');
+    await clickInAct(source);
+
+    expect(document.activeElement).toBe(container.querySelector('#meeting-segment-13'));
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('disables repeat saves while the first review save is pending', async () => {
+    let resolveSave: ((saved: boolean) => void) | undefined;
+    const saveReview = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveSave = resolve;
+    }));
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    const source = container.querySelector<HTMLInputElement>('[aria-label^="Select transcript segment 11 at"]');
+    const addClaim = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.trim() === 'New decision');
+    if (!source || !addClaim) throw new Error('Missing source or claim creation control');
+    await act(async () => source.click());
+    await clickInAct(addClaim);
+    const text = container.querySelector<HTMLTextAreaElement>('[aria-label="New decision text"]');
+    if (!text) throw new Error('Missing new decision text field');
+    await act(async () => setTextAreaValue(text, 'A single save'));
+    const form = container.querySelector<HTMLFormElement>('form[aria-label="Edit meeting review"]');
+    const save = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (!save) throw new Error('Missing review save button');
+    await clickInAct(save);
+
+    expect(saveReview).toHaveBeenCalledOnce();
+    expect(save.matches(':disabled')).toBe(true);
+    await clickInAct(save);
+    expect(saveReview).toHaveBeenCalledOnce();
+
+    await act(async () => resolveSave?.(true));
   });
 });

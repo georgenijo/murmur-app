@@ -124,6 +124,9 @@ export interface EditableReviewDocument {
   actionItems: EditableReviewAction[];
   openQuestions: EditableReviewText[];
 }
+export type NewReviewClaim =
+  | { kind: 'decision' | 'open_question'; text: string; sourceSegmentIds: number[] }
+  | { kind: 'action_item'; text: string; owner: string | null; dueDate: string | null; sourceSegmentIds: number[] };
 export type ReviewEditBase =
   | { kind: 'labels_only' }
   | { kind: 'generated'; generatedRevision: number }
@@ -134,6 +137,7 @@ export interface SaveMeetingReviewRequest {
   base: ReviewEditBase;
   labels: MeetingSpeakerLabels;
   document: EditableReviewDocument | null;
+  newClaims?: NewReviewClaim[];
 }
 
 export type MeetingSummaryPhase = 'idle' | 'running' | 'cancelling' | 'complete' | 'failed' | 'cancelled';

@@ -118,6 +118,30 @@ pub struct EditableReviewDocument {
     pub open_questions: Vec<EditableReviewText>,
 }
 
+// Creation has no client key. Only saved keys may be used by the edit DTOs above.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NewReviewClaim {
+    Decision {
+        text: String,
+        #[serde(rename = "sourceSegmentIds")]
+        source_segment_ids: Vec<i64>,
+    },
+    ActionItem {
+        text: String,
+        owner: Option<String>,
+        #[serde(rename = "dueDate")]
+        due_date: Option<String>,
+        #[serde(rename = "sourceSegmentIds")]
+        source_segment_ids: Vec<i64>,
+    },
+    OpenQuestion {
+        text: String,
+        #[serde(rename = "sourceSegmentIds")]
+        source_segment_ids: Vec<i64>,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewEditBase {
@@ -140,6 +164,8 @@ pub struct SaveMeetingReviewRequest {
     pub base: ReviewEditBase,
     pub labels: MeetingSpeakerLabels,
     pub document: Option<EditableReviewDocument>,
+    #[serde(default)]
+    pub new_claims: Vec<NewReviewClaim>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -414,6 +440,66 @@ pub fn apply_edit(
     validate_document(&mut document, allowed)
         .then_some(document)
         .ok_or_else(|| "The reviewed meeting is invalid.".to_string())
+}
+
+pub fn append_new_claims(
+    document: &mut MeetingReviewDocumentV1,
+    claims: Vec<NewReviewClaim>,
+    session_id: &str,
+    revision: u64,
+    allowed: &HashSet<i64>,
+) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    if claims.len() > MAX_ITEMS {
+        return Err("Too many new review claims.".into());
+    }
+    for (index, claim) in claims.into_iter().enumerate() {
+        // Session + committed revision + request position identifies a creation,
+        // independent of its editable prose. Subsequent saves rehydrate this key.
+        let key = format!(
+            "claim:{:x}",
+            Sha256::digest(format!("{session_id}:{revision}:{index}"))
+        );
+        match claim {
+            NewReviewClaim::Decision {
+                text,
+                source_segment_ids,
+            } => {
+                document.decisions.push(ReviewText {
+                    key,
+                    text,
+                    source_segment_ids,
+                });
+            }
+            NewReviewClaim::OpenQuestion {
+                text,
+                source_segment_ids,
+            } => {
+                document.open_questions.push(ReviewText {
+                    key,
+                    text,
+                    source_segment_ids,
+                });
+            }
+            NewReviewClaim::ActionItem {
+                text,
+                owner,
+                due_date,
+                source_segment_ids,
+            } => {
+                document.action_items.push(ReviewAction {
+                    key,
+                    text,
+                    owner,
+                    due_date,
+                    source_segment_ids,
+                });
+            }
+        }
+    }
+    validate_document(document, allowed)
+        .then_some(())
+        .ok_or_else(|| "Every new claim needs non-empty text and at least one source from this meeting, with valid action details.".into())
 }
 
 fn speaker_label<'a>(workspace: &'a MeetingWorkspace, segment: &MeetingSegment) -> &'a str {
