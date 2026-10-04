@@ -1079,7 +1079,10 @@ impl MeetingRepository {
                 Some(review)
             }
         };
-        let document = match (base, request.document) {
+        if !request.new_claims.is_empty() && base.is_none() {
+            return Err("New claims require an editable meeting review.".into());
+        }
+        let mut document = match (base, request.document) {
             (Some(base), Some(edit)) => Some(meeting_review::apply_edit(base, edit, &allowed)?),
             (None, None) => workspace
                 .review
@@ -1122,6 +1125,17 @@ impl MeetingRepository {
             }
         }
         let next_revision = current_revision.unwrap_or(0).saturating_add(1);
+        if !request.new_claims.is_empty() {
+            meeting_review::append_new_claims(
+                document
+                    .as_mut()
+                    .ok_or("New claims require an editable meeting review.")?,
+                request.new_claims,
+                &session_id,
+                next_revision,
+                &allowed,
+            )?;
+        }
         let based_on = match &request.base {
             ReviewEditBase::Generated { generated_revision } => Some(*generated_revision),
             ReviewEditBase::Review { .. } => workspace
@@ -1202,6 +1216,7 @@ impl MeetingRepository {
                 .collect(),
         };
         self.save_review(SaveMeetingReviewRequest {
+            new_claims: Vec::new(),
             session_id: request.session_id,
             expected_review_revision: request.expected_review_revision,
             base: ReviewEditBase::Generated {
@@ -1682,6 +1697,7 @@ mod tests {
             .unwrap();
         let expected = source
             .save_review(SaveMeetingReviewRequest {
+                new_claims: Vec::new(),
                 session_id: "recovered-meeting".into(),
                 expected_review_revision: None,
                 base: ReviewEditBase::Generated {
@@ -1820,6 +1836,7 @@ mod tests {
         let workspace = repository.workspace("upgrade").unwrap();
         repository
             .save_review(SaveMeetingReviewRequest {
+                new_claims: Vec::new(),
                 session_id: "upgrade".into(),
                 expected_review_revision: None,
                 base: ReviewEditBase::Generated {
@@ -2751,6 +2768,7 @@ mod tests {
         let generated_revision = workspace.generated.as_ref().unwrap().revision;
         let saved_review = repository
             .save_review(SaveMeetingReviewRequest {
+                new_claims: Vec::new(),
                 session_id: "review-session".into(),
                 expected_review_revision: None,
                 base: ReviewEditBase::Generated { generated_revision },
@@ -2772,6 +2790,7 @@ mod tests {
         let saved_revision = saved_review.review.as_ref().unwrap().revision;
         let labels_only = repository
             .save_review(SaveMeetingReviewRequest {
+                new_claims: Vec::new(),
                 session_id: "review-session".into(),
                 expected_review_revision: Some(saved_revision),
                 base: ReviewEditBase::LabelsOnly,

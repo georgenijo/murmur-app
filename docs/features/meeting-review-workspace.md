@@ -16,7 +16,8 @@ Sessions without retained audio explain why playback is unavailable.
 
 The Notetaker loads one Rust-owned workspace snapshot for the selected meeting.
 The user can name the meeting, maintain its attendee list, rename the two capture
-channels, edit existing generated claims,
+channels, edit existing generated claims, select transcript segments to add a
+decision, action item, or open question to an existing review draft,
 reorder or remove list items, save the review, follow a source to the transcript,
 regenerate a separate draft, deliberately restore that draft, and copy or export
 the reviewed meeting as Markdown, plain text, or JSON.
@@ -87,24 +88,23 @@ pub struct SaveMeetingMetadataRequest {
 
 pub struct SaveMeetingReviewRequest {
     pub session_id: String,
+    pub expected_review_revision: Option<u64>,
     pub base: ReviewEditBaseInput,
     pub labels: SpeakerLabelsInput,
     pub document: Option<EditableReviewDocumentInput>,
+    pub new_claims: Vec<NewReviewClaim>,
 }
 
 pub enum ReviewEditBaseInput {
-    LabelsOnly { expected_review_revision: Option<u64> },
-    Generated {
-        generated_revision: u64,
-        expected_review_revision: Option<u64>,
-    },
+    LabelsOnly,
+    Generated { generated_revision: u64 },
     Review { review_revision: u64 },
 }
 
 pub struct RestoreMeetingReviewRequest {
     pub session_id: String,
     pub generated_revision: u64,
-    pub review_revision: u64,
+    pub expected_review_revision: Option<u64>,
 }
 ```
 
@@ -114,8 +114,24 @@ section, and position. For a review base, it loads the persisted keys. A save mu
 submit the summary key and an ordered subset of each section's keys, with no
 duplicates or cross-section moves. Rust rehydrates the original source IDs,
 validates all bounds and dates, checks the expected revisions, then commits labels
-and the complete review document in one `BEGIN IMMEDIATE` transaction. New claims
-are out of scope until a source-selection workflow exists.
+and the complete review document in one `BEGIN IMMEDIATE` transaction.
+
+Select **Use as source** on one or more transcript rows, then choose **New
+decision**, **New action item**, or **New open question**. Enter the claim text
+and optional action owner/due date, then **Save review**. The selected sources
+are fixed for that new claim; choosing other rows creates a separate claim.
+Selection and unsaved claims are transient. **Cancel** discards them, and a failed
+save leaves them in the current editor. Reloading after a revision conflict or a
+new generated revision resets the editor; copy any unsaved text before reloading.
+Generate a review draft first if none exists.
+
+New claims use a separate typed `newClaims` field on the same save request; they
+have no client-supplied key. Rust assigns deterministic opaque keys from the
+session, committed review revision, and creation position, validates the combined
+document with the existing allowed-source check, and persists the source mapping.
+Every new claim needs non-empty text and at least one finalized, non-empty segment
+from this meeting. Later edits carry only the saved key and editable values, and
+Rust rehydrates those sources exactly as it does for existing generated claims.
 
 The repository exposes five deep capabilities:
 
@@ -190,10 +206,10 @@ escaping can cause subtitle readers to hide text or interpret it as formatting.
 for meeting A cannot replace a later selection B. It exposes operations rather than
 state setters. `MeetingsPanel` retains capture/history/deletion duties and composes:
 
-- `MeetingReviewWorkspace` for reviewed/generated views, edit, regenerate,
-  restore, copy/export, and explicit empty/error states;
-- `MeetingArtifactEditor` for the controlled accessible form;
-- `MeetingTranscript` for canonical evidence rows and source focus/highlight.
+- `MeetingReviewWorkspace` for reviewed/generated views, the controlled edit
+  form, transient source selection/new claims, regenerate, restore, copy/export,
+  and explicit empty/error states. Its `TranscriptRow` and `SourceLinks` render
+  canonical evidence and accessible source focus.
 
 Source references are native buttons with `aria-controls`. Activation scrolls and
 focuses a `tabIndex={-1}` transcript article and announces its timestamp, display
@@ -206,7 +222,7 @@ remain visible and actionable.
 Candidate A is the base because its edit DTO cannot forge provenance, its active
 document is resolved by Rust, and its revisioned full-snapshot save keeps labels and
 review content atomic. Candidate B contributed the separately named, confirmed,
-revision-checked restore operation. Client-supplied source IDs, timestamp-only
+revision-checked restore operation. Client-supplied sources for existing keys, timestamp-only
 generation identity, generation-time review seeding, separate label writes, and
 frontend-owned export rendering were rejected.
 
@@ -214,8 +230,8 @@ frontend-owned export rendering were rejected.
 
 - We store a second strict local prose snapshot so regeneration cannot erase edits.
 - We use optimistic revision conflicts instead of silently merging concurrent saves.
-- We do not allow new claims until the UI can bind them to deliberately selected
-  transcript sources.
+- New claims require deliberately selected transcript sources; existing claims'
+  provenance remains immutable during editing.
 - We export the transcript with the review so citations remain meaningful outside
   Murmur.
 - We fail when a complete export exceeds 8 MiB instead of truncating evidence.
