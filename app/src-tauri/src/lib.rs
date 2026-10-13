@@ -67,6 +67,7 @@ mod query_provider;
 mod resource_monitor;
 mod selection;
 mod smart_auto_probe;
+mod smart_destination;
 mod smart_formatting;
 mod spoken_numbers;
 mod spoken_structure;
@@ -749,6 +750,7 @@ pub fn run() {
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
             frontmost::register_delivery_transition_observers();
+            smart_destination::start(app.handle().clone());
             meeting_suggestions::initialize(app.handle().clone());
             #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_update_wake_observer(app.handle().clone());
@@ -878,6 +880,7 @@ pub fn run() {
         }
 
         if let RunEvent::Exit = &_event {
+            smart_destination::set_enabled(false);
             audio_inventory::shutdown();
             // App-exit teardown: stop resident native helpers so none outlive
             // the app (all no-op when no child is running).

@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 import type { ModeRuntimeStatus } from '../../lib/hooks/useModeRuntime';
+import {
+  smartDestinationLabel,
+  type SmartDestinationStatus,
+} from '../../lib/smartDestination';
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -49,6 +53,8 @@ interface OverlayDropdownProps {
   status: DictationStatus;
   stillConnecting: boolean;
   showTapMissed: boolean;
+  smartDestinationStatus?: SmartDestinationStatus | null;
+  smartDestinationAppName?: string | null;
   disabled: boolean;
   autoPaste: boolean;
   fileOutputEnabled: boolean;
@@ -71,6 +77,8 @@ export function OverlayDropdown({
   status,
   stillConnecting,
   showTapMissed,
+  smartDestinationStatus = null,
+  smartDestinationAppName = null,
   disabled,
   autoPaste,
   fileOutputEnabled,
@@ -126,6 +134,10 @@ export function OverlayDropdown({
     : autoPastePaused
       ? 'rgba(245,158,11,0.14)'
       : 'rgba(255,255,255,0.06)';
+  const destinationLabel = (status === 'recording' || status === 'processing')
+    && smartDestinationStatus
+    ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
+    : null;
 
   return (
     <div
@@ -193,7 +205,7 @@ export function OverlayDropdown({
       </button>
       </div>
 
-      {(status === 'recording' || status === 'starting' || status === 'recovering' || showTapMissed) && (
+      {(status === 'recording' || (status === 'processing' && destinationLabel) || status === 'starting' || status === 'recovering' || showTapMissed) && (
         <span
           role={status === 'recording' && !showTapMissed ? undefined : 'status'}
           aria-live={status === 'recording' && !showTapMissed ? undefined : 'polite'}
@@ -205,8 +217,20 @@ export function OverlayDropdown({
               Tap missed
             </span>
           ) : status === 'recording' ? (
-            <span className="text-white/60 tabular-nums" style={{ fontSize: 11 }}>
-              {formatElapsed(elapsed)}
+            <span className="text-white/60" style={{ fontSize: 11 }}>
+              {destinationLabel ? (
+                <>
+                  <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+                  <span aria-hidden="true"> · </span>
+                  <span className="font-medium text-sky-200">{destinationLabel}</span>
+                </>
+              ) : (
+                <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+              )}
+            </span>
+          ) : status === 'processing' ? (
+            <span className="font-medium text-sky-200" style={{ fontSize: 11 }}>
+              {destinationLabel}
             </span>
           ) : status === 'starting' ? (
             <span className={stillConnecting ? 'text-amber-300 font-medium' : 'text-sky-300 font-medium'} style={{ fontSize: 11 }}>

@@ -13,6 +13,11 @@ import {
   initializationPresentationFromPayload,
   interruptedPresentationFromPayload,
 } from '../dictationPresentation';
+import {
+  recordingIdFromPayload,
+  smartDestinationSelectionFromPayload,
+  type SmartDestinationSelection,
+} from '../smartDestination';
 
 interface UseRecordingStateProps {
   addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
@@ -44,6 +49,8 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
   const [statsVersion, setStatsVersion] = useState(0);
+  const [smartDestinationSelection, setSmartDestinationSelection] =
+    useState<SmartDestinationSelection | null>(null);
 
   // Refs for stable callbacks (hotkey toggle reads current state)
   const statusRef = useRef(status);
@@ -51,6 +58,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const smartAutoRef = useRef(smartAuto);
   const recordingStartTimeRef = useRef(recordingStartTime);
   const latestRecordingGenerationRef = useRef(0);
+  const cancelledDestinationGenerationRef = useRef(0);
   const completedRecordingIds = useRef(new Set<number>());
   const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
   const nextErrorIdRef = useRef(0);
@@ -172,6 +180,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         // so the next recording cycle can stop normally.
         if (event.payload === 'idle') {
           isStoppingRef.current = false;
+          setSmartDestinationSelection(null);
           if (previousStatus === 'recovering') {
             // Recovery reaching Idle is authoritative. Invalidate any invoke
             // response that was produced before this transition and clear only
@@ -207,6 +216,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       return true;
     };
     listen<unknown>('dictation-generation-started', (event) => {
+      if (cancelled) return;
       const payload = event.payload as Record<string, unknown> | null;
       const recordingId = payload?.recordingId;
       if (
@@ -217,11 +227,44 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         latestRecordingGenerationRef.current = recordingId;
         dismissedErrorRef.current = null;
         clearError();
+        setSmartDestinationSelection(null);
       }
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
+    listen<unknown>('smart-destination-selected', (event) => {
+      if (cancelled) return;
+      const selection = smartDestinationSelectionFromPayload(event.payload);
+      if (
+        !selection
+        || statusRef.current === 'idle'
+        || selection.recordingId < latestRecordingGenerationRef.current
+        || selection.recordingId <= cancelledDestinationGenerationRef.current
+      ) return;
+      if (selection.recordingId > latestRecordingGenerationRef.current) {
+        latestRecordingGenerationRef.current = selection.recordingId;
+        dismissedErrorRef.current = null;
+        clearError();
+      }
+      setSmartDestinationSelection(selection);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    listen<unknown>('recording-cancelled', (event) => {
+      if (cancelled) return;
+      const recordingId = recordingIdFromPayload(event.payload);
+      if (recordingId !== null) {
+        cancelledDestinationGenerationRef.current = Math.max(
+          cancelledDestinationGenerationRef.current,
+          recordingId,
+        );
+      }
+      setSmartDestinationSelection(null);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
     listen<unknown>('recording-initialization-failed', (event) => {
+      if (cancelled) return;
       const presentation = initializationPresentationFromPayload(event.payload);
       if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
       const payload = event.payload as Record<string, unknown>;
@@ -233,6 +276,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       if (cancelled) fn(); else unlistens.push(fn);
     });
     listen<unknown>('recording-recovery-stalled', (event) => {
+      if (cancelled) return;
       const presentation = cleanupStalledPresentationFromPayload(event.payload);
       if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
       presentError(
@@ -244,6 +288,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       if (cancelled) fn(); else unlistens.push(fn);
     });
     listen<unknown>('recording-interrupted', (event) => {
+      if (cancelled) return;
       const presentation = interruptedPresentationFromPayload(event.payload);
       if (!presentation || !acceptPresentationGeneration(presentation.recordingId)) return;
       const payload = event.payload as Record<string, unknown>;
@@ -541,6 +586,8 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     handleStop,
     toggleRecording,
     audioLevel,
+    smartDestinationStatus: smartDestinationSelection?.status ?? null,
+    smartDestinationAppName: smartDestinationSelection?.appName ?? null,
     lockedMode,
     toggleLockedMode,
     statsVersion,

@@ -7,12 +7,18 @@ import {
 } from '../../lib/settings';
 import type { MeetingRuntimePhase } from '../../lib/meetings';
 import type { DictationStatus } from '../../lib/types';
+import {
+  smartDestinationLabel,
+  type SmartDestinationStatus,
+} from '../../lib/smartDestination';
 
 interface HomeRecordingBarProps {
   status: DictationStatus;
   initialized: boolean;
   recordingDuration: number;
   audioLevel: number;
+  smartDestinationStatus?: SmartDestinationStatus | null;
+  smartDestinationAppName?: string | null;
   triggerKey: DictationKey;
   recordingMode: RecordingMode;
   meetingPhase: MeetingRuntimePhase;
@@ -34,6 +40,8 @@ export function HomeRecordingBar({
   initialized,
   recordingDuration,
   audioLevel,
+  smartDestinationStatus = null,
+  smartDestinationAppName = null,
   triggerKey,
   recordingMode,
   meetingPhase,
@@ -45,6 +53,10 @@ export function HomeRecordingBar({
   const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
   const normalized = Math.min(1, Math.max(0, audioLevel) * 16);
   const envelopes = [0.52, 0.78, 1, 0.78, 0.52];
+  const destinationLabel = (status === 'recording' || status === 'processing')
+    && smartDestinationStatus
+    ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
+    : null;
 
   let title: string;
   let hint: ReactNode;
@@ -103,7 +115,16 @@ export function HomeRecordingBar({
               </span>
             )}
           </span>
-          <span className="home-talk-hint">{hint}</span>
+          <span className="home-talk-hint">
+            {destinationLabel ? (
+              <span
+                className="home-talk-destination"
+                aria-label={`Destination: ${destinationLabel}`}
+              >
+                {destinationLabel}
+              </span>
+            ) : hint}
+          </span>
         </span>
       </button>
     </section>

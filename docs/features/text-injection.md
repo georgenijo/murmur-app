@@ -27,6 +27,48 @@ When `auto_paste` is enabled in settings:
 11. If native event construction fails, wait 100ms, re-check the focused role, exact target, and unchanged pasteboard generation, then make one native retry only when all three remain safe.
 12. Report a typed delivery outcome: automatic paste posted, confirmed clipboard-only, clipboard write failed, or delivery unconfirmed.
 
+### Smart destination (macOS, opt-in)
+
+`smartDestinationEnabled` defaults to `false`. With it enabled and auto-paste
+eligible, Murmur tracks the last positively focused editable field through
+native Accessibility metadata. A recognized Play/Pause or media slider control
+can preserve that destination for up to 120 seconds before a recording starts.
+Once accepted, a recording keeps its verified destination through transcription
+without expiring solely because it is long. Focusing another editable
+field replaces it; unrelated or unknown focus clears it. This is not an app pin.
+
+The accepted recording freezes its destination and resolves that app's profile
+once. Changes during a recording do not silently retarget it or replace its
+profile. The recording indicator names the selected application when available.
+The main window and overlay discard indicators from stale or cancelled
+recordings, and show clipboard-only when the resolved profile disables delivery.
+
+Smart delivery requires the same process instance, window, field, document, and
+selection to remain verifiable. A retained background selection must be collapsed:
+Murmur never replaces a hidden selection. To deliver to a recent field, it
+activates that application, lets macOS settle between main-thread dispatches,
+rechecks recording ownership, the exact field, and clipboard generation,
+and posts native Cmd+V once. It may return focus to the media application when
+that can be done safely. There is no whole-field replacement, automatic submit,
+or fallback paste into a different field after an attempted delivery.
+
+Unknown, secure, expired, or changed destinations remain clipboard-only. This is
+intentionally stricter than normal auto-paste. Disable Smart destination to use
+the existing app-level delivery policy described above.
+
+Tracking is local and ephemeral. It does not capture screenshots, read input
+values or selected text, query browser URLs, or call a model/API. It reads
+Accessibility roles, static control labels, identities, numeric selection ranges,
+and character counts. Supported T3 builds may require enabling their native
+accessibility tree while the feature is on; Murmur restores a flag it changed
+when disabled or on normal exit. No destination names or field metadata are
+added to diagnostic logs.
+
+An explicit **Paste Last** in smart mode creates a fresh one-shot field check
+only after the user focuses the original destination process. It never replays
+the recording's consumed capability or pastes back into an unseen background
+field. A concurrent recording prevents the retry from changing the clipboard.
+
 ### Delay Rationale
 
 The clipboard write (`arboard::set_text()` → `NSPasteboard`) is synchronous, so no delay is needed for clipboard sync. The delay exists solely to let macOS window focus settle after the transcription pipeline returns. The zero-delay default is sufficient for the native path; users can increase up to 500ms via the settings slider for applications that move focus asynchronously. Delivery-target verification runs after this delay, immediately before the focused-field query.

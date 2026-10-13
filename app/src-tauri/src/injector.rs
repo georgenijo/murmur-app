@@ -20,6 +20,7 @@ pub(crate) enum ClipboardOnlyReason {
     FocusNotEditable,
     ClipboardChanged,
     PasteFailed,
+    SmartTargetUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,20 +213,31 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn pasteboard_change_count() -> Option<i64> {
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
     use objc2_app_kit::NSPasteboard;
 
     Some(NSPasteboard::generalPasteboard().changeCount() as i64)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn pasteboard_change_count() -> Option<i64> {
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
     None
 }
 
 fn write_clipboard_text_with_change_count(text: &str) -> Result<Option<i64>, String> {
     write_clipboard_text(text)?;
     Ok(pasteboard_change_count())
+}
+
+fn smart_refusal_reason(
+    expected_pasteboard_change: Option<i64>,
+    current_pasteboard_change: Option<i64>,
+) -> ClipboardOnlyReason {
+    if expected_pasteboard_change == current_pasteboard_change {
+        ClipboardOnlyReason::SmartTargetUnavailable
+    } else {
+        ClipboardOnlyReason::ClipboardChanged
+    }
 }
 
 /// A fully written, owner-only caption temp file. Preparing it may perform
@@ -354,6 +366,47 @@ fn prepare_caption_to(dir: &std::path::Path, text: &str) -> Option<PreparedCapti
 #[cfg(test)]
 fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
     prepare_caption_to(dir, text).is_some_and(PreparedCaption::publish)
+}
+
+/// Exact-field delivery for the opt-in mode. The destination module chooses
+/// its transport once and never falls through to the ordinary paste route.
+pub(crate) fn inject_with_destination(
+    text: &str,
+    auto_paste: bool,
+    delay_ms: u64,
+    target: &crate::frontmost::DeliveryTargetSnapshot,
+    smart: &crate::smart_destination::Snapshot,
+) -> Result<InjectionResult, String> {
+    if matches!(smart, crate::smart_destination::Snapshot::Disabled) || !auto_paste {
+        return inject_text(text, auto_paste, delay_ms, target);
+    }
+    if text.trim().is_empty() {
+        return Ok(InjectionResult {
+            outcome: InjectionOutcome::NoText,
+            verification: None,
+        });
+    }
+    let pasteboard_change = write_clipboard_text_with_change_count(text)?;
+    let accessible = is_accessibility_enabled();
+    let outcome = match pasteboard_change {
+        None => InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
+        Some(change) if pasteboard_change_count() != Some(change) => {
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged)
+        }
+        Some(_) if !accessible => {
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied)
+        }
+        Some(change) => match crate::smart_destination::insert(smart, text, change) {
+            crate::smart_destination::InsertOutcome::Posted => InjectionOutcome::AutoPasted,
+            crate::smart_destination::InsertOutcome::Refused => InjectionOutcome::ClipboardOnly(
+                smart_refusal_reason(pasteboard_change, pasteboard_change_count()),
+            ),
+        },
+    };
+    Ok(InjectionResult {
+        outcome,
+        verification: None,
+    })
 }
 
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
@@ -550,7 +603,17 @@ fn create_native_paste_events(
 }
 
 #[cfg(target_os = "macos")]
-fn simulate_paste_native() -> Result<(), String> {
+pub(crate) fn simulate_paste_native() -> Result<(), String> {
+    post_paste_native(3)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn simulate_smart_paste_native() -> Result<(), String> {
+    post_paste_native(10)
+}
+
+#[cfg(target_os = "macos")]
+fn post_paste_native(hold_ms: u64) -> Result<(), String> {
     use core_graphics::event::CGEventTapLocation;
     use std::thread;
     use std::time::Duration;
@@ -559,13 +622,13 @@ fn simulate_paste_native() -> Result<(), String> {
     key_down.post(CGEventTapLocation::HID);
     // Some applications drop an instantaneous down/up burst. This remains far
     // below the old subprocess cost while matching hardware-like key timing.
-    thread::sleep(Duration::from_millis(3));
+    thread::sleep(Duration::from_millis(hold_ms));
     key_up.post(CGEventTapLocation::HID);
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn simulate_paste_native() -> Result<(), String> {
+pub(crate) fn simulate_paste_native() -> Result<(), String> {
     Err("native paste is unavailable on this platform".to_string())
 }
 
@@ -1050,6 +1113,22 @@ mod focus_tests {
             current_is_self: false,
             ownership_current: true,
         }
+    }
+
+    #[test]
+    fn smart_refusal_distinguishes_a_revoked_target_from_a_changed_clipboard() {
+        assert_eq!(
+            smart_refusal_reason(Some(7), Some(7)),
+            ClipboardOnlyReason::SmartTargetUnavailable
+        );
+        assert_eq!(
+            smart_refusal_reason(Some(7), Some(8)),
+            ClipboardOnlyReason::ClipboardChanged
+        );
+        assert_eq!(
+            smart_refusal_reason(Some(7), None),
+            ClipboardOnlyReason::ClipboardChanged
+        );
     }
 
     #[test]

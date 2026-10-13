@@ -1046,6 +1046,7 @@ textarea {
 .home-talk-title { display: flex; min-width: 0; align-items: center; gap: var(--ui-space-4); color: var(--murmur-on-surface); font-size: var(--ui-font-body); }
 .home-talk-title strong { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .home-talk-hint { overflow: hidden; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.home-talk-destination { color: var(--murmur-primary); font-weight: 600; }
 .home-talk-key {
   border: 1px solid var(--ui-hairline);
   border-radius: 0.3125rem;

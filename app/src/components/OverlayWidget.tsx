@@ -297,6 +297,8 @@ export function OverlayWidget() {
             status={status}
             stillConnecting={stillConnecting}
             showTapMissed={visual.showTapMissedLabel}
+            smartDestinationStatus={runtime.smartDestinationStatus}
+            smartDestinationAppName={runtime.smartDestinationAppName}
             disabled={runtime.disabled}
             autoPaste={settingsMirror.autoPaste}
             fileOutputEnabled={settingsMirror.fileOutputEnabled}

@@ -72,6 +72,7 @@ export interface ConfigureOptions {
   model?: string;
   language?: string;
   autoPaste?: boolean;
+  smartDestinationEnabled?: boolean;
   autoPasteDelayMs?: number;
   vadSensitivity?: number;
   idleTimeoutMinutes?: number;
@@ -113,6 +114,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     model: s.model,
     language: s.language,
     autoPaste: s.autoPaste,
+    smartDestinationEnabled: s.smartDestinationEnabled,
     autoPasteDelayMs: s.autoPasteDelayMs,
     mirrorToNotchPill: s.mirrorToNotchPill,
     vadSensitivity: s.vadSensitivity,
