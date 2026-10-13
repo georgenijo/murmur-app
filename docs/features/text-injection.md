@@ -46,7 +46,8 @@ recordings, and show clipboard-only when the resolved profile disables delivery.
 Smart delivery requires the same process instance, window, field, document, and
 selection to remain verifiable. A retained background selection must be collapsed:
 Murmur never replaces a hidden selection. To deliver to a recent field, it
-activates that application, lets macOS settle between main-thread dispatches,
+activates that application through its Accessibility `AXFrontmost` attribute
+(without changing the field or selection), lets macOS settle between main-thread dispatches,
 rechecks recording ownership, the exact field, and clipboard generation,
 and posts native Cmd+V once. It may return focus to the media application when
 that can be done safely. There is no whole-field replacement, automatic submit,

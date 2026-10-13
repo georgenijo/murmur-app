@@ -6,7 +6,7 @@ use super::{
     PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+use objc2_app_kit::NSRunningApplication;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -876,13 +876,25 @@ fn destination_is_active(frozen: &Frozen) -> bool {
 }
 
 fn request_recent_destination_activation(frozen: &Frozen) -> bool {
-    let Some(application) = running_application(
+    request_application_activation(
         &frozen.destination_identity,
         frozen.destination_launch_token_bits,
-    ) else {
-        return false;
-    };
-    application.activateWithOptions(NSApplicationActivationOptions::empty())
+        &frozen.app,
+    )
+}
+
+fn request_application_activation(
+    identity: &DeliveryTargetSnapshot,
+    launch_token_bits: u64,
+    app: &OwnedCf,
+) -> bool {
+    // AppKit may refuse cooperative activation from background Murmur. Use
+    // the granted Accessibility capability to activate this exact application,
+    // without changing the focused field or selection. The later main-thread
+    // insertion turn must still prove that the original field gained focus.
+    attribute_settable(app.as_element(), "AXFrontmost")
+        && process_is_running(identity, launch_token_bits)
+        && set_attribute(app.as_element(), "AXFrontmost", unsafe { kCFBooleanTrue }) == AX_SUCCESS
 }
 
 fn maybe_restore_media_before_post(
@@ -925,11 +937,14 @@ fn maybe_restore_media(
     {
         return;
     }
-    if let Some(application) = running_application(
-        &frozen.expected_foreground,
-        frozen.expected_foreground_launch_token_bits,
-    ) {
-        let _ = application.activateWithOptions(NSApplicationActivationOptions::empty());
+    if let Some(app) = complete_identity(&frozen.expected_foreground)
+        .and_then(|identity| create_application(identity.process_id))
+    {
+        let _ = request_application_activation(
+            &frozen.expected_foreground,
+            frozen.expected_foreground_launch_token_bits,
+            &app,
+        );
     }
 }
 
