@@ -6,12 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-13
+
 ### Dictation
 
 - Added an opt-in macOS Smart destination setting that keeps dictation with a
   recent verified text field across supported media controls. The recording
   indicator names the destination app; uncertain targets stay on the clipboard.
   Delivery can briefly switch to the destination app and never submits the text.
+- Fixed Technical mode removing punctuation from ordinary prose. Technical mode
+  and the Code / technical writing style now detect commands automatically;
+  use Terminal mode, Commands On, or the spoken `command` cue for unknown tools.
+- Restored automatic paste in web editors that expose a non-editable accessibility
+  role, while retaining Finder's protection against stray text-clipping files.
+- A one-session writing style no longer turns automatic command detection off.
+
+### Meetings
+
+- Search active meeting reviews and see which fields matched.
+- Create decisions, action items, and open questions from selected transcript
+  segments, retaining their source links in review, search, and exports.
+- Refresh the selected meeting's details automatically when capture finishes.
+
+### Voice Query and appearance
+
+- Simplified the Voice Query popover and its handoff to Assistant.
+- Fixed overlay layout and positioning on external displays, including Macs
+  running with the lid closed.
 
 ## [0.50.0] - 2026-09-14
 
