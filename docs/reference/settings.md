@@ -115,6 +115,7 @@ interface Settings {
 
   // Delivery
   autoPaste: boolean;
+  smartDestinationEnabled: boolean;
   autoPasteDelayMs: number;
   pasteLastShortcut: PasteLastShortcut | null;
   correctionShortcutEnabled: boolean;
@@ -183,6 +184,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
   autoPaste: false,
+  smartDestinationEnabled: false,
   // Native CGEvents can paste immediately in the common case. Apps that move
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
@@ -330,6 +332,7 @@ The Settings disclosure explicitly states that the configured CLI may send the q
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
 | `autoPaste` | `boolean` | `false` | `true` / `false` | Stored preference for automatically pasting transcribed text after clipboard copy. Requires macOS Accessibility permission. Text is always copied. When either file-output toggle is on, the UI shows auto-paste unavailable without overwriting this preference. An enabled preference is labeled paused and resumes when file output is off; a disabled preference remains off. |
+| `smartDestinationEnabled` | `boolean` | `false` | `true` / `false` | macOS-only opt-in that keeps dictation associated with the recent text field while supported media controls are used. The switch is available only while auto-paste is active and file output is off. If auto-paste or file output makes it unavailable, the enabled preference remains stored and resumes when delivery is eligible again. If the destination is unclear, text stays on the clipboard. Missing or malformed persisted values fail closed to `false`. |
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
 | `correctionShortcutEnabled` | `boolean` | `false` | `true` / `false` | Enables ⌘⇧E to start or finish a spoken correction of the latest delivery. The configured microphone and local transform model are used. |
 | `pasteLastShortcut` | `PasteLastShortcut \| null` | `null` | `'command_shift_v'` (⌘⇧V), `'command_option_v'` (⌘⌥V), `'command_control_v'` (⌘⌃V), or `null` to disable | Configures the global Paste Last / Retry Delivery chord. Changes take effect immediately; invalid or Murmur-owned conflicting identifiers fail closed, and native registration failure leaves the last working value selected. Retried text stays memory-only and uses the normal secure delivery checks. Settings v4 migrates the former `pasteLastShortcutEnabled: true` to ⌘⇧V and `false`/absent to Disabled. |
@@ -340,6 +343,25 @@ The Settings disclosure explicitly states that the configured CLI may send the q
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
 | `benchmarkOutputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved Performance Lab benchmark reports (`benchmark-<version>-<machine>-<createdAt>.json`). Empty means the app default (`Documents/Murmur`, created on first write). Kept separate from `outputDir` so benchmark JSON doesn't mix with dictation transcripts/audio. Set via a folder picker in the Performance Lab. |
 | `benchmarkAutoSave` | `boolean` | `false` | `true` / `false` | When enabled, each completed benchmark run is written to `benchmarkOutputDir` automatically (in addition to the 10-slot in-app history), so reports survive the localStorage cap. Best-effort: a write failure surfaces an error but does not fail the run. |
+
+### Smart destination privacy and limits
+
+Smart destination is off by default and must be turned on explicitly. While it
+is available, Murmur uses only local macOS Accessibility information to remember
+the most recently focused editable field for up to 120 seconds before recording
+starts. An accepted recording keeps its verified destination through processing;
+a long recording does not expire merely because of its duration. It does not take
+screenshots; read transcripts, field contents, or selected text; or send this
+routing check to an API or model. For known T3 Code builds, Murmur may locally
+enable the app's accessibility tree so the focused field can be identified.
+
+The remembered field is kept only while focus moves to a supported media control.
+Before delivery, Murmur verifies the same app, window, field, and insertion point.
+Delivering to a recent field may briefly activate that app; Murmur returns to the
+media app only when it can do so safely.
+A selected range in a background field is refused rather than replaced. If the
+app or field is unknown, changed, expired, or otherwise cannot be verified, no
+automatic insertion is attempted and the finished text remains on the clipboard.
 
 ## Vocabulary Settings
 
@@ -433,6 +455,10 @@ Default is complete immediately. Every other pre-v3 microphone string remains
 pending until an available shared inventory proves exact ID membership or a
 unique legacy display-name match; stale/unavailable inventory never migrates it.
 
+On the first v6 load, Murmur adds the `smartDestinationEnabled` opt-in as
+`false`. Missing and malformed values also fail closed to `false`; only an
+explicit persisted boolean `true` enables the feature.
+
 Hydration is idempotent, so every window can run it regardless of creation order; concurrent first-run writes are serialized in Rust and write identical content.
 
 ### Saving
@@ -451,7 +477,7 @@ A `settings.json` that is oversized, not UTF-8, not valid JSON, or not a JSON ob
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
 5. Validates `model` against the macOS catalog allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to Core ML Parakeet v3. `language` is validated against `LANGUAGE_OPTIONS` the same way.
-6. Coerces `transformHoldKey` to `null` unless it matches `TRANSFORM_KEY_OPTIONS`, and sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
+6. Coerces `smartDestinationEnabled` to `false` unless it is a boolean, coerces `transformHoldKey` to `null` unless it matches `TRANSFORM_KEY_OPTIONS`, and sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
 7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
 8. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 
@@ -464,6 +490,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `model` | `model` | Yes |
 | `language` | `language` | Yes |
 | `autoPaste` | `autoPaste` | Yes |
+| `smartDestinationEnabled` | `smartDestinationEnabled` | Yes |
 | `autoPasteDelayMs` | `autoPasteDelayMs` | Yes |
 | `vadSensitivity` | `vadSensitivity` | Yes |
 | `saveTranscript` | `saveTranscript` | Yes |
@@ -480,7 +507,7 @@ When settings change, `useSettings.updateSettings` pushes the following fields t
 | `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
 | `benchmarkAutoSave` | _(read in the Performance Lab; drives auto-save after each run)_ | Frontend only |
 
-**Optimistic updates with rollback:** If `configure_dictation` fails, the affected settings (model, language, autoPaste, autoPasteDelayMs, vadSensitivity) revert to their previous values. Similarly, if the autostart toggle fails, `launchAtLogin` reverts. A versioned configure ref prevents stale rollbacks from overwriting newer settings.
+**Optimistic updates with rollback:** If `configure_dictation` fails, the affected settings (including model, language, autoPaste, smartDestinationEnabled, autoPasteDelayMs, and vadSensitivity) revert to their previous values. Similarly, if the autostart toggle fails, `launchAtLogin` reverts. A versioned configure ref prevents stale rollbacks from overwriting newer settings.
 
 ---
 

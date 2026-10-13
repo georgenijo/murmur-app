@@ -84,3 +84,60 @@ it.each(
     await act(async () => root.unmount());
   },
 );
+
+it.each([
+  ['current', 'Current text field'],
+  ['recent', 'Recent text field'],
+  ['unavailable', 'Clipboard only'],
+] as const)('shows the %s destination in the expanded active overlay', async (smartDestinationStatus, label) => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const props = {
+    geometry: fixture.notched,
+    expanded: true,
+    stillConnecting: false,
+    showTapMissed: false,
+    smartDestinationStatus,
+    disabled: false,
+    autoPaste: true,
+    fileOutputEnabled: false,
+    onToggleDisabled: vi.fn(),
+    onToggleAutoPaste: vi.fn(),
+    onOpenSettings: vi.fn(),
+  };
+
+  await act(async () => root.render(<OverlayDropdown {...props} status="recording" />));
+  expect(container.textContent).toContain(`0:00 · ${label}`);
+
+  await act(async () => root.render(<OverlayDropdown {...props} status="processing" />));
+  expect(container.textContent).toContain(label);
+
+  await act(async () => root.render(<OverlayDropdown {...props} status="idle" />));
+  expect(container.textContent).not.toContain(label);
+  await act(async () => root.unmount());
+});
+
+it('shows the verified app name for a current or recent overlay destination', async () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  await act(async () => root.render(
+    <OverlayDropdown
+      geometry={fixture.notched}
+      expanded
+      status="recording"
+      stillConnecting={false}
+      showTapMissed={false}
+      smartDestinationStatus="recent"
+      smartDestinationAppName="T3 Code"
+      disabled={false}
+      autoPaste
+      fileOutputEnabled={false}
+      onToggleDisabled={vi.fn()}
+      onToggleAutoPaste={vi.fn()}
+      onOpenSettings={vi.fn()}
+    />,
+  ));
+
+  expect(container.textContent).toContain('0:00 · To T3 Code');
+  await act(async () => root.unmount());
+});

@@ -50,6 +50,7 @@ import {
 
 function Harness({ status = 'idle' }: { status?: DictationStatus }) {
   const statusRef = useRef<DictationStatus>(status);
+  statusRef.current = status;
   const hotkeyMissFeedbackRef = useRef(false);
   current = useOverlayRuntime({
     status,
@@ -110,6 +111,18 @@ describe('useOverlayRuntime transient cues', () => {
     await act(async () => {
       mocks.handlers.get('dictation-generation-started')?.({
         payload: { recordingId },
+      });
+    });
+  }
+
+  async function emitSmartDestination(
+    recordingId: number,
+    status: unknown,
+    appName?: unknown,
+  ) {
+    await act(async () => {
+      mocks.handlers.get('smart-destination-selected')?.({
+        payload: { recordingId, status, appName },
       });
     });
   }
@@ -201,6 +214,76 @@ describe('useOverlayRuntime transient cues', () => {
     await emitGeneration(2);
     expect(current?.showMicrophoneFailure).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the smart destination scoped to the active overlay generation', async () => {
+    await act(async () => root.unmount());
+    mocks.handlers.clear();
+    mocks.unlistens.clear();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness status="recording" />);
+      await Promise.resolve();
+    });
+
+    await emitGeneration(20);
+    await emitSmartDestination(20, 'current', 'T3 Code');
+    expect(current?.smartDestinationStatus).toBe('current');
+    expect(current?.smartDestinationAppName).toBe('T3 Code');
+
+    await emitSmartDestination(19, 'recent', 'Old App');
+    await emitSmartDestination(20, 'invalid');
+    expect(current?.smartDestinationStatus).toBe('current');
+    expect(current?.smartDestinationAppName).toBe('T3 Code');
+
+    await emitGeneration(21);
+    expect(current?.smartDestinationStatus).toBeNull();
+    expect(current?.smartDestinationAppName).toBeNull();
+    await emitSmartDestination(21, 'recent', 'Notes');
+    expect(current?.smartDestinationStatus).toBe('recent');
+    expect(current?.smartDestinationAppName).toBe('Notes');
+
+    await act(async () => {
+      mocks.handlers.get('recording-cancelled')?.({ payload: { recordingId: 21 } });
+    });
+    expect(current?.smartDestinationStatus).toBeNull();
+    expect(current?.smartDestinationAppName).toBeNull();
+    await emitSmartDestination(21, 'unavailable');
+    expect(current?.smartDestinationStatus).toBeNull();
+
+    await emitGeneration(22);
+    await emitSmartDestination(22, 'unavailable');
+    expect(current?.smartDestinationStatus).toBe('unavailable');
+    await act(async () => root.render(<Harness status="idle" />));
+    expect(current?.smartDestinationStatus).toBeNull();
+    expect(current?.smartDestinationAppName).toBeNull();
+    await emitSmartDestination(22, 'current');
+    expect(current?.smartDestinationStatus).toBeNull();
+  });
+
+  it('cleans up a smart destination listener that resolves after unmount', async () => {
+    await act(async () => root.unmount());
+    mocks.handlers.clear();
+    mocks.unlistens.clear();
+    mocks.deferredListeners.add('smart-destination-selected');
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness status="recording" />);
+      await Promise.resolve();
+    });
+    const delayedHandler = mocks.handlers.get('smart-destination-selected');
+
+    await act(async () => root.unmount());
+    await act(async () => delayedHandler?.({
+      payload: { recordingId: 30, status: 'current' },
+    }));
+    expect(current?.smartDestinationStatus).toBeNull();
+    await act(async () => {
+      mocks.deferredResolves.get('smart-destination-selected')?.();
+      await Promise.resolve();
+    });
+    expect(mocks.unlistens.get('smart-destination-selected')).toHaveBeenCalledOnce();
+    root = createRoot(container);
   });
 
   it('rejects delayed initialization and interruption failures from an older generation', async () => {
@@ -556,6 +639,7 @@ describe('useOverlayRuntime transient cues', () => {
     await act(async () => root.unmount());
     expect(mocks.unlistens.get('dictation-delivery-outcome')).toHaveBeenCalledOnce();
     expect(mocks.unlistens.get('dictation-generation-started')).toHaveBeenCalledOnce();
+    expect(mocks.unlistens.get('smart-destination-selected')).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
     root = createRoot(container);
   });

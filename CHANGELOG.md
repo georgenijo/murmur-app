@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- Added an opt-in macOS Smart destination setting that keeps dictation with a
+  recent verified text field across supported media controls. The recording
+  indicator names the destination app; uncertain targets stay on the clipboard.
+  Delivery can briefly switch to the destination app and never submits the text.
+
 ## [0.50.0] - 2026-09-14
 
 ### Assistant
