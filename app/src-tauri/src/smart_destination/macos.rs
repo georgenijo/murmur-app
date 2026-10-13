@@ -29,7 +29,10 @@ const AX_SUCCESS: AXError = 0;
 const AX_ERROR_FAILURE: AXError = -25200;
 const AX_ERROR_ATTRIBUTE_UNSUPPORTED: AXError = -25205;
 const AX_ERROR_NO_VALUE: AXError = -25212;
-const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.005;
+// Chromium can take more than 5 ms to return valid focused-window metadata.
+// Keep each call bounded without routinely revoking a healthy destination;
+// the separate operation budgets still bound each sampling/delivery pass.
+const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.020;
 const SAMPLE_AX_BUDGET: Duration = Duration::from_millis(50);
 const CAPTURE_AX_BUDGET: Duration = Duration::from_millis(200);
 const DELIVERY_AX_BUDGET: Duration = Duration::from_millis(500);
