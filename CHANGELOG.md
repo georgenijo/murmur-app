@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- In the combined double-tap and hold mode, pressing a shortcut that uses the
+  trigger key as a modifier (for example Cmd+Shift+4 for a screenshot) no
+  longer stops a running double-tap dictation. Releasing the trigger key on
+  its own still stops it.
+
 ## [0.51.10] - 2026-10-14
 
 ### Overlay

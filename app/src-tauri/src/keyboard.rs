@@ -854,6 +854,17 @@ fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &Event
 static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Set to true by the timer thread when it promotes a press to a real hold.
 static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
+/// The current hold press began while a double-tap recording was running.
+static HOLD_OVER_TOGGLE: AtomicBool = AtomicBool::new(false);
+
+/// Whether a promoted hold ending with `event_type` stops the recording. A
+/// hold that began during a double-tap recording did not start it: the held
+/// key is most likely a modifier of another shortcut (Cmd+Shift+4), so the
+/// combo key ends the hold without stopping. Releasing the key on its own
+/// still stops, as before.
+fn promoted_hold_stops_recording(over_toggle_recording: bool, event_type: &EventType) -> bool {
+    !(over_toggle_recording && matches!(event_type, EventType::KeyPress(_)))
+}
 /// When true, the Both-mode callback ignores all key events.
 /// Set by lib.rs when the transcription pipeline is running.
 static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
@@ -1635,6 +1646,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 // Don't emit hold-down-start yet — start a timer.
                                 // The timer will promote after MAX_HOLD_DURATION_MS.
                                 HOLD_PROMOTED.store(false, Ordering::SeqCst);
+                                let over_toggle = DOUBLE_TAP_DETECTOR
+                                    .lock_or_recover()
+                                    .as_ref()
+                                    .is_some_and(|d| d.recording);
+                                HOLD_OVER_TOGGLE.store(over_toggle, Ordering::SeqCst);
                                 let press_id =
                                     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
                                 let timer_handle = handle.clone();
@@ -1651,7 +1667,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                                 .map(|d| d.state == HoldState::Held)
                                                 .unwrap_or(false)
                                         };
-                                        if still_held {
+                                        if still_held && over_toggle {
+                                            // Already recording: the hold owns nothing to start.
+                                            HOLD_PROMOTED.store(true, Ordering::SeqCst);
+                                            tracing::info!(target: "keyboard", "BOTH -> timer promoted hold during toggle recording");
+                                        } else if still_held {
                                             HOLD_PROMOTED.store(true, Ordering::SeqCst);
                                             tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
                                             let _ = timer_handle.emit("hold-down-start", ());
@@ -1665,7 +1685,14 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 // Invalidate any pending timer
                                 HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
 
-                                if promoted {
+                                if promoted
+                                    && !promoted_hold_stops_recording(
+                                        HOLD_OVER_TOGGLE.load(Ordering::SeqCst),
+                                        &event.event_type,
+                                    )
+                                {
+                                    tracing::info!(target: "keyboard", "BOTH -> combo during toggle recording; recording continues");
+                                } else if promoted {
                                     // Recorder transitions are serialized, so a stop safely
                                     // waits for an in-flight start even on an immediate release.
                                     tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
@@ -3092,6 +3119,7 @@ mod tests {
             HoldDownEvent::None
         };
 
+        let over_toggle = dtap.recording;
         // Always feed double-tap
         let dtap_fired = dtap.handle_event(event_type);
         let mut emitted = Vec::new();
@@ -3101,7 +3129,9 @@ mod tests {
                 // In real code: spawns a timer thread, no synchronous emission
             }
             HoldDownEvent::Stop => {
-                if promoted {
+                if promoted && !promoted_hold_stops_recording(over_toggle, event_type) {
+                    // A combo key during a double-tap recording: keep recording.
+                } else if promoted {
                     emitted.push(BothEmit::HoldStop);
                 } else if dtap_fired {
                     emitted.push(BothEmit::DoubleTapToggle);
@@ -3249,6 +3279,28 @@ mod tests {
         // Release 40ms after promotion — the promoted hold must stop and transcribe.
         let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true);
         assert_eq!(e, vec![BothEmit::HoldStop]);
+    }
+
+    #[test]
+    fn both_combo_during_toggle_recording_keeps_recording() {
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        dtap.recording = true;
+
+        // Cmd+Shift+4 while a double-tap recording runs: Shift is held past
+        // promotion, then the 4 cancels the hold. Recording must continue.
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(e, vec![]);
+        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::Num4), true);
+        assert_eq!(e, vec![]);
+        assert!(!promoted_hold_stops_recording(true, &press(Key::Num4)));
+        // Without a running toggle recording a combo still ends a held dictation,
+        // and a lone release during one still stops it.
+        assert!(promoted_hold_stops_recording(false, &press(Key::Num4)));
+        assert!(promoted_hold_stops_recording(
+            true,
+            &release(Key::ShiftLeft)
+        ));
     }
 
     #[test]
