@@ -43,9 +43,9 @@ fn capture_gate(accepted_enabled: bool, currently_enabled: bool) -> CaptureGate 
 pub(crate) enum Snapshot {
     #[default]
     Disabled,
-    /// Fail closed: delivery stays clipboard-only (secure or self-owned focus,
-    /// supported media without a retained field, a stale capture, or a
-    /// captured destination that could not be prepared).
+    /// Fail closed: delivery stays clipboard-only (a secure field, supported
+    /// media without a retained field, revocation during capture, or a
+    /// media-handoff destination that could not be prepared).
     Unavailable,
     /// No field was positively proven at acceptance, but nothing positively
     /// ruled delivery out. Delivery uses the normal verified auto-paste
@@ -201,14 +201,8 @@ pub async fn capture(
         CaptureGate::Disabled => return Snapshot::Disabled,
         CaptureGate::Unavailable => return Snapshot::Unavailable,
     }
-    match expected {
-        DeliveryTargetSnapshot::Complete(_) => {}
-        // A transient lookup gap proves nothing; normal delivery can still
-        // verify a complete stop-time anchor.
-        DeliveryTargetSnapshot::Incomplete => return Snapshot::Unverified,
-        DeliveryTargetSnapshot::SelfTarget | DeliveryTargetSnapshot::Mismatch(_) => {
-            return Snapshot::Unavailable
-        }
+    if let Some(snapshot) = start_without_external_app(expected) {
+        return snapshot;
     }
 
     let generation = GENERATION.load(Ordering::Acquire);
@@ -234,6 +228,18 @@ pub async fn capture(
             unproven_capture(generation, &fallback_vetoed)
         }
         Ok(Ok(snapshot)) => snapshot,
+    }
+}
+
+/// No complete external app at start (a lookup gap, Murmur itself in front
+/// after a relaunch, or a mismatch): normal delivery applies its own start and
+/// stop anchor checks, exactly as with the feature off.
+fn start_without_external_app(expected: &DeliveryTargetSnapshot) -> Option<Snapshot> {
+    match expected {
+        DeliveryTargetSnapshot::Complete(_) => None,
+        DeliveryTargetSnapshot::Incomplete
+        | DeliveryTargetSnapshot::SelfTarget
+        | DeliveryTargetSnapshot::Mismatch(_) => Some(Snapshot::Unverified),
     }
 }
 
@@ -573,6 +579,21 @@ mod tests {
             current_app: true,
         }
         .uses_normal_paste());
+    }
+
+    #[test]
+    fn starting_without_an_external_app_uses_normal_paste() {
+        // Murmur frontmost right after an update relaunch must not make the
+        // recording clipboard-only.
+        for start in [
+            DeliveryTargetSnapshot::SelfTarget,
+            DeliveryTargetSnapshot::Incomplete,
+        ] {
+            assert!(matches!(
+                start_without_external_app(&start),
+                Some(Snapshot::Unverified)
+            ));
+        }
     }
 
     #[test]

@@ -466,11 +466,12 @@ pub(super) fn disable_if_main_thread(generation: u64) {
     });
 }
 
-/// Only positive evidence keeps delivery clipboard-only. Focus that AX cannot
-/// classify (common in Chromium/Electron apps) or a transient identity lookup
-/// gap returns `Unverified`, which uses the normal verified auto-paste policy.
-/// `fallback_vetoed` is set as soon as refusal evidence (or a smart route) is
-/// found, before any observer cleanup that could outlive the caller's timeout.
+/// Smart destination is additive: anything other than a secure field, a media
+/// control without a retained field, or revocation returns `Unverified`, which
+/// delivers through the normal verified auto-paste policy exactly as with the
+/// feature off (that policy does its own self, process, and stop-anchor checks).
+/// `fallback_vetoed` is set as soon as such refusal evidence (or the media
+/// route) is found, before observer cleanup that could outlive the timeout.
 pub(super) fn capture(
     expected: &DeliveryTargetSnapshot,
     generation: u64,
@@ -488,51 +489,43 @@ pub(super) fn capture(
             state.reconcile_observer_epochs();
 
             let current = crate::frontmost::capture_delivery_target_snapshot();
-            match identity_relation(&current, expected) {
-                IdentityRelation::Same => {}
-                IdentityRelation::Unknown => return Snapshot::Unverified,
-                IdentityRelation::Different => {
-                    veto();
-                    return Snapshot::Unavailable;
-                }
+            // Focus moving to another app (or Murmur) is not a reason to be
+            // stricter than normal paste, which re-verifies its own anchor.
+            if identity_relation(&current, expected) != IdentityRelation::Same {
+                return Snapshot::Unverified;
             }
 
             let observation = inspect_current_from_snapshot(&mut state, current);
             let route = match &observation {
                 CurrentObservation::Editable(_) => DeliveryRoute::CurrentEditable,
-                CurrentObservation::SupportedMedia => DeliveryRoute::RecentMedia,
-                CurrentObservation::SelfOverlay | CurrentObservation::Secure => {
+                CurrentObservation::SupportedMedia => {
+                    // An unfinished media capture must never fall back to
+                    // normal paste, which would target the media app.
+                    veto();
+                    DeliveryRoute::RecentMedia
+                }
+                CurrentObservation::Secure => {
                     veto();
                     apply_observation(&mut state, observation);
                     return Snapshot::Unavailable;
                 }
-                CurrentObservation::Other | CurrentObservation::Unavailable => {
-                    // Inspection also reports Unavailable when the process
-                    // changed underneath it; only a lookup gap may fall back.
-                    let relation = identity_relation(
-                        &crate::frontmost::capture_delivery_target_snapshot(),
-                        expected,
-                    );
-                    let snapshot = if relation == IdentityRelation::Different {
-                        veto();
-                        Snapshot::Unavailable
-                    } else {
-                        Snapshot::Unverified
-                    };
+                CurrentObservation::SelfOverlay
+                | CurrentObservation::Other
+                | CurrentObservation::Unavailable => {
                     apply_observation(&mut state, observation);
-                    return snapshot;
+                    return Snapshot::Unverified;
                 }
             };
-            // A smart route found a field or media control: an unfinished freeze
-            // must not fall back to normal paste.
-            veto();
             apply_observation(&mut state, observation);
 
-            // A freeze failure can mean focus moved to a different field or the
-            // media app has no retained field: positive evidence, so it never
-            // falls back to normal paste.
-            freeze_candidate(&mut state, expected.clone(), generation, route)
-                .unwrap_or(Snapshot::Unavailable)
+            freeze_candidate(&mut state, expected.clone(), generation, route).unwrap_or(match route
+            {
+                // The field could not be frozen (budget, observer, caret,
+                // or a focus change): use normal paste into this app.
+                DeliveryRoute::CurrentEditable => Snapshot::Unverified,
+                // No retained field behind the media control.
+                DeliveryRoute::RecentMedia => Snapshot::Unavailable,
+            })
         })
     })
 }

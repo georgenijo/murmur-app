@@ -361,11 +361,10 @@ Delivering to a recent field may briefly activate that app; Murmur returns to th
 media app only when it can do so safely.
 A selected range in a background field is refused rather than replaced. If a
 remembered field changed, expired, or can no longer be verified, no automatic
-insertion is attempted and the finished text remains on the clipboard. If no
-field could be identified when recording started, Murmur uses normal auto-paste,
-as it would with Smart destination off; secure fields (also checked again at
-delivery), a field or app change during capture, and media apps without a
-remembered field stay clipboard-only.
+insertion is attempted and the finished text remains on the clipboard. In every
+other case where no field is verified, Murmur uses normal auto-paste, as it
+would with Smart destination off; only secure fields (also checked again at
+delivery) and media apps without a remembered field stay clipboard-only.
 
 ## Vocabulary Settings
 
