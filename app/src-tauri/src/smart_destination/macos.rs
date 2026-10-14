@@ -1,9 +1,10 @@
 use super::{
     candidate_action, candidate_is_capturable, candidate_is_preservable, claim_preparation,
-    delivery_is_confirmed, generation_is_current, generation_is_latest, identity_relation,
-    notification_invalidates, selection_allowed, t3_empty_composer_delivery_is_confirmed,
-    CandidateAction, CandidateNotification, CapabilityStage, DeliveryRoute, IdentityRelation,
-    InsertOutcome, Observation, PrepareOutcome, Snapshot,
+    delivery_is_confirmed, generation_is_current, generation_is_latest, handoff_focus_allowed,
+    identity_relation, manual_retry_due, notification_invalidates, selection_allowed,
+    t3_empty_composer_delivery_is_confirmed, CandidateAction, CandidateNotification,
+    CapabilityStage, DeliveryRoute, IdentityRelation, InsertOutcome, Observation, PrepareOutcome,
+    Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
@@ -274,7 +275,7 @@ struct State {
     candidate: Option<Candidate>,
     frozen: HashMap<u64, Frozen>,
     manual_override: Option<ManualOverride>,
-    manual_attempted: Option<DeliveryTargetSnapshot>,
+    manual_attempted: Option<(DeliveryTargetSnapshot, Instant)>,
 }
 
 impl State {
@@ -839,8 +840,11 @@ fn validate_frozen_for_prepare(state: &State, frozen: &Frozen) -> bool {
     }
     match frozen.route {
         DeliveryRoute::CurrentEditable => {}
+        // The media handoff was decided when recording started. The control
+        // no longer holding focus is not a revocation; only the user having
+        // moved into another editable or a secure field is.
         DeliveryRoute::RecentMedia => {
-            if !current_is_supported_media(&frozen.expected_foreground) {
+            if !handoff_focus_allowed(foreground_focus_observation(&frozen.expected_foreground)) {
                 return false;
             }
         }
@@ -1199,15 +1203,29 @@ fn classify_text_role(
     Ok(())
 }
 
-fn current_is_supported_media(expected: &DeliveryTargetSnapshot) -> bool {
+/// Classify the expected foreground app's focus without any side effects.
+/// Failed lookups are `Unavailable`: only positive evidence revokes.
+fn foreground_focus_observation(expected: &DeliveryTargetSnapshot) -> Observation {
     let Some(identity) = complete_identity(expected) else {
-        return false;
+        return Observation::Unavailable;
     };
     let Some(app) = create_application(identity.process_id) else {
-        return false;
+        return Observation::Unavailable;
     };
-    let field = copy_element_attribute(app.as_element(), "AXFocusedUIElement").ok();
-    current_is_supported_media_with_field(expected, field.as_ref())
+    let Ok(field) = copy_element_attribute(app.as_element(), "AXFocusedUIElement") else {
+        return Observation::Unavailable;
+    };
+    match editable_status(field.as_element()) {
+        EditableStatus::Secure => Observation::Secure,
+        EditableStatus::Editable => Observation::Editable,
+        EditableStatus::NotEditable | EditableStatus::Unavailable => {
+            if current_is_supported_media_with_field(expected, Some(&field)) {
+                Observation::SupportedMedia
+            } else {
+                Observation::Other
+            }
+        }
+    }
 }
 
 fn current_is_supported_media_with_field(
@@ -1305,8 +1323,15 @@ fn enable_manual_accessibility_if_needed(
     if state
         .manual_attempted
         .as_ref()
-        .is_some_and(|attempted| same_process(attempted, identity))
+        .is_some_and(|(attempted, at)| {
+            same_process(attempted, identity) && !manual_retry_due(at.elapsed())
+        })
     {
+        return false;
+    }
+    // An exhausted AX budget is not evidence about this app; never record it
+    // as a failed attempt.
+    if !ax_budget_open() {
         return false;
     }
     match copy_bool_attribute(app.as_element(), "AXManualAccessibility") {
@@ -1319,7 +1344,9 @@ fn enable_manual_accessibility_if_needed(
                 kCFBooleanTrue
             }) != AX_SUCCESS
             {
-                state.manual_attempted = Some(identity.clone());
+                if ax_budget_open() {
+                    state.manual_attempted = Some((identity.clone(), Instant::now()));
+                }
                 return false;
             }
             state.manual_override = Some(ManualOverride {
@@ -1330,7 +1357,9 @@ fn enable_manual_accessibility_if_needed(
             true
         }
         None => {
-            state.manual_attempted = Some(identity.clone());
+            if ax_budget_open() {
+                state.manual_attempted = Some((identity.clone(), Instant::now()));
+            }
             false
         }
     }

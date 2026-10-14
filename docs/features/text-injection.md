@@ -35,7 +35,19 @@ native Accessibility metadata. A recognized Play/Pause or media slider control
 can preserve that destination for up to 120 seconds before a recording starts.
 Once accepted, a recording keeps its verified destination through transcription
 without expiring solely because it is long. Focusing another editable
-field replaces it; unrelated or unknown focus clears it. This is not an app pin.
+field replaces it, and a secure field clears it. Ordinary page focus, Murmur's
+own overlay, or a failed or timed-out Accessibility lookup is not evidence that
+you moved to another text input, so a single such sample never forgets the
+retained field; it still expires 120 seconds after it was last focused. This is
+not an app pin.
+
+The media handoff is decided once, when recording starts. After transcription,
+delivery only requires the same media app to still be frontmost and its focus
+not to have moved into another editable field or a secure field; the media
+control losing focus (for example because player controls auto-hide) does not
+revoke it. The one-time `AXManualAccessibility` request for T3 Code is retried
+every 5 seconds after a failure instead of being abandoned until Smart
+destination is toggled.
 
 The accepted recording freezes its destination and resolves that app's profile
 once. Changes during a recording do not silently retarget it or replace its

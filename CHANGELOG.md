@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- Smart destination now keeps the retained text field through ordinary page
+  focus or a failed Accessibility lookup in the media app, and no longer drops
+  a media handoff at delivery just because the media control lost focus while
+  you spoke. A different editable field or a secure field still cancels it.
+
 ## [0.51.5] - 2026-10-14
 
 ### Dictation

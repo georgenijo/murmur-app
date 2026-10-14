@@ -419,17 +419,50 @@ enum CandidateAction {
 }
 
 #[cfg(any(target_os = "macos", test))]
+/// Only a positively focused editable field replaces the retained one, and
+/// only a positively secure field forgets it. Everything else (a media control,
+/// Murmur's overlay, ordinary page focus, or a failed/timed-out lookup) is not
+/// evidence that the user moved to another text input, so one such sample must
+/// not discard the destination. The retained field is still bounded by its
+/// recency window, by its own observer invalidation, and by exact-field
+/// validation at capture and delivery.
 fn candidate_action(observation: Observation, has_recent_candidate: bool) -> CandidateAction {
     match observation {
         Observation::Editable => CandidateAction::Replace,
-        Observation::SupportedMedia | Observation::SelfOverlay if has_recent_candidate => {
+        Observation::SupportedMedia
+        | Observation::SelfOverlay
+        | Observation::Other
+        | Observation::Unavailable
+            if has_recent_candidate =>
+        {
             CandidateAction::Preserve
         }
-        Observation::SupportedMedia | Observation::SelfOverlay => CandidateAction::Clear,
-        Observation::Secure | Observation::Other | Observation::Unavailable => {
-            CandidateAction::Clear
-        }
+        Observation::SupportedMedia
+        | Observation::SelfOverlay
+        | Observation::Other
+        | Observation::Unavailable
+        | Observation::Secure => CandidateAction::Clear,
     }
+}
+
+/// Whether the media app's current focus still permits a media handoff that
+/// was decided at recording start. Only a different editable field or a secure
+/// field the user genuinely moved to revokes it; the media control no longer
+/// needing to hold focus (controls auto-hide, pages re-focus) does not.
+#[cfg(any(target_os = "macos", test))]
+fn handoff_focus_allowed(observation: Observation) -> bool {
+    !matches!(observation, Observation::Editable | Observation::Secure)
+}
+
+/// How long after a failed `AXManualAccessibility` attempt the same process is
+/// retried. A permanent latch would leave a T3 window without an exposed
+/// accessibility tree untracked until Smart destination is toggled.
+#[cfg(any(target_os = "macos", test))]
+const MANUAL_ACCESSIBILITY_RETRY: Duration = Duration::from_secs(5);
+
+#[cfg(any(target_os = "macos", test))]
+fn manual_retry_due(since_attempt: Duration) -> bool {
+    since_attempt >= MANUAL_ACCESSIBILITY_RETRY
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -629,24 +662,56 @@ mod tests {
             candidate_action(Observation::Editable, true),
             CandidateAction::Replace
         );
-        for observation in [
-            Observation::Secure,
-            Observation::Other,
-            Observation::Unavailable,
-        ] {
-            assert_eq!(candidate_action(observation, true), CandidateAction::Clear);
-        }
+        // A secure field always forgets the retained destination.
+        assert_eq!(
+            candidate_action(Observation::Secure, true),
+            CandidateAction::Clear
+        );
+        assert_eq!(
+            candidate_action(Observation::Secure, false),
+            CandidateAction::Clear
+        );
     }
 
     #[test]
-    fn only_media_and_self_overlay_preserve_a_recent_target_without_refreshing_it() {
-        for observation in [Observation::SupportedMedia, Observation::SelfOverlay] {
+    fn a_single_non_editable_sample_preserves_a_recent_target_without_refreshing_it() {
+        // Ordinary page focus or a failed lookup (for example Brave reporting
+        // web-area focus after the media click) must not forget the T3 field.
+        for observation in [
+            Observation::SupportedMedia,
+            Observation::SelfOverlay,
+            Observation::Other,
+            Observation::Unavailable,
+        ] {
             assert_eq!(
                 candidate_action(observation, true),
                 CandidateAction::Preserve
             );
             assert_eq!(candidate_action(observation, false), CandidateAction::Clear);
         }
+    }
+
+    #[test]
+    fn media_handoff_survives_focus_drift_but_not_a_new_field_or_secure_field() {
+        for observation in [
+            Observation::SupportedMedia,
+            Observation::Other,
+            Observation::Unavailable,
+            Observation::SelfOverlay,
+        ] {
+            assert!(handoff_focus_allowed(observation));
+        }
+        assert!(!handoff_focus_allowed(Observation::Editable));
+        assert!(!handoff_focus_allowed(Observation::Secure));
+    }
+
+    #[test]
+    fn manual_accessibility_is_retried_after_the_backoff_not_latched_forever() {
+        assert!(!manual_retry_due(Duration::ZERO));
+        assert!(!manual_retry_due(
+            MANUAL_ACCESSIBILITY_RETRY - Duration::from_nanos(1)
+        ));
+        assert!(manual_retry_due(MANUAL_ACCESSIBILITY_RETRY));
     }
 
     #[test]
