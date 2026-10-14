@@ -482,21 +482,29 @@ pub(super) fn capture(expected: &DeliveryTargetSnapshot, generation: u64) -> Sna
             }
 
             let observation = inspect_current_from_snapshot(&mut state, current);
+            // Only positive evidence keeps delivery clipboard-only. Focus that
+            // AX cannot classify (common in Chromium/Electron apps) falls back
+            // to the normal verified auto-paste policy instead.
             let route = match &observation {
                 CurrentObservation::Editable(_) => DeliveryRoute::CurrentEditable,
                 CurrentObservation::SupportedMedia => DeliveryRoute::RecentMedia,
-                CurrentObservation::SelfOverlay
-                | CurrentObservation::Secure
-                | CurrentObservation::Other
-                | CurrentObservation::Unavailable => {
+                CurrentObservation::SelfOverlay | CurrentObservation::Secure => {
                     apply_observation(&mut state, observation);
                     return Snapshot::Unavailable;
+                }
+                CurrentObservation::Other | CurrentObservation::Unavailable => {
+                    apply_observation(&mut state, observation);
+                    return Snapshot::Unverified;
                 }
             };
             apply_observation(&mut state, observation);
 
-            freeze_candidate(&mut state, expected.clone(), generation, route)
-                .unwrap_or(Snapshot::Unavailable)
+            freeze_candidate(&mut state, expected.clone(), generation, route).unwrap_or(match route
+            {
+                DeliveryRoute::CurrentEditable => Snapshot::Unverified,
+                // Never paste into the media app itself.
+                DeliveryRoute::RecentMedia => Snapshot::Unavailable,
+            })
         })
     })
 }

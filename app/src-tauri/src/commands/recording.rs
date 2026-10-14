@@ -1163,6 +1163,17 @@ fn smart_destination_status(
             "current"
         }
         Some(_) => "recent",
+        // Normal auto-paste targets the accepted frontmost app.
+        None if matches!(
+            smart_destination,
+            crate::smart_destination::Snapshot::Unverified
+        ) && matches!(
+            accepted_target,
+            crate::frontmost::DeliveryTargetSnapshot::Complete(_)
+        ) =>
+        {
+            "current"
+        }
         None => "unavailable",
     }
 }
@@ -2528,6 +2539,14 @@ async fn run_transcription_pipeline(
                 }
             }
         }
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.smart_destination_route",
+            recording_id,
+            accepted_route = recovery_smart_destination.route_code(),
+            delivery_route = smart_destination.route_code(),
+            "smart destination delivery route"
+        );
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
@@ -2573,6 +2592,13 @@ async fn run_transcription_pipeline(
             .await
         {
             Ok(Ok(Some(Ok(result)))) => {
+                tracing::info!(
+                    target: "pipeline",
+                    event_code = "pipeline.delivery_outcome",
+                    recording_id,
+                    outcome = ?result.outcome,
+                    "text delivery outcome"
+                );
                 if result.outcome != injector::InjectionOutcome::NoText {
                     app_handle.state::<State>().delivery_recovery.remember(
                         recording_id,
@@ -7514,6 +7540,28 @@ pub(crate) mod tests {
             identity: editor_target.clone(),
         };
         assert_eq!(smart_destination_status(&smart, &media_target), "recent");
+        assert_eq!(
+            smart_destination_status(
+                &crate::smart_destination::Snapshot::Unverified,
+                &media_target
+            ),
+            "current",
+            "an unproven field still auto-pastes into the accepted app",
+        );
+        assert_eq!(
+            smart_destination_status(
+                &crate::smart_destination::Snapshot::Unverified,
+                &DeliveryTargetSnapshot::Incomplete
+            ),
+            "unavailable",
+        );
+        assert_eq!(
+            smart_destination_status(
+                &crate::smart_destination::Snapshot::Unavailable,
+                &media_target
+            ),
+            "unavailable",
+        );
         let destination =
             select_recording_destination(&media_target, Some(&media_site), smart.clone());
         assert!(destination.target == editor_target);

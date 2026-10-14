@@ -53,9 +53,17 @@ and posts native Cmd+V once. It may return focus to the media application when
 that can be done safely. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
 
-Unknown, secure, expired, or changed destinations remain clipboard-only. This is
-intentionally stricter than normal auto-paste. Disable Smart destination to use
-the existing app-level delivery policy described above.
+When no field can be proven at recording start, for example because a
+Chromium or Electron app does not expose its focused element, the recording uses
+the normal auto-paste policy above against the accepted frontmost app, exactly as
+if Smart destination were off. Smart destination only adds behavior; uncertainty
+never makes ordinary dictation stricter than normal auto-paste.
+
+Positive evidence still keeps delivery clipboard-only: a secure field, Murmur's own
+window, a supported media control with no retained field, or a captured
+destination that changed or expired before delivery. Each delivery logs a
+content-free `pipeline.smart_destination_route` (`smart_target`, `normal_paste`,
+`clipboard_only`, or `disabled`) and a `pipeline.delivery_outcome`.
 
 Tracking is local and ephemeral. It does not capture screenshots, read input
 values or selected text, query browser URLs, or call a model/API. It reads
@@ -68,7 +76,9 @@ added to diagnostic logs.
 An explicit **Paste Last** in smart mode creates a fresh one-shot field check
 only after the user focuses the original destination process. It never replays
 the recording's consumed capability or pastes back into an unseen background
-field. A concurrent recording prevents the retry from changing the clipboard.
+field. If that fresh check cannot prove a field in the focused original process,
+the retry uses the normal auto-paste policy. A concurrent recording prevents the
+retry from changing the clipboard.
 
 ### Delay Rationale
 

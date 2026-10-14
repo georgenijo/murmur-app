@@ -332,7 +332,7 @@ The Settings disclosure explicitly states that the configured CLI may send the q
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
 | `autoPaste` | `boolean` | `false` | `true` / `false` | Stored preference for automatically pasting transcribed text after clipboard copy. Requires macOS Accessibility permission. Text is always copied. When either file-output toggle is on, the UI shows auto-paste unavailable without overwriting this preference. An enabled preference is labeled paused and resumes when file output is off; a disabled preference remains off. |
-| `smartDestinationEnabled` | `boolean` | `false` | `true` / `false` | macOS-only opt-in that keeps dictation associated with the recent text field while supported media controls are used. The switch is available only while auto-paste is active and file output is off. If auto-paste or file output makes it unavailable, the enabled preference remains stored and resumes when delivery is eligible again. If the destination is unclear, text stays on the clipboard. Missing or malformed persisted values fail closed to `false`. |
+| `smartDestinationEnabled` | `boolean` | `false` | `true` / `false` | macOS-only opt-in that keeps dictation associated with the recent text field while supported media controls are used. The switch is available only while auto-paste is active and file output is off. If auto-paste or file output makes it unavailable, the enabled preference remains stored and resumes when delivery is eligible again. If no field can be proven, delivery uses normal auto-paste; secure fields, media without a retained field, and changed destinations stay on the clipboard. Missing or malformed persisted values fail closed to `false`. |
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
 | `correctionShortcutEnabled` | `boolean` | `false` | `true` / `false` | Enables ⌘⇧E to start or finish a spoken correction of the latest delivery. The configured microphone and local transform model are used. |
 | `pasteLastShortcut` | `PasteLastShortcut \| null` | `null` | `'command_shift_v'` (⌘⇧V), `'command_option_v'` (⌘⌥V), `'command_control_v'` (⌘⌃V), or `null` to disable | Configures the global Paste Last / Retry Delivery chord. Changes take effect immediately; invalid or Murmur-owned conflicting identifiers fail closed, and native registration failure leaves the last working value selected. Retried text stays memory-only and uses the normal secure delivery checks. Settings v4 migrates the former `pasteLastShortcutEnabled: true` to ⌘⇧V and `false`/absent to Disabled. |
@@ -359,9 +359,12 @@ The remembered field is kept only while focus moves to a supported media control
 Before delivery, Murmur verifies the same app, window, field, and insertion point.
 Delivering to a recent field may briefly activate that app; Murmur returns to the
 media app only when it can do so safely.
-A selected range in a background field is refused rather than replaced. If the
-app or field is unknown, changed, expired, or otherwise cannot be verified, no
-automatic insertion is attempted and the finished text remains on the clipboard.
+A selected range in a background field is refused rather than replaced. If a
+remembered field changed, expired, or can no longer be verified, no automatic
+insertion is attempted and the finished text remains on the clipboard. If no
+field could be identified when recording started, Murmur uses normal auto-paste
+into the frontmost app, as it would with Smart destination off; secure fields
+and media apps without a remembered field stay clipboard-only.
 
 ## Vocabulary Settings
 

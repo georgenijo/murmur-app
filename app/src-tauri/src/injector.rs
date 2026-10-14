@@ -377,7 +377,7 @@ pub(crate) fn inject_with_destination(
     target: &crate::frontmost::DeliveryTargetSnapshot,
     smart: &crate::smart_destination::Snapshot,
 ) -> Result<InjectionResult, String> {
-    if matches!(smart, crate::smart_destination::Snapshot::Disabled) || !auto_paste {
+    if smart.uses_normal_paste() || !auto_paste {
         return inject_text(text, auto_paste, delay_ms, target);
     }
     if text.trim().is_empty() {

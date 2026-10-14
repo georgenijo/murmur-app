@@ -23,12 +23,10 @@ enum RecoveryRoute {
 }
 
 fn recovery_route(snapshot: &crate::smart_destination::Snapshot) -> RecoveryRoute {
-    match snapshot {
-        crate::smart_destination::Snapshot::Disabled => RecoveryRoute::NormalPaste,
-        crate::smart_destination::Snapshot::Unavailable
-        | crate::smart_destination::Snapshot::Target { .. } => {
-            RecoveryRoute::VerifiedSmartDestination
-        }
+    if snapshot.uses_normal_paste() {
+        RecoveryRoute::NormalPaste
+    } else {
+        RecoveryRoute::VerifiedSmartDestination
     }
 }
 
@@ -172,7 +170,8 @@ pub(crate) async fn retry_last_delivery(
             };
         latest.smart_destination = if retry_target_matches(&latest.target, &current) {
             match crate::smart_destination::capture(&app_handle, &current, true).await {
-                snapshot @ crate::smart_destination::Snapshot::Target { .. } => snapshot,
+                snapshot @ (crate::smart_destination::Snapshot::Target { .. }
+                | crate::smart_destination::Snapshot::Unverified) => snapshot,
                 _ => crate::smart_destination::Snapshot::Unavailable,
             }
         } else {
@@ -451,7 +450,11 @@ mod tests {
         assert_eq!(
             recovery_route(&crate::smart_destination::Snapshot::Disabled),
             RecoveryRoute::NormalPaste,
-            "only the explicit disabled variant preserves legacy retry behavior",
+        );
+        assert_eq!(
+            recovery_route(&crate::smart_destination::Snapshot::Unverified),
+            RecoveryRoute::NormalPaste,
+            "a recording that never proved a field uses the normal retry policy",
         );
     }
 }

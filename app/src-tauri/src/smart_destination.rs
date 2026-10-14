@@ -43,7 +43,14 @@ fn capture_gate(accepted_enabled: bool, currently_enabled: bool) -> CaptureGate 
 pub(crate) enum Snapshot {
     #[default]
     Disabled,
+    /// Fail closed: delivery stays clipboard-only (secure or self-owned focus,
+    /// supported media without a retained field, a stale capture, or a
+    /// captured destination that could not be prepared).
     Unavailable,
+    /// No field was positively proven at acceptance, but nothing positively
+    /// ruled delivery out. Delivery uses the normal verified auto-paste
+    /// policy, exactly as it would with Smart destination off.
+    Unverified,
     Target {
         token: u64,
         revision: u64,
@@ -55,7 +62,23 @@ impl Snapshot {
     pub(crate) fn identity(&self) -> Option<&DeliveryTargetSnapshot> {
         match self {
             Self::Target { identity, .. } => Some(identity),
-            Self::Disabled | Self::Unavailable => None,
+            Self::Disabled | Self::Unavailable | Self::Unverified => None,
+        }
+    }
+
+    /// Whether delivery follows the normal auto-paste policy instead of the
+    /// smart one-shot field capability.
+    pub(crate) fn uses_normal_paste(&self) -> bool {
+        matches!(self, Self::Disabled | Self::Unverified)
+    }
+
+    /// Content-free routing label for diagnostics.
+    pub(crate) fn route_code(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "clipboard_only",
+            Self::Unverified => "normal_paste",
+            Self::Target { .. } => "smart_target",
         }
     }
 }
@@ -175,12 +198,14 @@ pub async fn capture(
         })
         .is_err()
     {
-        return Snapshot::Unavailable;
+        return Snapshot::Unverified;
     }
 
+    // A capture that cannot finish proves nothing either way, so it must not
+    // make delivery stricter than the normal auto-paste policy.
     match tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await {
         Ok(Ok(snapshot)) => snapshot,
-        Ok(Err(_)) | Err(_) => Snapshot::Unavailable,
+        Ok(Err(_)) | Err(_) => Snapshot::Unverified,
     }
 }
 
@@ -386,6 +411,20 @@ mod tests {
         assert!(matches!(snapshot, Snapshot::Disabled));
         assert!(snapshot.identity().is_none());
         assert!(Snapshot::Unavailable.identity().is_none());
+        assert!(Snapshot::Unverified.identity().is_none());
+    }
+
+    #[test]
+    fn only_unproven_and_disabled_snapshots_use_normal_paste() {
+        assert!(Snapshot::Disabled.uses_normal_paste());
+        assert!(Snapshot::Unverified.uses_normal_paste());
+        assert!(!Snapshot::Unavailable.uses_normal_paste());
+        assert!(!Snapshot::Target {
+            token: 1,
+            revision: 1,
+            identity: DeliveryTargetSnapshot::Incomplete,
+        }
+        .uses_normal_paste());
     }
 
     #[test]
