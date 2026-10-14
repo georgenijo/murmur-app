@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.12] - 2026-10-14
+
 ### Overlay
 
 - Keep the live transcription preview directly beneath the floating pill on external displays, including while its controls expand or its calibrated position changes.
