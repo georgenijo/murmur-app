@@ -330,8 +330,7 @@ mod native {
         let mut frames = Vec::new();
         for window in list.iter() {
             // Borrowed from `list`; the dictionary is retained for this scope.
-            let window =
-                unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
+            let window = unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
             if number(&window, kCGWindowLayer as *const c_void) != Some(STATUS_WINDOW_LAYER)
                 || number(&window, kCGWindowNumber as *const c_void) == Some(exclude_window_number)
             {
