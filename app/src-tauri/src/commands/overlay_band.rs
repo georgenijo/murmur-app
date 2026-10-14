@@ -327,16 +327,24 @@ mod native {
             let value = dict.find(key)?;
             unsafe { CFNumber::wrap_under_get_rule(*value as CFNumberRef) }.to_i64()
         };
+        // SAFETY: immutable CoreFoundation string constants.
+        let (layer_key, number_key, bounds_key) = unsafe {
+            (
+                kCGWindowLayer as *const c_void,
+                kCGWindowNumber as *const c_void,
+                kCGWindowBounds as *const c_void,
+            )
+        };
         let mut frames = Vec::new();
         for window in list.iter() {
             // Borrowed from `list`; the dictionary is retained for this scope.
             let window = unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
-            if number(&window, kCGWindowLayer as *const c_void) != Some(STATUS_WINDOW_LAYER)
-                || number(&window, kCGWindowNumber as *const c_void) == Some(exclude_window_number)
+            if number(&window, layer_key) != Some(STATUS_WINDOW_LAYER)
+                || number(&window, number_key) == Some(exclude_window_number)
             {
                 continue;
             }
-            let Some(bounds) = window.find(kCGWindowBounds as *const c_void) else {
+            let Some(bounds) = window.find(bounds_key) else {
                 continue;
             };
             let bounds = unsafe { CFDictionary::wrap_under_get_rule(*bounds as CFDictionaryRef) };
