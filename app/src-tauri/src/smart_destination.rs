@@ -333,6 +333,14 @@ enum DeliveryRoute {
     RecentMedia,
 }
 
+/// Only a media handoff reads the field back after the key post, to decide
+/// whether focus can be returned to the media app. Other routes return
+/// `Posted` without settling or querying the field.
+#[cfg(any(target_os = "macos", test))]
+fn verifies_after_post(route: DeliveryRoute) -> bool {
+    route == DeliveryRoute::RecentMedia
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn selection_allowed(route: DeliveryRoute, selection_length: usize) -> bool {
     route == DeliveryRoute::CurrentEditable || selection_length == 0
@@ -928,6 +936,12 @@ mod tests {
         assert!(!selection_allowed(DeliveryRoute::RecentMedia, 1));
         assert!(selection_allowed(DeliveryRoute::CurrentEditable, 0));
         assert!(selection_allowed(DeliveryRoute::CurrentEditable, 12));
+    }
+
+    #[test]
+    fn only_media_handoffs_settle_and_read_back_after_the_post() {
+        assert!(verifies_after_post(DeliveryRoute::RecentMedia));
+        assert!(!verifies_after_post(DeliveryRoute::CurrentEditable));
     }
 
     #[test]

@@ -331,6 +331,41 @@ export async function saveMeetingExport(
   return path;
 }
 
+export interface MeetingBundlePreview {
+  audioSegments: number;
+  audioBytes: number;
+  unavailableSegments: number;
+  maxAudioBytes: number;
+}
+export interface MeetingBundleReceipt { bytes: number; includedSegments: number; omittedSegments: number }
+
+/** Segment count and total audio size of the with-audio bundle, shown before the save dialog. */
+export async function previewMeetingBundle(id: string): Promise<MeetingBundlePreview> {
+  return invoke<MeetingBundlePreview>('get_meeting_bundle_preview', { id });
+}
+
+/** Save the review document plus retained audio as a .zip; null when the dialog is cancelled. */
+export async function saveMeetingBundle(
+  id: string,
+  startedAtMs: number,
+  format: MeetingReviewExportFormat,
+): Promise<{ path: string; receipt: MeetingBundleReceipt } | null> {
+  const stamp = new Date(startedAtMs).toISOString().slice(0, 10);
+  const path = await save({
+    defaultPath: `Murmur Meeting ${stamp}.zip`,
+    filters: [{ name: 'Murmur meeting with audio', extensions: ['zip'] }],
+  });
+  if (typeof path !== 'string' || path.length === 0) return null;
+  const receipt = await invoke<MeetingBundleReceipt>('save_meeting_bundle_export', { id, format, path });
+  return { path, receipt };
+}
+
+export function formatBundleSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function formatMeetingTimestamp(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(seconds / 3600);

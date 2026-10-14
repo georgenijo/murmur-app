@@ -33,7 +33,7 @@ describe('overlay geometry contract fixture', () => {
       dropdownH: 64, wingW: 36, floating: false,
     });
     expect(fixture.external).toEqual({
-      windowW: 280, collapsedH: 36, expandedH: 100,
+      windowW: 280, collapsedH: 30, expandedH: 94,
       pillIdleW: 280, pillActiveW: 280,
       pillMarginIdle: 0, pillMarginActive: 0,
       dropdownH: 64, wingW: 36, floating: true,

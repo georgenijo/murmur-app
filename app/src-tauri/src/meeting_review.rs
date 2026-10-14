@@ -176,7 +176,7 @@ pub struct RestoreMeetingReviewRequest {
     pub expected_review_revision: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MeetingReviewExportFormat {
     Markdown,

@@ -3,9 +3,9 @@ use super::{
     classify_foreground_focus, delivery_is_confirmed, editable_observation, generation_is_current,
     generation_is_latest, handoff_focus_allowed, identity_relation, manual_failure_to_record,
     manual_retry_due, notification_invalidates, selection_allowed,
-    t3_empty_composer_delivery_is_confirmed, CandidateAction, CandidateNotification,
-    CapabilityStage, DeliveryRoute, EditableStatus, IdentityRelation, InsertOutcome,
-    ManualAccessibilityAttempt, Observation, PrepareOutcome, Snapshot,
+    t3_empty_composer_delivery_is_confirmed, verifies_after_post, CandidateAction,
+    CandidateNotification, CapabilityStage, DeliveryRoute, EditableStatus, IdentityRelation,
+    InsertOutcome, ManualAccessibilityAttempt, Observation, PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
@@ -723,34 +723,38 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
                 return InsertOutcome::Refused;
             }
 
-            let _ = sleep_within_budget(POST_SETTLE);
-            let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
-                .ok()
-                .and_then(|value| decode_range(value.as_type()));
-            let character_count_after =
-                copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
-            let confirmed = delivery_is_confirmed(
-                expected_range,
-                inserted_length,
-                range_after,
-                character_count_before,
-                character_count_after,
-            ) || complete_identity(&frozen.destination_identity)
-                .is_some_and(|identity| known_t3_bundle_id(&identity.bundle_id))
-                && t3_empty_composer_delivery_is_confirmed(
+            // The read-back below only gates returning focus to the media app.
+            // Other routes have nothing to decide, so they skip the settle.
+            if verifies_after_post(frozen.route) {
+                let _ = sleep_within_budget(POST_SETTLE);
+                let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
+                    .ok()
+                    .and_then(|value| decode_range(value.as_type()));
+                let character_count_after =
+                    copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
+                let confirmed = delivery_is_confirmed(
                     expected_range,
                     inserted_length,
                     range_after,
                     character_count_before,
                     character_count_after,
-                );
-            if confirmed {
-                maybe_restore_media_after_post(
-                    &frozen,
-                    range_after.expect("confirmed range is present"),
-                    character_count_after.expect("confirmed count is present"),
-                    pasteboard_change,
-                );
+                ) || complete_identity(&frozen.destination_identity)
+                    .is_some_and(|identity| known_t3_bundle_id(&identity.bundle_id))
+                    && t3_empty_composer_delivery_is_confirmed(
+                        expected_range,
+                        inserted_length,
+                        range_after,
+                        character_count_before,
+                        character_count_after,
+                    );
+                if confirmed {
+                    maybe_restore_media_after_post(
+                        &frozen,
+                        range_after.expect("confirmed range is present"),
+                        character_count_after.expect("confirmed count is present"),
+                        pasteboard_change,
+                    );
+                }
             }
             state.invalidate_candidate();
             InsertOutcome::Posted

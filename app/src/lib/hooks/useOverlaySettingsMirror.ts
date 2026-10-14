@@ -8,7 +8,6 @@ import {
   smartAutoMicrophoneRequest,
 } from '../settings';
 import type { Settings, SmartAutoMicrophoneRequest } from '../settings';
-import { buildConfigureOptions } from '../dictation';
 
 export interface UseOverlaySettingsMirrorArgs {
   setDisabled: (value: boolean) => void;
@@ -98,7 +97,9 @@ export function useOverlaySettingsMirror({
       saveSettings(nextSettings);
       applySettingsSnapshot(nextSettings);
       try {
-        await invoke('configure_dictation', { options: buildConfigureOptions(nextSettings) });
+        // This webview has a separate Settings snapshot. Send only the value it
+        // owns so it cannot restore older vocabulary or other main-window edits.
+        await invoke('configure_dictation', { options: { autoPaste: next } });
       } catch (err) {
         const fresh = loadSettings();
         if (operation === autoPasteOperation.current && fresh.autoPaste === next) {

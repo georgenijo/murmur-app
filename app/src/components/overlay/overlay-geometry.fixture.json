@@ -1,8 +1,8 @@
 {
   "notched":  { "windowW":257,"collapsedH":32,"expandedH":96,"pillIdleW":221,"pillActiveW":257,"pillMarginIdle":0,"pillMarginActive":0,"dropdownH":64,"wingW":36,"floating":false },
-  "external": { "windowW":280,"collapsedH":36,"expandedH":100,"pillIdleW":280,"pillActiveW":280,"pillMarginIdle":0,"pillMarginActive":0,"dropdownH":64,"wingW":36,"floating":true },
+  "external": { "windowW":280,"collapsedH":30,"expandedH":94,"pillIdleW":280,"pillActiveW":280,"pillMarginIdle":0,"pillMarginActive":0,"dropdownH":64,"wingW":36,"floating":true },
   "fallback": { "windowW":280,"collapsedH":36,"expandedH":100,"pillIdleW":280,"pillActiveW":280,"pillMarginIdle":0,"pillMarginActive":0,"dropdownH":64,"wingW":36,"floating":true },
   "meetingSuggestionNotched": { "windowW":320,"collapsedH":32,"expandedH":168,"pillIdleW":221,"pillActiveW":320,"pillMarginIdle":31.5,"pillMarginActive":0,"dropdownH":136,"wingW":36,"floating":false },
-  "meetingSuggestionExternal": { "windowW":320,"collapsedH":36,"expandedH":172,"pillIdleW":280,"pillActiveW":320,"pillMarginIdle":20,"pillMarginActive":0,"dropdownH":136,"wingW":36,"floating":true },
+  "meetingSuggestionExternal": { "windowW":320,"collapsedH":30,"expandedH":166,"pillIdleW":280,"pillActiveW":320,"pillMarginIdle":20,"pillMarginActive":0,"dropdownH":136,"wingW":36,"floating":true },
   "meetingSuggestionFallback": { "windowW":320,"collapsedH":36,"expandedH":172,"pillIdleW":280,"pillActiveW":320,"pillMarginIdle":20,"pillMarginActive":0,"dropdownH":136,"wingW":36,"floating":true }
 }

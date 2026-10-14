@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "0.51.5"
+version = "0.51.7"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -49,6 +49,8 @@ sherpa-onnx = "1.13"
 # Parakeet model bundles ship as .tar.bz2 (sherpa-onnx releases); used to extract them.
 tar = "0.4"
 bzip2 = "0.5"
+# Meeting bundle export writes a stored (never recompressed) .zip; no codecs needed.
+zip = { version = "4.6", default-features = false }
 arboard = "3"
 hound = "3.5"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "isomp4", "aac", "alac"] }
