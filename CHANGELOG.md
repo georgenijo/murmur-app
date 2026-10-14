@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.5] - 2026-10-14
+
 ### Dictation
 
 - Fixed the completion sound never playing after a dictation was pasted or
