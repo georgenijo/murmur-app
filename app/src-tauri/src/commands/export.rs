@@ -20,6 +20,20 @@ const MAX_EXPORT_BYTES: usize = 8 * 1024 * 1024;
 /// Reject anything that isn't an absolute path to a writable document with an
 /// allow-listed extension inside an existing directory.
 pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
+    validate_path_with_extensions(path, &ALLOWED_EXTENSIONS, ".json, .md, .txt, .srt or .vtt")
+}
+
+/// Same checks as [`validate_export_path`] for a meeting bundle, whose only
+/// legal extension is `.zip`.
+pub(crate) fn validate_bundle_path(path: &Path) -> Result<(), String> {
+    validate_path_with_extensions(path, &["zip"], ".zip")
+}
+
+fn validate_path_with_extensions(
+    path: &Path,
+    allowed: &[&str],
+    expected: &str,
+) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("Export path must be absolute".to_string());
     }
@@ -39,9 +53,9 @@ pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .ok_or_else(|| "Export file name must have an extension".to_string())?;
-    if !ALLOWED_EXTENSIONS.contains(&extension.as_str()) {
+    if !allowed.contains(&extension.as_str()) {
         return Err(format!(
-            "Unsupported export type '.{extension}' (expected .json, .md, .txt, .srt or .vtt)"
+            "Unsupported export type '.{extension}' (expected {expected})"
         ));
     }
     let parent = path
@@ -87,6 +101,37 @@ pub(crate) fn write_text_export(path: &Path, contents: &str) -> Result<u64, Stri
     Ok(contents.len() as u64)
 }
 
+/// Atomically publish a file produced by `write` at `path`: the bytes go to a
+/// hidden temp sibling that is renamed over the destination only after `write`
+/// succeeds, and removed on any failure. Used for exports too large to hold in
+/// memory; the caller validates `path` first.
+pub(crate) fn publish_with<F>(path: &Path, write: F) -> Result<u64, String>
+where
+    F: FnOnce(&mut std::fs::File) -> Result<u64, String>,
+{
+    let temp = temp_path_for(path);
+    let written = std::fs::File::create(&temp)
+        .map_err(|e| format!("Failed to write export: {e}"))
+        .and_then(|mut file| {
+            let written = write(&mut file)?;
+            file.sync_all()
+                .map_err(|e| format!("Failed to write export: {e}"))?;
+            Ok(written)
+        });
+    let written = match written {
+        Ok(written) => written,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+    };
+    if let Err(e) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("Failed to publish export: {e}"));
+    }
+    Ok(written)
+}
+
 /// Write a user-authored text export to a path the user chose in the native
 /// save dialog. Returns the number of bytes written.
 #[tauri::command]
@@ -116,6 +161,43 @@ mod tests {
         let bytes = write_text_export(&path, "# hi\n").unwrap();
         assert_eq!(bytes, 5);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# hi\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bundle_paths_accept_only_zip() {
+        let dir = temp_dir("bundle_ext");
+        assert!(validate_bundle_path(&dir.join("meeting.ZIP")).is_ok());
+        for name in ["meeting.md", "meeting.txt", "meeting.sh"] {
+            let error = validate_bundle_path(&dir.join(name)).unwrap_err();
+            assert!(error.contains("Unsupported export type"), "{name}: {error}");
+        }
+        assert!(validate_export_path(&dir.join("meeting.zip")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publish_with_is_atomic_and_cleans_up_failed_writes() {
+        use std::io::Write;
+        let dir = temp_dir("publish_with");
+        let path = dir.join("meeting.zip");
+        std::fs::write(&path, "previous").unwrap();
+        let error = publish_with(&path, |file| {
+            file.write_all(b"partial").unwrap();
+            Err("boom".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(error, "boom");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let written = publish_with(&path, |file| {
+            file.write_all(b"fresh").unwrap();
+            Ok(5)
+        })
+        .unwrap();
+        assert_eq!(written, 5);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

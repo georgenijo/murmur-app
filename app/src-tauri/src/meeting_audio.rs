@@ -16,7 +16,9 @@ pub(crate) const AUDIO_UNAVAILABLE: &str = "This retained meeting audio is unava
 const INVALID_REQUEST: &str = "The meeting audio request is invalid.";
 const CAPTURE_BUSY: &str =
     "Pause recording or finish the active voice task before playing meeting audio.";
-const INVALIDATED: &str =
+pub(crate) const BUNDLE_CAPTURE_BUSY: &str =
+    "Pause recording or finish the active voice task before exporting meeting audio.";
+pub(crate) const INVALIDATED: &str =
     "Meeting audio changed or was deleted. Open the meeting again before playing.";
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -120,7 +122,7 @@ pub(crate) fn validate_manifest_request(
     }
 }
 
-fn require_main_window(label: &str) -> Result<(), String> {
+pub(crate) fn require_main_window(label: &str) -> Result<(), String> {
     if label == "main" {
         Ok(())
     } else {
@@ -128,7 +130,7 @@ fn require_main_window(label: &str) -> Result<(), String> {
     }
 }
 
-fn capture_busy(state: &State) -> bool {
+pub(crate) fn capture_busy(state: &State) -> bool {
     state.app_state.dictation.lock_or_recover().status != crate::state::DictationStatus::Idle
         || state.app_state.meeting_blocks_asr()
         || state.app_state.transform_status().blocks_recording()
@@ -181,9 +183,9 @@ pub async fn get_meeting_audio_manifest(
 static AUDIO_READERS: AtomicUsize = AtomicUsize::new(0);
 static AUDIO_REVISION: AtomicU64 = AtomicU64::new(0);
 
-struct AudioReadPermit;
+pub(crate) struct AudioReadPermit;
 impl AudioReadPermit {
-    fn acquire() -> Result<Self, String> {
+    pub(crate) fn acquire() -> Result<Self, String> {
         AUDIO_READERS
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 2).then_some(count + 1)
@@ -285,10 +287,7 @@ fn read_audio_range(
     revision: u64,
 ) -> Result<Vec<u8>, String> {
     validate_range_request(session_id, segment_id, offset, length)?;
-    let reference = repository.audio_reference(session_id, segment_id)?;
-    let mut file = open_audio_file(&reference.path)?;
-    let metadata = file.metadata().map_err(|_| AUDIO_UNAVAILABLE)?;
-    validate_wav(&mut file, metadata.len(), reference.duration_ms)?;
+    let (reference, mut file, metadata) = open_validated_audio(repository, session_id, segment_id)?;
     if offset > metadata.len() {
         return Err(INVALID_REQUEST.into());
     }
@@ -301,6 +300,55 @@ fn read_audio_range(
         repository, session_id, segment_id, &reference, &file, &metadata, revision,
     )?;
     Ok(bytes)
+}
+
+/// Resolve a retained segment to an open, WAV-validated file through the same
+/// ownership, no-follow, and format checks playback uses. Every audio read,
+/// including the meeting bundle export, goes through here.
+fn open_validated_audio(
+    repository: &MeetingRepository,
+    session_id: &str,
+    segment_id: i64,
+) -> Result<(OwnedAudioReference, File, std::fs::Metadata), String> {
+    let reference = repository.audio_reference(session_id, segment_id)?;
+    let mut file = open_audio_file(&reference.path)?;
+    let metadata = file.metadata().map_err(|_| AUDIO_UNAVAILABLE)?;
+    validate_wav(&mut file, metadata.len(), reference.duration_ms)?;
+    Ok((reference, file, metadata))
+}
+
+/// Byte length of a retained segment's validated WAV file, without reading its samples.
+pub(crate) fn audio_file_len(
+    repository: &MeetingRepository,
+    session_id: &str,
+    segment_id: i64,
+) -> Result<u64, String> {
+    validate_range_request(session_id, segment_id, 0, 1)?;
+    open_validated_audio(repository, session_id, segment_id).map(|(_, _, metadata)| metadata.len())
+}
+
+/// Read one whole retained segment exactly as stored (never transcoded). A file
+/// that changed or was revoked during the read fails with `INVALIDATED`.
+pub(crate) fn read_audio_whole(
+    repository: &MeetingRepository,
+    session_id: &str,
+    segment_id: i64,
+    revision: u64,
+) -> Result<Vec<u8>, String> {
+    validate_range_request(session_id, segment_id, 0, 1)?;
+    let (reference, mut file, metadata) = open_validated_audio(repository, session_id, segment_id)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| AUDIO_UNAVAILABLE)?;
+    let mut bytes = vec![0; metadata.len() as usize];
+    file.read_exact(&mut bytes).map_err(|_| AUDIO_UNAVAILABLE)?;
+    revalidate_audio_read(
+        repository, session_id, segment_id, &reference, &file, &metadata, revision,
+    )?;
+    Ok(bytes)
+}
+
+pub(crate) fn current_audio_revision() -> u64 {
+    AUDIO_REVISION.load(Ordering::Acquire)
 }
 
 fn revalidate_audio_read(

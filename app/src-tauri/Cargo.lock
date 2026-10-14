@@ -6169,6 +6169,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "whisper-rs",
+ "zip",
 ]
 
 [[package]]

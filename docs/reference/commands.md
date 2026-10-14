@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 233 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 235 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -111,6 +111,8 @@ than JSON or base64.
 | `get_meeting_audio_manifest` | `sessionId`, `fromMs?`, `channel?: all \| me \| them`, `cursor?: {startMs, segmentId}`, `limit?` | `Result<AudioManifest, String>` | Metadata-only timeline of retained final/failed chunks for a finished session. Defaults to position zero, All, and 128 entries; caps pages at 256. Uses `(startMs, segmentId)` keyset pagination and includes chunks overlapping `fromMs`. The global duration is independent of the selected channel. |
 | `read_meeting_audio_range` | `sessionId`, `segmentId`, `offsetBytes`, `lengthBytes` | `Result<binary response, String>` | Revalidates session/segment ownership and retained-audio consent, refuses symlinks and nonregular files, validates mono 16 kHz PCM16 WAV structure, and returns at most 64 KiB. A file may be at most 512 KiB; exact EOF returns an empty response. Busy capture and invalidated reads fail without returning audio. |
 | `get_meeting_audio_capture_busy` | — | `Result<bool, String>` | Native playback-admission snapshot for dictation, meeting/recovery/summary, transform, query, microphone preview/startup checks, and actual capture activity. Performs no Calendar or model-installation probe. |
+| `get_meeting_bundle_preview` | `id` | `Result<BundlePreview, String>` | Main-window-only size check for a with-audio export: `audioSegments`, `audioBytes`, `unavailableSegments` (retained rows whose WAV is missing or unreadable), and `maxAudioBytes` (2 GiB). Refused for sessions without retained audio, unfinished sessions, busy capture, or when no audio file is readable. |
+| `save_meeting_bundle_export` | `id`, `format`, `path` | `Result<BundleReceipt, String>` | Main-window-only. Atomically writes a `.zip` holding `review.<ext>` (byte-for-byte the document export for `format`), every readable retained WAV as `audio/segment-<id>-<me\|them>.wav` stored without re-encoding, and `manifest.json`. Missing segments are omitted and listed in the manifest (`complete: false`); the receipt returns `bytes`, `includedSegments`, and `omittedSegments`. Audio over 2 GiB, retention off, or no readable audio is refused. |
 
 `AudioManifest` is either `{kind: unavailable, reason: notRetained | notFinished | noAudio}`
 or `{kind: available, sessionId, durationMs, chunks, nextCursor}`. Each chunk has
