@@ -1086,6 +1086,14 @@ pub(crate) fn position_overlay_default(
             (centered_x, centered_y + applied_position.applied_offset)
         };
 
+        // A partial native update invalidates the old frame. Publish the new
+        // frame only after both setters succeed; otherwise the next resize
+        // must recover from the actual window frame.
+        *overlay
+            .app_handle()
+            .state::<State>()
+            .overlay_frame
+            .lock_or_recover() = None;
         let sized = if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
         {
             tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
@@ -1246,6 +1254,9 @@ pub async fn set_overlay_expanded(
                 };
                 let (x, y) =
                     resized_logical_position(logical_position, current_width, applied.window_w);
+                // Never retain an authoritative old frame after a partially
+                // successful size/position pair.
+                *state.overlay_frame.lock_or_recover() = None;
                 overlay
                     .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
                     .map_err(|error| error.to_string())?;
