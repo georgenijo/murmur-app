@@ -854,16 +854,31 @@ fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &Event
 static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Set to true by the timer thread when it promotes a press to a real hold.
 static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
-/// The current hold press began while a double-tap recording was running.
-static HOLD_OVER_TOGGLE: AtomicBool = AtomicBool::new(false);
+/// The current hold was promoted while a recording it did not start was
+/// already running. Decided at promotion from the backend's own dictation
+/// state (the frontend-synced double-tap flag can lag a fresh start), and
+/// stored before `HOLD_PROMOTED`.
+static HOLD_OVER_RECORDING: AtomicBool = AtomicBool::new(false);
 
 /// Whether a promoted hold ending with `event_type` stops the recording. A
-/// hold that began during a double-tap recording did not start it: the held
-/// key is most likely a modifier of another shortcut (Cmd+Shift+4), so the
-/// combo key ends the hold without stopping. Releasing the key on its own
-/// still stops, as before.
-fn promoted_hold_stops_recording(over_toggle_recording: bool, event_type: &EventType) -> bool {
-    !(over_toggle_recording && matches!(event_type, EventType::KeyPress(_)))
+/// hold promoted over a running recording did not start it: the held key is
+/// most likely a modifier of another shortcut (Cmd+Shift+4), so the combo key
+/// ends the hold without stopping. Releasing the key on its own still stops,
+/// as before.
+fn promoted_hold_stops_recording(over_recording: bool, event_type: &EventType) -> bool {
+    !(over_recording && matches!(event_type, EventType::KeyPress(_)))
+}
+
+/// A dictation is in flight that the current hold did not start.
+fn dictation_in_flight(handle: &tauri::AppHandle) -> bool {
+    handle.try_state::<crate::State>().is_some_and(|state| {
+        matches!(
+            state.app_state.dictation.lock_or_recover().status,
+            crate::state::DictationStatus::Starting
+                | crate::state::DictationStatus::Recording
+                | crate::state::DictationStatus::Recovering
+        )
+    })
 }
 /// When true, the Both-mode callback ignores all key events.
 /// Set by lib.rs when the transcription pipeline is running.
@@ -1646,11 +1661,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 // Don't emit hold-down-start yet — start a timer.
                                 // The timer will promote after MAX_HOLD_DURATION_MS.
                                 HOLD_PROMOTED.store(false, Ordering::SeqCst);
-                                let over_toggle = DOUBLE_TAP_DETECTOR
-                                    .lock_or_recover()
-                                    .as_ref()
-                                    .is_some_and(|d| d.recording);
-                                HOLD_OVER_TOGGLE.store(over_toggle, Ordering::SeqCst);
+                                HOLD_OVER_RECORDING.store(false, Ordering::SeqCst);
                                 let press_id =
                                     HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
                                 let timer_handle = handle.clone();
@@ -1667,10 +1678,14 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                                 .map(|d| d.state == HoldState::Held)
                                                 .unwrap_or(false)
                                         };
-                                        if still_held && over_toggle {
-                                            // Already recording: the hold owns nothing to start.
+                                        if still_held && dictation_in_flight(&timer_handle) {
+                                            // Already recording: the hold starts nothing, but a
+                                            // physical hold still pauses silence auto-stop.
+                                            HOLD_OVER_RECORDING.store(true, Ordering::SeqCst);
                                             HOLD_PROMOTED.store(true, Ordering::SeqCst);
-                                            tracing::info!(target: "keyboard", "BOTH -> timer promoted hold during toggle recording");
+                                            tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-start");
+                                            let _ =
+                                                timer_handle.emit("hold-over-recording-start", ());
                                         } else if still_held {
                                             HOLD_PROMOTED.store(true, Ordering::SeqCst);
                                             tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
@@ -1687,11 +1702,12 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
 
                                 if promoted
                                     && !promoted_hold_stops_recording(
-                                        HOLD_OVER_TOGGLE.load(Ordering::SeqCst),
+                                        HOLD_OVER_RECORDING.load(Ordering::SeqCst),
                                         &event.event_type,
                                     )
                                 {
-                                    tracing::info!(target: "keyboard", "BOTH -> combo during toggle recording; recording continues");
+                                    tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-end (combo; recording continues)");
+                                    let _ = handle.emit("hold-over-recording-end", ());
                                 } else if promoted {
                                     // Recorder transitions are serialized, so a stop safely
                                     // waits for an in-flight start even on an immediate release.
@@ -3094,6 +3110,7 @@ mod tests {
     #[derive(Debug, PartialEq)]
     enum BothEmit {
         HoldStop,
+        HoldOverRecordingEnd,
         DoubleTapToggle,
     }
 
@@ -3105,6 +3122,18 @@ mod tests {
         dtap: &mut DoubleTapDetector,
         event_type: &EventType,
         promoted: bool,
+    ) -> Vec<BothEmit> {
+        both_handle_event_over(hold, dtap, event_type, promoted, false)
+    }
+
+    /// `over_recording` simulates a hold the timer promoted while a recording
+    /// it did not start was already running (HOLD_OVER_RECORDING).
+    fn both_handle_event_over(
+        hold: &mut HoldDownDetector,
+        dtap: &mut DoubleTapDetector,
+        event_type: &EventType,
+        promoted: bool,
+        over_recording: bool,
     ) -> Vec<BothEmit> {
         // Check dtap phase BEFORE feeding — also verify the window hasn't expired
         let dtap_second_phase = matches!(
@@ -3119,7 +3148,6 @@ mod tests {
             HoldDownEvent::None
         };
 
-        let over_toggle = dtap.recording;
         // Always feed double-tap
         let dtap_fired = dtap.handle_event(event_type);
         let mut emitted = Vec::new();
@@ -3129,8 +3157,9 @@ mod tests {
                 // In real code: spawns a timer thread, no synchronous emission
             }
             HoldDownEvent::Stop => {
-                if promoted && !promoted_hold_stops_recording(over_toggle, event_type) {
-                    // A combo key during a double-tap recording: keep recording.
+                if promoted && !promoted_hold_stops_recording(over_recording, event_type) {
+                    // A combo key during a recording the hold did not start.
+                    emitted.push(BothEmit::HoldOverRecordingEnd);
                 } else if promoted {
                     emitted.push(BothEmit::HoldStop);
                 } else if dtap_fired {
@@ -3285,22 +3314,28 @@ mod tests {
     fn both_combo_during_toggle_recording_keeps_recording() {
         let mut hold = make_hold_detector(Key::ShiftLeft);
         let mut dtap = make_detector(Key::ShiftLeft);
-        dtap.recording = true;
 
         // Cmd+Shift+4 while a double-tap recording runs: Shift is held past
-        // promotion, then the 4 cancels the hold. Recording must continue.
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        // promotion (over the running recording), then the 4 ends the hold.
+        // Recording continues; only the physical-hold mark is lifted.
+        let e = both_handle_event_over(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, false);
         assert_eq!(e, vec![]);
-        let e = both_handle_event(&mut hold, &mut dtap, &press(Key::Num4), true);
-        assert_eq!(e, vec![]);
-        assert!(!promoted_hold_stops_recording(true, &press(Key::Num4)));
-        // Without a running toggle recording a combo still ends a held dictation,
-        // and a lone release during one still stops it.
-        assert!(promoted_hold_stops_recording(false, &press(Key::Num4)));
-        assert!(promoted_hold_stops_recording(
-            true,
-            &release(Key::ShiftLeft)
-        ));
+        let e = both_handle_event_over(&mut hold, &mut dtap, &press(Key::Num4), true, true);
+        assert_eq!(e, vec![BothEmit::HoldOverRecordingEnd]);
+
+        // Releasing the trigger alone during that recording still stops it.
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event_over(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, false);
+        let e = both_handle_event_over(&mut hold, &mut dtap, &release(Key::ShiftLeft), true, true);
+        assert_eq!(e, vec![BothEmit::HoldStop]);
+
+        // A hold that started its own recording still stops on a combo.
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event_over(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, false);
+        let e = both_handle_event_over(&mut hold, &mut dtap, &press(Key::Num4), true, false);
+        assert_eq!(e, vec![BothEmit::HoldStop]);
     }
 
     #[test]
