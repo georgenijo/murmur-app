@@ -1,8 +1,8 @@
 use super::{
     candidate_action, candidate_is_capturable, candidate_is_preservable, claim_preparation,
     classify_foreground_focus, delivery_is_confirmed, editable_observation, generation_is_current,
-    generation_is_latest, handoff_focus_allowed, identity_relation, manual_failure_to_record,
-    manual_retry_due, notification_invalidates, selection_allowed,
+    generation_is_latest, handoff_focus_allowed, hands_off, identity_relation,
+    manual_failure_to_record, manual_retry_due, notification_invalidates, selection_allowed,
     t3_empty_composer_delivery_is_confirmed, verifies_after_post, CandidateAction,
     CandidateNotification, CapabilityStage, DeliveryRoute, EditableStatus, IdentityRelation,
     InsertOutcome, ManualAccessibilityAttempt, Observation, PrepareOutcome, Snapshot,
@@ -242,6 +242,28 @@ struct Frozen {
     route: DeliveryRoute,
     stage: CapabilityStage,
     prepared_character_count: Option<usize>,
+    /// The application the user switched to while speaking, for a
+    /// current-app destination handed back to at delivery. Set at prepare;
+    /// focus returns there afterwards, as it does to the media app.
+    switched_away_from: Option<(DeliveryTargetSnapshot, u64)>,
+}
+
+impl Frozen {
+    fn hands_off(&self) -> bool {
+        hands_off(self.route, self.switched_away_from.is_some())
+    }
+
+    /// Where focus returns after a handoff: the media app, or the application
+    /// the user switched to.
+    fn return_target(&self) -> (&DeliveryTargetSnapshot, u64) {
+        match &self.switched_away_from {
+            Some((snapshot, launch_token_bits)) => (snapshot, *launch_token_bits),
+            None => (
+                &self.expected_foreground,
+                self.expected_foreground_launch_token_bits,
+            ),
+        }
+    }
 }
 
 struct ManualOverride {
@@ -555,17 +577,35 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.reconcile_observer_epochs();
+            let current = crate::frontmost::capture_delivery_target_snapshot();
+            // A current-app destination whose application is no longer in
+            // front: the user switched away while speaking.
+            let switched_away = allow_activation
+                && state.frozen.get(token).is_some_and(|frozen| {
+                    frozen.route == DeliveryRoute::CurrentEditable
+                        && !same_process(&current, &frozen.expected_foreground)
+                });
+            let switched_away_from = if switched_away {
+                running_process_launch_bits(&current).map(|bits| (current.clone(), bits))
+            } else {
+                None
+            };
             let valid = state.frozen.get(token).is_some_and(|frozen| {
                 frozen.revision == *revision
                     && frozen.destination_identity == *identity
                     && frozen.stage == CapabilityStage::Captured
                     && (allow_activation || frozen.route == DeliveryRoute::CurrentEditable)
                     && generation_is_current(frozen.generation)
-                    && validate_frozen_for_prepare(&state, frozen)
+                    && if switched_away {
+                        switched_away_from.is_some()
+                            && validate_switched_away_for_prepare(&state, frozen, &current)
+                    } else {
+                        validate_frozen_for_prepare(&state, frozen)
+                    }
             });
             if !valid {
                 state.frozen.remove(token);
-                return PrepareOutcome::Refused;
+                return refused(switched_away);
             }
 
             // The capability becomes one-shot before activation is attempted.
@@ -577,16 +617,30 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                     .expect("validated frozen destination is present");
                 if !claim_preparation(&mut frozen.stage) {
                     state.frozen.remove(token);
-                    return PrepareOutcome::Refused;
+                    return refused(switched_away);
                 }
                 frozen.prepared_character_count =
                     copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
+                frozen.switched_away_from = switched_away_from;
                 frozen.route
             };
 
+            // The validation above blocks on Accessibility. The user may have
+            // moved on again, possibly into a text input: the application in
+            // front must still be the one that was judged.
+            if switched_away
+                && !same_process(
+                    &crate::frontmost::capture_delivery_target_snapshot(),
+                    &current,
+                )
+            {
+                state.frozen.remove(token);
+                return PrepareOutcome::RefusedClipboardOnly;
+            }
+
             match route {
-                DeliveryRoute::CurrentEditable => PrepareOutcome::Ready,
-                DeliveryRoute::RecentMedia => {
+                DeliveryRoute::CurrentEditable if !switched_away => PrepareOutcome::Ready,
+                DeliveryRoute::CurrentEditable | DeliveryRoute::RecentMedia => {
                     let activated = state
                         .frozen
                         .get(token)
@@ -595,7 +649,7 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                         PrepareOutcome::WaitForActivation
                     } else {
                         state.frozen.remove(token);
-                        PrepareOutcome::Refused
+                        refused(switched_away)
                     }
                 }
             }
@@ -698,7 +752,7 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
 
             let ready_to_post = destination_is_active(&frozen)
                 && validate_exact_field(&frozen, expected_range)
-                && (frozen.route != DeliveryRoute::RecentMedia
+                && (!frozen.hands_off()
                     || frozen.prepared_character_count == character_count_before)
                 && crate::injector::pasteboard_change_count() == Some(pasteboard_change);
             if !ready_to_post {
@@ -723,9 +777,10 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
                 return InsertOutcome::Refused;
             }
 
-            // The read-back below only gates returning focus to the media app.
-            // Other routes have nothing to decide, so they skip the settle.
-            if verifies_after_post(frozen.route) {
+            // The read-back below only gates returning focus after a handoff.
+            // Delivery into the current app has nothing to decide, so it skips
+            // the settle.
+            if verifies_after_post(frozen.route, frozen.switched_away_from.is_some()) {
                 let _ = sleep_within_budget(POST_SETTLE);
                 let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
                     .ok()
@@ -825,6 +880,7 @@ fn freeze_candidate(
         route,
         stage: CapabilityStage::Captured,
         prepared_character_count: None,
+        switched_away_from: None,
     };
     // One live capability is sufficient for the single recording owner and
     // bounds retained native references even if a caller abandons a snapshot.
@@ -871,6 +927,38 @@ fn validate_frozen_for_prepare(state: &State, frozen: &Frozen) -> bool {
         DeliveryRoute::CurrentEditable => validate_exact_field(frozen, expected_range),
         DeliveryRoute::RecentMedia => validate_retained_field(frozen, expected_range),
     }
+}
+
+/// A switched-away preparation that does not complete keeps the transcript on
+/// the clipboard: an activation may already have moved focus, so the
+/// same-app normal paste fallback is no longer bound to a known field.
+fn refused(switched_away: bool) -> PrepareOutcome {
+    if switched_away {
+        PrepareOutcome::RefusedClipboardOnly
+    } else {
+        PrepareOutcome::Refused
+    }
+}
+
+/// A current-app destination after the user switched to `current` while
+/// speaking. Exactly what a media handoff requires: the application now in
+/// front must positively hold no text input (one focus observation), and the
+/// retained field must still be the captured one with a collapsed caret where
+/// it was. A background selection is never replaced.
+fn validate_switched_away_for_prepare(
+    state: &State,
+    frozen: &Frozen,
+    current: &DeliveryTargetSnapshot,
+) -> bool {
+    if !handoff_focus_allowed(foreground_focus_observation(current))
+        || !validate_frozen_candidate(state, frozen)
+    {
+        return false;
+    }
+    decode_range(frozen.range.as_type()).is_some_and(|expected_range| {
+        selection_allowed(DeliveryRoute::RecentMedia, expected_range.1)
+            && validate_retained_field(frozen, expected_range)
+    })
 }
 
 fn validate_frozen_candidate(state: &State, frozen: &Frozen) -> bool {
@@ -971,27 +1059,21 @@ fn maybe_restore_media(
     expected_count: usize,
     pasteboard_change: i64,
 ) {
-    if frozen.route != DeliveryRoute::RecentMedia
+    let (return_to, return_launch_token_bits) = frozen.return_target();
+    if !frozen.hands_off()
         || crate::injector::pasteboard_change_count() != Some(pasteboard_change)
         || !destination_is_active(frozen)
         || !validate_exact_field(frozen, expected_range)
         || copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters")
             != Some(expected_count)
-        || !process_is_running(
-            &frozen.expected_foreground,
-            frozen.expected_foreground_launch_token_bits,
-        )
+        || !process_is_running(return_to, return_launch_token_bits)
     {
         return;
     }
-    if let Some(app) = complete_identity(&frozen.expected_foreground)
-        .and_then(|identity| create_application(identity.process_id))
+    if let Some(app) =
+        complete_identity(return_to).and_then(|identity| create_application(identity.process_id))
     {
-        let _ = request_application_activation(
-            &frozen.expected_foreground,
-            frozen.expected_foreground_launch_token_bits,
-            &app,
-        );
+        let _ = request_application_activation(return_to, return_launch_token_bits, &app);
     }
 }
 

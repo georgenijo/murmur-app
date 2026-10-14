@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Dictation
 
+- With Smart destination on, a dictation started in a text field still pastes
+  there when you switch to another app while speaking, for example when a
+  screenshot tool takes focus. Murmur pastes into the original field and
+  returns you to the app you were in. If the app you switched to has a text
+  field focused, Murmur cannot tell what is focused, or text was selected in
+  the original field, the text stays on the clipboard as before.
 - In the combined double-tap and hold mode, pressing a shortcut that uses the
   trigger key as a modifier (for example Cmd+Shift+4 for a screenshot) no
   longer stops a running double-tap dictation. Releasing the trigger key on
