@@ -90,14 +90,18 @@ ordinary dictation stricter than normal auto-paste.
 When the user switches to another application while speaking a recording
 whose field was captured in the frontmost app, delivery hands back to that field
 the same way a media handoff does. Examples: a screenshot tool takes focus, or
-the user glances at a viewer or Finder. Preparation requires positive evidence
-that the application now in front is not a text input: a media control, a
-positively non-editable element, or no focused element at all. It also requires
-that the captured field is still the same field with its caret unmoved.
-Murmur then activates the captured app, posts Cmd+V once, reads the field back,
-and returns focus to the application the user switched to. An unreadable focus
-(a failed or timed-out query), another editable field, or a secure field leaves
-the transcript on the clipboard.
+the user glances at a viewer or Finder. Preparation requires the same evidence as
+a media handoff. The focused element of the application now in front must be
+positively readable as a media control or a non-editable element; no focused
+element at all is not evidence, because some web-based editors do not expose
+theirs. The captured field must still be the same field, with a collapsed caret
+where it was, since a background selection is never replaced. The same
+application must still be in front right before activation. Murmur then
+activates the captured app, posts Cmd+V once, reads the field back, and returns
+focus to the application the user switched to. An unreadable focus, another
+editable field, or a secure field leaves the transcript on the clipboard, and a
+switched-away preparation that does not complete never falls back to normal
+paste into the captured app.
 
 When a field captured in the app that was frontmost at recording start can no
 longer be re-verified at delivery (for example its text, caret, or focus changed

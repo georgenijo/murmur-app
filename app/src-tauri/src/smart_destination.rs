@@ -123,6 +123,10 @@ pub(crate) enum PrepareOutcome {
     Ready,
     WaitForActivation,
     Refused,
+    /// Refused after the user switched away from a current-app destination.
+    /// Unlike `Refused`, the caller must not fall back to normal paste into
+    /// the captured app: activation may already have moved its focus.
+    RefusedClipboardOnly,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -526,19 +530,6 @@ fn handoff_focus_allowed(observation: Observation) -> bool {
         observation,
         Observation::SupportedMedia | Observation::Other
     )
-}
-
-/// Whether a destination captured in the then-current application may be
-/// handed back to after the user moved to another application while speaking
-/// (a screenshot tool, a viewer, Finder). The same positive evidence as the
-/// media handoff, plus an application that positively reports no focused
-/// element at all, which is no text input either. Unknown focus, another
-/// editable field, a secure field, and Murmur itself leave delivery
-/// clipboard-only.
-#[cfg(any(target_os = "macos", test))]
-fn switched_away_handoff_allowed(observation: Observation, positively_unfocused: bool) -> bool {
-    handoff_focus_allowed(observation)
-        || (observation == Observation::Unavailable && positively_unfocused)
 }
 
 /// How long after a failed `AXManualAccessibility` attempt the same process is
@@ -964,32 +955,6 @@ mod tests {
         assert!(verifies_after_post(DeliveryRoute::RecentMedia, false));
         assert!(verifies_after_post(DeliveryRoute::CurrentEditable, true));
         assert!(!verifies_after_post(DeliveryRoute::CurrentEditable, false));
-    }
-
-    #[test]
-    fn switching_away_hands_back_only_from_positively_non_text_focus() {
-        for observation in [Observation::SupportedMedia, Observation::Other] {
-            assert!(switched_away_handoff_allowed(observation, false));
-        }
-        // Nothing focused at all (a screenshot overlay, the desktop).
-        assert!(switched_away_handoff_allowed(
-            Observation::Unavailable,
-            true
-        ));
-        // A failed or timed-out focus query is unknown, not empty.
-        assert!(!switched_away_handoff_allowed(
-            Observation::Unavailable,
-            false
-        ));
-        for observation in [
-            Observation::Editable,
-            Observation::EditableUnverified,
-            Observation::Secure,
-            Observation::SelfOverlay,
-        ] {
-            assert!(!switched_away_handoff_allowed(observation, false));
-            assert!(!switched_away_handoff_allowed(observation, true));
-        }
     }
 
     #[test]

@@ -3,10 +3,9 @@ use super::{
     classify_foreground_focus, delivery_is_confirmed, editable_observation, generation_is_current,
     generation_is_latest, handoff_focus_allowed, hands_off, identity_relation,
     manual_failure_to_record, manual_retry_due, notification_invalidates, selection_allowed,
-    switched_away_handoff_allowed, t3_empty_composer_delivery_is_confirmed, verifies_after_post,
-    CandidateAction, CandidateNotification, CapabilityStage, DeliveryRoute, EditableStatus,
-    IdentityRelation, InsertOutcome, ManualAccessibilityAttempt, Observation, PrepareOutcome,
-    Snapshot,
+    t3_empty_composer_delivery_is_confirmed, verifies_after_post, CandidateAction,
+    CandidateNotification, CapabilityStage, DeliveryRoute, EditableStatus, IdentityRelation,
+    InsertOutcome, ManualAccessibilityAttempt, Observation, PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
@@ -606,7 +605,7 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
             });
             if !valid {
                 state.frozen.remove(token);
-                return PrepareOutcome::Refused;
+                return refused(switched_away);
             }
 
             // The capability becomes one-shot before activation is attempted.
@@ -618,13 +617,26 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                     .expect("validated frozen destination is present");
                 if !claim_preparation(&mut frozen.stage) {
                     state.frozen.remove(token);
-                    return PrepareOutcome::Refused;
+                    return refused(switched_away);
                 }
                 frozen.prepared_character_count =
                     copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
                 frozen.switched_away_from = switched_away_from;
                 frozen.route
             };
+
+            // The validation above blocks on Accessibility. The user may have
+            // moved on again, possibly into a text input: the application in
+            // front must still be the one that was judged.
+            if switched_away
+                && !same_process(
+                    &crate::frontmost::capture_delivery_target_snapshot(),
+                    &current,
+                )
+            {
+                state.frozen.remove(token);
+                return PrepareOutcome::RefusedClipboardOnly;
+            }
 
             match route {
                 DeliveryRoute::CurrentEditable if !switched_away => PrepareOutcome::Ready,
@@ -637,7 +649,7 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                         PrepareOutcome::WaitForActivation
                     } else {
                         state.frozen.remove(token);
-                        PrepareOutcome::Refused
+                        refused(switched_away)
                     }
                 }
             }
@@ -917,32 +929,36 @@ fn validate_frozen_for_prepare(state: &State, frozen: &Frozen) -> bool {
     }
 }
 
+/// A switched-away preparation that does not complete keeps the transcript on
+/// the clipboard: an activation may already have moved focus, so the
+/// same-app normal paste fallback is no longer bound to a known field.
+fn refused(switched_away: bool) -> PrepareOutcome {
+    if switched_away {
+        PrepareOutcome::RefusedClipboardOnly
+    } else {
+        PrepareOutcome::Refused
+    }
+}
+
 /// A current-app destination after the user switched to `current` while
-/// speaking. The application now in front must permit a handoff, and the
-/// retained field must still be the captured one with its caret unmoved,
-/// exactly as a media handoff requires.
+/// speaking. Exactly what a media handoff requires: the application now in
+/// front must positively hold no text input (one focus observation), and the
+/// retained field must still be the captured one with a collapsed caret where
+/// it was. A background selection is never replaced.
 fn validate_switched_away_for_prepare(
     state: &State,
     frozen: &Frozen,
     current: &DeliveryTargetSnapshot,
 ) -> bool {
-    if !switched_foreground_allows_handoff(current) || !validate_frozen_candidate(state, frozen) {
+    if !handoff_focus_allowed(foreground_focus_observation(current))
+        || !validate_frozen_candidate(state, frozen)
+    {
         return false;
     }
-    decode_range(frozen.range.as_type())
-        .is_some_and(|expected_range| validate_retained_field(frozen, expected_range))
-}
-
-fn switched_foreground_allows_handoff(current: &DeliveryTargetSnapshot) -> bool {
-    let positively_unfocused = complete_identity(current)
-        .and_then(|identity| create_application(identity.process_id))
-        .is_some_and(|app| {
-            matches!(
-                copy_attribute_raw(app.as_element(), "AXFocusedUIElement"),
-                Err(status) if benign_absence(status)
-            )
-        });
-    switched_away_handoff_allowed(foreground_focus_observation(current), positively_unfocused)
+    decode_range(frozen.range.as_type()).is_some_and(|expected_range| {
+        selection_allowed(DeliveryRoute::RecentMedia, expected_range.1)
+            && validate_retained_field(frozen, expected_range)
+    })
 }
 
 fn validate_frozen_candidate(state: &State, frozen: &Frozen) -> bool {

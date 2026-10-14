@@ -2532,8 +2532,14 @@ async fn run_transcription_pipeline(
                 Ok(Ok(Some(crate::smart_destination::PrepareOutcome::WaitForActivation))) => {
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
-                _ => {
-                    let same_app_fallback = smart_destination.allows_same_app_fallback();
+                outcome => {
+                    let same_app_fallback = smart_destination.allows_same_app_fallback()
+                        && !matches!(
+                            outcome,
+                            Ok(Ok(Some(
+                                crate::smart_destination::PrepareOutcome::RefusedClipboardOnly
+                            )))
+                        );
                     let abandoned = smart_destination.clone();
                     let _ = app_handle.run_on_main_thread(move || {
                         crate::smart_destination::abort(&abandoned, None);
