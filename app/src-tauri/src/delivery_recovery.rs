@@ -209,10 +209,17 @@ pub(crate) async fn retry_last_delivery(
             tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await,
             Ok(Ok(crate::smart_destination::PrepareOutcome::Ready))
         ) {
+            let same_app_fallback = latest.smart_destination.allows_same_app_fallback();
             let abandoned = latest.smart_destination.clone();
             let _ = app_handle
                 .run_on_main_thread(move || crate::smart_destination::abort(&abandoned, None));
-            latest.smart_destination = crate::smart_destination::Snapshot::Unavailable;
+            // `latest.target` is the original process the fresh capture just
+            // matched, so a same-app fallback stays bound to it.
+            latest.smart_destination = if same_app_fallback {
+                crate::smart_destination::Snapshot::Unverified
+            } else {
+                crate::smart_destination::Snapshot::Unavailable
+            };
         }
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -429,6 +436,7 @@ mod tests {
             token: 9,
             revision: 3,
             identity: target.clone(),
+            current_app: true,
         };
         let state = DeliveryRecoveryState::default();
         state.remember(7, "original".into(), target, smart, 0, None);

@@ -545,6 +545,7 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
         token,
         revision,
         identity,
+        ..
     } = snapshot
     else {
         return PrepareOutcome::Refused;
@@ -610,6 +611,7 @@ pub(super) fn abort(snapshot: &Snapshot, pasteboard_change: Option<i64>) {
         token,
         revision,
         identity,
+        ..
     } = snapshot
     else {
         return;
@@ -653,6 +655,7 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
         token,
         revision,
         identity,
+        ..
     } = snapshot
     else {
         return InsertOutcome::Refused;
@@ -827,6 +830,7 @@ fn freeze_candidate(
         token,
         revision,
         identity: destination_identity,
+        current_app: route == DeliveryRoute::CurrentEditable,
     })
 }
 
