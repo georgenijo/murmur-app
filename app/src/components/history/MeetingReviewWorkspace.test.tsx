@@ -32,6 +32,8 @@ function controller(overrides: Partial<ReturnType<typeof useMeetings>> = {}): Re
     restoreReview: vi.fn().mockResolvedValue(true),
     copy: vi.fn().mockResolvedValue(true),
     exportReview: vi.fn().mockResolvedValue('/tmp/review.md'),
+    previewBundle: vi.fn().mockResolvedValue({ audioSegments: 3, audioBytes: 3 * 1024 * 1024, unavailableSegments: 0, maxAudioBytes: 2 * 1024 * 1024 * 1024 }),
+    exportBundle: vi.fn().mockResolvedValue({ path: '/tmp/meeting.zip', receipt: { bytes: 10, includedSegments: 3, omittedSegments: 0 } }),
     summarize: vi.fn().mockResolvedValue(undefined),
     cancelSummary: vi.fn().mockResolvedValue(undefined),
     renameRemoteSpeaker: vi.fn().mockResolvedValue(true),
@@ -185,6 +187,61 @@ describe('MeetingReviewWorkspace', () => {
     const buttons = [...container.querySelectorAll('button')].filter((button) => ['Copy captions', 'Export…'].includes(button.textContent ?? ''));
     expect(buttons).toHaveLength(2);
     expect(buttons.every((button) => button.disabled)).toBe(true);
+  });
+
+  const retainedDetail: MeetingDetail = { ...detail, session: { ...detail.session, retainAudio: true } };
+  const click = (label: string) => act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === label)?.click());
+
+  it('hides the with-audio export when audio was not retained', async () => {
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    expect(container.textContent).not.toContain('Export with audio…');
+  });
+
+  it('shows the bundle size before saving, then exports the selected format with audio', async () => {
+    const meetings = controller({ detail: retainedDetail });
+    const onNotice = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    await click('Export with audio…');
+    expect(meetings.previewBundle).toHaveBeenCalledWith('meeting');
+    expect(meetings.exportBundle).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('3 audio segments (3.0 MB)');
+    await click('Choose location…');
+    expect(meetings.exportBundle).toHaveBeenCalledWith('meeting', 1, 'markdown');
+    expect(onNotice).toHaveBeenCalledWith('Meeting exported with 3 audio segments.');
+    expect(container.querySelector('[aria-label="Export with audio"]')).toBeNull();
+  });
+
+  it('warns that unavailable audio is left out and reports it after saving', async () => {
+    const meetings = controller({
+      detail: retainedDetail,
+      previewBundle: vi.fn().mockResolvedValue({ audioSegments: 2, audioBytes: 2048, unavailableSegments: 1, maxAudioBytes: 4096 }),
+      exportBundle: vi.fn().mockResolvedValue({ path: '/tmp/meeting.zip', receipt: { bytes: 10, includedSegments: 2, omittedSegments: 1 } }),
+    });
+    const onNotice = vi.fn();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    await click('Export with audio…');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('1 retained audio segments are missing');
+    await click('Choose location…');
+    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('1 unavailable segments are listed in manifest.json'));
+  });
+
+  it('blocks a bundle over the size limit and lets the user cancel', async () => {
+    const meetings = controller({
+      detail: retainedDetail,
+      previewBundle: vi.fn().mockResolvedValue({ audioSegments: 9, audioBytes: 5000, unavailableSegments: 0, maxAudioBytes: 4096 }),
+    });
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await click('Export with audio…');
+    const choose = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Choose location…');
+    expect(choose?.disabled).toBe(true);
+    await click('Cancel');
+    expect(container.querySelector('[aria-label="Export with audio"]')).toBeNull();
+    expect(meetings.exportBundle).not.toHaveBeenCalled();
+  });
+
+  it('keeps with-audio export unavailable while capture is busy or the meeting is active', async () => {
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail })} segments={segments} captureBusy onNotice={() => {}} />));
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Export with audio…')?.disabled).toBe(true);
   });
 
   it('omits playback controls and explains audio retention for transcript-only meetings', async () => {

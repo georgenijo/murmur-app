@@ -215,6 +215,8 @@ mockIPC((command, payload) => {
   if (command === 'get_meeting_review_export') return '# Meeting review\n';
   if (command === 'save_meeting_review' || command === 'restore_meeting_review_from_generated') return meetingFixture;
   if (command === 'save_meeting_review_export') return 20;
+  if (command === 'get_meeting_bundle_preview') return { audioSegments: 1, audioBytes: 192_044, unavailableSegments: 0, maxAudioBytes: 2_147_483_648 };
+  if (command === 'save_meeting_bundle_export') return { bytes: 192_900, includedSegments: 1, omittedSegments: 0 };
   if (command === 'get_microphone_preview_status') {
     return {
       previewId: null,
