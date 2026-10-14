@@ -19,6 +19,7 @@ pub mod mode_runtime;
 pub mod models;
 pub(crate) mod native_window;
 pub mod overlay;
+pub(crate) mod overlay_band;
 pub mod performance;
 pub mod permissions;
 pub mod query_history;

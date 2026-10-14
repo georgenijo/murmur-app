@@ -721,8 +721,11 @@ pub fn run() {
             }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
+            // Menu occupancy is unknown this early (Accessibility can block), so
+            // the overlay starts in the standalone placement; the placement
+            // worker refreshes it right after the observers below are registered.
             let display_snapshot =
-                commands::overlay::capture_display_snapshot(app.handle());
+                commands::overlay::capture_display_snapshot(app.handle(), None);
             let notch = display_snapshot.notch_info;
             {
                 let state = app.state::<State>();
@@ -745,11 +748,15 @@ pub fn run() {
                 tracing::warn!(target: "system", "setup: overlay window NOT found");
             }
 
-            // Listen for display config changes (monitor plug/unplug, lid open/close)
-            // to re-detect notch info and reposition the overlay.
+            // Start the overlay placement worker and listen for display config
+            // changes (monitor plug/unplug, lid open/close) to re-detect notch
+            // info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
             frontmost::register_delivery_transition_observers();
+            commands::overlay::request_placement_refresh(
+                commands::overlay::PlacementTrigger::Startup,
+            );
             smart_destination::start(app.handle().clone());
             meeting_suggestions::initialize(app.handle().clone());
             #[cfg(not(feature = "internal-benchmark"))]
