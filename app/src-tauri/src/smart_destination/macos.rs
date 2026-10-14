@@ -1,16 +1,16 @@
 use super::{
     candidate_action, candidate_is_capturable, candidate_is_preservable, claim_preparation,
-    delivery_is_confirmed, generation_is_current, generation_is_latest, notification_invalidates,
-    selection_allowed, t3_empty_composer_delivery_is_confirmed, CandidateAction,
-    CandidateNotification, CapabilityStage, DeliveryRoute, InsertOutcome, Observation,
-    PrepareOutcome, Snapshot,
+    delivery_is_confirmed, generation_is_current, generation_is_latest, identity_relation,
+    notification_invalidates, selection_allowed, t3_empty_composer_delivery_is_confirmed,
+    CandidateAction, CandidateNotification, CapabilityStage, DeliveryRoute, IdentityRelation,
+    InsertOutcome, Observation, PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -466,8 +466,19 @@ pub(super) fn disable_if_main_thread(generation: u64) {
     });
 }
 
-pub(super) fn capture(expected: &DeliveryTargetSnapshot, generation: u64) -> Snapshot {
+/// Only positive evidence keeps delivery clipboard-only. Focus that AX cannot
+/// classify (common in Chromium/Electron apps) or a transient identity lookup
+/// gap returns `Unverified`, which uses the normal verified auto-paste policy.
+/// `fallback_vetoed` is set as soon as refusal evidence (or a smart route) is
+/// found, before any observer cleanup that could outlive the caller's timeout.
+pub(super) fn capture(
+    expected: &DeliveryTargetSnapshot,
+    generation: u64,
+    fallback_vetoed: &AtomicBool,
+) -> Snapshot {
+    let veto = || fallback_vetoed.store(true, Ordering::Release);
     if !is_main_thread() || !generation_is_current(generation) {
+        veto();
         return Snapshot::Unavailable;
     }
     with_ax_budget(CAPTURE_AX_BUDGET, || {
@@ -477,24 +488,49 @@ pub(super) fn capture(expected: &DeliveryTargetSnapshot, generation: u64) -> Sna
             state.reconcile_observer_epochs();
 
             let current = crate::frontmost::capture_delivery_target_snapshot();
-            if !same_process(&current, expected) {
-                return Snapshot::Unavailable;
+            match identity_relation(&current, expected) {
+                IdentityRelation::Same => {}
+                IdentityRelation::Unknown => return Snapshot::Unverified,
+                IdentityRelation::Different => {
+                    veto();
+                    return Snapshot::Unavailable;
+                }
             }
 
             let observation = inspect_current_from_snapshot(&mut state, current);
             let route = match &observation {
                 CurrentObservation::Editable(_) => DeliveryRoute::CurrentEditable,
                 CurrentObservation::SupportedMedia => DeliveryRoute::RecentMedia,
-                CurrentObservation::SelfOverlay
-                | CurrentObservation::Secure
-                | CurrentObservation::Other
-                | CurrentObservation::Unavailable => {
+                CurrentObservation::SelfOverlay | CurrentObservation::Secure => {
+                    veto();
                     apply_observation(&mut state, observation);
                     return Snapshot::Unavailable;
                 }
+                CurrentObservation::Other | CurrentObservation::Unavailable => {
+                    // Inspection also reports Unavailable when the process
+                    // changed underneath it; only a lookup gap may fall back.
+                    let relation = identity_relation(
+                        &crate::frontmost::capture_delivery_target_snapshot(),
+                        expected,
+                    );
+                    let snapshot = if relation == IdentityRelation::Different {
+                        veto();
+                        Snapshot::Unavailable
+                    } else {
+                        Snapshot::Unverified
+                    };
+                    apply_observation(&mut state, observation);
+                    return snapshot;
+                }
             };
+            // A smart route found a field or media control: an unfinished freeze
+            // must not fall back to normal paste.
+            veto();
             apply_observation(&mut state, observation);
 
+            // A freeze failure can mean focus moved to a different field or the
+            // media app has no retained field: positive evidence, so it never
+            // falls back to normal paste.
             freeze_candidate(&mut state, expected.clone(), generation, route)
                 .unwrap_or(Snapshot::Unavailable)
         })
@@ -1120,25 +1156,10 @@ enum EditableStatus {
 }
 
 fn editable_status(element: AXUIElementRef) -> EditableStatus {
-    let role = match copy_string_attribute_status(element, "AXRole") {
-        Ok(role) => role,
-        Err(status) if benign_absence(status) => return EditableStatus::NotEditable,
-        Err(_) => return EditableStatus::Unavailable,
-    };
-    let subrole = match copy_string_attribute_status(element, "AXSubrole") {
-        Ok(subrole) => Some(subrole),
-        Err(status) if benign_absence(status) => None,
-        Err(_) => return EditableStatus::Unavailable,
-    };
-    if role.trim() == "AXSecureTextField"
-        || subrole
-            .as_deref()
-            .is_some_and(|subrole| subrole.trim() == "AXSecureTextField")
-    {
-        return EditableStatus::Secure;
-    }
-    if !matches!(role.trim(), "AXTextArea" | "AXTextField") {
-        return EditableStatus::NotEditable;
+    if let Err(status) = classify_text_role(copy_string_attribute_status(element, "AXRole"), || {
+        copy_string_attribute_status(element, "AXSubrole")
+    }) {
+        return status;
     }
     if !copy_bool_attribute(element, "AXEnabled").is_some_and(|enabled| enabled)
         || !attribute_settable(element, "AXSelectedText")
@@ -1146,6 +1167,39 @@ fn editable_status(element: AXUIElementRef) -> EditableStatus {
         return EditableStatus::Unavailable;
     }
     EditableStatus::Editable
+}
+
+/// Classify role evidence. `Err` is final; `Ok` means a text role that still
+/// needs the enabled/settable checks. The subrole is queried only after the
+/// role, so positive secure evidence wins before another fallible query could
+/// downgrade it to `Unavailable`, which delivery treats as "nothing proven".
+fn classify_text_role(
+    role: Result<String, AXError>,
+    subrole: impl FnOnce() -> Result<String, AXError>,
+) -> Result<(), EditableStatus> {
+    let role = match role {
+        Ok(role) => role,
+        Err(status) if benign_absence(status) => return Err(EditableStatus::NotEditable),
+        Err(_) => return Err(EditableStatus::Unavailable),
+    };
+    if role.trim() == "AXSecureTextField" {
+        return Err(EditableStatus::Secure);
+    }
+    let subrole = match subrole() {
+        Ok(subrole) => Some(subrole),
+        Err(status) if benign_absence(status) => None,
+        Err(_) => return Err(EditableStatus::Unavailable),
+    };
+    if subrole
+        .as_deref()
+        .is_some_and(|subrole| subrole.trim() == "AXSecureTextField")
+    {
+        return Err(EditableStatus::Secure);
+    }
+    if !matches!(role.trim(), "AXTextArea" | "AXTextField") {
+        return Err(EditableStatus::NotEditable);
+    }
+    Ok(())
 }
 
 fn current_is_supported_media(expected: &DeliveryTargetSnapshot) -> bool {
@@ -1729,6 +1783,30 @@ fn is_main_thread() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secure_role_wins_even_when_the_subrole_query_fails() {
+        assert!(matches!(
+            classify_text_role(Ok("AXSecureTextField".into()), || Err(AX_ERROR_FAILURE)),
+            Err(EditableStatus::Secure)
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXTextField".into()), || Ok("AXSecureTextField".into())),
+            Err(EditableStatus::Secure)
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXTextField".into()), || Err(AX_ERROR_FAILURE)),
+            Err(EditableStatus::Unavailable)
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXTextArea".into()), || Err(AX_ERROR_NO_VALUE)),
+            Ok(())
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXWebArea".into()), || Err(AX_ERROR_NO_VALUE)),
+            Err(EditableStatus::NotEditable)
+        ));
+    }
 
     #[test]
     fn media_marker_normalization_is_bounded_to_explicit_markers() {

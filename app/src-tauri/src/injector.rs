@@ -30,6 +30,27 @@ pub(crate) enum InjectionOutcome {
     AutoPasted,
 }
 
+impl InjectionOutcome {
+    /// Bounded, content-free code for diagnostics.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::NoText => "no_text",
+            Self::AutoPasted => "auto_pasted",
+            Self::ClipboardOnly(reason) => match reason {
+                ClipboardOnlyReason::AutoPasteDisabled => "clipboard_only_auto_paste_disabled",
+                ClipboardOnlyReason::AccessibilityDenied => "clipboard_only_accessibility_denied",
+                ClipboardOnlyReason::TargetChanged => "clipboard_only_target_changed",
+                ClipboardOnlyReason::FocusNotEditable => "clipboard_only_focus_not_editable",
+                ClipboardOnlyReason::ClipboardChanged => "clipboard_only_clipboard_changed",
+                ClipboardOnlyReason::PasteFailed => "clipboard_only_paste_failed",
+                ClipboardOnlyReason::SmartTargetUnavailable => {
+                    "clipboard_only_smart_target_unavailable"
+                }
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InjectionResult {
     pub outcome: InjectionOutcome,
@@ -380,6 +401,11 @@ pub(crate) fn inject_with_destination(
     if matches!(smart, crate::smart_destination::Snapshot::Disabled) || !auto_paste {
         return inject_text(text, auto_paste, delay_ms, target);
     }
+    if smart.uses_normal_paste() {
+        // Unverified: Smart destination proved no field, so use normal paste,
+        // but keep its secure-field promise against the field focused now.
+        return inject_text_with_policy(text, auto_paste, delay_ms, target, true);
+    }
     if text.trim().is_empty() {
         return Ok(InjectionResult {
             outcome: InjectionOutcome::NoText,
@@ -421,6 +447,17 @@ pub(crate) fn inject_text(
     auto_paste: bool,
     delay_ms: u64,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> Result<InjectionResult, String> {
+    inject_text_with_policy(text, auto_paste, delay_ms, delivery_target, false)
+}
+
+/// `refuse_secure` keeps a positively secure focused field clipboard-only.
+fn inject_text_with_policy(
+    text: &str,
+    auto_paste: bool,
+    delay_ms: u64,
+    delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
+    refuse_secure: bool,
 ) -> Result<InjectionResult, String> {
     let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
@@ -481,7 +518,10 @@ pub(crate) fn inject_text(
             || crate::frontmost::verify_delivery_target(delivery_target, true),
             || {
                 let started = Instant::now();
-                let state = scope_non_editable_to_finder(focused_field_state(), target_is_finder);
+                let state = secure_field_policy(
+                    scope_non_editable_to_finder(focused_field_state(), target_is_finder),
+                    refuse_secure,
+                );
                 focus_ms = started.elapsed().as_millis() as u64;
                 state
             },
@@ -531,8 +571,10 @@ pub(crate) fn inject_text(
                 let (retry_outcome, retry_verification) = retry_paste_if_safe(
                     || {
                         let started = Instant::now();
-                        let state =
-                            scope_non_editable_to_finder(focused_field_state(), target_is_finder);
+                        let state = secure_field_policy(
+                            scope_non_editable_to_finder(focused_field_state(), target_is_finder),
+                            refuse_secure,
+                        );
                         focus_ms = focus_ms.saturating_add(started.elapsed().as_millis() as u64);
                         state
                     },
@@ -728,6 +770,19 @@ enum FocusedFieldState {
     NonEditable,
     /// Could not determine — default to allowing the paste (current behavior).
     Unknown,
+    /// A secure (password) text control. Pasteable under the normal policy;
+    /// `secure_field_policy` decides before preflight sees it.
+    Secure,
+}
+
+/// Resolve `Secure` before the paste preflight: the normal policy pastes into
+/// it as an editable field, while the Smart destination fallback refuses it.
+fn secure_field_policy(state: FocusedFieldState, refuse_secure: bool) -> FocusedFieldState {
+    match state {
+        FocusedFieldState::Secure if refuse_secure => FocusedFieldState::NonEditable,
+        FocusedFieldState::Secure => FocusedFieldState::Editable,
+        state => state,
+    }
 }
 
 /// Classify an Accessibility role string as an editable text control.
@@ -991,6 +1046,38 @@ fn focused_role_native() -> Result<String, String> {
     let mut role: CFTypeRef = std::ptr::null();
     let role_status = unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
     unsafe { CFRelease(role_attribute) };
+    // Browser password inputs report AXTextField with an AXSecureTextField
+    // subrole. Surface that as the secure role so the Smart destination
+    // fallback can veto it; a failed subrole query leaves the role in charge.
+    let mut secure_subrole = false;
+    if role_status == AX_SUCCESS && !role.is_null() {
+        let subrole_attribute = unsafe {
+            CFStringCreateWithCString(std::ptr::null(), c"AXSubrole".as_ptr(), UTF8_ENCODING)
+        };
+        if !subrole_attribute.is_null() {
+            let mut subrole: CFTypeRef = std::ptr::null();
+            let subrole_status =
+                unsafe { AXUIElementCopyAttributeValue(focused, subrole_attribute, &mut subrole) };
+            unsafe { CFRelease(subrole_attribute) };
+            if !subrole.is_null() {
+                if subrole_status == AX_SUCCESS {
+                    let mut buffer = [0 as c_char; 128];
+                    let converted = unsafe {
+                        CFStringGetCString(
+                            subrole,
+                            buffer.as_mut_ptr(),
+                            buffer.len() as isize,
+                            UTF8_ENCODING,
+                        )
+                    };
+                    secure_subrole = converted
+                        && unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_bytes()
+                            == b"AXSecureTextField";
+                }
+                unsafe { CFRelease(subrole) };
+            }
+        }
+    }
     unsafe { CFRelease(focused) };
     if role_status != AX_SUCCESS || role.is_null() {
         if !role.is_null() {
@@ -1011,6 +1098,9 @@ fn focused_role_native() -> Result<String, String> {
     unsafe { CFRelease(role) };
     if !converted {
         return Err("could not convert AX role to UTF-8".to_string());
+    }
+    if secure_subrole {
+        return Ok("AXSecureTextField".to_string());
     }
 
     Ok(unsafe { CStr::from_ptr(buffer.as_ptr()) }
@@ -1071,7 +1161,9 @@ fn classify_focused_role(role: &str) -> FocusedFieldState {
     if role.is_empty() || role == "missing value" {
         return FocusedFieldState::Unknown;
     }
-    if is_editable_text_role(role) {
+    if role == "AXSecureTextField" {
+        FocusedFieldState::Secure
+    } else if is_editable_text_role(role) {
         FocusedFieldState::Editable
     } else if is_non_editable_desktop_role(role) {
         FocusedFieldState::NonEditable
@@ -1579,18 +1671,36 @@ mod focus_tests {
     fn editable_roles_classify_as_editable_and_allow_paste() {
         // Representative editable controls take priority over the denylist and
         // permit the paste.
-        for role in [
-            "AXTextField",
-            "AXTextArea",
-            "AXComboBox",
-            "AXSecureTextField",
-        ] {
+        for role in ["AXTextField", "AXTextArea", "AXComboBox"] {
             assert_eq!(
                 classify_focused_role(role),
                 FocusedFieldState::Editable,
                 "{} should classify as Editable",
                 role
             );
+        }
+    }
+
+    #[test]
+    fn secure_fields_paste_normally_but_the_smart_fallback_refuses_them() {
+        let secure = classify_focused_role("AXSecureTextField");
+        assert_eq!(secure, FocusedFieldState::Secure);
+        // Normal auto-paste is unchanged: a secure field is editable.
+        assert_eq!(
+            secure_field_policy(scope_non_editable_to_finder(secure, false), false),
+            FocusedFieldState::Editable
+        );
+        // The Smart destination fallback refuses it before preflight.
+        assert_eq!(
+            secure_field_policy(scope_non_editable_to_finder(secure, false), true),
+            FocusedFieldState::NonEditable
+        );
+        for state in [
+            FocusedFieldState::Editable,
+            FocusedFieldState::Unknown,
+            FocusedFieldState::NonEditable,
+        ] {
+            assert_eq!(secure_field_policy(state, true), state);
         }
     }
 

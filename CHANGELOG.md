@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- Fixed Smart destination leaving most dictations on the clipboard. When no
+  text field can be identified at recording start, as is common in Chromium and
+  Electron apps, Murmur now uses normal auto-paste instead of refusing. Secure
+  fields and media apps without a remembered field still stay clipboard-only.
+
 ## [0.51.0] - 2026-10-13
 
 ### Dictation

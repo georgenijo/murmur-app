@@ -1163,6 +1163,15 @@ fn smart_destination_status(
             "current"
         }
         Some(_) => "recent",
+        // Normal auto-paste goes to the verified app at stop, which may not be
+        // the accepted app, so this status is presented without an app name.
+        None if matches!(
+            smart_destination,
+            crate::smart_destination::Snapshot::Unverified
+        ) =>
+        {
+            "current"
+        }
         None => "unavailable",
     }
 }
@@ -1193,7 +1202,11 @@ fn emit_smart_destination(
     } else {
         "unavailable"
     };
-    let app_name = if status == "unavailable" {
+    let app_name = if status == "unavailable"
+        || matches!(
+            context.app.smart_destination,
+            crate::smart_destination::Snapshot::Unverified
+        ) {
         None
     } else {
         destination_application_name(&context.app.delivery_target)
@@ -2528,6 +2541,8 @@ async fn run_transcription_pipeline(
                 }
             }
         }
+        let accepted_route = recovery_smart_destination.route_code();
+        let delivery_route = smart_destination.route_code();
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
@@ -2569,10 +2584,12 @@ async fn run_transcription_pipeline(
         } else {
             "Text is in your clipboard -- press Ctrl+V to paste manually."
         };
+        let mut injection_outcome_code = "unconfirmed";
         let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
         {
             Ok(Ok(Some(Ok(result)))) => {
+                injection_outcome_code = result.outcome.code();
                 if result.outcome != injector::InjectionOutcome::NoText {
                     app_handle.state::<State>().delivery_recovery.remember(
                         recording_id,
@@ -2619,6 +2636,7 @@ async fn run_transcription_pipeline(
             }
             Ok(Ok(Some(Err(e)))) => {
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
+                injection_outcome_code = "clipboard_write_failed";
                 emit_auto_paste_failure_if_current(
                     app_handle,
                     app_state,
@@ -2666,6 +2684,15 @@ async fn run_transcription_pipeline(
                 DictationDeliveryOutcome::Unconfirmed
             }
         };
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.smart_destination_delivery",
+            recording_id,
+            accepted_route,
+            delivery_route,
+            outcome_code = injection_outcome_code,
+            "smart destination delivery"
+        );
         // Hold the recording-state lock across ownership validation and event
         // publication. A concurrent cancel changes Processing to Idle under
         // this same lock before marking the ID cancelled, and a new start also
@@ -7514,6 +7541,23 @@ pub(crate) mod tests {
             identity: editor_target.clone(),
         };
         assert_eq!(smart_destination_status(&smart, &media_target), "recent");
+        for accepted in [media_target.clone(), DeliveryTargetSnapshot::Incomplete] {
+            assert_eq!(
+                smart_destination_status(
+                    &crate::smart_destination::Snapshot::Unverified,
+                    &accepted
+                ),
+                "current",
+                "an unproven field still uses normal auto-paste into the current app",
+            );
+        }
+        assert_eq!(
+            smart_destination_status(
+                &crate::smart_destination::Snapshot::Unavailable,
+                &media_target
+            ),
+            "unavailable",
+        );
         let destination =
             select_recording_destination(&media_target, Some(&media_site), smart.clone());
         assert!(destination.target == editor_target);

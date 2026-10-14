@@ -234,6 +234,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
             Some("pipeline.dictation_preview_presentation")
         }
         "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
+        "pipeline.smart_destination_delivery" => Some("pipeline.smart_destination_delivery"),
         "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
         "system.model_install_started" => Some("system.model_install_started"),
@@ -883,6 +884,66 @@ fn sanitize_dictation_terminal_event(data: &mut serde_json::Map<String, serde_js
     }
 }
 
+fn is_smart_destination_delivery_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.smart_destination_delivery")
+}
+
+fn is_safe_smart_destination_delivery_field(key: &str, value: &serde_json::Value) -> bool {
+    let route = |value: &serde_json::Value| {
+        value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "disabled" | "clipboard_only" | "normal_paste" | "smart_target"
+            )
+        })
+    };
+    match key {
+        "event_code" => value.as_str() == Some("pipeline.smart_destination_delivery"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "accepted_route" | "delivery_route" => route(value),
+        "outcome_code" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "no_text"
+                    | "auto_pasted"
+                    | "clipboard_only_auto_paste_disabled"
+                    | "clipboard_only_accessibility_denied"
+                    | "clipboard_only_target_changed"
+                    | "clipboard_only_focus_not_editable"
+                    | "clipboard_only_clipboard_changed"
+                    | "clipboard_only_paste_failed"
+                    | "clipboard_only_smart_target_unavailable"
+                    | "clipboard_write_failed"
+                    | "unconfirmed"
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// Keep only the exact bounded schema in every build; any invalid known field
+/// collapses the record to its event code.
+fn sanitize_smart_destination_delivery_event(
+    data: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    const REQUIRED_FIELDS: [&str; 5] = [
+        "event_code",
+        "recording_id",
+        "accepted_route",
+        "delivery_route",
+        "outcome_code",
+    ];
+    let valid = REQUIRED_FIELDS.iter().all(|key| {
+        data.get(*key)
+            .is_some_and(|value| is_safe_smart_destination_delivery_field(key, value))
+    });
+    data.retain(|key, value| is_safe_smart_destination_delivery_field(key, value));
+    if !valid {
+        data.retain(|key, _| key == "event_code");
+    }
+}
+
 fn is_delivery_target_verification_event(
     data: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
@@ -1225,6 +1286,10 @@ fn sanitized_summary(
         == Some("pipeline.delivery_target_verified")
     {
         "Dictation delivery target verification".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.smart_destination_delivery")
+    {
+        "Dictation delivery route".to_string()
     } else if matches!(
         data.get("event_code").and_then(serde_json::Value::as_str),
         Some(
@@ -1584,6 +1649,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         // Terminal lifecycle records share the event file with Fleet uploads.
         // Keep the exact content-free schema in debug and release builds.
         sanitize_dictation_terminal_event(obj);
+        return;
+    }
+    if is_smart_destination_delivery_event(obj) {
+        sanitize_smart_destination_delivery_event(obj);
         return;
     }
     if is_delivery_target_verification_event(obj) {
@@ -3081,6 +3150,78 @@ mod tests {
             ));
             assert_eq!(data.as_object().unwrap().len(), 1);
             assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+        }
+    }
+
+    #[test]
+    fn smart_destination_delivery_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": "pipeline.smart_destination_delivery",
+                "recording_id": 12,
+                "accepted_route": "normal_paste",
+                "delivery_route": "normal_paste",
+                "outcome_code": "auto_pasted",
+                "bundle_id": "com.private.SENTINEL",
+                "transcript": "SENTINEL_PRIVATE_TRANSCRIPT",
+                "nested": {"content": "SENTINEL_PRIVATE_CONTENT"}
+            });
+            sanitize_event_data("pipeline", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({
+                    "event_code": "pipeline.smart_destination_delivery",
+                    "recording_id": 12,
+                    "accepted_route": "normal_paste",
+                    "delivery_route": "normal_paste",
+                    "outcome_code": "auto_pasted",
+                }),
+                "debug_build={debug_build}",
+            );
+
+            let mut invalid = serde_json::json!({
+                "event_code": "pipeline.smart_destination_delivery",
+                "recording_id": 12,
+                "accepted_route": "SENTINEL_PRIVATE_ROUTE",
+                "delivery_route": "normal_paste",
+                "outcome_code": "auto_pasted",
+            });
+            sanitize_event_data("pipeline", &mut invalid, debug_build);
+            assert_eq!(
+                invalid,
+                serde_json::json!({"event_code": "pipeline.smart_destination_delivery"}),
+            );
+        }
+    }
+
+    #[test]
+    fn smart_destination_delivery_outcome_codes_cover_every_injection_outcome() {
+        use crate::injector::{ClipboardOnlyReason, InjectionOutcome};
+        let outcomes = [
+            InjectionOutcome::NoText,
+            InjectionOutcome::AutoPasted,
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AutoPasteDisabled),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::TargetChanged),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::FocusNotEditable),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::PasteFailed),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::SmartTargetUnavailable),
+        ];
+        for outcome in outcomes {
+            assert!(
+                is_safe_smart_destination_delivery_field(
+                    "outcome_code",
+                    &serde_json::json!(outcome.code())
+                ),
+                "{outcome:?}",
+            );
+        }
+        for route in ["disabled", "clipboard_only", "normal_paste", "smart_target"] {
+            assert!(is_safe_smart_destination_delivery_field(
+                "delivery_route",
+                &serde_json::json!(route)
+            ));
         }
     }
 

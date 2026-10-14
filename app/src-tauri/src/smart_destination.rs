@@ -43,7 +43,14 @@ fn capture_gate(accepted_enabled: bool, currently_enabled: bool) -> CaptureGate 
 pub(crate) enum Snapshot {
     #[default]
     Disabled,
+    /// Fail closed: delivery stays clipboard-only (secure or self-owned focus,
+    /// supported media without a retained field, a stale capture, or a
+    /// captured destination that could not be prepared).
     Unavailable,
+    /// No field was positively proven at acceptance, but nothing positively
+    /// ruled delivery out. Delivery uses the normal verified auto-paste
+    /// policy, exactly as it would with Smart destination off.
+    Unverified,
     Target {
         token: u64,
         revision: u64,
@@ -55,7 +62,23 @@ impl Snapshot {
     pub(crate) fn identity(&self) -> Option<&DeliveryTargetSnapshot> {
         match self {
             Self::Target { identity, .. } => Some(identity),
-            Self::Disabled | Self::Unavailable => None,
+            Self::Disabled | Self::Unavailable | Self::Unverified => None,
+        }
+    }
+
+    /// Whether delivery follows the normal auto-paste policy instead of the
+    /// smart one-shot field capability.
+    pub(crate) fn uses_normal_paste(&self) -> bool {
+        matches!(self, Self::Disabled | Self::Unverified)
+    }
+
+    /// Content-free routing label for diagnostics.
+    pub(crate) fn route_code(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "clipboard_only",
+            Self::Unverified => "normal_paste",
+            Self::Target { .. } => "smart_target",
         }
     }
 }
@@ -161,26 +184,92 @@ pub async fn capture(
         CaptureGate::Disabled => return Snapshot::Disabled,
         CaptureGate::Unavailable => return Snapshot::Unavailable,
     }
-    if !matches!(expected, DeliveryTargetSnapshot::Complete(_)) {
-        return Snapshot::Unavailable;
+    match expected {
+        DeliveryTargetSnapshot::Complete(_) => {}
+        // A transient lookup gap proves nothing; normal delivery can still
+        // verify a complete stop-time anchor.
+        DeliveryTargetSnapshot::Incomplete => return Snapshot::Unverified,
+        DeliveryTargetSnapshot::SelfTarget | DeliveryTargetSnapshot::Mismatch(_) => {
+            return Snapshot::Unavailable
+        }
     }
 
     let generation = GENERATION.load(Ordering::Acquire);
     let expected = expected.clone();
+    // Native capture sets this the moment it has positive evidence against
+    // falling back (secure/self focus, a different process, or a smart route),
+    // before any cleanup that could outlive the timeout.
+    let fallback_vetoed = std::sync::Arc::new(AtomicBool::new(false));
+    let native_veto = fallback_vetoed.clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     if app
         .run_on_main_thread(move || {
-            let snapshot = native::capture(&expected, generation);
+            let snapshot = native::capture(&expected, generation, &native_veto);
             let _ = sender.send(snapshot);
         })
         .is_err()
     {
-        return Snapshot::Unavailable;
+        return unproven_capture(generation, &fallback_vetoed);
     }
 
     match tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await {
+        Ok(Ok(Snapshot::Unverified)) | Ok(Err(_)) | Err(_) => {
+            unproven_capture(generation, &fallback_vetoed)
+        }
         Ok(Ok(snapshot)) => snapshot,
-        Ok(Err(_)) | Err(_) => Snapshot::Unavailable,
+    }
+}
+
+fn unproven_capture(captured_generation: u64, fallback_vetoed: &AtomicBool) -> Snapshot {
+    unproven_capture_policy(
+        fallback_vetoed.load(Ordering::Acquire),
+        ENABLED.load(Ordering::Acquire),
+        GENERATION.load(Ordering::Acquire),
+        captured_generation,
+    )
+}
+
+/// A capture that proved nothing, or could not finish, must not make delivery
+/// stricter than normal auto-paste, unless native capture already found
+/// refusal evidence or Smart destination was revoked while it was pending.
+fn unproven_capture_policy(
+    fallback_vetoed: bool,
+    enabled_now: bool,
+    generation_now: u64,
+    captured_generation: u64,
+) -> Snapshot {
+    if !fallback_vetoed && enabled_now && generation_now == captured_generation {
+        Snapshot::Unverified
+    } else {
+        Snapshot::Unavailable
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityRelation {
+    Same,
+    /// A transient lookup gap: nothing contradicts the expected process.
+    Unknown,
+    /// Self, mismatched, or a different complete process: positive evidence.
+    Different,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn identity_relation(
+    current: &DeliveryTargetSnapshot,
+    expected: &DeliveryTargetSnapshot,
+) -> IdentityRelation {
+    match (current, expected) {
+        (DeliveryTargetSnapshot::Complete(current), DeliveryTargetSnapshot::Complete(expected))
+            if current.bundle_id == expected.bundle_id
+                && current.process_id == expected.process_id
+                && current.process_instance == expected.process_instance =>
+        {
+            IdentityRelation::Same
+        }
+        (DeliveryTargetSnapshot::Incomplete, _) => IdentityRelation::Unknown,
+        _ => IdentityRelation::Different,
     }
 }
 
@@ -357,7 +446,11 @@ mod native {
 
     pub(super) fn disable_if_main_thread(_generation: u64) {}
 
-    pub(super) fn capture(_expected: &DeliveryTargetSnapshot, _generation: u64) -> Snapshot {
+    pub(super) fn capture(
+        _expected: &DeliveryTargetSnapshot,
+        _generation: u64,
+        _fallback_vetoed: &std::sync::atomic::AtomicBool,
+    ) -> Snapshot {
         Snapshot::Unavailable
     }
 
@@ -386,6 +479,82 @@ mod tests {
         assert!(matches!(snapshot, Snapshot::Disabled));
         assert!(snapshot.identity().is_none());
         assert!(Snapshot::Unavailable.identity().is_none());
+        assert!(Snapshot::Unverified.identity().is_none());
+    }
+
+    #[test]
+    fn unproven_capture_falls_back_only_without_veto_while_enabled_and_current() {
+        assert!(matches!(
+            unproven_capture_policy(false, true, 7, 7),
+            Snapshot::Unverified
+        ));
+        // Secure/self/different-process evidence found before a timeout.
+        assert!(matches!(
+            unproven_capture_policy(true, true, 7, 7),
+            Snapshot::Unavailable
+        ));
+        // Revoked while pending, including a capture that completed Unverified.
+        assert!(matches!(
+            unproven_capture_policy(false, false, 7, 7),
+            Snapshot::Unavailable
+        ));
+        assert!(matches!(
+            unproven_capture_policy(false, true, 8, 7),
+            Snapshot::Unavailable
+        ));
+    }
+
+    #[test]
+    fn only_an_incomplete_sample_is_an_unknown_identity() {
+        use crate::frontmost::{
+            AppTransitionSnapshot, DeliveryTargetIdentity, ProcessInstanceToken,
+        };
+        let target = |pid: i32, instance: u64| {
+            DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+                bundle_id: "com.example.Editor".into(),
+                process_id: pid,
+                process_instance: ProcessInstanceToken::for_test(instance),
+                window_token: None,
+                transitions: AppTransitionSnapshot {
+                    activation_generation: 0,
+                    space_generation: 0,
+                },
+            })
+        };
+        let expected = target(42, 1);
+        assert_eq!(
+            identity_relation(&target(42, 1), &expected),
+            IdentityRelation::Same
+        );
+        assert_eq!(
+            identity_relation(&DeliveryTargetSnapshot::Incomplete, &expected),
+            IdentityRelation::Unknown
+        );
+        assert_eq!(
+            identity_relation(&target(43, 1), &expected),
+            IdentityRelation::Different
+        );
+        assert_eq!(
+            identity_relation(&target(42, 2), &expected),
+            IdentityRelation::Different
+        );
+        assert_eq!(
+            identity_relation(&DeliveryTargetSnapshot::SelfTarget, &expected),
+            IdentityRelation::Different
+        );
+    }
+
+    #[test]
+    fn only_unproven_and_disabled_snapshots_use_normal_paste() {
+        assert!(Snapshot::Disabled.uses_normal_paste());
+        assert!(Snapshot::Unverified.uses_normal_paste());
+        assert!(!Snapshot::Unavailable.uses_normal_paste());
+        assert!(!Snapshot::Target {
+            token: 1,
+            revision: 1,
+            identity: DeliveryTargetSnapshot::Incomplete,
+        }
+        .uses_normal_paste());
     }
 
     #[test]

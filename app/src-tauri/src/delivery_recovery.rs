@@ -23,12 +23,10 @@ enum RecoveryRoute {
 }
 
 fn recovery_route(snapshot: &crate::smart_destination::Snapshot) -> RecoveryRoute {
-    match snapshot {
-        crate::smart_destination::Snapshot::Disabled => RecoveryRoute::NormalPaste,
-        crate::smart_destination::Snapshot::Unavailable
-        | crate::smart_destination::Snapshot::Target { .. } => {
-            RecoveryRoute::VerifiedSmartDestination
-        }
+    if snapshot.uses_normal_paste() {
+        RecoveryRoute::NormalPaste
+    } else {
+        RecoveryRoute::VerifiedSmartDestination
     }
 }
 
@@ -172,7 +170,8 @@ pub(crate) async fn retry_last_delivery(
             };
         latest.smart_destination = if retry_target_matches(&latest.target, &current) {
             match crate::smart_destination::capture(&app_handle, &current, true).await {
-                snapshot @ crate::smart_destination::Snapshot::Target { .. } => snapshot,
+                snapshot @ (crate::smart_destination::Snapshot::Target { .. }
+                | crate::smart_destination::Snapshot::Unverified) => snapshot,
                 _ => crate::smart_destination::Snapshot::Unavailable,
             }
         } else {
@@ -229,18 +228,16 @@ pub(crate) async fn retry_last_delivery(
                 let _ = tx.send(None);
                 return;
             }
-            let attempt = match recovery_route(&latest.smart_destination) {
-                RecoveryRoute::NormalPaste => {
-                    injector::inject_text(&latest.text, true, latest.delay_ms, &latest.target)
-                }
-                RecoveryRoute::VerifiedSmartDestination => injector::inject_with_destination(
-                    &latest.text,
-                    true,
-                    latest.delay_ms,
-                    &latest.target,
-                    &latest.smart_destination,
-                ),
-            };
+            // Routes on the snapshot itself: Disabled uses legacy normal paste,
+            // Unverified uses normal paste with the secure-field veto, and a
+            // fresh smart Target uses its one-shot capability.
+            let attempt = injector::inject_with_destination(
+                &latest.text,
+                true,
+                latest.delay_ms,
+                &latest.target,
+                &latest.smart_destination,
+            );
             crate::smart_destination::abort(&latest.smart_destination, None);
             let _ = tx.send(Some(attempt));
         })
@@ -451,7 +448,11 @@ mod tests {
         assert_eq!(
             recovery_route(&crate::smart_destination::Snapshot::Disabled),
             RecoveryRoute::NormalPaste,
-            "only the explicit disabled variant preserves legacy retry behavior",
+        );
+        assert_eq!(
+            recovery_route(&crate::smart_destination::Snapshot::Unverified),
+            RecoveryRoute::NormalPaste,
+            "a recording that never proved a field uses the normal retry policy",
         );
     }
 }
