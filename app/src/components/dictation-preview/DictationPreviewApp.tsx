@@ -39,7 +39,7 @@ export function DictationPreviewCard({ text }: { text: string }) {
 
   return (
     <main className="flex w-full justify-center px-3" aria-label="Live dictation preview">
-      <div className="flex w-full items-start gap-2.5 overflow-hidden rounded-[14px] border border-white/10 bg-[#141414]/95 px-3.5 py-2.5 text-white shadow-2xl backdrop-blur-3xl">
+      <div className="flex w-full items-start gap-2.5 overflow-hidden rounded-[14px] border border-white/10 bg-[#141414]/95 px-3.5 py-2.5 text-white backdrop-blur-3xl">
         <span
           aria-hidden="true"
           className="mt-[5px] h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500"
