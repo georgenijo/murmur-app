@@ -11,7 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Smart destination now keeps the retained text field through ordinary page
   focus or a failed Accessibility lookup in the media app, and no longer drops
   a media handoff at delivery just because the media control lost focus while
-  you spoke. A different editable field or a secure field still cancels it.
+  you spoke. Another editable field (even one Murmur cannot fully capture) or a
+  secure field still cancels it, and delivery to the retained field now
+  requires positively readable focus, otherwise the transcript stays on the
+  clipboard.
 
 ## [0.51.5] - 2026-10-14
 

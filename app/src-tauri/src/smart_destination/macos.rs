@@ -1,10 +1,11 @@
 use super::{
     candidate_action, candidate_is_capturable, candidate_is_preservable, claim_preparation,
-    delivery_is_confirmed, generation_is_current, generation_is_latest, handoff_focus_allowed,
-    identity_relation, manual_retry_due, notification_invalidates, selection_allowed,
+    classify_foreground_focus, delivery_is_confirmed, editable_observation, generation_is_current,
+    generation_is_latest, handoff_focus_allowed, identity_relation, manual_failure_to_record,
+    manual_retry_due, notification_invalidates, selection_allowed,
     t3_empty_composer_delivery_is_confirmed, CandidateAction, CandidateNotification,
-    CapabilityStage, DeliveryRoute, IdentityRelation, InsertOutcome, Observation, PrepareOutcome,
-    Snapshot,
+    CapabilityStage, DeliveryRoute, EditableStatus, IdentityRelation, InsertOutcome,
+    ManualAccessibilityAttempt, Observation, PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
@@ -408,6 +409,9 @@ struct EditableSample {
 
 enum CurrentObservation {
     Editable(EditableSample),
+    /// Positively editable, but the window or document ancestor could not be
+    /// captured, so it cannot be a destination. It still revokes the old one.
+    EditableUnverified,
     SupportedMedia,
     SelfOverlay,
     Secure,
@@ -419,6 +423,7 @@ impl CurrentObservation {
     fn policy(&self) -> Observation {
         match self {
             Self::Editable(_) => Observation::Editable,
+            Self::EditableUnverified => Observation::EditableUnverified,
             Self::SupportedMedia => Observation::SupportedMedia,
             Self::SelfOverlay => Observation::SelfOverlay,
             Self::Secure => Observation::Secure,
@@ -510,7 +515,8 @@ pub(super) fn capture(
                     apply_observation(&mut state, observation);
                     return Snapshot::Unavailable;
                 }
-                CurrentObservation::SelfOverlay
+                CurrentObservation::EditableUnverified
+                | CurrentObservation::SelfOverlay
                 | CurrentObservation::Other
                 | CurrentObservation::Unavailable => {
                     apply_observation(&mut state, observation);
@@ -1112,14 +1118,16 @@ fn inspect_current_from_snapshot(
     match status {
         EditableStatus::Secure => CurrentObservation::Secure,
         EditableStatus::Editable => {
-            let (Some(window), Some(field)) = (window, field) else {
-                return CurrentObservation::Unavailable;
-            };
-            let document = retained_document_ancestor(&field);
+            let document = field.as_ref().and_then(retained_document_ancestor);
             let requires_document = crate::browser_site::allowed_browser(&identity.bundle_id)
                 || manual_accessibility_applies(state, &snapshot, &app);
-            if requires_document && document.is_none() {
-                return CurrentObservation::Unavailable;
+            let (Some(window), Some(field)) = (window, field) else {
+                return CurrentObservation::EditableUnverified;
+            };
+            if editable_observation(true, requires_document, document.is_some())
+                != Observation::Editable
+            {
+                return CurrentObservation::EditableUnverified;
             }
             if !same_process(
                 &crate::frontmost::capture_delivery_target_snapshot(),
@@ -1146,14 +1154,6 @@ fn inspect_current_from_snapshot(
             }
         }
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EditableStatus {
-    Editable,
-    Secure,
-    NotEditable,
-    Unavailable,
 }
 
 fn editable_status(element: AXUIElementRef) -> EditableStatus {
@@ -1204,7 +1204,7 @@ fn classify_text_role(
 }
 
 /// Classify the expected foreground app's focus without any side effects.
-/// Failed lookups are `Unavailable`: only positive evidence revokes.
+/// Only positive evidence authorizes delivery; see `classify_foreground_focus`.
 fn foreground_focus_observation(expected: &DeliveryTargetSnapshot) -> Observation {
     let Some(identity) = complete_identity(expected) else {
         return Observation::Unavailable;
@@ -1212,20 +1212,13 @@ fn foreground_focus_observation(expected: &DeliveryTargetSnapshot) -> Observatio
     let Some(app) = create_application(identity.process_id) else {
         return Observation::Unavailable;
     };
-    let Ok(field) = copy_element_attribute(app.as_element(), "AXFocusedUIElement") else {
-        return Observation::Unavailable;
-    };
-    match editable_status(field.as_element()) {
-        EditableStatus::Secure => Observation::Secure,
-        EditableStatus::Editable => Observation::Editable,
-        EditableStatus::NotEditable | EditableStatus::Unavailable => {
-            if current_is_supported_media_with_field(expected, Some(&field)) {
-                Observation::SupportedMedia
-            } else {
-                Observation::Other
-            }
-        }
-    }
+    let field = copy_element_attribute(app.as_element(), "AXFocusedUIElement").ok();
+    let status = field
+        .as_ref()
+        .map(|field| editable_status(field.as_element()));
+    classify_foreground_focus(status, || {
+        current_is_supported_media_with_field(expected, field.as_ref())
+    })
 }
 
 fn current_is_supported_media_with_field(
@@ -1329,37 +1322,52 @@ fn enable_manual_accessibility_if_needed(
     {
         return false;
     }
-    // An exhausted AX budget is not evidence about this app; never record it
-    // as a failed attempt.
-    if !ax_budget_open() {
-        return false;
-    }
-    match copy_bool_attribute(app.as_element(), "AXManualAccessibility") {
+    // Backoff applies to calls that reached the native API, even if they ran
+    // past the sampling deadline; a call skipped for an exhausted budget says
+    // nothing about the app and is retried on the next sample.
+    let record_failure = |state: &mut State, attempt: ManualAccessibilityAttempt| {
+        if let Some(at) = manual_failure_to_record(attempt, Instant::now()) {
+            state.manual_attempted = Some((identity.clone(), at));
+        }
+    };
+    let (current, read_dispatched) =
+        copy_bool_attribute_dispatch(app.as_element(), "AXManualAccessibility");
+    match current {
         Some(true) => true,
         Some(false) => {
             let Some(launch_token_bits) = running_process_launch_bits(identity) else {
                 return false;
             };
-            if set_attribute(app.as_element(), "AXManualAccessibility", unsafe {
+            match set_attribute_dispatch(app.as_element(), "AXManualAccessibility", unsafe {
                 kCFBooleanTrue
-            }) != AX_SUCCESS
-            {
-                if ax_budget_open() {
-                    state.manual_attempted = Some((identity.clone(), Instant::now()));
+            }) {
+                Some(AX_SUCCESS) => {
+                    state.manual_override = Some(ManualOverride {
+                        identity: identity.clone(),
+                        launch_token_bits,
+                        app: app.clone(),
+                    });
+                    true
                 }
-                return false;
+                Some(_) => {
+                    record_failure(state, ManualAccessibilityAttempt::DispatchedFailure);
+                    false
+                }
+                None => {
+                    record_failure(state, ManualAccessibilityAttempt::NotDispatched);
+                    false
+                }
             }
-            state.manual_override = Some(ManualOverride {
-                identity: identity.clone(),
-                launch_token_bits,
-                app: app.clone(),
-            });
-            true
         }
         None => {
-            if ax_budget_open() {
-                state.manual_attempted = Some((identity.clone(), Instant::now()));
-            }
+            record_failure(
+                state,
+                if read_dispatched {
+                    ManualAccessibilityAttempt::DispatchedFailure
+                } else {
+                    ManualAccessibilityAttempt::NotDispatched
+                },
+            );
             false
         }
     }
@@ -1635,10 +1643,21 @@ fn cfstring(value: &str) -> Option<OwnedCf> {
 }
 
 fn copy_attribute_raw(element: AXUIElementRef, name: &str) -> Result<OwnedCf, AXError> {
+    copy_attribute_dispatch(element, name).0
+}
+
+/// Also reports whether the native call was dispatched (`false`: skipped
+/// before the call because the budget was exhausted or setup failed).
+fn copy_attribute_dispatch(
+    element: AXUIElementRef,
+    name: &str,
+) -> (Result<OwnedCf, AXError>, bool) {
     if !ax_budget_open() {
-        return Err(AX_ERROR_FAILURE);
+        return (Err(AX_ERROR_FAILURE), false);
     }
-    let attribute = cfstring(name).ok_or(AX_ERROR_FAILURE)?;
+    let Some(attribute) = cfstring(name) else {
+        return (Err(AX_ERROR_FAILURE), false);
+    };
     let mut value = std::ptr::null();
     let status = unsafe { AXUIElementCopyAttributeValue(element, attribute.0, &mut value) };
     if status != AX_SUCCESS || value.is_null() {
@@ -1647,13 +1666,19 @@ fn copy_attribute_raw(element: AXUIElementRef, name: &str) -> Result<OwnedCf, AX
                 CFRelease(value);
             }
         }
-        return Err(if status == AX_SUCCESS {
-            AX_ERROR_NO_VALUE
-        } else {
-            status
-        });
+        return (
+            Err(if status == AX_SUCCESS {
+                AX_ERROR_NO_VALUE
+            } else {
+                status
+            }),
+            true,
+        );
     }
-    unsafe { OwnedCf::from_create(value).ok_or(AX_ERROR_FAILURE) }
+    (
+        unsafe { OwnedCf::from_create(value).ok_or(AX_ERROR_FAILURE) },
+        true,
+    )
 }
 
 fn copy_attribute(element: AXUIElementRef, name: &str) -> Result<OwnedCf, AXError> {
@@ -1697,11 +1722,18 @@ fn copy_string_attribute_status(element: AXUIElementRef, name: &str) -> Result<S
 }
 
 fn copy_bool_attribute(element: AXUIElementRef, name: &str) -> Option<bool> {
-    let value = copy_attribute_raw(element, name).ok()?;
+    copy_bool_attribute_dispatch(element, name).0
+}
+
+fn copy_bool_attribute_dispatch(element: AXUIElementRef, name: &str) -> (Option<bool>, bool) {
+    let (value, dispatched) = copy_attribute_dispatch(element, name);
+    let Ok(value) = value else {
+        return (None, dispatched);
+    };
     if unsafe { CFGetTypeID(value.0) } != unsafe { CFBooleanGetTypeID() } {
-        return None;
+        return (None, dispatched);
     }
-    Some(unsafe { CFBooleanGetValue(value.0) != 0 })
+    (Some(unsafe { CFBooleanGetValue(value.0) != 0 }), dispatched)
 }
 
 fn copy_number_attribute(element: AXUIElementRef, name: &str) -> Option<usize> {
@@ -1732,13 +1764,20 @@ fn attribute_settable(element: AXUIElementRef, name: &str) -> bool {
 }
 
 fn set_attribute(element: AXUIElementRef, name: &str, value: CFTypeRef) -> AXError {
+    set_attribute_dispatch(element, name, value).unwrap_or(AX_ERROR_FAILURE)
+}
+
+/// `None` when the call was skipped before reaching the native API.
+fn set_attribute_dispatch(
+    element: AXUIElementRef,
+    name: &str,
+    value: CFTypeRef,
+) -> Option<AXError> {
     if !ax_budget_open() {
-        return AX_ERROR_FAILURE;
+        return None;
     }
-    let Some(attribute) = cfstring(name) else {
-        return AX_ERROR_FAILURE;
-    };
-    unsafe { AXUIElementSetAttributeValue(element, attribute.0, value) }
+    let attribute = cfstring(name)?;
+    Some(unsafe { AXUIElementSetAttributeValue(element, attribute.0, value) })
 }
 
 #[repr(C)]
