@@ -49,8 +49,8 @@ fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
             let x = monitor.position().x as f64 / scale
                 + (monitor.size().width as f64 / scale - WIDTH) / 2.0;
             let base_y = monitor.position().y as f64 / scale + top_inset;
-            let (y, height) = super::overlay::overlay_popover_fit(app, &monitor, HEIGHT)
-                .unwrap_or((base_y, HEIGHT));
+            let (x, y, height) = super::overlay::overlay_popover_fit(app, &monitor, WIDTH, HEIGHT)
+                .unwrap_or((x, base_y, HEIGHT));
             (x, y, WIDTH, height)
         }
         None => (300.0, top_inset, WIDTH, HEIGHT),
@@ -76,6 +76,21 @@ fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
 /// already visible is how a display change is absorbed.
 pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
     POPOVER.show(app, frame(app, notch_height(app)))
+}
+
+/// Keep an already-visible preview attached to the overlay as its native frame
+/// changes. This never shows a hidden window, so recording generation remains
+/// owned by `show_dictation_preview`/the Rust ticker.
+pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(POPOVER.label) else {
+        return;
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    if let Err(error) = POPOVER.reposition(app, frame(app, notch_height(app))) {
+        tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
+    }
 }
 
 #[derive(Clone, Copy)]

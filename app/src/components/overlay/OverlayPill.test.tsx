@@ -70,6 +70,12 @@ describe('OverlayPill transient cues', () => {
     container.remove();
   });
 
+  it('does not advertise free native dragging on the anchor-owned top bar', async () => {
+    await act(async () => root.render(<CuePill indicator={{ kind: 'idle', dimmed: false }} />));
+
+    expect(container.querySelector('[data-tauri-drag-region]')).toBeNull();
+  });
+
   it('renders an accessible manual-paste status with a non-focusing retry action', async () => {
     const onRetryDelivery = vi.fn();
     const onPauseDeliveryTimer = vi.fn();

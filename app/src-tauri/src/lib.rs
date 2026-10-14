@@ -197,6 +197,16 @@ pub(crate) struct State {
     /// Complete primary-display snapshot used to coalesce native screen
     /// notifications and skip geometrically identical updates.
     pub(crate) display_snapshot: Mutex<Option<commands::overlay::DisplaySnapshot>>,
+    /// Requested logical-point calibration for this session. Native placement
+    /// refreshes re-resolve its effective value against the current display, so
+    /// a temporary menu-band clamp does not erase the saved/draft intent.
+    pub(crate) overlay_calibration: Mutex<commands::overlay::OverlayCalibrationState>,
+    /// Last native overlay frame accepted by WindowServer-facing setters. Nearby
+    /// popovers follow this frame rather than a theoretical maximum offset/size.
+    pub(crate) overlay_frame: Mutex<Option<commands::overlay::OverlayFrame>>,
+    /// Intended query-review size class, retained so an overlay frame change can
+    /// reposition a visible query popover without changing its semantics.
+    pub(crate) query_popover_expanded: Mutex<bool>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
     /// new size class without the caller re-supplying the anchor.
@@ -302,6 +312,9 @@ pub fn run() {
             transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
             display_snapshot: Mutex::new(None),
+            overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
+            overlay_frame: Mutex::new(None),
+            query_popover_expanded: Mutex::new(false),
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
             transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),

@@ -49,9 +49,10 @@ export function OverlayPill({
 
   return (
     <>
-      {/* Top bar — the only draggable surface (keeps the dropdown buttons clickable).
-          No horizontal padding: each wing owns its full wingW and centers content. */}
-      <div data-tauri-drag-region className="flex items-center" style={{ height: topH }}>
+      {/* The native overlay is anchor-owned; this surface deliberately is not a
+          drag region because arbitrary movement is neither persisted nor part
+          of the placement contract. */}
+      <div className="flex items-center" style={{ height: topH }}>
         {/* Left wing — fixed wing slot, content centered */}
         <div
           className="shrink-0 flex items-center justify-center"

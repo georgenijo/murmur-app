@@ -30,6 +30,32 @@ pub struct AppliedSurface {
     pub window_h: f64,
 }
 
+/// Effective calibration and the range the current display/window frame can
+/// actually honor. The frontend displays these resolved values so clamped
+/// movement never masquerades as additional travel.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedOverlayPosition {
+    pub requested_offset: f64,
+    pub applied_offset: f64,
+    pub min_offset: f64,
+    pub max_offset: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OverlayFrame {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct OverlayCalibrationState {
+    pub(crate) requested_offset: f64,
+    pub(crate) applied_offset: f64,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayContent {
@@ -322,54 +348,134 @@ fn floating_logical_position(
     )
 }
 
-/// On a floating display, reserve enough vertical space for expanded controls,
-/// even if the pill is currently collapsed or calibration is applied later.
-/// Returns `None` under a physical notch, where callers use their own inset.
+fn vertical_offset_bounds(
+    frame_top: f64,
+    work_top: f64,
+    work_bottom: f64,
+    window_h: f64,
+    floating: bool,
+    in_menu_bar_band: bool,
+) -> (f64, f64) {
+    if !floating {
+        return (MIN_VERTICAL_OFFSET, MAX_VERTICAL_OFFSET);
+    }
+    let (floor_y, base_y) = floating_anchor(frame_top, work_top, in_menu_bar_band);
+    let bottommost_y = (work_bottom - window_h).max(floor_y);
+    (
+        (floor_y - base_y).clamp(MIN_VERTICAL_OFFSET, MAX_VERTICAL_OFFSET),
+        (bottommost_y - base_y).clamp(MIN_VERTICAL_OFFSET, MAX_VERTICAL_OFFSET),
+    )
+}
+
+fn applied_overlay_position(
+    requested_offset: f64,
+    frame_top: f64,
+    work_top: f64,
+    work_bottom: f64,
+    window_h: f64,
+    floating: bool,
+    in_menu_bar_band: bool,
+) -> AppliedOverlayPosition {
+    let requested_offset = clamp_vertical_offset(requested_offset);
+    let (min_offset, max_offset) = vertical_offset_bounds(
+        frame_top,
+        work_top,
+        work_bottom,
+        window_h,
+        floating,
+        in_menu_bar_band,
+    );
+    AppliedOverlayPosition {
+        requested_offset,
+        applied_offset: requested_offset.clamp(min_offset, max_offset),
+        min_offset,
+        max_offset,
+    }
+}
+
+/// On a floating display, place a nearby popover below the actual native
+/// overlay frame. Returns `None` under a physical notch, where callers retain
+/// the deliberately close under-notch path (hover may briefly overlap it).
 pub(crate) fn overlay_popover_fit(
     app: &tauri::AppHandle,
     monitor: &tauri::Monitor,
+    popover_width: f64,
     popover_height: f64,
-) -> Option<(f64, f64)> {
+) -> Option<(f64, f64, f64)> {
     let primary = app.primary_monitor().ok().flatten()?;
     if primary.position() != monitor.position() || primary.size() != monitor.size() {
         return None;
     }
     let state = app.try_state::<crate::State>()?;
     let notch = *state.notch_info.lock_or_recover();
-    let geometry = geometry_for(notch);
     let scale = monitor.scale_factor();
-    let frame_top = monitor.position().y as f64 / scale;
+    let work_left = monitor.work_area().position.x as f64 / scale;
+    let work_right =
+        (monitor.work_area().position.x as f64 + monitor.work_area().size.width as f64) / scale;
     let work_top = monitor.work_area().position.y as f64 / scale;
     let work_bottom =
         (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
-    overlay_popover_fit_for_geometry(
-        frame_top,
+    let geometry = geometry_for(notch);
+    let frame = *state.overlay_frame.lock_or_recover();
+    overlay_popover_fit_for_frame(
+        work_left,
+        work_right,
         work_top,
         work_bottom,
+        popover_width,
         popover_height,
-        &geometry,
-        floating_in_menu_bar_band(notch),
+        frame,
+        geometry.floating,
     )
 }
 
-fn overlay_popover_fit_for_geometry(
-    frame_top: f64,
+fn overlay_popover_fit_for_frame(
+    work_left: f64,
+    work_right: f64,
     work_top: f64,
     work_bottom: f64,
+    popover_width: f64,
     popover_height: f64,
-    geometry: &OverlayGeometry,
-    in_menu_bar_band: bool,
-) -> Option<(f64, f64)> {
+    frame: Option<OverlayFrame>,
+    floating: bool,
+) -> Option<(f64, f64, f64)> {
     // Under a physical notch the collapsed pill fills the notch; callers keep
     // their popover tucked just below it. Reserving the full hover-expanded
     // height there put the live transcript far from the pill.
-    if !geometry.floating {
+    if !floating {
         return None;
     }
-    let (_, base_y) = floating_anchor(frame_top, work_top, in_menu_bar_band);
-    let below_overlay = base_y + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
-    let top = below_overlay.clamp(work_top, work_bottom);
-    Some((top, popover_height.min((work_bottom - top).max(0.0))))
+    let frame = frame?;
+    let rightmost_x = (work_right - popover_width).max(work_left);
+    let x = (frame.x + (frame.width - popover_width) / 2.0).clamp(work_left, rightmost_x);
+    let top = (frame.y + frame.height + POPOVER_GAP).clamp(work_top, work_bottom);
+    Some((x, top, popover_height.min((work_bottom - top).max(0.0))))
+}
+
+#[cfg(target_os = "macos")]
+fn remember_overlay_frame(app: &tauri::AppHandle, frame: OverlayFrame) {
+    *app.state::<State>().overlay_frame.lock_or_recover() = Some(frame);
+}
+
+#[cfg(target_os = "macos")]
+fn remember_overlay_position(
+    app: &tauri::AppHandle,
+    frame: OverlayFrame,
+    applied: AppliedOverlayPosition,
+) {
+    let state = app.state::<State>();
+    *state.overlay_calibration.lock_or_recover() = OverlayCalibrationState {
+        requested_offset: applied.requested_offset,
+        applied_offset: applied.applied_offset,
+    };
+    *state.overlay_frame.lock_or_recover() = Some(frame);
+    let _ = app.emit("overlay-position-applied", applied);
+}
+
+#[cfg(target_os = "macos")]
+fn follow_overlay_popovers(app: &tauri::AppHandle) {
+    crate::commands::dictation_preview::follow_overlay_if_visible(app);
+    crate::commands::query_popover::follow_overlay_if_visible(app);
 }
 
 /// WindowServer applies frame changes asynchronously. Reading `outer_position`
@@ -716,8 +822,9 @@ fn apply_placement(
     if let Some(overlay) = handle.get_webview_window("overlay") {
         position_overlay_default(&overlay, notch, trigger.as_str());
     }
-    // The frontend treats this event as authoritative: it collapses and re-reads
-    // the geometry (and reapplies the saved vertical calibration).
+    // The frontend treats this event as authoritative for expansion: it
+    // collapses and re-reads geometry. Native placement retained the effective
+    // calibration above, including an active unsaved draft.
     let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
 }
 
@@ -887,9 +994,32 @@ pub(crate) fn position_overlay_default(
             sf,
             overlay_w,
         );
+        let area = monitor.work_area();
+        let work_top = area.position.y as f64 / sf;
+        let work_bottom = (area.position.y as f64 + area.size.height as f64) / sf;
+        let in_band = floating_in_menu_bar_band(notch_info);
+        let calibration = *overlay
+            .app_handle()
+            .state::<State>()
+            .overlay_calibration
+            .lock_or_recover();
+        let requested_offset = calibration.requested_offset;
+        tracing::debug!(
+            target: "system",
+            requested_offset,
+            previous_applied_offset = calibration.applied_offset,
+            "re-resolving overlay calibration for native placement"
+        );
+        let applied_position = applied_overlay_position(
+            requested_offset,
+            centered_y,
+            work_top,
+            work_bottom,
+            overlay_h,
+            g.floating,
+            in_band,
+        );
         let (x, y) = if g.floating {
-            let area = monitor.work_area();
-            let in_band = floating_in_menu_bar_band(notch_info);
             floating_logical_position(
                 floating_window_x(centered_x, notch_info, overlay_w),
                 centered_y,
@@ -901,20 +1031,38 @@ pub(crate) fn position_overlay_default(
                 ),
                 (overlay_w, overlay_h),
                 sf,
-                0.0,
+                applied_position.applied_offset,
                 in_band,
             )
         } else {
-            (centered_x, centered_y)
+            (centered_x, centered_y + applied_position.applied_offset)
         };
 
-        if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+        let sized = if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
+        {
             tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
-        }
+            false
+        } else {
+            true
+        };
         tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
         if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, y)) {
             tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
         } else {
+            if sized {
+                let app = overlay.app_handle();
+                remember_overlay_position(
+                    app,
+                    OverlayFrame {
+                        x,
+                        y,
+                        width: overlay_w,
+                        height: overlay_h,
+                    },
+                    applied_position,
+                );
+                follow_overlay_popovers(app);
+            }
             let overlay = overlay.clone();
             let app = overlay.app_handle().clone();
             let target = ((x * sf).round() as i32, (y * sf).round() as i32);
@@ -1003,19 +1151,15 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn set_overlay_expanded(
     app: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    _state: tauri::State<'_, State>,
     expanded: bool,
     content: Option<OverlayContent>,
 ) -> Result<AppliedSurface, String> {
-    let applied = surface_for_content(
-        *state.notch_info.lock_or_recover(),
-        expanded,
-        content.unwrap_or_default(),
-    );
+    let content = content.unwrap_or_default();
     #[cfg(not(target_os = "macos"))]
     {
         let _ = &app;
-        return Ok(applied);
+        return Ok(surface_for_content(None, expanded, content));
     }
 
     #[cfg(target_os = "macos")]
@@ -1024,8 +1168,14 @@ pub async fn set_overlay_expanded(
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window not found".to_string())?;
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let dispatch_app = app.clone();
         app.run_on_main_thread(move || {
             let result = (|| {
+                // Resolve geometry only once this mutation reaches the native
+                // main thread. A queued display refresh may have replaced the
+                // notch/scale contract since the command was invoked.
+                let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
+                let applied = surface_for_content(notch, expanded, content);
                 let position = overlay
                     .outer_position()
                     .map_err(|error| error.to_string())?;
@@ -1041,6 +1191,16 @@ pub async fn set_overlay_expanded(
                 overlay
                     .set_position(tauri::LogicalPosition::new(x, y))
                     .map_err(|error| error.to_string())?;
+                remember_overlay_frame(
+                    &dispatch_app,
+                    OverlayFrame {
+                        x,
+                        y,
+                        width: applied.window_w,
+                        height: applied.window_h,
+                    },
+                );
+                follow_overlay_popovers(&dispatch_app);
                 Ok(applied)
             })();
             let _ = tx.send(result);
@@ -1055,21 +1215,26 @@ pub async fn set_overlay_expanded(
 
 /// Apply a user-calibrated vertical offset to the notch-anchored overlay.
 ///
-/// The frontend persists the logical-point offset in its local settings and
-/// reapplies it after launch/display changes. Keeping the native command
-/// stateless avoids a second settings store while still ensuring the actual
-/// NSWindow moves, rather than merely translating web content inside it.
+/// The frontend persists the saved logical-point offset. Native state retains
+/// both the requested session offset (including an unsaved calibration draft)
+/// and its effective clamped value, so placement refreshes can re-resolve the
+/// same intent without resetting or competing with it.
 #[tauri::command]
 pub async fn set_overlay_vertical_offset(
     app: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    _state: tauri::State<'_, State>,
     offset: f64,
-) -> Result<(), String> {
+) -> Result<AppliedOverlayPosition, String> {
     let offset = clamp_vertical_offset(offset);
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (&app, &state, offset);
-        return Ok(());
+        let _ = &app;
+        return Ok(AppliedOverlayPosition {
+            requested_offset: offset,
+            applied_offset: offset,
+            min_offset: MIN_VERTICAL_OFFSET,
+            max_offset: MAX_VERTICAL_OFFSET,
+        });
     }
 
     #[cfg(target_os = "macos")]
@@ -1077,32 +1242,30 @@ pub async fn set_overlay_vertical_offset(
         let overlay = app
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window not found".to_string())?;
-        let _ = &state;
-        let monitor = app
-            .primary_monitor()
-            .map_err(|error| error.to_string())?
-            .or_else(|| overlay.current_monitor().ok().flatten())
-            .ok_or_else(|| "no monitor available".to_string())?;
-        let position = monitor.position();
-        let size = monitor.size();
-        let scale_factor = monitor.scale_factor();
-        let monitor_position = (position.x, position.y);
-        let monitor_size = (size.width, size.height);
-        let monitor_x = position.x;
-        let monitor_y = position.y;
         let overlay_to_move = overlay.clone();
-        let notch = *state.notch_info.lock_or_recover();
-        let floating = geometry_for(notch).floating;
-        let area = monitor.work_area();
-        let work_area = (
-            area.position.x,
-            area.position.y,
-            area.size.width,
-            area.size.height,
-        );
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let dispatch_app = app.clone();
         app.run_on_main_thread(move || {
             let result = (|| {
+                let monitor = dispatch_app
+                    .primary_monitor()
+                    .map_err(|error| error.to_string())?
+                    .or_else(|| overlay_to_move.current_monitor().ok().flatten())
+                    .ok_or_else(|| "no monitor available".to_string())?;
+                let position = monitor.position();
+                let size = monitor.size();
+                let scale_factor = monitor.scale_factor();
+                let monitor_position = (position.x, position.y);
+                let monitor_size = (size.width, size.height);
+                let area = monitor.work_area();
+                let work_area = (
+                    area.position.x,
+                    area.position.y,
+                    area.size.width,
+                    area.size.height,
+                );
+                let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
+                let floating = geometry_for(notch).floating;
                 let current_scale = overlay_to_move
                     .scale_factor()
                     .map_err(|error| error.to_string())?;
@@ -1113,35 +1276,64 @@ pub async fn set_overlay_vertical_offset(
                 let height = current_size.height as f64 / current_scale;
                 let (centered_x, top_y) =
                     centered_logical_position(monitor_position, monitor_size, scale_factor, width);
+                let work_top = area.position.y as f64 / scale_factor;
+                let work_bottom = (area.position.y as f64 + area.size.height as f64) / scale_factor;
+                let in_band = floating_in_menu_bar_band(notch);
+                let applied = applied_overlay_position(
+                    offset,
+                    top_y,
+                    work_top,
+                    work_bottom,
+                    height,
+                    floating,
+                    in_band,
+                );
                 let (x, y) = if floating {
-                    let in_band = floating_in_menu_bar_band(notch);
                     floating_logical_position(
                         floating_window_x(centered_x, notch, width),
                         top_y,
                         work_area,
                         (width, height),
                         scale_factor,
-                        offset,
+                        applied.applied_offset,
                         in_band,
                     )
                 } else {
-                    (centered_x, top_y + offset)
+                    (centered_x, top_y + applied.applied_offset)
                 };
                 overlay_to_move
                     .set_position(tauri::LogicalPosition::new(x, y))
                     .map_err(|error| error.to_string())?;
+                remember_overlay_position(
+                    &dispatch_app,
+                    OverlayFrame {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                    applied,
+                );
+                follow_overlay_popovers(&dispatch_app);
                 Ok::<_, String>((
-                    (x * scale_factor).round() as i32,
-                    (y * scale_factor).round() as i32,
+                    (
+                        (x * scale_factor).round() as i32,
+                        (y * scale_factor).round() as i32,
+                    ),
+                    applied,
+                    position.x,
+                    position.y,
+                    scale_factor,
                 ))
             })();
             let _ = tx.send(result);
         })
         .map_err(|error| error.to_string())?;
-        let (x, y) = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
-            .await
-            .map_err(|_| "overlay position update timed out".to_string())?
-            .map_err(|_| "overlay position update was dropped".to_string())??;
+        let ((x, y), applied, monitor_x, monitor_y, scale_factor) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+                .await
+                .map_err(|_| "overlay position update timed out".to_string())?
+                .map_err(|_| "overlay position update was dropped".to_string())??;
 
         let probe_app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -1149,7 +1341,8 @@ pub async fn set_overlay_vertical_offset(
                 Ok(actual) => tracing::info!(
                     target: "system",
                     event_code = "overlay.position_offset_applied",
-                    offset_logical = offset,
+                    requested_offset_logical = applied.requested_offset,
+                    applied_offset_logical = applied.applied_offset,
                     target_x_physical = x,
                     target_y_physical = y,
                     actual_x_physical = actual.0,
@@ -1163,7 +1356,8 @@ pub async fn set_overlay_vertical_offset(
                 Err(error) => tracing::warn!(
                     target: "system",
                     event_code = "overlay.position_read_failed",
-                    offset_logical = offset,
+                    requested_offset_logical = applied.requested_offset,
+                    applied_offset_logical = applied.applied_offset,
                     target_x_physical = x,
                     target_y_physical = y,
                     error = %error,
@@ -1171,7 +1365,7 @@ pub async fn set_overlay_vertical_offset(
                 ),
             }
         });
-        Ok(())
+        Ok(applied)
     }
 }
 
@@ -1663,36 +1857,99 @@ mod tests {
     }
 
     #[test]
-    fn floating_popovers_clear_expanded_overlay_and_stay_in_work_area() {
-        // Standalone placement (36pt pill): 30 + 8 + 12 + 100 + 6.
-        let geometry = geometry_for(Some(external_without_slot(30.0)));
+    fn floating_popovers_follow_the_actual_overlay_frame_and_stay_in_work_area() {
+        let collapsed = OverlayFrame {
+            x: 1140.0,
+            y: 38.0,
+            width: 280.0,
+            height: 36.0,
+        };
+        let expanded = OverlayFrame {
+            height: 100.0,
+            ..collapsed
+        };
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 104.0, &geometry, false),
-            Some((156.0, 104.0))
+            overlay_popover_fit_for_frame(
+                0.0,
+                2560.0,
+                30.0,
+                1440.0,
+                460.0,
+                104.0,
+                Some(collapsed),
+                true,
+            ),
+            Some((1050.0, 80.0, 104.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 340.0, &geometry, false),
-            Some((156.0, 340.0))
+            overlay_popover_fit_for_frame(
+                0.0,
+                2560.0,
+                30.0,
+                1440.0,
+                440.0,
+                340.0,
+                Some(expanded),
+                true,
+            ),
+            Some((1060.0, 144.0, 340.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 30.0, 400.0, 340.0, &geometry, false),
-            Some((156.0, 244.0))
+            overlay_popover_fit_for_frame(
+                0.0,
+                2560.0,
+                30.0,
+                400.0,
+                440.0,
+                340.0,
+                Some(expanded),
+                true,
+            ),
+            Some((1060.0, 144.0, 256.0))
         );
     }
 
     #[test]
-    fn menu_bar_band_popovers_clear_the_hover_expanded_overlay() {
-        let info = external(24.0);
-        let geometry = geometry_for(Some(info));
-        // Expanded overlay spans y 0..88 (+12 calibration); popover starts 6pt below.
-        let (top, height) =
-            overlay_popover_fit_for_geometry(0.0, 24.0, 1440.0, 104.0, &geometry, true).unwrap();
-        assert_eq!((top, height), (106.0, 104.0));
-        assert!(top >= 12.0 + geometry.expanded_h);
-        // Still capped by the work area.
+    fn floating_popover_requires_an_applied_frame() {
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 24.0, 200.0, 340.0, &geometry, true),
-            Some((106.0, 94.0))
+            overlay_popover_fit_for_frame(0.0, 2560.0, 24.0, 1440.0, 460.0, 104.0, None, true,),
+            None
+        );
+    }
+
+    #[test]
+    fn floating_popover_matches_an_off_center_band_slot_and_clamps_to_work_area() {
+        let frame = OverlayFrame {
+            x: 300.0,
+            y: 0.0,
+            width: 280.0,
+            height: 24.0,
+        };
+        assert_eq!(
+            overlay_popover_fit_for_frame(
+                0.0,
+                2560.0,
+                24.0,
+                1440.0,
+                460.0,
+                104.0,
+                Some(frame),
+                true,
+            ),
+            Some((210.0, 30.0, 104.0))
+        );
+        assert_eq!(
+            overlay_popover_fit_for_frame(
+                100.0,
+                900.0,
+                24.0,
+                1440.0,
+                460.0,
+                104.0,
+                Some(OverlayFrame { x: -40.0, ..frame }),
+                true,
+            ),
+            Some((100.0, 30.0, 104.0))
         );
     }
 
@@ -1702,8 +1959,55 @@ mod tests {
         // the hover-expanded overlay, which left a large gap below the pill.
         let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched, false),
+            overlay_popover_fit_for_frame(
+                0.0,
+                1512.0,
+                32.0,
+                1440.0,
+                460.0,
+                104.0,
+                Some(OverlayFrame {
+                    x: 627.5,
+                    y: 0.0,
+                    width: 257.0,
+                    height: notched.collapsed_h,
+                }),
+                false,
+            ),
             None
+        );
+    }
+
+    #[test]
+    fn calibration_reports_only_travel_the_current_anchor_can_apply() {
+        // A pill in the menu-bar band is already at the display top.
+        let band = applied_overlay_position(-12.0, 0.0, 24.0, 1440.0, 24.0, true, true);
+        assert_eq!(
+            band,
+            AppliedOverlayPosition {
+                requested_offset: -12.0,
+                applied_offset: 0.0,
+                min_offset: 0.0,
+                max_offset: 12.0,
+            }
+        );
+        // Standalone placement starts 8pt below the usable top, so only 8pt of
+        // upward adjustment is real even though the durable schema accepts ±12.
+        // Carrying the requested (not applied) value across mode changes keeps
+        // the user's saved intent intact.
+        assert_eq!(
+            applied_overlay_position(band.requested_offset, 0.0, 30.0, 1440.0, 36.0, true, false,),
+            AppliedOverlayPosition {
+                requested_offset: -12.0,
+                applied_offset: -8.0,
+                min_offset: -8.0,
+                max_offset: 12.0,
+            }
+        );
+        // The physical-notch path retains the full calibration range.
+        assert_eq!(
+            applied_overlay_position(-12.0, 0.0, 32.0, 982.0, 32.0, false, false).applied_offset,
+            -12.0
         );
     }
 

@@ -417,7 +417,7 @@ without logging their content.
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
 | `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes between collapsed and expanded frames (top-anchored) and returns the applied frame, so CSS never animates into a window that hasn't grown yet. |
-| `set_overlay_vertical_offset` | `offset: f64` | `Result<(), String>` | Clamps calibration to ±12 logical points, moves the actual native overlay window relative to the active monitor's top-center default, and logs target plus applied physical coordinates. The command is non-persistent; the frontend persists only Save and inactive Reset actions. |
+| `set_overlay_vertical_offset` | `offset: f64` | `Result<AppliedOverlayPosition, String>` | Clamps calibration to the current display/window's effective range within ±12 logical points, moves the native overlay, retains the session offset across native placement refreshes, and returns requested/applied offsets plus effective bounds. Durable persistence still occurs only on Save and inactive Reset. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
 
 ## Dictation preview (`commands/dictation_preview.rs`)

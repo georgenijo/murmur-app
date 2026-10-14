@@ -53,6 +53,10 @@ export function OverlayWidget() {
     ? 'meeting_suggestion'
     : 'controls';
   const geometry = useOverlayGeometry(overlayContent);
+  // Saved settings initialize native ownership once and apply again only when
+  // the saved value itself changes. Geometry refreshes retain Rust's effective
+  // offset, including an active unsaved calibration draft.
+  const appliedSavedOffsetRef = useRef<number | null>(null);
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
   const smartAutoStatus = useSmartAutoMicrophoneStatus(settingsMirror.smartAuto);
@@ -141,7 +145,12 @@ export function OverlayWidget() {
 
   useEffect(() => {
     if (!geometry) return;
+    if (appliedSavedOffsetRef.current === settingsMirror.overlayVerticalOffset) return;
+    appliedSavedOffsetRef.current = settingsMirror.overlayVerticalOffset;
     void invoke('set_overlay_vertical_offset', { offset: settingsMirror.overlayVerticalOffset }).catch((error) => {
+      if (appliedSavedOffsetRef.current === settingsMirror.overlayVerticalOffset) {
+        appliedSavedOffsetRef.current = null;
+      }
       flog.warn('overlay', 'could not apply calibrated offset', { error: String(error) });
     });
   }, [geometry, settingsMirror.overlayVerticalOffset]);

@@ -10,10 +10,11 @@ import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 const mocks = vi.hoisted(() => ({
   emit: vi.fn(),
   invoke: vi.fn(),
+  listen: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
-vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit }));
+vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
 
 function click(container: HTMLElement, label: string): void {
   const button = Array.from(container.querySelectorAll('button')).find(
@@ -49,6 +50,8 @@ describe('OverlayCalibrationControl', () => {
     mocks.emit.mockResolvedValue(undefined);
     mocks.invoke.mockReset();
     mocks.invoke.mockResolvedValue(undefined);
+    mocks.listen.mockReset();
+    mocks.listen.mockResolvedValue(() => {});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -148,6 +151,85 @@ describe('OverlayCalibrationControl', () => {
       (candidate) => candidate.getAttribute('aria-label') === label,
     );
     expect(button?.disabled).toBe(true);
+  });
+
+  it('shows native effective travel instead of a clamped requested offset', async () => {
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === 'set_overlay_vertical_offset') {
+        const requestedOffset = (args as { offset: number }).offset;
+        return {
+          requestedOffset,
+          appliedOffset: Math.max(-8, requestedOffset),
+          minOffset: -8,
+          maxOffset: 12,
+        };
+      }
+      return undefined;
+    });
+    await act(async () => root.render(<Harness initialOffset={-12} />));
+    await act(async () => {
+      click(container, 'Calibrate');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('-8 pt');
+    const up = container.querySelector<HTMLButtonElement>('[aria-label="Move overlay up one point"]');
+    expect(up?.disabled).toBe(true);
+
+    await act(async () => click(container, 'Save position'));
+    expect(committed).toEqual([-8]);
+  });
+
+  it('cancels back to the original requested setting after a native clamp', async () => {
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === 'set_overlay_vertical_offset') {
+        const requestedOffset = (args as { offset: number }).offset;
+        return {
+          requestedOffset,
+          appliedOffset: Math.max(-8, requestedOffset),
+          minOffset: -8,
+          maxOffset: 12,
+        };
+      }
+      return undefined;
+    });
+    await act(async () => root.render(<Harness initialOffset={-12} />));
+    await act(async () => {
+      click(container, 'Calibrate');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      click(container, 'Move overlay down one point');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      click(container, 'Cancel');
+      await Promise.resolve();
+    });
+
+    expect(mocks.invoke).toHaveBeenLastCalledWith('set_overlay_vertical_offset', { offset: -12 });
+    expect(committed).toEqual([]);
+  });
+
+  it('ignores malformed native position events during calibration', async () => {
+    let positionListener: ((event: { payload: unknown }) => void) | undefined;
+    mocks.listen.mockImplementation(async (event: string, listener: typeof positionListener) => {
+      if (event === 'overlay-position-applied') positionListener = listener;
+      return () => {};
+    });
+    await act(async () => root.render(<Harness initialOffset={4} />));
+    await act(async () => {
+      click(container, 'Calibrate');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('+4 pt');
+
+    await act(async () => positionListener?.({ payload: { appliedOffset: 0 } }));
+
+    expect(container.textContent).toContain('+4 pt');
   });
 
   it('restores the original position when Settings closes during calibration', async () => {
