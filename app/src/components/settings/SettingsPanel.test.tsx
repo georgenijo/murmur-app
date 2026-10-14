@@ -1059,7 +1059,7 @@ describe('SettingsPanel information architecture', () => {
       expect(smartDestination.getAttribute('aria-checked')).toBe('true');
       expect(smartDestination.hasAttribute('data-disabled')).toBe(true);
       expect(container.textContent).toContain(
-        'Keep dictation with your recent text field while using supported media controls. Delivery may briefly switch to that app. Otherwise, dictation pastes normally.',
+        'Keep dictation with your recent text field while using supported media controls. Delivery may briefly switch to that app. Elsewhere, dictation pastes normally. If a media destination cannot be verified, text stays on the clipboard.',
       );
       onUpdateSettings.mockClear();
       await act(async () => smartDestination.click());
