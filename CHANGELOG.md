@@ -14,6 +14,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   before saving. Deleting the meeting or starting a recording during the export
   cancels it without saving anything.
 
+## [0.51.6] - 2026-10-14
+
+### Dictation
+
+- The Smart destination setting now says that a media handoff that cannot be
+  verified leaves the text on the clipboard.
+
+### Releases
+
+- A newer merge to main no longer cancels an in-flight release build, and an
+  older release that finishes late can no longer replace the newest one as the
+  update offered to users.
+
 ## [0.51.5] - 2026-10-14
 
 ### Dictation

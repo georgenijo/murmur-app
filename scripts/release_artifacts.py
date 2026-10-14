@@ -519,6 +519,27 @@ def verify_release_notes_match(
         raise ArtifactError("draft release notes differ from the updater manifest")
 
 
+STABLE_TAG_RE = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+
+
+def highest_release_tag(releases: Any) -> str:
+    """Return the highest stable vMAJOR.MINOR.PATCH tag among published releases."""
+    if not isinstance(releases, list):
+        raise ArtifactError("release list must be a JSON array")
+    best: tuple[tuple[int, int, int], str] | None = None
+    for release in releases:
+        tag = release.get("tagName") if isinstance(release, dict) else None
+        match = STABLE_TAG_RE.match(tag) if isinstance(tag, str) else None
+        if match is None:
+            continue
+        version = (int(match[1]), int(match[2]), int(match[3]))
+        if best is None or version > best[0]:
+            best = (version, tag)
+    if best is None:
+        raise ArtifactError("no published stable release tag found")
+    return best[1]
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -589,6 +610,9 @@ def _parser() -> argparse.ArgumentParser:
     verify_notes = subparsers.add_parser("verify-notes")
     verify_notes.add_argument("--manifest", type=Path, required=True)
     verify_notes.add_argument("--release-notes", type=Path, required=True)
+
+    highest = subparsers.add_parser("highest-release")
+    highest.add_argument("--releases", type=Path, required=True)
     return parser
 
 
@@ -716,6 +740,12 @@ def main() -> None:
                 args.min_version,
             )
             print(f"wrote updater manifests: {modern}, {legacy}")
+        elif args.command == "highest-release":
+            try:
+                releases = json.loads(args.releases.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ArtifactError("release list is not valid JSON") from exc
+            print(highest_release_tag(releases))
         else:
             verify_release_notes_match(args.manifest, args.release_notes)
             print("verified draft release notes match the updater manifest")
