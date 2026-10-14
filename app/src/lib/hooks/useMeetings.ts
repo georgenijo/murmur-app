@@ -230,6 +230,7 @@ export function useMeetings(settings: Settings) {
         maxSessions: settings.meetingMaxSessions,
         echoCancellation: settings.meetingEchoCancellationEnabled,
         diarization: settings.meetingDiarization,
+        autoExportDir: settings.meetingAutoExportEnabled ? settings.meetingAutoExportDir : null,
         suggestionToken,
       });
       setPage((current) => ({
@@ -248,6 +249,8 @@ export function useMeetings(settings: Settings) {
     }
   }, [
     select,
+    settings.meetingAutoExportDir,
+    settings.meetingAutoExportEnabled,
     settings.meetingDiarization,
     settings.meetingEchoCancellationEnabled,
     settings.meetingMaxSessions,

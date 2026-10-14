@@ -180,6 +180,8 @@ export interface StartMeetingOptions {
   maxSessions: number;
   echoCancellation: boolean;
   diarization: boolean;
+  /** Auto-export folder when enabled; empty selects the default. Omit to disable. */
+  autoExportDir?: string | null;
   suggestionToken?: string;
 }
 
@@ -217,6 +219,7 @@ export async function startMeeting(options: StartMeetingOptions): Promise<Meetin
       maxSessions: options.maxSessions,
       echoCancellation: options.echoCancellation,
       diarization: options.diarization,
+      ...(typeof options.autoExportDir === 'string' ? { autoExportDir: options.autoExportDir } : {}),
       ...(options.suggestionToken ? { suggestionToken: options.suggestionToken } : {}),
     },
   });

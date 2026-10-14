@@ -113,13 +113,29 @@ fn app_idle(state: &State) -> bool {
         && state.app_state.dictation.lock_or_recover().status == crate::state::DictationStatus::Idle
 }
 
+/// Runs once after a scheduled speaker pass ends for any reason.
+pub(crate) type FinishedHook = Box<dyn FnOnce() + Send + 'static>;
+
+/// Fires its hook exactly once when dropped, so every exit path of a speaker
+/// pass (success, failure, cancellation, timeout, or no thread) releases it.
+struct OnFinished(Option<FinishedHook>);
+impl Drop for OnFinished {
+    fn drop(&mut self) {
+        if let Some(hook) = self.0.take() {
+            hook();
+        }
+    }
+}
+
 pub fn schedule(
     app: tauri::AppHandle,
     repository: MeetingRepository,
     session_id: String,
     capture_generation: u64,
     audio: RemoteAudio,
+    on_finished: Option<FinishedHook>,
 ) {
+    let on_finished = OnFinished(on_finished);
     let generation = {
         let mut control = CONTROL.lock_or_recover();
         if stop_owned(&mut control).is_err() {
@@ -132,6 +148,8 @@ pub fn schedule(
     let _ = std::thread::Builder::new()
         .name("murmur-meeting-speakers".into())
         .spawn(move || {
+            // Declared first so it drops last, after the worker is released.
+            let _on_finished = on_finished;
             let _owner = JobOwner(generation);
             let deadline = Instant::now() + JOB_DEADLINE;
             let mut attempts = 0;
@@ -511,6 +529,21 @@ mod tests {
             Some(libc::ESRCH)
         );
         drop((input, output));
+    }
+    #[test]
+    fn finished_hook_fires_exactly_once_on_drop() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let hook = OnFinished(Some(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let moved = std::thread::spawn(move || drop(hook));
+        moved.join().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        drop(OnFinished(None));
     }
     #[test]
     fn foreground_reservation_prevents_new_worker_ownership() {

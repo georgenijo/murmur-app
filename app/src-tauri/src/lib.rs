@@ -46,6 +46,7 @@ mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
 mod meeting_audio;
+mod meeting_auto_export;
 mod meeting_capture;
 pub mod meeting_diarization;
 mod meeting_review;
