@@ -358,9 +358,13 @@ fn app_transition_snapshot() -> AppTransitionSnapshot {
 }
 
 /// Register app-lifetime, content-free transition counters. Observer callbacks
-/// deliberately do no native lookup and capture no application identity.
+/// deliberately do no native lookup and capture no application identity. They
+/// also nudge the overlay placement worker (a non-blocking channel send), which
+/// does its own debounced sampling elsewhere, so a changed frontmost
+/// application's menus or a Space switch re-resolve the overlay placement.
 #[cfg(target_os = "macos")]
 pub(crate) fn register_delivery_transition_observers() {
+    use crate::commands::overlay::{request_placement_refresh, PlacementTrigger};
     use objc2_app_kit::{
         NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
         NSWorkspaceDidActivateApplicationNotification,
@@ -371,10 +375,12 @@ pub(crate) fn register_delivery_transition_observers() {
         center: &objc2_foundation::NSNotificationCenter,
         name: &objc2_foundation::NSNotificationName,
         generation: &'static AtomicU64,
+        placement: PlacementTrigger,
     ) {
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
                 generation.fetch_add(1, Ordering::SeqCst);
+                request_placement_refresh(placement);
             });
         unsafe {
             let observer =
@@ -388,11 +394,13 @@ pub(crate) fn register_delivery_transition_observers() {
         &center,
         unsafe { NSWorkspaceDidActivateApplicationNotification },
         &ACTIVATION_GENERATION,
+        PlacementTrigger::FrontmostApp,
     );
     register(
         &center,
         unsafe { NSWorkspaceActiveSpaceDidChangeNotification },
         &SPACE_GENERATION,
+        PlacementTrigger::SpaceChange,
     );
 }
 

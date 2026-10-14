@@ -14,6 +14,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   before saving. Deleting the meeting or starting a recording during the export
   cancels it without saving anything.
 
+### Overlay
+
+- On displays without a notch, the idle overlay pill now sits inside the menu
+  bar instead of below it, so it no longer covers browser tab strips. It only
+  does so in a gap that the frontmost app's menus and the status items leave
+  free, and otherwise (unknown menu occupancy, no room, or a hidden menu bar)
+  keeps the previous placement below the bar so it never covers menu items. It
+  expands downward only on hover, and re-checks its placement when the frontmost
+  app, the Space, or the display changes.
+
 ## [0.51.6] - 2026-10-14
 
 ### Dictation
