@@ -63,13 +63,21 @@ including on Paste Last. The indicator then shows "Current text field" without
 naming an app. Smart destination only adds behavior; uncertainty never makes
 ordinary dictation stricter than normal auto-paste.
 
+When a field captured in the app that was frontmost at recording start can no
+longer be re-verified at delivery (for example its text, caret, or focus changed
+while you spoke), nothing has been activated yet, so delivery uses that same
+normal policy bound to the captured app: it pastes only if that app instance is
+still frontmost, and still refuses a positively secure field. A field retained
+across a media handoff in another app never falls back this way.
+
 Positive evidence still keeps delivery clipboard-only: a secure field (the
 secure role is checked before any other fallible query), Murmur's own window, a
 mismatched or different process (including focus moving to another app during
 capture), a supported media control with no retained field, an editable field
-that could not be frozen (for example because focus moved to another field),
+that could not be frozen at recording start (for example because focus moved to
+another field),
 Smart destination being turned off while the capture was pending, or a captured
-destination that changed or expired before delivery. Refusal evidence found by a
+media-handoff destination that changed or expired before delivery. Refusal evidence found by a
 capture that then misses its deadline is still honored. Each
 delivery logs a content-free `pipeline.smart_destination_delivery` event; see the
 [event reference](../reference/events.md).

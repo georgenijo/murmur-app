@@ -860,6 +860,7 @@ mod tests {
                 token: 11,
                 revision: 3,
                 identity: target,
+                current_app: true,
             };
 
         let state = AppState::default();
