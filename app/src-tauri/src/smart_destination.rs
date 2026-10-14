@@ -411,6 +411,10 @@ fn t3_empty_composer_delivery_is_confirmed(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Observation {
     Editable,
+    /// A positively detected editable field whose capture metadata (window or
+    /// required document ancestor) was incomplete. It cannot become the
+    /// destination, but it is evidence the user moved to another text input.
+    EditableUnverified,
     SupportedMedia,
     SelfOverlay,
     Secure,
@@ -427,16 +431,124 @@ enum CandidateAction {
 }
 
 #[cfg(any(target_os = "macos", test))]
+/// Only a positively focused editable field replaces the retained one, and
+/// only a positively secure or incompletely captured editable field forgets
+/// it. Everything else (a media control, Murmur's overlay, ordinary page focus,
+/// or a failed/timed-out lookup) is no evidence that the user moved to another
+/// text input, so one such sample must not discard the destination. The
+/// retained field is still bounded by its recency window, by its own observer
+/// invalidation, and by exact-field validation at capture and delivery.
+/// Clearing the candidate also drops every frozen recording capability.
 fn candidate_action(observation: Observation, has_recent_candidate: bool) -> CandidateAction {
     match observation {
         Observation::Editable => CandidateAction::Replace,
-        Observation::SupportedMedia | Observation::SelfOverlay if has_recent_candidate => {
+        Observation::SupportedMedia
+        | Observation::SelfOverlay
+        | Observation::Other
+        | Observation::Unavailable
+            if has_recent_candidate =>
+        {
             CandidateAction::Preserve
         }
-        Observation::SupportedMedia | Observation::SelfOverlay => CandidateAction::Clear,
-        Observation::Secure | Observation::Other | Observation::Unavailable => {
-            CandidateAction::Clear
+        Observation::SupportedMedia
+        | Observation::SelfOverlay
+        | Observation::Other
+        | Observation::Unavailable
+        | Observation::EditableUnverified
+        | Observation::Secure => CandidateAction::Clear,
+    }
+}
+
+/// An editable status is only a usable sample when the window and, where the
+/// app requires one, the document ancestor were captured too. Otherwise the
+/// field is still positively editable, so the old destination must be revoked.
+#[cfg(any(target_os = "macos", test))]
+fn editable_observation(
+    has_window: bool,
+    requires_document: bool,
+    has_document: bool,
+) -> Observation {
+    if has_window && (!requires_document || has_document) {
+        Observation::Editable
+    } else {
+        Observation::EditableUnverified
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditableStatus {
+    Editable,
+    Secure,
+    NotEditable,
+    Unavailable,
+}
+
+/// Classify the media app's focus at delivery. `status` is `None` when the
+/// focused element itself could not be read. Every unreadable step stays
+/// `Unavailable`, which `handoff_focus_allowed` refuses.
+#[cfg(any(target_os = "macos", test))]
+fn classify_foreground_focus(
+    status: Option<EditableStatus>,
+    is_media_control: impl FnOnce() -> bool,
+) -> Observation {
+    match status {
+        None | Some(EditableStatus::Unavailable) => Observation::Unavailable,
+        Some(EditableStatus::Secure) => Observation::Secure,
+        Some(EditableStatus::Editable) => Observation::Editable,
+        Some(EditableStatus::NotEditable) => {
+            if is_media_control() {
+                Observation::SupportedMedia
+            } else {
+                Observation::Other
+            }
         }
+    }
+}
+
+/// Whether the media app's current focus still permits a media handoff that
+/// was decided at recording start. Cross-app activation needs positive
+/// evidence: the media control itself or a positively non-editable element.
+/// Unknown focus (a failed or timed-out query), another editable field, and a
+/// secure field all leave delivery clipboard-only. The media control merely not
+/// holding focus (controls auto-hide, pages re-focus) is acceptable.
+#[cfg(any(target_os = "macos", test))]
+fn handoff_focus_allowed(observation: Observation) -> bool {
+    matches!(
+        observation,
+        Observation::SupportedMedia | Observation::Other
+    )
+}
+
+/// How long after a failed `AXManualAccessibility` attempt the same process is
+/// retried. A permanent latch would leave a T3 window without an exposed
+/// accessibility tree untracked until Smart destination is toggled.
+#[cfg(any(target_os = "macos", test))]
+const MANUAL_ACCESSIBILITY_RETRY: Duration = Duration::from_secs(5);
+
+#[cfg(any(target_os = "macos", test))]
+fn manual_retry_due(since_attempt: Duration) -> bool {
+    since_attempt >= MANUAL_ACCESSIBILITY_RETRY
+}
+
+/// How an `AXManualAccessibility` attempt ended. Only a call that reached the
+/// native API counts as evidence about the app, even when it timed out after
+/// the sampling deadline; a call skipped for an exhausted budget does not.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualAccessibilityAttempt {
+    NotDispatched,
+    DispatchedFailure,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn manual_failure_to_record(
+    attempt: ManualAccessibilityAttempt,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    match attempt {
+        ManualAccessibilityAttempt::DispatchedFailure => Some(now),
+        ManualAccessibilityAttempt::NotDispatched => None,
     }
 }
 
@@ -637,24 +749,136 @@ mod tests {
             candidate_action(Observation::Editable, true),
             CandidateAction::Replace
         );
-        for observation in [
-            Observation::Secure,
-            Observation::Other,
-            Observation::Unavailable,
-        ] {
-            assert_eq!(candidate_action(observation, true), CandidateAction::Clear);
-        }
+        // A secure field always forgets the retained destination.
+        assert_eq!(
+            candidate_action(Observation::Secure, true),
+            CandidateAction::Clear
+        );
+        assert_eq!(
+            candidate_action(Observation::Secure, false),
+            CandidateAction::Clear
+        );
     }
 
     #[test]
-    fn only_media_and_self_overlay_preserve_a_recent_target_without_refreshing_it() {
-        for observation in [Observation::SupportedMedia, Observation::SelfOverlay] {
+    fn a_single_non_editable_sample_preserves_a_recent_target_without_refreshing_it() {
+        // Ordinary page focus or a failed lookup (for example Brave reporting
+        // web-area focus after the media click) must not forget the T3 field.
+        for observation in [
+            Observation::SupportedMedia,
+            Observation::SelfOverlay,
+            Observation::Other,
+            Observation::Unavailable,
+        ] {
             assert_eq!(
                 candidate_action(observation, true),
                 CandidateAction::Preserve
             );
             assert_eq!(candidate_action(observation, false), CandidateAction::Clear);
         }
+    }
+
+    #[test]
+    fn a_positively_editable_field_with_incomplete_capture_revokes_the_destination() {
+        // Editable detected but the window or required document ancestor was
+        // missing: it cannot replace the retained field, but must forget it
+        // (which also drops every frozen capability), with or without history.
+        assert_eq!(
+            candidate_action(Observation::EditableUnverified, true),
+            CandidateAction::Clear
+        );
+        assert_eq!(
+            candidate_action(Observation::EditableUnverified, false),
+            CandidateAction::Clear
+        );
+        // Pure absence of evidence, in contrast, keeps it.
+        assert_eq!(
+            candidate_action(Observation::Unavailable, true),
+            CandidateAction::Preserve
+        );
+        assert_eq!(
+            editable_observation(true, false, false),
+            Observation::Editable
+        );
+        assert_eq!(
+            editable_observation(true, true, true),
+            Observation::Editable
+        );
+        assert_eq!(
+            editable_observation(true, true, false),
+            Observation::EditableUnverified
+        );
+        assert_eq!(
+            editable_observation(false, false, true),
+            Observation::EditableUnverified
+        );
+    }
+
+    #[test]
+    fn media_handoff_needs_positively_permissible_focus_at_delivery() {
+        for observation in [Observation::SupportedMedia, Observation::Other] {
+            assert!(handoff_focus_allowed(observation));
+        }
+        for observation in [
+            Observation::Unavailable,
+            Observation::Editable,
+            Observation::EditableUnverified,
+            Observation::Secure,
+            Observation::SelfOverlay,
+        ] {
+            assert!(!handoff_focus_allowed(observation));
+        }
+    }
+
+    #[test]
+    fn unreadable_foreground_focus_never_authorizes_delivery() {
+        let delivery =
+            |status, media| handoff_focus_allowed(classify_foreground_focus(status, || media));
+        // The focused element could not be read, or a role/enabled/settable
+        // query on it failed: clipboard-only.
+        assert!(!delivery(None, false));
+        assert!(!delivery(None, true));
+        assert!(!delivery(Some(EditableStatus::Unavailable), false));
+        assert!(!delivery(Some(EditableStatus::Unavailable), true));
+        // Another editable or a secure field cancels the handoff.
+        assert!(!delivery(Some(EditableStatus::Editable), false));
+        assert!(!delivery(Some(EditableStatus::Secure), false));
+        // Positive, permissible evidence still delivers.
+        assert!(delivery(Some(EditableStatus::NotEditable), true));
+        assert!(delivery(Some(EditableStatus::NotEditable), false));
+        assert_eq!(
+            classify_foreground_focus(Some(EditableStatus::NotEditable), || true),
+            Observation::SupportedMedia
+        );
+        assert_eq!(
+            classify_foreground_focus(Some(EditableStatus::NotEditable), || false),
+            Observation::Other
+        );
+    }
+
+    #[test]
+    fn manual_accessibility_is_retried_after_the_backoff_not_latched_forever() {
+        assert!(!manual_retry_due(Duration::ZERO));
+        assert!(!manual_retry_due(
+            MANUAL_ACCESSIBILITY_RETRY - Duration::from_nanos(1)
+        ));
+        assert!(manual_retry_due(MANUAL_ACCESSIBILITY_RETRY));
+    }
+
+    #[test]
+    fn only_dispatched_manual_accessibility_failures_start_the_backoff() {
+        let now = std::time::Instant::now();
+        // A call that started within budget but failed or timed out after the
+        // deadline was dispatched, so it backs off for five seconds.
+        assert_eq!(
+            manual_failure_to_record(ManualAccessibilityAttempt::DispatchedFailure, now),
+            Some(now)
+        );
+        // A call skipped for an exhausted budget is retried on the next tick.
+        assert_eq!(
+            manual_failure_to_record(ManualAccessibilityAttempt::NotDispatched, now),
+            None
+        );
     }
 
     #[test]
