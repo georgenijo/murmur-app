@@ -51,6 +51,10 @@ pub(crate) struct NotchInfo {
     width: f64,
     height: f64,
     physical_notch: bool,
+    /// A real menu bar occupies the top of the display (its height was measured
+    /// from the screen frame / visible-frame gap). False when the bar is
+    /// auto-hidden or the native measurement was unavailable or implausible.
+    menu_bar_visible: bool,
 }
 
 impl NotchInfo {
@@ -78,6 +82,8 @@ const WING: f64 = 36.0;
 const DROPDOWN_H: f64 = 64.0;
 const FLOATING_W: f64 = 280.0;
 const FLOATING_TOP_H: f64 = 36.0;
+/// Shortest collapsed floating pill: fits the 14pt waveform and 16pt icons.
+const FLOATING_MIN_H: f64 = 24.0;
 const FLOATING_GAP: f64 = 8.0;
 const POPOVER_GAP: f64 = 6.0;
 const MEETING_SUGGESTION_MIN_W: f64 = 320.0;
@@ -104,6 +110,14 @@ fn geometry_for(notch: Option<NotchInfo>) -> OverlayGeometry {
     // When native screen measurement is unavailable, use the spacious
     // floating surface. A synthetic 80pt center cannot fit quick controls.
     let floating = notch.is_none_or(|info| !info.physical_notch);
+    // Inside a visible menu bar the collapsed pill takes the bar's own height
+    // so it never reaches down over browser tab strips; otherwise it keeps the
+    // standalone 36pt height.
+    let floating_h = notch
+        .filter(|info| info.menu_bar_visible)
+        .map_or(FLOATING_TOP_H, |info| {
+            info.height.clamp(FLOATING_MIN_H, FLOATING_TOP_H)
+        });
     let window_w = if floating {
         FLOATING_W
     } else {
@@ -111,9 +125,9 @@ fn geometry_for(notch: Option<NotchInfo>) -> OverlayGeometry {
     };
     OverlayGeometry {
         window_w,
-        collapsed_h: if floating { FLOATING_TOP_H } else { notch_h },
+        collapsed_h: if floating { floating_h } else { notch_h },
         expanded_h: if floating {
-            FLOATING_TOP_H + DROPDOWN_H
+            floating_h + DROPDOWN_H
         } else {
             notch_h + DROPDOWN_H
         },
@@ -198,10 +212,10 @@ fn notch_info_from_screen_measurements(
 ) -> NotchInfo {
     let visible_top_gap = (frame_top - visible_frame_top).max(0.0);
     let measured_menu_bar_h = safe_top.max(visible_top_gap);
-    let menu_bar_h = if measured_menu_bar_h.is_finite()
+    let menu_bar_visible = measured_menu_bar_h.is_finite()
         && measured_menu_bar_h > 0.0
-        && measured_menu_bar_h <= MAX_REASONABLE_MENU_BAR_H
-    {
+        && measured_menu_bar_h <= MAX_REASONABLE_MENU_BAR_H;
+    let menu_bar_h = if menu_bar_visible {
         measured_menu_bar_h
     } else {
         FALLBACK_NOTCH_H
@@ -223,6 +237,7 @@ fn notch_info_from_screen_measurements(
         width: notch_w,
         height: menu_bar_h,
         physical_notch,
+        menu_bar_visible,
     }
 }
 
@@ -237,22 +252,44 @@ fn centered_logical_position(
     (x, monitor_position.1 as f64 / scale_factor)
 }
 
+/// Whether the collapsed floating pill sits inside the menu-bar band at the
+/// very top of the display (emulating the notch) rather than below the work
+/// area. Requires a measured, visible menu bar, and a work area that actually
+/// starts below the screen's top edge; an auto-hidden bar (work-area top ==
+/// frame top) falls back to the work-area placement.
+fn floating_in_menu_bar_band(notch: Option<NotchInfo>, frame_top: f64, work_top: f64) -> bool {
+    notch.is_some_and(|info| !info.physical_notch && info.menu_bar_visible) && work_top > frame_top
+}
+
+/// Lowest `y` the floating window may take, and the `y` it takes with zero
+/// calibration offset.
+fn floating_anchor(frame_top: f64, work_top: f64, in_menu_bar_band: bool) -> (f64, f64) {
+    if in_menu_bar_band {
+        (frame_top, frame_top)
+    } else {
+        (work_top, work_top + FLOATING_GAP)
+    }
+}
+
 fn floating_logical_position(
     centered_x: f64,
+    frame_top: f64,
     work_area: (i32, i32, u32, u32),
     window_size: (f64, f64),
     scale_factor: f64,
     vertical_offset: f64,
+    in_menu_bar_band: bool,
 ) -> (f64, f64) {
     let (work_x, work_y, work_w, work_h) = work_area;
     let left = work_x as f64 / scale_factor;
     let top = work_y as f64 / scale_factor;
+    let (floor_y, base_y) = floating_anchor(frame_top, top, in_menu_bar_band);
     let rightmost_x = (left + work_w as f64 / scale_factor - window_size.0).max(left);
-    let bottommost_y = (top + work_h as f64 / scale_factor - window_size.1).max(top);
-    let desired_y = top + FLOATING_GAP + vertical_offset;
+    let bottommost_y = (top + work_h as f64 / scale_factor - window_size.1).max(floor_y);
+    let desired_y = base_y + vertical_offset;
     (
         centered_x.clamp(left, rightmost_x),
-        desired_y.clamp(top, bottommost_y),
+        desired_y.clamp(floor_y, bottommost_y),
     )
 }
 
@@ -269,19 +306,30 @@ pub(crate) fn overlay_popover_fit(
         return None;
     }
     let state = app.try_state::<crate::State>()?;
-    let geometry = geometry_for(*state.notch_info.lock_or_recover());
+    let notch = *state.notch_info.lock_or_recover();
+    let geometry = geometry_for(notch);
     let scale = monitor.scale_factor();
+    let frame_top = monitor.position().y as f64 / scale;
     let work_top = monitor.work_area().position.y as f64 / scale;
     let work_bottom =
         (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
-    overlay_popover_fit_for_geometry(work_top, work_bottom, popover_height, &geometry)
+    overlay_popover_fit_for_geometry(
+        frame_top,
+        work_top,
+        work_bottom,
+        popover_height,
+        &geometry,
+        floating_in_menu_bar_band(notch, frame_top, work_top),
+    )
 }
 
 fn overlay_popover_fit_for_geometry(
+    frame_top: f64,
     work_top: f64,
     work_bottom: f64,
     popover_height: f64,
     geometry: &OverlayGeometry,
+    in_menu_bar_band: bool,
 ) -> Option<(f64, f64)> {
     // Under a physical notch the collapsed pill fills the notch; callers keep
     // their popover tucked just below it. Reserving the full hover-expanded
@@ -289,8 +337,8 @@ fn overlay_popover_fit_for_geometry(
     if !geometry.floating {
         return None;
     }
-    let below_overlay =
-        work_top + FLOATING_GAP + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
+    let (_, base_y) = floating_anchor(frame_top, work_top, in_menu_bar_band);
+    let below_overlay = base_y + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
     let top = below_overlay.clamp(work_top, work_bottom);
     Some((top, popover_height.min((work_bottom - top).max(0.0))))
 }
@@ -584,8 +632,11 @@ pub(crate) fn position_overlay_default(
         );
         let (x, y) = if g.floating {
             let area = monitor.work_area();
+            let in_band =
+                floating_in_menu_bar_band(notch_info, centered_y, area.position.y as f64 / sf);
             floating_logical_position(
                 centered_x,
+                centered_y,
                 (
                     area.position.x,
                     area.position.y,
@@ -595,6 +646,7 @@ pub(crate) fn position_overlay_default(
                 (overlay_w, overlay_h),
                 sf,
                 0.0,
+                in_band,
             )
         } else {
             (centered_x, centered_y)
@@ -783,7 +835,8 @@ pub async fn set_overlay_vertical_offset(
         let monitor_x = position.x;
         let monitor_y = position.y;
         let overlay_to_move = overlay.clone();
-        let floating = geometry_for(*state.notch_info.lock_or_recover()).floating;
+        let notch = *state.notch_info.lock_or_recover();
+        let floating = geometry_for(notch).floating;
         let area = monitor.work_area();
         let work_area = (
             area.position.x,
@@ -805,12 +858,16 @@ pub async fn set_overlay_vertical_offset(
                 let (centered_x, top_y) =
                     centered_logical_position(monitor_position, monitor_size, scale_factor, width);
                 let (x, y) = if floating {
+                    let in_band =
+                        floating_in_menu_bar_band(notch, top_y, work_area.1 as f64 / scale_factor);
                     floating_logical_position(
                         centered_x,
+                        top_y,
                         work_area,
                         (width, height),
                         scale_factor,
                         offset,
+                        in_band,
                     )
                 } else {
                     (centered_x, top_y + offset)
@@ -906,6 +963,7 @@ mod tests {
             width,
             height,
             physical_notch: true,
+            menu_bar_visible: true,
         }
     }
 
@@ -914,6 +972,15 @@ mod tests {
             width: FALLBACK_NOTCH_W,
             height,
             physical_notch: false,
+            menu_bar_visible: true,
+        }
+    }
+
+    /// Auto-hidden menu bar or failed native measurement on a non-notched display.
+    fn external_without_menu_bar() -> NotchInfo {
+        NotchInfo {
+            menu_bar_visible: false,
+            ..external(FALLBACK_NOTCH_H)
         }
     }
 
@@ -967,9 +1034,41 @@ mod tests {
         assert_eq!(g.pill_idle_w, 280.0);
         assert_eq!(g.pill_margin_idle, 0.0);
         assert_eq!(g.pill_active_w, 280.0);
-        assert_eq!(g.collapsed_h, 36.0);
-        assert_eq!(g.expanded_h, 100.0);
+        // The collapsed pill takes the menu bar's own height so it fits the band.
+        assert_eq!(g.collapsed_h, 30.0);
+        assert_eq!(g.expanded_h, 94.0);
         assert!(g.floating);
+    }
+
+    #[test]
+    fn collapsed_floating_pill_height_follows_the_menu_bar_within_bounds() {
+        let collapsed = |info| geometry_for(Some(info)).collapsed_h;
+        assert_eq!(collapsed(external(24.0)), 24.0);
+        assert_eq!(collapsed(external(30.0)), 30.0);
+        // Implausibly short or tall bars (e.g. a Dock at the top) are clamped.
+        assert_eq!(collapsed(external(10.0)), FLOATING_MIN_H);
+        assert_eq!(collapsed(external(90.0)), FLOATING_TOP_H);
+        // No visible bar: the standalone 36pt pill.
+        assert_eq!(collapsed(external_without_menu_bar()), FLOATING_TOP_H);
+        assert_eq!(geometry_for(None).collapsed_h, FLOATING_TOP_H);
+    }
+
+    #[test]
+    fn menu_bar_measurement_flags_hidden_or_invalid_bars() {
+        assert!(
+            notch_info_from_screen_measurements(2560.0, 1440.0, 1416.0, 0.0, 0.0, 0.0)
+                .menu_bar_visible
+        );
+        // Auto-hide: visible frame top == frame top.
+        assert_eq!(
+            notch_info_from_screen_measurements(2560.0, 1440.0, 1440.0, 0.0, 0.0, 0.0),
+            external_without_menu_bar()
+        );
+        // Notched display: the safe-area inset is the bar.
+        assert!(
+            notch_info_from_screen_measurements(1512.0, 982.0, 950.0, 32.0, 663.5, 663.5)
+                .menu_bar_visible
+        );
     }
 
     #[test]
@@ -982,7 +1081,7 @@ mod tests {
     fn invalid_native_measurements_fail_closed_to_geometry_defaults() {
         assert_eq!(
             notch_info_from_screen_measurements(2560.0, 1440.0, 1440.0, f64::NAN, 0.0, 0.0,),
-            external(FALLBACK_NOTCH_H)
+            external_without_menu_bar()
         );
     }
 
@@ -1045,34 +1144,167 @@ mod tests {
 
     #[test]
     fn floating_position_uses_selected_display_work_area_at_both_scales() {
+        // Work-area fallback: 8pt below the work-area top.
         assert_eq!(
-            floating_logical_position(1204.0, (0, 60, 5120, 2820), (280.0, 100.0), 2.0, 0.0),
+            floating_logical_position(
+                1204.0,
+                0.0,
+                (0, 60, 5120, 2820),
+                (280.0, 100.0),
+                2.0,
+                0.0,
+                false
+            ),
             (1204.0, 38.0),
         );
         assert_eq!(
-            floating_logical_position(-1960.0, (-2560, 30, 2560, 1410), (280.0, 100.0), 1.0, 0.0),
+            floating_logical_position(
+                -1960.0,
+                0.0,
+                (-2560, 30, 2560, 1410),
+                (280.0, 100.0),
+                1.0,
+                0.0,
+                false
+            ),
             (-1960.0, 38.0),
         );
         assert_eq!(
-            floating_logical_position(5000.0, (0, 60, 5120, 2820), (280.0, 100.0), 2.0, -12.0),
+            floating_logical_position(
+                5000.0,
+                0.0,
+                (0, 60, 5120, 2820),
+                (280.0, 100.0),
+                2.0,
+                -12.0,
+                false
+            ),
             (2280.0, 30.0),
+        );
+    }
+
+    #[test]
+    fn collapsed_floating_pill_sits_inside_the_menu_bar_band() {
+        let info = external(24.0);
+        let g = geometry_for(Some(info));
+        // 1x external display, menu bar 24pt tall.
+        let (x, y) = floating_logical_position(
+            1140.0,
+            0.0,
+            (0, 24, 2560, 1416),
+            (g.window_w, g.collapsed_h),
+            1.0,
+            0.0,
+            floating_in_menu_bar_band(Some(info), 0.0, 24.0),
+        );
+        assert_eq!((x, y), (1140.0, 0.0));
+        assert!(y + g.collapsed_h <= 24.0, "pill must not pass the menu bar");
+
+        // 2x display on a secondary-origin monitor: logical frame top 128.
+        let (_, y) = floating_logical_position(
+            1204.0,
+            128.0,
+            (0, 304, 5120, 2576),
+            (g.window_w, g.collapsed_h),
+            2.0,
+            0.0,
+            floating_in_menu_bar_band(Some(info), 128.0, 152.0),
+        );
+        assert_eq!(y, 128.0);
+        assert!(y + g.collapsed_h <= 152.0);
+    }
+
+    #[test]
+    fn menu_bar_band_calibration_never_rises_above_the_display() {
+        let args = |offset| {
+            floating_logical_position(
+                0.0,
+                0.0,
+                (0, 24, 2560, 1416),
+                (280.0, 24.0),
+                1.0,
+                offset,
+                true,
+            )
+            .1
+        };
+        assert_eq!(args(-12.0), 0.0);
+        assert_eq!(args(7.0), 7.0);
+        assert_eq!(args(12.0), 12.0);
+    }
+
+    #[test]
+    fn menu_bar_band_requires_a_visible_bar_and_a_non_notched_display() {
+        let visible = Some(external(24.0));
+        assert!(floating_in_menu_bar_band(visible, 0.0, 24.0));
+        // Auto-hidden bar: work-area top == frame top.
+        assert!(!floating_in_menu_bar_band(visible, 0.0, 0.0));
+        // Failed or hidden-bar measurement.
+        assert!(!floating_in_menu_bar_band(
+            Some(external_without_menu_bar()),
+            0.0,
+            24.0
+        ));
+        assert!(!floating_in_menu_bar_band(None, 0.0, 24.0));
+        // Notched displays keep their own layout.
+        assert!(!floating_in_menu_bar_band(
+            Some(notched(185.0, 32.0)),
+            0.0,
+            32.0
+        ));
+    }
+
+    #[test]
+    fn hidden_menu_bar_falls_back_to_work_area_placement() {
+        let info = external_without_menu_bar();
+        let g = geometry_for(Some(info));
+        let in_band = floating_in_menu_bar_band(Some(info), 0.0, 0.0);
+        assert!(!in_band);
+        assert_eq!(
+            floating_logical_position(
+                1140.0,
+                0.0,
+                (0, 0, 2560, 1440),
+                (g.window_w, g.collapsed_h),
+                1.0,
+                0.0,
+                in_band
+            ),
+            (1140.0, 8.0),
         );
     }
 
     #[test]
     fn floating_popovers_clear_expanded_overlay_and_stay_in_work_area() {
         let geometry = geometry_for(Some(external(30.0)));
+        // Work-area fallback: 30 + 8 + 12 + 94 + 6.
         assert_eq!(
-            overlay_popover_fit_for_geometry(30.0, 1440.0, 104.0, &geometry),
-            Some((156.0, 104.0))
+            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 104.0, &geometry, false),
+            Some((150.0, 104.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_geometry(30.0, 1440.0, 340.0, &geometry),
-            Some((156.0, 340.0))
+            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 340.0, &geometry, false),
+            Some((150.0, 340.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_geometry(30.0, 400.0, 340.0, &geometry),
-            Some((156.0, 244.0))
+            overlay_popover_fit_for_geometry(0.0, 30.0, 400.0, 340.0, &geometry, false),
+            Some((150.0, 250.0))
+        );
+    }
+
+    #[test]
+    fn menu_bar_band_popovers_clear_the_hover_expanded_overlay() {
+        let info = external(24.0);
+        let geometry = geometry_for(Some(info));
+        // Expanded overlay spans y 0..88 (+12 calibration); popover starts 6pt below.
+        let (top, height) =
+            overlay_popover_fit_for_geometry(0.0, 24.0, 1440.0, 104.0, &geometry, true).unwrap();
+        assert_eq!((top, height), (106.0, 104.0));
+        assert!(top >= 12.0 + geometry.expanded_h);
+        // Still capped by the work area.
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 24.0, 200.0, 340.0, &geometry, true),
+            Some((106.0, 94.0))
         );
     }
 
@@ -1082,7 +1314,7 @@ mod tests {
         // the hover-expanded overlay, which left a large gap below the pill.
         let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
-            overlay_popover_fit_for_geometry(32.0, 1440.0, 104.0, &notched),
+            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched, false),
             None
         );
     }

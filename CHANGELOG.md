@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Overlay
+
+- On displays without a notch, the idle overlay pill now sits inside the menu
+  bar instead of below it, so it no longer covers browser tab strips. It
+  expands downward only on hover, and keeps the previous placement when the menu
+  bar is hidden.
+
 ## [0.51.5] - 2026-10-14
 
 ### Dictation
