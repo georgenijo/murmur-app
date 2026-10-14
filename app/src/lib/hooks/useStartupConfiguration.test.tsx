@@ -61,7 +61,7 @@ describe('startup vocabulary configuration', () => {
     let initialization!: ReturnType<typeof useInitialization>;
     function Harness() {
       settingsState = useSettings();
-      initialization = useInitialization(settingsState.getCurrentSettings);
+      initialization = useInitialization(settingsState.getConfirmedSettings, settingsState.getCurrentSettings);
       return null;
     }
     await act(async () => root.render(<Harness />));
@@ -91,5 +91,58 @@ describe('startup vocabulary configuration', () => {
     expect(writes[1].vocabularyEntries).toEqual([]);
     expect(initialization.initialized).toBe(true);
     expect(initialization.error).toBe('');
+  });
+
+  it('initializes with confirmed settings when an invalid edit is queued behind startup', async () => {
+    const init = deferred<{ type: string }>();
+    const validEdit = deferred<{ type: string }>();
+    const writes: Array<{ vocabularyEntries?: VocabularyEntry[]; language?: string }> = [];
+    mocks.invoke.mockImplementation((command: string, args?: { options?: { vocabularyEntries?: VocabularyEntry[]; language?: string } }) => {
+      if (command === 'init_dictation') return init.promise;
+      if (command === 'configure_dictation') {
+        writes.push(args?.options ?? {});
+        if (writes.length === 1) return validEdit.promise;
+        if (writes.length === 3) return Promise.reject(new Error('invalid alias'));
+        return Promise.resolve({ type: 'configured' });
+      }
+      return Promise.resolve(undefined);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    let settingsState!: ReturnType<typeof useSettings>;
+    let initialization!: ReturnType<typeof useInitialization>;
+    function Harness() {
+      settingsState = useSettings();
+      initialization = useInitialization(settingsState.getConfirmedSettings, settingsState.getCurrentSettings);
+      return null;
+    }
+    await act(async () => root.render(<Harness />));
+
+    const entry: VocabularyEntry = {
+      id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
+      scope: { kind: 'global' },
+    };
+    await act(async () => {
+      settingsState.updateSettings({ language: 'fr' });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      init.resolve({ type: 'initialized' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Startup is queued behind the pending valid edit; now queue an invalid one behind startup.
+    await act(async () => {
+      settingsState.updateSettings({ vocabularyEntries: [entry], customVocabulary: 'Tauri' });
+      validEdit.resolve({ type: 'configured' });
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    });
+
+    expect(writes).toHaveLength(3);
+    expect(writes[1].vocabularyEntries).toEqual([]);
+    expect(writes[1].language).toBe('fr');
+    expect(settingsState.settings.vocabularyEntries).toEqual([]);
+    expect(initialization.error).toBe('');
+    expect(initialization.initialized).toBe(true);
   });
 });

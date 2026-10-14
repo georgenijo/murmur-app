@@ -226,6 +226,44 @@ describe('useSettings configure rollback privacy', () => {
     expect(current.settings.vocabularyEntries).toEqual([]);
   });
 
+  it('keeps a native-selected mode in UI and storage when an older full configure precedes a rejected edit', async () => {
+    let onModeChanged: ((event: { payload: { modeId: string } }) => void) | null = null;
+    mocks.listen.mockImplementation(async (event, callback) => {
+      if (event === 'mode-manual-changed') {
+        onModeChanged = callback as (event: { payload: { modeId: string } }) => void;
+      }
+      return () => {};
+    });
+    await mountHarness();
+    const fullConfigure = deferred<void>();
+    const invalidEdit = deferred<void>();
+    mocks.configure
+      .mockReturnValueOnce(fullConfigure.promise)
+      .mockReturnValueOnce(invalidEdit.promise)
+      .mockResolvedValueOnce(undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    current.updateSettings({ language: 'fr' });
+    current.updateSettings({ vocabularyEntries: [{
+      id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
+      scope: { kind: 'global' },
+    }], customVocabulary: 'Tauri' });
+    await act(async () => onModeChanged?.({ payload: { modeId: 'builtin.technical' } }));
+    await act(async () => {
+      fullConfigure.resolve(undefined);
+      await Promise.resolve();
+      invalidEdit.reject(new Error('invalid alias'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.vocabularyEntries).toEqual([]);
+    expect(current.settings.language).toBe('fr');
+    expect(current.settings.activeModeId).toBe('builtin.technical');
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').activeModeId).toBe('builtin.technical');
+  });
+
   it('configures the latest saved alias when startup completes after an edit', async () => {
     const init = deferred<void>();
     mocks.initDictation.mockReturnValue(init.promise);
@@ -234,7 +272,7 @@ describe('useSettings configure rollback privacy', () => {
     ));
     function Harness() {
       current = useSettings();
-      useInitialization(current.getCurrentSettings);
+      useInitialization(current.getConfirmedSettings, current.getCurrentSettings);
       return null;
     }
     await act(async () => root.render(<Harness />));

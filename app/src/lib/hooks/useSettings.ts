@@ -28,6 +28,9 @@ export function useSettings() {
   const [probeConfigureError, setProbeConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const confirmedConfigureSettingsRef = useRef(settings);
+  // Bumped on every native-selected mode so an older full-configure
+  // acknowledgement cannot restore the previous mode in the confirmed snapshot.
+  const nativeModeVersionRef = useRef(0);
   const configureVersionRef = useRef(0);
   const desiredProbePolicyRef = useRef<SmartAutoProbePolicy>(smartAutoProbePolicy(settings));
   const desiredProbePolicyVersionRef = useRef(0);
@@ -237,6 +240,7 @@ export function useSettings() {
       if (typeof modeId !== 'string' || settingsRef.current.activeModeId === modeId) return;
       const next = { ...settingsRef.current, activeModeId: modeId };
       settingsRef.current = next;
+      nativeModeVersionRef.current += 1;
       confirmedConfigureSettingsRef.current = {
         ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
       };
@@ -277,6 +281,14 @@ export function useSettings() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [persistSettings]);
+
+  // Record a full configuration as native-confirmed, keeping any mode that
+  // native code selected after the call was queued.
+  const confirmConfigured = useCallback((configured: Settings, nativeModeVersion: number) => {
+    confirmedConfigureSettingsRef.current = nativeModeVersionRef.current === nativeModeVersion
+      ? configured
+      : { ...configured, activeModeId: confirmedConfigureSettingsRef.current.activeModeId };
+  }, []);
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
     setConfigureError(null);
@@ -350,8 +362,9 @@ export function useSettings() {
 
     if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
       const version = ++configureVersionRef.current;
+      const nativeModeVersion = nativeModeVersionRef.current;
       void configure(buildConfigureOptions(newSettings), {
-        onSuccess: () => { confirmedConfigureSettingsRef.current = newSettings; },
+        onSuccess: () => { confirmConfigured(newSettings, nativeModeVersion); },
         onError: () => {
           console.error('Failed to configure settings; previous values restored.');
           if (configureVersionRef.current === version) {
@@ -398,7 +411,7 @@ export function useSettings() {
         },
       }).catch(() => {});
     }
-  }, [enqueueMeetingSuggestionChange, persistSettings, scheduleProbePolicyWrite]);
+  }, [confirmConfigured, enqueueMeetingSuggestionChange, persistSettings, scheduleProbePolicyWrite]);
 
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a
@@ -427,19 +440,21 @@ export function useSettings() {
       confirmedConfigureSettingsRef.current = {
         ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
       };
+      const nativeModeVersion = nativeModeVersionRef.current;
       void configure(buildConfigureOptions(next), {
-        onSuccess: () => { confirmedConfigureSettingsRef.current = next; },
+        onSuccess: () => { confirmConfigured(next, nativeModeVersion); },
         onError: () => {
           console.error('Failed to configure externally changed settings.');
           setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
         },
       }).catch(() => {});
     }
-  }, [persistSettings]);
+  }, [confirmConfigured, persistSettings]);
 
   return {
     settings,
     getCurrentSettings: () => settingsRef.current,
+    getConfirmedSettings: () => confirmedConfigureSettingsRef.current,
     updateSettings,
     applyExternalSettings,
     configureError: probeConfigureError ?? configureError,
