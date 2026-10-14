@@ -30,25 +30,81 @@ the display topology changes. Results are cached in `State.notch_info` as a
 `NotchInfo` with an explicit physical-notch flag. `get_overlay_geometry`
 derives an `OverlayGeometry` from that snapshot.
 
-**No-notch displays:** Murmur uses a 280pt rounded floating pill. While a
-menu bar is visible, the collapsed pill sits *inside* the menu-bar band at the
-very top of the selected display (emulating the notch), horizontally centered
-where the bar is normally empty, and its collapsed height equals the measured
-bar height (clamped to 24–36pt). It therefore never covers the browser tab
-strips and toolbars directly beneath the bar. Hover expansion and the sibling
-popovers extend *downward* from the band only while active. Its native window
-and visible pill have the same collapsed width, so no transparent click-catching
-strips remain, and the window position is clamped to that display's usable
-bounds.
+**No-notch displays:** Murmur uses a 280pt rounded floating pill. The overlay
+window sits above the menu bar and takes mouse events, and macOS does not
+reserve space for it the way a physical notch does, so the collapsed pill enters
+the menu-bar band only where it provably covers nothing: it sits *inside* the
+band at the very top of the selected display, in the free gap that the
+frontmost application's menu titles and the status items leave, and its
+collapsed height equals the measured bar height (clamped to 24–36pt). It
+therefore never covers browser tab strips beneath the bar, and never hides a
+menu or status item. Hover expansion and the sibling popovers extend *downward*
+from the band only while active. Its native window and visible pill have the
+same collapsed width, so no transparent click-catching strips remain, and the
+window position is clamped to that display's usable bounds.
 
-When there is no visible menu bar to sit in — auto-hide (the work-area top equals
-the frame top), or native measurement unavailable or implausible — the pill falls
-back to a 36pt pill 8pt below the work-area top. `NotchInfo.menu_bar_visible`
-records whether the bar was measured; `floating_in_menu_bar_band()` additionally
-requires the monitor's work area to start below its frame top. Native
-measurement failure also uses this spacious floating layout so controls cannot
-be clipped by a synthetic narrow center. `get_overlay_geometry` and the
+### Menu-bar slot
+
+`commands/overlay_band.rs` decides where, if anywhere, in the band the pill may
+sit. Occupancy comes from two window/element-frame sources (no titles or
+content, no permission beyond the Accessibility access Murmur already uses):
+
+- the frontmost application's menu titles: the `AXMenuBar` children's
+  `AXPosition`/`AXSize`, read on a worker thread with bounded Accessibility
+  timeouts and an overall budget (never on the main thread);
+- status items, Control Center, and the clock: `CGWindowListCopyWindowInfo`
+  windows at `kCGStatusWindowLevel` (layer 25) that intersect the band, bounds
+  only, excluding the overlay's own window.
+
+Each frame is padded by 8pt, merged, and the free gaps between them are
+searched for one at least 320pt wide (the widest window the pill grows into,
+the meeting-suggestion surface, since the window takes mouse events across its
+full width). The gap closest to the display centre wins and the pill is
+centred exactly when the centre is free, otherwise as near to it as the gap
+allows. This is the pure function `resolve_band_center`; the result is stored
+as `NotchInfo.band_center_x` and drives the window x position.
+
+**Fallback.** The pill never covers menu items on uncertainty. It uses the
+standalone placement (36pt pill, 8pt below the work-area top) when there is no
+visible menu bar (auto-hide, or native measurement unavailable or implausible),
+when either occupancy sample failed, timed out, or came back empty (every real
+menu bar has an Apple menu and a clock), or when no gap is wide enough.
+`NotchInfo.menu_bar_visible` records whether a bar was measured;
+`band_center_x` is set only if a slot was proven free. Collapsed height,
+anchoring, native size, popover placement, and the emitted `OverlayGeometry`
+all derive from this one resolved value (`NotchInfo::in_menu_band`), so a
+visible bar without a safe slot gets the 36pt standalone geometry, never the
+shorter band height with a standalone anchor. Native measurement failure also
+uses this spacious floating layout so controls cannot be clipped by a
+synthetic narrow center. `get_overlay_geometry` and the
 `overlay-geometry-changed` event never return null.
+
+### Placement refresh
+
+Menu occupancy and menu-bar visibility change without any display
+reconfiguration, so one worker thread (`murmur-overlay-placement`) re-resolves
+the whole placement together for each of these triggers (`PlacementTrigger`):
+
+- startup (the first snapshot is taken before any sampling, so the pill starts
+  in the standalone placement and moves into the band right after);
+- `NSApplicationDidChangeScreenParametersNotification`;
+- `NSWorkspaceDidActivateApplicationNotification` (frontmost application
+  change: a different app has different menus);
+- `NSWorkspaceActiveSpaceDidChangeNotification` (a fullscreen Space hides the
+  menu bar, a desktop Space restores it).
+
+The two workspace observers live in `frontmost.rs` and only post a non-blocking
+channel message, in addition to their delivery counters. Bursts are debounced
+(125ms quiet, 1s cap) so rapid app switching coalesces into one refresh. After
+an app or Space trigger one delayed re-check (600ms) catches the menu bar
+repopulating or animating in or out. Each refresh samples the frontmost menus
+off the main thread, then on the main thread re-measures the screen and status
+items, builds one `DisplaySnapshot`, and, only if it differs from the cached
+one, updates `State.notch_info`, repositions and resizes the native window, and
+emits `overlay-geometry-changed` (the frontend collapses and reapplies the
+saved calibration offset). A physical notch skips the Accessibility sampling.
+Status items appearing or resizing with no app, Space, or display change are
+not observed; they are picked up on the next trigger.
 
 ## Window Configuration
 
@@ -75,17 +131,18 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
 
 - **Compact idle width.** On a physical notch, `windowW == pillActiveW == notchW + 2·WING`; while truly idle and not hovered, `pillIdleW == notchW + WING` with a fixed left edge. On a no-notch display, the pill fills the 280pt native window in every state. Recording, processing, and delivery-result cues retain the full active width. `WING = 36` fits the left status icon and right waveform.
-- **Notched vs. no-notch.** Notched (notch `185×32`): `windowW 257`, `collapsedH 32`, `expandedH 96`, `dropdownH 64`. An external display with a 30pt menu bar: `windowW 280`, `collapsedH 30`, `expandedH 94` (a 24pt bar gives `collapsedH 24`). Hidden menu bar or native measurement fallback: `windowW 280`, `collapsedH 36`, `expandedH 100`.
+- **Notched vs. no-notch.** Notched (notch `185×32`): `windowW 257`, `collapsedH 32`, `expandedH 96`, `dropdownH 64`. An external display with a 30pt menu bar: `windowW 280`, `collapsedH 30`, `expandedH 94` (a 24pt bar gives `collapsedH 24`). Hidden menu bar, unknown or full menu-bar occupancy, or native measurement fallback: `windowW 280`, `collapsedH 36`, `expandedH 100`.
 - **Window width** (`windowW`) is fixed and horizontally centers the overlay on
   the selected menu-bar display in logical coordinates. A notched pill sits at
-  the screen top; a floating pill sits in the menu-bar band at the screen top, or
-  8pt below the usable top edge when no menu bar is visible. Calibration cannot
-  lift a band pill above the display.
+  the screen top; a floating pill sits in a free menu-bar slot at the screen top
+  (centred on the slot, which is the display centre when that is free), or 8pt
+  below the usable top edge when no safe slot exists. Calibration cannot lift a
+  band pill above the display.
 - **Size transition.** Height grows from `collapsedH` to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown opens. The native window stays at `windowW`, so recording/processing can use the full top bar immediately.
 - **Status and controls.** The wings hold the status indicator (left) and waveform or delivery action (right). The expanded surface places Mode and quick controls in one row, with recording, connecting, recovery, and hotkey-miss text in a separate row. Text cannot cover buttons. The amber `!` badge and border glow stay on the pill.
 - **Nearby popovers.** On a floating display, the live dictation preview and
   Voice Query answer popover sit below the maximum expanded overlay height
-  (measured from the menu-bar band top, or from the work-area fallback position),
+  (measured from the menu-bar band top, or from the standalone fallback position),
   including the largest saved vertical calibration offset, with their height
   capped at the remaining work area when necessary. Under a physical notch they
   stay tucked directly below the notch so the live transcript reads next to the

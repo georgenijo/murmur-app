@@ -9,9 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Overlay
 
 - On displays without a notch, the idle overlay pill now sits inside the menu
-  bar instead of below it, so it no longer covers browser tab strips. It
-  expands downward only on hover, and keeps the previous placement when the menu
-  bar is hidden.
+  bar instead of below it, so it no longer covers browser tab strips. It only
+  does so in a gap that the frontmost app's menus and the status items leave
+  free, and otherwise (unknown menu occupancy, no room, or a hidden menu bar)
+  keeps the previous placement below the bar so it never covers menu items. It
+  expands downward only on hover, and re-checks its placement when the frontmost
+  app, the Space, or the display changes.
 
 ## [0.51.5] - 2026-10-14
 
