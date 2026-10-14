@@ -53,9 +53,12 @@ and posts native Cmd+V once. It may return focus to the media application when
 that can be done safely. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
 
-When nothing can be proven at recording start, for example because a Chromium
-or Electron app does not expose its focused element, the start identity lookup
-was incomplete, or the capture could not finish in time, the recording uses the
+Smart destination is additive. Whenever it does not hold a verified field, for
+example because a Chromium or Electron app does not expose its focused element,
+the start identity lookup was incomplete, Murmur itself was frontmost (such as
+right after an update relaunch), focus moved to another app or field during
+capture, the field could not be frozen, or the capture could not finish in time,
+the recording uses the
 normal auto-paste policy above (including its stop-time anchor) exactly as if
 Smart destination were off, with one addition: a field that is positively
 secure at delivery (role or subrole `AXSecureTextField`) stays clipboard-only,
@@ -70,15 +73,11 @@ normal policy bound to the captured app: it pastes only if that app instance is
 still frontmost, and still refuses a positively secure field. A field retained
 across a media handoff in another app never falls back this way.
 
-Positive evidence still keeps delivery clipboard-only: a secure field (the
-secure role is checked before any other fallible query), Murmur's own window, a
-mismatched or different process (including focus moving to another app during
-capture), a supported media control with no retained field, an editable field
-that could not be frozen at recording start (for example because focus moved to
-another field),
-Smart destination being turned off while the capture was pending, or a captured
-media-handoff destination that changed or expired before delivery. Refusal evidence found by a
-capture that then misses its deadline is still honored. Each
+Only these stay clipboard-only: a secure field (the secure role is checked
+before any other fallible query), a supported media control with no retained
+field, Smart destination being turned off while the capture was pending, or a
+media-handoff destination that changed or expired before delivery. Refusal
+evidence found by a capture that then misses its deadline is still honored. Each
 delivery logs a content-free `pipeline.smart_destination_delivery` event; see the
 [event reference](../reference/events.md).
 

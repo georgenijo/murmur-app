@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- Smart destination no longer refuses a dictation that normal auto-paste would
+  deliver, including the first dictation after an update relaunch while Murmur
+  was still frontmost. Only secure fields and media apps without a remembered
+  text field stay clipboard-only.
+
 ## [0.51.3] - 2026-10-14
 
 ### Overlay
