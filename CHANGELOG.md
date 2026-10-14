@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Overlay
+
+- On macOS 27, the floating pill on displays without a notch now moves into
+  the menu bar. Murmur reads the menu-bar status items through Accessibility,
+  because macOS 27 no longer reports them in the window list, so the pill
+  always fell back to sitting under the bar.
+
 ## [0.51.9] - 2026-10-14
 
 ### Overlay
