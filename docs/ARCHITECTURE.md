@@ -145,6 +145,15 @@ owners. The main webview schedules small decoded chunks on their saved Me/Them
 timeline, preserving overlapping speech and silent gaps. Deletion invalidates
 pending reads and notifies only the main window. See [Meeting audio playback](features/meeting-audio-playback.md).
 
+`meeting_bundle.rs` exports a with-audio `.zip` (review document, retained WAVs,
+manifest). It lists segments from the playback manifest and reads each WAV through
+the same validated `meeting_audio` open path, so no second path resolver exists.
+Entries are stored, and the archive streams to a unique exclusive temp file that is
+renamed only after a final revocation and capture check. One checked database
+connection serves the whole operation, and a separate single-slot permit keeps
+playback's two-slot pool free. See
+[Meeting review workspace](features/meeting-review-workspace.md#export-with-audio).
+
 ### Selected-text transform
 
 ```text
@@ -248,7 +257,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 233 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 235 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -496,7 +505,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-233 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+235 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
