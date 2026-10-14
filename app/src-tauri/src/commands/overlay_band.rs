@@ -313,43 +313,35 @@ mod native {
     /// `exclude_window_number` is the overlay itself, which shares that level.
     /// `None` when the window list is unavailable.
     pub(crate) fn status_item_frames(exclude_window_number: i64) -> Option<Vec<FrameRect>> {
-        use core_foundation::base::{CFType, TCFType};
-        use core_foundation::dictionary::CFDictionary;
-        use core_foundation::number::CFNumber;
-        use core_foundation::string::CFString;
+        use core_foundation::base::TCFType;
+        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+        use core_foundation::number::{CFNumber, CFNumberRef};
+        use core_graphics::geometry::CGRect;
         use core_graphics::window::{
-            kCGNullWindowID, kCGWindowBounds, kCGWindowLayer, kCGWindowListOptionOnScreenOnly,
-            kCGWindowNumber, CGWindowListCopyWindowInfo,
+            copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowLayer,
+            kCGWindowListOptionOnScreenOnly, kCGWindowNumber,
         };
 
-        let list =
-            unsafe { CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) };
-        if list.is_null() {
-            return None;
-        }
-        let list: core_foundation::array::CFArray<CFDictionary<CFString, CFType>> =
-            unsafe { TCFType::wrap_under_create_rule(list) };
-
-        let number = |dict: &CFDictionary<CFString, CFType>, key| {
-            dict.find(unsafe { CFString::wrap_under_get_rule(key) })
-                .and_then(|value| value.downcast::<CFNumber>())
-                .and_then(|value| value.to_i64())
+        let list = copy_window_info(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)?;
+        let number = |dict: &CFDictionary, key: *const c_void| -> Option<i64> {
+            let value = dict.find(key)?;
+            unsafe { CFNumber::wrap_under_get_rule(*value as CFNumberRef) }.to_i64()
         };
         let mut frames = Vec::new();
         for window in list.iter() {
-            if number(&window, kCGWindowLayer) != Some(STATUS_WINDOW_LAYER)
-                || number(&window, kCGWindowNumber) == Some(exclude_window_number)
+            // Borrowed from `list`; the dictionary is retained for this scope.
+            let window =
+                unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
+            if number(&window, kCGWindowLayer as *const c_void) != Some(STATUS_WINDOW_LAYER)
+                || number(&window, kCGWindowNumber as *const c_void) == Some(exclude_window_number)
             {
                 continue;
             }
-            let Some(bounds) = window
-                .find(unsafe { CFString::wrap_under_get_rule(kCGWindowBounds) })
-                .and_then(|value| value.downcast::<CFDictionary>())
-            else {
+            let Some(bounds) = window.find(kCGWindowBounds as *const c_void) else {
                 continue;
             };
-            let Some(rect) = core_graphics::geometry::CGRect::from_dict_representation(&bounds)
-            else {
+            let bounds = unsafe { CFDictionary::wrap_under_get_rule(*bounds as CFDictionaryRef) };
+            let Some(rect) = CGRect::from_dict_representation(&bounds) else {
                 continue;
             };
             frames.push(FrameRect {
