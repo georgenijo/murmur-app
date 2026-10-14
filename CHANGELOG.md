@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- Smart destination pastes no longer wait 40 ms after the key post unless a
+  media handoff needs the read-back, and a media handoff no longer waits a
+  fixed 300 ms for activation: it continues as soon as the destination field
+  is focused.
+
 ## [0.51.6] - 2026-10-14
 
 ### Dictation

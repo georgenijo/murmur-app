@@ -2,8 +2,8 @@ use super::{
     candidate_action, candidate_is_capturable, candidate_is_preservable, claim_preparation,
     delivery_is_confirmed, generation_is_current, generation_is_latest, identity_relation,
     notification_invalidates, selection_allowed, t3_empty_composer_delivery_is_confirmed,
-    CandidateAction, CandidateNotification, CapabilityStage, DeliveryRoute, IdentityRelation,
-    InsertOutcome, Observation, PrepareOutcome, Snapshot,
+    verifies_after_post, CandidateAction, CandidateNotification, CapabilityStage, DeliveryRoute,
+    IdentityRelation, InsertOutcome, Observation, PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
@@ -596,6 +596,37 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
     })
 }
 
+pub(super) fn destination_ready(snapshot: &Snapshot) -> bool {
+    if !is_main_thread() {
+        return false;
+    }
+    let Snapshot::Target {
+        token,
+        revision,
+        identity,
+        ..
+    } = snapshot
+    else {
+        return false;
+    };
+
+    with_ax_budget(DELIVERY_AX_BUDGET, || {
+        STATE.with(|state| {
+            let state = state.borrow();
+            state.frozen.get(token).is_some_and(|frozen| {
+                frozen.revision == *revision
+                    && frozen.destination_identity == *identity
+                    && frozen.stage == CapabilityStage::Prepared
+                    && generation_is_current(frozen.generation)
+                    && decode_range(frozen.range.as_type()).is_some_and(|expected_range| {
+                        destination_is_active(frozen)
+                            && validate_exact_field(frozen, expected_range)
+                    })
+            })
+        })
+    })
+}
+
 pub(super) fn abort(snapshot: &Snapshot, pasteboard_change: Option<i64>) {
     if !is_main_thread() {
         return;
@@ -716,34 +747,38 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
                 return InsertOutcome::Refused;
             }
 
-            let _ = sleep_within_budget(POST_SETTLE);
-            let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
-                .ok()
-                .and_then(|value| decode_range(value.as_type()));
-            let character_count_after =
-                copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
-            let confirmed = delivery_is_confirmed(
-                expected_range,
-                inserted_length,
-                range_after,
-                character_count_before,
-                character_count_after,
-            ) || complete_identity(&frozen.destination_identity)
-                .is_some_and(|identity| known_t3_bundle_id(&identity.bundle_id))
-                && t3_empty_composer_delivery_is_confirmed(
+            // The read-back below only gates returning focus to the media app.
+            // Other routes have nothing to decide, so they skip the settle.
+            if verifies_after_post(frozen.route) {
+                let _ = sleep_within_budget(POST_SETTLE);
+                let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
+                    .ok()
+                    .and_then(|value| decode_range(value.as_type()));
+                let character_count_after =
+                    copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
+                let confirmed = delivery_is_confirmed(
                     expected_range,
                     inserted_length,
                     range_after,
                     character_count_before,
                     character_count_after,
-                );
-            if confirmed {
-                maybe_restore_media_after_post(
-                    &frozen,
-                    range_after.expect("confirmed range is present"),
-                    character_count_after.expect("confirmed count is present"),
-                    pasteboard_change,
-                );
+                ) || complete_identity(&frozen.destination_identity)
+                    .is_some_and(|identity| known_t3_bundle_id(&identity.bundle_id))
+                    && t3_empty_composer_delivery_is_confirmed(
+                        expected_range,
+                        inserted_length,
+                        range_after,
+                        character_count_before,
+                        character_count_after,
+                    );
+                if confirmed {
+                    maybe_restore_media_after_post(
+                        &frozen,
+                        range_after.expect("confirmed range is present"),
+                        character_count_after.expect("confirmed count is present"),
+                        pasteboard_change,
+                    );
+                }
             }
             state.invalidate_candidate();
             InsertOutcome::Posted

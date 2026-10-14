@@ -47,10 +47,13 @@ Smart delivery requires the same process instance, window, field, document, and
 selection to remain verifiable. A retained background selection must be collapsed:
 Murmur never replaces a hidden selection. To deliver to a recent field, it
 activates that application through its Accessibility `AXFrontmost` attribute
-(without changing the field or selection), lets macOS settle between main-thread dispatches,
+(without changing the field or selection), then polls every 20 ms across separate
+main-thread dispatches, for at most 300 ms, until the destination is active and its
+exact field is focused with the expected caret. A timeout proceeds as before. It then
 rechecks recording ownership, the exact field, and clipboard generation,
-and posts native Cmd+V once. It may return focus to the media application when
-that can be done safely. There is no whole-field replacement, automatic submit,
+and posts native Cmd+V once. Only a media handoff waits 40 ms after the post and reads
+the field back, to decide whether focus can safely return to the media application;
+other routes return right after the post. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
 
 Smart destination is additive. Whenever it does not hold a verified field, for

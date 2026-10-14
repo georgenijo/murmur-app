@@ -1245,6 +1245,22 @@ fn destination_application_name(
     None
 }
 
+/// Upper bound on waiting for a requested destination activation to take effect.
+const ACTIVATION_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+/// Gap between main-thread readiness probes while waiting for activation.
+const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// How long to sleep before the next readiness probe, or `None` once the
+/// activation wait is exhausted. The last pause is clipped so the total never
+/// exceeds `deadline`.
+fn activation_poll_pause(
+    elapsed: std::time::Duration,
+    deadline: std::time::Duration,
+    interval: std::time::Duration,
+) -> Option<std::time::Duration> {
+    (elapsed < deadline).then(|| interval.min(deadline - elapsed))
+}
+
 /// Run a delivery side effect only while this recording still owns the
 /// Processing state. The dictation lock stays held through `operation`, making
 /// cancellation/supersession atomic with the clipboard write and optional
@@ -2456,6 +2472,9 @@ async fn run_transcription_pipeline(
     // Phase: File output (optional) -- persist audio/transcript before injection.
     // Non-fatal: a write failure is logged and surfaced to the UI, but the text
     // is already on its way to the clipboard. Uses the original (pre-VAD) samples.
+    // This stays ahead of injection: it only runs when auto-paste is suppressed
+    // (so no paste waits on it), cancellation was just checked above, and its
+    // stage timing precedes the clipboard stage in diagnostics.
     let file_output_started = std::time::Instant::now();
     performance_guard.enter(PerformanceStageV1::FileOutput);
     if delivery.save_audio || delivery.save_transcript {
@@ -2530,7 +2549,35 @@ async fn run_transcription_pipeline(
             match tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await {
                 Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Ready))) => {}
                 Ok(Ok(Some(crate::smart_destination::PrepareOutcome::WaitForActivation))) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    // Poll across separate main-thread turns (AppKit refreshes
+                    // its active-application state between them) and stop as
+                    // soon as the exact destination field is focused. Timing
+                    // out proceeds exactly as the former fixed wait did;
+                    // insertion repeats the full verification either way.
+                    let waited = std::time::Instant::now();
+                    while let Some(pause) =
+                        activation_poll_pause(waited.elapsed(), ACTIVATION_WAIT, ACTIVATION_POLL)
+                    {
+                        tokio::time::sleep(pause).await;
+                        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+                        let probing = smart_destination.clone();
+                        if app_handle
+                            .run_on_main_thread(move || {
+                                let _ = ready_sender
+                                    .send(crate::smart_destination::destination_ready(&probing));
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        let remaining = ACTIVATION_WAIT.saturating_sub(waited.elapsed());
+                        if matches!(
+                            tokio::time::timeout(remaining, ready_receiver).await,
+                            Ok(Ok(true))
+                        ) {
+                            break;
+                        }
+                    }
                 }
                 _ => {
                     let same_app_fallback = smart_destination.allows_same_app_fallback();
@@ -6054,6 +6101,33 @@ pub async fn transcribe_file(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn activation_polling_is_bounded_by_the_original_wait() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        assert_eq!(
+            activation_poll_pause(ms(0), ACTIVATION_WAIT, ACTIVATION_POLL),
+            Some(ms(20))
+        );
+        assert_eq!(
+            activation_poll_pause(ms(290), ACTIVATION_WAIT, ACTIVATION_POLL),
+            Some(ms(10))
+        );
+        assert_eq!(
+            activation_poll_pause(ms(300), ACTIVATION_WAIT, ACTIVATION_POLL),
+            None
+        );
+        assert_eq!(
+            activation_poll_pause(ms(450), ACTIVATION_WAIT, ACTIVATION_POLL),
+            None
+        );
+        let mut elapsed = ms(0);
+        while let Some(pause) = activation_poll_pause(elapsed, ACTIVATION_WAIT, ACTIVATION_POLL) {
+            elapsed += pause;
+        }
+        assert_eq!(elapsed, ACTIVATION_WAIT);
+    }
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};

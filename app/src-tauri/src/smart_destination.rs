@@ -326,11 +326,27 @@ pub(crate) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
     native::insert(snapshot, text, pasteboard_change)
 }
 
+/// Read-only main-thread probe used while waiting for a requested activation:
+/// true once the prepared destination application is active and its exact
+/// field is focused with the expected caret. It never mutates the token, so
+/// [`insert`] still performs its own complete re-verification.
+pub(crate) fn destination_ready(snapshot: &Snapshot) -> bool {
+    native::destination_ready(snapshot)
+}
+
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeliveryRoute {
     CurrentEditable,
     RecentMedia,
+}
+
+/// Only a media handoff reads the field back after the key post, to decide
+/// whether focus can be returned to the media app. Other routes return
+/// `Posted` without settling or querying the field.
+#[cfg(any(target_os = "macos", test))]
+fn verifies_after_post(route: DeliveryRoute) -> bool {
+    route == DeliveryRoute::RecentMedia
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -489,6 +505,10 @@ mod native {
         _pasteboard_change: i64,
     ) -> InsertOutcome {
         InsertOutcome::Refused
+    }
+
+    pub(super) fn destination_ready(_snapshot: &Snapshot) -> bool {
+        false
     }
 }
 
@@ -704,6 +724,12 @@ mod tests {
         assert!(!selection_allowed(DeliveryRoute::RecentMedia, 1));
         assert!(selection_allowed(DeliveryRoute::CurrentEditable, 0));
         assert!(selection_allowed(DeliveryRoute::CurrentEditable, 12));
+    }
+
+    #[test]
+    fn only_media_handoffs_settle_and_read_back_after_the_post() {
+        assert!(verifies_after_post(DeliveryRoute::RecentMedia));
+        assert!(!verifies_after_post(DeliveryRoute::CurrentEditable));
     }
 
     #[test]
