@@ -55,14 +55,17 @@ content, no permission beyond the Accessibility access Murmur already uses):
 - status items, Control Center, and the clock: each application's
   `AXExtrasMenuBar` children, also read on the worker thread. macOS 27 no longer
   exposes status items as `kCGStatusWindowLevel` windows, so the window list
-  cannot be used. `StatusItemScanner` reads every application that can show a
-  status item (not background-only, not a WebKit helper) on startup, on display
-  changes, and at most once a minute. In between it re-reads only the
-  applications known to show status items plus newly launched ones. A full scan
-  of ~60 applications takes about 0.6s, mostly applications that never answer.
-  An application without items that fails to answer is skipped. An application
-  that showed items and then fails makes the sample unknown. Hidden items report
-  frames off the bar and are ignored.
+  cannot be used. Every application that can show a status item (not
+  background-only, not a WebKit helper) is read on every refresh. Nothing is
+  cached, because a cached "no items" cannot prove an application has not
+  added one since. The first scan takes ~0.6s while Accessibility connections
+  are established, and ~4ms afterwards (53 applications on macOS 27). An
+  application that does not answer cannot report its items. macOS packs status
+  items into one run from the right edge, so the seen items' positions already
+  account for unseen items to their right. An unseen item can only extend the
+  run leftward, so each application that did not answer reserves 128pt left of
+  the leftmost seen item. Hidden items report frames off the bar and are
+  ignored.
 
 Each frame is padded by 8pt, merged, and the free gaps between them are
 searched for one at least 320pt wide (the widest window the pill grows into,

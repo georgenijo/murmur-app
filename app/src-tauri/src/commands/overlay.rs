@@ -1,4 +1,4 @@
-use super::overlay_band::{self, resolve_band_center, Band, FrameRect};
+use super::overlay_band::{self, resolve_band_center, Band, FrameRect, StatusItems};
 use crate::{MutexExt, State};
 use tauri::Emitter;
 use tauri::Manager;
@@ -418,7 +418,7 @@ fn with_menu_bar_slot(
     display_left: f64,
     display_w: f64,
     menu_items: Option<&[FrameRect]>,
-    status_items: Option<&[FrameRect]>,
+    status_items: Option<&StatusItems>,
 ) -> NotchInfo {
     if info.physical_notch || !info.menu_bar_visible {
         return NotchInfo {
@@ -436,7 +436,8 @@ fn with_menu_bar_slot(
         band_center_x: resolve_band_center(
             band,
             menu_items,
-            status_items,
+            status_items.map(|items| items.frames.as_slice()),
+            status_items.map_or(0, |items| items.unanswered),
             BAND_ITEM_MARGIN,
             BAND_REQUIRED_CLEAR_W,
         ),
@@ -452,7 +453,7 @@ fn with_menu_bar_slot(
 #[cfg(target_os = "macos")]
 pub(crate) fn detect_notch_info(
     menu_items: Option<&[FrameRect]>,
-    status_items: Option<&[FrameRect]>,
+    status_items: Option<&StatusItems>,
 ) -> Option<NotchInfo> {
     // Returns (notch_or_synthetic_center_width, actual_menu_bar_height) in
     // logical points.
@@ -510,7 +511,7 @@ pub(crate) fn detect_notch_info(
     );
     tracing::info!(
         target: "system",
-        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}, band_center_x={:?}, menu_items={:?}, status_items={:?}",
+        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}, band_center_x={:?}, menu_items={:?}, status_items={:?}, status_unanswered={:?}",
         info.width,
         info.height,
         insets.top,
@@ -518,7 +519,8 @@ pub(crate) fn detect_notch_info(
         frame.size.width,
         info.band_center_x,
         menu_items.map(<[FrameRect]>::len),
-        status_items.map(<[FrameRect]>::len)
+        status_items.map(|items| items.frames.len()),
+        status_items.map(|items| items.unanswered)
     );
     Some(info)
 }
@@ -526,7 +528,7 @@ pub(crate) fn detect_notch_info(
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn detect_notch_info(
     _menu_items: Option<&[FrameRect]>,
-    _status_items: Option<&[FrameRect]>,
+    _status_items: Option<&StatusItems>,
 ) -> Option<NotchInfo> {
     None
 }
@@ -537,7 +539,7 @@ pub(crate) fn detect_notch_info(
 pub(crate) fn capture_display_snapshot(
     app_handle: &tauri::AppHandle,
     menu_items: Option<&[FrameRect]>,
-    status_items: Option<&[FrameRect]>,
+    status_items: Option<&StatusItems>,
 ) -> DisplaySnapshot {
     let monitor = app_handle.primary_monitor().ok().flatten();
     let notch_info = detect_notch_info(menu_items, status_items);
@@ -646,11 +648,7 @@ pub(crate) fn request_placement_refresh(trigger: PlacementTrigger) {
 /// Re-resolve the whole placement for `trigger`: sample the frontmost menus and
 /// the status items off the main thread, then apply everything together on it.
 #[cfg(target_os = "macos")]
-fn refresh_placement(
-    app_handle: &tauri::AppHandle,
-    trigger: PlacementTrigger,
-    status_scanner: &mut overlay_band::StatusItemScanner,
-) {
+fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     let cached_physical_notch = app_handle.try_state::<State>().is_some_and(|state| {
         state
             .notch_info
@@ -663,7 +661,7 @@ fn refresh_placement(
     } else {
         (
             overlay_band::frontmost_menu_item_frames(),
-            overlay_band::status_item_frames(status_scanner, trigger.forces_sampling()),
+            overlay_band::status_items(),
         )
     };
     let handle = app_handle.clone();
@@ -672,7 +670,7 @@ fn refresh_placement(
             &handle,
             trigger,
             menu_items.as_deref(),
-            status_items.as_deref(),
+            status_items.as_ref(),
         );
     }) {
         tracing::warn!(
@@ -690,7 +688,7 @@ fn apply_placement(
     handle: &tauri::AppHandle,
     trigger: PlacementTrigger,
     menu_items: Option<&[FrameRect]>,
-    status_items: Option<&[FrameRect]>,
+    status_items: Option<&StatusItems>,
 ) {
     let snapshot = capture_display_snapshot(handle, menu_items, status_items);
     let notch = snapshot.notch_info;
@@ -738,7 +736,6 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
         .name("murmur-overlay-placement".to_string())
         .spawn(move || {
             let mut carried: Option<PlacementTrigger> = None;
-            let mut status_scanner = overlay_band::StatusItemScanner::default();
             loop {
                 let mut trigger = match carried.take() {
                     Some(trigger) => trigger,
@@ -757,7 +754,7 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
-                refresh_placement(&app_handle, trigger, &mut status_scanner);
+                refresh_placement(&app_handle, trigger);
                 // A new trigger supersedes the remaining re-checks; it brings
                 // its own.
                 for &delay in trigger.settle_delays() {
@@ -766,11 +763,9 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
                             carried = Some(next);
                             break;
                         }
-                        Err(RecvTimeoutError::Timeout) => refresh_placement(
-                            &app_handle,
-                            PlacementTrigger::Settle,
-                            &mut status_scanner,
-                        ),
+                        Err(RecvTimeoutError::Timeout) => {
+                            refresh_placement(&app_handle, PlacementTrigger::Settle)
+                        }
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
@@ -1583,8 +1578,11 @@ mod tests {
             height: 24.0,
         };
         let menus = [item(0.0, 500.0)];
-        let status = [item(2300.0, 260.0)];
-        let resolve = |menus: Option<&[FrameRect]>, status: Option<&[FrameRect]>| {
+        let status = StatusItems {
+            frames: vec![item(2300.0, 260.0)],
+            unanswered: 0,
+        };
+        let resolve = |menus: Option<&[FrameRect]>, status: Option<&StatusItems>| {
             with_menu_bar_slot(measured, 0.0, 2560.0, menus, status).band_center_x
         };
         assert_eq!(resolve(Some(&menus), Some(&status)), Some(1280.0));
@@ -1596,6 +1594,12 @@ mod tests {
         assert_eq!(resolve(Some(&wide), Some(&status)), Some(1568.0));
         let full = [item(0.0, 2000.0)];
         assert_eq!(resolve(Some(&full), Some(&status)), None);
+        // Status items that did not answer reserve room left of the run.
+        let unanswered = StatusItems {
+            unanswered: 8,
+            ..status.clone()
+        };
+        assert_eq!(resolve(Some(&menus), Some(&unanswered)), Some(1108.0));
         // Hidden bar and physical notch never get a slot.
         let hidden = notch_info_from_screen_measurements(2560.0, 1440.0, 1440.0, 0.0, 0.0, 0.0);
         assert_eq!(

@@ -11,7 +11,6 @@
 //! below the menu bar. Only window/element frames are read, never titles or
 //! content.
 
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// A frame in global logical (top-left origin) coordinates, as reported by the
@@ -119,21 +118,38 @@ fn select_slot_center(
 }
 
 /// Resolve where the collapsed pill may sit in `band`, from the frontmost
-/// application's menu-item frames and the on-screen status-item frames.
+/// application's menu-item frames and the status-item frames.
 ///
 /// Either sample being unavailable or empty means occupancy is unknown (every
 /// menu bar has an Apple menu and a clock), so the result is `None`.
+///
+/// `unanswered_status_apps` applications did not report their status items.
+/// macOS packs status items into one run from the right edge of the bar, so
+/// the seen items' positions already account for any unseen item to their
+/// right; an unseen item can only extend the run leftward. Each such
+/// application therefore reserves `UNANSWERED_STATUS_RESERVE` to the left of
+/// the leftmost seen item.
 pub(crate) fn resolve_band_center(
     band: Band,
     menu_items: Option<&[FrameRect]>,
     status_items: Option<&[FrameRect]>,
+    unanswered_status_apps: usize,
     margin: f64,
     required_w: f64,
 ) -> Option<f64> {
     let menu_items = menu_items.filter(|frames| !frames.is_empty())?;
     let status_items = status_items.filter(|frames| !frames.is_empty())?;
     let mut occupied = band_occupancy(band, menu_items)?;
-    occupied.extend(band_occupancy(band, status_items)?);
+    let status_spans = band_occupancy(band, status_items)?;
+    if unanswered_status_apps > 0 {
+        let run_left = status_spans
+            .iter()
+            .map(|&(left, _)| left)
+            .fold(band.right, f64::min);
+        let reserve = unanswered_status_apps as f64 * UNANSWERED_STATUS_RESERVE;
+        occupied.push(((run_left - reserve).max(band.left), run_left));
+    }
+    occupied.extend(status_spans);
     select_slot_center(band.left, band.right, &occupied, margin, required_w)
 }
 
@@ -147,90 +163,52 @@ pub(crate) enum ExtrasRead {
     Failed,
 }
 
-/// How long applications without status items are skipped before a full scan
-/// re-reads every application.
-const STATUS_RESCAN_INTERVAL: Duration = Duration::from_secs(60);
-/// Upper bound for one scan. A full scan of ~60 applications measured ~0.6s on
-/// macOS 27, mostly applications that never answer.
-const STATUS_FULL_SCAN_BUDGET: Duration = Duration::from_millis(1500);
-const STATUS_SCAN_BUDGET: Duration = Duration::from_millis(400);
-
-/// Status-item occupancy kept by the placement worker between refreshes.
-///
-/// macOS 27 no longer exposes status items as `kCGStatusWindowLevel` windows,
-/// so each application's `AXExtrasMenuBar` is read instead. Most applications
-/// have none, and several never answer Accessibility, so a full scan of every
-/// application runs only on request or once per `STATUS_RESCAN_INTERVAL`.
-/// In between, only applications known to show status items and newly seen
-/// applications are read. An application that showed status items and then
-/// fails to answer makes the whole sample unknown, so its items are never
-/// silently covered.
-#[derive(Debug, Default)]
-pub(crate) struct StatusItemScanner {
-    with_items: HashSet<i32>,
-    without_items: HashSet<i32>,
-    last_full_scan: Option<Instant>,
+/// Every status item that answered, plus how many applications did not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct StatusItems {
+    pub frames: Vec<FrameRect>,
+    /// Applications whose status items, if any, are unseen.
+    pub unanswered: usize,
 }
 
-impl StatusItemScanner {
-    /// Scan `process_ids` (the running applications that may show status
-    /// items) with `read`. `None` when the sample is unknown.
-    pub(crate) fn scan(
-        &mut self,
-        now: Instant,
-        force_full: bool,
-        process_ids: impl IntoIterator<Item = i32>,
-        mut read: impl FnMut(i32) -> ExtrasRead,
-    ) -> Option<Vec<FrameRect>> {
-        let full = force_full
-            || self
-                .last_full_scan
-                .is_none_or(|at| now.saturating_duration_since(at) >= STATUS_RESCAN_INTERVAL);
-        let budget = if full {
-            STATUS_FULL_SCAN_BUDGET
-        } else {
-            STATUS_SCAN_BUDGET
-        };
-        let started = Instant::now();
-        let mut with_items = HashSet::new();
-        let mut without_items = HashSet::new();
-        let mut frames = Vec::new();
-        for process_id in process_ids {
-            let known = self.with_items.contains(&process_id);
-            if !full && !known && self.without_items.contains(&process_id) {
-                continue;
-            }
-            if started.elapsed() > budget {
-                return None;
-            }
-            match read(process_id) {
-                ExtrasRead::Frames(items) if !items.is_empty() => {
-                    with_items.insert(process_id);
-                    frames.extend(items);
-                }
-                ExtrasRead::Failed if known => return None,
-                ExtrasRead::NoItems | ExtrasRead::Frames(_) | ExtrasRead::Failed => {
-                    without_items.insert(process_id);
-                }
-            }
+/// Width assumed for the unseen status items of each application that did not
+/// answer (see `resolve_band_center`).
+const UNANSWERED_STATUS_RESERVE: f64 = 128.0;
+/// Upper bound for one scan of every application. Measured on macOS 27 with 53
+/// applications: ~0.6s for the first scan (Accessibility connections being
+/// established), ~4ms afterwards.
+const STATUS_SCAN_BUDGET: Duration = Duration::from_millis(1500);
+
+/// Read the status items of every application in `process_ids` with `read`.
+/// macOS 27 no longer exposes status items as `kCGStatusWindowLevel` windows,
+/// so each application's `AXExtrasMenuBar` is read instead, every time:
+/// cached absence cannot prove that an application has not added an item
+/// since. `None` when the budget is spent.
+pub(crate) fn collect_status_items(
+    process_ids: impl IntoIterator<Item = i32>,
+    mut read: impl FnMut(i32) -> ExtrasRead,
+) -> Option<StatusItems> {
+    let started = Instant::now();
+    let mut items = StatusItems::default();
+    for process_id in process_ids {
+        if started.elapsed() > STATUS_SCAN_BUDGET {
+            return None;
         }
-        if full {
-            self.without_items = without_items;
-            self.last_full_scan = Some(now);
-        } else {
-            self.without_items.extend(without_items);
+        match read(process_id) {
+            ExtrasRead::Frames(frames) => items.frames.extend(frames),
+            ExtrasRead::NoItems => {}
+            ExtrasRead::Failed => items.unanswered += 1,
         }
-        self.with_items = with_items;
-        Some(frames)
     }
+    Some(items)
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use native::{frontmost_menu_item_frames, status_item_frames};
+pub(crate) use native::{frontmost_menu_item_frames, status_items};
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::{ExtrasRead, FrameRect, StatusItemScanner};
+    use super::{collect_status_items, ExtrasRead, FrameRect, StatusItems};
     use std::ffi::{c_char, c_void, CString};
     use std::time::{Duration, Instant};
 
@@ -439,16 +417,12 @@ mod native {
         }
     }
 
-    /// Frames of every status item (status items, Control Center, the clock)
-    /// on every display, read through Accessibility on the placement worker
-    /// thread; `scanner` decides which applications to read. Hidden items
-    /// report frames off the bar, which the band filter ignores. `None` when
-    /// the sample is unknown. Blocks for Accessibility round trips, so never
-    /// call this on the main thread.
-    pub(crate) fn status_item_frames(
-        scanner: &mut StatusItemScanner,
-        force_full: bool,
-    ) -> Option<Vec<FrameRect>> {
+    /// Every status item (status items, Control Center, the clock) on every
+    /// display, read through Accessibility. Hidden items report frames off the
+    /// bar, which the band filter ignores. `None` when the sample is unknown.
+    /// Blocks for Accessibility round trips, so never call this on the main
+    /// thread.
+    pub(crate) fn status_items() -> Option<StatusItems> {
         use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
         let process_ids: Vec<i32> = objc2::rc::autoreleasepool(|_| {
             NSWorkspace::sharedWorkspace()
@@ -465,7 +439,7 @@ mod native {
                 .map(|application| application.processIdentifier())
                 .collect()
         });
-        scanner.scan(Instant::now(), force_full, process_ids, extras_frames)
+        collect_status_items(process_ids, extras_frames)
     }
 }
 
@@ -579,24 +553,24 @@ mod tests {
         let menu = [item(0.0, 400.0)];
         let status = [item(2300.0, 260.0)];
         let band = bar(0.0, 2560.0);
-        assert!(resolve_band_center(band, Some(&menu), Some(&status), MARGIN, WIDTH).is_some());
+        assert!(resolve_band_center(band, Some(&menu), Some(&status), 0, MARGIN, WIDTH).is_some());
         // AX failure / timeout.
         assert_eq!(
-            resolve_band_center(band, None, Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, None, Some(&status), 0, MARGIN, WIDTH),
             None
         );
         // Window list failure.
         assert_eq!(
-            resolve_band_center(band, Some(&menu), None, MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), None, 0, MARGIN, WIDTH),
             None
         );
         // A menu bar always has an Apple menu and a clock: empty means unreadable.
         assert_eq!(
-            resolve_band_center(band, Some(&[]), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&[]), Some(&status), 0, MARGIN, WIDTH),
             None
         );
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&[]), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&[]), 0, MARGIN, WIDTH),
             None
         );
         // Garbage frames and degenerate bands are not "free space".
@@ -605,7 +579,7 @@ mod tests {
             ..item(0.0, 10.0)
         }];
         assert_eq!(
-            resolve_band_center(band, Some(&bad), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&bad), Some(&status), 0, MARGIN, WIDTH),
             None
         );
         let flat = Band {
@@ -613,7 +587,7 @@ mod tests {
             ..band
         };
         assert_eq!(
-            resolve_band_center(flat, Some(&menu), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(flat, Some(&menu), Some(&status), 0, MARGIN, WIDTH),
             None
         );
     }
@@ -636,13 +610,13 @@ mod tests {
             item(1200.0, 0.0),
         ];
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&status), 0, MARGIN, WIDTH),
             Some(1280.0)
         );
         // The same frame inside the band pushes the pill aside.
         let menu = [item(0.0, 300.0), item(1000.0, 600.0)];
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&status), 0, MARGIN, WIDTH),
             Some(1000.0 - MARGIN - WIDTH / 2.0)
         );
     }
@@ -654,13 +628,13 @@ mod tests {
         // Status cluster reaches far to the left on a narrow display: 428..972 fits.
         let status = [item(980.0, 460.0)];
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&status), 0, MARGIN, WIDTH),
             Some(720.0)
         );
         // Starting at 700 leaves only 428..692: too narrow, so no slot.
         let status = [item(700.0, 740.0)];
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&status), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&status), 0, MARGIN, WIDTH),
             None
         );
     }
@@ -672,114 +646,57 @@ mod tests {
         let band = bar(-2560.0, 0.0);
         let menu = [item(-2560.0, 500.0)];
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&status(-200.0)), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&status(-200.0)), 0, MARGIN, WIDTH),
             Some(-1280.0)
         );
         // Display right of the primary; items on the neighbouring display are ignored.
         let band = bar(2560.0, 5120.0);
         let menu = [item(2560.0, 500.0), item(100.0, 900.0)];
         assert_eq!(
-            resolve_band_center(band, Some(&menu), Some(&status(4920.0)), MARGIN, WIDTH),
+            resolve_band_center(band, Some(&menu), Some(&status(4920.0)), 0, MARGIN, WIDTH),
             Some(3840.0)
         );
         // Centre blocked on a secondary display: nearest gap still inside it.
         let menu = [item(2560.0, 1400.0)];
         let center =
-            resolve_band_center(band, Some(&menu), Some(&status(4920.0)), MARGIN, WIDTH).unwrap();
+            resolve_band_center(band, Some(&menu), Some(&status(4920.0)), 0, MARGIN, WIDTH)
+                .unwrap();
         assert_eq!(center, 2560.0 + 1400.0 + MARGIN + WIDTH / 2.0);
         assert!(center - WIDTH / 2.0 >= band.left && center + WIDTH / 2.0 <= band.right);
     }
 
-    fn scan_with(
-        scanner: &mut StatusItemScanner,
-        now: Instant,
-        force_full: bool,
-        apps: &[(i32, ExtrasRead)],
-        reads: &mut Vec<i32>,
-    ) -> Option<Vec<FrameRect>> {
-        scanner.scan(now, force_full, apps.iter().map(|(pid, _)| *pid), |pid| {
-            reads.push(pid);
-            apps.iter()
-                .find(|(candidate, _)| *candidate == pid)
-                .map(|(_, read)| read.clone())
-                .unwrap()
-        })
+    #[test]
+    fn status_collection_counts_unanswered_apps_without_caching() {
+        let clock = item(2400.0, 129.0);
+        let read = |pid| match pid {
+            1 => ExtrasRead::Frames(vec![clock]),
+            2 => ExtrasRead::NoItems,
+            _ => ExtrasRead::Failed,
+        };
+        assert_eq!(
+            collect_status_items([1, 2, 3, 4], read),
+            Some(StatusItems {
+                frames: vec![clock],
+                unanswered: 2,
+            })
+        );
     }
 
     #[test]
-    fn status_scan_skips_quiet_apps_until_the_next_full_scan() {
-        let mut scanner = StatusItemScanner::default();
-        let start = Instant::now();
-        let clock = ExtrasRead::Frames(vec![item(2400.0, 129.0)]);
-        let apps = [
-            (1, clock.clone()),
-            (2, ExtrasRead::NoItems),
-            (3, ExtrasRead::Failed),
-        ];
-        let mut reads = Vec::new();
-        let frames = scan_with(&mut scanner, start, false, &apps, &mut reads).unwrap();
-        assert_eq!(frames, vec![item(2400.0, 129.0)]);
-        assert_eq!(reads, vec![1, 2, 3], "the first scan is full");
-
-        // Within the interval only apps with items and new apps are read.
-        let apps = [
-            (1, clock.clone()),
-            (2, ExtrasRead::NoItems),
-            (3, ExtrasRead::Failed),
-            (4, ExtrasRead::Frames(vec![item(2300.0, 22.0)])),
-        ];
-        reads.clear();
-        let frames = scan_with(
-            &mut scanner,
-            start + Duration::from_secs(5),
-            false,
-            &apps,
-            &mut reads,
-        )
-        .unwrap();
-        assert_eq!(reads, vec![1, 4]);
-        assert_eq!(frames.len(), 2);
-
-        // A forced or overdue full scan re-reads everyone.
-        for (now, force) in [
-            (start + Duration::from_secs(6), true),
-            (
-                start + Duration::from_secs(6) + STATUS_RESCAN_INTERVAL,
-                false,
-            ),
-        ] {
-            reads.clear();
-            scan_with(&mut scanner, now, force, &apps, &mut reads).unwrap();
-            assert_eq!(reads, vec![1, 2, 3, 4]);
-        }
-    }
-
-    #[test]
-    fn status_scan_is_unknown_when_an_app_with_items_stops_answering() {
-        let mut scanner = StatusItemScanner::default();
-        let start = Instant::now();
-        let mut reads = Vec::new();
-        let apps = [(1, ExtrasRead::Frames(vec![item(2400.0, 129.0)]))];
-        assert!(scan_with(&mut scanner, start, false, &apps, &mut reads).is_some());
-        let apps = [(1, ExtrasRead::Failed)];
-        assert_eq!(
-            scan_with(
-                &mut scanner,
-                start + Duration::from_secs(1),
-                false,
-                &apps,
-                &mut reads
-            ),
-            None
-        );
-        // An app with no items failing to answer is tolerated (WebKit helpers,
-        // busy browsers), and an empty result stays empty so the band resolver
-        // treats it as unknown.
-        let mut scanner = StatusItemScanner::default();
-        let apps = [(7, ExtrasRead::Failed), (8, ExtrasRead::NoItems)];
-        assert_eq!(
-            scan_with(&mut scanner, start, false, &apps, &mut reads),
-            Some(Vec::new())
-        );
+    fn unanswered_apps_reserve_space_left_of_the_status_run() {
+        let band = bar(0.0, 2560.0);
+        let menu = [item(0.0, 300.0)];
+        let status = [item(2100.0, 460.0)];
+        let resolve = |unanswered| {
+            resolve_band_center(band, Some(&menu), Some(&status), unanswered, MARGIN, WIDTH)
+        };
+        // Plenty of room: the reserve stays clear of the centre.
+        assert_eq!(resolve(0), Some(1280.0));
+        assert_eq!(resolve(2), Some(1280.0));
+        // The reserve pushes the slot left of an otherwise free centre.
+        let shifted = resolve(6).unwrap();
+        assert!(shifted + WIDTH / 2.0 + MARGIN <= 2100.0 - 6.0 * UNANSWERED_STATUS_RESERVE);
+        // Enough unanswered applications leave no slot at all.
+        assert_eq!(resolve(14), None);
     }
 }
