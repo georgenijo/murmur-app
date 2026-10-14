@@ -36,9 +36,13 @@ profiles and every stored field retain their values across the Settings redesign
 | Inherit | Preserves the current global/profile behavior byte-for-byte. |
 | Conversational | Removes filler and repeated words, tidies capitalization, keeps wording, and disables automatic command formatting. |
 | Polished prose | Applies conversational cleanup, deterministic vocabulary correction, and explicitly cued prose structure. |
-| Code / technical | Preserves technical surface text, activates enabled developer vocabulary, enables deterministic vocabulary correction, and enables reviewed command formatting. |
+| Code / technical | Preserves technical surface text, activates enabled developer vocabulary, enables deterministic vocabulary correction, and automatically formats recognized commands while preserving ordinary prose punctuation. |
 | Verbatim | Bypasses cleanup, spoken commands, correction, prose formatting, and command formatting. |
 | Notes | Removes filler without forcing sentence capitalization, applies deterministic correction, and formats explicitly cued lists, paragraphs, lines, and symbols. |
+
+Code / technical now uses automatic command detection. Existing profiles that
+relied on forced formatting for unknown tools can select Terminal mode, set
+Commands On, or use an explicit `command` cue. Stored profile values are unchanged.
 
 These policies use only Murmur's existing reviewed local formatting APIs. They do not call a cloud service or perform open-ended rewriting. The per-profile Clean, Prose, and Commands controls apply after the preset, so users can visibly fine-tune a category. One-session overrides remain highest precedence.
 

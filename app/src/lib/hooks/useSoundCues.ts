@@ -11,9 +11,9 @@ interface SoundCueSettings {
 
 function deliveryCue(payload: unknown): SoundCue | null {
   const outcome = (payload as { outcome?: unknown } | null)?.outcome;
-  return outcome === 'clipboard_only' || outcome === 'auto_pasted'
+  return outcome === 'autoPastePosted' || outcome === 'clipboardOnly'
     ? 'success'
-    : outcome === 'unconfirmed' ? 'failure' : null;
+    : outcome === 'unconfirmed' || outcome === 'clipboardWriteFailed' ? 'failure' : null;
 }
 
 export function useSoundCues(settings: SoundCueSettings, meetingPhase: MeetingRuntimePhase): void {

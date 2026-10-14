@@ -19,13 +19,82 @@ When `auto_paste` is enabled in settings:
 3. Check `AXIsProcessTrusted()` under that ownership fence. If accessibility is not granted, write the transcript to the clipboard and stop.
 4. Verify the anchored target against the current native frontmost identity. The anchor is the sample frozen at the accepted stop transition when that sample is a complete identity, and otherwise the recording-start sample; a self-owned, incomplete, mismatched, or absent stop sample never makes delivery more permissive than the start-anchored behavior it replaces. The anchored target must be complete and external to Murmur, and the current bundle, PID, and process-instance evidence must identify that same process instance. A temporarily unavailable native lookup may be retried only within the bounded verifier; it never changes the frozen target or tries a different process.
 5. Fail closed to clipboard-only for a different application, different process, process relaunch, partial identity mismatch, unavailable/incomplete identity, or self-owned anchored target. Contradictory native PID or launch-instance evidence is terminal even when an unbundled process withholds its bundle identity; a later sample cannot erase it. Moving to a different window in the same exact process instance remains eligible. Window relation, application activation, and Space changes are diagnostic facts only and never override identity verification. Every current refusal writes the transcript before returning clipboard-only.
-6. Query the verified process's focused element role with the native macOS Accessibility API. Native AX timeout (`-25204`) remains `Unknown` without launching the compatibility query. A no-value result (`-25212`) does the same for non-Finder apps; Finder retains the bounded System Events role query so its desktop/file-view guard remains effective. Other native failures may also use that compatibility query. Skip auto-paste only when the role is on the confirmed non-editable denylist; unknown roles still allow paste.
+6. Query the verified process's focused element role with the native macOS Accessibility API. Native AX timeout (`-25204`) remains `Unknown` without launching the compatibility query. A no-value result (`-25212`) does the same for non-Finder apps; Finder retains the bounded System Events role query so its desktop/file-view guard remains effective. Other native failures may also use that compatibility query. Skip auto-paste only when the role is on the confirmed non-editable denylist and the recording's frozen delivery target is Finder, where a stray Cmd+V drops a `.textClipping`. For any other delivery target a denylisted role is treated as `Unknown`, because web-backed editors such as Meta's Muse can report roles like `AXScrollArea` for a working input. Unknown roles still allow paste.
 7. Verify the exact target again because the Accessibility query may have blocked while focus changed.
 8. Write the transcript to `NSPasteboard` and capture only its numeric `changeCount` generation. Clipboard contents are never read back.
 9. Verify the exact target a third time, then require the pasteboard generation to remain unchanged. A different generation means another app or the user changed the clipboard; return the unconfirmed `ClipboardChanged` outcome without posting a key or claiming clipboard-only success.
 10. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. There is no AppleScript paste fallback.
 11. If native event construction fails, wait 100ms, re-check the focused role, exact target, and unchanged pasteboard generation, then make one native retry only when all three remain safe.
 12. Report a typed delivery outcome: automatic paste posted, confirmed clipboard-only, clipboard write failed, or delivery unconfirmed.
+
+### Smart destination (macOS, opt-in)
+
+`smartDestinationEnabled` defaults to `false`. With it enabled and auto-paste
+eligible, Murmur tracks the last positively focused editable field through
+native Accessibility metadata. A recognized Play/Pause or media slider control
+can preserve that destination for up to 120 seconds before a recording starts.
+Once accepted, a recording keeps its verified destination through transcription
+without expiring solely because it is long. Focusing another editable
+field replaces it; unrelated or unknown focus clears it. This is not an app pin.
+
+The accepted recording freezes its destination and resolves that app's profile
+once. Changes during a recording do not silently retarget it or replace its
+profile. The recording indicator names the selected application when available.
+The main window and overlay discard indicators from stale or cancelled
+recordings, and show clipboard-only when the resolved profile disables delivery.
+
+Smart delivery requires the same process instance, window, field, document, and
+selection to remain verifiable. A retained background selection must be collapsed:
+Murmur never replaces a hidden selection. To deliver to a recent field, it
+activates that application through its Accessibility `AXFrontmost` attribute
+(without changing the field or selection), lets macOS settle between main-thread dispatches,
+rechecks recording ownership, the exact field, and clipboard generation,
+and posts native Cmd+V once. It may return focus to the media application when
+that can be done safely. There is no whole-field replacement, automatic submit,
+or fallback paste into a different field after an attempted delivery.
+
+Smart destination is additive. Whenever it does not hold a verified field, for
+example because a Chromium or Electron app does not expose its focused element,
+the start identity lookup was incomplete, Murmur itself was frontmost (such as
+right after an update relaunch), focus moved to another app or field during
+capture, the field could not be frozen, or the capture could not finish in time,
+the recording uses the
+normal auto-paste policy above (including its stop-time anchor) exactly as if
+Smart destination were off, with one addition: a field that is positively
+secure at delivery (role or subrole `AXSecureTextField`) stays clipboard-only,
+including on Paste Last. The indicator then shows "Current text field" without
+naming an app. Smart destination only adds behavior; uncertainty never makes
+ordinary dictation stricter than normal auto-paste.
+
+When a field captured in the app that was frontmost at recording start can no
+longer be re-verified at delivery (for example its text, caret, or focus changed
+while you spoke), nothing has been activated yet, so delivery uses that same
+normal policy bound to the captured app: it pastes only if that app instance is
+still frontmost, and still refuses a positively secure field. A field retained
+across a media handoff in another app never falls back this way.
+
+Only these stay clipboard-only: a secure field (the secure role is checked
+before any other fallible query), a supported media control with no retained
+field, Smart destination being turned off while the capture was pending, or a
+media-handoff destination that changed or expired before delivery. Refusal
+evidence found by a capture that then misses its deadline is still honored. Each
+delivery logs a content-free `pipeline.smart_destination_delivery` event; see the
+[event reference](../reference/events.md).
+
+Tracking is local and ephemeral. It does not capture screenshots, read input
+values or selected text, query browser URLs, or call a model/API. It reads
+Accessibility roles, static control labels, identities, numeric selection ranges,
+and character counts. Supported T3 builds may require enabling their native
+accessibility tree while the feature is on; Murmur restores a flag it changed
+when disabled or on normal exit. No destination names or field metadata are
+added to diagnostic logs.
+
+An explicit **Paste Last** in smart mode creates a fresh one-shot field check
+only after the user focuses the original destination process. It never replays
+the recording's consumed capability or pastes back into an unseen background
+field. If that fresh check cannot prove a field in the focused original process,
+the retry uses the normal auto-paste policy. A concurrent recording prevents the
+retry from changing the clipboard.
 
 ### Delay Rationale
 

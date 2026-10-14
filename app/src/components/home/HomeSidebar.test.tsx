@@ -47,13 +47,13 @@ describe('HomeSidebar tooltips', () => {
 
     const buttons = Array.from(container.querySelectorAll('nav button')) as HTMLButtonElement[];
     expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Home', 'Notetaker', 'Queries', 'Insights',
+      'Home', 'Notetaker', 'Assistant', 'Insights',
     ]);
     // Still exactly one button per destination — the tooltip trigger wraps
     // the existing button rather than introducing a duplicate nested one.
     expect(buttons).toHaveLength(4);
 
-    const queriesButton = buttons.find((button) => button.getAttribute('aria-label') === 'Queries')!;
+    const queriesButton = buttons.find((button) => button.getAttribute('aria-label') === 'Assistant')!;
     await act(async () => queriesButton.click());
     expect(onNavigate).toHaveBeenCalledWith('queries');
   });

@@ -18,6 +18,11 @@ import {
   retryLastDelivery,
   type DeliveryRetryResult,
 } from '../deliveryRecovery';
+import {
+  recordingIdFromPayload as smartDestinationRecordingIdFromPayload,
+  smartDestinationSelectionFromPayload,
+  type SmartDestinationSelection,
+} from '../smartDestination';
 
 const CANCELLED_FLASH_MS = 800;
 /** How long the secure-field refusal flash shows (issue #312 PR-C2). */
@@ -124,6 +129,10 @@ export interface OverlayRuntime {
   showClipboardOnly: boolean;
   /** Current inline delivery result, kept content-free. */
   deliveryCue: OverlayDeliveryCue | null;
+  /** Content-free target selected for the active recording generation. */
+  smartDestinationStatus: SmartDestinationSelection['status'] | null;
+  /** Validated, localized app name for the selected target, when available. */
+  smartDestinationAppName: string | null;
   /** Re-runs secure delivery without activating or focusing Murmur. */
   retryDelivery: () => void;
   /** Pauses auto-hide as soon as a pointer interaction starts. */
@@ -160,6 +169,8 @@ export function useOverlayRuntime({
   const [showMicrophoneFailure, setShowMicrophoneFailure] =
     useState<MicrophoneFailureCue | null>(null);
   const [deliveryCue, setDeliveryCue] = useState<OverlayDeliveryCue | null>(null);
+  const [smartDestinationSelection, setSmartDestinationSelection] =
+    useState<SmartDestinationSelection | null>(null);
   const disabledRef = useRef(disabled);
   const hotkeyMissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clipboardOnlyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -167,6 +178,7 @@ export function useOverlayRuntime({
   const microphoneFailureRecordingIdRef = useRef(0);
   const lastDeliveryRecordingIdRef = useRef(0);
   const latestRecordingGenerationRef = useRef(0);
+  const cancelledDestinationGenerationRef = useRef(0);
   const clipboardListenerFailedRef = useRef(false);
   const deliveryRetryInFlightRef = useRef(false);
   const deliveryRetryAttemptRef = useRef(0);
@@ -296,7 +308,16 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    listen('recording-cancelled', () => {
+    listen<unknown>('recording-cancelled', (event) => {
+      if (cancelled) return;
+      const recordingId = smartDestinationRecordingIdFromPayload(event.payload);
+      if (recordingId !== null) {
+        cancelledDestinationGenerationRef.current = Math.max(
+          cancelledDestinationGenerationRef.current,
+          recordingId,
+        );
+      }
+      setSmartDestinationSelection(null);
       if (timeoutId) clearTimeout(timeoutId);
       setShowCancelled(true);
       timeoutId = setTimeout(() => {
@@ -312,6 +333,42 @@ export function useOverlayRuntime({
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (status === 'idle') setSmartDestinationSelection(null);
+  }, [status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>('smart-destination-selected', (event) => {
+      if (cancelled || statusRef.current === 'idle') return;
+      const selection = smartDestinationSelectionFromPayload(event.payload);
+      if (
+        !selection
+        || selection.recordingId < latestRecordingGenerationRef.current
+        || selection.recordingId <= cancelledDestinationGenerationRef.current
+      ) return;
+      latestRecordingGenerationRef.current = Math.max(
+        latestRecordingGenerationRef.current,
+        selection.recordingId,
+      );
+      setSmartDestinationSelection(selection);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    }).catch((cause: unknown) => {
+      if (!cancelled) {
+        setSmartDestinationSelection(null);
+        flog.warn('overlay', 'smart-destination-selected listener unavailable', {
+          error: String(cause),
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [statusRef]);
 
   // Every terminal delivery outcome carries a monotonic recording ID. A newer
   // non-clipboard outcome clears any older cue, while duplicate/stale events
@@ -390,6 +447,7 @@ export function useOverlayRuntime({
       const recordingId = recordingIdFromPayload(event.payload);
       if (recordingId == null || recordingId <= latestRecordingGenerationRef.current) return;
       latestRecordingGenerationRef.current = recordingId;
+      setSmartDestinationSelection(null);
       if (recordingId > microphoneFailureRecordingIdRef.current) {
         if (microphoneFailureTimerRef.current) clearTimeout(microphoneFailureTimerRef.current);
         microphoneFailureTimerRef.current = null;
@@ -574,6 +632,8 @@ export function useOverlayRuntime({
     showMicrophoneFailure,
     showClipboardOnly: deliveryCue !== null,
     deliveryCue,
+    smartDestinationStatus: smartDestinationSelection?.status ?? null,
+    smartDestinationAppName: smartDestinationSelection?.appName ?? null,
     retryDelivery,
     pauseDeliveryTimer,
     resumeDeliveryTimer,

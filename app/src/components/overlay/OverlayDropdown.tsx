@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 import type { ModeRuntimeStatus } from '../../lib/hooks/useModeRuntime';
+import {
+  smartDestinationLabel,
+  type SmartDestinationStatus,
+} from '../../lib/smartDestination';
 
 function formatElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -49,10 +53,11 @@ interface OverlayDropdownProps {
   status: DictationStatus;
   stillConnecting: boolean;
   showTapMissed: boolean;
+  smartDestinationStatus?: SmartDestinationStatus | null;
+  smartDestinationAppName?: string | null;
   disabled: boolean;
   autoPaste: boolean;
   fileOutputEnabled: boolean;
-  recordingShortcutHint: string;
   mode?: ModeRuntimeStatus;
   onCycleMode?: (e: React.MouseEvent) => void;
   onToggleDisabled: (e: React.MouseEvent) => void;
@@ -62,10 +67,9 @@ interface OverlayDropdownProps {
 
 /**
  * The dropdown row revealed on hover-expand: the three quick-settings buttons
- * (centered), plus a left-anchored status slot that carries content too wide for
- * a wing — the recording `m:ss` timer (when recording) or the "Tap missed" label
- * (during a hotkey-miss flash). The slot is absolutely positioned so the buttons
- * stay centered regardless of it.
+ * (centered), plus a separate status row for content too wide for a wing.
+ * Keeping status out of the control row prevents long recovery and connection
+ * labels from covering clickable actions on narrow displays.
  */
 export function OverlayDropdown({
   geometry,
@@ -73,10 +77,11 @@ export function OverlayDropdown({
   status,
   stillConnecting,
   showTapMissed,
+  smartDestinationStatus = null,
+  smartDestinationAppName = null,
   disabled,
   autoPaste,
   fileOutputEnabled,
-  recordingShortcutHint,
   mode = { id: 'builtin.everyday', name: 'Everyday', source: 'manual' },
   onCycleMode = () => {},
   onToggleDisabled,
@@ -129,60 +134,27 @@ export function OverlayDropdown({
     : autoPastePaused
       ? 'rgba(245,158,11,0.14)'
       : 'rgba(255,255,255,0.06)';
+  const destinationLabel = (status === 'recording' || status === 'processing')
+    && smartDestinationStatus
+    ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
+    : null;
 
   return (
     <div
-      className="overlay-dropdown relative flex items-center justify-center gap-3"
+      className="overlay-dropdown flex flex-col items-center justify-center gap-1"
       role="group"
       aria-label="Quick settings"
       aria-hidden={!expanded}
       style={{
         height: geometry.dropdownH,
-        padding: '0 10px 6px',
+        padding: '4px 8px 6px',
         opacity: expanded ? 1 : 0,
         pointerEvents: expanded ? 'auto' : 'none',
         transition: 'opacity 200ms ease',
         transitionDelay: expanded ? '100ms' : '0ms',
       }}
     >
-      {/* Left status slot — content too wide for a wing renders here, below the
-          notch. Recording timer takes precedence; the "Tap missed" label shows
-          during a hotkey-miss flash. Absolutely positioned so the buttons stay
-          centered. */}
-      {(status === 'idle' || status === 'recording' || status === 'starting' || status === 'recovering' || showTapMissed) && (
-        <span
-          className="absolute left-[10px] top-0 bottom-[6px] flex max-w-[82px] items-center pointer-events-none"
-          aria-live={showTapMissed ? 'polite' : undefined}
-        >
-          {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}
-          {showTapMissed ? (
-            <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
-              Tap missed
-            </span>
-          ) : status === 'recording' ? (
-            <span className="text-white/60 tabular-nums" style={{ fontSize: 11 }}>
-              {formatElapsed(elapsed)}
-            </span>
-          ) : status === 'starting' ? (
-            <span className={stillConnecting ? 'text-amber-300 font-medium' : 'text-sky-300 font-medium'} style={{ fontSize: 11 }}>
-              {stillConnecting ? 'Still connecting' : 'Connecting'}
-            </span>
-          ) : status === 'recovering' ? (
-            <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
-              Audio recovering
-            </span>
-          ) : (
-            <span
-              className="truncate text-white/55"
-              style={{ fontSize: 10 }}
-              title={recordingShortcutHint}
-            >
-              {recordingShortcutHint}
-            </span>
-          )}
-        </span>
-      )}
-
+      <div className="flex w-full items-center justify-center gap-3" data-testid="overlay-controls-row">
       {/* Resolved Mode. The overlay window is non-activating, so cycling keeps
           keyboard focus in the user's target app. */}
       <button
@@ -231,6 +203,46 @@ export function OverlayDropdown({
       >
         <SlidersIcon stroke="rgba(255,255,255,0.85)" />
       </button>
+      </div>
+
+      {(status === 'recording' || (status === 'processing' && destinationLabel) || status === 'starting' || status === 'recovering' || showTapMissed) && (
+        <span
+          role={status === 'recording' && !showTapMissed ? undefined : 'status'}
+          aria-live={status === 'recording' && !showTapMissed ? undefined : 'polite'}
+          className="max-w-full truncate text-center leading-none pointer-events-none"
+        >
+          {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}
+          {showTapMissed ? (
+            <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
+              Tap missed
+            </span>
+          ) : status === 'recording' ? (
+            <span className="text-white/60" style={{ fontSize: 11 }}>
+              {destinationLabel ? (
+                <>
+                  <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+                  <span aria-hidden="true"> · </span>
+                  <span className="font-medium text-sky-200">{destinationLabel}</span>
+                </>
+              ) : (
+                <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+              )}
+            </span>
+          ) : status === 'processing' ? (
+            <span className="font-medium text-sky-200" style={{ fontSize: 11 }}>
+              {destinationLabel}
+            </span>
+          ) : status === 'starting' ? (
+            <span className={stillConnecting ? 'text-amber-300 font-medium' : 'text-sky-300 font-medium'} style={{ fontSize: 11 }}>
+              {stillConnecting ? 'Still connecting' : 'Connecting'}
+            </span>
+          ) : (
+            <span className="text-amber-300 font-medium" style={{ fontSize: 11 }}>
+              Audio recovering
+            </span>
+          )}
+        </span>
+      )}
     </div>
   );
 }

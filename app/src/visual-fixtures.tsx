@@ -11,6 +11,9 @@ import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
+import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
+import { QueryReviewView } from './components/query-review/QueryReviewApp';
+import './components/assistant/assistant.css';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
@@ -195,8 +198,8 @@ mockIPC((command, payload) => {
   }
   if (command === 'list_meetings') {
     return requestedState === 'meetings-empty'
-      ? { sessions: [], total: 0, offset: 0, limit: 50 }
-      : { sessions: [meetingFixture.session], total: 1, offset: 0, limit: 50 };
+      ? { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 }
+      : { sessions: [meetingFixture.session], searchMatches: {}, total: 1, offset: 0, limit: 50 };
   }
   if (command === 'get_meeting') return meetingFixture;
   if (command === 'get_meeting_audio_capture_busy') return false;
@@ -451,7 +454,7 @@ function VisualFixture() {
   const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
   const [destination, setDestination] = React.useState<MainDestination>(
-    requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
+    requestedState === 'insights' ? 'insights' : requestedState.startsWith('assistant') ? 'queries' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
   const homeNavigationRef = React.useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = React.useRef(false);
@@ -554,10 +557,26 @@ function VisualFixture() {
             ) : destination === 'queries' ? (
               <section className="main-secondary-view" aria-labelledby="queries-view-title">
                 <WorkspacePageHeader
-                  title="Queries"
+                  title="Assistant"
                   titleId="queries-view-title"
-                  description="Questions and answers retained explicitly on this Mac."
+                  description="Talk, type, and pick up where you left off."
                   back={{ label: 'Back to Home', onActivate: backToHome }}
+                />
+                <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
+                  <button type="button" aria-pressed="true">Conversations</button>
+                  <button type="button" aria-pressed="false">Previous queries</button>
+                </div>
+                <AssistantWorkspace
+                  connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
+                  conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
+                  selectedId="fixture" confirmationOutcomeUnknownActionIds={[]} messages={requestedState === 'assistant-empty' ? [] : [
+                    { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete', actions: [] },
+                    { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete', actions: [] },
+                  ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
+                  dictation={requestedState === 'assistant-listening' ? { passId: 1, text: 'What needs my attention tomorrow?', status: 'partial' } : null}
+                  onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
+                  onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}}
+                  onConfirmAction={async () => {}} onCancelAction={async () => {}} onRefreshAction={async () => {}} onSettings={() => {}}
                 />
               </section>
             ) : (
@@ -700,7 +719,20 @@ function MeetingSuggestionOverlayFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'update-flow' ? (
+    {requestedState === 'query-review' ? (
+      <div className="h-screen w-full">
+      <QueryReviewView driver={{
+        state: 'ready', errorCode: 'auto_copy_disabled', question: 'Is the living-room light on?',
+        answer: query.has('long') ? 'This is a long answer.\n\n'.repeat(80) : 'Yes—the living-room light is on.',
+        partial: '', errorDetail: null, usage: null, signInFix: null, signInStatus: null,
+        signInBusy: false, contextSummary: 'Context: T3 Code — window title · no readable selection',
+        capabilitySummary: 'Restricted · no trusted workspace · CLI inference may use network',
+        canOpenInAssistant: true, assistantBusy: false, assistantOpenError: null,
+        followUpBusy: false, followUpError: null, cancel: () => {}, copy: () => {},
+        followUp: async () => {}, signIn: async () => {}, openInAssistant: async () => {},
+      }} />
+      </div>
+    ) : requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
     ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />

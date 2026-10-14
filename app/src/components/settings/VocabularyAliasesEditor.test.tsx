@@ -2,7 +2,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VocabularyEntry } from '../../lib/settings';
+import { exportVocabularyFile } from '../../lib/vocabularyExchange';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), save: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save }));
 
 vi.mock('../../lib/dictation', () => ({
   previewVocabularyAliases: vi.fn(async (_entries, _commands, text: string) => text),
@@ -26,6 +31,9 @@ describe('VocabularyAliasesEditor', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     onChange.mockReset();
+    mocks.invoke.mockReset();
+    mocks.open.mockReset();
+    mocks.save.mockReset();
     await act(async () => root.render(
       <VocabularyAliasesEditor entries={[TAURI_ENTRY]} voiceCommands={[]} onChange={onChange} />,
     ));
@@ -72,5 +80,33 @@ describe('VocabularyAliasesEditor', () => {
     const list = container.querySelector('[aria-label="Saved spellings"]') as HTMLDivElement;
     expect(list.className).toContain('max-h-[286px]');
     expect(list.className).toContain('overflow-y-auto');
+  });
+
+  it('previews an import and applies it only after confirmation', async () => {
+    const imported: VocabularyEntry = {
+      id: 'react', written: 'React', aliases: ['ree-act'], enabled: true, scope: { kind: 'global' },
+    };
+    mocks.open.mockResolvedValue('/private/vocabulary.json');
+    mocks.invoke.mockResolvedValue(exportVocabularyFile({ vocabularyEntries: [imported], voiceCommands: [] }));
+    const importButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Import saved spellings')) as HTMLButtonElement;
+    await act(async () => importButton.click());
+    expect(mocks.invoke).toHaveBeenCalledWith('read_modes_file', { path: '/private/vocabulary.json' });
+    expect(container.textContent).toContain('1 new saved spellings');
+    expect(onChange).not.toHaveBeenCalled();
+    const confirm = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent === 'Confirm import') as HTMLButtonElement;
+    await act(async () => confirm.click());
+    expect(onChange).toHaveBeenCalledWith([TAURI_ENTRY, imported]);
+  });
+
+  it('exports all current saved spellings through the atomic text sink', async () => {
+    mocks.save.mockResolvedValue('/private/vocabulary.json');
+    await act(async () => (Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Export saved spellings')) as HTMLButtonElement).click());
+    expect(mocks.invoke).toHaveBeenCalledWith('save_text_export', {
+      path: '/private/vocabulary.json',
+      contents: exportVocabularyFile({ vocabularyEntries: [TAURI_ENTRY], voiceCommands: [] }),
+    });
   });
 });

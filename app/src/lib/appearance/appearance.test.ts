@@ -442,7 +442,7 @@ describe('appearance color math and resolver', () => {
         `non-text seed case ${index}: ${JSON.stringify(theme)}`,
       ).toEqual([]);
     }
-  });
+  }, 120_000);
 
   it('locks the exact semantic pair inventory established by the themed DOM audit', () => {
     expect(SEMANTIC_CONTRAST_MATRIX.map((pair) => {

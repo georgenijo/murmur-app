@@ -1,0 +1,81 @@
+{
+  "completed": {
+    "result": {
+      "schema_version": 1,
+      "action_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "idempotency_key": "0134120b7817cc8aa166578587dcb7853b3a9f5db0bbb24c4c2be6fe164a4f61",
+      "kind": "lights.set",
+      "actor_id": "george",
+      "connection_id": "11111111-1111-4111-8111-111111111111",
+      "conversation_id": "22222222-2222-4222-8222-222222222222",
+      "request_id": "33333333-3333-4333-8333-333333333333",
+      "targets": [{"entity_id": "light.govee_bulb_149d", "name": "Living room bulb"}],
+      "parameters": {"power": "on", "brightness_pct": 30, "rgb_color": [0, 0, 255]},
+      "created_at": "2026-09-14T04:00:00Z",
+      "expires_at": "2026-09-14T04:05:00Z",
+      "parameter_digest": "1f580306ba3580f9cd51d92439c78a6aeb81c4a23071122e817431b274cf0603",
+      "status": "completed",
+      "receipt": {"execution_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "started_at": "2026-09-14T04:00:01Z", "finished_at": "2026-09-14T04:00:03Z", "write_attempted": true},
+      "verification": {
+        "source": "home_assistant_reported",
+        "verified_at": "2026-09-14T04:00:03Z",
+        "matched": true,
+        "states": [{
+          "entity_id": "light.govee_bulb_149d",
+          "aliases": [],
+          "name": "Living room bulb",
+          "state": "on",
+          "availability": "available",
+          "observed_at": "2026-09-14T04:00:03Z",
+          "last_changed": "2026-09-14T04:00:02Z",
+          "last_updated": "2026-09-14T04:00:02Z",
+          "last_reported": "2026-09-14T04:00:02Z",
+          "freshness": {"status": "fresh", "basis": "last_reported", "age_seconds": 1.0, "stale_after_seconds": 300},
+          "capabilities": {"on_off": true, "brightness": true, "supported_color_modes": ["brightness", "rgb"]},
+          "attributes": {"brightness": 77, "color_temp_kelvin": null, "min_color_temp_kelvin": null, "max_color_temp_kelvin": null, "color_temp": null, "min_mireds": null, "max_mireds": null, "supported_features": null, "color_mode": "rgb", "hs_color": null, "xy_color": null, "rgb_color": [0, 0, 255], "rgbw_color": null, "rgbww_color": null}
+        }],
+        "message": "Home Assistant reported the requested state."
+      }
+    }
+  },
+  "proposed": {
+    "result": {
+      "schema_version": 1,
+      "action_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "idempotency_key": "0134120b7817cc8aa166578587dcb7853b3a9f5db0bbb24c4c2be6fe164a4f61",
+      "kind": "lights.set",
+      "actor_id": "george",
+      "connection_id": "11111111-1111-4111-8111-111111111111",
+      "conversation_id": "22222222-2222-4222-8222-222222222222",
+      "request_id": "33333333-3333-4333-8333-333333333333",
+      "targets": [{"entity_id": "light.govee_bulb_149d", "name": "Living room bulb"}],
+      "parameters": {"power": "on", "brightness_pct": 30, "rgb_color": [0, 0, 255]},
+      "created_at": "2026-09-14T04:00:00Z",
+      "expires_at": "2026-09-14T04:05:00Z",
+      "parameter_digest": "1f580306ba3580f9cd51d92439c78a6aeb81c4a23071122e817431b274cf0603",
+      "status": "proposed",
+      "receipt": null,
+      "verification": null
+    }
+  },
+  "uncertain": {
+    "result": {
+      "schema_version": 1,
+      "action_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "idempotency_key": "0134120b7817cc8aa166578587dcb7853b3a9f5db0bbb24c4c2be6fe164a4f61",
+      "kind": "lights.set",
+      "actor_id": "george",
+      "connection_id": "11111111-1111-4111-8111-111111111111",
+      "conversation_id": "22222222-2222-4222-8222-222222222222",
+      "request_id": "33333333-3333-4333-8333-333333333333",
+      "targets": [{"entity_id": "light.govee_bulb_149d", "name": "Living room bulb"}],
+      "parameters": {"power": "on", "brightness_pct": 30, "rgb_color": [0, 0, 255]},
+      "created_at": "2026-09-14T04:00:00Z",
+      "expires_at": "2026-09-14T04:05:00Z",
+      "parameter_digest": "1f580306ba3580f9cd51d92439c78a6aeb81c4a23071122e817431b274cf0603",
+      "status": "uncertain",
+      "receipt": {"execution_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "started_at": "2026-09-14T04:00:01Z", "finished_at": "2026-09-14T04:00:03Z", "write_attempted": true},
+      "verification": {"source": "home_assistant_reported", "verified_at": "2026-09-14T04:00:03Z", "matched": null, "states": [], "message": "Read-back failed: timeout."}
+    }
+  }
+}

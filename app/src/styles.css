@@ -82,6 +82,14 @@
   --ui-radius-inset: 0.5rem;
   --ui-control-compact: 1.75rem;   /* 28px, was 26px */
   --ui-control-standard: 2rem;     /* 32px, was 28px */
+  /* Assistant reading geometry: shared text gutter and compact composer. */
+  --ui-assistant-rail: 11rem;
+  --ui-assistant-rail-compact: 8.5rem;
+  --ui-assistant-gutter: 1.5rem;
+  --ui-assistant-gutter-compact: 1rem;
+  --ui-assistant-turn-gap: 1.75rem;
+  --ui-assistant-icon: 1rem;
+  --ui-assistant-details-width: 18rem;
 
   /* Sona-modern surface ramp: soft hairlines, layered low-alpha shadows,
      tinted surfaces, and the caps/tight/title tracking scale. Every value
@@ -1038,6 +1046,7 @@ textarea {
 .home-talk-title { display: flex; min-width: 0; align-items: center; gap: var(--ui-space-4); color: var(--murmur-on-surface); font-size: var(--ui-font-body); }
 .home-talk-title strong { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .home-talk-hint { overflow: hidden; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.home-talk-destination { color: var(--murmur-primary); font-weight: 600; }
 .home-talk-key {
   border: 1px solid var(--ui-hairline);
   border-radius: 0.3125rem;

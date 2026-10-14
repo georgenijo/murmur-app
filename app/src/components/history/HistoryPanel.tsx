@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
-import { Copy, GraduationCap, Star } from 'lucide-react';
+import { Copy, GraduationCap, Star, Trash2 } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
   entrySource,
@@ -140,6 +140,7 @@ function HistoryPanelComponent({
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
+  const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<HistoryEntry | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [dateFilter, setDateFilter] = useState<HistoryDateFilter>('all');
@@ -560,6 +561,23 @@ function HistoryPanelComponent({
                       Correct &amp; Teach
                     </SmartOverflowAction>
                   )}
+                  <SmartOverflowAction
+                    id="delete"
+                    priority="overflow"
+                    destructive
+                    icon={<Trash2 />}
+                    onSelect={() => {
+                      if (confirmDeleteEntry !== entry) {
+                        setConfirmDeleteEntry(entry);
+                        return;
+                      }
+                      onDeleteEntries([entry]);
+                      setConfirmDeleteEntry(null);
+                      showNotice('Deleted transcript.');
+                    }}
+                  >
+                    {confirmDeleteEntry === entry ? 'Confirm delete' : 'Delete'}
+                  </SmartOverflowAction>
                 </SmartOverflow>
               </div>
               {entry.derived && <span className="transcript-derived">Reformatted · {entry.derived.modeId}</span>}

@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
 import { isQueryUsage, type QueryUsage } from '../queryUsage';
 import { pollQuerySignIn } from '../queryProviders';
+import { assistantError } from '../assistant';
 import {
   isHiddenPayload,
   isQueryStatePayload,
@@ -45,6 +46,7 @@ export function useQueryReviewDriver() {
   const [state, setState] = useState<QueryReviewState>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [answer, setAnswer] = useState('');
+  const [question, setQuestion] = useState('');
   const [followUpBusy, setFollowUpBusy] = useState(false);
   const [followUpError, setFollowUpError] = useState<string | null>(null);
   const followUpAttemptRef = useRef(0);
@@ -58,6 +60,11 @@ export function useQueryReviewDriver() {
   const [signInBusy, setSignInBusy] = useState(false);
   const [contextSummary, setContextSummary] = useState<string | null>(null);
   const [capabilitySummary, setCapabilitySummary] = useState<string | null>(null);
+  const [isCustomProvider, setIsCustomProvider] = useState(false);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantOpenError, setAssistantOpenError] = useState<string | null>(null);
+  const assistantAttemptRef = useRef(0);
+  const assistantPendingRef = useRef(false);
   const passIdRef = useRef<number | null>(null);
   const stateRef = useRef<QueryReviewState>('idle');
   const nextSequenceRef = useRef(0);
@@ -90,7 +97,9 @@ export function useQueryReviewDriver() {
           && contextRefreshTicketRef.current === ticket
         ) {
           setContextSummary(typeof content.contextSummary === 'string' ? content.contextSummary : null);
+          setQuestion(typeof content.question === 'string' ? content.question : '');
           setCapabilitySummary(typeof content.capabilitySummary === 'string' ? content.capabilitySummary : null);
+          setIsCustomProvider(content.provider === 'custom');
         }
       } catch {
         flog.warn('query-review', 'could not refresh query context');
@@ -110,6 +119,7 @@ export function useQueryReviewDriver() {
           && typeof content.answer === 'string'
         ) {
           setAnswer(content.answer);
+          setIsCustomProvider(content.provider === 'custom');
           setErrorDetail(typeof content.errorDetail === 'string' ? content.errorDetail : null);
           setUsage(isQueryUsage(content.usage) ? content.usage : null);
           setSignInFix(typeof content.signInFix === 'string' ? content.signInFix : null);
@@ -135,6 +145,11 @@ export function useQueryReviewDriver() {
           terminalPassIdRef.current = null;
           terminalAnswerSnapshotRef.current = false;
           setAnswer('');
+          setQuestion('');
+          assistantAttemptRef.current += 1;
+          assistantPendingRef.current = false;
+          setAssistantBusy(false);
+          setIsCustomProvider(false); setAssistantOpenError(null);
           followUpAttemptRef.current += 1;
           followUpSourceRef.current = null;
           followUpPendingRef.current = false;
@@ -247,6 +262,12 @@ export function useQueryReviewDriver() {
         setFollowUpError(null);
         setErrorCode(null);
         setAnswer('');
+        setQuestion('');
+        setIsCustomProvider(false);
+        setAssistantOpenError(null);
+        assistantAttemptRef.current += 1;
+        assistantPendingRef.current = false;
+        setAssistantBusy(false);
         setPartial('');
         setErrorDetail(null);
         setUsage(null);
@@ -274,6 +295,7 @@ export function useQueryReviewDriver() {
     void setup();
     return () => {
       disposed = true;
+      assistantAttemptRef.current += 1;
       signInAttemptRef.current += 1;
       copyAttemptRef.current += 1;
       unlistenState?.();
@@ -365,10 +387,30 @@ export function useQueryReviewDriver() {
     }
   }, [errorCode]);
 
+  const openInAssistant = useCallback(async () => {
+    const pass = passIdRef.current;
+    if (!pass || stateRef.current !== 'ready' || assistantPendingRef.current) return;
+    const attempt = ++assistantAttemptRef.current;
+    const ownsAttempt = () => assistantAttemptRef.current === attempt && passIdRef.current === pass;
+    assistantPendingRef.current = true;
+    setAssistantBusy(true); setAssistantOpenError(null);
+    try { await invoke('open_query_in_assistant', { queryPassId: pass, consent: true }); }
+    catch (error) {
+      if (ownsAttempt()) {
+        assistantPendingRef.current = false;
+        setAssistantBusy(false);
+        setAssistantOpenError(assistantError(error));
+      }
+    }
+    // Keep successful handoffs latched until hide/new-pass, so a second click
+    // cannot import the same exchange while the native window is closing.
+  }, []);
+
   return {
     state,
     errorCode,
     answer,
+    question,
     partial,
     errorDetail,
     usage,
@@ -377,6 +419,10 @@ export function useQueryReviewDriver() {
     signInBusy,
     contextSummary,
     capabilitySummary,
+    canOpenInAssistant: isCustomProvider && state === 'ready',
+    openInAssistant,
+    assistantBusy,
+    assistantOpenError,
     followUp,
     followUpBusy,
     followUpError,

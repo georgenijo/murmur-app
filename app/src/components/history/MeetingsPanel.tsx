@@ -1,3 +1,4 @@
+import { MEETING_SEARCH_FIELD_LABELS } from '../../lib/meetings';
 import { useEffect, useRef, useState } from 'react';
 import { echoCancellationNotice, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
@@ -186,7 +187,9 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
             {meetings.loading && <p className="p-3 text-xs text-on-surface-variant">Loading meetings…</p>}
             {!meetings.loading && meetings.page.sessions.length === 0 && (
               <p className="p-3 text-xs leading-relaxed text-on-surface-variant">
-                No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers.
+                {meetings.appliedQuery
+                  ? 'No meetings match this search. Try another word or clear the search.'
+                  : 'No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers.'}
               </p>
             )}
             {meetings.page.sessions.map((session) => (
@@ -207,6 +210,11 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                   </span>
                   <span className="text-[10px] capitalize text-on-surface-variant">{session.status}</span>
                 </div>
+                {meetings.page.searchMatches[session.id]?.length > 0 && (
+                  <p className="mt-1 text-[11px] leading-relaxed text-primary">
+                    Matches: {meetings.page.searchMatches[session.id].map((field) => MEETING_SEARCH_FIELD_LABELS[field]).join(', ')}
+                  </p>
+                )}
                 {session.title && <p className="mt-1 text-xs text-on-surface-variant">{new Date(session.startedAtMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</p>}
                 <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-on-surface-variant">
                   {session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}

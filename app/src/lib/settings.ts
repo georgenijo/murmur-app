@@ -172,9 +172,9 @@ export interface VocabularyEntry {
   scope: VocabularyScope;
 }
 
-const MAX_VOCABULARY_ENTRIES = 500;
-const MAX_VOCABULARY_ALIASES = 16;
-const MAX_VOCABULARY_VALUE_CHARS = 256;
+export const MAX_VOCABULARY_ENTRIES = 500;
+export const MAX_VOCABULARY_ALIASES = 16;
+export const MAX_VOCABULARY_VALUE_CHARS = 256;
 
 function truncateVocabularyValue(value: string): string {
   return Array.from(value).slice(0, MAX_VOCABULARY_VALUE_CHARS).join('');
@@ -312,6 +312,8 @@ export interface Settings {
   retainQueryHistory: boolean;
   language: string;
   autoPaste: boolean;
+  /** Keep delivery associated with the recent text field across supported media controls. */
+  smartDestinationEnabled: boolean;
   autoPasteDelayMs: number;
   /** Global Paste Last chord. `null` disables it. */
   pasteLastShortcut: PasteLastShortcut | null;
@@ -608,6 +610,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
   autoPaste: false,
+  // Opt-in: destination continuity relies on native observation and must never
+  // be enabled implicitly for existing installs or malformed settings blobs.
+  smartDestinationEnabled: false,
   // Native CGEvents can paste immediately in the common case. Apps that move
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
@@ -672,7 +677,7 @@ export const STORAGE_KEY = 'dictation-settings';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
-const SETTINGS_VERSION = 5;
+const SETTINGS_VERSION = 6;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
 const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
 const MAX_SMART_AUTO_DEVICES = 32;
@@ -1024,6 +1029,11 @@ export function loadSettings(): Settings {
         parsed.autoPasteDelayMs = DEFAULT_SETTINGS.autoPasteDelayMs;
       } else {
         parsed.autoPasteDelayMs = Math.max(0, Math.min(500, Math.trunc(parsed.autoPasteDelayMs)));
+      }
+      // Smart destination is an explicit opt-in. Missing or malformed values
+      // fail closed rather than enabling native destination observation.
+      if (typeof parsed.smartDestinationEnabled !== 'boolean') {
+        parsed.smartDestinationEnabled = DEFAULT_SETTINGS.smartDestinationEnabled;
       }
       // v4 replaces the opt-in boolean with an explicit, allow-listed chord.
       // Preserve the old working ⌘⇧V binding for enabled upgrades. Any

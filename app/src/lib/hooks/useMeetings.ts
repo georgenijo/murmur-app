@@ -38,7 +38,7 @@ import {
   type SystemAudioPermissionState,
 } from '../meetings';
 
-const EMPTY_PAGE: MeetingPage = { sessions: [], total: 0, offset: 0, limit: 50 };
+const EMPTY_PAGE: MeetingPage = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
 const MAX_LIVE_SEGMENTS = 200;
 
 export function useMeetings(settings: Settings) {
@@ -52,23 +52,34 @@ export function useMeetings(settings: Settings) {
   const [error, setError] = useState<string | null>(null);
   const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
+  const [appliedQuery, setAppliedQuery] = useState('');
+  const searchTicketRef = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
   const selectionTicketRef = useRef(0);
+  const detailRequestTicketRef = useRef(0);
+  const runtimeStatusRef = useRef<MeetingRuntimeStatus>(IDLE_MEETING_STATUS);
+  const terminalReceiptRef = useRef<string | null>(null);
 
   const refresh = useCallback(async (query = queryRef.current) => {
     queryRef.current = query;
+    const ticket = ++searchTicketRef.current;
+    setLoading(true);
     try {
-      setPage(await listMeetings(query));
+      const next = await listMeetings(query);
+      if (ticket !== searchTicketRef.current) return;
+      setPage(next);
+      setAppliedQuery(query.trim());
       setError(null);
     } catch (cause) {
-      setError(String(cause));
+      if (ticket === searchTicketRef.current) setError(String(cause));
     } finally {
-      setLoading(false);
+      if (ticket === searchTicketRef.current) setLoading(false);
     }
   }, []);
 
   const select = useCallback(async (id: string | null) => {
     const ticket = ++selectionTicketRef.current;
+    const requestTicket = ++detailRequestTicketRef.current;
     selectedIdRef.current = id;
     if (!id) {
       setDetail(null);
@@ -76,18 +87,50 @@ export function useMeetings(settings: Settings) {
     }
     try {
       const next = await getMeeting(id);
-      if (ticket !== selectionTicketRef.current || selectedIdRef.current !== id) return;
+      if (ticket !== selectionTicketRef.current || requestTicket !== detailRequestTicketRef.current || selectedIdRef.current !== id) return;
       setDetail(next);
       setError(null);
     } catch (cause) {
-      if (ticket !== selectionTicketRef.current || selectedIdRef.current !== id) return;
+      if (ticket !== selectionTicketRef.current || requestTicket !== detailRequestTicketRef.current || selectedIdRef.current !== id) return;
       setError(String(cause));
     }
   }, []);
 
+  const refreshFinalizedDetail = useCallback(async (id: string, generation: number) => {
+    const ticket = ++detailRequestTicketRef.current;
+    const isCurrent = () => ticket === detailRequestTicketRef.current
+      && selectedIdRef.current === id && runtimeStatusRef.current.generation === generation;
+    try {
+      const next = await getMeeting(id);
+      if (!isCurrent()) return;
+      // Capture completion must not replace review revisions/labels and reset
+      // the workspace's unsaved editor, or undo concurrently saved metadata.
+      setDetail((current) => current?.session.id === id ? {
+        ...current,
+        session: {
+          ...current.session,
+          status: next.session.status,
+          endedAtMs: next.session.endedAtMs,
+          durationMs: next.session.durationMs,
+          segmentCount: next.session.segmentCount,
+          preview: next.session.preview,
+          errorCode: next.session.errorCode,
+        },
+        segments: next.segments,
+      } : next);
+    } catch (cause) {
+      if (isCurrent()) setError(String(cause));
+    }
+  }, []);
+
   useEffect(() => {
+    const initialStatus = runtimeStatusRef.current;
     void Promise.all([
-      getMeetingStatus().then(setStatus),
+      getMeetingStatus().then((next) => {
+        if (runtimeStatusRef.current !== initialStatus) return;
+        runtimeStatusRef.current = next;
+        setStatus(next);
+      }),
       getMeetingSummaryStatus().then(setSummaryStatus),
       getSystemAudioPermissionStatus().then(setPermission),
       refresh(),
@@ -100,11 +143,25 @@ export function useMeetings(settings: Settings) {
     const unlisteners: Array<() => void> = [];
     Promise.all([
       listen<MeetingRuntimeStatus>('meeting-status-changed', (event) => {
+        const previous = runtimeStatusRef.current;
+        if (event.payload.generation < previous.generation) return;
+        runtimeStatusRef.current = event.payload;
         setStatus(event.payload);
         if (event.payload.systemAudioActive) setPermission('granted');
         if (event.payload.errorCode === 'system_audio_permission_denied') setPermission('denied');
         if (event.payload.errorCode === 'unsupported_os') setPermission('unsupported');
-        if (event.payload.phase === 'idle' || event.payload.phase === 'failed') void refresh();
+        if (event.payload.phase === 'idle' || event.payload.phase === 'failed') {
+          void refresh();
+          // Successful idle drops sessionId; only the same generation's last
+          // runtime status identifies the session that actually just finished.
+          const id = event.payload.sessionId
+            ?? (event.payload.generation === previous.generation ? previous.sessionId : null);
+          const receipt = id ? `${event.payload.generation}:${id}` : null;
+          if (id && receipt !== terminalReceiptRef.current) {
+            terminalReceiptRef.current = receipt;
+            if (selectedIdRef.current === id) void refreshFinalizedDetail(id, event.payload.generation);
+          }
+        }
       }),
       listen<MeetingSegment>('meeting-segment-finalized', (event) => {
         setLiveSegments((current) => orderedMeetingSegments([...current, event.payload], MAX_LIVE_SEGMENTS));
@@ -126,8 +183,9 @@ export function useMeetings(settings: Settings) {
       ),
       listen<MeetingSummaryStatus>('meeting-summary-status-changed', (event) => {
         setSummaryStatus(event.payload);
-        if (event.payload.phase === 'complete' && selectedIdRef.current === event.payload.sessionId) {
-          void select(event.payload.sessionId);
+        if (event.payload.phase === 'complete') {
+          void refresh();
+          if (selectedIdRef.current === event.payload.sessionId) void select(event.payload.sessionId);
         }
       }),
       listen<{ sessionId: string }>('meeting-speakers-updated', (event) => {
@@ -143,9 +201,10 @@ export function useMeetings(settings: Settings) {
     });
     return () => {
       disposed = true;
+      ++detailRequestTicketRef.current;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [refresh, select]);
+  }, [refresh, refreshFinalizedDetail, select]);
 
   useEffect(() => {
     if (!['starting', 'recording', 'stopping', 'processing'].includes(status.phase)) return;
@@ -283,12 +342,13 @@ export function useMeetings(settings: Settings) {
     try {
       const next = await saveMeetingReview(request);
       if (selectedIdRef.current === request.sessionId) setDetail(next);
+      await refresh();
       return true;
     } catch (cause) {
       setError(String(cause));
       return false;
     }
-  }, []);
+  }, [refresh]);
 
   const saveMetadata = useCallback(async (request: SaveMeetingMetadataRequest) => {
     const ticket = selectionTicketRef.current;
@@ -337,12 +397,13 @@ export function useMeetings(settings: Settings) {
         expectedReviewRevision,
       );
       if (selectedIdRef.current === sessionId) setDetail(next);
+      await refresh();
       return true;
     } catch (cause) {
       setError(String(cause));
       return false;
     }
-  }, []);
+  }, [refresh]);
 
   const renameRemoteSpeaker = useCallback(async (
     sessionId: string,
@@ -397,7 +458,7 @@ export function useMeetings(settings: Settings) {
     status,
     permission,
     access,
-    page,
+    page, appliedQuery,
     detail,
     liveSegments,
     loading,

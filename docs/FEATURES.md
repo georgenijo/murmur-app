@@ -87,7 +87,8 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 **[docs/features/text-injection.md](features/text-injection.md)**
 
 - **Clipboard-first, always.** Auto-paste is layered on top and never the only path.
-- Native `CGEvent` Cmd+V with an `osascript` fallback; configurable 10–500ms delay; one retry; timeout-bounded.
+- Native `CGEvent` Cmd+V with a configurable 0–500ms delay and bounded target checks.
+- **Smart destination** — opt-in on macOS: retain a recent verified text field across supported media controls, show the destination app, and keep uncertain deliveries on the clipboard. Delivery may briefly activate the destination; it never submits text.
 - Auto-paste failure emits a hint with an inline **Try again** action in the
   non-activating overlay and main window. Every retry reports whether text was
   pasted, copied only, unavailable, busy, or failed without exposing content.
@@ -347,7 +348,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 218 registered commands |
+| Rust backend | `app/src-tauri/src/` — 233 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

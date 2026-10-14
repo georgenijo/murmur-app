@@ -44,6 +44,7 @@ export function InsightsView({ statsVersion, modes = [], onBackToHome }: Insight
           { id: 'transforms', label: 'Transforms this month', value: activity.month.runs.toLocaleString(), detail: `${activity.approvalRate}% approved` },
           { id: 'most-used-transform', label: 'Most-used transform', value: activity.mostUsedTransformName ?? 'None yet', detail: `${activity.mostUsedTransformRuns.toLocaleString()} runs` },
           { id: 'corrections', label: 'Corrections taught', value: stats.activity.corrections.taught.toLocaleString(), detail: `${stats.activity.corrections.proposed.toLocaleString()} proposed` },
+          { id: 'paste-last', label: 'Paste Last', value: stats.activity.pasteLastUses.toLocaleString(), detail: 'successful uses' },
         ]}
       />
 

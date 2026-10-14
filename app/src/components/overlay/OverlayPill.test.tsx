@@ -10,13 +10,14 @@ import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 const geometry: OverlayGeometry = {
   windowW: 257,
   collapsedH: 32,
-  expandedH: 76,
+  expandedH: 96,
   pillIdleW: 221,
   pillActiveW: 257,
   pillMarginIdle: 0,
   pillMarginActive: 0,
-  dropdownH: 44,
+  dropdownH: 64,
   wingW: 36,
+  floating: false,
 };
 
 function CuePill({

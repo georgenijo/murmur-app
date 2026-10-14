@@ -14,6 +14,7 @@ import {
   autoPasteDeliveryDescription,
   effectiveAutoPaste,
   fileOutputDeliveryDescription,
+  isMacOSSettingsPlatform,
   resolvePage,
 } from './SettingsPanel';
 
@@ -208,7 +209,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('opens on a single customization hub before the direct settings destinations', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'Customize', 'Modes', 'General', 'Recording', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Appearance',
+      'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Modes', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
@@ -1029,6 +1030,76 @@ describe('SettingsPanel information architecture', () => {
     onUpdateSettings.mockClear();
     await act(async () => autoPasteSwitch.click());
     expect(onUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  it('shows Smart destination only on macOS and preserves an enabled preference while unavailable', async () => {
+    const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    try {
+      Object.defineProperty(navigator, 'userAgent', {
+        configurable: true,
+        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15',
+      });
+      expect(isMacOSSettingsPlatform()).toBe(true);
+
+      await act(async () => renderPanel(true, {
+        ...DEFAULT_SETTINGS,
+        autoPaste: true,
+        smartDestinationEnabled: true,
+        saveTranscript: true,
+      }));
+      const delivery = Array.from(container.querySelectorAll('nav button')).find(
+        (button) => button.textContent === 'Delivery',
+      ) as HTMLButtonElement;
+      await act(async () => delivery.click());
+
+      let smartDestination = container.querySelector(
+        '[role="switch"][aria-label="Smart destination"]',
+      ) as HTMLElement;
+      expect(smartDestination).toBeTruthy();
+      expect(smartDestination.getAttribute('aria-checked')).toBe('true');
+      expect(smartDestination.hasAttribute('data-disabled')).toBe(true);
+      expect(container.textContent).toContain(
+        'Keep dictation with your recent text field while using supported media controls. Delivery may briefly switch to that app. Otherwise, dictation pastes normally.',
+      );
+      onUpdateSettings.mockClear();
+      await act(async () => smartDestination.click());
+      expect(onUpdateSettings).not.toHaveBeenCalled();
+
+      await act(async () => renderPanel(true, {
+        ...DEFAULT_SETTINGS,
+        autoPaste: true,
+        smartDestinationEnabled: true,
+      }));
+      smartDestination = container.querySelector(
+        '[role="switch"][aria-label="Smart destination"]',
+      ) as HTMLElement;
+      expect(smartDestination.hasAttribute('data-disabled')).toBe(false);
+      await act(async () => smartDestination.click());
+      expect(onUpdateSettings).toHaveBeenCalledWith({ smartDestinationEnabled: false });
+
+      Object.defineProperty(navigator, 'userAgent', {
+        configurable: true,
+        value: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+      });
+      expect(isMacOSSettingsPlatform()).toBe(false);
+      await act(async () => renderPanel(true, {
+        ...DEFAULT_SETTINGS,
+        autoPaste: true,
+        smartDestinationEnabled: true,
+      }));
+      expect(container.querySelector('[aria-label="Smart destination"]')).toBeNull();
+
+      const search = container.querySelector('input[type="search"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      await act(async () => {
+        setter.call(search, 'smart destination');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(container.textContent).toContain('No settings match “smart destination”.');
+    } finally {
+      if (ownUserAgent) Object.defineProperty(navigator, 'userAgent', ownUserAgent);
+      else Reflect.deleteProperty(navigator, 'userAgent');
+    }
   });
 
   it('reveals dependent controls directly beneath their owning switch', async () => {

@@ -261,6 +261,8 @@ pub struct DictationState {
     pub model_name: String,
     pub language: String,
     pub auto_paste: bool,
+    #[serde(default)]
+    pub smart_destination_enabled: bool,
     pub auto_paste_delay_ms: u64,
     pub vad_sensitivity: u32,
     pub custom_vocabulary: String,
@@ -345,6 +347,7 @@ impl Default for DictationState {
             // configure_dictation; this is only the pre-configure fallback.
             language: "auto".to_string(),
             auto_paste: false,
+            smart_destination_enabled: false,
             auto_paste_delay_ms: 0,
             vad_sensitivity: 50,
             custom_vocabulary: String::new(),
@@ -752,6 +755,27 @@ mod tests {
         assert_eq!(DictationState::default().auto_paste_delay_ms, 0);
     }
 
+    #[test]
+    fn smart_destination_is_opt_in_across_persisted_state_migration() {
+        let mut stored = serde_json::to_value(DictationState::default()).expect("serialize state");
+        stored
+            .as_object_mut()
+            .expect("dictation state object")
+            .remove("smart_destination_enabled");
+        let migrated: DictationState =
+            serde_json::from_value(stored).expect("deserialize pre-feature state");
+        assert!(!migrated.smart_destination_enabled);
+
+        let enabled = DictationState {
+            smart_destination_enabled: true,
+            ..DictationState::default()
+        };
+        let round_trip: DictationState =
+            serde_json::from_value(serde_json::to_value(enabled).expect("serialize enabled state"))
+                .expect("deserialize enabled state");
+        assert!(round_trip.smart_destination_enabled);
+    }
+
     fn snapshot(model_name: &str) -> Arc<crate::dictation_context::DictationContextSnapshot> {
         let settings = DictationState {
             model_name: model_name.to_string(),
@@ -811,6 +835,48 @@ mod tests {
             state.active_context(1).unwrap().transcription.model_name,
             "base.en"
         );
+    }
+
+    #[test]
+    fn active_context_keeps_accepted_smart_destination_after_settings_change() {
+        use crate::frontmost::{
+            AppTransitionSnapshot, DeliveryTargetIdentity, DeliveryTargetSnapshot,
+            ProcessInstanceToken,
+        };
+
+        let target = DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+            bundle_id: "com.example.Editor".into(),
+            process_id: 42,
+            process_instance: ProcessInstanceToken::for_test(7),
+            window_token: None,
+            transitions: AppTransitionSnapshot {
+                activation_generation: 0,
+                space_generation: 0,
+            },
+        });
+        let mut accepted = snapshot("base.en");
+        Arc::make_mut(&mut accepted).app.smart_destination =
+            crate::smart_destination::Snapshot::Target {
+                token: 11,
+                revision: 3,
+                identity: target,
+                current_app: true,
+            };
+
+        let state = AppState::default();
+        state.dictation.lock_or_recover().smart_destination_enabled = true;
+        state.set_active_context(7, accepted);
+        state.dictation.lock_or_recover().smart_destination_enabled = false;
+
+        let active = state.active_context(7).expect("accepted context");
+        assert!(matches!(
+            &active.app.smart_destination,
+            crate::smart_destination::Snapshot::Target {
+                token: 11,
+                revision: 3,
+                ..
+            }
+        ));
     }
 
     #[test]

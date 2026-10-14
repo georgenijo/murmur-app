@@ -19,6 +19,8 @@ import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { MainHeader } from './components/MainHeader';
 import { MeetingsPanel, QueryHistoryPanel } from './components/history';
+import { AssistantPage } from './components/assistant/AssistantPage';
+import { isConversationId } from './lib/assistant';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
@@ -145,6 +147,8 @@ function App() {
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(settings);
   const [mainDestination, setMainDestination] = useState<MainDestination>('home');
+  const [assistantTab, setAssistantTab] = useState<'chat' | 'history'>('chat');
+  const [requestedAssistantId, setRequestedAssistantId] = useState<string | null>(null);
   const homeNavigationRef = useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = useRef(false);
   const queryHistorySurfaceActive = isQueryHistorySurfaceActive({
@@ -153,7 +157,17 @@ function App() {
     onboardingState,
     modelReady,
   });
-  const queryHistory = useQueryHistory(queryHistorySurfaceActive);
+  const queryHistory = useQueryHistory(queryHistorySurfaceActive && assistantTab === 'history');
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen<{ conversationId: string }>('assistant-open-conversation', ({ payload }) => {
+      if (disposed || !isConversationId(payload?.conversationId)) return;
+      setRequestedAssistantId(payload.conversationId);
+      setAssistantTab('chat'); setMainDestination('queries'); setIsSettingsOpen(false);
+    }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, []);
 
   // First-launch gate: is the currently-selected model present? Checked once on
   // mount (not reactively) so changing models in Settings uses the inline
@@ -279,6 +293,7 @@ function App() {
     canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
+    smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
     addEntry,
     microphone: settings.microphone,
@@ -697,7 +712,14 @@ function App() {
         title: 'Show Voice Query history',
         section: 'Navigation',
         keywords: ['questions', 'answers', 'agent', 'queries'],
-        run: () => { closeSettings('programmatic'); setMainDestination('queries'); },
+        run: () => { closeSettings('programmatic'); setAssistantTab('history'); setMainDestination('queries'); },
+      },
+      {
+        id: 'show-assistant',
+        title: 'Open Assistant',
+        section: 'Navigation',
+        keywords: ['pi', 'chat', 'conversation', 'voice'],
+        run: () => { closeSettings('programmatic'); setAssistantTab('chat'); setMainDestination('queries'); },
       },
       {
         id: 'settings-shortcuts',
@@ -903,6 +925,8 @@ function App() {
                   initialized={initialized}
                   recordingDuration={recordingDuration}
                   audioLevel={audioLevel}
+                  smartDestinationStatus={smartDestinationStatus}
+                  smartDestinationAppName={smartDestinationAppName}
                   settings={settings}
                   meetings={meetings}
                   statsVersion={combinedStatsVersion}
@@ -928,13 +952,23 @@ function App() {
               ) : mainDestination === 'queries' ? (
                 <section className="main-secondary-view" aria-labelledby="queries-view-title">
                   <WorkspacePageHeader
-                    title="Queries"
+                    title="Assistant"
                     titleId="queries-view-title"
-                    description="Questions and answers retained explicitly on this Mac."
+                    description="Talk, type, and pick up where you left off."
                     back={{ label: 'Back to Home', onActivate: backToHome }}
                   />
-                  {queryHistorySurfaceActive && (
-                    <QueryHistoryPanel history={queryHistory} retentionEnabled={settings.retainQueryHistory} />
+                  <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
+                    <button type="button" aria-pressed={assistantTab === 'chat'} onClick={() => setAssistantTab('chat')}>Conversations</button>
+                    <button type="button" aria-pressed={assistantTab === 'history'} onClick={() => setAssistantTab('history')}>Previous queries</button>
+                  </div>
+                  {queryHistorySurfaceActive && (assistantTab === 'history'
+                    ? <QueryHistoryPanel history={queryHistory} retentionEnabled={settings.retainQueryHistory} />
+                    : <AssistantPage
+                      command={{ provider: settings.queryProvider, executable: settings.queryExecutable, arguments: settings.queryArguments, timeoutSeconds: settings.queryTimeoutSeconds, contextLevel: 'none', retainQueryHistory: false }}
+                      deviceName={microphoneDeviceNameArg(settings.microphone)} smartAuto={smartAutoMicrophoneRequest(settings)}
+                      voiceAvailable={initialized && modelReady === true && status === 'idle'} requestedId={requestedAssistantId}
+                      onSettings={() => openSettingsPage('voice-query')}
+                    />
                   )}
                 </section>
               ) : (

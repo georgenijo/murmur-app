@@ -112,6 +112,7 @@ describe('loadSettings', () => {
       transformHoldKey: 'alt_r' as const,
       language: 'es',
       autoPaste: true,
+      smartDestinationEnabled: true,
       autoPasteDelayMs: 230,
       recordingMode: 'both' as const,
       hotkeyMissFeedback: true,
@@ -265,6 +266,34 @@ describe('loadSettings', () => {
     expect(settings.autoPaste).toBe(true);
   });
 
+  it('migrates Smart destination as an explicit opt-in and rejects corrupt values', () => {
+    const legacy = { ...DEFAULT_SETTINGS, settingsVersion: 5 } as Record<string, unknown>;
+    delete legacy.smartDestinationEnabled;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
+
+    expect(loadSettings().smartDestinationEnabled).toBe(false);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
+      smartDestinationEnabled: false,
+      settingsVersion: 6,
+    });
+
+    for (const corrupt of [null, 'true', 1, {}]) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        settingsVersion: 6,
+        smartDestinationEnabled: corrupt,
+      }));
+      expect(loadSettings().smartDestinationEnabled).toBe(false);
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS,
+      settingsVersion: 6,
+      smartDestinationEnabled: true,
+    }));
+    expect(loadSettings().smartDestinationEnabled).toBe(true);
+  });
+
   it('allows zero-delay paste and bounds malformed persisted delays', () => {
     for (const [stored, expected] of [
       [0, 0],
@@ -384,7 +413,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 5,
+      settingsVersion: 6,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -410,7 +439,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 5,
+      settingsVersion: 6,
     });
   });
 
@@ -426,7 +455,7 @@ describe('loadSettings', () => {
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       overlayVerticalOffset: 0,
-      settingsVersion: 5,
+      settingsVersion: 6,
     });
   });
 
@@ -1174,7 +1203,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 5 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 6 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 

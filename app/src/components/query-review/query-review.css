@@ -1,0 +1,33 @@
+.query-review-surface { display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-popover); background: var(--murmur-surface-container-lowest); color: var(--murmur-on-surface); font-size: var(--ui-font-body); user-select: none; }
+.query-review-header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: var(--ui-space-4); padding: var(--ui-space-6) var(--ui-dashboard-inset); }
+.query-review-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4); min-width: 0; }
+.query-review-title { font-size: var(--ui-font-label); font-weight: 600; }
+.query-review-status { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); }
+.query-review-dot { width: var(--ui-space-3); height: var(--ui-space-3); border-radius: var(--ui-radius-pill); background: var(--murmur-primary); }
+.query-review-surface[data-state="failed"] .query-review-dot { background: var(--murmur-error); }
+.query-review-surface svg { width: var(--ui-assistant-icon); height: var(--ui-assistant-icon); flex-shrink: 0; }
+.query-review-content { min-height: 0; flex: 1; overflow-y: auto; padding: var(--ui-space-4) var(--ui-dashboard-inset) var(--ui-space-6); overflow-wrap: anywhere; scrollbar-gutter: stable; }
+.query-review-message { margin-bottom: var(--ui-dashboard-inset); user-select: text; }
+.query-review-message h2 { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); font-weight: 600; margin-bottom: var(--ui-space-4); }
+.query-review-message[data-speaker="assistant"] > h2 { color: var(--murmur-primary); }
+.query-review-plain { white-space: pre-wrap; line-height: 1.6; user-select: text; }
+.query-review-markdown { line-height: 1.6; }
+.query-review-markdown p + p, .query-review-markdown ul, .query-review-markdown ol, .query-review-markdown pre { margin-top: var(--ui-space-6); }
+.query-review-markdown h1, .query-review-markdown h2, .query-review-markdown h3 { color: var(--murmur-on-surface); font-size: var(--ui-font-body); font-weight: 600; margin-block: var(--ui-space-6) var(--ui-space-4); }
+.query-review-markdown > :first-child { margin-top: 0; }
+.query-review-markdown ul, .query-review-markdown ol { padding-left: var(--ui-dashboard-inset); }
+.query-review-markdown ul { list-style: disc; }
+.query-review-markdown ol { list-style: decimal; }
+.query-review-markdown a { color: var(--murmur-primary); text-decoration: underline; }
+.query-review-markdown pre, .query-review-provider-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--ui-font-caption); border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-inset); padding: var(--ui-space-6); }
+.query-review-markdown blockquote { border-left: 2px solid var(--ui-hairline); padding-left: var(--ui-space-6); }
+.query-review-markdown table { display: block; overflow-x: auto; }
+.query-review-markdown td, .query-review-markdown th { padding-right: var(--ui-space-6); }
+.query-review-notice { color: var(--murmur-warning); font-size: var(--ui-font-caption); margin-block: var(--ui-space-4); }
+.query-review-hint, .query-review-details, .query-review-provider-detail { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: 1.6; }
+.query-review-details summary, .query-review-provider-detail summary { cursor: pointer; width: fit-content; border-radius: var(--ui-radius-inset); }
+.query-review-details p { margin-top: var(--ui-space-4); user-select: text; }
+.query-review-footer { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: var(--ui-space-4); border-top: 1px solid var(--ui-hairline); padding: var(--ui-space-6) var(--ui-dashboard-inset); }
+.query-review-actions { display: flex; flex-wrap: wrap; gap: var(--ui-space-4); min-width: 0; }
+.query-review-surface :focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.query-review-surface button:disabled { opacity: .5; cursor: default; }

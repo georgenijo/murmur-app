@@ -661,6 +661,61 @@ pub(crate) fn resolve_live_context(
     }
 }
 
+/// Routing state selected once for an accepted recording generation.
+///
+/// A smart destination may point at a different application than the one that
+/// is temporarily frontmost (for example, an editor retained across a media
+/// interaction). In that case browser-site context from the temporary app must
+/// not leak into the intended destination's profile resolution.
+struct RecordingDestination<'a> {
+    target: crate::frontmost::DeliveryTargetSnapshot,
+    site_identity: Option<&'a crate::browser_site::BrowserSiteIdentity>,
+    smart_destination: crate::smart_destination::Snapshot,
+}
+
+fn select_recording_destination<'a>(
+    accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
+    accepted_site_identity: Option<&'a crate::browser_site::BrowserSiteIdentity>,
+    smart_destination: crate::smart_destination::Snapshot,
+) -> RecordingDestination<'a> {
+    let Some(intended_target) = smart_destination.identity() else {
+        return RecordingDestination {
+            target: accepted_target.clone(),
+            site_identity: accepted_site_identity,
+            smart_destination,
+        };
+    };
+    let same_app = crate::frontmost::profile_identity_from_delivery_target(intended_target)
+        == crate::frontmost::profile_identity_from_delivery_target(accepted_target);
+    RecordingDestination {
+        target: intended_target.clone(),
+        site_identity: same_app.then_some(accepted_site_identity).flatten(),
+        smart_destination,
+    }
+}
+
+/// Resolve the profile from the intended delivery target and bind the opaque
+/// smart capability into that same immutable snapshot. Callers cannot splice a
+/// profile resolved for one app together with routing state for another.
+fn resolve_recording_context(
+    app_state: &AppState,
+    knowledge: &crate::knowledge_store::KnowledgeStore,
+    destination: RecordingDestination<'_>,
+    session_overrides: SessionOverrides,
+) -> Arc<DictationContextSnapshot> {
+    let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
+    let mut context = resolve_live_context(
+        app_state,
+        knowledge,
+        &app_identity,
+        &destination.target,
+        destination.site_identity,
+        session_overrides,
+    );
+    Arc::make_mut(&mut context).app.smart_destination = destination.smart_destination;
+    context
+}
+
 /// Merge the manual custom-vocabulary string and the code-aware vocabulary into a
 /// single Whisper initial prompt. Returns `None` when both are blank so the
 /// backend skips setting a prompt entirely.
@@ -1069,6 +1124,127 @@ fn delivery_event_recording_id(
     }
 }
 
+fn recording_capture_is_current(
+    recording_id: u64,
+    current_recording_id: u64,
+    cancelled: bool,
+    status: DictationStatus,
+) -> bool {
+    recording_id == current_recording_id
+        && !cancelled
+        && matches!(
+            status,
+            DictationStatus::Starting
+                | DictationStatus::Recording
+                | DictationStatus::Recovering
+                | DictationStatus::Processing
+        )
+}
+
+/// A stored preference may be paused by global delivery settings. Use the
+/// same gate for tracking and accepted recordings so per-app overrides retain
+/// the ordinary paste path while Smart destination is unavailable.
+fn smart_destination_eligible(dictation: &crate::state::DictationState) -> bool {
+    dictation.smart_destination_enabled
+        && dictation.auto_paste
+        && !dictation.save_audio
+        && !dictation.save_transcript
+}
+
+fn smart_destination_status(
+    smart_destination: &crate::smart_destination::Snapshot,
+    accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> &'static str {
+    match smart_destination.identity() {
+        Some(target)
+            if crate::frontmost::profile_identity_from_delivery_target(target)
+                == crate::frontmost::profile_identity_from_delivery_target(accepted_target) =>
+        {
+            "current"
+        }
+        Some(_) => "recent",
+        // Normal auto-paste goes to the verified app at stop, which may not be
+        // the accepted app, so this status is presented without an app name.
+        None if matches!(
+            smart_destination,
+            crate::smart_destination::Snapshot::Unverified
+        ) =>
+        {
+            "current"
+        }
+        None => "unavailable",
+    }
+}
+
+/// Presentation uses only the accepted delivery policy and an application name,
+/// never a document title, input value, or selected text.
+fn emit_smart_destination(
+    app: &tauri::AppHandle,
+    app_state: &AppState,
+    rid: u64,
+    context: &DictationContextSnapshot,
+    accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
+) {
+    let dictation = app_state.dictation.lock_or_recover();
+    if !recording_capture_is_current(
+        rid,
+        app_state.recording_id.load(Ordering::SeqCst),
+        app_state.is_cancelled(rid),
+        dictation.status,
+    ) {
+        return;
+    }
+    let eligible = context.delivery.auto_paste
+        && !context.delivery.save_audio
+        && !context.delivery.save_transcript;
+    let status = if eligible {
+        smart_destination_status(&context.app.smart_destination, accepted_target)
+    } else {
+        "unavailable"
+    };
+    let app_name = if status == "unavailable"
+        || matches!(
+            context.app.smart_destination,
+            crate::smart_destination::Snapshot::Unverified
+        ) {
+        None
+    } else {
+        destination_application_name(&context.app.delivery_target)
+    };
+    let _ = app.emit(
+        "smart-destination-selected",
+        serde_json::json!({
+            "recordingId": rid, "status": status, "appName": app_name,
+        }),
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn destination_application_name(
+    target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> Option<String> {
+    let crate::frontmost::DeliveryTargetSnapshot::Complete(identity) = target else {
+        return None;
+    };
+    let app = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
+        identity.process_id,
+    )?;
+    if app.bundleIdentifier()?.to_string() != identity.bundle_id {
+        return None;
+    }
+    let name = app.localizedName()?.to_string();
+    let name = name.trim();
+    (!name.is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control))
+        .then(|| name.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn destination_application_name(
+    _target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> Option<String> {
+    None
+}
+
 /// Run a delivery side effect only while this recording still owns the
 /// Processing state. The dictation lock stays held through `operation`, making
 /// cancellation/supersession atomic with the clipboard write and optional
@@ -1157,6 +1333,7 @@ mod clipboard_delivery_tests {
             ClipboardOnlyReason::TargetChanged,
             ClipboardOnlyReason::FocusNotEditable,
             ClipboardOnlyReason::PasteFailed,
+            ClipboardOnlyReason::SmartTargetUnavailable,
         ] {
             assert_eq!(
                 confirmed_delivery_outcome(InjectionOutcome::ClipboardOnly(reason)),
@@ -1205,6 +1382,36 @@ mod clipboard_delivery_tests {
             delivery_event_recording_id(12, 12, false, DictationStatus::Processing),
             Some(12)
         );
+    }
+
+    #[test]
+    fn asynchronous_destination_capture_is_generation_and_lifecycle_owned() {
+        for status in [
+            DictationStatus::Starting,
+            DictationStatus::Recording,
+            DictationStatus::Recovering,
+            DictationStatus::Processing,
+        ] {
+            assert!(recording_capture_is_current(12, 12, false, status));
+        }
+        assert!(!recording_capture_is_current(
+            12,
+            13,
+            false,
+            DictationStatus::Starting,
+        ));
+        assert!(!recording_capture_is_current(
+            12,
+            12,
+            true,
+            DictationStatus::Processing,
+        ));
+        assert!(!recording_capture_is_current(
+            12,
+            12,
+            false,
+            DictationStatus::Idle,
+        ));
     }
 
     #[test]
@@ -2282,14 +2489,70 @@ async fn run_transcription_pipeline(
             &context.app.delivery_target,
             stop_delivery_target.as_ref(),
         );
-        let delivery_target = anchored_target.clone();
-        let recovery_target = delivery_target.clone();
+        let mut delivery_target = anchored_target.clone();
+        let mut smart_destination = context.app.smart_destination.clone();
+        let recovery_smart_destination = smart_destination.clone();
+        let recovery_target = smart_destination
+            .identity()
+            .unwrap_or(&delivery_target)
+            .clone();
         // Keep the configurable focus-settle wait off the macOS main thread so
         // activation/Space notification callbacks can advance their
         // content-free counters before target verification runs.
         if effective_auto_paste && paste_delay_ms > 0 && injector::is_accessibility_enabled() {
             tokio::time::sleep(std::time::Duration::from_millis(paste_delay_ms)).await;
         }
+        // Activation and insertion are separate main-thread turns: AppKit
+        // refreshes its active-application state only after this turn returns.
+        if effective_auto_paste
+            && injector::is_accessibility_enabled()
+            && matches!(
+                smart_destination,
+                crate::smart_destination::Snapshot::Target { .. }
+            )
+        {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let prepare_app = app_handle.clone();
+            let preparing = smart_destination.clone();
+            app_handle
+                .run_on_main_thread(move || {
+                    if sender.is_closed() {
+                        return;
+                    }
+                    let state = prepare_app.state::<State>();
+                    let outcome =
+                        with_current_delivery_owner(&state.app_state, recording_id, || {
+                            crate::smart_destination::prepare(&preparing)
+                        });
+                    let _ = sender.send(outcome);
+                })
+                .map_err(|error| error.to_string())?;
+            match tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await {
+                Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Ready))) => {}
+                Ok(Ok(Some(crate::smart_destination::PrepareOutcome::WaitForActivation))) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+                _ => {
+                    let same_app_fallback = smart_destination.allows_same_app_fallback();
+                    let abandoned = smart_destination.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        crate::smart_destination::abort(&abandoned, None);
+                    });
+                    smart_destination = if same_app_fallback {
+                        // The field changed while speaking (typing, caret,
+                        // or focus inside the same app). Nothing was
+                        // activated, so use the normal verified paste bound
+                        // to that app, exactly as with the feature off.
+                        delivery_target = recovery_target.clone();
+                        crate::smart_destination::Snapshot::Unverified
+                    } else {
+                        crate::smart_destination::Snapshot::Unavailable
+                    };
+                }
+            }
+        }
+        let accepted_route = recovery_smart_destination.route_code();
+        let delivery_route = smart_destination.route_code();
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
@@ -2297,13 +2560,15 @@ async fn run_transcription_pipeline(
             .run_on_main_thread(move || {
                 let state = injection_app_handle.state::<State>();
                 let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
-                    injector::inject_text(
+                    injector::inject_with_destination(
                         &text_to_inject,
                         effective_auto_paste,
                         paste_delay_ms,
                         &delivery_target,
+                        &smart_destination,
                     )
                 });
+                crate::smart_destination::abort(&smart_destination, None);
                 match &attempt {
                     Some(Ok(result)) => {
                         if let Some(evidence) = result.verification {
@@ -2329,15 +2594,18 @@ async fn run_transcription_pipeline(
         } else {
             "Text is in your clipboard -- press Ctrl+V to paste manually."
         };
+        let mut injection_outcome_code = "unconfirmed";
         let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
         {
             Ok(Ok(Some(Ok(result)))) => {
+                injection_outcome_code = result.outcome.code();
                 if result.outcome != injector::InjectionOutcome::NoText {
                     app_handle.state::<State>().delivery_recovery.remember(
                         recording_id,
                         text.clone(),
                         recovery_target,
+                        recovery_smart_destination,
                         paste_delay_ms,
                         crate::correct_and_teach::teaching_context(
                             context.app.bundle_id.as_deref(),
@@ -2351,6 +2619,9 @@ async fn run_transcription_pipeline(
                 }
                 if let injector::InjectionOutcome::ClipboardOnly(reason) = result.outcome {
                     let failure_message = match reason {
+                        injector::ClipboardOnlyReason::SmartTargetUnavailable => Some(
+                            "The intended text field could not be verified. Click your destination and press Cmd+V.",
+                        ),
                         injector::ClipboardOnlyReason::TargetChanged => Some(
                             "App focus changed. Text is in your clipboard; paste it when ready.",
                         ),
@@ -2375,6 +2646,7 @@ async fn run_transcription_pipeline(
             }
             Ok(Ok(Some(Err(e)))) => {
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
+                injection_outcome_code = "clipboard_write_failed";
                 emit_auto_paste_failure_if_current(
                     app_handle,
                     app_state,
@@ -2422,6 +2694,15 @@ async fn run_transcription_pipeline(
                 DictationDeliveryOutcome::Unconfirmed
             }
         };
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.smart_destination_delivery",
+            recording_id,
+            accepted_route,
+            delivery_route,
+            outcome_code = injection_outcome_code,
+            "smart destination delivery"
+        );
         // Hold the recording-state lock across ownership validation and event
         // publication. A concurrent cancel changes Processing to Idle under
         // this same lock before marking the ID cancelled, and a new start also
@@ -2536,7 +2817,7 @@ pub async fn process_audio(
     // helper before recording. Fail-fast no-op while a transform is in flight —
     // the is_transform_busy guard below then refuses this recording.
     state.transform_runtime.shutdown();
-    let (rid, delivery_target, site_identity) = {
+    let (rid, delivery_target, site_identity, smart_enabled) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
         // path also runs the shared Whisper backend, so refuse while a file
@@ -2577,7 +2858,12 @@ pub async fn process_audio(
             .site_mode_lookup_enabled
             .then(|| crate::browser_site::query_for_identity(&app_identity))
             .flatten();
-        (recording_id, delivery_target, site_identity)
+        (
+            recording_id,
+            delivery_target,
+            site_identity,
+            smart_destination_eligible(&dictation),
+        )
     };
     drop(transition);
     keyboard::set_processing(true);
@@ -2586,15 +2872,49 @@ pub async fn process_audio(
         serde_json::json!({ "recordingId": rid }),
     );
     let _ = app_handle.emit("recording-status-changed", "processing");
-    let app_identity = crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
-    let context = resolve_live_context(
+    // Legacy process_audio has a single API acceptance boundary: audio has
+    // already been recorded by its caller. Freeze its destination here, when
+    // processing is accepted; the native recording path freezes at start.
+    let smart_destination =
+        crate::smart_destination::capture(&app_handle, &delivery_target, smart_enabled).await;
+    let capture_is_current = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        recording_capture_is_current(
+            rid,
+            state.app_state.recording_id.load(Ordering::SeqCst),
+            state.app_state.is_cancelled(rid),
+            dictation.status,
+        )
+    };
+    if !capture_is_current {
+        tracing::info!(
+            target: "pipeline",
+            recording_id = rid,
+            "process_audio: smart destination capture superseded"
+        );
+        return Ok(serde_json::json!({
+            "type": "transcription",
+            "text": "",
+            "state": "idle"
+        }));
+    }
+    let destination =
+        select_recording_destination(&delivery_target, site_identity.as_ref(), smart_destination);
+    let context = resolve_recording_context(
         &state.app_state,
         &state.knowledge,
-        &app_identity,
-        &delivery_target,
-        site_identity.as_ref(),
+        destination,
         SessionOverrides::default(),
     );
+    if smart_enabled {
+        emit_smart_destination(
+            &app_handle,
+            &state.app_state,
+            rid,
+            &context,
+            &delivery_target,
+        );
+    }
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
         runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
@@ -3052,6 +3372,12 @@ pub async fn configure_dictation(
         dictation.language = l;
     }
 
+    if let Some(enabled) = options
+        .get("smartDestinationEnabled")
+        .and_then(|v| v.as_bool())
+    {
+        dictation.smart_destination_enabled = enabled;
+    }
     if let Some(auto_paste) = options.get("autoPaste").and_then(|v| v.as_bool()) {
         dictation.auto_paste = auto_paste;
     }
@@ -3416,6 +3742,7 @@ pub async fn configure_dictation(
     // correction settings. Built here on settings-change, never per-utterance.
     rebuild_correction_matcher(&state.app_state, &dictation);
     state.app_state.bump_settings_revision();
+    crate::smart_destination::set_enabled(smart_destination_eligible(&dictation));
 
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
         let normalized = match idle_timeout {
@@ -4435,6 +4762,7 @@ pub async fn start_native_recording(
     let (
         rid,
         performance_started_at_ms,
+        smart_enabled,
         delivery_target,
         site_identity,
         selected_device_name,
@@ -4590,6 +4918,7 @@ pub async fn start_native_recording(
                 (
                     rid,
                     performance_started_at_ms,
+                    smart_destination_eligible(&dictation),
                     delivery_target,
                     site_identity,
                     selected_device_name,
@@ -4663,20 +4992,49 @@ pub async fn start_native_recording(
     // Resolve profile and IDE context from the same native sample frozen at
     // acceptance. A later focus change cannot splice another application's
     // context into the recording while retaining the original paste target.
-    let app_identity = crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
+    let captured_smart_destination =
+        crate::smart_destination::capture(&app_handle, &delivery_target, smart_enabled).await;
+    let capture_is_current = {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        recording_capture_is_current(
+            rid,
+            state.app_state.recording_id.load(Ordering::SeqCst),
+            state.app_state.is_cancelled(rid),
+            dictation.status,
+        )
+    };
+    let smart_destination = if capture_is_current {
+        captured_smart_destination
+    } else if smart_enabled {
+        // A late result from a failed/cancelled start must not select a profile
+        // or retain a native field capability for that inactive generation.
+        crate::smart_destination::Snapshot::Unavailable
+    } else {
+        crate::smart_destination::Snapshot::Disabled
+    };
+    let destination =
+        select_recording_destination(&delivery_target, site_identity.as_ref(), smart_destination);
+    let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
     refresh_expired_ide_context(
         &app_handle,
         &state.app_state,
         app_identity.bundle_id.as_deref(),
     );
-    let context = resolve_live_context(
+    let context = resolve_recording_context(
         &state.app_state,
         &state.knowledge,
-        &app_identity,
-        &delivery_target,
-        site_identity.as_ref(),
+        destination,
         session_overrides,
     );
+    if smart_enabled && capture_is_current {
+        emit_smart_destination(
+            &app_handle,
+            &state.app_state,
+            rid,
+            &context,
+            &delivery_target,
+        );
+    }
     state.performance.production_context(rid, &context);
     let context_action = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -5834,6 +6192,7 @@ pub(crate) mod tests {
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
+                assistant: crate::assistant::AssistantStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
@@ -6324,6 +6683,7 @@ pub(crate) mod tests {
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
+                assistant: crate::assistant::AssistantStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
@@ -6452,6 +6812,7 @@ pub(crate) mod tests {
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
+                assistant: crate::assistant::AssistantStore::default(),
                 transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
                 ),
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
@@ -7085,6 +7446,181 @@ pub(crate) mod tests {
                 assert_eq!(dictation.status, DictationStatus::Idle);
             }
         }
+    }
+
+    #[test]
+    fn paused_smart_preference_preserves_per_app_auto_paste() {
+        let app_state = AppState::default();
+        {
+            let mut dictation = app_state.dictation.lock_or_recover();
+            dictation.smart_destination_enabled = true;
+            dictation.auto_paste = false;
+            dictation.app_profiles = vec![crate::state::AppProfile {
+                bundle_id: "com.example.Editor".into(),
+                label: "Editor".into(),
+                auto_paste_override: Some(true),
+                cleanup_override: None,
+                cli_formatting_override: None,
+                smart_formatting_override: None,
+                writing_style: None,
+                ide_context_enabled: false,
+                ide_project_roots: vec![],
+                query_context_excluded: false,
+                mode_id: None,
+            }];
+            assert!(!smart_destination_eligible(&dictation));
+            dictation.auto_paste = true;
+            assert!(smart_destination_eligible(&dictation));
+            dictation.save_audio = true;
+            assert!(!smart_destination_eligible(&dictation));
+            dictation.save_audio = false;
+            dictation.save_transcript = true;
+            assert!(!smart_destination_eligible(&dictation));
+            dictation.save_transcript = false;
+            dictation.auto_paste = false;
+        }
+        let knowledge = crate::knowledge_store::KnowledgeStore::default();
+        let context = resolve_live_context(
+            &app_state,
+            &knowledge,
+            &crate::frontmost::FrontmostAppIdentity {
+                bundle_id: Some("com.example.Editor".into()),
+                process_id: Some(42),
+            },
+            &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+            None,
+            SessionOverrides::default(),
+        );
+        assert!(context.delivery.auto_paste);
+        assert!(matches!(
+            context.app.smart_destination,
+            crate::smart_destination::Snapshot::Disabled
+        ));
+    }
+
+    #[test]
+    fn smart_destination_resolves_and_freezes_the_intended_targets_profile() {
+        use crate::browser_site::BrowserSiteIdentity;
+        use crate::frontmost::{
+            AppTransitionSnapshot, DeliveryTargetIdentity, DeliveryTargetSnapshot,
+            ProcessInstanceToken,
+        };
+        use crate::state::AppProfile;
+
+        let target = |bundle_id: &str, process_id: i32, instance: u64| {
+            DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+                bundle_id: bundle_id.into(),
+                process_id,
+                process_instance: ProcessInstanceToken::for_test(instance),
+                window_token: None,
+                transitions: AppTransitionSnapshot {
+                    activation_generation: 0,
+                    space_generation: 0,
+                },
+            })
+        };
+        let profile = |bundle_id: &str, label: &str| AppProfile {
+            bundle_id: bundle_id.into(),
+            label: label.into(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: None,
+            ide_context_enabled: false,
+            ide_project_roots: Vec::new(),
+            query_context_excluded: false,
+            mode_id: None,
+        };
+        let media_target = target("com.brave.Browser", 41, 1);
+        let editor_target = target("com.example.Editor", 42, 2);
+        let media_site = BrowserSiteIdentity {
+            browser_bundle_id: "com.brave.Browser".into(),
+            host: "example.com".into(),
+        };
+        let app_state = AppState::default();
+        app_state.dictation.lock_or_recover().app_profiles = vec![
+            profile("com.brave.Browser", "Media browser"),
+            profile("com.example.Editor", "Intended editor"),
+        ];
+        let knowledge = crate::knowledge_store::KnowledgeStore::default();
+
+        let smart = crate::smart_destination::Snapshot::Target {
+            token: 17,
+            revision: 4,
+            identity: editor_target.clone(),
+            current_app: false,
+        };
+        assert_eq!(smart_destination_status(&smart, &media_target), "recent");
+        for accepted in [media_target.clone(), DeliveryTargetSnapshot::Incomplete] {
+            assert_eq!(
+                smart_destination_status(
+                    &crate::smart_destination::Snapshot::Unverified,
+                    &accepted
+                ),
+                "current",
+                "an unproven field still uses normal auto-paste into the current app",
+            );
+        }
+        assert_eq!(
+            smart_destination_status(
+                &crate::smart_destination::Snapshot::Unavailable,
+                &media_target
+            ),
+            "unavailable",
+        );
+        let destination =
+            select_recording_destination(&media_target, Some(&media_site), smart.clone());
+        assert!(destination.target == editor_target);
+        assert!(
+            destination.site_identity.is_none(),
+            "browser context from temporary media focus must not follow a cross-app destination",
+        );
+        let context = resolve_recording_context(
+            &app_state,
+            &knowledge,
+            destination,
+            SessionOverrides::default(),
+        );
+        assert_eq!(context.app.bundle_id.as_deref(), Some("com.example.Editor"));
+        assert_eq!(
+            context
+                .matched_profile
+                .as_ref()
+                .map(|profile| profile.label.as_str()),
+            Some("Intended editor"),
+        );
+        assert!(context.app.delivery_target == editor_target);
+        assert!(matches!(
+            &context.app.smart_destination,
+            crate::smart_destination::Snapshot::Target { .. }
+        ));
+
+        let disabled = select_recording_destination(
+            &media_target,
+            Some(&media_site),
+            crate::smart_destination::Snapshot::Disabled,
+        );
+        assert!(disabled.target == media_target);
+        assert!(disabled.site_identity.is_some());
+        let context = resolve_recording_context(
+            &app_state,
+            &knowledge,
+            disabled,
+            SessionOverrides::default(),
+        );
+        assert_eq!(
+            context
+                .matched_profile
+                .as_ref()
+                .map(|profile| profile.label.as_str()),
+            Some("Media browser"),
+            "the opt-out path must preserve the existing frontmost-app profile",
+        );
+        assert!(matches!(
+            &context.app.smart_destination,
+            crate::smart_destination::Snapshot::Disabled
+        ));
     }
 
     #[test]

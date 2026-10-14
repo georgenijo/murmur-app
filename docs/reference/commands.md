@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 218 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 233 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -72,7 +72,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_meeting` | `id` | `Result<MeetingWorkspace, String>` | One session with optional title, title source, attendees, immutable Me/Them segments, display labels, revisioned generated/reviewed documents, and the Rust-resolved active document. |
 | `save_meeting_metadata` | `request: {sessionId, title: string \| null, attendees: string[]}` | `Result<MeetingWorkspace, String>` | Main-window-only transactional save of a title and ordered attendee list. Rust assigns `manual` to a non-null title and clears the source with the title. Titles and attendees allow at most 200 characters each, and a meeting allows at most 100 attendees. The command refreshes title search without changing transcript or review data. |
 | `rename_meeting_remote_speaker` | `session_id: String`, `speaker_id: u32`, `label: String` | `Result<MeetingWorkspace, String>` | Validates and saves one session-scoped display label for a remote speaker, then returns the updated meeting workspace. Transcript evidence remains unchanged. |
-| `save_meeting_review` | `request` | `Result<MeetingWorkspace, String>` | Revision-checks a complete edit, restores source IDs from the selected server-owned base, and atomically saves labels plus the reviewed snapshot. |
+| `save_meeting_review` | `request` | `Result<MeetingWorkspace, String>` | Revision-checks a complete edit, restores existing claims' source IDs from the server-owned base, and validates selected session sources and assigns opaque keys for `newClaims`. Atomically saves labels, the reviewed snapshot and its search index. |
 | `restore_meeting_review_from_generated` | `request` | `Result<MeetingWorkspace, String>` | Explicitly replaces a saved review from the exact generated revision after checking the current review revision. Raw transcript evidence is unchanged. |
 | `get_meeting_review_export` | `id`, `format` | `Result<String, String>` | Renders one bounded reviewed-meeting snapshot as Markdown, plain text, or schema-v2 JSON for explicit clipboard copy. Document exports include the title and attendees. |
 | `save_meeting_review_export` | `id`, `format`, `path` | `Result<u64, String>` | Renders and atomically saves the same reviewed-meeting snapshot after enforcing the matching `.md`, `.txt`, or `.json` extension. |
@@ -191,6 +191,28 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `retry_last_delivery` | — | `Result<RetryResult, String>` | Re-delivers the latest process-memory final text through the normal secure injector. Returns explicit `auto_pasted`, `clipboard_only`, `empty`, `busy`, or `failed` feedback without recording, retranscription, History, statistics, or learning changes. |
 
 ## Voice Query (`query_flow.rs`)
+
+Assistant commands reuse the same coordinator, local ASR, and managed CLI ownership.
+All are main-window-only except the exact-pass `open_query_in_assistant` handoff
+from query-review. Local deletion does not erase Pi's separately retained remote session.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_assistant_connection` | `command: QueryCommandConfig` | `Result<AssistantConnection, String>` | Checks explicit consent against the current canonical Custom executable and fixed argv. |
+| `connect_assistant` | `command: QueryCommandConfig`, `consent: bool` | `Result<(), String>` | Saves explicit Mac and remote Pi persistence consent for the configured Custom Pi bridge. |
+| `disconnect_assistant` | — | `Result<(), String>` | Revokes future Assistant dispatch; retains conversations. |
+| `list_assistant_conversations` | — | `Result<Vec<ConversationSummary>, String>` | Lists bounded local conversations newest-first. |
+| `create_assistant_conversation` | `consent: bool` | `Result<Conversation, String>` | Creates a local UUID conversation after explicit connection. |
+| `get_assistant_conversation` | `conversation_id: String` | `Result<Conversation, String>` | Hydrates messages and exact active pass from the private native mirror. |
+| `delete_assistant_conversation` | `conversation_id: String` | `Result<(), String>` | Deletes only the local inactive conversation; refuses active ownership. |
+| `send_assistant_message` | `conversation_id: String`, `message: String`, `command: QueryCommandConfig`, `consent: bool` | `Result<AssistantReceipt, String>` | Queues a bounded typed message and runs the connected Pi bridge asynchronously without opening the popover or changing clipboard. |
+| `confirm_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Loads the durable action and its bound connection, conversation, request, and parameter digest before dispatching a native-authorized confirmation through the V2 bridge. |
+| `cancel_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Loads the same durable bound action fields before dispatching cancellation through the V2 bridge. |
+| `refresh_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Requests the bound action's current status without confirming or retrying its write. |
+| `start_assistant_voice` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantReceipt, String>` | Starts the shared real capture pipeline for a thread. Finish and cancellation use existing exact-pass commands. |
+| `start_assistant_dictation` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantDraftReceipt, String>` | Main-only local composer capture; returns `{queryPassId, conversationId}`. Validates connection binding, reserves the shared microphone/ASR owner, and emits only main-targeted `assistant-draft-state` and `assistant-draft-partial`. Creates no messages and never starts Pi or the popover. |
+| `finish_assistant_dictation` | `query_pass_id: u64` | `Result<AssistantDraftText, String>` | Main-only exact-pass stop and local transcription; returns `{text}` and releases ownership to Idle. Text remains an editable unsent composer draft; no history, session text, provider dispatch, or clipboard write. Cancellation uses `cancel_query`. |
+| `open_query_in_assistant` | `query_pass_id: u64`, `consent: bool` | `Result<Conversation, String>` | Imports the exact Ready exchange from the connected Custom Pi bridge, focuses main, and navigates to that conversation. |
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|

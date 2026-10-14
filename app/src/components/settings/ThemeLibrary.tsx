@@ -1,7 +1,9 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
+  availableThemeId,
   effectiveAppearanceSelection,
+  makeLocalThemeEntry,
   previewThemeLibraryPairSelection,
   resolveTheme,
   type MurmurTokens,
@@ -217,15 +219,17 @@ function ModePreview({
   );
 }
 
-function ActionButton({ label, onClick, children, danger = false }: {
+function ActionButton({ label, onClick, children, danger = false, disabled = false }: {
   label: string;
   onClick: () => void;
   children: React.ReactNode;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       aria-label={label}
       title={label}
       onClick={(event) => {
@@ -248,6 +252,8 @@ function CollectionCard({
   onCustomize,
   customizeAsCopy = false,
   onExport,
+  onDuplicate,
+  duplicateDisabled = false,
   onRemove,
   resolvedAppearance,
 }: {
@@ -259,6 +265,8 @@ function CollectionCard({
   onCustomize?: () => void;
   customizeAsCopy?: boolean;
   onExport?: (entry: ThemeLibraryEntryV1) => void;
+  onDuplicate?: (entry: ThemeLibraryEntryV1) => void;
+  duplicateDisabled?: boolean;
   onRemove?: () => void;
   resolvedAppearance: ResolvedAppearance;
 }) {
@@ -345,7 +353,7 @@ function CollectionCard({
         >
           {label}
         </button>
-        {(onCustomize || onExport || onRemove) && (
+        {(onCustomize || onDuplicate || onExport || onRemove) && (
           <div className="flex shrink-0 items-center gap-0.5">
             {onCustomize && (
               <ActionButton label={customizeAsCopy ? `Create theme from ${label}` : `Edit ${label}`} onClick={onCustomize}>
@@ -353,6 +361,7 @@ function CollectionCard({
               </ActionButton>
             )}
             {onExport && exportEntry && <ActionButton label={`Export ${label}`} onClick={() => onExport(exportEntry)}><UploadIcon /></ActionButton>}
+            {onDuplicate && exportEntry && <ActionButton label={`Duplicate ${label}`} disabled={duplicateDisabled} onClick={() => onDuplicate(exportEntry)}><CopyIcon /></ActionButton>}
             {onRemove && <ActionButton label={`Remove ${label}`} onClick={onRemove} danger><TrashIcon /></ActionButton>}
           </div>
         )}
@@ -370,6 +379,18 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
   const [removeTarget, setRemoveTarget] = useState<{ label: string; ids: string[] } | null>(null);
   const [importMenuOpen, setImportMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const duplicateEntry = async (source: ThemeLibraryEntryV1) => {
+    try {
+      setError(null);
+      const label = `Copy of ${source.label}`.slice(0, 64).trimEnd();
+      const occupiedIds = new Set(appearance.library.document.themes.map((entry) => entry.id));
+      const entry = makeLocalThemeEntry(availableThemeId(label, occupiedIds), label, source.theme, source.modes);
+      await appearance.library.install([entry]);
+    } catch (cause) {
+      setError(String(cause));
+    }
+  };
 
   const groups = useMemo(() => {
     const grouped = new Map<string, { label: string; entries: ThemeLibraryEntryV1[] }>();
@@ -541,6 +562,8 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
             onApplyPair={applyPair}
             onApplyMode={applyMode}
             onExport={(entry) => void exportEntry(entry)}
+            onDuplicate={(entry) => void duplicateEntry(entry)}
+            duplicateDisabled={appearance.busy}
             onRemove={() => setRemoveTarget({ label: group.label, ids: group.entries.map((entry) => entry.id) })}
             resolvedAppearance={appearance.resolvedAppearance}
           />

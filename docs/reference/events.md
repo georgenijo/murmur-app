@@ -108,6 +108,12 @@ Question and context content never appears in events. Only the dedicated review 
 |-------|---------|--------|---------------|-----------|
 | `query-state-changed` | `{queryPassId, state, errorCode, usage}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. `usage` is null until a structured provider reports numeric token/cache/reasoning counts and optional cost; it never contains content. Typed provider failures use `provider_error`; known authentication failures use the repairable `provider_not_authenticated`. Stderr and provider detail are never included. | Query popover (`useQueryReviewDriver`) and main-window content-free stats aggregation (`useQueryFlow`). |
 | `query-partial` | `{queryPassId, text}` | `query_flow.rs` | A display-only listening transcript snapshot is decoded. Targeted with `emit_to("query-review", …)`, never broadcast. Replaces the previous partial; never feeds the CLI. | Query popover only. |
+| `assistant-conversation-changed` | `{conversationId, queryPassId}` | `assistant.rs` | Native queue, partial answer, or terminal state changed. Fetch the conversation by ID; no content in the notification. | Main only, targeted. |
+| `assistant-state-changed` | `{conversationId, queryPassId, state, errorCode}` | `query_flow.rs` | Exact thread and pass lifecycle, separate from the content-free global query state. | Main only, targeted. |
+| `assistant-partial` | `{conversationId, queryPassId, text}` | `query_flow.rs` | Ephemeral listening transcription for an Assistant voice turn; never saved or sent to Pi. | Main only, targeted. |
+| `assistant-draft-state` | `{conversationId, queryPassId, state, errorCode}` | `query_flow.rs` | Local composer capture lifecycle. Successful finish emits idle before returning final text; idle with cancelled error discards speech. No Pi request. | Main only, targeted. |
+| `assistant-draft-partial` | `{conversationId, queryPassId, text}` | `query_flow.rs` | Ephemeral local ASR preview for the composer. Exact-pass gated; never stored or broadcast to the floating transcript. | Main only, targeted. |
+| `assistant-open-conversation` | `{conversationId}` | `query_flow.rs` | Navigate main to the exact imported Ready popover exchange after explicit persistence consent. | Main only, targeted. |
 | `query-context-resolved` | `{queryPassId}` | `query_flow.rs` | The immutable context snapshot is ready. Targeted to `query-review`; carries no app, window, selection, or summary content and only triggers a gated refresh. | Query popover only. |
 | `query-answer-chunk` | `{queryPassId, sequence, text, replace}` | `query_flow.rs` | A decoded raw chunk or structured Claude/Codex answer chunk accepted within the 256 KiB cap. `replace: true` atomically resets optimistic structured text to the complete raw stream when JSONL parsing falls back, including incomplete EOF without a typed terminal event; otherwise text appends. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
 | `query-review-hidden` | `{queryPassId}` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. The main window folds an otherwise-unreported cancellation into content-free usage statistics exactly once; malformed and stale payloads cannot clear a newer pass. | Main window and query popover. |
@@ -224,6 +230,17 @@ strips unknown fields, collapses malformed required fields to the event code,
 and always uses a constant summary. It never admits application or bundle
 identity, PID/process-instance evidence, window titles, transcript or clipboard
 content, paths, or raw errors.
+
+Each delivery also emits the exact-schema code
+`pipeline.smart_destination_delivery` with a positive `recording_id`;
+`accepted_route` (the route frozen at acceptance) and `delivery_route` (after
+smart preparation), each one of `disabled`, `clipboard_only`, `normal_paste`, or
+`smart_target`; and `outcome_code`, one of `no_text`, `auto_pasted`,
+`clipboard_only_auto_paste_disabled`, `clipboard_only_accessibility_denied`,
+`clipboard_only_target_changed`, `clipboard_only_focus_not_editable`,
+`clipboard_only_clipboard_changed`, `clipboard_only_paste_failed`,
+`clipboard_only_smart_target_unavailable`, `clipboard_write_failed`, or
+`unconfirmed`. The same all-build sanitizer rules apply.
 
 A capture backend that exceeds its initialization budget emits the stable
 structured code `audio.system_audio_graph_observed` from every install, armed

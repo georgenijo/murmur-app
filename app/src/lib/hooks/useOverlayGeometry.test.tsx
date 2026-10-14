@@ -27,25 +27,27 @@ import { useOverlayGeometry } from './useOverlayGeometry';
 const notched: OverlayGeometry = {
   windowW: 257,
   collapsedH: 32,
-  expandedH: 76,
+  expandedH: 96,
   pillIdleW: 257,
   pillActiveW: 257,
   pillMarginIdle: 0,
   pillMarginActive: 0,
-  dropdownH: 44,
+  dropdownH: 64,
   wingW: 36,
+  floating: false,
 };
 
 const fallback: OverlayGeometry = {
-  windowW: 152,
-  collapsedH: 37,
-  expandedH: 81,
-  pillIdleW: 152,
-  pillActiveW: 152,
+  windowW: 280,
+  collapsedH: 36,
+  expandedH: 100,
+  pillIdleW: 280,
+  pillActiveW: 280,
   pillMarginIdle: 0,
   pillMarginActive: 0,
-  dropdownH: 44,
+  dropdownH: 64,
   wingW: 36,
+  floating: true,
 };
 
 const meetingSuggestion: OverlayGeometry = {
@@ -58,6 +60,7 @@ const meetingSuggestion: OverlayGeometry = {
   pillMarginActive: 0,
   dropdownH: 136,
   wingW: 36,
+  floating: false,
 };
 
 function deferred<T>() {

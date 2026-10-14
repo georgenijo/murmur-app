@@ -20,6 +20,7 @@ pub(crate) enum ClipboardOnlyReason {
     FocusNotEditable,
     ClipboardChanged,
     PasteFailed,
+    SmartTargetUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,27 @@ pub(crate) enum InjectionOutcome {
     NoText,
     ClipboardOnly(ClipboardOnlyReason),
     AutoPasted,
+}
+
+impl InjectionOutcome {
+    /// Bounded, content-free code for diagnostics.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::NoText => "no_text",
+            Self::AutoPasted => "auto_pasted",
+            Self::ClipboardOnly(reason) => match reason {
+                ClipboardOnlyReason::AutoPasteDisabled => "clipboard_only_auto_paste_disabled",
+                ClipboardOnlyReason::AccessibilityDenied => "clipboard_only_accessibility_denied",
+                ClipboardOnlyReason::TargetChanged => "clipboard_only_target_changed",
+                ClipboardOnlyReason::FocusNotEditable => "clipboard_only_focus_not_editable",
+                ClipboardOnlyReason::ClipboardChanged => "clipboard_only_clipboard_changed",
+                ClipboardOnlyReason::PasteFailed => "clipboard_only_paste_failed",
+                ClipboardOnlyReason::SmartTargetUnavailable => {
+                    "clipboard_only_smart_target_unavailable"
+                }
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,20 +234,31 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn pasteboard_change_count() -> Option<i64> {
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
     use objc2_app_kit::NSPasteboard;
 
     Some(NSPasteboard::generalPasteboard().changeCount() as i64)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn pasteboard_change_count() -> Option<i64> {
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
     None
 }
 
 fn write_clipboard_text_with_change_count(text: &str) -> Result<Option<i64>, String> {
     write_clipboard_text(text)?;
     Ok(pasteboard_change_count())
+}
+
+fn smart_refusal_reason(
+    expected_pasteboard_change: Option<i64>,
+    current_pasteboard_change: Option<i64>,
+) -> ClipboardOnlyReason {
+    if expected_pasteboard_change == current_pasteboard_change {
+        ClipboardOnlyReason::SmartTargetUnavailable
+    } else {
+        ClipboardOnlyReason::ClipboardChanged
+    }
 }
 
 /// A fully written, owner-only caption temp file. Preparing it may perform
@@ -356,6 +389,52 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
     prepare_caption_to(dir, text).is_some_and(PreparedCaption::publish)
 }
 
+/// Exact-field delivery for the opt-in mode. The destination module chooses
+/// its transport once and never falls through to the ordinary paste route.
+pub(crate) fn inject_with_destination(
+    text: &str,
+    auto_paste: bool,
+    delay_ms: u64,
+    target: &crate::frontmost::DeliveryTargetSnapshot,
+    smart: &crate::smart_destination::Snapshot,
+) -> Result<InjectionResult, String> {
+    if matches!(smart, crate::smart_destination::Snapshot::Disabled) || !auto_paste {
+        return inject_text(text, auto_paste, delay_ms, target);
+    }
+    if smart.uses_normal_paste() {
+        // Unverified: Smart destination proved no field, so use normal paste,
+        // but keep its secure-field promise against the field focused now.
+        return inject_text_with_policy(text, auto_paste, delay_ms, target, true);
+    }
+    if text.trim().is_empty() {
+        return Ok(InjectionResult {
+            outcome: InjectionOutcome::NoText,
+            verification: None,
+        });
+    }
+    let pasteboard_change = write_clipboard_text_with_change_count(text)?;
+    let accessible = is_accessibility_enabled();
+    let outcome = match pasteboard_change {
+        None => InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
+        Some(change) if pasteboard_change_count() != Some(change) => {
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged)
+        }
+        Some(_) if !accessible => {
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied)
+        }
+        Some(change) => match crate::smart_destination::insert(smart, text, change) {
+            crate::smart_destination::InsertOutcome::Posted => InjectionOutcome::AutoPasted,
+            crate::smart_destination::InsertOutcome::Refused => InjectionOutcome::ClipboardOnly(
+                smart_refusal_reason(pasteboard_change, pasteboard_change_count()),
+            ),
+        },
+    };
+    Ok(InjectionResult {
+        outcome,
+        verification: None,
+    })
+}
+
 /// Copy text to clipboard and optionally simulate Cmd+V paste.
 /// The async caller applies `delay_ms` before dispatching this function to the
 /// main thread; the value is retained here only for timing telemetry.
@@ -368,6 +447,17 @@ pub(crate) fn inject_text(
     auto_paste: bool,
     delay_ms: u64,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> Result<InjectionResult, String> {
+    inject_text_with_policy(text, auto_paste, delay_ms, delivery_target, false)
+}
+
+/// `refuse_secure` keeps a positively secure focused field clipboard-only.
+fn inject_text_with_policy(
+    text: &str,
+    auto_paste: bool,
+    delay_ms: u64,
+    delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
+    refuse_secure: bool,
 ) -> Result<InjectionResult, String> {
     let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
@@ -423,11 +513,15 @@ pub(crate) fn inject_text(
         // `focused_field_state` for the false-negative bias.
         let mut focus_ms = 0_u64;
         let mut clipboard_ms = 0_u64;
+        let target_is_finder = delivery_target_is_finder(delivery_target);
         let preflight = first_paste_preflight(
             || crate::frontmost::verify_delivery_target(delivery_target, true),
             || {
                 let started = Instant::now();
-                let state = focused_field_state();
+                let state = secure_field_policy(
+                    scope_non_editable_to_finder(focused_field_state(), target_is_finder),
+                    refuse_secure,
+                );
                 focus_ms = started.elapsed().as_millis() as u64;
                 state
             },
@@ -477,7 +571,10 @@ pub(crate) fn inject_text(
                 let (retry_outcome, retry_verification) = retry_paste_if_safe(
                     || {
                         let started = Instant::now();
-                        let state = focused_field_state();
+                        let state = secure_field_policy(
+                            scope_non_editable_to_finder(focused_field_state(), target_is_finder),
+                            refuse_secure,
+                        );
                         focus_ms = focus_ms.saturating_add(started.elapsed().as_millis() as u64);
                         state
                     },
@@ -548,7 +645,17 @@ fn create_native_paste_events(
 }
 
 #[cfg(target_os = "macos")]
-fn simulate_paste_native() -> Result<(), String> {
+pub(crate) fn simulate_paste_native() -> Result<(), String> {
+    post_paste_native(3)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn simulate_smart_paste_native() -> Result<(), String> {
+    post_paste_native(10)
+}
+
+#[cfg(target_os = "macos")]
+fn post_paste_native(hold_ms: u64) -> Result<(), String> {
     use core_graphics::event::CGEventTapLocation;
     use std::thread;
     use std::time::Duration;
@@ -557,13 +664,13 @@ fn simulate_paste_native() -> Result<(), String> {
     key_down.post(CGEventTapLocation::HID);
     // Some applications drop an instantaneous down/up burst. This remains far
     // below the old subprocess cost while matching hardware-like key timing.
-    thread::sleep(Duration::from_millis(3));
+    thread::sleep(Duration::from_millis(hold_ms));
     key_up.post(CGEventTapLocation::HID);
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn simulate_paste_native() -> Result<(), String> {
+pub(crate) fn simulate_paste_native() -> Result<(), String> {
     Err("native paste is unavailable on this platform".to_string())
 }
 
@@ -663,6 +770,19 @@ enum FocusedFieldState {
     NonEditable,
     /// Could not determine — default to allowing the paste (current behavior).
     Unknown,
+    /// A secure (password) text control. Pasteable under the normal policy;
+    /// `secure_field_policy` decides before preflight sees it.
+    Secure,
+}
+
+/// Resolve `Secure` before the paste preflight: the normal policy pastes into
+/// it as an editable field, while the Smart destination fallback refuses it.
+fn secure_field_policy(state: FocusedFieldState, refuse_secure: bool) -> FocusedFieldState {
+    match state {
+        FocusedFieldState::Secure if refuse_secure => FocusedFieldState::NonEditable,
+        FocusedFieldState::Secure => FocusedFieldState::Editable,
+        state => state,
+    }
 }
 
 /// Classify an Accessibility role string as an editable text control.
@@ -771,6 +891,37 @@ fn focused_field_state() -> FocusedFieldState {
     classify_focused_role(&role)
 }
 
+const FINDER_BUNDLE_ID: &str = "com.apple.finder";
+
+/// Whether the recording's frozen delivery target is Finder. Cmd+V is posted
+/// only after the preflight re-verifies this exact target, so the paste policy
+/// keys off it rather than a separate, racy frontmost sample.
+fn delivery_target_is_finder(target: &crate::frontmost::DeliveryTargetSnapshot) -> bool {
+    matches!(
+        target,
+        crate::frontmost::DeliveryTargetSnapshot::Complete(identity)
+            if identity.bundle_id == FINDER_BUNDLE_ID
+    )
+}
+
+/// Keep a `NonEditable` verdict only when the delivery target is Finder.
+///
+/// The denylist exists for Finder (#195), where a synthetic Cmd+V on the
+/// desktop or a file view drops a stray `.textClipping`. Other apps ignore a
+/// paste that lands on a non-text element, while web-backed editors (e.g. Meta's
+/// Muse) can report denylisted roles such as `AXScrollArea` for a working
+/// input. Outside Finder, fail open like every other uncertain case.
+fn scope_non_editable_to_finder(
+    state: FocusedFieldState,
+    target_is_finder: bool,
+) -> FocusedFieldState {
+    if state == FocusedFieldState::NonEditable && !target_is_finder {
+        FocusedFieldState::Unknown
+    } else {
+        state
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn is_native_ax_timeout(error: &str) -> bool {
     // kAXErrorCannotComplete is returned when the target app does not answer
@@ -798,7 +949,7 @@ fn frontmost_application_is_finder() -> Option<bool> {
     Some(
         application
             .bundleIdentifier()
-            .is_some_and(|bundle_id| bundle_id.to_string() == "com.apple.finder"),
+            .is_some_and(|bundle_id| bundle_id.to_string() == FINDER_BUNDLE_ID),
     )
 }
 
@@ -895,6 +1046,38 @@ fn focused_role_native() -> Result<String, String> {
     let mut role: CFTypeRef = std::ptr::null();
     let role_status = unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
     unsafe { CFRelease(role_attribute) };
+    // Browser password inputs report AXTextField with an AXSecureTextField
+    // subrole. Surface that as the secure role so the Smart destination
+    // fallback can veto it; a failed subrole query leaves the role in charge.
+    let mut secure_subrole = false;
+    if role_status == AX_SUCCESS && !role.is_null() {
+        let subrole_attribute = unsafe {
+            CFStringCreateWithCString(std::ptr::null(), c"AXSubrole".as_ptr(), UTF8_ENCODING)
+        };
+        if !subrole_attribute.is_null() {
+            let mut subrole: CFTypeRef = std::ptr::null();
+            let subrole_status =
+                unsafe { AXUIElementCopyAttributeValue(focused, subrole_attribute, &mut subrole) };
+            unsafe { CFRelease(subrole_attribute) };
+            if !subrole.is_null() {
+                if subrole_status == AX_SUCCESS {
+                    let mut buffer = [0 as c_char; 128];
+                    let converted = unsafe {
+                        CFStringGetCString(
+                            subrole,
+                            buffer.as_mut_ptr(),
+                            buffer.len() as isize,
+                            UTF8_ENCODING,
+                        )
+                    };
+                    secure_subrole = converted
+                        && unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_bytes()
+                            == b"AXSecureTextField";
+                }
+                unsafe { CFRelease(subrole) };
+            }
+        }
+    }
     unsafe { CFRelease(focused) };
     if role_status != AX_SUCCESS || role.is_null() {
         if !role.is_null() {
@@ -915,6 +1098,9 @@ fn focused_role_native() -> Result<String, String> {
     unsafe { CFRelease(role) };
     if !converted {
         return Err("could not convert AX role to UTF-8".to_string());
+    }
+    if secure_subrole {
+        return Ok("AXSecureTextField".to_string());
     }
 
     Ok(unsafe { CStr::from_ptr(buffer.as_ptr()) }
@@ -975,7 +1161,9 @@ fn classify_focused_role(role: &str) -> FocusedFieldState {
     if role.is_empty() || role == "missing value" {
         return FocusedFieldState::Unknown;
     }
-    if is_editable_text_role(role) {
+    if role == "AXSecureTextField" {
+        FocusedFieldState::Secure
+    } else if is_editable_text_role(role) {
         FocusedFieldState::Editable
     } else if is_non_editable_desktop_role(role) {
         FocusedFieldState::NonEditable
@@ -1017,6 +1205,22 @@ mod focus_tests {
             current_is_self: false,
             ownership_current: true,
         }
+    }
+
+    #[test]
+    fn smart_refusal_distinguishes_a_revoked_target_from_a_changed_clipboard() {
+        assert_eq!(
+            smart_refusal_reason(Some(7), Some(7)),
+            ClipboardOnlyReason::SmartTargetUnavailable
+        );
+        assert_eq!(
+            smart_refusal_reason(Some(7), Some(8)),
+            ClipboardOnlyReason::ClipboardChanged
+        );
+        assert_eq!(
+            smart_refusal_reason(Some(7), None),
+            ClipboardOnlyReason::ClipboardChanged
+        );
     }
 
     #[test]
@@ -1385,6 +1589,53 @@ mod focus_tests {
     }
 
     #[test]
+    fn non_editable_verdict_is_kept_only_for_a_finder_delivery_target() {
+        assert_eq!(
+            scope_non_editable_to_finder(FocusedFieldState::NonEditable, true),
+            FocusedFieldState::NonEditable
+        );
+        // Web-backed editors outside Finder (e.g. Muse reporting a denylisted
+        // role for its input) must fail open.
+        assert_eq!(
+            scope_non_editable_to_finder(FocusedFieldState::NonEditable, false),
+            FocusedFieldState::Unknown
+        );
+        for state in [FocusedFieldState::Editable, FocusedFieldState::Unknown] {
+            for target_is_finder in [true, false] {
+                assert_eq!(scope_non_editable_to_finder(state, target_is_finder), state);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_complete_finder_delivery_target_counts_as_finder() {
+        use crate::frontmost::{
+            AppTransitionSnapshot, DeliveryTargetIdentity, DeliveryTargetSnapshot,
+            ProcessInstanceToken,
+        };
+        let target = |bundle_id: &str| {
+            DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+                bundle_id: bundle_id.to_string(),
+                process_id: 42,
+                process_instance: ProcessInstanceToken::for_test(1),
+                window_token: None,
+                transitions: AppTransitionSnapshot {
+                    activation_generation: 0,
+                    space_generation: 0,
+                },
+            })
+        };
+        assert!(delivery_target_is_finder(&target("com.apple.finder")));
+        assert!(!delivery_target_is_finder(&target("com.meta.endo")));
+        assert!(!delivery_target_is_finder(
+            &DeliveryTargetSnapshot::Incomplete
+        ));
+        assert!(!delivery_target_is_finder(
+            &DeliveryTargetSnapshot::SelfTarget
+        ));
+    }
+
+    #[test]
     fn unrecognised_role_is_unknown_and_allows_paste() {
         // Policy is a DENYLIST: any non-empty role that is neither a recognised
         // editable role nor on the desktop denylist must map to Unknown (allow
@@ -1420,18 +1671,36 @@ mod focus_tests {
     fn editable_roles_classify_as_editable_and_allow_paste() {
         // Representative editable controls take priority over the denylist and
         // permit the paste.
-        for role in [
-            "AXTextField",
-            "AXTextArea",
-            "AXComboBox",
-            "AXSecureTextField",
-        ] {
+        for role in ["AXTextField", "AXTextArea", "AXComboBox"] {
             assert_eq!(
                 classify_focused_role(role),
                 FocusedFieldState::Editable,
                 "{} should classify as Editable",
                 role
             );
+        }
+    }
+
+    #[test]
+    fn secure_fields_paste_normally_but_the_smart_fallback_refuses_them() {
+        let secure = classify_focused_role("AXSecureTextField");
+        assert_eq!(secure, FocusedFieldState::Secure);
+        // Normal auto-paste is unchanged: a secure field is editable.
+        assert_eq!(
+            secure_field_policy(scope_non_editable_to_finder(secure, false), false),
+            FocusedFieldState::Editable
+        );
+        // The Smart destination fallback refuses it before preflight.
+        assert_eq!(
+            secure_field_policy(scope_non_editable_to_finder(secure, false), true),
+            FocusedFieldState::NonEditable
+        );
+        for state in [
+            FocusedFieldState::Editable,
+            FocusedFieldState::Unknown,
+            FocusedFieldState::NonEditable,
+        ] {
+            assert_eq!(secure_field_policy(state, true), state);
         }
     }
 

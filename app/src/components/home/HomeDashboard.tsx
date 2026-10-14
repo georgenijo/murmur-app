@@ -3,6 +3,7 @@ import type { useMeetings } from '../../lib/hooks/useMeetings';
 import type { HistoryEntry } from '../../lib/history';
 import type { Settings } from '../../lib/settings';
 import type { DictationStatus } from '../../lib/types';
+import type { SmartDestinationStatus } from '../../lib/smartDestination';
 import { loadStats } from '../../lib/stats';
 import { HistoryPanel } from '../history/HistoryPanel';
 import { HomeRecordingBar } from './HomeRecordingBar';
@@ -24,6 +25,8 @@ interface HomeDashboardProps {
   initialized: boolean;
   recordingDuration: number;
   audioLevel: number;
+  smartDestinationStatus?: SmartDestinationStatus | null;
+  smartDestinationAppName?: string | null;
   settings: Settings;
   meetings: ReturnType<typeof useMeetings>;
   statsVersion: number;
@@ -51,6 +54,8 @@ export function HomeDashboard({
   initialized,
   recordingDuration,
   audioLevel,
+  smartDestinationStatus = null,
+  smartDestinationAppName = null,
   settings,
   meetings,
   statsVersion,
@@ -70,6 +75,8 @@ export function HomeDashboard({
             initialized={initialized}
             recordingDuration={recordingDuration}
             audioLevel={audioLevel}
+            smartDestinationStatus={smartDestinationStatus}
+            smartDestinationAppName={smartDestinationAppName}
             triggerKey={settings.doubleTapKey}
             recordingMode={settings.recordingMode}
             meetingPhase={meetings.status.phase}

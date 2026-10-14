@@ -15,7 +15,6 @@ const sources = productionSources("./src");
 const alwaysDarkPrefixes = [
   "components/overlay/",
   "components/transform-review/",
-  "components/query-review/",
   "components/dictation-preview/",
 ] as const;
 const alwaysDarkFiles = new Set(["components/OverlayWidget.tsx"]);

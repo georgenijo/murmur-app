@@ -30,6 +30,19 @@ describe('ModesManager', () => {
     expect(previewModeText('um first new line second', mode)).toBe('first \n second');
   });
 
+  it('marks the selected Mode row for keyboard and visual state styling', async () => {
+    await act(async () => root.render(
+      <ModesManager modes={[mode]} profiles={[]} siteLookupEnabled={false} siteRules={[]} onChange={vi.fn()} />,
+    ));
+    const rows = [...container.querySelectorAll<HTMLButtonElement>('[aria-label="Modes"] > button')];
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0].getAttribute('aria-pressed')).toBe('true');
+    expect(rows[0].className).toContain('settings-mode-row');
+    await act(async () => rows[1].click());
+    expect(rows[0].getAttribute('aria-pressed')).toBe('false');
+    expect(rows[1].getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('creates, tests, edits, and removes exact browser host rules behind global opt-in', async () => {
     const onChange = vi.fn();
     await act(async () => root.render(<ModesManager modes={[mode]} profiles={[]} siteLookupEnabled siteRules={[]} onChange={onChange} />));

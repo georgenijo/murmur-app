@@ -12,6 +12,10 @@ The CLI stage is conservative and bounded to command-shaped lines at the utteran
 
 **CLI: Off** disables implicit detection for that app; an explicit command trigger still works. Text that does not activate is returned byte-for-byte unchanged. Mentions such as “I use git and cargo every day” and “npm is a package manager” are ordinary prose, not commands.
 
+The Technical mode and Code / technical writing style use automatic detection;
+they do not imply CLI: On. Terminal mode explicitly selects CLI: On. This keeps
+ordinary technical prose out of the punctuation-stripping command formatter.
+
 Physical line endings are immutable boundaries. Each line is considered independently, so a command line can be canonicalized without rewriting adjacent prose, and existing LF/CRLF endings remain unchanged.
 
 ### Inline slash-command references

@@ -38,7 +38,9 @@ fn frame(app: &tauri::AppHandle, expanded: bool) -> (f64, f64, f64, f64) {
             let scale = monitor.scale_factor();
             let x = monitor.position().x as f64 / scale
                 + (monitor.size().width as f64 / scale - WIDTH) / 2.0;
-            let y = monitor.position().y as f64 / scale + TOP_INSET;
+            let base_y = monitor.position().y as f64 / scale + TOP_INSET;
+            let (y, height) = super::overlay::overlay_popover_fit(app, &monitor, height)
+                .unwrap_or((base_y, height));
             (x, y, WIDTH, height)
         }
         None => (300.0, TOP_INSET, WIDTH, height),

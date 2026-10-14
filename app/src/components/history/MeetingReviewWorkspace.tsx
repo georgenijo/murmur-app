@@ -7,6 +7,7 @@ import {
   meetingSegmentDisplayLabel,
   type EditableReviewDocument,
   type MeetingReviewDocumentV1,
+  type NewReviewClaim,
   type MeetingReviewExportFormat,
   type MeetingSegment,
   type MeetingSpeakerLabels,
@@ -58,12 +59,15 @@ function SourceLinks({ label, ids, onActivate }: {
   );
 }
 
-function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabled }: {
+function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabled, selected, onSelect, selectionDisabled }: {
   segment: MeetingSegment;
   labels: { me: string; them: string };
   remoteSpeakers: RemoteSpeakerLabel[];
   onPlay?: () => void;
   playbackDisabled?: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  selectionDisabled: boolean;
 }) {
   const canonical = segment.speaker === 'me' ? 'Me' : 'Them';
   const display = meetingSegmentDisplayLabel(segment, labels, remoteSpeakers);
@@ -90,9 +94,15 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
       <span className={`truncate text-xs font-bold ${segment.speaker === 'me' ? 'text-primary' : 'text-success'}`} title={`${display} (${canonical})`}>
         {display} <span className="font-normal text-on-surface-variant">({canonical})</span>
       </span>
-      <p className="min-w-0 whitespace-pre-wrap break-words text-on-surface">
-        {segment.status === 'final' ? segment.text : segment.status === 'pending' ? 'Transcript pending…' : 'Transcription failed.'}
-      </p>
+      <div className="min-w-0">
+        <label className="mb-1 flex w-fit items-center gap-1.5 text-[11px] text-on-surface-variant">
+          <input type="checkbox" checked={selected} onChange={onSelect} disabled={selectionDisabled} aria-label={`Use as source: transcript segment ${segment.id} at ${formatMeetingTimestamp(segment.startMs)}`} aria-controls={`meeting-segment-${segment.id}`} className="accent-primary" />
+          Use as source
+        </label>
+        <p className="min-w-0 whitespace-pre-wrap break-words text-on-surface">
+          {segment.status === 'final' ? segment.text : segment.status === 'pending' ? 'Transcript pending…' : 'Transcription failed.'}
+        </p>
+      </div>
     </article>
   );
 }
@@ -107,6 +117,10 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   const [format, setFormat] = useState<MeetingReviewExportFormat>('markdown');
   const captions = format === 'srt' || format === 'vtt';
   const [restoreConfirm, setRestoreConfirm] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [newClaims, setNewClaims] = useState<Array<{ id: number; claim: NewReviewClaim }>>([]);
+  const nextClaimId = useRef(0);
+  const [saving, setSaving] = useState(false);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
   const summaryBusy = summaryStatus?.phase === 'running' || summaryStatus?.phase === 'cancelling';
   const activeDocument = detail.activeDocument;
@@ -124,6 +138,9 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     setEditing(false);
     setDraft(null);
     setRestoreConfirm(false);
+    setSelectedIds([]);
+    setNewClaims([]);
+    setSaving(false);
   }, [detail.session.id, detail.review?.revision, detail.generated?.revision]);
 
   useEffect(() => {
@@ -203,7 +220,33 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     }
   };
 
+  const createClaim = (kind: NewReviewClaim['kind']) => {
+    if (!selectedIds.length) {
+      onNotice('Select at least one transcript segment before creating a claim.');
+      return;
+    }
+    if (!activeDocument || saving || captureBusy) return;
+    if (!editing) beginEdit();
+    const claim: NewReviewClaim = kind === 'action_item'
+      ? { kind, text: '', owner: null, dueDate: null, sourceSegmentIds: [...selectedIds] }
+      : { kind, text: '', sourceSegmentIds: [...selectedIds] };
+    const id = nextClaimId.current++;
+    setNewClaims((current) => [...current, { id, claim }]);
+    setSelectedIds([]);
+    onNotice('New claim added to your unsaved review. Enter its text, then save the review.');
+    const activation = activeWorkspace.current;
+    window.requestAnimationFrame(() => {
+      if (isCurrentWorkspace(activation)) window.document.getElementById(`new-meeting-claim-${id}`)?.focus();
+    });
+  };
+
   const saveEdits = async () => {
+    if (saving) return;
+    if (newClaims.some(({ claim }) => !claim.sourceSegmentIds.length || !claim.text.trim())) {
+      onNotice('Every new claim needs text and at least one selected transcript source.');
+      return;
+    }
+    setSaving(true);
     const activation = activeWorkspace.current;
     const sessionId = detail.session.id;
     const base: ReviewEditBase = detail.activeOrigin === 'reviewed' && detail.review
@@ -217,6 +260,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
       base,
       labels,
       document: draft ?? (activeDocument ? editable(activeDocument) : null),
+      newClaims: newClaims.map(({ claim }) => claim),
     });
     if (saved && isCurrentWorkspace(activation)) {
       setLabelDrafts((current) => {
@@ -226,8 +270,12 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         return next;
       });
       setEditing(false);
+      setDraft(null);
+      setNewClaims([]);
+      setSelectedIds([]);
       onNotice('Meeting review saved on this Mac.');
     }
+    if (isCurrentWorkspace(activation)) setSaving(false);
   };
 
   const restore = async () => {
@@ -371,11 +419,24 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
 
       {editing && draft ? (
-        <form aria-label="Edit meeting review" aria-busy={false} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="mb-4 space-y-3 rounded-[var(--ui-radius-card)] border border-primary/25 bg-surface-container-low p-4">
+        <form aria-label="Edit meeting review" aria-busy={saving} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="mb-4 space-y-3 rounded-[var(--ui-radius-card)] border border-primary/25 bg-surface-container-low p-4">
+          <fieldset disabled={saving} className="space-y-3">
           <label className="block text-xs font-semibold">Summary<textarea aria-label="Review summary" value={draft.summary.text} onChange={(event) => setDraft({ ...draft, summary: { ...draft.summary, text: event.target.value } })} className="mt-1 min-h-20 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /></label>
           {(['decisions', 'openQuestions'] as const).map((section) => <fieldset key={section} className="space-y-2"><legend className="text-xs font-semibold">{section === 'decisions' ? 'Decisions' : 'Open questions'}</legend>{draft[section].length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft[section].map((item, index) => <div key={item.key} className="flex gap-2"><textarea aria-label={`${section} ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, [section]: draft[section].map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="min-h-14 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /><button type="button" aria-label={`Remove ${section} ${index + 1}`} onClick={() => setDraft({ ...draft, [section]: draft[section].filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>)}
           <fieldset className="space-y-2"><legend className="text-xs font-semibold">Action items</legend>{draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft.actionItems.map((item, index) => <div key={item.key} className="grid gap-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2 sm:grid-cols-[minmax(0,1fr)_8rem_8rem_auto]"><input aria-label={`Action item ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} /><input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} /><input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} /><button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>
-          <div className="flex gap-2"><button type="submit" className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)]">Save review</button><button type="button" onClick={() => { setEditing(false); setDraft(null); setLabelDrafts({}); }} className="rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold">Cancel</button></div>
+          {newClaims.length > 0 && <fieldset className="space-y-3"><legend className="text-xs font-semibold">New claims · unsaved</legend>{newClaims.map(({ id, claim }, index) => {
+            const number = newClaims.slice(0, index).filter((entry) => entry.claim.kind === claim.kind).length + 1;
+            const kindLabel = claim.kind === 'decision' ? 'New decision' : claim.kind === 'action_item' ? 'New action item' : 'New open question';
+            const label = `${kindLabel} ${number}`;
+            const update = (next: NewReviewClaim) => setNewClaims((current) => current.map((entry) => entry.id === id ? { id, claim: next } : entry));
+            return <div key={id} className="space-y-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2">
+              <label className="block text-xs font-semibold">{label}<textarea id={`new-meeting-claim-${id}`} aria-label={`${label} text`} maxLength={16_384} value={claim.text} onChange={(event) => update({ ...claim, text: event.target.value })} className="mt-1 min-h-14 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /></label>
+              {claim.kind === 'action_item' && <div className="flex flex-wrap gap-2"><input aria-label={`New action owner ${number}`} maxLength={256} placeholder="Unknown owner" value={claim.owner ?? ''} onChange={(event) => update({ ...claim, owner: event.target.value || null })} className="rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] p-2 text-xs" /><input aria-label={`New action due date ${number}`} type="date" value={claim.dueDate ?? ''} onChange={(event) => update({ ...claim, dueDate: event.target.value || null })} className="rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] p-2 text-xs" /></div>}
+              <div className="flex items-center justify-between text-xs"><span>Sources<SourceLinks label={label} ids={claim.sourceSegmentIds} onActivate={jumpToSource} /></span><button type="button" aria-label={`Remove ${label.toLowerCase()}`} onClick={() => setNewClaims((current) => current.filter((entry) => entry.id !== id))} className="text-error">Remove</button></div>
+            </div>;
+          })}</fieldset>}
+          <div className="flex gap-2"><button type="submit" className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)]">Save review</button><button type="button" onClick={() => { setEditing(false); setDraft(null); setLabelDrafts({}); setNewClaims([]); setSelectedIds([]); }} className="rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold">Cancel</button></div>
+          </fieldset>
         </form>
       ) : activeDocument ? (
         <article className="mb-4 rounded-[var(--ui-radius-card)] border border-primary/25 bg-[var(--ui-tint-accent-subtle)] p-4">
@@ -387,7 +448,13 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         </article>
       ) : <div className="mb-4 rounded-[var(--ui-radius-card)] border border-dashed border-[var(--ui-hairline-strong)] p-5 text-center"><p className="text-sm font-semibold">No review draft yet</p><p className="mt-1 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p></div>}
 
-      <section aria-labelledby="meeting-transcript-title"><h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Raw segment text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}</section>
+      <section aria-labelledby="meeting-transcript-title">
+        {activeDocument && <div className="dialog-card mb-3 flex flex-wrap items-center gap-2 p-3">
+          <span role="status" className="text-xs text-on-surface-variant">{selectedIds.length} transcript sources selected</span>
+          {(['decision', 'action_item', 'open_question'] as const).map((kind) => <button key={kind} type="button" disabled={captureBusy || saving} onClick={() => createClaim(kind)} className="dialog-pill-btn px-3 py-2 text-xs disabled:opacity-40">{kind === 'decision' ? 'New decision' : kind === 'action_item' ? 'New action item' : 'New open question'}</button>)}
+          {selectedIds.length > 0 && <button type="button" disabled={saving} onClick={() => setSelectedIds([])} className="dialog-pill-btn px-3 py-2 text-xs">Clear selection</button>}
+        </div>}
+        <h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Select transcript sources to add a claim to your review. Raw text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} selected={selectedIds.includes(segment.id)} onSelect={() => setSelectedIds((current) => current.includes(segment.id) ? current.filter((id) => id !== segment.id) : [...current, segment.id])} selectionDisabled={!activeDocument || captureBusy || saving || segment.status !== 'final' || !segment.text.trim()} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}</section>
     </div>
   );
 }
