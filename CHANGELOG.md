@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   displays. It is tucked directly under the notch again; floating overlays on
   external displays keep their clearance.
 
+## [0.51.2] - 2026-10-14
+
+### Dictation
+
+- Fixed Smart destination still leaving dictations on the clipboard when the
+  text, caret, or focus in the same app changed while you were speaking. Murmur
+  now pastes into that app with normal auto-paste, as it does with Smart
+  destination off; secure fields and other apps are still refused.
+
 ## [0.51.1] - 2026-10-14
 
 ### Dictation

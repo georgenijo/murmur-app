@@ -2489,7 +2489,7 @@ async fn run_transcription_pipeline(
             &context.app.delivery_target,
             stop_delivery_target.as_ref(),
         );
-        let delivery_target = anchored_target.clone();
+        let mut delivery_target = anchored_target.clone();
         let mut smart_destination = context.app.smart_destination.clone();
         let recovery_smart_destination = smart_destination.clone();
         let recovery_target = smart_destination
@@ -2533,11 +2533,21 @@ async fn run_transcription_pipeline(
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
                 _ => {
+                    let same_app_fallback = smart_destination.allows_same_app_fallback();
                     let abandoned = smart_destination.clone();
                     let _ = app_handle.run_on_main_thread(move || {
                         crate::smart_destination::abort(&abandoned, None);
                     });
-                    smart_destination = crate::smart_destination::Snapshot::Unavailable;
+                    smart_destination = if same_app_fallback {
+                        // The field changed while speaking (typing, caret,
+                        // or focus inside the same app). Nothing was
+                        // activated, so use the normal verified paste bound
+                        // to that app, exactly as with the feature off.
+                        delivery_target = recovery_target.clone();
+                        crate::smart_destination::Snapshot::Unverified
+                    } else {
+                        crate::smart_destination::Snapshot::Unavailable
+                    };
                 }
             }
         }
@@ -7539,6 +7549,7 @@ pub(crate) mod tests {
             token: 17,
             revision: 4,
             identity: editor_target.clone(),
+            current_app: false,
         };
         assert_eq!(smart_destination_status(&smart, &media_target), "recent");
         for accepted in [media_target.clone(), DeliveryTargetSnapshot::Incomplete] {

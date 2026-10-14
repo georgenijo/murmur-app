@@ -55,6 +55,9 @@ pub(crate) enum Snapshot {
         token: u64,
         revision: u64,
         identity: DeliveryTargetSnapshot,
+        /// The field was in the app that was frontmost at recording start, so
+        /// delivery needs no cross-app activation.
+        current_app: bool,
     },
 }
 
@@ -70,6 +73,20 @@ impl Snapshot {
     /// smart one-shot field capability.
     pub(crate) fn uses_normal_paste(&self) -> bool {
         matches!(self, Self::Disabled | Self::Unverified)
+    }
+
+    /// A current-app capture whose field could not be re-verified may use the
+    /// normal verified paste into that same app, exactly as with the feature
+    /// off. A cross-app (media handoff) capture never may: normal paste would
+    /// target the media app instead.
+    pub(crate) fn allows_same_app_fallback(&self) -> bool {
+        matches!(
+            self,
+            Self::Target {
+                current_app: true,
+                ..
+            }
+        )
     }
 
     /// Content-free routing label for diagnostics.
@@ -553,8 +570,24 @@ mod tests {
             token: 1,
             revision: 1,
             identity: DeliveryTargetSnapshot::Incomplete,
+            current_app: true,
         }
         .uses_normal_paste());
+    }
+
+    #[test]
+    fn only_current_app_captures_may_fall_back_to_normal_paste() {
+        let target = |current_app| Snapshot::Target {
+            token: 1,
+            revision: 1,
+            identity: DeliveryTargetSnapshot::Incomplete,
+            current_app,
+        };
+        assert!(target(true).allows_same_app_fallback());
+        assert!(!target(false).allows_same_app_fallback());
+        assert!(!Snapshot::Unavailable.allows_same_app_fallback());
+        assert!(!Snapshot::Unverified.allows_same_app_fallback());
+        assert!(!Snapshot::Disabled.allows_same_app_fallback());
     }
 
     #[test]
