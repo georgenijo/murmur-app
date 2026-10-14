@@ -280,6 +280,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'text-editors', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
+  { page: 'general', target: 'overlay-calibration', title: 'Calibrate Overlay Position', detail: 'Fine-tune the overlay position around your Mac’s notch.', keywords: 'calibrate calibration overlay position vertical notch dynamic island' },
   { page: 'shortcuts', target: 'shortcuts', title: 'Keyboard Shortcuts', detail: 'See every global and main-window shortcut.', keywords: 'hotkey key binding command control recording transform query paste correction' },
   { page: 'general', target: 'setup', title: 'Setup Assistant', detail: 'Re-check permissions and model setup.', keywords: 'onboarding microphone accessibility' },
   { page: 'general', target: 'updates', title: 'Updates', detail: 'Check for a newer Murmur release.', keywords: 'version upgrade' },
@@ -426,7 +427,8 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
     const target = content.querySelector<HTMLElement>(`[data-setting-target="${targetRequest.id}"]`);
     if (!target) return;
-    if (target instanceof HTMLDetailsElement) target.open = true;
+    const disclosure = target instanceof HTMLDetailsElement ? target : target.closest('details');
+    if (disclosure instanceof HTMLDetailsElement) disclosure.open = true;
     target.scrollIntoView({ block: 'center' });
     target.classList.add('settings-target-flash');
     const timeout = window.setTimeout(() => target.classList.remove('settings-target-flash'), 1800);
@@ -1459,6 +1461,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             )}
             <SettingsDisclosure title="Advanced" layout="stack">
               <OverlayCalibrationControl
+                targetId="overlay-calibration"
                 offset={settings.overlayVerticalOffset}
                 onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
               />

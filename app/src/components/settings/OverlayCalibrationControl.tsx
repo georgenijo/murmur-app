@@ -10,6 +10,7 @@ import {
 interface OverlayCalibrationControlProps {
   offset: number;
   onCommit: (offset: number) => void;
+  targetId?: string;
 }
 
 function offsetLabel(offset: number): string {
@@ -20,6 +21,7 @@ function offsetLabel(offset: number): string {
 export function OverlayCalibrationControl({
   offset,
   onCommit,
+  targetId,
 }: OverlayCalibrationControlProps) {
   const [active, setActive] = useState(false);
   const [draft, setDraft] = useState(() => clampOverlayVerticalOffset(offset));
@@ -123,7 +125,7 @@ export function OverlayCalibrationControl({
   }, [announceCalibration]);
 
   return (
-    <div className="rounded-(--ui-radius-control) border border-outline-variant/30 bg-surface-container-lowest p-3">
+    <div data-setting-target={targetId} className="rounded-(--ui-radius-control) border border-outline-variant/30 bg-surface-container-lowest p-3 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs font-medium text-on-surface">Overlay position</p>
