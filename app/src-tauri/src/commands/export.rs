@@ -20,6 +20,20 @@ const MAX_EXPORT_BYTES: usize = 8 * 1024 * 1024;
 /// Reject anything that isn't an absolute path to a writable document with an
 /// allow-listed extension inside an existing directory.
 pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
+    validate_path_with_extensions(path, &ALLOWED_EXTENSIONS, ".json, .md, .txt, .srt or .vtt")
+}
+
+/// Same checks as [`validate_export_path`] for a meeting bundle, whose only
+/// legal extension is `.zip`.
+pub(crate) fn validate_bundle_path(path: &Path) -> Result<(), String> {
+    validate_path_with_extensions(path, &["zip"], ".zip")
+}
+
+fn validate_path_with_extensions(
+    path: &Path,
+    allowed: &[&str],
+    expected: &str,
+) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("Export path must be absolute".to_string());
     }
@@ -39,9 +53,9 @@ pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .ok_or_else(|| "Export file name must have an extension".to_string())?;
-    if !ALLOWED_EXTENSIONS.contains(&extension.as_str()) {
+    if !allowed.contains(&extension.as_str()) {
         return Err(format!(
-            "Unsupported export type '.{extension}' (expected .json, .md, .txt, .srt or .vtt)"
+            "Unsupported export type '.{extension}' (expected {expected})"
         ));
     }
     let parent = path
@@ -87,6 +101,64 @@ pub(crate) fn write_text_export(path: &Path, contents: &str) -> Result<u64, Stri
     Ok(contents.len() as u64)
 }
 
+/// Unique, hidden temp sibling for one `publish_with` call. The random suffix
+/// keeps concurrent exports to the same destination (and any file the user
+/// already has next to it) from sharing an inode.
+fn unique_temp_path_for(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("export");
+    path.with_file_name(format!(
+        ".{name}.{}.murmur-tmp",
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
+/// Atomically publish a file produced by `write` at `path`: the bytes go to a
+/// uniquely named, exclusively created hidden sibling that is renamed over the
+/// destination only after `write` and `before_publish` succeed. The sibling is
+/// created with `O_EXCL`, so an existing file or symlink is never opened,
+/// truncated, or removed; failure cleanup deletes only the file this call
+/// created. `before_publish` runs immediately before the rename so the caller
+/// can re-validate whatever the bytes depend on. Used for exports too large to
+/// hold in memory; the caller validates `path` first.
+pub(crate) fn publish_with<F, G>(path: &Path, write: F, before_publish: G) -> Result<u64, String>
+where
+    F: FnOnce(&mut std::fs::File) -> Result<u64, String>,
+    G: FnOnce() -> Result<(), String>,
+{
+    use std::os::unix::fs::OpenOptionsExt;
+    let temp = unique_temp_path_for(path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temp)
+        .map_err(|e| format!("Failed to write export: {e}"))?;
+    // From here the temp file is ours alone, so every failure removes it.
+    let written = write(&mut file).and_then(|written| {
+        file.sync_all()
+            .map_err(|e| format!("Failed to write export: {e}"))?;
+        before_publish()?;
+        Ok(written)
+    });
+    drop(file);
+    let written = match written {
+        Ok(written) => written,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+    };
+    if let Err(e) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("Failed to publish export: {e}"));
+    }
+    Ok(written)
+}
+
 /// Write a user-authored text export to a path the user chose in the native
 /// save dialog. Returns the number of bytes written.
 #[tauri::command]
@@ -116,6 +188,158 @@ mod tests {
         let bytes = write_text_export(&path, "# hi\n").unwrap();
         assert_eq!(bytes, 5);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# hi\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bundle_paths_accept_only_zip() {
+        let dir = temp_dir("bundle_ext");
+        assert!(validate_bundle_path(&dir.join("meeting.ZIP")).is_ok());
+        for name in ["meeting.md", "meeting.txt", "meeting.sh"] {
+            let error = validate_bundle_path(&dir.join(name)).unwrap_err();
+            assert!(error.contains("Unsupported export type"), "{name}: {error}");
+        }
+        assert!(validate_export_path(&dir.join("meeting.zip")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publish_with_is_atomic_and_cleans_up_failed_writes() {
+        use std::io::Write;
+        let dir = temp_dir("publish_with");
+        let path = dir.join("meeting.zip");
+        std::fs::write(&path, "previous").unwrap();
+        let error = publish_with(
+            &path,
+            |file| {
+                file.write_all(b"partial").unwrap();
+                Err("boom".to_string())
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "boom");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let written = publish_with(
+            &path,
+            |file| {
+                file.write_all(b"fresh").unwrap();
+                Ok(5)
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(written, 5);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publish_with_publishes_nothing_when_the_last_check_refuses() {
+        use std::io::Write;
+        let dir = temp_dir("publish_refused");
+        let path = dir.join("meeting.zip");
+        std::fs::write(&path, "previous").unwrap();
+        let error = publish_with(
+            &path,
+            |file| {
+                file.write_all(b"fresh").unwrap();
+                Ok(5)
+            },
+            || Err("revoked".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "revoked");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publish_with_never_touches_existing_files_or_symlinks_beside_the_destination() {
+        use std::io::Write;
+        let dir = temp_dir("publish_existing");
+        let path = dir.join("meeting.zip");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "precious").unwrap();
+        // The names the old fixed-name scheme would have used.
+        let legacy = dir.join(".meeting.zip.murmur-tmp");
+        std::os::unix::fs::symlink(&victim, &legacy).unwrap();
+        let other = dir.join(".meeting.zip.murmur-tmp.keep");
+        std::fs::write(&other, "unrelated").unwrap();
+
+        let error = publish_with(
+            &path,
+            |file| {
+                file.write_all(b"partial").unwrap();
+                Err("boom".to_string())
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "boom");
+        publish_with(
+            &path,
+            |file| {
+                file.write_all(b"fresh").unwrap();
+                Ok(5)
+            },
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        assert!(std::fs::symlink_metadata(&legacy)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "unrelated");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fresh");
+        // destination, victim, legacy symlink, unrelated file: no stray temp.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_publishes_to_one_destination_each_stay_intact() {
+        use std::io::Write;
+        use std::sync::{Arc, Barrier};
+        let dir = temp_dir("publish_concurrent");
+        let path = dir.join("meeting.zip");
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = [b'a', b'b']
+            .into_iter()
+            .map(|byte| {
+                let (path, barrier) = (path.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    let payload = vec![byte; 64 * 1024];
+                    publish_with(
+                        &path,
+                        |file| {
+                            // Both writers have their temp file open before
+                            // either one finishes.
+                            file.write_all(&payload[..1024]).unwrap();
+                            barrier.wait();
+                            file.write_all(&payload[1024..]).unwrap();
+                            Ok(payload.len() as u64)
+                        },
+                        || Ok(()),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap(), 64 * 1024);
+        }
+        let published = std::fs::read(&path).unwrap();
+        assert_eq!(published.len(), 64 * 1024);
+        assert!(
+            published.iter().all(|byte| *byte == published[0]),
+            "the published file mixes both writers' bytes"
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

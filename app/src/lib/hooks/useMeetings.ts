@@ -17,9 +17,11 @@ import {
   listMeetings,
   openSystemAudioPreferences,
   orderedMeetingSegments,
+  previewMeetingBundle,
   requestSystemAudioPermission,
   renameMeetingRemoteSpeaker,
   restoreMeetingReviewFromGenerated,
+  saveMeetingBundle,
   saveMeetingExport,
   saveMeetingReview,
   saveMeetingMetadata,
@@ -337,6 +339,30 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
+  const previewBundle = useCallback(async (id: string) => {
+    setError(null);
+    try {
+      return await previewMeetingBundle(id);
+    } catch (cause) {
+      setError(String(cause));
+      return null;
+    }
+  }, []);
+
+  const exportBundle = useCallback(async (
+    id: string,
+    startedAtMs: number,
+    format: MeetingReviewExportFormat,
+  ) => {
+    setError(null);
+    try {
+      return await saveMeetingBundle(id, startedAtMs, format);
+    } catch (cause) {
+      setError(String(cause));
+      return null;
+    }
+  }, []);
+
   const saveReview = useCallback(async (request: SaveMeetingReviewRequest) => {
     setError(null);
     try {
@@ -472,6 +498,8 @@ export function useMeetings(settings: Settings) {
     openSystemAudioPreferences: openPreferences,
     copy,
     exportReview,
+    previewBundle,
+    exportBundle,
     saveReview,
     saveMetadata,
     applyCalendarEvent,

@@ -2,10 +2,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
+  formatBundleSize,
   formatMeetingTimestamp,
   MEETING_EXPORT_FORMATS,
   meetingSegmentDisplayLabel,
   type EditableReviewDocument,
+  type MeetingBundlePreview,
   type MeetingReviewDocumentV1,
   type NewReviewClaim,
   type MeetingReviewExportFormat,
@@ -121,6 +123,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   const [newClaims, setNewClaims] = useState<Array<{ id: number; claim: NewReviewClaim }>>([]);
   const nextClaimId = useRef(0);
   const [saving, setSaving] = useState(false);
+  const [bundlePlan, setBundlePlan] = useState<{ sessionId: string; preview: MeetingBundlePreview } | null>(null);
+  const [bundleBusy, setBundleBusy] = useState(false);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
   const summaryBusy = summaryStatus?.phase === 'running' || summaryStatus?.phase === 'cancelling';
   const activeDocument = detail.activeDocument;
@@ -310,6 +314,29 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     if (path && isCurrentWorkspace(activation)) onNotice(`Meeting ${captions ? 'captions' : 'review'} exported as ${format}.`);
   };
 
+  const planBundle = async () => {
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    setBundleBusy(true);
+    const preview = await meetings.previewBundle(sessionId);
+    setBundleBusy(false);
+    if (preview && isCurrentWorkspace(activation)) setBundlePlan({ sessionId, preview });
+  };
+
+  const exportBundle = async () => {
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    setBundleBusy(true);
+    const saved = await meetings.exportBundle(sessionId, detail.session.startedAtMs, format);
+    setBundleBusy(false);
+    if (!saved || !isCurrentWorkspace(activation)) return;
+    setBundlePlan(null);
+    const { includedSegments, omittedSegments } = saved.receipt;
+    onNotice(omittedSegments > 0
+      ? `Meeting exported with ${includedSegments} audio segments; ${omittedSegments} unavailable segments are listed in manifest.json.`
+      : `Meeting exported with ${includedSegments} audio segments.`);
+  };
+
   const renderTextItems = (title: string, items: MeetingReviewDocumentV1['decisions']) => (
     <section className="mt-3" aria-labelledby={`meeting-${title.toLowerCase().replace(/\s/g, '-')}`}>
       <h4 id={`meeting-${title.toLowerCase().replace(/\s/g, '-')}`} className="text-xs font-semibold text-on-surface">{title}</h4>
@@ -412,7 +439,32 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         </label>
         <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{captions ? 'Copy captions' : 'Copy review'}</button>
         <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export…</button>
+        {detail.session.retainAudio && (
+          <button type="button" disabled={detail.session.status === 'active' || captureBusy || bundleBusy} onClick={() => void planBundle()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export with audio…</button>
+        )}
       </div>
+
+      {bundlePlan && bundlePlan.sessionId === detail.session.id && (
+        <section aria-label="Export with audio" className="dialog-card mb-3 p-3 text-xs leading-relaxed">
+          <p role="status">
+            The .zip holds the {captions ? 'captions' : 'review'} as {format}, {bundlePlan.preview.audioSegments} audio segments ({formatBundleSize(bundlePlan.preview.audioBytes)}), and a manifest. Audio is saved exactly as recorded.
+          </p>
+          {bundlePlan.preview.unavailableSegments > 0 && (
+            <p role="alert" className="mt-1 text-error">
+              {bundlePlan.preview.unavailableSegments} retained audio segments are missing and will be left out. The manifest lists them, so the bundle is incomplete.
+            </p>
+          )}
+          {bundlePlan.preview.audioBytes > bundlePlan.preview.maxAudioBytes && (
+            <p role="alert" className="mt-1 text-error">
+              This is over the {formatBundleSize(bundlePlan.preview.maxAudioBytes)} bundle limit. Use Export… for the {captions ? 'captions' : 'review'} on its own.
+            </p>
+          )}
+          <div className="mt-2 flex gap-2">
+            <button type="button" disabled={bundleBusy || captureBusy || bundlePlan.preview.audioBytes > bundlePlan.preview.maxAudioBytes} onClick={() => void exportBundle()} className="dialog-pill-btn px-3 py-1.5 text-xs disabled:opacity-40">Choose location…</button>
+            <button type="button" disabled={bundleBusy} onClick={() => setBundlePlan(null)} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Cancel</button>
+          </div>
+        </section>
+      )}
 
       {captions && <p className="mb-3 text-xs text-on-surface-variant" role="status">{detail.session.status === 'active'
         ? 'Stop this meeting before exporting captions.'

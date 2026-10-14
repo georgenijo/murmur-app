@@ -46,6 +46,7 @@ mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
 mod meeting_audio;
+mod meeting_bundle;
 mod meeting_capture;
 pub mod meeting_diarization;
 mod meeting_review;
@@ -457,6 +458,8 @@ pub fn run() {
             commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,
             commands::meeting::save_meeting_review_export,
+            meeting_bundle::get_meeting_bundle_preview,
+            meeting_bundle::save_meeting_bundle_export,
             commands::meeting::delete_meeting,
             commands::meeting::delete_all_meetings,
             commands::meeting::prune_meetings,

@@ -53,7 +53,7 @@ function meetingsController(remove: (id: string) => Promise<boolean>): ReturnTyp
       elapsedMs: 0, peakRssMb: 0, errorCode: null,
     },
     refresh: vi.fn(), select: vi.fn(), start: vi.fn(), stop: vi.fn(), requestPermission: vi.fn(),
-    openSystemAudioPreferences: vi.fn(), copy: vi.fn(), exportReview: vi.fn(), saveReview: vi.fn(),
+    openSystemAudioPreferences: vi.fn(), copy: vi.fn(), exportReview: vi.fn(), previewBundle: vi.fn(), exportBundle: vi.fn(), saveReview: vi.fn(),
     saveMetadata: vi.fn(), applyCalendarEvent: vi.fn(), restoreReview: vi.fn(),
     renameRemoteSpeaker: vi.fn(), remove, clear: vi.fn(), summarize: vi.fn(), cancelSummary: vi.fn(),
   };

@@ -17,6 +17,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_release_build_concurrency_is_commit_scoped(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        group = "group: release-build-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}"
+        self.assertIn(group, workflow)
+        for replacement in (
+            "group: release-build-${{ github.ref }}",
+            "group: release-build-${{ github.sha }}",
+        ):
+            mutated = workflow.replace(group, replacement, 1)
+            self.assertNotEqual(workflow, mutated)
+            with self.assertRaises(AssertionError):
+                validate_release_build(mutated)
+
+    def test_publication_never_lets_an_older_release_become_latest(self) -> None:
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        for old, new in (
+            ("--draft=false --latest=false", "--draft=false"),
+            ("Promote highest published release to latest", "Promote release"),
+        ):
+            mutated = workflow.replace(old, new, 1)
+            self.assertNotEqual(workflow, mutated)
+            with self.assertRaises(AssertionError):
+                validate_promotion_policy(mutated)
+
     def test_ci_rust_filter_includes_root_rustfmt_config(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         without_rust_path = workflow.replace("              - 'rustfmt.toml'\n", "", 1)

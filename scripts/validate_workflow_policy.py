@@ -233,6 +233,10 @@ def validate_release_build(workflow: str) -> int:
     assert "self-hosted" not in workflow
     assert "contents: write" not in workflow
     assert "tests/test_release_version.py" in workflow
+    assert (
+        "group: release-build-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}"
+        in workflow
+    )
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
     for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
@@ -424,12 +428,23 @@ def validate_promotion_policy(workflow: str) -> int:
         "Upload and verify updater manifests",
         "Verify release metadata matches updater manifest",
         "Publish release",
+        "Promote highest published release to latest",
     )
     for name in publish_steps:
         block = named_step_block(workflow, name, 6)
         assert "if: needs.resolve.outputs.publish == 'true'" in block
     assert workflow.index("Verify release metadata matches updater manifest") < workflow.index(
         "Publish release"
+    )
+    # Concurrent version builds can finish out of order, so publication never
+    # lets GitHub pick "latest"; the promotion step converges on the highest.
+    publish = named_step_block(workflow, "Publish release", 6)
+    assert "--draft=false --latest=false" in publish
+    promote = named_step_block(workflow, "Promote highest published release to latest", 6)
+    assert "scripts/release_artifacts.py highest-release" in promote
+    assert "--exclude-drafts --exclude-pre-releases" in promote
+    assert workflow.index("Publish release") < workflow.index(
+        "Promote highest published release to latest"
     )
     metadata_check = named_step_block(
         workflow, "Verify release metadata matches updater manifest", 6

@@ -489,4 +489,34 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+        run: gh release edit "$TAG" --draft=false --latest=false --repo "$GITHUB_REPOSITORY"
+
+      - name: Promote highest published release to latest
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Release builds for different commits can finish out of order. Every
+          # publisher re-reads the published set after its own write, so the
+          # last writer always leaves the highest version marked latest.
+          STABLE=0
+          for ATTEMPT in 1 2 3 4 5 6 7 8; do
+            gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+              --limit 200 --json tagName,isLatest > published-releases.json
+            HIGHEST=$(python3 scripts/release_artifacts.py highest-release \
+              --releases published-releases.json)
+            CURRENT=$(jq -r '[.[] | select(.isLatest) | .tagName][0] // empty' published-releases.json)
+            if [ "$CURRENT" = "$HIGHEST" ]; then
+              STABLE=$((STABLE + 1))
+              if [ "$STABLE" -ge 2 ]; then
+                echo "latest release is $HIGHEST"
+                exit 0
+              fi
+            else
+              STABLE=0
+              gh release edit "$HIGHEST" --latest --repo "$GITHUB_REPOSITORY"
+            fi
+            sleep 10
+          done
+          echo "ERROR: latest release did not settle on the highest published version"
+          exit 1

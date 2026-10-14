@@ -65,7 +65,8 @@ describe('VocabularyAliasesEditor', () => {
     expect((container.querySelector('[aria-label="Spoken aliases for Tauri"]') as HTMLInputElement).value).toBe('Tori, Tory');
     expect(container.textContent).toContain('Murmur hears');
     expect(container.textContent).toContain('Murmur types');
-    expect(container.textContent).not.toContain('Spoken aliases');
+    expect(container.textContent).toContain('A written form alone is a recognition hint');
+    expect(container.textContent).toContain('Spoken aliases replace exact matches');
     expect(container.textContent).not.toContain('Global');
 
     const previewButton = Array.from(container.querySelectorAll('button'))

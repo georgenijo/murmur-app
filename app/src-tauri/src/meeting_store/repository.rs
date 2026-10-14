@@ -79,6 +79,18 @@ pub enum InitializationOutcome {
     Reinitialized,
 }
 
+#[cfg(test)]
+thread_local! {
+    static CHECKED_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Checked-connection opens (each runs `quick_check` and schema validation) on
+/// this thread, so tests can prove an operation validates the database once.
+#[cfg(test)]
+pub(crate) fn checked_opens() -> usize {
+    CHECKED_OPENS.with(std::cell::Cell::get)
+}
+
 #[derive(Clone, Debug)]
 pub struct MeetingRepository {
     root: PathBuf,
@@ -533,12 +545,27 @@ impl MeetingRepository {
         cursor: Option<&crate::meeting_audio::AudioCursor>,
         limit: u32,
     ) -> Result<crate::meeting_audio::AudioManifest, String> {
+        crate::meeting_audio::validate_manifest_request(session_id, from_ms, cursor, limit)?;
+        let connection = self.open_checked()?;
+        self.audio_manifest_on(&connection, session_id, from_ms, channel, cursor, limit)
+    }
+
+    /// [`Self::audio_manifest`] on a connection the caller already opened and
+    /// checked, so a long operation validates the database once.
+    pub(crate) fn audio_manifest_on(
+        &self,
+        connection: &Connection,
+        session_id: &str,
+        from_ms: u64,
+        channel: crate::meeting_audio::PlaybackChannel,
+        cursor: Option<&crate::meeting_audio::AudioCursor>,
+        limit: u32,
+    ) -> Result<crate::meeting_audio::AudioManifest, String> {
         use crate::meeting_audio::{
             AudioChunk, AudioCursor, AudioManifest, AudioUnavailableReason, AUDIO_UNAVAILABLE,
             MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER,
         };
         crate::meeting_audio::validate_manifest_request(session_id, from_ms, cursor, limit)?;
-        let connection = self.open_checked()?;
         let session = connection
             .query_row(
                 "SELECT retain_audio, status, ended_at_ms FROM meeting_sessions WHERE id=?",
@@ -639,11 +666,29 @@ impl MeetingRepository {
         session_id: &str,
         segment_id: i64,
     ) -> Result<crate::meeting_audio::OwnedAudioReference, String> {
+        crate::meeting_audio::validate_session_id(session_id)?;
+        let connection = self.open_checked()?;
+        self.audio_reference_on(&connection, session_id, segment_id)
+    }
+
+    /// A connection that has passed the integrity and schema checks once, for an
+    /// operation that resolves many segments through [`Self::audio_reference_on`].
+    pub(crate) fn open_audio_connection(&self) -> Result<Connection, String> {
+        self.open_checked()
+    }
+
+    /// The per-segment ownership check behind [`Self::audio_reference`], on a
+    /// connection the caller already opened and checked.
+    pub(crate) fn audio_reference_on(
+        &self,
+        connection: &Connection,
+        session_id: &str,
+        segment_id: i64,
+    ) -> Result<crate::meeting_audio::OwnedAudioReference, String> {
         use crate::meeting_audio::{
             OwnedAudioReference, AUDIO_UNAVAILABLE, MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER,
         };
         crate::meeting_audio::validate_session_id(session_id)?;
-        let connection = self.open_checked()?;
         let row = connection.query_row(
             "SELECT g.audio_relative_path, g.speaker, g.sequence, g.start_ms, g.end_ms
              FROM meeting_segments g JOIN meeting_sessions s ON s.id=g.session_id
@@ -667,6 +712,45 @@ impl MeetingRepository {
             path: self.root.join(expected),
             duration_ms: end_ms - start_ms,
         })
+    }
+
+    /// Whether the session still exists as a finished, audio-retaining meeting.
+    /// Distinguishes a meeting deleted or pruned mid-operation from a segment
+    /// file that was already gone.
+    pub(crate) fn audio_session_intact_on(
+        &self,
+        connection: &Connection,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        crate::meeting_audio::validate_session_id(session_id)?;
+        connection
+            .query_row(
+                "SELECT 1 FROM meeting_sessions
+                 WHERE id=? AND retain_audio=1 AND status!='active' AND ended_at_ms IS NOT NULL",
+                [session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(db_error)
+    }
+
+    /// Whether the segment row still belongs to the session.
+    pub(crate) fn audio_segment_present_on(
+        &self,
+        connection: &Connection,
+        session_id: &str,
+        segment_id: i64,
+    ) -> Result<bool, String> {
+        connection
+            .query_row(
+                "SELECT 1 FROM meeting_segments WHERE id=? AND session_id=? AND audio_relative_path IS NOT NULL",
+                params![segment_id, session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|row| row.is_some())
+            .map_err(db_error)
     }
 
     pub fn save_metadata(
@@ -1347,6 +1431,8 @@ impl MeetingRepository {
     }
 
     fn open_checked(&self) -> Result<Connection, String> {
+        #[cfg(test)]
+        CHECKED_OPENS.with(|count| count.set(count.get() + 1));
         let connection = self.open_raw()?;
         configure_connection(&connection).map_err(db_error)?;
         migrations::quick_check(&connection).map_err(migrations::MeetingDatabaseError::message)?;
