@@ -356,9 +356,12 @@ routing check to an API or model. For known T3 Code builds, Murmur may locally
 enable the app's accessibility tree so the focused field can be identified.
 
 The remembered field is kept only while focus moves to a supported media control.
+A recording that starts in a text field also keeps that field if you switch to
+another app while speaking, as long as that app positively has something other
+than a text field focused.
 Before delivery, Murmur verifies the same app, window, field, and insertion point.
 Delivering to a recent field may briefly activate that app; Murmur returns to the
-media app only when it can do so safely.
+app you were in only when it can do so safely.
 A selected range in a background field is refused rather than replaced. If a
 remembered field changed, expired, or can no longer be verified, no automatic
 insertion is attempted and the finished text remains on the clipboard. In every

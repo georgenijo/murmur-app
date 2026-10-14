@@ -123,6 +123,10 @@ pub(crate) enum PrepareOutcome {
     Ready,
     WaitForActivation,
     Refused,
+    /// Refused after the user switched away from a current-app destination.
+    /// Unlike `Refused`, the caller must not fall back to normal paste into
+    /// the captured app: activation may already have moved its focus.
+    RefusedClipboardOnly,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -333,12 +337,20 @@ enum DeliveryRoute {
     RecentMedia,
 }
 
-/// Only a media handoff reads the field back after the key post, to decide
-/// whether focus can be returned to the media app. Other routes return
-/// `Posted` without settling or querying the field.
+/// Whether delivery activates the destination from another application and
+/// then returns focus there: the media handoff decided at recording start, or
+/// a current-app destination the user switched away from while speaking.
 #[cfg(any(target_os = "macos", test))]
-fn verifies_after_post(route: DeliveryRoute) -> bool {
-    route == DeliveryRoute::RecentMedia
+fn hands_off(route: DeliveryRoute, switched_away: bool) -> bool {
+    route == DeliveryRoute::RecentMedia || switched_away
+}
+
+/// Only a handoff reads the field back after the key post, to decide whether
+/// focus can be returned to the application the user is in. Delivery into the
+/// current application returns `Posted` without settling or querying the field.
+#[cfg(any(target_os = "macos", test))]
+fn verifies_after_post(route: DeliveryRoute, switched_away: bool) -> bool {
+    hands_off(route, switched_away)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -939,9 +951,10 @@ mod tests {
     }
 
     #[test]
-    fn only_media_handoffs_settle_and_read_back_after_the_post() {
-        assert!(verifies_after_post(DeliveryRoute::RecentMedia));
-        assert!(!verifies_after_post(DeliveryRoute::CurrentEditable));
+    fn only_handoffs_settle_and_read_back_after_the_post() {
+        assert!(verifies_after_post(DeliveryRoute::RecentMedia, false));
+        assert!(verifies_after_post(DeliveryRoute::CurrentEditable, true));
+        assert!(!verifies_after_post(DeliveryRoute::CurrentEditable, false));
     }
 
     #[test]
