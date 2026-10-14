@@ -446,12 +446,13 @@ fn with_menu_bar_slot(
 
 /// Detect notch width and the menu-bar slot, and configure the overlay as a
 /// notch-level window. Uses native NSScreen APIs — no subprocess needed.
-/// `menu_items` are the frontmost application's menu-title frames, sampled off
-/// the main thread because Accessibility can block; `None` means unknown.
+/// `menu_items` are the frontmost application's menu-title frames and
+/// `status_items` every status item's frame, both sampled off the main thread
+/// because Accessibility can block; `None` means unknown.
 #[cfg(target_os = "macos")]
 pub(crate) fn detect_notch_info(
     menu_items: Option<&[FrameRect]>,
-    overlay_window_number: i64,
+    status_items: Option<&[FrameRect]>,
 ) -> Option<NotchInfo> {
     // Returns (notch_or_synthetic_center_width, actual_menu_bar_height) in
     // logical points.
@@ -499,16 +500,13 @@ pub(crate) fn detect_notch_info(
         right_w,
     );
     // The menu-bar display is the primary one, whose top edge is y = 0 in the
-    // top-left global space that Accessibility and the window list report.
-    let status_items = (!measured.physical_notch && measured.menu_bar_visible)
-        .then(|| overlay_band::status_item_frames(overlay_window_number))
-        .flatten();
+    // top-left global space that Accessibility reports.
     let info = with_menu_bar_slot(
         measured,
         frame.origin.x,
         frame.size.width,
         menu_items,
-        status_items.as_deref(),
+        status_items,
     );
     tracing::info!(
         target: "system",
@@ -520,7 +518,7 @@ pub(crate) fn detect_notch_info(
         frame.size.width,
         info.band_center_x,
         menu_items.map(<[FrameRect]>::len),
-        status_items.as_ref().map(Vec::len)
+        status_items.map(<[FrameRect]>::len)
     );
     Some(info)
 }
@@ -528,37 +526,21 @@ pub(crate) fn detect_notch_info(
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn detect_notch_info(
     _menu_items: Option<&[FrameRect]>,
-    _overlay_window_number: i64,
+    _status_items: Option<&[FrameRect]>,
 ) -> Option<NotchInfo> {
     None
 }
 
-/// `NSWindow.windowNumber` of the overlay, or -1 before it exists. Main thread.
-#[cfg(target_os = "macos")]
-fn overlay_window_number(app_handle: &tauri::AppHandle) -> i64 {
-    app_handle
-        .get_webview_window("overlay")
-        .and_then(|overlay| overlay.ns_window().ok())
-        .map_or(-1, |ptr| {
-            let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
-            ns_window.windowNumber() as i64
-        })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn overlay_window_number(_app_handle: &tauri::AppHandle) -> i64 {
-    -1
-}
-
 /// Capture one display snapshot on the main thread. `menu_items` is the
-/// frontmost application's menu-title sample (`None` while unknown, which
-/// selects the standalone placement).
+/// frontmost application's menu-title sample and `status_items` the status-item
+/// sample (`None` while unknown, which selects the standalone placement).
 pub(crate) fn capture_display_snapshot(
     app_handle: &tauri::AppHandle,
     menu_items: Option<&[FrameRect]>,
+    status_items: Option<&[FrameRect]>,
 ) -> DisplaySnapshot {
     let monitor = app_handle.primary_monitor().ok().flatten();
-    let notch_info = detect_notch_info(menu_items, overlay_window_number(app_handle));
+    let notch_info = detect_notch_info(menu_items, status_items);
     DisplaySnapshot {
         notch_info,
         monitor_position: monitor.as_ref().map(|monitor| {
@@ -661,10 +643,14 @@ pub(crate) fn request_placement_refresh(trigger: PlacementTrigger) {
     }
 }
 
-/// Re-resolve the whole placement for `trigger`: sample the frontmost menus off
-/// the main thread, then apply everything together on it.
+/// Re-resolve the whole placement for `trigger`: sample the frontmost menus and
+/// the status items off the main thread, then apply everything together on it.
 #[cfg(target_os = "macos")]
-fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
+fn refresh_placement(
+    app_handle: &tauri::AppHandle,
+    trigger: PlacementTrigger,
+    status_scanner: &mut overlay_band::StatusItemScanner,
+) {
     let cached_physical_notch = app_handle.try_state::<State>().is_some_and(|state| {
         state
             .notch_info
@@ -672,14 +658,22 @@ fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
             .is_some_and(|info| info.physical_notch)
     });
     // A physical notch never uses the band, so skip the Accessibility round trips.
-    let menu_items = if cached_physical_notch && !trigger.forces_sampling() {
-        None
+    let (menu_items, status_items) = if cached_physical_notch && !trigger.forces_sampling() {
+        (None, None)
     } else {
-        overlay_band::frontmost_menu_item_frames()
+        (
+            overlay_band::frontmost_menu_item_frames(),
+            overlay_band::status_item_frames(status_scanner, trigger.forces_sampling()),
+        )
     };
     let handle = app_handle.clone();
     if let Err(error) = app_handle.run_on_main_thread(move || {
-        apply_placement(&handle, trigger, menu_items.as_deref());
+        apply_placement(
+            &handle,
+            trigger,
+            menu_items.as_deref(),
+            status_items.as_deref(),
+        );
     }) {
         tracing::warn!(
             target: "system",
@@ -696,8 +690,9 @@ fn apply_placement(
     handle: &tauri::AppHandle,
     trigger: PlacementTrigger,
     menu_items: Option<&[FrameRect]>,
+    status_items: Option<&[FrameRect]>,
 ) {
-    let snapshot = capture_display_snapshot(handle, menu_items);
+    let snapshot = capture_display_snapshot(handle, menu_items, status_items);
     let notch = snapshot.notch_info;
     let changed = {
         let state = handle.state::<State>();
@@ -743,6 +738,7 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
         .name("murmur-overlay-placement".to_string())
         .spawn(move || {
             let mut carried: Option<PlacementTrigger> = None;
+            let mut status_scanner = overlay_band::StatusItemScanner::default();
             loop {
                 let mut trigger = match carried.take() {
                     Some(trigger) => trigger,
@@ -761,7 +757,7 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
-                refresh_placement(&app_handle, trigger);
+                refresh_placement(&app_handle, trigger, &mut status_scanner);
                 // A new trigger supersedes the remaining re-checks; it brings
                 // its own.
                 for &delay in trigger.settle_delays() {
@@ -770,9 +766,11 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
                             carried = Some(next);
                             break;
                         }
-                        Err(RecvTimeoutError::Timeout) => {
-                            refresh_placement(&app_handle, PlacementTrigger::Settle)
-                        }
+                        Err(RecvTimeoutError::Timeout) => refresh_placement(
+                            &app_handle,
+                            PlacementTrigger::Settle,
+                            &mut status_scanner,
+                        ),
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
@@ -1590,7 +1588,7 @@ mod tests {
             with_menu_bar_slot(measured, 0.0, 2560.0, menus, status).band_center_x
         };
         assert_eq!(resolve(Some(&menus), Some(&status)), Some(1280.0));
-        // Unknown occupancy (AX failure/timeout, window list failure).
+        // Unknown occupancy (Accessibility failure or timeout).
         assert_eq!(resolve(None, Some(&status)), None);
         assert_eq!(resolve(Some(&menus), None), None);
         // A long menu reaching the centre moves the slot; no room left means none.

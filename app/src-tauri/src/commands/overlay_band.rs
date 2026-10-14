@@ -11,8 +11,11 @@
 //! below the menu bar. Only window/element frames are read, never titles or
 //! content.
 
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
 /// A frame in global logical (top-left origin) coordinates, as reported by the
-/// Accessibility API and `CGWindowListCopyWindowInfo`.
+/// Accessibility API.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameRect {
     pub x: f64,
@@ -134,12 +137,100 @@ pub(crate) fn resolve_band_center(
     select_slot_center(band.left, band.right, &occupied, margin, required_w)
 }
 
+/// One application's status items (`AXExtrasMenuBar` children), as read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ExtrasRead {
+    /// The application reports no status items.
+    NoItems,
+    Frames(Vec<FrameRect>),
+    /// The application did not answer (timeout, unsupported, busy).
+    Failed,
+}
+
+/// How long applications without status items are skipped before a full scan
+/// re-reads every application.
+const STATUS_RESCAN_INTERVAL: Duration = Duration::from_secs(60);
+/// Upper bound for one scan. A full scan of ~60 applications measured ~0.6s on
+/// macOS 27, mostly applications that never answer.
+const STATUS_FULL_SCAN_BUDGET: Duration = Duration::from_millis(1500);
+const STATUS_SCAN_BUDGET: Duration = Duration::from_millis(400);
+
+/// Status-item occupancy kept by the placement worker between refreshes.
+///
+/// macOS 27 no longer exposes status items as `kCGStatusWindowLevel` windows,
+/// so each application's `AXExtrasMenuBar` is read instead. Most applications
+/// have none, and several never answer Accessibility, so a full scan of every
+/// application runs only on request or once per `STATUS_RESCAN_INTERVAL`.
+/// In between, only applications known to show status items and newly seen
+/// applications are read. An application that showed status items and then
+/// fails to answer makes the whole sample unknown, so its items are never
+/// silently covered.
+#[derive(Debug, Default)]
+pub(crate) struct StatusItemScanner {
+    with_items: HashSet<i32>,
+    without_items: HashSet<i32>,
+    last_full_scan: Option<Instant>,
+}
+
+impl StatusItemScanner {
+    /// Scan `process_ids` (the running applications that may show status
+    /// items) with `read`. `None` when the sample is unknown.
+    pub(crate) fn scan(
+        &mut self,
+        now: Instant,
+        force_full: bool,
+        process_ids: impl IntoIterator<Item = i32>,
+        mut read: impl FnMut(i32) -> ExtrasRead,
+    ) -> Option<Vec<FrameRect>> {
+        let full = force_full
+            || self
+                .last_full_scan
+                .is_none_or(|at| now.saturating_duration_since(at) >= STATUS_RESCAN_INTERVAL);
+        let budget = if full {
+            STATUS_FULL_SCAN_BUDGET
+        } else {
+            STATUS_SCAN_BUDGET
+        };
+        let started = Instant::now();
+        let mut with_items = HashSet::new();
+        let mut without_items = HashSet::new();
+        let mut frames = Vec::new();
+        for process_id in process_ids {
+            let known = self.with_items.contains(&process_id);
+            if !full && !known && self.without_items.contains(&process_id) {
+                continue;
+            }
+            if started.elapsed() > budget {
+                return None;
+            }
+            match read(process_id) {
+                ExtrasRead::Frames(items) if !items.is_empty() => {
+                    with_items.insert(process_id);
+                    frames.extend(items);
+                }
+                ExtrasRead::Failed if known => return None,
+                ExtrasRead::NoItems | ExtrasRead::Frames(_) | ExtrasRead::Failed => {
+                    without_items.insert(process_id);
+                }
+            }
+        }
+        if full {
+            self.without_items = without_items;
+            self.last_full_scan = Some(now);
+        } else {
+            self.without_items.extend(without_items);
+        }
+        self.with_items = with_items;
+        Some(frames)
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) use native::{frontmost_menu_item_frames, status_item_frames};
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::FrameRect;
+    use super::{ExtrasRead, FrameRect, StatusItemScanner};
     use std::ffi::{c_char, c_void, CString};
     use std::time::{Duration, Instant};
 
@@ -193,6 +284,10 @@ mod native {
     }
 
     const AX_SUCCESS: i32 = 0;
+    /// `kAXErrorAttributeUnsupported` / `kAXErrorNoValue`: the application has
+    /// no status items, as opposed to failing to answer.
+    const AX_ERROR_ATTRIBUTE_UNSUPPORTED: i32 = -25205;
+    const AX_ERROR_NO_VALUE: i32 = -25212;
     const AX_VALUE_CG_POINT: u32 = 1;
     const AX_VALUE_CG_SIZE: u32 = 2;
     const UTF8_ENCODING: u32 = 0x0800_0100;
@@ -203,8 +298,6 @@ mod native {
     const MENU_READ_BUDGET: Duration = Duration::from_millis(300);
     /// Menu bars hold a few dozen items at most; more means something is off.
     const MAX_MENU_BAR_ITEMS: CFIndex = 64;
-    /// `kCGStatusWindowLevel`: windows of status items and Control Center.
-    const STATUS_WINDOW_LAYER: i64 = 25;
 
     fn cf_string(name: &str) -> Option<CFGuard> {
         let name = CString::new(name).ok()?;
@@ -271,17 +364,24 @@ mod native {
             return None;
         }
         let menu_bar = copy_attribute(application.0, "AXMenuBar")?;
-        if unsafe { AXUIElementSetMessagingTimeout(menu_bar.0, AX_QUERY_TIMEOUT_SECONDS) }
-            != AX_SUCCESS
+        let frames = children_frames(&menu_bar, started)?;
+        (!frames.is_empty()).then_some(frames)
+    }
+
+    /// Frames of a menu bar's children. `None` on any failure, on more than
+    /// `MAX_MENU_BAR_ITEMS` children, or once `MENU_READ_BUDGET` since
+    /// `started` is spent.
+    fn children_frames(bar: &CFGuard, started: Instant) -> Option<Vec<FrameRect>> {
+        if unsafe { AXUIElementSetMessagingTimeout(bar.0, AX_QUERY_TIMEOUT_SECONDS) } != AX_SUCCESS
         {
             return None;
         }
-        let children = copy_attribute(menu_bar.0, "AXChildren")?;
+        let children = copy_attribute(bar.0, "AXChildren")?;
         if unsafe { CFGetTypeID(children.0) != CFArrayGetTypeID() } {
             return None;
         }
         let count = unsafe { CFArrayGetCount(children.0) };
-        if !(1..=MAX_MENU_BAR_ITEMS).contains(&count) {
+        if !(0..=MAX_MENU_BAR_ITEMS).contains(&count) {
             return None;
         }
         let mut frames = Vec::with_capacity(count as usize);
@@ -307,58 +407,65 @@ mod native {
         menu_bar_item_frames(application.processIdentifier())
     }
 
-    /// Frames of the on-screen status-item windows (status items, Control
-    /// Center, clock) at `kCGStatusWindowLevel`. Window bounds only: no names
-    /// or contents are read, so no Screen Recording permission is involved.
-    /// `exclude_window_number` is the overlay itself, which shares that level.
-    /// `None` when the window list is unavailable.
-    pub(crate) fn status_item_frames(exclude_window_number: i64) -> Option<Vec<FrameRect>> {
-        use core_foundation::base::TCFType;
-        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-        use core_foundation::number::{CFNumber, CFNumberRef};
-        use core_graphics::geometry::CGRect;
-        use core_graphics::window::{
-            copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowLayer,
-            kCGWindowListOptionOnScreenOnly, kCGWindowNumber,
-        };
-
-        let list = copy_window_info(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)?;
-        let number = |dict: &CFDictionary, key: *const c_void| -> Option<i64> {
-            let value = dict.find(key)?;
-            unsafe { CFNumber::wrap_under_get_rule(*value as CFNumberRef) }.to_i64()
-        };
-        // SAFETY: immutable CoreFoundation string constants.
-        let (layer_key, number_key, bounds_key) = unsafe {
-            (
-                kCGWindowLayer as *const c_void,
-                kCGWindowNumber as *const c_void,
-                kCGWindowBounds as *const c_void,
-            )
-        };
-        let mut frames = Vec::new();
-        for window in list.iter() {
-            // Borrowed from `list`; the dictionary is retained for this scope.
-            let window = unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
-            if number(&window, layer_key) != Some(STATUS_WINDOW_LAYER)
-                || number(&window, number_key) == Some(exclude_window_number)
-            {
-                continue;
-            }
-            let Some(bounds) = window.find(bounds_key) else {
-                continue;
-            };
-            let bounds = unsafe { CFDictionary::wrap_under_get_rule(*bounds as CFDictionaryRef) };
-            let Some(rect) = CGRect::from_dict_representation(&bounds) else {
-                continue;
-            };
-            frames.push(FrameRect {
-                x: rect.origin.x,
-                y: rect.origin.y,
-                width: rect.size.width,
-                height: rect.size.height,
-            });
+    /// One application's status-item frames from its `AXExtrasMenuBar`.
+    fn extras_frames(process_id: i32) -> ExtrasRead {
+        let started = Instant::now();
+        let application = unsafe { AXUIElementCreateApplication(process_id) };
+        if application.is_null() {
+            return ExtrasRead::Failed;
         }
-        Some(frames)
+        let application = CFGuard(application);
+        if unsafe { AXUIElementSetMessagingTimeout(application.0, AX_QUERY_TIMEOUT_SECONDS) }
+            != AX_SUCCESS
+        {
+            return ExtrasRead::Failed;
+        }
+        let Some(attribute) = cf_string("AXExtrasMenuBar") else {
+            return ExtrasRead::Failed;
+        };
+        let mut value: CFTypeRef = std::ptr::null();
+        let status =
+            unsafe { AXUIElementCopyAttributeValue(application.0, attribute.0, &mut value) };
+        if !value.is_null() && status != AX_SUCCESS {
+            unsafe { CFRelease(value) };
+        }
+        match status {
+            AX_SUCCESS if !value.is_null() => {
+                let bar = CFGuard(value);
+                children_frames(&bar, started).map_or(ExtrasRead::Failed, ExtrasRead::Frames)
+            }
+            AX_ERROR_NO_VALUE | AX_ERROR_ATTRIBUTE_UNSUPPORTED => ExtrasRead::NoItems,
+            _ => ExtrasRead::Failed,
+        }
+    }
+
+    /// Frames of every status item (status items, Control Center, the clock)
+    /// on every display, read through Accessibility on the placement worker
+    /// thread; `scanner` decides which applications to read. Hidden items
+    /// report frames off the bar, which the band filter ignores. `None` when
+    /// the sample is unknown. Blocks for Accessibility round trips, so never
+    /// call this on the main thread.
+    pub(crate) fn status_item_frames(
+        scanner: &mut StatusItemScanner,
+        force_full: bool,
+    ) -> Option<Vec<FrameRect>> {
+        use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
+        let process_ids: Vec<i32> = objc2::rc::autoreleasepool(|_| {
+            NSWorkspace::sharedWorkspace()
+                .runningApplications()
+                .iter()
+                .filter(|application| {
+                    // Background-only processes cannot show status items, and
+                    // WebKit's helper processes never answer Accessibility.
+                    application.activationPolicy() != NSApplicationActivationPolicy::Prohibited
+                        && !application.bundleIdentifier().is_some_and(|identifier| {
+                            identifier.to_string().starts_with("com.apple.WebKit.")
+                        })
+                })
+                .map(|application| application.processIdentifier())
+                .collect()
+        });
+        scanner.scan(Instant::now(), force_full, process_ids, extras_frames)
     }
 }
 
@@ -581,5 +688,98 @@ mod tests {
             resolve_band_center(band, Some(&menu), Some(&status(4920.0)), MARGIN, WIDTH).unwrap();
         assert_eq!(center, 2560.0 + 1400.0 + MARGIN + WIDTH / 2.0);
         assert!(center - WIDTH / 2.0 >= band.left && center + WIDTH / 2.0 <= band.right);
+    }
+
+    fn scan_with(
+        scanner: &mut StatusItemScanner,
+        now: Instant,
+        force_full: bool,
+        apps: &[(i32, ExtrasRead)],
+        reads: &mut Vec<i32>,
+    ) -> Option<Vec<FrameRect>> {
+        scanner.scan(now, force_full, apps.iter().map(|(pid, _)| *pid), |pid| {
+            reads.push(pid);
+            apps.iter()
+                .find(|(candidate, _)| *candidate == pid)
+                .map(|(_, read)| read.clone())
+                .unwrap()
+        })
+    }
+
+    #[test]
+    fn status_scan_skips_quiet_apps_until_the_next_full_scan() {
+        let mut scanner = StatusItemScanner::default();
+        let start = Instant::now();
+        let clock = ExtrasRead::Frames(vec![item(2400.0, 129.0)]);
+        let apps = [
+            (1, clock.clone()),
+            (2, ExtrasRead::NoItems),
+            (3, ExtrasRead::Failed),
+        ];
+        let mut reads = Vec::new();
+        let frames = scan_with(&mut scanner, start, false, &apps, &mut reads).unwrap();
+        assert_eq!(frames, vec![item(2400.0, 129.0)]);
+        assert_eq!(reads, vec![1, 2, 3], "the first scan is full");
+
+        // Within the interval only apps with items and new apps are read.
+        let apps = [
+            (1, clock.clone()),
+            (2, ExtrasRead::NoItems),
+            (3, ExtrasRead::Failed),
+            (4, ExtrasRead::Frames(vec![item(2300.0, 22.0)])),
+        ];
+        reads.clear();
+        let frames = scan_with(
+            &mut scanner,
+            start + Duration::from_secs(5),
+            false,
+            &apps,
+            &mut reads,
+        )
+        .unwrap();
+        assert_eq!(reads, vec![1, 4]);
+        assert_eq!(frames.len(), 2);
+
+        // A forced or overdue full scan re-reads everyone.
+        for (now, force) in [
+            (start + Duration::from_secs(6), true),
+            (
+                start + Duration::from_secs(6) + STATUS_RESCAN_INTERVAL,
+                false,
+            ),
+        ] {
+            reads.clear();
+            scan_with(&mut scanner, now, force, &apps, &mut reads).unwrap();
+            assert_eq!(reads, vec![1, 2, 3, 4]);
+        }
+    }
+
+    #[test]
+    fn status_scan_is_unknown_when_an_app_with_items_stops_answering() {
+        let mut scanner = StatusItemScanner::default();
+        let start = Instant::now();
+        let mut reads = Vec::new();
+        let apps = [(1, ExtrasRead::Frames(vec![item(2400.0, 129.0)]))];
+        assert!(scan_with(&mut scanner, start, false, &apps, &mut reads).is_some());
+        let apps = [(1, ExtrasRead::Failed)];
+        assert_eq!(
+            scan_with(
+                &mut scanner,
+                start + Duration::from_secs(1),
+                false,
+                &apps,
+                &mut reads
+            ),
+            None
+        );
+        // An app with no items failing to answer is tolerated (WebKit helpers,
+        // busy browsers), and an empty result stays empty so the band resolver
+        // treats it as unknown.
+        let mut scanner = StatusItemScanner::default();
+        let apps = [(7, ExtrasRead::Failed), (8, ExtrasRead::NoItems)];
+        assert_eq!(
+            scan_with(&mut scanner, start, false, &apps, &mut reads),
+            Some(Vec::new())
+        );
     }
 }

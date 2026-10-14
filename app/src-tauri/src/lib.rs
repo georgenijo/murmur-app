@@ -728,7 +728,7 @@ pub fn run() {
             // the overlay starts in the standalone placement; the placement
             // worker refreshes it right after the observers below are registered.
             let display_snapshot =
-                commands::overlay::capture_display_snapshot(app.handle(), None);
+                commands::overlay::capture_display_snapshot(app.handle(), None, None);
             let notch = display_snapshot.notch_info;
             {
                 let state = app.state::<State>();
