@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- With Smart destination on, a dictation started in a text field still pastes
+  there when you switch to another app while speaking, for example when a
+  screenshot tool takes focus. Murmur pastes into the original field and
+  returns you to the app you were in. If the app you switched to has a text
+  field focused, the text stays on the clipboard as before.
+
 ## [0.51.10] - 2026-10-14
 
 ### Overlay

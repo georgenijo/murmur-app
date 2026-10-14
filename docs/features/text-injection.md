@@ -68,9 +68,10 @@ Murmur never replaces a hidden selection. To deliver to a recent field, it
 activates that application through its Accessibility `AXFrontmost` attribute
 (without changing the field or selection), lets macOS settle between main-thread dispatches,
 rechecks recording ownership, the exact field, and clipboard generation,
-and posts native Cmd+V once. Only a media handoff waits 40 ms after the post and reads
-the field back, to decide whether focus can safely return to the media application;
-other routes return right after the post. There is no whole-field replacement, automatic submit,
+and posts native Cmd+V once. Only a handoff (to media, or back from an app the
+user switched to) waits 40 ms after the post and reads the field back, to decide
+whether focus can safely return to that application; delivery into the current
+app returns right after the post. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
 
 Smart destination is additive. Whenever it does not hold a verified field, for
@@ -85,6 +86,18 @@ secure at delivery (role or subrole `AXSecureTextField`) stays clipboard-only,
 including on Paste Last. The indicator then shows "Current text field" without
 naming an app. Smart destination only adds behavior; uncertainty never makes
 ordinary dictation stricter than normal auto-paste.
+
+When the user switches to another application while speaking a recording
+whose field was captured in the frontmost app, delivery hands back to that field
+the same way a media handoff does. Examples: a screenshot tool takes focus, or
+the user glances at a viewer or Finder. Preparation requires positive evidence
+that the application now in front is not a text input: a media control, a
+positively non-editable element, or no focused element at all. It also requires
+that the captured field is still the same field with its caret unmoved.
+Murmur then activates the captured app, posts Cmd+V once, reads the field back,
+and returns focus to the application the user switched to. An unreadable focus
+(a failed or timed-out query), another editable field, or a secure field leaves
+the transcript on the clipboard.
 
 When a field captured in the app that was frontmost at recording start can no
 longer be re-verified at delivery (for example its text, caret, or focus changed

@@ -333,12 +333,20 @@ enum DeliveryRoute {
     RecentMedia,
 }
 
-/// Only a media handoff reads the field back after the key post, to decide
-/// whether focus can be returned to the media app. Other routes return
-/// `Posted` without settling or querying the field.
+/// Whether delivery activates the destination from another application and
+/// then returns focus there: the media handoff decided at recording start, or
+/// a current-app destination the user switched away from while speaking.
 #[cfg(any(target_os = "macos", test))]
-fn verifies_after_post(route: DeliveryRoute) -> bool {
-    route == DeliveryRoute::RecentMedia
+fn hands_off(route: DeliveryRoute, switched_away: bool) -> bool {
+    route == DeliveryRoute::RecentMedia || switched_away
+}
+
+/// Only a handoff reads the field back after the key post, to decide whether
+/// focus can be returned to the application the user is in. Delivery into the
+/// current application returns `Posted` without settling or querying the field.
+#[cfg(any(target_os = "macos", test))]
+fn verifies_after_post(route: DeliveryRoute, switched_away: bool) -> bool {
+    hands_off(route, switched_away)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -518,6 +526,19 @@ fn handoff_focus_allowed(observation: Observation) -> bool {
         observation,
         Observation::SupportedMedia | Observation::Other
     )
+}
+
+/// Whether a destination captured in the then-current application may be
+/// handed back to after the user moved to another application while speaking
+/// (a screenshot tool, a viewer, Finder). The same positive evidence as the
+/// media handoff, plus an application that positively reports no focused
+/// element at all, which is no text input either. Unknown focus, another
+/// editable field, a secure field, and Murmur itself leave delivery
+/// clipboard-only.
+#[cfg(any(target_os = "macos", test))]
+fn switched_away_handoff_allowed(observation: Observation, positively_unfocused: bool) -> bool {
+    handoff_focus_allowed(observation)
+        || (observation == Observation::Unavailable && positively_unfocused)
 }
 
 /// How long after a failed `AXManualAccessibility` attempt the same process is
@@ -939,9 +960,36 @@ mod tests {
     }
 
     #[test]
-    fn only_media_handoffs_settle_and_read_back_after_the_post() {
-        assert!(verifies_after_post(DeliveryRoute::RecentMedia));
-        assert!(!verifies_after_post(DeliveryRoute::CurrentEditable));
+    fn only_handoffs_settle_and_read_back_after_the_post() {
+        assert!(verifies_after_post(DeliveryRoute::RecentMedia, false));
+        assert!(verifies_after_post(DeliveryRoute::CurrentEditable, true));
+        assert!(!verifies_after_post(DeliveryRoute::CurrentEditable, false));
+    }
+
+    #[test]
+    fn switching_away_hands_back_only_from_positively_non_text_focus() {
+        for observation in [Observation::SupportedMedia, Observation::Other] {
+            assert!(switched_away_handoff_allowed(observation, false));
+        }
+        // Nothing focused at all (a screenshot overlay, the desktop).
+        assert!(switched_away_handoff_allowed(
+            Observation::Unavailable,
+            true
+        ));
+        // A failed or timed-out focus query is unknown, not empty.
+        assert!(!switched_away_handoff_allowed(
+            Observation::Unavailable,
+            false
+        ));
+        for observation in [
+            Observation::Editable,
+            Observation::EditableUnverified,
+            Observation::Secure,
+            Observation::SelfOverlay,
+        ] {
+            assert!(!switched_away_handoff_allowed(observation, false));
+            assert!(!switched_away_handoff_allowed(observation, true));
+        }
     }
 
     #[test]
