@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.7] - 2026-10-14
+
 ### Dictation
 
+- Saved vocabulary spellings no longer revert or go unapplied after quick
+  successive edits; a rejected edit restores the last settings Murmur actually
+  applied, and startup waits for pending edits to settle.
 - Smart destination pastes into the current field no longer wait 40 ms after
   the key post; only a media handoff still reads the field back.
 
