@@ -1154,6 +1154,12 @@ pub(crate) fn position_overlay_default(
         }
     } else {
         tracing::warn!(target: "system", "position_overlay_default: no monitor available, retaining configured position");
+        // Even without a monitor, resizing invalidates the cached dimensions.
+        *overlay
+            .app_handle()
+            .state::<State>()
+            .overlay_frame
+            .lock_or_recover() = None;
         if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
             tracing::warn!(target: "system", "position_overlay_default: fallback set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
         }
