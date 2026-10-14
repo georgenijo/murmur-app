@@ -2541,6 +2541,7 @@ async fn run_transcription_pipeline(
                 }
             }
         }
+        let accepted_route = recovery_smart_destination.route_code();
         let delivery_route = smart_destination.route_code();
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
@@ -2687,7 +2688,7 @@ async fn run_transcription_pipeline(
             target: "pipeline",
             event_code = "pipeline.smart_destination_delivery",
             recording_id,
-            accepted_route = recovery_smart_destination.route_code(),
+            accepted_route,
             delivery_route,
             outcome_code = injection_outcome_code,
             "smart destination delivery"
