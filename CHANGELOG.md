@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.8] - 2026-10-14
+
 ### Dictation
 
 - Smart destination now keeps the retained text field through ordinary page
