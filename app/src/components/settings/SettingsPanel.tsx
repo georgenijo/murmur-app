@@ -1255,7 +1255,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <SettingToggle
                   targetId="smart-destination"
                   title="Smart destination"
-                  description="Keep dictation with your recent text field while using supported media controls. Delivery may briefly switch to that app. Otherwise, dictation pastes normally."
+                  description="Keep dictation with your recent text field while using supported media controls. Delivery may briefly switch to that app. Elsewhere, dictation pastes normally. If a media destination cannot be verified, text stays on the clipboard."
                   checked={settings.smartDestinationEnabled}
                   disabled={!autoPasteOn}
                   onChange={() => onUpdateSettings({ smartDestinationEnabled: !settings.smartDestinationEnabled })}
