@@ -184,8 +184,14 @@ pub async fn capture(
         CaptureGate::Disabled => return Snapshot::Disabled,
         CaptureGate::Unavailable => return Snapshot::Unavailable,
     }
-    if !matches!(expected, DeliveryTargetSnapshot::Complete(_)) {
-        return Snapshot::Unavailable;
+    match expected {
+        DeliveryTargetSnapshot::Complete(_) => {}
+        // A transient lookup gap proves nothing; normal delivery can still
+        // verify a complete stop-time anchor.
+        DeliveryTargetSnapshot::Incomplete => return Snapshot::Unverified,
+        DeliveryTargetSnapshot::SelfTarget | DeliveryTargetSnapshot::Mismatch(_) => {
+            return Snapshot::Unavailable
+        }
     }
 
     let generation = GENERATION.load(Ordering::Acquire);
@@ -198,14 +204,35 @@ pub async fn capture(
         })
         .is_err()
     {
-        return Snapshot::Unverified;
+        return unfinished_capture(generation);
     }
 
-    // A capture that cannot finish proves nothing either way, so it must not
-    // make delivery stricter than the normal auto-paste policy.
     match tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await {
         Ok(Ok(snapshot)) => snapshot,
-        Ok(Err(_)) | Err(_) => Snapshot::Unverified,
+        Ok(Err(_)) | Err(_) => unfinished_capture(generation),
+    }
+}
+
+fn unfinished_capture(captured_generation: u64) -> Snapshot {
+    unfinished_capture_policy(
+        ENABLED.load(Ordering::Acquire),
+        GENERATION.load(Ordering::Acquire),
+        captured_generation,
+    )
+}
+
+/// A capture that cannot finish proves nothing either way, so it must not make
+/// delivery stricter than normal auto-paste, unless Smart destination was
+/// revoked while the capture was pending.
+fn unfinished_capture_policy(
+    enabled_now: bool,
+    generation_now: u64,
+    captured_generation: u64,
+) -> Snapshot {
+    if enabled_now && generation_now == captured_generation {
+        Snapshot::Unverified
+    } else {
+        Snapshot::Unavailable
     }
 }
 
@@ -412,6 +439,22 @@ mod tests {
         assert!(snapshot.identity().is_none());
         assert!(Snapshot::Unavailable.identity().is_none());
         assert!(Snapshot::Unverified.identity().is_none());
+    }
+
+    #[test]
+    fn unfinished_capture_falls_back_only_while_still_enabled_and_current() {
+        assert!(matches!(
+            unfinished_capture_policy(true, 7, 7),
+            Snapshot::Unverified
+        ));
+        assert!(matches!(
+            unfinished_capture_policy(false, 7, 7),
+            Snapshot::Unavailable
+        ));
+        assert!(matches!(
+            unfinished_capture_policy(true, 8, 7),
+            Snapshot::Unavailable
+        ));
     }
 
     #[test]

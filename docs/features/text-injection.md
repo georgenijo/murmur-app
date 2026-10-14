@@ -53,17 +53,22 @@ and posts native Cmd+V once. It may return focus to the media application when
 that can be done safely. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
 
-When no field can be proven at recording start, for example because a
-Chromium or Electron app does not expose its focused element, the recording uses
-the normal auto-paste policy above against the accepted frontmost app, exactly as
-if Smart destination were off. Smart destination only adds behavior; uncertainty
-never makes ordinary dictation stricter than normal auto-paste.
+When nothing can be proven at recording start, for example because a Chromium
+or Electron app does not expose its focused element, the start identity lookup
+was incomplete, or the capture could not finish in time, the recording uses the
+normal auto-paste policy above (including its stop-time anchor) exactly as if
+Smart destination were off. The indicator then shows "Current text field"
+without naming an app. Smart destination only adds behavior; uncertainty never
+makes ordinary dictation stricter than normal auto-paste.
 
-Positive evidence still keeps delivery clipboard-only: a secure field, Murmur's own
-window, a supported media control with no retained field, or a captured
-destination that changed or expired before delivery. Each delivery logs a
-content-free `pipeline.smart_destination_route` (`smart_target`, `normal_paste`,
-`clipboard_only`, or `disabled`) and a `pipeline.delivery_outcome`.
+Positive evidence still keeps delivery clipboard-only: a secure field (the
+secure role is checked before any other fallible query), Murmur's own window or a
+mismatched start identity, a supported media control with no retained field, an
+editable field that could not be frozen (for example because focus moved to
+another field), Smart destination being turned off while the capture was
+pending, or a captured destination that changed or expired before delivery. Each
+delivery logs a content-free `pipeline.smart_destination_delivery` event; see the
+[event reference](../reference/events.md).
 
 Tracking is local and ephemeral. It does not capture screenshots, read input
 values or selected text, query browser URLs, or call a model/API. It reads

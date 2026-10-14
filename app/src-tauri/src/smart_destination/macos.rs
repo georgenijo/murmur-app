@@ -499,12 +499,11 @@ pub(super) fn capture(expected: &DeliveryTargetSnapshot, generation: u64) -> Sna
             };
             apply_observation(&mut state, observation);
 
-            freeze_candidate(&mut state, expected.clone(), generation, route).unwrap_or(match route
-            {
-                DeliveryRoute::CurrentEditable => Snapshot::Unverified,
-                // Never paste into the media app itself.
-                DeliveryRoute::RecentMedia => Snapshot::Unavailable,
-            })
+            // A freeze failure can mean focus moved to a different field or the
+            // media app has no retained field: positive evidence, so it never
+            // falls back to normal paste.
+            freeze_candidate(&mut state, expected.clone(), generation, route)
+                .unwrap_or(Snapshot::Unavailable)
         })
     })
 }
@@ -1128,25 +1127,10 @@ enum EditableStatus {
 }
 
 fn editable_status(element: AXUIElementRef) -> EditableStatus {
-    let role = match copy_string_attribute_status(element, "AXRole") {
-        Ok(role) => role,
-        Err(status) if benign_absence(status) => return EditableStatus::NotEditable,
-        Err(_) => return EditableStatus::Unavailable,
-    };
-    let subrole = match copy_string_attribute_status(element, "AXSubrole") {
-        Ok(subrole) => Some(subrole),
-        Err(status) if benign_absence(status) => None,
-        Err(_) => return EditableStatus::Unavailable,
-    };
-    if role.trim() == "AXSecureTextField"
-        || subrole
-            .as_deref()
-            .is_some_and(|subrole| subrole.trim() == "AXSecureTextField")
-    {
-        return EditableStatus::Secure;
-    }
-    if !matches!(role.trim(), "AXTextArea" | "AXTextField") {
-        return EditableStatus::NotEditable;
+    if let Err(status) = classify_text_role(copy_string_attribute_status(element, "AXRole"), || {
+        copy_string_attribute_status(element, "AXSubrole")
+    }) {
+        return status;
     }
     if !copy_bool_attribute(element, "AXEnabled").is_some_and(|enabled| enabled)
         || !attribute_settable(element, "AXSelectedText")
@@ -1154,6 +1138,39 @@ fn editable_status(element: AXUIElementRef) -> EditableStatus {
         return EditableStatus::Unavailable;
     }
     EditableStatus::Editable
+}
+
+/// Classify role evidence. `Err` is final; `Ok` means a text role that still
+/// needs the enabled/settable checks. The subrole is queried only after the
+/// role, so positive secure evidence wins before another fallible query could
+/// downgrade it to `Unavailable`, which delivery treats as "nothing proven".
+fn classify_text_role(
+    role: Result<String, AXError>,
+    subrole: impl FnOnce() -> Result<String, AXError>,
+) -> Result<(), EditableStatus> {
+    let role = match role {
+        Ok(role) => role,
+        Err(status) if benign_absence(status) => return Err(EditableStatus::NotEditable),
+        Err(_) => return Err(EditableStatus::Unavailable),
+    };
+    if role.trim() == "AXSecureTextField" {
+        return Err(EditableStatus::Secure);
+    }
+    let subrole = match subrole() {
+        Ok(subrole) => Some(subrole),
+        Err(status) if benign_absence(status) => None,
+        Err(_) => return Err(EditableStatus::Unavailable),
+    };
+    if subrole
+        .as_deref()
+        .is_some_and(|subrole| subrole.trim() == "AXSecureTextField")
+    {
+        return Err(EditableStatus::Secure);
+    }
+    if !matches!(role.trim(), "AXTextArea" | "AXTextField") {
+        return Err(EditableStatus::NotEditable);
+    }
+    Ok(())
 }
 
 fn current_is_supported_media(expected: &DeliveryTargetSnapshot) -> bool {
@@ -1737,6 +1754,30 @@ fn is_main_thread() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secure_role_wins_even_when_the_subrole_query_fails() {
+        assert!(matches!(
+            classify_text_role(Ok("AXSecureTextField".into()), || Err(AX_ERROR_FAILURE)),
+            Err(EditableStatus::Secure)
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXTextField".into()), || Ok("AXSecureTextField".into())),
+            Err(EditableStatus::Secure)
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXTextField".into()), || Err(AX_ERROR_FAILURE)),
+            Err(EditableStatus::Unavailable)
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXTextArea".into()), || Err(AX_ERROR_NO_VALUE)),
+            Ok(())
+        ));
+        assert!(matches!(
+            classify_text_role(Ok("AXWebArea".into()), || Err(AX_ERROR_NO_VALUE)),
+            Err(EditableStatus::NotEditable)
+        ));
+    }
 
     #[test]
     fn media_marker_normalization_is_bounded_to_explicit_markers() {

@@ -30,6 +30,27 @@ pub(crate) enum InjectionOutcome {
     AutoPasted,
 }
 
+impl InjectionOutcome {
+    /// Bounded, content-free code for diagnostics.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::NoText => "no_text",
+            Self::AutoPasted => "auto_pasted",
+            Self::ClipboardOnly(reason) => match reason {
+                ClipboardOnlyReason::AutoPasteDisabled => "clipboard_only_auto_paste_disabled",
+                ClipboardOnlyReason::AccessibilityDenied => "clipboard_only_accessibility_denied",
+                ClipboardOnlyReason::TargetChanged => "clipboard_only_target_changed",
+                ClipboardOnlyReason::FocusNotEditable => "clipboard_only_focus_not_editable",
+                ClipboardOnlyReason::ClipboardChanged => "clipboard_only_clipboard_changed",
+                ClipboardOnlyReason::PasteFailed => "clipboard_only_paste_failed",
+                ClipboardOnlyReason::SmartTargetUnavailable => {
+                    "clipboard_only_smart_target_unavailable"
+                }
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InjectionResult {
     pub outcome: InjectionOutcome,
