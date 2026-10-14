@@ -1275,7 +1275,13 @@ mod tests {
 
     #[test]
     fn external_display_uses_its_measured_menu_bar_height() {
-        let info = notch_info_from_screen_measurements(2560.0, 1440.0, 1410.0, 0.0, 0.0, 0.0);
+        let measured = notch_info_from_screen_measurements(2560.0, 1440.0, 1410.0, 0.0, 0.0, 0.0);
+        // Measurement alone proves nothing about menu occupancy: no slot yet.
+        assert_eq!(measured, external_without_slot(30.0));
+        let info = NotchInfo {
+            band_center_x: Some(1280.0),
+            ..measured
+        };
         assert_eq!(info, external(30.0));
 
         let g = geometry_for(Some(info));
