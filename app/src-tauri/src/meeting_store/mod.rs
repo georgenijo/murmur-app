@@ -3,6 +3,8 @@ mod repository;
 mod search;
 mod types;
 
+#[cfg(test)]
+pub(crate) use repository::checked_opens;
 pub use repository::{InitializationOutcome, MeetingRepository};
 pub use types::*;
 

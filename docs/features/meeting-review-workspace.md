@@ -197,20 +197,41 @@ Audio is read through the same ownership, no-follow, and WAV checks as playback.
 The bundle names no local paths and carries no prompts, discarded drafts, or
 hidden metrics.
 
-**Missing audio is never hidden.** If a retained segment's WAV is missing,
-pruned, malformed, or outside the owned spool, the segment is omitted and listed
-in `omittedSegments` with `complete: false` and a notice. The confirmation shows
-how many segments are unavailable before saving and the completed export reports
-it. If no audio file is readable the export is refused. A segment that changes
-or is deleted during the export aborts it.
+**Missing audio is never hidden.** If a retained segment's WAV was already
+missing, pruned, malformed, or outside the owned spool when the export reached
+it, the segment is omitted and listed in `omittedSegments` with `complete: false`
+and a notice. The confirmation shows how many segments are unavailable before
+saving and the completed export reports it. If no audio file is readable the
+export is refused.
+
+**Deletion or capture during an export aborts it.** Omission applies only to
+audio that was already gone while the meeting was untouched. Before every
+segment, after the last one, and again immediately before the file is renamed
+into place, the export re-checks that the meeting was not deleted, pruned, or
+invalidated (including by an unrelated delete, which makes the audio revision
+move) and that no recording, dictation, or other voice task has started. If
+any check fails, nothing is published, any previous file at the destination is
+left alone, and a bundle is never marked `complete` over a revoked meeting.
+Retry once the meeting or capture settles.
 
 **Size contract.** The 8 MiB document bound does not apply to audio. The panel
 shows the number of segments and total audio size before the save dialog. Total
 audio is capped at 2 GiB (and 50,000 segments); a larger meeting is refused with
-guidance to export the document alone. The zip is streamed to a temporary sibling
-and renamed on success, so memory use is one segment plus the document and a
-failure leaves no partial file. Exporting is unavailable while recording or
-another voice task is active, matching playback.
+guidance to export the document alone. The zip is streamed to a uniquely named,
+exclusively created temporary sibling and renamed on success, so memory use is
+one segment plus the document, a failure leaves no partial file, and an
+existing file or symlink beside the destination is never opened or removed.
+Two exports to the same destination each stay intact; the last rename wins.
+Exporting is unavailable while recording or another voice task is active,
+matching playback.
+
+**Resources.** One export opens and integrity-checks the meeting database once
+and reuses that connection for every per-segment ownership check, so cost grows
+with the number of segments rather than with segments times database size. An
+export holds a dedicated single-slot bundle permit rather than the two-slot
+playback pool, so the two channel requests of normal playback keep working while
+a preview or export runs; a second concurrent export is refused with a retry
+message.
 
 ### Meeting captions
 

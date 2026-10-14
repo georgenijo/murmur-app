@@ -148,7 +148,10 @@ pending reads and notifies only the main window. See [Meeting audio playback](fe
 `meeting_bundle.rs` exports a with-audio `.zip` (review document, retained WAVs,
 manifest). It lists segments from the playback manifest and reads each WAV through
 the same validated `meeting_audio` open path, so no second path resolver exists.
-Entries are stored, and the archive streams to an atomic temp file. See
+Entries are stored, and the archive streams to a unique exclusive temp file that is
+renamed only after a final revocation and capture check. One checked database
+connection serves the whole operation, and a separate single-slot permit keeps
+playback's two-slot pool free. See
 [Meeting review workspace](features/meeting-review-workspace.md#export-with-audio).
 
 ### Selected-text transform

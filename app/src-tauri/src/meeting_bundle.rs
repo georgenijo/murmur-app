@@ -13,23 +13,36 @@
 //! picks a destination, and the archive is streamed to disk one segment at a
 //! time rather than built in memory.
 //!
-//! Completeness contract: a segment whose WAV is missing, pruned, malformed, or
-//! outside the owned spool is omitted and listed in `manifest.json` with
-//! `"complete": false` and a notice; the save receipt reports the omitted count
-//! so the UI can say so. A segment that changes or is revoked mid-export aborts
-//! the whole export. A bundle with no audio at all is refused rather than
-//! written.
+//! Completeness contract: a segment whose WAV was already missing, pruned,
+//! malformed, or outside the owned spool when the export reached it is omitted
+//! and listed in `manifest.json` with `"complete": false` and a notice; the save
+//! receipt reports the omitted count so the UI can say so. A bundle with no
+//! audio at all is refused rather than written.
+//!
+//! Revocation contract: an export is one [`BundleOperation`] that re-checks, at
+//! every segment and immediately before the atomic rename, that the meeting was
+//! not deleted, pruned, or invalidated (the audio revision is unchanged and the
+//! session still owns its audio) and that no capture started. Any failure
+//! aborts and publishes nothing, so a deleted meeting's audio is never
+//! published and a bundle is never marked complete over a revoked session.
+//!
+//! Resources: the operation opens and validates the database once and reuses
+//! that connection for every per-segment ownership check. It holds a dedicated
+//! single-slot bundle permit instead of the two-slot playback pool, so
+//! two-channel playback keeps working while a bundle is being written.
 
 use crate::meeting_audio::{
     audio_file_len, current_audio_revision, read_audio_whole, AudioChunk, AudioCursor,
-    AudioManifest, AudioReadPermit, AudioUnavailableReason, PlaybackChannel, AUDIO_UNAVAILABLE,
-    MAX_MANIFEST_CHUNKS,
+    AudioManifest, AudioUnavailableReason, PlaybackChannel, AUDIO_UNAVAILABLE, BUNDLE_CAPTURE_BUSY,
+    INVALIDATED, MAX_MANIFEST_CHUNKS,
 };
 use crate::meeting_review::{render_export, MeetingReviewExportFormat, MeetingWorkspace};
 use crate::meeting_store::MeetingRepository;
 use crate::State;
+use rusqlite::Connection;
 use serde::Serialize;
 use std::io::{Seek, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
 pub const MEETING_BUNDLE_SCHEMA: &str = "murmur.meeting-bundle.v1";
@@ -42,6 +55,9 @@ const OMITTED_REASON: &str = "missing_or_unreadable";
 const WRITE_FAILED: &str = "The meeting bundle could not be written.";
 const NOTHING_TO_BUNDLE: &str =
     "None of this meeting's retained audio files could be found, so there is no audio to bundle.";
+const BUNDLE_REVOKED: &str =
+    "This meeting's audio changed or was deleted during the export. Nothing was saved. Try again.";
+const BUNDLE_BUSY: &str = "Another meeting export is already running. Try again shortly.";
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -60,52 +76,23 @@ pub struct BundleReceipt {
     pub omitted_segments: u64,
 }
 
-/// Every retained segment the playback manifest lists for a finished session,
-/// or a clear refusal. Reuses the manifest query so "retained" means the same
-/// thing here as in playback.
-fn retained_chunks(
-    repository: &MeetingRepository,
-    session_id: &str,
-) -> Result<Vec<AudioChunk>, String> {
-    let mut chunks = Vec::new();
-    let mut cursor: Option<AudioCursor> = None;
-    loop {
-        match repository.audio_manifest(
-            session_id,
-            0,
-            PlaybackChannel::All,
-            cursor.as_ref(),
-            MAX_MANIFEST_CHUNKS,
-        )? {
-            AudioManifest::Unavailable { reason } => {
-                return Err(match reason {
-                    AudioUnavailableReason::NotRetained => {
-                        "Audio was not retained for this meeting, so it cannot be exported with audio."
-                    }
-                    AudioUnavailableReason::NotFinished => {
-                        "Stop this meeting before exporting it with audio."
-                    }
-                    AudioUnavailableReason::NoAudio => {
-                        "This meeting has no retained audio segments to export."
-                    }
-                }
-                .into());
-            }
-            AudioManifest::Available {
-                chunks: page,
-                next_cursor,
-                ..
-            } => {
-                chunks.extend(page);
-                if chunks.len() > MAX_BUNDLE_SEGMENTS {
-                    return Err("This meeting has too many audio segments for one bundle.".into());
-                }
-                match next_cursor {
-                    Some(next) => cursor = Some(next),
-                    None => return Ok(chunks),
-                }
-            }
-        }
+static BUNDLE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Admission for bundle work. Deliberately separate from the two-slot playback
+/// pool in `meeting_audio`: a long export must never make the two concurrent
+/// channel requests of ordinary playback fail.
+struct BundlePermit;
+impl BundlePermit {
+    fn acquire() -> Result<Self, String> {
+        BUNDLE_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| BUNDLE_BUSY.to_string())
+    }
+}
+impl Drop for BundlePermit {
+    fn drop(&mut self) {
+        BUNDLE_ACTIVE.store(false, Ordering::Release);
     }
 }
 
@@ -116,178 +103,299 @@ fn too_large() -> String {
     )
 }
 
-/// Size and completeness of the bundle the user is about to save.
-pub(crate) fn preview_bundle(
-    repository: &MeetingRepository,
-    session_id: &str,
-) -> Result<BundlePreview, String> {
-    let mut preview = BundlePreview {
-        audio_segments: 0,
-        audio_bytes: 0,
-        unavailable_segments: 0,
-        max_audio_bytes: MAX_BUNDLE_AUDIO_BYTES,
-    };
-    for chunk in retained_chunks(repository, session_id)? {
-        match audio_file_len(repository, session_id, chunk.segment_id) {
-            Ok(length) => {
-                preview.audio_segments += 1;
-                preview.audio_bytes += length;
-            }
-            Err(error) if error == AUDIO_UNAVAILABLE => preview.unavailable_segments += 1,
-            Err(error) => return Err(error),
-        }
-    }
-    if preview.audio_segments == 0 {
-        return Err(NOTHING_TO_BUNDLE.into());
-    }
-    Ok(preview)
-}
-
 fn write_failed<E>(_: E) -> String {
     WRITE_FAILED.into()
 }
 
-/// Write the bundle for `workspace` into `writer`. `revision` is the audio
-/// revision captured when the export started; a delete or invalidation after
-/// that aborts the export.
-pub(crate) fn write_bundle<W: Write + Seek>(
-    repository: &MeetingRepository,
-    workspace: &MeetingWorkspace,
-    format: MeetingReviewExportFormat,
+/// One preview or export of one meeting. Owns the operation-scoped checked
+/// database connection and the admission state captured when it started.
+pub(crate) struct BundleOperation<'a> {
+    repository: &'a MeetingRepository,
+    connection: Connection,
+    /// Audio revision captured at admission; any later delete, prune, or
+    /// invalidation changes it and aborts the operation.
     revision: u64,
-    writer: W,
-) -> Result<BundleReceipt, String> {
-    write_bundle_limited(
-        repository,
-        workspace,
-        format,
-        revision,
-        MAX_BUNDLE_AUDIO_BYTES,
-        writer,
-    )
+    /// True once a recording, dictation, or other voice task has started.
+    capture_busy: &'a dyn Fn() -> bool,
 }
 
-fn write_bundle_limited<W: Write + Seek>(
-    repository: &MeetingRepository,
-    workspace: &MeetingWorkspace,
-    format: MeetingReviewExportFormat,
-    revision: u64,
-    max_audio_bytes: u64,
-    writer: W,
-) -> Result<BundleReceipt, String> {
-    use zip::write::SimpleFileOptions;
-    let session_id = workspace.session.id.as_str();
-    if !workspace.session.retain_audio {
-        return Err(
-            "Audio was not retained for this meeting, so it cannot be exported with audio.".into(),
-        );
+impl<'a> BundleOperation<'a> {
+    pub(crate) fn open(
+        repository: &'a MeetingRepository,
+        revision: u64,
+        capture_busy: &'a dyn Fn() -> bool,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            repository,
+            connection: repository.open_audio_connection()?,
+            revision,
+            capture_busy,
+        })
     }
-    let chunks = retained_chunks(repository, session_id)?;
-    // Byte-for-byte the same document the standalone export writes.
-    let document = render_export(workspace, format)?;
-    let document_name = format!("review.{}", format.extension());
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
-    let mut zip = zip::ZipWriter::new(writer);
-    zip.start_file(document_name.as_str(), options)
-        .map_err(write_failed)?;
-    zip.write_all(document.as_bytes()).map_err(write_failed)?;
-
-    let mut included = Vec::new();
-    let mut omitted = Vec::new();
-    let mut audio_bytes = 0_u64;
-    for chunk in &chunks {
-        let bytes = match read_audio_whole(repository, session_id, chunk.segment_id, revision) {
-            Ok(bytes) => bytes,
-            Err(error) if error == AUDIO_UNAVAILABLE => {
-                omitted.push(serde_json::json!({
-                    "segmentId": chunk.segment_id,
-                    "channel": chunk.channel,
-                    "startMs": chunk.start_ms,
-                    "endMs": chunk.end_ms,
-                    "reason": OMITTED_REASON,
-                }));
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        audio_bytes += bytes.len() as u64;
-        if audio_bytes > max_audio_bytes {
-            return Err(too_large());
+    /// Fail unless the meeting is exactly as it was at admission and capture is
+    /// still idle. Called at every bounded step and again right before the
+    /// rename that publishes the file.
+    pub(crate) fn ensure_current(&self, session_id: &str) -> Result<(), String> {
+        if (self.capture_busy)() {
+            return Err(BUNDLE_CAPTURE_BUSY.into());
         }
-        let name = format!(
-            "audio/segment-{:08}-{}.wav",
-            chunk.segment_id,
-            chunk.channel.as_db()
-        );
-        zip.start_file(name.as_str(), options)
-            .map_err(write_failed)?;
-        zip.write_all(&bytes).map_err(write_failed)?;
-        included.push(serde_json::json!({
-            "segmentId": chunk.segment_id,
-            "channel": chunk.channel,
-            "startMs": chunk.start_ms,
-            "endMs": chunk.end_ms,
-            "file": name,
-            "bytes": bytes.len(),
-        }));
-    }
-    if included.is_empty() {
-        return Err(NOTHING_TO_BUNDLE.into());
+        if current_audio_revision() != self.revision
+            || !self
+                .repository
+                .audio_session_intact_on(&self.connection, session_id)?
+        {
+            return Err(BUNDLE_REVOKED.into());
+        }
+        Ok(())
     }
 
-    let complete = omitted.is_empty();
-    let notice = (!complete).then(|| {
-        format!(
-            "{} retained audio segment(s) were missing or unreadable and are not in this bundle, so the audio is incomplete.",
-            omitted.len()
-        )
-    });
-    let (included_segments, omitted_segments) = (included.len() as u64, omitted.len() as u64);
-    let manifest = serde_json::to_string_pretty(&serde_json::json!({
-        "schema": MEETING_BUNDLE_SCHEMA,
-        "sessionId": session_id,
-        "complete": complete,
-        "notice": notice,
-        "document": {
-            "file": document_name,
-            "format": format,
-            "bytes": document.len(),
-        },
-        "audio": {
-            "encoding": "WAV, 16 kHz mono 16-bit PCM, stored exactly as recorded",
-            "totalBytes": audio_bytes,
-            "includedSegments": included,
-            "omittedSegments": omitted,
-        },
-    }))
-    .map_err(write_failed)?;
-    zip.start_file(MANIFEST_NAME, options)
+    /// A segment read said "unavailable". That is an omission only if the file
+    /// was already gone while the meeting is untouched; a revoked meeting or a
+    /// vanished segment row aborts the export instead.
+    fn confirm_already_unavailable(&self, session_id: &str, segment_id: i64) -> Result<(), String> {
+        self.ensure_current(session_id)?;
+        if self
+            .repository
+            .audio_segment_present_on(&self.connection, session_id, segment_id)?
+        {
+            Ok(())
+        } else {
+            Err(BUNDLE_REVOKED.into())
+        }
+    }
+
+    /// Every retained segment the playback manifest lists for a finished
+    /// session, or a clear refusal. Reuses the manifest query so "retained"
+    /// means the same thing here as in playback.
+    fn retained_chunks(&self, session_id: &str) -> Result<Vec<AudioChunk>, String> {
+        let mut chunks = Vec::new();
+        let mut cursor: Option<AudioCursor> = None;
+        loop {
+            match self.repository.audio_manifest_on(
+                &self.connection,
+                session_id,
+                0,
+                PlaybackChannel::All,
+                cursor.as_ref(),
+                MAX_MANIFEST_CHUNKS,
+            )? {
+                AudioManifest::Unavailable { reason } => {
+                    return Err(match reason {
+                        AudioUnavailableReason::NotRetained => {
+                            "Audio was not retained for this meeting, so it cannot be exported with audio."
+                        }
+                        AudioUnavailableReason::NotFinished => {
+                            "Stop this meeting before exporting it with audio."
+                        }
+                        AudioUnavailableReason::NoAudio => {
+                            "This meeting has no retained audio segments to export."
+                        }
+                    }
+                    .into());
+                }
+                AudioManifest::Available {
+                    chunks: page,
+                    next_cursor,
+                    ..
+                } => {
+                    chunks.extend(page);
+                    if chunks.len() > MAX_BUNDLE_SEGMENTS {
+                        return Err(
+                            "This meeting has too many audio segments for one bundle.".into()
+                        );
+                    }
+                    match next_cursor {
+                        Some(next) => cursor = Some(next),
+                        None => return Ok(chunks),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Size and completeness of the bundle the user is about to save.
+    pub(crate) fn preview(&self, session_id: &str) -> Result<BundlePreview, String> {
+        let mut preview = BundlePreview {
+            audio_segments: 0,
+            audio_bytes: 0,
+            unavailable_segments: 0,
+            max_audio_bytes: MAX_BUNDLE_AUDIO_BYTES,
+        };
+        for chunk in self.retained_chunks(session_id)? {
+            self.ensure_current(session_id)?;
+            match audio_file_len(
+                self.repository,
+                &self.connection,
+                session_id,
+                chunk.segment_id,
+            ) {
+                Ok(length) => {
+                    preview.audio_segments += 1;
+                    preview.audio_bytes += length;
+                }
+                Err(error) if error == AUDIO_UNAVAILABLE => {
+                    self.confirm_already_unavailable(session_id, chunk.segment_id)?;
+                    preview.unavailable_segments += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if preview.audio_segments == 0 {
+            return Err(NOTHING_TO_BUNDLE.into());
+        }
+        Ok(preview)
+    }
+
+    /// Write the bundle for `workspace` into `writer`.
+    pub(crate) fn write<W: Write + Seek>(
+        &self,
+        workspace: &MeetingWorkspace,
+        format: MeetingReviewExportFormat,
+        writer: W,
+    ) -> Result<BundleReceipt, String> {
+        self.write_limited(workspace, format, MAX_BUNDLE_AUDIO_BYTES, writer)
+    }
+
+    fn write_limited<W: Write + Seek>(
+        &self,
+        workspace: &MeetingWorkspace,
+        format: MeetingReviewExportFormat,
+        max_audio_bytes: u64,
+        writer: W,
+    ) -> Result<BundleReceipt, String> {
+        use zip::write::SimpleFileOptions;
+        let session_id = workspace.session.id.as_str();
+        if !workspace.session.retain_audio {
+            return Err(
+                "Audio was not retained for this meeting, so it cannot be exported with audio."
+                    .into(),
+            );
+        }
+        let chunks = self.retained_chunks(session_id)?;
+        // Byte-for-byte the same document the standalone export writes.
+        let document = render_export(workspace, format)?;
+        let document_name = format!("review.{}", format.extension());
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        let mut zip = zip::ZipWriter::new(writer);
+        zip.start_file(document_name.as_str(), options)
+            .map_err(write_failed)?;
+        zip.write_all(document.as_bytes()).map_err(write_failed)?;
+
+        let mut included = Vec::new();
+        let mut omitted = Vec::new();
+        let mut audio_bytes = 0_u64;
+        for chunk in &chunks {
+            self.ensure_current(session_id)?;
+            let bytes = match read_audio_whole(
+                self.repository,
+                &self.connection,
+                session_id,
+                chunk.segment_id,
+                self.revision,
+            ) {
+                Ok(bytes) => bytes,
+                Err(error) if error == AUDIO_UNAVAILABLE => {
+                    self.confirm_already_unavailable(session_id, chunk.segment_id)?;
+                    omitted.push(serde_json::json!({
+                        "segmentId": chunk.segment_id,
+                        "channel": chunk.channel,
+                        "startMs": chunk.start_ms,
+                        "endMs": chunk.end_ms,
+                        "reason": OMITTED_REASON,
+                    }));
+                    continue;
+                }
+                Err(error) if error == INVALIDATED => return Err(BUNDLE_REVOKED.into()),
+                Err(error) => return Err(error),
+            };
+            audio_bytes += bytes.len() as u64;
+            if audio_bytes > max_audio_bytes {
+                return Err(too_large());
+            }
+            let name = format!(
+                "audio/segment-{:08}-{}.wav",
+                chunk.segment_id,
+                chunk.channel.as_db()
+            );
+            zip.start_file(name.as_str(), options)
+                .map_err(write_failed)?;
+            zip.write_all(&bytes).map_err(write_failed)?;
+            included.push(serde_json::json!({
+                "segmentId": chunk.segment_id,
+                "channel": chunk.channel,
+                "startMs": chunk.start_ms,
+                "endMs": chunk.end_ms,
+                "file": name,
+                "bytes": bytes.len(),
+            }));
+        }
+        // The last read must not be the last look: a deletion after it would
+        // otherwise leave a bundle that claims to be complete.
+        self.ensure_current(session_id)?;
+        if included.is_empty() {
+            return Err(NOTHING_TO_BUNDLE.into());
+        }
+
+        let complete = omitted.is_empty();
+        let notice = (!complete).then(|| {
+            format!(
+                "{} retained audio segment(s) were missing or unreadable and are not in this bundle, so the audio is incomplete.",
+                omitted.len()
+            )
+        });
+        let (included_segments, omitted_segments) = (included.len() as u64, omitted.len() as u64);
+        let manifest = serde_json::to_string_pretty(&serde_json::json!({
+            "schema": MEETING_BUNDLE_SCHEMA,
+            "sessionId": session_id,
+            "complete": complete,
+            "notice": notice,
+            "document": {
+                "file": document_name,
+                "format": format,
+                "bytes": document.len(),
+            },
+            "audio": {
+                "encoding": "WAV, 16 kHz mono 16-bit PCM, stored exactly as recorded",
+                "totalBytes": audio_bytes,
+                "includedSegments": included,
+                "omittedSegments": omitted,
+            },
+        }))
         .map_err(write_failed)?;
-    zip.write_all(manifest.as_bytes()).map_err(write_failed)?;
-    let mut writer = zip.finish().map_err(write_failed)?;
-    Ok(BundleReceipt {
-        bytes: writer.stream_position().map_err(write_failed)?,
-        included_segments,
-        omitted_segments,
-    })
+        zip.start_file(MANIFEST_NAME, options)
+            .map_err(write_failed)?;
+        zip.write_all(manifest.as_bytes()).map_err(write_failed)?;
+        let mut writer = zip.finish().map_err(write_failed)?;
+        Ok(BundleReceipt {
+            bytes: writer.stream_position().map_err(write_failed)?,
+            included_segments,
+            omitted_segments,
+        })
+    }
 }
 
 #[tauri::command]
 pub async fn get_meeting_bundle_preview(
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     id: String,
     state: tauri::State<'_, State>,
 ) -> Result<BundlePreview, String> {
     crate::meeting_audio::require_main_window(window.label())?;
     if crate::meeting_audio::capture_busy(&state) {
-        return Err(crate::meeting_audio::BUNDLE_CAPTURE_BUSY.into());
+        return Err(BUNDLE_CAPTURE_BUSY.into());
     }
     let repository = state.meeting_store.repository()?;
-    let permit = AudioReadPermit::acquire()?;
+    let permit = BundlePermit::acquire()?;
+    let revision = current_audio_revision();
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        preview_bundle(&repository, id.trim())
+        let busy = || crate::meeting_audio::capture_busy(&app.state::<State>());
+        let operation = BundleOperation::open(&repository, revision, &busy)?;
+        operation.preview(id.trim())
     })
     .await
     .map_err(|_| AUDIO_UNAVAILABLE.to_string())?
@@ -306,25 +414,17 @@ pub async fn save_meeting_bundle_export(
     let path = std::path::PathBuf::from(path);
     crate::commands::export::validate_bundle_path(&path)?;
     if crate::meeting_audio::capture_busy(&state) {
-        return Err(crate::meeting_audio::BUNDLE_CAPTURE_BUSY.into());
+        return Err(BUNDLE_CAPTURE_BUSY.into());
     }
     let repository = state.meeting_store.repository()?;
-    let permit = AudioReadPermit::acquire()?;
+    let permit = BundlePermit::acquire()?;
     let revision = current_audio_revision();
     let receipt = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        if crate::meeting_audio::capture_busy(&app.state::<State>()) {
-            return Err(crate::meeting_audio::BUNDLE_CAPTURE_BUSY.to_string());
-        }
+        let busy = || crate::meeting_audio::capture_busy(&app.state::<State>());
+        let operation = BundleOperation::open(&repository, revision, &busy)?;
         let workspace = repository.workspace(id.trim())?;
-        let mut receipt = None;
-        crate::commands::export::publish_with(&path, |file| {
-            let written = write_bundle(&repository, &workspace, format, revision, &mut *file)?;
-            let bytes = written.bytes;
-            receipt = Some(written);
-            Ok(bytes)
-        })?;
-        receipt.ok_or_else(|| WRITE_FAILED.to_string())
+        publish_bundle(&operation, &workspace, format, &path)
     })
     .await
     .map_err(|_| AUDIO_UNAVAILABLE.to_string())??;
@@ -337,6 +437,28 @@ pub async fn save_meeting_bundle_export(
         "meeting bundle written"
     );
     Ok(receipt)
+}
+
+/// Stream the bundle to a unique temp sibling and rename it into place, after a
+/// last check that the meeting is untouched and capture is idle.
+fn publish_bundle(
+    operation: &BundleOperation<'_>,
+    workspace: &MeetingWorkspace,
+    format: MeetingReviewExportFormat,
+    path: &std::path::Path,
+) -> Result<BundleReceipt, String> {
+    let mut receipt = None;
+    crate::commands::export::publish_with(
+        path,
+        |file| {
+            let written = operation.write(workspace, format, &mut *file)?;
+            let bytes = written.bytes;
+            receipt = Some(written);
+            Ok(bytes)
+        },
+        || operation.ensure_current(workspace.session.id.as_str()),
+    )?;
+    receipt.ok_or_else(|| WRITE_FAILED.to_string())
 }
 
 #[cfg(test)]
@@ -405,6 +527,17 @@ mod tests {
             .unwrap();
     }
 
+    fn idle() -> bool {
+        false
+    }
+
+    fn preview_bundle(
+        repository: &MeetingRepository,
+        session_id: &str,
+    ) -> Result<BundlePreview, String> {
+        BundleOperation::open(repository, current_audio_revision(), &idle)?.preview(session_id)
+    }
+
     fn bundle(
         repository: &MeetingRepository,
         session_id: &str,
@@ -412,11 +545,9 @@ mod tests {
     ) -> Result<(BundleReceipt, Vec<u8>), String> {
         let workspace = repository.workspace(session_id).unwrap();
         let mut output = Cursor::new(Vec::new());
-        let receipt = write_bundle(
-            repository,
+        let receipt = BundleOperation::open(repository, current_audio_revision(), &idle)?.write(
             &workspace,
             format,
-            current_audio_revision(),
             &mut output,
         )?;
         Ok((receipt, output.into_inner()))
@@ -652,16 +783,256 @@ mod tests {
         let length = std::fs::metadata(path).unwrap().len();
         let workspace = repository.workspace("big").unwrap();
         let attempt = |limit| {
-            write_bundle_limited(
-                &repository,
+            BundleOperation::open(&repository, current_audio_revision(), &idle)?.write_limited(
                 &workspace,
                 MeetingReviewExportFormat::Markdown,
-                current_audio_revision(),
                 limit,
                 Cursor::new(Vec::new()),
             )
         };
         assert!(attempt(length).is_ok());
         assert!(attempt(length - 1).unwrap_err().contains("bundle limit"));
+    }
+
+    /// A meeting with `count` finished segments on alternating channels.
+    fn finished_meeting(repository: &MeetingRepository, id: &str, count: u64) -> Vec<i64> {
+        session(repository, id, true);
+        let ids = (0..count)
+            .map(|index| {
+                let channel = if index % 2 == 0 {
+                    MeetingSpeaker::Me
+                } else {
+                    MeetingSpeaker::Them
+                };
+                clip(repository, id, channel, index, index * 1_000).0
+            })
+            .collect();
+        finish(repository, id);
+        ids
+    }
+
+    fn destination_is_untouched(dir: &std::path::Path) {
+        assert_eq!(
+            std::fs::read_dir(dir).unwrap().count(),
+            0,
+            "nothing, not even a temp file, may be left behind"
+        );
+    }
+
+    #[test]
+    fn deleting_the_meeting_between_segments_aborts_and_publishes_nothing() {
+        use std::cell::Cell;
+        let (_temporary, repository) = repository();
+        finished_meeting(&repository, "between", 3);
+        let workspace = repository.workspace("between").unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("meeting.zip");
+
+        // One idle check per segment: delete just before the third read.
+        let checks = Cell::new(0);
+        let busy = || {
+            checks.set(checks.get() + 1);
+            if checks.get() == 3 {
+                repository.delete_session("between").unwrap();
+            }
+            false
+        };
+        let operation =
+            BundleOperation::open(&repository, current_audio_revision(), &busy).unwrap();
+        let error = publish_bundle(
+            &operation,
+            &workspace,
+            MeetingReviewExportFormat::Json,
+            &path,
+        )
+        .unwrap_err();
+        assert_eq!(error, BUNDLE_REVOKED);
+        destination_is_untouched(destination.path());
+    }
+
+    #[test]
+    fn a_segment_revoked_after_admission_is_an_abort_not_an_omission() {
+        use std::cell::Cell;
+        let (_temporary, repository) = repository();
+        let ids = finished_meeting(&repository, "revoked", 3);
+        let workspace = repository.workspace("revoked").unwrap();
+        // Remove only the second segment's row behind the exporter's back,
+        // without bumping the audio revision: the read reports "unavailable",
+        // which must not be mistaken for a file that was already missing.
+        let checks = Cell::new(0);
+        let busy = || {
+            checks.set(checks.get() + 1);
+            if checks.get() == 2 {
+                let connection =
+                    rusqlite::Connection::open(repository.root().join("meetings.sqlite3")).unwrap();
+                connection
+                    .execute("DELETE FROM meeting_segments WHERE id=?", [ids[1]])
+                    .unwrap();
+            }
+            false
+        };
+        let operation =
+            BundleOperation::open(&repository, current_audio_revision(), &busy).unwrap();
+        let error = operation
+            .write(
+                &workspace,
+                MeetingReviewExportFormat::Markdown,
+                Cursor::new(Vec::new()),
+            )
+            .unwrap_err();
+        assert_eq!(error, BUNDLE_REVOKED);
+    }
+
+    #[test]
+    fn deleting_the_meeting_after_the_last_read_but_before_publication_publishes_nothing() {
+        let (_temporary, repository) = repository();
+        finished_meeting(&repository, "late", 2);
+        let workspace = repository.workspace("late").unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("meeting.zip");
+        std::fs::write(&path, "previous export").unwrap();
+
+        let operation =
+            BundleOperation::open(&repository, current_audio_revision(), &idle).unwrap();
+        let mut written = None;
+        let error = crate::commands::export::publish_with(
+            &path,
+            |file| {
+                let receipt = operation.write(&workspace, MeetingReviewExportFormat::Text, file)?;
+                // Every read succeeded and the bundle says complete; now the
+                // meeting is deleted before the rename.
+                repository.delete_session("late").unwrap();
+                written = Some(receipt.bytes);
+                Ok(receipt.bytes)
+            },
+            || operation.ensure_current("late"),
+        )
+        .unwrap_err();
+        assert_eq!(error, BUNDLE_REVOKED);
+        assert!(written.is_some(), "the bundle was fully written first");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous export");
+        assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn capture_starting_after_admission_aborts_mid_export_and_before_publication() {
+        use std::cell::Cell;
+        let (_temporary, repository) = repository();
+        finished_meeting(&repository, "capture", 4);
+        let workspace = repository.workspace("capture").unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = destination.path().join("meeting.zip");
+
+        // Capture begins while the second segment is being processed.
+        let checks = Cell::new(0);
+        let busy = || {
+            checks.set(checks.get() + 1);
+            checks.get() >= 2
+        };
+        let operation =
+            BundleOperation::open(&repository, current_audio_revision(), &busy).unwrap();
+        let error = publish_bundle(
+            &operation,
+            &workspace,
+            MeetingReviewExportFormat::Srt,
+            &path,
+        )
+        .unwrap_err();
+        assert_eq!(error, BUNDLE_CAPTURE_BUSY);
+        assert_eq!(checks.get(), 2, "no further segment was read");
+        destination_is_untouched(destination.path());
+
+        // Capture begins only after the last segment: the final pre-rename
+        // check still refuses.
+        let flag = Cell::new(false);
+        let busy = || flag.get();
+        let operation =
+            BundleOperation::open(&repository, current_audio_revision(), &busy).unwrap();
+        let error = crate::commands::export::publish_with(
+            &path,
+            |file| {
+                let receipt = operation.write(&workspace, MeetingReviewExportFormat::Srt, file)?;
+                flag.set(true);
+                Ok(receipt.bytes)
+            },
+            || operation.ensure_current("capture"),
+        )
+        .unwrap_err();
+        assert_eq!(error, BUNDLE_CAPTURE_BUSY);
+        destination_is_untouched(destination.path());
+    }
+
+    #[test]
+    fn an_export_validates_the_database_once_however_many_segments() {
+        let (_temporary, repository) = repository();
+        finished_meeting(&repository, "small", 2);
+        finished_meeting(&repository, "large", 24);
+        let measure = |id: &str| {
+            let workspace = repository.workspace(id).unwrap();
+            let before = crate::meeting_store::checked_opens();
+            let operation =
+                BundleOperation::open(&repository, current_audio_revision(), &idle).unwrap();
+            operation.preview(id).unwrap();
+            operation
+                .write(
+                    &workspace,
+                    MeetingReviewExportFormat::Markdown,
+                    Cursor::new(Vec::new()),
+                )
+                .unwrap();
+            crate::meeting_store::checked_opens() - before
+        };
+        assert_eq!(measure("small"), 1);
+        assert_eq!(measure("large"), 1);
+    }
+
+    #[test]
+    fn a_running_export_does_not_take_playback_slots() {
+        use crate::meeting_audio::AudioReadPermit;
+        use std::sync::mpsc;
+        let (_temporary, repository) = repository();
+        finished_meeting(&repository, "playing", 3);
+        let workspace = repository.workspace("playing").unwrap();
+
+        let (reached, reached_rx) = mpsc::channel();
+        let (resume, resume_rx) = mpsc::channel::<()>();
+        let permit = BundlePermit::acquire().unwrap();
+        let exporter = {
+            let repository = repository.clone();
+            std::thread::spawn(move || {
+                let _permit = permit;
+                // Park the export mid-way, between two segments.
+                let checks = std::cell::Cell::new(0);
+                let busy = || {
+                    checks.set(checks.get() + 1);
+                    if checks.get() == 2 {
+                        reached.send(()).unwrap();
+                        resume_rx.recv().unwrap();
+                    }
+                    false
+                };
+                BundleOperation::open(&repository, current_audio_revision(), &busy)
+                    .unwrap()
+                    .write(
+                        &workspace,
+                        MeetingReviewExportFormat::Markdown,
+                        Cursor::new(Vec::new()),
+                    )
+            })
+        };
+        reached_rx.recv().unwrap();
+
+        // Mid-export: both channels of ordinary playback are still admitted,
+        // and a second bundle is the only thing refused.
+        let me = AudioReadPermit::acquire().unwrap();
+        let them = AudioReadPermit::acquire().unwrap();
+        assert!(AudioReadPermit::acquire().is_err());
+        drop((me, them));
+        assert_eq!(BundlePermit::acquire().err().as_deref(), Some(BUNDLE_BUSY));
+
+        resume.send(()).unwrap();
+        let receipt = exporter.join().unwrap().unwrap();
+        assert_eq!(receipt.included_segments, 3);
+        assert!(BundlePermit::acquire().is_ok());
     }
 }
