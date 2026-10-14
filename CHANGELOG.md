@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.10] - 2026-10-14
+
 ### Overlay
 
 - On macOS 27, the floating pill on displays without a notch now moves into
