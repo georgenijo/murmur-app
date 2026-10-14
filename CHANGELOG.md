@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.11] - 2026-10-14
+
 ### Dictation
 
 - With Smart destination on, a dictation started in a text field still pastes
