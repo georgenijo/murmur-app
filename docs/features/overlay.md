@@ -70,10 +70,12 @@ Every overlay dimension comes from one source: `geometry_for(notch)` in `command
   the screen top; a floating pill sits below that display's usable top edge.
 - **Size transition.** Height grows from `collapsedH` to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown opens. The native window stays at `windowW`, so recording/processing can use the full top bar immediately.
 - **Status and controls.** The wings hold the status indicator (left) and waveform or delivery action (right). The expanded surface places Mode and quick controls in one row, with recording, connecting, recovery, and hotkey-miss text in a separate row. Text cannot cover buttons. The amber `!` badge and border glow stay on the pill.
-- **Nearby popovers.** The live dictation preview and Voice Query answer popover
-  sit below the maximum expanded overlay height on both notched and floating
-  displays, including the largest saved vertical calibration offset. Their
-  height is capped at the remaining work area when necessary.
+- **Nearby popovers.** On a floating display, the live dictation preview and
+  Voice Query answer popover sit below the maximum expanded overlay height,
+  including the largest saved vertical calibration offset, with their height
+  capped at the remaining work area when necessary. Under a physical notch they
+  stay tucked directly below the notch so the live transcript reads next to the
+  pill; hovering the pill open can briefly overlap them.
 - **Mixed display scales.** Native size and position calls use logical points
   derived from the selected monitor. Tao otherwise converts physical inputs
   with the overlay window's old scale while it moves between 1x and 2x screens.

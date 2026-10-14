@@ -256,8 +256,9 @@ fn floating_logical_position(
     )
 }
 
-/// Reserve enough vertical space for expanded controls on the selected display,
+/// On a floating display, reserve enough vertical space for expanded controls,
 /// even if the pill is currently collapsed or calibration is applied later.
+/// Returns `None` under a physical notch, where callers use their own inset.
 pub(crate) fn overlay_popover_fit(
     app: &tauri::AppHandle,
     monitor: &tauri::Monitor,
@@ -270,34 +271,28 @@ pub(crate) fn overlay_popover_fit(
     let state = app.try_state::<crate::State>()?;
     let geometry = geometry_for(*state.notch_info.lock_or_recover());
     let scale = monitor.scale_factor();
-    let screen_top = monitor.position().y as f64 / scale;
     let work_top = monitor.work_area().position.y as f64 / scale;
     let work_bottom =
         (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
-    Some(overlay_popover_fit_for_geometry(
-        screen_top,
-        work_top,
-        work_bottom,
-        popover_height,
-        &geometry,
-    ))
+    overlay_popover_fit_for_geometry(work_top, work_bottom, popover_height, &geometry)
 }
 
 fn overlay_popover_fit_for_geometry(
-    screen_top: f64,
     work_top: f64,
     work_bottom: f64,
     popover_height: f64,
     geometry: &OverlayGeometry,
-) -> (f64, f64) {
-    let overlay_top = if geometry.floating {
-        work_top + FLOATING_GAP
-    } else {
-        screen_top
-    };
-    let below_overlay = overlay_top + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
+) -> Option<(f64, f64)> {
+    // Under a physical notch the collapsed pill fills the notch; callers keep
+    // their popover tucked just below it. Reserving the full hover-expanded
+    // height there put the live transcript far from the pill.
+    if !geometry.floating {
+        return None;
+    }
+    let below_overlay =
+        work_top + FLOATING_GAP + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
     let top = below_overlay.clamp(work_top, work_bottom);
-    (top, popover_height.min((work_bottom - top).max(0.0)))
+    Some((top, popover_height.min((work_bottom - top).max(0.0))))
 }
 
 /// WindowServer applies frame changes asynchronously. Reading `outer_position`
@@ -1068,21 +1063,27 @@ mod tests {
     fn floating_popovers_clear_expanded_overlay_and_stay_in_work_area() {
         let geometry = geometry_for(Some(external(30.0)));
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 104.0, &geometry),
-            (156.0, 104.0)
+            overlay_popover_fit_for_geometry(30.0, 1440.0, 104.0, &geometry),
+            Some((156.0, 104.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 340.0, &geometry),
-            (156.0, 340.0)
+            overlay_popover_fit_for_geometry(30.0, 1440.0, 340.0, &geometry),
+            Some((156.0, 340.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 30.0, 400.0, 340.0, &geometry),
-            (156.0, 244.0)
+            overlay_popover_fit_for_geometry(30.0, 400.0, 340.0, &geometry),
+            Some((156.0, 244.0))
         );
+    }
+
+    #[test]
+    fn notched_popovers_stay_tucked_under_the_notch() {
+        // Callers fall back to their own under-notch inset instead of clearing
+        // the hover-expanded overlay, which left a large gap below the pill.
         let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched),
-            (114.0, 104.0)
+            overlay_popover_fit_for_geometry(32.0, 1440.0, 104.0, &notched),
+            None
         );
     }
 
