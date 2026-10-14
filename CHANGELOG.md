@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Overlay
+
+- Fixed the live dictation preview appearing far below the notch on MacBook
+  displays. It is tucked directly under the notch again; floating overlays on
+  external displays keep their clearance.
+
 ## [0.51.2] - 2026-10-14
 
 ### Dictation
