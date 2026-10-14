@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.4] - 2026-10-14
+
 ### Dictation
 
 - Smart destination no longer refuses a dictation that normal auto-paste would
