@@ -28,6 +28,7 @@ from scripts.finalize_macos_bundle import (
 )
 from scripts.release_artifacts import (
     ArtifactError,
+    highest_release_tag,
     create_provenance,
     validate_release,
     verify_release_notes_match,
@@ -1002,6 +1003,32 @@ class ReleaseArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(EvidenceError, "ambiguous"):
                     extract_entitlements_plist(payload)
 
+
+class HighestReleaseTagTests(unittest.TestCase):
+    def test_picks_highest_semver_regardless_of_list_order(self) -> None:
+        releases = [
+            {"tagName": "v0.51.6", "isLatest": True},
+            {"tagName": "v0.51.10", "isLatest": False},
+            {"tagName": "v0.9.99", "isLatest": False},
+        ]
+        self.assertEqual(highest_release_tag(releases), "v0.51.10")
+        self.assertEqual(highest_release_tag(list(reversed(releases))), "v0.51.10")
+
+    def test_ignores_non_stable_tags(self) -> None:
+        releases = [
+            {"tagName": "v0.52.0-rc.1"},
+            {"tagName": "nightly"},
+            {"tagName": "v0.51.5"},
+            {"tagName": "v01.0.0"},
+            {},
+            "v9.9.9",
+        ]
+        self.assertEqual(highest_release_tag(releases), "v0.51.5")
+
+    def test_fails_closed_without_a_stable_release(self) -> None:
+        for releases in ([], [{"tagName": "nightly"}], {"tagName": "v1.0.0"}):
+            with self.assertRaises(ArtifactError):
+                highest_release_tag(releases)
 
 if __name__ == "__main__":
     unittest.main()
