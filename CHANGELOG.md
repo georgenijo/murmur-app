@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- Fixed the completion sound never playing after a dictation was pasted or
+  copied; delivery failures now play the failure sound.
+- The Smart destination setting now explains that dictation otherwise pastes
+  normally.
+
 ## [0.51.4] - 2026-10-14
 
 ### Dictation

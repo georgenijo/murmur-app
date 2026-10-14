@@ -90,6 +90,13 @@ async function clickInAct(element: HTMLElement) {
   await act(async () => element.click());
 }
 
+// Claim creation focuses the new field on the next animation frame; wait for it so it cannot steal focus later.
+async function flushAnimationFrame() {
+  await act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  });
+}
+
 async function selectSegments(ids: number[]) {
   await act(async () => {
     for (const id of ids) {
@@ -761,6 +768,7 @@ describe('MeetingReviewWorkspace', () => {
     expect(checkbox?.getAttribute('aria-label')).toContain('Use as source');
     await selectSegments([13]);
     await clickInAct(getButton('New action item'));
+    await flushAnimationFrame();
     expect(container.querySelector<HTMLInputElement>('[aria-label="New action owner 1"]')?.maxLength).toBe(256);
     const source = container.querySelector<HTMLButtonElement>('[aria-label="New decision 2 source 1 of 1, transcript segment 12"]');
     if (!source) throw new Error('Missing numbered source link');

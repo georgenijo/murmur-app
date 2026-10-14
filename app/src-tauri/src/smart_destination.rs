@@ -208,7 +208,7 @@ pub async fn capture(
     let generation = GENERATION.load(Ordering::Acquire);
     let expected = expected.clone();
     // Native capture sets this the moment it has positive evidence against
-    // falling back (secure/self focus, a different process, or a smart route),
+    // falling back (a secure field or the media route),
     // before any cleanup that could outlive the timeout.
     let fallback_vetoed = std::sync::Arc::new(AtomicBool::new(false));
     let native_veto = fallback_vetoed.clone();
@@ -511,7 +511,7 @@ mod tests {
             unproven_capture_policy(false, true, 7, 7),
             Snapshot::Unverified
         ));
-        // Secure/self/different-process evidence found before a timeout.
+        // Secure-field or media-route evidence found before a timeout.
         assert!(matches!(
             unproven_capture_policy(true, true, 7, 7),
             Snapshot::Unavailable
