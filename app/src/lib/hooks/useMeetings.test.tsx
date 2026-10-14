@@ -2,13 +2,16 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, type Settings } from '../settings';
-import type { MeetingDetail } from '../meetings';
+import type { MeetingPage, MeetingDetail } from '../meetings';
 import { useMeetings } from './useMeetings';
 
 const meetingMocks = vi.hoisted(() => ({
   getMeeting: vi.fn(),
   startMeeting: vi.fn(),
   saveMeetingMetadata: vi.fn(),
+  listMeetings: vi.fn(),
+  saveMeetingReview: vi.fn(),
+  restoreMeetingReviewFromGenerated: vi.fn(),
 }));
 const eventMocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
@@ -31,7 +34,7 @@ vi.mock('../meetings', async (importOriginal) => {
     getMeetingStatus: vi.fn(async () => original.IDLE_MEETING_STATUS),
     getMeetingSummaryStatus: vi.fn(async () => original.IDLE_MEETING_SUMMARY_STATUS),
     getSystemAudioPermissionStatus: vi.fn(async () => 'granted'),
-    listMeetings: vi.fn(async () => ({ sessions: [], total: 0, offset: 0, limit: 50 })),
+    listMeetings: meetingMocks.listMeetings,
     cancelMeetingSummary: vi.fn(async () => false),
     copyMeeting: vi.fn(async () => {}),
     deleteAllMeetings: vi.fn(async () => {}),
@@ -40,9 +43,9 @@ vi.mock('../meetings', async (importOriginal) => {
     requestSystemAudioPermission: vi.fn(async () => ({
       permission: 'granted', captureReady: true, audioFlowing: false, needsRelaunch: false,
     })),
-    restoreMeetingReviewFromGenerated: vi.fn(),
+    restoreMeetingReviewFromGenerated: meetingMocks.restoreMeetingReviewFromGenerated,
     saveMeetingExport: vi.fn(),
-    saveMeetingReview: vi.fn(),
+    saveMeetingReview: meetingMocks.saveMeetingReview,
     startMeetingSummary: vi.fn(),
     stopMeeting: vi.fn(async () => {}),
   };
@@ -116,12 +119,41 @@ describe('useMeetings remote speaker refresh', () => {
     meetingMocks.getMeeting.mockReset();
     meetingMocks.startMeeting.mockReset();
     meetingMocks.saveMeetingMetadata.mockReset();
+    meetingMocks.listMeetings.mockReset().mockResolvedValue({ sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 });
+    meetingMocks.saveMeetingReview.mockReset();
+    meetingMocks.restoreMeetingReviewFromGenerated.mockReset();
     await act(async () => root.render(<Harness />));
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('keeps the latest search when an older query resolves afterward', async () => {
+    const older = deferred<MeetingPage>();
+    const latest = { sessions: [detail('second', 'Team') .session], searchMatches: { second: ['decision' as const] }, total: 1, offset: 0, limit: 50 };
+    meetingMocks.listMeetings.mockImplementation((query: string) => query === 'old' ? older.promise : Promise.resolve(latest));
+    let pending: Promise<void>;
+    await act(async () => { pending = controller().refresh('old'); });
+    await act(async () => controller().refresh('new'));
+    await act(async () => {
+      older.resolve({ sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 });
+      await pending;
+    });
+    expect(controller().page).toEqual(latest);
+    expect(controller().appliedQuery).toBe('new');
+    expect(controller().loading).toBe(false);
+  });
+
+  it('refreshes an active search after saving or restoring a review', async () => {
+    meetingMocks.saveMeetingReview.mockResolvedValue(detail('first', 'Team'));
+    meetingMocks.restoreMeetingReviewFromGenerated.mockResolvedValue(detail('first', 'Team'));
+    await act(async () => controller().refresh('reviewword'));
+    meetingMocks.listMeetings.mockClear();
+    await act(async () => controller().saveReview({ sessionId: 'first', expectedReviewRevision: null, base: { kind: 'labels_only' }, labels: { me: 'Me', them: 'Team' }, document: null }));
+    await act(async () => controller().restoreReview('first', 1, null));
+    expect(meetingMocks.listMeetings.mock.calls).toEqual([['reviewword'], ['reviewword']]);
   });
 
   it('drops a speaker event refresh when the selected meeting changes before it resolves', async () => {

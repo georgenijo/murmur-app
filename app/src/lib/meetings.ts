@@ -124,6 +124,9 @@ export interface EditableReviewDocument {
   actionItems: EditableReviewAction[];
   openQuestions: EditableReviewText[];
 }
+export type NewReviewClaim =
+  | { kind: 'decision' | 'open_question'; text: string; sourceSegmentIds: number[] }
+  | { kind: 'action_item'; text: string; owner: string | null; dueDate: string | null; sourceSegmentIds: number[] };
 export type ReviewEditBase =
   | { kind: 'labels_only' }
   | { kind: 'generated'; generatedRevision: number }
@@ -134,6 +137,7 @@ export interface SaveMeetingReviewRequest {
   base: ReviewEditBase;
   labels: MeetingSpeakerLabels;
   document: EditableReviewDocument | null;
+  newClaims?: NewReviewClaim[];
 }
 
 export type MeetingSummaryPhase = 'idle' | 'running' | 'cancelling' | 'complete' | 'failed' | 'cancelled';
@@ -153,7 +157,15 @@ export const IDLE_MEETING_SUMMARY_STATUS: MeetingSummaryStatus = {
   totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null,
 };
 
+export type MeetingSearchField = 'summary' | 'decision' | 'action_item' | 'open_question' | 'transcript' | 'title';
+
+export const MEETING_SEARCH_FIELD_LABELS: Record<MeetingSearchField, string> = {
+  summary: 'Summary', decision: 'Decision', action_item: 'Action item',
+  open_question: 'Open question', transcript: 'Transcript', title: 'Title',
+};
+
 export interface MeetingPage {
+  searchMatches: Record<string, MeetingSearchField[]>;
   sessions: MeetingSession[];
   total: number;
   offset: number;

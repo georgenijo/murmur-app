@@ -67,6 +67,7 @@ mod query_provider;
 mod resource_monitor;
 mod selection;
 mod smart_auto_probe;
+mod smart_destination;
 mod smart_formatting;
 mod spoken_numbers;
 mod spoken_structure;
@@ -191,7 +192,7 @@ pub(crate) struct State {
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
     /// primary NSScreen. Refreshed on the main thread after display changes.
-    pub(crate) notch_info: Mutex<Option<(f64, f64)>>,
+    pub(crate) notch_info: Mutex<Option<commands::overlay::NotchInfo>>,
     /// Complete primary-display snapshot used to coalesce native screen
     /// notifications and skip geometrically identical updates.
     pub(crate) display_snapshot: Mutex<Option<commands::overlay::DisplaySnapshot>>,
@@ -749,6 +750,7 @@ pub fn run() {
             commands::overlay::register_screen_change_observer(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
             frontmost::register_delivery_transition_observers();
+            smart_destination::start(app.handle().clone());
             meeting_suggestions::initialize(app.handle().clone());
             #[cfg(not(feature = "internal-benchmark"))]
             commands::tray::register_update_wake_observer(app.handle().clone());
@@ -878,6 +880,7 @@ pub fn run() {
         }
 
         if let RunEvent::Exit = &_event {
+            smart_destination::set_enabled(false);
             audio_inventory::shutdown();
             // App-exit teardown: stop resident native helpers so none outlive
             // the app (all no-op when no child is running).

@@ -46,8 +46,8 @@ function meetingsController(remove: (id: string) => Promise<boolean>): ReturnTyp
       systemAudioActive: false, echoCancellation: { state: 'off' }, errorCode: null,
     },
     permission: 'granted', access: null,
-    page: { sessions: [detail.session], total: 1, offset: 0, limit: 50 },
-    detail, liveSegments: [], loading: false, error: null,
+    page: { sessions: [detail.session], searchMatches: {}, total: 1, offset: 0, limit: 50 },
+    detail, appliedQuery: '', liveSegments: [], loading: false, error: null,
     summaryStatus: {
       generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0,
       elapsedMs: 0, peakRssMb: 0, errorCode: null,
@@ -72,6 +72,29 @@ describe('MeetingsPanel retained audio deletion', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it('shows content-free matching field labels and keeps the result selectable', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.appliedQuery = 'reviewonly';
+    meetings.page.searchMatches = { [detail.session.id]: ['decision', 'action_item'] };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('Matches: Decision, Action item');
+    const result = container.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+    await act(async () => result.click());
+    expect(meetings.select).toHaveBeenCalledWith(detail.session.id);
+  });
+
+  it('distinguishes an empty search from an empty meeting history', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.appliedQuery = 'missing';
+    meetings.page = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('No meetings match this search.');
+    expect(container.textContent).not.toContain('No meeting transcripts yet.');
+    meetings.appliedQuery = '';
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('No meeting transcripts yet.');
   });
 
   it('invalidates local playback before deleting the selected meeting', async () => {

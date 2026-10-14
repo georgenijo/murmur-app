@@ -8,6 +8,7 @@ describe('buildConfigureOptions', () => {
       ...DEFAULT_SETTINGS,
       smartPunctuation: false,
       smartFormattingEnabled: true,
+      smartDestinationEnabled: true,
       appProfiles: [
         {
           bundleId: 'com.apple.Terminal',
@@ -25,6 +26,7 @@ describe('buildConfigureOptions', () => {
     });
 
     expect(options.smartFormattingEnabled).toBe(true);
+    expect(options.smartDestinationEnabled).toBe(true);
     expect(options.smartPunctuation).toBe(false);
     expect(options.appProfiles?.[0].smartFormattingOverride).toBe(false);
     expect(options.appProfiles?.[0].writingStyle).toBe('code_technical');

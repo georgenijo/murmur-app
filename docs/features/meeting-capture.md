@@ -45,9 +45,12 @@ status evidence.
 Notetaker presents the generated result as a separate draft over immutable
 transcript evidence. A user can set per-session display labels for the canonical
 `Me` and `Them` channels, edit existing sourced claims, reorder or remove list
-items, and save a revisioned reviewed snapshot. The edit request never carries
-source IDs; Rust restores them from the exact generated or reviewed base before
-committing. New claims require a future source-selection workflow.
+items, select transcript sources to add a decision, action item, or open question,
+and save a revisioned reviewed snapshot. Existing claim edits never carry source
+IDs; Rust restores them from the exact generated or reviewed base. New claims
+carry selected segment IDs in the same revision-checked save request, without a
+client key. Rust validates their session sources and assigns opaque identities
+before committing.
 
 Regeneration replaces only the generated draft. A saved review remains active
 until the user separately confirms replacement from an exact generated revision.

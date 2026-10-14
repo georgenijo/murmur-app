@@ -231,6 +231,17 @@ and always uses a constant summary. It never admits application or bundle
 identity, PID/process-instance evidence, window titles, transcript or clipboard
 content, paths, or raw errors.
 
+Each delivery also emits the exact-schema code
+`pipeline.smart_destination_delivery` with a positive `recording_id`;
+`accepted_route` (the route frozen at acceptance) and `delivery_route` (after
+smart preparation), each one of `disabled`, `clipboard_only`, `normal_paste`, or
+`smart_target`; and `outcome_code`, one of `no_text`, `auto_pasted`,
+`clipboard_only_auto_paste_disabled`, `clipboard_only_accessibility_denied`,
+`clipboard_only_target_changed`, `clipboard_only_focus_not_editable`,
+`clipboard_only_clipboard_changed`, `clipboard_only_paste_failed`,
+`clipboard_only_smart_target_unavailable`, `clipboard_write_failed`, or
+`unconfirmed`. The same all-build sanitizer rules apply.
+
 A capture backend that exceeds its initialization budget emits the stable
 structured code `audio.system_audio_graph_observed` from every install, armed
 for hang diagnostics or not. It is a strictly content-free aggregate of the

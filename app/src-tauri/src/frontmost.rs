@@ -43,6 +43,13 @@ pub struct FrontmostAppIdentity {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProcessInstanceToken(u64);
 
+#[cfg(test)]
+impl ProcessInstanceToken {
+    pub(crate) fn for_test(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 /// Opaque Accessibility identity for the focused window. This is diagnostic
 /// evidence only: moving between windows in the same process never blocks a
 /// paste.

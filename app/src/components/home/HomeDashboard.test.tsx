@@ -69,6 +69,66 @@ describe('home dashboard interactions', () => {
     expect((container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it.each([
+    ['current', 'Current text field'],
+    ['recent', 'Recent text field'],
+    ['unavailable', 'Clipboard only'],
+  ] as const)('shows the %s smart destination while recording and processing', async (smartDestinationStatus, label) => {
+    const renderBar = async (status: 'recording' | 'processing' | 'idle') => {
+      await act(async () => root.render(
+        <HomeRecordingBar
+          status={status}
+          initialized
+          recordingDuration={12}
+          audioLevel={0.04}
+          smartDestinationStatus={smartDestinationStatus}
+          triggerKey="shift_l"
+          recordingMode="hold_down"
+          meetingPhase="idle"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+        />,
+      ));
+    };
+
+    await renderBar('recording');
+    expect(container.querySelector('.home-talk-destination')?.textContent).toBe(label);
+    expect(container.querySelector('.home-talk-destination')?.getAttribute('aria-label'))
+      .toBe(`Destination: ${label}`);
+
+    await renderBar('processing');
+    expect(container.querySelector('.home-talk-destination')?.textContent).toBe(label);
+
+    await renderBar('idle');
+    expect(container.querySelector('.home-talk-destination')).toBeNull();
+  });
+
+  it('names a verified destination app without naming clipboard-only delivery', async () => {
+    const renderBar = async (smartDestinationStatus: 'recent' | 'unavailable') => {
+      await act(async () => root.render(
+        <HomeRecordingBar
+          status="recording"
+          initialized
+          recordingDuration={12}
+          audioLevel={0.04}
+          smartDestinationStatus={smartDestinationStatus}
+          smartDestinationAppName="T3 Code"
+          triggerKey="shift_l"
+          recordingMode="hold_down"
+          meetingPhase="idle"
+          onRecord={vi.fn()}
+          onStop={vi.fn()}
+        />,
+      ));
+    };
+
+    await renderBar('recent');
+    expect(container.querySelector('.home-talk-destination')?.textContent).toBe('To T3 Code');
+
+    await renderBar('unavailable');
+    expect(container.querySelector('.home-talk-destination')?.textContent).toBe('Clipboard only');
+  });
+
   it('keeps the sidebar focused on the four primary destinations', async () => {
     const onNavigate = vi.fn();
     await act(async () => root.render(

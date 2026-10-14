@@ -252,12 +252,17 @@ export function settingsLatencyView(page: string | undefined): string {
   return `settings.${resolvePage(page)}`;
 }
 
+export function isMacOSSettingsPlatform(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent): boolean {
+  return /Macintosh|Mac OS X/.test(userAgent);
+}
+
 const SETTINGS_SEARCH_ITEMS = [
   { page: 'recording', target: 'microphone', title: 'Microphone', detail: 'Choose an input and check its live level.', keywords: 'audio input device test level gain' },
   { page: 'recording', target: 'voice-detection', title: 'Voice Detection', detail: 'Adjust silence filtering sensitivity.', keywords: 'vad sensitivity noise silence' },
   { page: 'recording', target: 'recording-trigger', title: 'Recording Trigger', detail: 'Hold, double-tap, or use both.', keywords: 'hotkey shortcut key timing feedback' },
   { page: 'recording', target: 'stop-on-silence', title: 'Stop on Silence', detail: 'Finish hands-free recordings after quiet.', keywords: 'automatic stop vad pause' },
   { page: 'delivery', target: 'auto-paste', title: 'Auto-Paste', detail: 'Paste clipboard results into the active app.', keywords: 'auto paste autopaste delivery clipboard' },
+  { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls.', keywords: 'destination focus media play pause next previous', macOSOnly: true },
   { page: 'delivery', target: 'file-output', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription History', detail: 'Keep completed dictations on this Mac.', keywords: 'save retain local transcripts' },
   { page: 'delivery', target: 'app-overrides', title: 'App Overrides', detail: 'Customize delivery for individual apps.', keywords: 'profile bundle id per app' },
@@ -346,6 +351,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 }: SettingsPanelProps) {
   const { models: runtimeModels, byName: runtimeByName } = useModelRuntimeCatalog();
   const settingsSurfaceActive = useSettingsSurfaceActive();
+  const macOSSettingsPlatform = isMacOSSettingsPlatform();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
   const pageRequestPending = pageRequest !== null && pageRequest.token !== appliedRequestToken;
@@ -383,8 +389,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     const query = normalize(searchQuery);
     if (!query) return [];
     return SETTINGS_SEARCH_ITEMS.filter((item) =>
-      normalize(`${item.title} ${item.detail} ${item.keywords}`).includes(query));
-  }, [searchQuery]);
+      (!('macOSOnly' in item) || !item.macOSOnly || macOSSettingsPlatform)
+      && normalize(`${item.title} ${item.detail} ${item.keywords}`).includes(query));
+  }, [macOSSettingsPlatform, searchQuery]);
   useEffect(() => {
     if (!pageRequest || pageRequest.token === appliedRequestToken) return;
     setAppliedRequestToken(pageRequest.token);
@@ -1244,6 +1251,16 @@ export const SettingsPanel = memo(function SettingsPanel({
               >
                 <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />
               </div>
+              {macOSSettingsPlatform && (
+                <SettingToggle
+                  targetId="smart-destination"
+                  title="Smart destination"
+                  description="Keep dictation with your recent text field while using supported media controls. Delivery may briefly switch to that app. Otherwise, dictation pastes normally."
+                  checked={settings.smartDestinationEnabled}
+                  disabled={!autoPasteOn}
+                  onChange={() => onUpdateSettings({ smartDestinationEnabled: !settings.smartDestinationEnabled })}
+                />
+              )}
             </SettingsBranch>
             <div data-setting-target="paste-last-shortcut" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <p className="block text-sm font-medium text-on-surface">

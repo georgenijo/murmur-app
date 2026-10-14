@@ -293,6 +293,7 @@ function App() {
     canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
+    smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
     addEntry,
     microphone: settings.microphone,
@@ -924,6 +925,8 @@ function App() {
                   initialized={initialized}
                   recordingDuration={recordingDuration}
                   audioLevel={audioLevel}
+                  smartDestinationStatus={smartDestinationStatus}
+                  smartDestinationAppName={smartDestinationAppName}
                   settings={settings}
                   meetings={meetings}
                   statsVersion={combinedStatsVersion}

@@ -293,6 +293,76 @@ describe('useRecordingState transition ordering', () => {
     expect(current.error).toBe('');
   });
 
+  it('keeps the smart destination scoped to the active recording generation', async () => {
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+      mocks.listeners.get('dictation-generation-started')?.({
+        payload: { recordingId: 10 },
+      });
+      mocks.listeners.get('smart-destination-selected')?.({
+        payload: { recordingId: 10, status: 'current', appName: 'T3 Code' },
+      });
+    });
+    expect(current.smartDestinationStatus).toBe('current');
+    expect(current.smartDestinationAppName).toBe('T3 Code');
+
+    await act(async () => {
+      mocks.listeners.get('smart-destination-selected')?.({
+        payload: { recordingId: 9, status: 'recent', appName: 'Old App' },
+      });
+    });
+    expect(current.smartDestinationStatus).toBe('current');
+    expect(current.smartDestinationAppName).toBe('T3 Code');
+
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({
+        payload: { recordingId: 11 },
+      });
+    });
+    expect(current.smartDestinationStatus).toBeNull();
+    expect(current.smartDestinationAppName).toBeNull();
+
+    await act(async () => {
+      mocks.listeners.get('smart-destination-selected')?.({
+        payload: { recordingId: 11, status: 'unavailable', appName: 'Ignored App' },
+      });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
+    });
+    expect(current.smartDestinationStatus).toBe('unavailable');
+    expect(current.smartDestinationAppName).toBeNull();
+
+    await act(async () => {
+      mocks.listeners.get('recording-cancelled')?.({ payload: { recordingId: 11 } });
+      mocks.listeners.get('smart-destination-selected')?.({
+        payload: { recordingId: 11, status: 'recent' },
+      });
+    });
+    expect(current.smartDestinationStatus).toBeNull();
+    expect(current.smartDestinationAppName).toBeNull();
+
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({
+        payload: { recordingId: 12 },
+      });
+      mocks.listeners.get('smart-destination-selected')?.({
+        payload: { recordingId: 12, status: 'recent' },
+      });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+      mocks.listeners.get('smart-destination-selected')?.({
+        payload: { recordingId: 12, status: 'current' },
+      });
+    });
+    expect(current.smartDestinationStatus).toBeNull();
+    expect(current.smartDestinationAppName).toBeNull();
+  });
+
+  it('disposes the smart destination listeners on unmount', async () => {
+    await act(async () => root.unmount());
+    expect(mocks.listeners.has('smart-destination-selected')).toBe(false);
+    expect(mocks.listeners.has('recording-cancelled')).toBe(false);
+    root = createRoot(container);
+  });
+
   it('clears the matching cleanup notice when recovery returns to idle', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'audio_recovering',

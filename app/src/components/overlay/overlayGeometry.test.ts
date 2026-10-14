@@ -5,12 +5,14 @@ import type { OverlayGeometry } from '../../lib/overlayGeometry';
 
 const entries: Array<[string, OverlayGeometry]> = [
   ['notched', fixture.notched],
+  ['external', fixture.external],
   ['fallback', fixture.fallback],
 ];
 
 describe('overlay geometry contract fixture', () => {
   it('validates as OverlayGeometry', () => {
     expect(isOverlayGeometry(fixture.notched)).toBe(true);
+    expect(isOverlayGeometry(fixture.external)).toBe(true);
     expect(isOverlayGeometry(fixture.fallback)).toBe(true);
   });
 
@@ -25,16 +27,22 @@ describe('overlay geometry contract fixture', () => {
 
   it('locks the characterization values', () => {
     expect(fixture.notched).toEqual({
-      windowW: 257, collapsedH: 32, expandedH: 76,
+      windowW: 257, collapsedH: 32, expandedH: 96,
       pillIdleW: 221, pillActiveW: 257,
       pillMarginIdle: 0, pillMarginActive: 0,
-      dropdownH: 44, wingW: 36,
+      dropdownH: 64, wingW: 36, floating: false,
+    });
+    expect(fixture.external).toEqual({
+      windowW: 280, collapsedH: 36, expandedH: 100,
+      pillIdleW: 280, pillActiveW: 280,
+      pillMarginIdle: 0, pillMarginActive: 0,
+      dropdownH: 64, wingW: 36, floating: true,
     });
     expect(fixture.fallback).toEqual({
-      windowW: 152, collapsedH: 37, expandedH: 81,
-      pillIdleW: 116, pillActiveW: 152,
+      windowW: 280, collapsedH: 36, expandedH: 100,
+      pillIdleW: 280, pillActiveW: 280,
       pillMarginIdle: 0, pillMarginActive: 0,
-      dropdownH: 44, wingW: 36,
+      dropdownH: 64, wingW: 36, floating: true,
     });
   });
 

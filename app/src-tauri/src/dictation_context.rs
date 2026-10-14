@@ -23,6 +23,7 @@ pub struct ActiveAppIdentity {
     /// The private application identity is memory-only and intentionally has
     /// no `Debug` representation.
     pub(crate) delivery_target: crate::frontmost::DeliveryTargetSnapshot,
+    pub(crate) smart_destination: crate::smart_destination::Snapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -565,6 +566,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             bundle_id: inputs.bundle_id.map(str::to_string),
             process_id: None,
             delivery_target: crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+            smart_destination: crate::smart_destination::Snapshot::Disabled,
         },
         matched_profile,
         teaching_project_root,

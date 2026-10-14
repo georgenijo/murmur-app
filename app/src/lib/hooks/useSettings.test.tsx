@@ -44,8 +44,9 @@ type SettingsState = ReturnType<typeof useSettings>;
 
 function deferred<T>() {
   let resolve = (_value: T) => {};
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject = (_reason?: unknown) => {};
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 describe('useSettings configure rollback privacy', () => {
@@ -371,6 +372,54 @@ describe('useSettings configure rollback privacy', () => {
     const calls = mocks.configure.mock.calls;
     const lastArg = calls[calls.length - 1]?.[0];
     expect(lastArg).toMatchObject({ mirrorToNotchPill: true });
+  });
+
+  it('configures and rolls back Smart destination when the current request fails', async () => {
+    await mountHarness();
+    const configureRequest = deferred<void>();
+    mocks.configure.mockReturnValueOnce(configureRequest.promise);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => current.updateSettings({ smartDestinationEnabled: true }));
+    expect(mocks.configure).toHaveBeenLastCalledWith(expect.objectContaining({
+      smartDestinationEnabled: true,
+    }));
+    expect(current.settings.smartDestinationEnabled).toBe(true);
+
+    await act(async () => {
+      configureRequest.reject(new Error('configure failed'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.smartDestinationEnabled).toBe(false);
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').smartDestinationEnabled)
+      .toBe(false);
+    expect(current.configureError).toContain('Previous settings were restored');
+    expect(consoleError).toHaveBeenCalled();
+  });
+
+  it('does not let a stale configure failure roll back a newer Smart destination value', async () => {
+    await mountHarness();
+    const staleRequest = deferred<void>();
+    const currentRequest = deferred<void>();
+    mocks.configure
+      .mockReturnValueOnce(staleRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => current.updateSettings({ smartDestinationEnabled: true }));
+    await act(async () => current.updateSettings({ language: 'es' }));
+    await act(async () => {
+      currentRequest.resolve(undefined);
+      staleRequest.reject(new Error('stale failure'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.settings.smartDestinationEnabled).toBe(true);
+    expect(current.settings.language).toBe('es');
+    expect(current.configureError).toBeNull();
   });
 
   it('notifies the overlay when the recording gesture or function key changes', async () => {
