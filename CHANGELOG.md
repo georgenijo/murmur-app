@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Smart destination pastes into the current field no longer wait 40 ms after
   the key post; only a media handoff still reads the field back.
 
+### Meetings
+
+- Meetings with retained audio can be exported as a single `.zip` containing the
+  review document, every retained WAV segment as recorded, and a manifest that
+  notes any segment whose audio is missing. The panel shows the audio size
+  before saving. Deleting the meeting or starting a recording during the export
+  cancels it without saving anything.
+
 ## [0.51.6] - 2026-10-14
 
 ### Dictation

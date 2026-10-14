@@ -171,10 +171,67 @@ All three formats represent one fixed scope named a reviewed meeting:
 
 Markdown uses transcript anchors, plain text names segment IDs and timestamps, and
 JSON uses `murmur.meeting-review-export.v2`. Markdown, text, and JSON include the
-title and attendees. Exports exclude audio, local paths,
-prompts, discarded drafts, and hidden runtime metrics. Rust builds one validated
+title and attendees. Document exports exclude audio, local paths,
+prompts, discarded drafts, and hidden runtime metrics (see Export with audio). Rust builds one validated
 snapshot and renders all formats from it. Clipboard rendering and the existing
 atomic `.md`/`.txt`/`.json` sink share the 8 MiB bound and never truncate evidence.
+
+### Export with audio
+
+When **Retain audio** was on for a finished meeting, **Export with audio…** saves
+one `.zip` that holds the review document in the selected format, the retained
+audio, and a manifest. Sessions without retained audio do not show the action,
+and Rust refuses the request if one is made anyway; it never writes an empty zip.
+
+The archive contains:
+
+- `review.<ext>`: byte-for-byte the same output as the standalone export for that
+  format, so it is not a separate format to maintain;
+- `audio/segment-<id>-<me|them>.wav`: each retained WAV exactly as recorded.
+  Entries are stored, not compressed, and audio is never decoded, mixed,
+  transcoded, or synthesized. The segment ID matches the transcript;
+- `manifest.json` (`murmur.meeting-bundle.v1`): the document file and format, each
+  included segment with channel, start/end, file name, and size, and `complete`.
+
+Audio is read through the same ownership, no-follow, and WAV checks as playback.
+The bundle names no local paths and carries no prompts, discarded drafts, or
+hidden metrics.
+
+**Missing audio is never hidden.** If a retained segment's WAV was already
+missing, pruned, malformed, or outside the owned spool when the export reached
+it, the segment is omitted and listed in `omittedSegments` with `complete: false`
+and a notice. The confirmation shows how many segments are unavailable before
+saving and the completed export reports it. If no audio file is readable the
+export is refused.
+
+**Deletion or capture during an export aborts it.** Omission applies only to
+audio that was already gone while the meeting was untouched. Before every
+segment, after the last one, and again immediately before the file is renamed
+into place, the export re-checks that the meeting was not deleted, pruned, or
+invalidated (including by an unrelated delete, which makes the audio revision
+move) and that no recording, dictation, or other voice task has started. If
+any check fails, nothing is published, any previous file at the destination is
+left alone, and a bundle is never marked `complete` over a revoked meeting.
+Retry once the meeting or capture settles.
+
+**Size contract.** The 8 MiB document bound does not apply to audio. The panel
+shows the number of segments and total audio size before the save dialog. Total
+audio is capped at 2 GiB (and 50,000 segments); a larger meeting is refused with
+guidance to export the document alone. The zip is streamed to a uniquely named,
+exclusively created temporary sibling and renamed on success, so memory use is
+one segment plus the document, a failure leaves no partial file, and an
+existing file or symlink beside the destination is never opened or removed.
+Two exports to the same destination each stay intact; the last rename wins.
+Exporting is unavailable while recording or another voice task is active,
+matching playback.
+
+**Resources.** One export opens and integrity-checks the meeting database once
+and reuses that connection for every per-segment ownership check, so cost grows
+with the number of segments rather than with segments times database size. An
+export holds a dedicated single-slot bundle permit rather than the two-slot
+playback pool, so the two channel requests of normal playback keep working while
+a preview or export runs; a second concurrent export is refused with a retry
+message.
 
 ### Meeting captions
 
