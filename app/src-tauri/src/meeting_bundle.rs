@@ -599,8 +599,10 @@ mod tests {
         let (forged, forged_path) = clip(&repository, "forged", MeetingSpeaker::Them, 0, 500);
         finish(&repository, "forged");
         let outside = temporary.path().canonicalize().unwrap().join("outside.wav");
-        std::fs::copy(&forged_path, &outside).unwrap();
-        let secret = std::fs::read(&outside).unwrap();
+        // A still-valid WAV whose samples differ from every real segment.
+        let mut secret = std::fs::read(&forged_path).unwrap();
+        *secret.last_mut().unwrap() ^= 0x55;
+        std::fs::write(&outside, &secret).unwrap();
 
         assert!(repository.audio_path("audio/../outside.wav").is_err());
         let connection =
