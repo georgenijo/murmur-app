@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.9] - 2026-10-14
+
 ### Overlay
 
 - On displays without a notch, the floating pill now moves into the menu bar
