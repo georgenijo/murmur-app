@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-10-14
+
 ### Dictation
 
 - Fixed Smart destination leaving most dictations on the clipboard. When no
