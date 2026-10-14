@@ -170,7 +170,7 @@ mod native {
             value: *mut CFTypeRef,
         ) -> i32;
         fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
-        fn AXValueGetValue(value: CFTypeRef, value_type: i32, out: *mut c_void) -> bool;
+        fn AXValueGetValue(value: CFTypeRef, value_type: u32, value_ptr: *mut c_void) -> bool;
         fn CFStringCreateWithCString(
             allocator: CFTypeRef,
             string: *const c_char,
@@ -193,8 +193,8 @@ mod native {
     }
 
     const AX_SUCCESS: i32 = 0;
-    const AX_VALUE_CG_POINT: i32 = 1;
-    const AX_VALUE_CG_SIZE: i32 = 2;
+    const AX_VALUE_CG_POINT: u32 = 1;
+    const AX_VALUE_CG_SIZE: u32 = 2;
     const UTF8_ENCODING: u32 = 0x0800_0100;
     /// Per-element Accessibility timeout. A hung application yields `None`
     /// (standalone fallback) rather than a long wait.
