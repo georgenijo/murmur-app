@@ -326,14 +326,6 @@ pub(crate) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
     native::insert(snapshot, text, pasteboard_change)
 }
 
-/// Read-only main-thread probe used while waiting for a requested activation:
-/// true once the prepared destination application is active and its exact
-/// field is focused with the expected caret. It never mutates the token, so
-/// [`insert`] still performs its own complete re-verification.
-pub(crate) fn destination_ready(snapshot: &Snapshot) -> bool {
-    native::destination_ready(snapshot)
-}
-
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeliveryRoute {
@@ -505,10 +497,6 @@ mod native {
         _pasteboard_change: i64,
     ) -> InsertOutcome {
         InsertOutcome::Refused
-    }
-
-    pub(super) fn destination_ready(_snapshot: &Snapshot) -> bool {
-        false
     }
 }
 

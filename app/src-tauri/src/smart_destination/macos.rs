@@ -596,37 +596,6 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
     })
 }
 
-pub(super) fn destination_ready(snapshot: &Snapshot) -> bool {
-    if !is_main_thread() {
-        return false;
-    }
-    let Snapshot::Target {
-        token,
-        revision,
-        identity,
-        ..
-    } = snapshot
-    else {
-        return false;
-    };
-
-    with_ax_budget(DELIVERY_AX_BUDGET, || {
-        STATE.with(|state| {
-            let state = state.borrow();
-            state.frozen.get(token).is_some_and(|frozen| {
-                frozen.revision == *revision
-                    && frozen.destination_identity == *identity
-                    && frozen.stage == CapabilityStage::Prepared
-                    && generation_is_current(frozen.generation)
-                    && decode_range(frozen.range.as_type()).is_some_and(|expected_range| {
-                        destination_is_active(frozen)
-                            && validate_exact_field(frozen, expected_range)
-                    })
-            })
-        })
-    })
-}
-
 pub(super) fn abort(snapshot: &Snapshot, pasteboard_change: Option<i64>) {
     if !is_main_thread() {
         return;
