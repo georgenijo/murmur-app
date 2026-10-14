@@ -228,18 +228,16 @@ pub(crate) async fn retry_last_delivery(
                 let _ = tx.send(None);
                 return;
             }
-            let attempt = match recovery_route(&latest.smart_destination) {
-                RecoveryRoute::NormalPaste => {
-                    injector::inject_text(&latest.text, true, latest.delay_ms, &latest.target)
-                }
-                RecoveryRoute::VerifiedSmartDestination => injector::inject_with_destination(
-                    &latest.text,
-                    true,
-                    latest.delay_ms,
-                    &latest.target,
-                    &latest.smart_destination,
-                ),
-            };
+            // Routes on the snapshot itself: Disabled uses legacy normal paste,
+            // Unverified uses normal paste with the secure-field veto, and a
+            // fresh smart Target uses its one-shot capability.
+            let attempt = injector::inject_with_destination(
+                &latest.text,
+                true,
+                latest.delay_ms,
+                &latest.target,
+                &latest.smart_destination,
+            );
             crate::smart_destination::abort(&latest.smart_destination, None);
             let _ = tx.send(Some(attempt));
         })

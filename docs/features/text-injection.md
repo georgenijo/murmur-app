@@ -57,16 +57,20 @@ When nothing can be proven at recording start, for example because a Chromium
 or Electron app does not expose its focused element, the start identity lookup
 was incomplete, or the capture could not finish in time, the recording uses the
 normal auto-paste policy above (including its stop-time anchor) exactly as if
-Smart destination were off. The indicator then shows "Current text field"
-without naming an app. Smart destination only adds behavior; uncertainty never
-makes ordinary dictation stricter than normal auto-paste.
+Smart destination were off, with one addition: a field that is positively
+secure at delivery (role or subrole `AXSecureTextField`) stays clipboard-only,
+including on Paste Last. The indicator then shows "Current text field" without
+naming an app. Smart destination only adds behavior; uncertainty never makes
+ordinary dictation stricter than normal auto-paste.
 
 Positive evidence still keeps delivery clipboard-only: a secure field (the
-secure role is checked before any other fallible query), Murmur's own window or a
-mismatched start identity, a supported media control with no retained field, an
-editable field that could not be frozen (for example because focus moved to
-another field), Smart destination being turned off while the capture was
-pending, or a captured destination that changed or expired before delivery. Each
+secure role is checked before any other fallible query), Murmur's own window, a
+mismatched or different process (including focus moving to another app during
+capture), a supported media control with no retained field, an editable field
+that could not be frozen (for example because focus moved to another field),
+Smart destination being turned off while the capture was pending, or a captured
+destination that changed or expired before delivery. Refusal evidence found by a
+capture that then misses its deadline is still honored. Each
 delivery logs a content-free `pipeline.smart_destination_delivery` event; see the
 [event reference](../reference/events.md).
 
