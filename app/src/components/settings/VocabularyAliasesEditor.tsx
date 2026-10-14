@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { VocabularyEntry, VoiceCommand } from '../../lib/settings';
-import { vocabularyPrompt } from '../../lib/settings';
 import { previewVocabularyAliases } from '../../lib/dictation';
 import { validateVocabularyEntries } from '../../lib/vocabulary';
 import { VocabularyFileActions } from './VocabularyFileActions';
@@ -28,8 +27,6 @@ export function VocabularyAliasesEditor({
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setDraft(entries); }, [entries]);
-
-  const enabledPrompt = useMemo(() => vocabularyPrompt(draft), [draft]);
 
   const update = (next: VocabularyEntry[]) => {
     setDraft(next);
@@ -81,7 +78,7 @@ export function VocabularyAliasesEditor({
             {draft.length === 0 ? 'No saved spellings' : `${draft.length} saved ${draft.length === 1 ? 'spelling' : 'spellings'}`}
           </p>
           <p className="mt-0.5 text-[11px] text-on-surface-variant">
-            If Murmur hears it more than one way, separate them with commas.
+            For reliable replacement, enter the words Murmur actually hears on the left. Separate variants with commas.
           </p>
         </div>
         <button
@@ -242,11 +239,9 @@ export function VocabularyAliasesEditor({
         )}
       </div>
 
-      {enabledPrompt && (
-        <p className="mt-2 text-[11px] text-on-surface-variant">
-          Your saved spellings work locally with every transcription model.
-        </p>
-      )}
+      <p className="mt-2 text-[11px] text-on-surface-variant">
+        A written form alone is a recognition hint, so it may not fix a mishearing. Spoken aliases replace exact matches with Smart Correction on; Verbatim skips correction. Terminal command formatting may change the result afterward.
+      </p>
     </div>
   );
 }

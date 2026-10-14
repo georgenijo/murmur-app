@@ -82,6 +82,7 @@ describe('overlay settings write ownership', () => {
     mocks.invoke.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
     await act(async () => container.querySelector('button')?.click());
     expect(stored.autoPaste).toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledWith('configure_dictation', { options: { autoPaste: true } });
     revokeInMain();
     await act(async () => fail(new Error('configuration refused')));
     expect(stored.autoPaste).toBe(false);
