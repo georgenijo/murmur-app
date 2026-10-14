@@ -115,9 +115,10 @@ while setup occupies the main thread, so the first sample is often unknown.
 Any new trigger supersedes the remaining re-checks. Each refresh samples the frontmost menus
 off the main thread, then on the main thread re-measures the screen and status
 items, builds one `DisplaySnapshot`, and, only if it differs from the cached
-one, updates `State.notch_info`, repositions and resizes the native window, and
-emits `overlay-geometry-changed` (the frontend collapses and reapplies the
-saved calibration offset). A physical notch skips the Accessibility sampling.
+one, updates `State.notch_info`, repositions and resizes the native window while
+retaining its calibration intent and recomputing the effective offset, and emits
+`overlay-geometry-changed` (the frontend collapses its expansion state). A
+physical notch skips the Accessibility sampling.
 Status items appearing or resizing with no app, Space, or display change are
 not observed; they are picked up on the next trigger.
 
@@ -155,13 +156,15 @@ Every overlay dimension comes from one source: `geometry_for(notch)` in `command
   band pill above the display.
 - **Size transition.** Height grows from `collapsedH` to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown opens. The native window stays at `windowW`, so recording/processing can use the full top bar immediately.
 - **Status and controls.** The wings hold the status indicator (left) and waveform or delivery action (right). The expanded surface places Mode and quick controls in one row, with recording, connecting, recovery, and hotkey-miss text in a separate row. Text cannot cover buttons. The amber `!` badge and border glow stay on the pill.
-- **Nearby popovers.** On a floating display, the live dictation preview and
-  Voice Query answer popover sit below the maximum expanded overlay height
-  (measured from the menu-bar band top, or from the standalone fallback position),
-  including the largest saved vertical calibration offset, with their height
-  capped at the remaining work area when necessary. Under a physical notch they
-  stay tucked directly below the notch so the live transcript reads next to the
-  pill; hovering the pill open can briefly overlap them.
+- **Nearby popovers.** On a floating display, the click-through live dictation
+  preview follows the actual applied native overlay frame: it shares the pill's
+  horizontal center (clamped to the work area), sits 6pt below it, and moves
+  below the controls while the overlay is expanded or calibrated. Its height is
+  capped at the remaining work area. The interactive Voice Query popover keeps a
+  conservative static position below the largest calibrated expanded overlay;
+  hover therefore cannot move Copy/Close controls under the pointer. Under a
+  physical notch both stay tucked directly below the notch; hovering the pill
+  open can briefly overlap them.
 - **Mixed display scales.** Native size and position calls use logical points
   derived from the selected monitor. Tao otherwise converts physical inputs
   with the overlay window's old scale while it moves between 1x and 2x screens.
@@ -170,7 +173,10 @@ Every overlay dimension comes from one source: `geometry_for(notch)` in `command
 ### Position calibration
 
 The App → General → Advanced settings section can fine-tune the native overlay
-window vertically from -12pt through +12pt. Calibration uses explicit one-point
+window vertically within a maximum range of -12pt through +12pt. The native
+command returns the effective range for the current display and window height,
+so a pill already at the screen top does not advertise unavailable upward travel.
+Calibration uses explicit one-point
 up/down controls rather than dragging overlay content: each change previews the
 actual macOS window position, **Cancel** restores the position from the start of
 the session, **Save position** commits the draft to the durable Settings
@@ -178,10 +184,17 @@ document, and **Reset** returns it to zero. Merely opening or closing calibratio
 never saves a position.
 
 `show_overlay` only shows the existing window and re-enables mouse input; it does
-not first jump the overlay back to its default coordinates. Startup and display
-changes establish the default top-center position, after which the overlay root
-applies the confirmed setting. The native command clamps again and records both
-target and actual physical coordinates in structured, content-free telemetry.
+not first jump the overlay back to its default coordinates. The overlay root
+initializes native ownership from the confirmed setting once. Native placement
+refreshes then retain the requested offset—including an active unsaved draft—and
+recompute what the current anchor can apply, so app, Space, or display changes
+cannot reset it. The native command clamps again
+and records both target and actual physical coordinates in structured,
+content-free telemetry.
+
+Physical-notch calibration intentionally retains the full ±12pt fine-tuning
+range; the screen-top clamp applies only to a synthetic pill occupying a proven
+menu-bar slot.
 
 Settings schema v2 resets offsets produced by the former pointer-drag flow once
 and removes its standalone `murmur-overlay-vertical-offset` key. That flow could
@@ -211,7 +224,10 @@ The controller runs a four-phase state machine:
 - **Motion tokens** — see [Motion tokens](#motion-tokens).
 - **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Gating: ticks do **no IPC** (no `outerPosition`/`cursorPosition`) while the overlay is **hidden**; while **disabled**, DOM and poller entry are blocked, but the exit watchdog stays alive during an active interaction so clicking the dropdown's own Disable control cannot strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount; hiding also cancels timers, resets the phase, and serializes a collapse. In-flight cursor results are generation-guarded so they cannot reopen after a visibility or display reset. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
   - **Note:** `overlay-visible-changed` is emitted by the `show_overlay`/`hide_overlay` commands, which are **not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible. The visibility ref therefore defaults to `true` so first-hover works from mount, and the `disabled`-phase gate is the active battery saver today; the visibility gate is plumbing that activates if/when show/hide get wired to dynamic callers.
-- Only the **top bar** is a drag region (`data-tauri-drag-region`, set in `OverlayPill.tsx`); the dropdown buttons are not, so they stay clickable. The dropdown is labeled as the `Quick settings` group and is `aria-hidden` until the expanded-frame acknowledgment reveals it.
+- The anchored overlay is not a native drag region. Relocation is explicit through
+  Settings calibration, so an unpersisted free drag cannot be undone by the next
+  native placement refresh. The dropdown is labeled as the `Quick settings` group
+  and is `aria-hidden` until the expanded-frame acknowledgment reveals it.
 
 ### Motion tokens
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import {
   clampOverlayVerticalOffset,
   OVERLAY_VERTICAL_OFFSET_MAX,
@@ -10,6 +10,43 @@ import {
 interface OverlayCalibrationControlProps {
   offset: number;
   onCommit: (offset: number) => void;
+  targetId?: string;
+}
+
+interface AppliedOverlayPosition {
+  requestedOffset: number;
+  appliedOffset: number;
+  minOffset: number;
+  maxOffset: number;
+}
+
+function validPosition(value: unknown): AppliedOverlayPosition | null {
+  const candidate = value as Partial<AppliedOverlayPosition> | null;
+  if (Number.isFinite(candidate?.requestedOffset)
+    && Number.isFinite(candidate?.appliedOffset)
+    && Number.isFinite(candidate?.minOffset)
+    && Number.isFinite(candidate?.maxOffset)
+    && candidate!.minOffset! <= candidate!.appliedOffset!
+    && candidate!.appliedOffset! <= candidate!.maxOffset!) {
+    return {
+      requestedOffset: candidate!.requestedOffset!,
+      appliedOffset: candidate!.appliedOffset!,
+      minOffset: candidate!.minOffset!,
+      maxOffset: candidate!.maxOffset!,
+    };
+  }
+  return null;
+}
+
+function resolvedPosition(value: unknown, requestedOffset: number): AppliedOverlayPosition {
+  const valid = validPosition(value);
+  if (valid) return valid;
+  return {
+    requestedOffset,
+    appliedOffset: requestedOffset,
+    minOffset: OVERLAY_VERTICAL_OFFSET_MIN,
+    maxOffset: OVERLAY_VERTICAL_OFFSET_MAX,
+  };
 }
 
 function offsetLabel(offset: number): string {
@@ -20,11 +57,19 @@ function offsetLabel(offset: number): string {
 export function OverlayCalibrationControl({
   offset,
   onCommit,
+  targetId,
 }: OverlayCalibrationControlProps) {
   const [active, setActive] = useState(false);
   const [draft, setDraft] = useState(() => clampOverlayVerticalOffset(offset));
+  const [requestedDraft, setRequestedDraft] = useState(
+    () => clampOverlayVerticalOffset(offset),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [bounds, setBounds] = useState({
+    min: OVERLAY_VERTICAL_OFFSET_MIN,
+    max: OVERLAY_VERTICAL_OFFSET_MAX,
+  });
   const activeRef = useRef(false);
   const adjustUpRef = useRef<HTMLButtonElement>(null);
   const startRef = useRef<HTMLButtonElement>(null);
@@ -39,7 +84,11 @@ export function OverlayCalibrationControl({
   }, [active]);
 
   useEffect(() => {
-    if (!activeRef.current) setDraft(clampOverlayVerticalOffset(offset));
+    if (!activeRef.current) {
+      const next = clampOverlayVerticalOffset(offset);
+      setDraft(next);
+      setRequestedDraft(next);
+    }
   }, [offset]);
 
   const announceCalibration = useCallback((nextActive: boolean) => {
@@ -52,9 +101,14 @@ export function OverlayCalibrationControl({
     setBusy(true);
     setError(null);
     try {
-      await invoke('set_overlay_vertical_offset', { offset: next });
+      const result = resolvedPosition(
+        await invoke<unknown>('set_overlay_vertical_offset', { offset: next }),
+        next,
+      );
       if (generation !== requestGenerationRef.current) return false;
-      setDraft(next);
+      setDraft(result.appliedOffset);
+      setRequestedDraft(result.requestedOffset);
+      setBounds({ min: result.minOffset, max: result.maxOffset });
       return true;
     } catch {
       if (generation === requestGenerationRef.current) {
@@ -73,10 +127,17 @@ export function OverlayCalibrationControl({
     setError(null);
     try {
       await invoke('show_overlay');
-      await invoke('set_overlay_vertical_offset', { offset: original });
+      const result = resolvedPosition(
+        await invoke<unknown>('set_overlay_vertical_offset', { offset: original }),
+        original,
+      );
       if (generation !== requestGenerationRef.current) return;
+      // Cancel restores the user's requested saved value, not a transient
+      // effective clamp imposed by the current display/placement mode.
       originalOffsetRef.current = original;
-      setDraft(original);
+      setDraft(result.appliedOffset);
+      setRequestedDraft(result.requestedOffset);
+      setBounds({ min: result.minOffset, max: result.maxOffset });
       activeRef.current = true;
       focusPendingRef.current = true;
       setActive(true);
@@ -90,6 +151,25 @@ export function OverlayCalibrationControl({
     }
   }, [announceCalibration, offset]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<unknown>('overlay-position-applied', ({ payload }) => {
+      if (!activeRef.current) return;
+      const result = validPosition(payload);
+      if (!result) return;
+      setDraft(result.appliedOffset);
+      setRequestedDraft(result.requestedOffset);
+      setBounds({ min: result.minOffset, max: result.maxOffset });
+    }).then((stop) => {
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const finish = useCallback(() => {
     activeRef.current = false;
     focusPendingRef.current = true;
@@ -102,10 +182,10 @@ export function OverlayCalibrationControl({
   }, [finish, preview]);
 
   const save = useCallback(() => {
-    onCommit(draft);
-    originalOffsetRef.current = draft;
+    onCommit(requestedDraft);
+    originalOffsetRef.current = requestedDraft;
     finish();
-  }, [draft, finish, onCommit]);
+  }, [finish, onCommit, requestedDraft]);
 
   const previewDefault = useCallback(async () => {
     await preview(0);
@@ -123,7 +203,7 @@ export function OverlayCalibrationControl({
   }, [announceCalibration]);
 
   return (
-    <div className="rounded-(--ui-radius-control) border border-outline-variant/30 bg-surface-container-lowest p-3">
+    <div data-setting-target={targetId} className="rounded-(--ui-radius-control) border border-outline-variant/30 bg-surface-container-lowest p-3 transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs font-medium text-on-surface">Overlay position</p>
@@ -148,7 +228,7 @@ export function OverlayCalibrationControl({
               ref={adjustUpRef}
               type="button"
               aria-label="Move overlay up one point"
-              disabled={busy || draft <= OVERLAY_VERTICAL_OFFSET_MIN}
+              disabled={busy || draft <= bounds.min}
               onClick={() => void preview(draft - 1)}
               className="grid h-8 w-10 place-items-center rounded-lg border border-outline-variant/30 bg-surface-container text-sm text-on-surface hover:border-primary/50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
             >
@@ -163,7 +243,7 @@ export function OverlayCalibrationControl({
             <button
               type="button"
               aria-label="Move overlay down one point"
-              disabled={busy || draft >= OVERLAY_VERTICAL_OFFSET_MAX}
+              disabled={busy || draft >= bounds.max}
               onClick={() => void preview(draft + 1)}
               className="grid h-8 w-10 place-items-center rounded-lg border border-outline-variant/30 bg-surface-container text-sm text-on-surface hover:border-primary/50 hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
             >
@@ -173,7 +253,7 @@ export function OverlayCalibrationControl({
           <div className="mt-3 flex items-center justify-between gap-2">
             <button
               type="button"
-              disabled={busy || draft === 0}
+              disabled={busy || requestedDraft === 0}
               onClick={() => void previewDefault()}
               className="rounded-lg px-2 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
             >

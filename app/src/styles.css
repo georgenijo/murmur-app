@@ -1217,6 +1217,11 @@ textarea {
   );
 }
 
+.settings-search input[type='search']::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 @media (max-width: 760px) {
   .settings-window-header {
     background-image: linear-gradient(

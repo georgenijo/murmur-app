@@ -846,6 +846,40 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Appearance settings');
   });
 
+  it('finds calibration and reopens General advanced settings for repeated searches', async () => {
+    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const searchCalibration = async () => {
+      await act(async () => {
+        setter.call(input, 'Calibrate');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.includes('Calibrate Overlay Position'),
+      ) as HTMLButtonElement;
+      expect(result).toBeDefined();
+      await act(async () => result.click());
+    };
+
+    scrollIntoView.mockClear();
+    await searchCalibration();
+
+    const calibration = container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement;
+    const advanced = calibration.closest('details') as HTMLDetailsElement;
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
+    expect(advanced.open).toBe(true);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+    expect(calibration.classList.contains('settings-target-flash')).toBe(true);
+
+    // Searching unmounts General; selecting the same result must reveal the
+    // newly mounted, initially collapsed disclosure again.
+    await searchCalibration();
+
+    expect((container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement)
+      .closest('details')?.open).toBe(true);
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
   it('resets targeted scrolling when entering and leaving a settings editor', async () => {
     const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
