@@ -261,9 +261,11 @@ export function OverlayWidget() {
           height: topH + (expanded ? geometry.dropdownH : 0),
           marginLeft: pillMargin,
           background: 'rgba(20, 20, 20, 0.92)',
+          // Inset only: the native window is exactly the island's size, so an
+          // outer shadow is clipped to a hard rectangle at its rounded corners.
           boxShadow: visual.showTapMissedLabel
-            ? 'inset 0 -2px 0 rgba(245,158,11,0.9), 0 3px 16px rgba(245,158,11,0.22)'
-            : geometry.floating ? '0 5px 18px rgba(0,0,0,0.28)' : 'none',
+            ? 'inset 0 -2px 0 rgba(245,158,11,0.9)'
+            : 'none',
           backdropFilter: 'blur(40px)',
           WebkitBackdropFilter: 'blur(40px)',
           transition: OVERLAY_ISLAND_TRANSITION,

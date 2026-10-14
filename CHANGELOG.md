@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Overlay
+
+- On displays without a notch, the floating pill now moves into the menu bar
+  within a few seconds of launch or a display change instead of waiting under
+  the bar until you switch apps.
+- The floating pill, live dictation preview, and transform review no longer
+  draw a drop shadow that the window edge cut into a visible rectangle.
+
 ## [0.51.8] - 2026-10-14
 
 ### Dictation

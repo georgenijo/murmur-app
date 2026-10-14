@@ -161,7 +161,6 @@ export function TransformReviewApp() {
         borderRadius: 14,
         backdropFilter: 'blur(40px)',
         WebkitBackdropFilter: 'blur(40px)',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
         opacity: dismissing ? 0 : mounted ? 1 : 0,
         transform: `scale(${scale})`,
         transition,

@@ -97,7 +97,11 @@ The two workspace observers live in `frontmost.rs` and only post a non-blocking
 channel message, in addition to their delivery counters. Bursts are debounced
 (125ms quiet, 1s cap) so rapid app switching coalesces into one refresh. After
 an app or Space trigger one delayed re-check (600ms) catches the menu bar
-repopulating or animating in or out. Each refresh samples the frontmost menus
+repopulating or animating in or out. Startup and display changes re-check at
+600ms, then 1.5s and 3s later: Murmur is usually frontmost while it launches
+(an update relaunches it), and its own menu bar cannot answer Accessibility
+while setup occupies the main thread, so the first sample is often unknown.
+Any new trigger supersedes the remaining re-checks. Each refresh samples the frontmost menus
 off the main thread, then on the main thread re-measures the screen and status
 items, builds one `DisplaySnapshot`, and, only if it differs from the cached
 one, updates `State.notch_info`, repositions and resizes the native window, and

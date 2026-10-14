@@ -512,13 +512,15 @@ pub(crate) fn detect_notch_info(
     );
     tracing::info!(
         target: "system",
-        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}, band_center_x={:?}",
+        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}, band_center_x={:?}, menu_items={:?}, status_items={:?}",
         info.width,
         info.height,
         insets.top,
         (frame_top - visible_frame_top).max(0.0),
         frame.size.width,
-        info.band_center_x
+        info.band_center_x,
+        menu_items.map(<[FrameRect]>::len),
+        status_items.as_ref().map(Vec::len)
     );
     Some(info)
 }
@@ -609,6 +611,26 @@ impl PlacementTrigger {
     /// startup has no earlier sample), so these always sample menu occupancy.
     fn forces_sampling(self) -> bool {
         matches!(self, Self::Startup | Self::DisplayChange)
+    }
+
+    /// Delayed re-checks after this trigger, each measured from the previous
+    /// refresh. App and Space changes need one, once the menu bar finishes
+    /// repopulating. Startup and display changes get a short series: Murmur is
+    /// usually frontmost while it launches (an update relaunches it), and its
+    /// own menu bar cannot answer Accessibility while setup occupies the main
+    /// thread, so the first sample is often unknown.
+    fn settle_delays(self) -> &'static [std::time::Duration] {
+        const APP: &[std::time::Duration] = &[PLACEMENT_SETTLE];
+        const LAUNCH: &[std::time::Duration] = &[
+            PLACEMENT_SETTLE,
+            std::time::Duration::from_millis(1500),
+            std::time::Duration::from_millis(3000),
+        ];
+        match self {
+            Self::FrontmostApp | Self::SpaceChange => APP,
+            Self::Startup | Self::DisplayChange => LAUNCH,
+            Self::Settle => &[],
+        }
     }
 }
 
@@ -740,12 +762,14 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
                     }
                 }
                 refresh_placement(&app_handle, trigger);
-                if matches!(
-                    trigger,
-                    PlacementTrigger::FrontmostApp | PlacementTrigger::SpaceChange
-                ) {
-                    match receiver.recv_timeout(PLACEMENT_SETTLE) {
-                        Ok(next) => carried = Some(next),
+                // A new trigger supersedes the remaining re-checks; it brings
+                // its own.
+                for &delay in trigger.settle_delays() {
+                    match receiver.recv_timeout(delay) {
+                        Ok(next) => {
+                            carried = Some(next);
+                            break;
+                        }
                         Err(RecvTimeoutError::Timeout) => {
                             refresh_placement(&app_handle, PlacementTrigger::Settle)
                         }
@@ -1596,6 +1620,24 @@ mod tests {
         assert_eq!(merge_triggers(SpaceChange, DisplayChange), DisplayChange);
         assert!(Startup.forces_sampling() && DisplayChange.forces_sampling());
         assert!(!FrontmostApp.forces_sampling() && !SpaceChange.forces_sampling());
+    }
+
+    #[test]
+    fn launch_triggers_recheck_until_the_menu_bar_can_answer() {
+        use PlacementTrigger::*;
+        let total = |trigger: PlacementTrigger| -> std::time::Duration {
+            trigger.settle_delays().iter().sum()
+        };
+        assert_eq!(FrontmostApp.settle_delays(), &[PLACEMENT_SETTLE]);
+        assert_eq!(SpaceChange.settle_delays(), &[PLACEMENT_SETTLE]);
+        assert!(Settle.settle_delays().is_empty());
+        // Startup and display changes keep re-checking for a few seconds, so
+        // an unknown first sample cannot strand the pill below the bar.
+        for trigger in [Startup, DisplayChange] {
+            assert!(trigger.settle_delays().len() > 1);
+            assert!(total(trigger) >= std::time::Duration::from_secs(4));
+            assert!(total(trigger) <= std::time::Duration::from_secs(10));
+        }
     }
 
     #[test]
