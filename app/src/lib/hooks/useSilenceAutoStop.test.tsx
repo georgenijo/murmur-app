@@ -171,6 +171,21 @@ describe('useSilenceAutoStop', () => {
     expect(onAutoStop).toHaveBeenCalledOnce();
   });
 
+  it('pauses while the trigger is held over a toggle recording and resumes after a combo', async () => {
+    const onAutoStop = vi.fn();
+    await render({ onAutoStop });
+    await emit(0.3, 800);
+    // Shift held as part of Cmd+Shift+4 during a double-tap recording.
+    await emitOrigin('hold-over-recording-start');
+    await emit(0.0, 5000);
+    expect(onAutoStop).not.toHaveBeenCalled();
+    // The 4 ends the hold without stopping; silence detection resumes.
+    await emitOrigin('hold-over-recording-end');
+    await emit(0.3, 800);
+    await emit(0.0, 2400);
+    expect(onAutoStop).toHaveBeenCalledOnce();
+  });
+
   it('does not stay disarmed after a cancelled speculative hold (legacy hold-down-cancel)', async () => {
     const onAutoStop = vi.fn();
     await render({ onAutoStop });
