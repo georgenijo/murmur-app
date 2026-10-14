@@ -48,9 +48,18 @@ describe('useSoundCues', () => {
   it('maps accepted start, stop, delivery, and failure events', () => {
     mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 1 } });
     mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
-    mocks.listeners.get('dictation-delivery-outcome')?.({ payload: { outcome: 'auto_pasted' } });
+    mocks.listeners.get('dictation-delivery-outcome')?.({ payload: { outcome: 'autoPastePosted' } });
     mocks.listeners.get('dictation-delivery-outcome')?.({ payload: { outcome: 'unconfirmed' } });
     expect(mocks.play.mock.calls.map(([cue]) => cue)).toEqual(['start', 'stop', 'success', 'failure']);
+  });
+
+  it('maps every camelCase delivery outcome and ignores unknown payloads', () => {
+    const emit = (payload: unknown) => mocks.listeners.get('dictation-delivery-outcome')?.({ payload });
+    for (const outcome of ['autoPastePosted', 'clipboardOnly', 'clipboardWriteFailed', 'unconfirmed', 'bogus', 'auto_pasted']) {
+      emit({ outcome });
+    }
+    emit(null);
+    expect(mocks.play.mock.calls.map(([cue]) => cue)).toEqual(['success', 'success', 'failure', 'failure']);
   });
 
   it('suppresses dictation cues during active meetings but allows them after failure', async () => {
