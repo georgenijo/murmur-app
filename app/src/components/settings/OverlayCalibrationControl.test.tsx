@@ -153,7 +153,7 @@ describe('OverlayCalibrationControl', () => {
     expect(button?.disabled).toBe(true);
   });
 
-  it('shows native effective travel instead of a clamped requested offset', async () => {
+  it('shows native effective travel but preserves requested intent when saved unchanged', async () => {
     mocks.invoke.mockImplementation(async (command, args) => {
       if (command === 'set_overlay_vertical_offset') {
         const requestedOffset = (args as { offset: number }).offset;
@@ -178,7 +178,36 @@ describe('OverlayCalibrationControl', () => {
     expect(up?.disabled).toBe(true);
 
     await act(async () => click(container, 'Save position'));
-    expect(committed).toEqual([-8]);
+    expect(committed).toEqual([-12]);
+  });
+
+  it('nudges from the effective position and saves the new requested intent', async () => {
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === 'set_overlay_vertical_offset') {
+        const requestedOffset = (args as { offset: number }).offset;
+        return {
+          requestedOffset,
+          appliedOffset: Math.max(-8, requestedOffset),
+          minOffset: -8,
+          maxOffset: 12,
+        };
+      }
+      return undefined;
+    });
+    await act(async () => root.render(<Harness initialOffset={-12} />));
+    await act(async () => {
+      click(container, 'Calibrate');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      click(container, 'Move overlay down one point');
+      await Promise.resolve();
+    });
+    await act(async () => click(container, 'Save position'));
+
+    expect(mocks.invoke).toHaveBeenLastCalledWith('set_overlay_vertical_offset', { offset: -7 });
+    expect(committed).toEqual([-7]);
   });
 
   it('cancels back to the original requested setting after a native clamp', async () => {

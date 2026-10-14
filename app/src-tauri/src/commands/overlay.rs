@@ -393,14 +393,70 @@ fn applied_overlay_position(
     }
 }
 
-/// On a floating display, place a nearby popover below the actual native
-/// overlay frame. Returns `None` under a physical notch, where callers retain
-/// the deliberately close under-notch path (hover may briefly overlap it).
+/// Conservative static placement for the interactive Voice Query popover. It
+/// reserves the largest calibrated expanded overlay box so hover never moves
+/// Copy/Close controls under the pointer. Dictation preview uses the separate
+/// actual-frame follower below.
 pub(crate) fn overlay_popover_fit(
     app: &tauri::AppHandle,
     monitor: &tauri::Monitor,
-    popover_width: f64,
     popover_height: f64,
+) -> Option<(f64, f64)> {
+    let primary = app.primary_monitor().ok().flatten()?;
+    if primary.position() != monitor.position() || primary.size() != monitor.size() {
+        return None;
+    }
+    let state = app.try_state::<crate::State>()?;
+    let notch = *state.notch_info.lock_or_recover();
+    let geometry = geometry_for(notch);
+    let scale = monitor.scale_factor();
+    let frame_top = monitor.position().y as f64 / scale;
+    let work_top = monitor.work_area().position.y as f64 / scale;
+    let work_bottom =
+        (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
+    overlay_popover_fit_for_geometry(
+        frame_top,
+        work_top,
+        work_bottom,
+        popover_height,
+        &geometry,
+        floating_in_menu_bar_band(notch),
+    )
+}
+
+fn overlay_popover_fit_for_geometry(
+    frame_top: f64,
+    work_top: f64,
+    work_bottom: f64,
+    popover_height: f64,
+    geometry: &OverlayGeometry,
+    in_menu_bar_band: bool,
+) -> Option<(f64, f64)> {
+    if !geometry.floating {
+        return None;
+    }
+    let (_, base_y) = floating_anchor(frame_top, work_top, in_menu_bar_band);
+    let below_overlay = base_y + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
+    let top = below_overlay.clamp(work_top, work_bottom);
+    Some((top, popover_height.min((work_bottom - top).max(0.0))))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PopoverWorkArea {
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+}
+
+/// Actual-frame placement used only by the click-through live dictation
+/// preview. It follows collapsed/expanded/calibrated overlay movement without
+/// changing the interactive Voice Query surface under the pointer.
+pub(crate) fn dictation_preview_fit(
+    app: &tauri::AppHandle,
+    monitor: &tauri::Monitor,
+    preview_width: f64,
+    preview_height: f64,
 ) -> Option<(f64, f64, f64)> {
     let primary = app.primary_monitor().ok().flatten()?;
     if primary.position() != monitor.position() || primary.size() != monitor.size() {
@@ -408,34 +464,22 @@ pub(crate) fn overlay_popover_fit(
     }
     let state = app.try_state::<crate::State>()?;
     let notch = *state.notch_info.lock_or_recover();
+    let floating = geometry_for(notch).floating;
     let scale = monitor.scale_factor();
-    let work_left = monitor.work_area().position.x as f64 / scale;
-    let work_right =
-        (monitor.work_area().position.x as f64 + monitor.work_area().size.width as f64) / scale;
-    let work_top = monitor.work_area().position.y as f64 / scale;
-    let work_bottom =
-        (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
-    let geometry = geometry_for(notch);
+    let area = monitor.work_area();
+    let work_area = PopoverWorkArea {
+        left: area.position.x as f64 / scale,
+        right: (area.position.x as f64 + area.size.width as f64) / scale,
+        top: area.position.y as f64 / scale,
+        bottom: (area.position.y as f64 + area.size.height as f64) / scale,
+    };
     let frame = *state.overlay_frame.lock_or_recover();
-    overlay_popover_fit_for_frame(
-        work_left,
-        work_right,
-        work_top,
-        work_bottom,
-        popover_width,
-        popover_height,
-        frame,
-        geometry.floating,
-    )
+    dictation_preview_fit_for_frame(work_area, (preview_width, preview_height), frame, floating)
 }
 
-fn overlay_popover_fit_for_frame(
-    work_left: f64,
-    work_right: f64,
-    work_top: f64,
-    work_bottom: f64,
-    popover_width: f64,
-    popover_height: f64,
+fn dictation_preview_fit_for_frame(
+    work_area: PopoverWorkArea,
+    preview_size: (f64, f64),
     frame: Option<OverlayFrame>,
     floating: bool,
 ) -> Option<(f64, f64, f64)> {
@@ -446,10 +490,15 @@ fn overlay_popover_fit_for_frame(
         return None;
     }
     let frame = frame?;
-    let rightmost_x = (work_right - popover_width).max(work_left);
-    let x = (frame.x + (frame.width - popover_width) / 2.0).clamp(work_left, rightmost_x);
-    let top = (frame.y + frame.height + POPOVER_GAP).clamp(work_top, work_bottom);
-    Some((x, top, popover_height.min((work_bottom - top).max(0.0))))
+    let (preview_width, preview_height) = preview_size;
+    let rightmost_x = (work_area.right - preview_width).max(work_area.left);
+    let x = (frame.x + (frame.width - preview_width) / 2.0).clamp(work_area.left, rightmost_x);
+    let top = (frame.y + frame.height + POPOVER_GAP).clamp(work_area.top, work_area.bottom);
+    Some((
+        x,
+        top,
+        preview_height.min((work_area.bottom - top).max(0.0)),
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -473,9 +522,8 @@ fn remember_overlay_position(
 }
 
 #[cfg(target_os = "macos")]
-fn follow_overlay_popovers(app: &tauri::AppHandle) {
+fn follow_dictation_preview(app: &tauri::AppHandle) {
     crate::commands::dictation_preview::follow_overlay_if_visible(app);
-    crate::commands::query_popover::follow_overlay_if_visible(app);
 }
 
 /// WindowServer applies frame changes asynchronously. Reading `outer_position`
@@ -1061,7 +1109,7 @@ pub(crate) fn position_overlay_default(
                     },
                     applied_position,
                 );
-                follow_overlay_popovers(app);
+                follow_dictation_preview(app);
             }
             let overlay = overlay.clone();
             let app = overlay.app_handle().clone();
@@ -1174,15 +1222,28 @@ pub async fn set_overlay_expanded(
                 // Resolve geometry only once this mutation reaches the native
                 // main thread. A queued display refresh may have replaced the
                 // notch/scale contract since the command was invoked.
-                let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
+                let state = dispatch_app.state::<State>();
+                let notch = *state.notch_info.lock_or_recover();
                 let applied = surface_for_content(notch, expanded, content);
-                let position = overlay
-                    .outer_position()
-                    .map_err(|error| error.to_string())?;
-                let size = overlay.outer_size().map_err(|error| error.to_string())?;
-                let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
-                let logical_position = (position.x as f64 / scale, position.y as f64 / scale);
-                let current_width = size.width as f64 / scale;
+                // Accepted native setters update `overlay_frame` synchronously
+                // on this same main-thread queue. Prefer that authoritative
+                // target over an immediate WindowServer read, which can still
+                // report the frame preceding a queued placement/calibration.
+                let saved_frame = *state.overlay_frame.lock_or_recover();
+                let (logical_position, current_width) = match saved_frame {
+                    Some(frame) => ((frame.x, frame.y), frame.width),
+                    None => {
+                        let position = overlay
+                            .outer_position()
+                            .map_err(|error| error.to_string())?;
+                        let size = overlay.outer_size().map_err(|error| error.to_string())?;
+                        let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
+                        (
+                            (position.x as f64 / scale, position.y as f64 / scale),
+                            size.width as f64 / scale,
+                        )
+                    }
+                };
                 let (x, y) =
                     resized_logical_position(logical_position, current_width, applied.window_w);
                 overlay
@@ -1200,7 +1261,7 @@ pub async fn set_overlay_expanded(
                         height: applied.window_h,
                     },
                 );
-                follow_overlay_popovers(&dispatch_app);
+                follow_dictation_preview(&dispatch_app);
                 Ok(applied)
             })();
             let _ = tx.send(result);
@@ -1314,7 +1375,7 @@ pub async fn set_overlay_vertical_offset(
                     },
                     applied,
                 );
-                follow_overlay_popovers(&dispatch_app);
+                follow_dictation_preview(&dispatch_app);
                 Ok::<_, String>((
                     (
                         (x * scale_factor).round() as i32,
@@ -1858,6 +1919,12 @@ mod tests {
 
     #[test]
     fn floating_popovers_follow_the_actual_overlay_frame_and_stay_in_work_area() {
+        let work_area = PopoverWorkArea {
+            left: 0.0,
+            right: 2560.0,
+            top: 30.0,
+            bottom: 1440.0,
+        };
         let collapsed = OverlayFrame {
             x: 1140.0,
             y: 38.0,
@@ -1869,41 +1936,22 @@ mod tests {
             ..collapsed
         };
         assert_eq!(
-            overlay_popover_fit_for_frame(
-                0.0,
-                2560.0,
-                30.0,
-                1440.0,
-                460.0,
-                104.0,
-                Some(collapsed),
-                true,
-            ),
+            dictation_preview_fit_for_frame(work_area, (460.0, 104.0), Some(collapsed), true),
             Some((1050.0, 80.0, 104.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_frame(
-                0.0,
-                2560.0,
-                30.0,
-                1440.0,
-                440.0,
-                340.0,
-                Some(expanded),
-                true,
-            ),
+            dictation_preview_fit_for_frame(work_area, (440.0, 340.0), Some(expanded), true),
             Some((1060.0, 144.0, 340.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_frame(
-                0.0,
-                2560.0,
-                30.0,
-                400.0,
-                440.0,
-                340.0,
+            dictation_preview_fit_for_frame(
+                PopoverWorkArea {
+                    bottom: 400.0,
+                    ..work_area
+                },
+                (440.0, 340.0),
                 Some(expanded),
-                true,
+                true
             ),
             Some((1060.0, 144.0, 256.0))
         );
@@ -1912,7 +1960,17 @@ mod tests {
     #[test]
     fn floating_popover_requires_an_applied_frame() {
         assert_eq!(
-            overlay_popover_fit_for_frame(0.0, 2560.0, 24.0, 1440.0, 460.0, 104.0, None, true,),
+            dictation_preview_fit_for_frame(
+                PopoverWorkArea {
+                    left: 0.0,
+                    right: 2560.0,
+                    top: 24.0,
+                    bottom: 1440.0,
+                },
+                (460.0, 104.0),
+                None,
+                true,
+            ),
             None
         );
     }
@@ -1926,28 +1984,30 @@ mod tests {
             height: 24.0,
         };
         assert_eq!(
-            overlay_popover_fit_for_frame(
-                0.0,
-                2560.0,
-                24.0,
-                1440.0,
-                460.0,
-                104.0,
+            dictation_preview_fit_for_frame(
+                PopoverWorkArea {
+                    left: 0.0,
+                    right: 2560.0,
+                    top: 24.0,
+                    bottom: 1440.0,
+                },
+                (460.0, 104.0),
                 Some(frame),
-                true,
+                true
             ),
             Some((210.0, 30.0, 104.0))
         );
         assert_eq!(
-            overlay_popover_fit_for_frame(
-                100.0,
-                900.0,
-                24.0,
-                1440.0,
-                460.0,
-                104.0,
+            dictation_preview_fit_for_frame(
+                PopoverWorkArea {
+                    left: 100.0,
+                    right: 900.0,
+                    top: 24.0,
+                    bottom: 1440.0,
+                },
+                (460.0, 104.0),
                 Some(OverlayFrame { x: -40.0, ..frame }),
-                true,
+                true
             ),
             Some((100.0, 30.0, 104.0))
         );
@@ -1959,21 +2019,41 @@ mod tests {
         // the hover-expanded overlay, which left a large gap below the pill.
         let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
-            overlay_popover_fit_for_frame(
-                0.0,
-                1512.0,
-                32.0,
-                1440.0,
-                460.0,
-                104.0,
+            dictation_preview_fit_for_frame(
+                PopoverWorkArea {
+                    left: 0.0,
+                    right: 1512.0,
+                    top: 32.0,
+                    bottom: 1440.0,
+                },
+                (460.0, 104.0),
                 Some(OverlayFrame {
                     x: 627.5,
                     y: 0.0,
                     width: 257.0,
                     height: notched.collapsed_h,
                 }),
-                false,
+                false
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn query_popovers_keep_conservative_static_clearance() {
+        let standalone = geometry_for(Some(external_without_slot(30.0)));
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 104.0, &standalone, false,),
+            Some((156.0, 104.0))
+        );
+        let band = geometry_for(Some(external(24.0)));
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 24.0, 200.0, 340.0, &band, true),
+            Some((106.0, 94.0))
+        );
+        let notched = geometry_for(Some(notched(185.0, 32.0)));
+        assert_eq!(
+            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched, false),
             None
         );
     }
@@ -2008,6 +2088,17 @@ mod tests {
         assert_eq!(
             applied_overlay_position(-12.0, 0.0, 32.0, 982.0, 32.0, false, false).applied_offset,
             -12.0
+        );
+        // If the usable area is shorter than the overlay, both bounds resolve
+        // to the only safe top edge; requested intent is still retained.
+        assert_eq!(
+            applied_overlay_position(12.0, 0.0, 30.0, 50.0, 100.0, true, false),
+            AppliedOverlayPosition {
+                requested_offset: 12.0,
+                applied_offset: -8.0,
+                min_offset: -8.0,
+                max_offset: -8.0,
+            }
         );
     }
 

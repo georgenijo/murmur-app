@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Overlay
+
+- Keep the live transcription preview directly beneath the floating pill on external displays, including while its controls expand or its calibrated position changes.
+- Keep calibration consistent when apps or displays change, show the movement limits the current display can honor, and preserve the requested offset when temporarily clamped.
+- Remove unsupported dragging from the anchored pill so it cannot be moved to a position that the next automatic refresh immediately overrides.
+
+### Settings
+
+- Find Calibrate in Settings search and jump directly to its control in General → Advanced.
+- Show one clear button in Settings search instead of duplicate native and custom controls.
+
 ## [0.51.10] - 2026-10-14
 
 ### Overlay

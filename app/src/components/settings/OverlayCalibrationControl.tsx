@@ -61,6 +61,9 @@ export function OverlayCalibrationControl({
 }: OverlayCalibrationControlProps) {
   const [active, setActive] = useState(false);
   const [draft, setDraft] = useState(() => clampOverlayVerticalOffset(offset));
+  const [requestedDraft, setRequestedDraft] = useState(
+    () => clampOverlayVerticalOffset(offset),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bounds, setBounds] = useState({
@@ -81,7 +84,11 @@ export function OverlayCalibrationControl({
   }, [active]);
 
   useEffect(() => {
-    if (!activeRef.current) setDraft(clampOverlayVerticalOffset(offset));
+    if (!activeRef.current) {
+      const next = clampOverlayVerticalOffset(offset);
+      setDraft(next);
+      setRequestedDraft(next);
+    }
   }, [offset]);
 
   const announceCalibration = useCallback((nextActive: boolean) => {
@@ -100,6 +107,7 @@ export function OverlayCalibrationControl({
       );
       if (generation !== requestGenerationRef.current) return false;
       setDraft(result.appliedOffset);
+      setRequestedDraft(result.requestedOffset);
       setBounds({ min: result.minOffset, max: result.maxOffset });
       return true;
     } catch {
@@ -128,6 +136,7 @@ export function OverlayCalibrationControl({
       // effective clamp imposed by the current display/placement mode.
       originalOffsetRef.current = original;
       setDraft(result.appliedOffset);
+      setRequestedDraft(result.requestedOffset);
       setBounds({ min: result.minOffset, max: result.maxOffset });
       activeRef.current = true;
       focusPendingRef.current = true;
@@ -150,6 +159,7 @@ export function OverlayCalibrationControl({
       const result = validPosition(payload);
       if (!result) return;
       setDraft(result.appliedOffset);
+      setRequestedDraft(result.requestedOffset);
       setBounds({ min: result.minOffset, max: result.maxOffset });
     }).then((stop) => {
       if (disposed) stop(); else unlisten = stop;
@@ -172,10 +182,10 @@ export function OverlayCalibrationControl({
   }, [finish, preview]);
 
   const save = useCallback(() => {
-    onCommit(draft);
-    originalOffsetRef.current = draft;
+    onCommit(requestedDraft);
+    originalOffsetRef.current = requestedDraft;
     finish();
-  }, [draft, finish, onCommit]);
+  }, [finish, onCommit, requestedDraft]);
 
   const previewDefault = useCallback(async () => {
     await preview(0);
@@ -243,7 +253,7 @@ export function OverlayCalibrationControl({
           <div className="mt-3 flex items-center justify-between gap-2">
             <button
               type="button"
-              disabled={busy || draft === 0}
+              disabled={busy || requestedDraft === 0}
               onClick={() => void previewDefault()}
               className="rounded-lg px-2 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-35"
             >

@@ -6199,6 +6199,10 @@ pub(crate) mod tests {
                 ),
                 notch_info: std::sync::Mutex::new(None),
                 display_snapshot: std::sync::Mutex::new(None),
+                overlay_calibration: std::sync::Mutex::new(
+                    crate::commands::overlay::OverlayCalibrationState::default(),
+                ),
+                overlay_frame: std::sync::Mutex::new(None),
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
@@ -6690,6 +6694,10 @@ pub(crate) mod tests {
                 ),
                 notch_info: std::sync::Mutex::new(None),
                 display_snapshot: std::sync::Mutex::new(None),
+                overlay_calibration: std::sync::Mutex::new(
+                    crate::commands::overlay::OverlayCalibrationState::default(),
+                ),
+                overlay_frame: std::sync::Mutex::new(None),
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
@@ -6819,6 +6827,10 @@ pub(crate) mod tests {
                 ),
                 notch_info: std::sync::Mutex::new(None),
                 display_snapshot: std::sync::Mutex::new(None),
+                overlay_calibration: std::sync::Mutex::new(
+                    crate::commands::overlay::OverlayCalibrationState::default(),
+                ),
+                overlay_frame: std::sync::Mutex::new(None),
                 transform_popover_anchor: std::sync::Mutex::new(None),
                 transform_main_was_visible: std::sync::Mutex::new(None),
                 transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),

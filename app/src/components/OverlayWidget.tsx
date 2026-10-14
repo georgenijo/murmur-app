@@ -21,6 +21,7 @@ import { smartAutoMicrophoneReasonLabel, smartAutoProbePhaseLabel } from '../lib
 import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
 import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
 import type { OverlayContent } from '../lib/overlayGeometry';
+import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
 
 export function OverlayWidget() {
   const [calibrating, setCalibrating] = useState(false);
@@ -53,12 +54,9 @@ export function OverlayWidget() {
     ? 'meeting_suggestion'
     : 'controls';
   const geometry = useOverlayGeometry(overlayContent);
-  // Saved settings initialize native ownership once and apply again only when
-  // the saved value itself changes. Geometry refreshes retain Rust's effective
-  // offset, including an active unsaved calibration draft.
-  const appliedSavedOffsetRef = useRef<number | null>(null);
 
   const settingsMirror = useOverlaySettingsMirror({ setDisabled, setShowHotkeyMiss, hotkeyMissFeedbackRef });
+  useApplySavedOverlayOffset(geometry, settingsMirror.overlayVerticalOffset);
   const smartAutoStatus = useSmartAutoMicrophoneStatus(settingsMirror.smartAuto);
   const smartAutoInventory = useAudioInputInventory(settingsMirror.smartAuto !== null);
   const smartAutoReady = smartAutoStatus.view.kind === 'resolved'
@@ -142,18 +140,6 @@ export function OverlayWidget() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, []);
-
-  useEffect(() => {
-    if (!geometry) return;
-    if (appliedSavedOffsetRef.current === settingsMirror.overlayVerticalOffset) return;
-    appliedSavedOffsetRef.current = settingsMirror.overlayVerticalOffset;
-    void invoke('set_overlay_vertical_offset', { offset: settingsMirror.overlayVerticalOffset }).catch((error) => {
-      if (appliedSavedOffsetRef.current === settingsMirror.overlayVerticalOffset) {
-        appliedSavedOffsetRef.current = null;
-      }
-      flog.warn('overlay', 'could not apply calibrated offset', { error: String(error) });
-    });
-  }, [geometry, settingsMirror.overlayVerticalOffset]);
 
   useEffect(() => {
     let disposed = false;

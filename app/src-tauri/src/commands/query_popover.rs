@@ -9,7 +9,6 @@
 //! rather than the webview's own key handler, so nothing needed focus.
 
 use crate::commands::native_window::PopoverSpec;
-use crate::{MutexExt, State};
 use tauri::Manager;
 
 const WIDTH: f64 = 440.0;
@@ -40,8 +39,8 @@ fn frame(app: &tauri::AppHandle, expanded: bool) -> (f64, f64, f64, f64) {
             let x = monitor.position().x as f64 / scale
                 + (monitor.size().width as f64 / scale - WIDTH) / 2.0;
             let base_y = monitor.position().y as f64 / scale + TOP_INSET;
-            let (x, y, height) = super::overlay::overlay_popover_fit(app, &monitor, WIDTH, height)
-                .unwrap_or((x, base_y, height));
+            let (y, height) = super::overlay::overlay_popover_fit(app, &monitor, height)
+                .unwrap_or((base_y, height));
             (x, y, WIDTH, height)
         }
         None => (300.0, TOP_INSET, WIDTH, height),
@@ -49,19 +48,11 @@ fn frame(app: &tauri::AppHandle, expanded: bool) -> (f64, f64, f64, f64) {
 }
 
 pub(crate) fn show_internal(app: &tauri::AppHandle, expanded: bool) -> Result<(), String> {
-    POPOVER.show(app, frame(app, expanded))?;
-    *app.state::<State>()
-        .query_popover_expanded
-        .lock_or_recover() = expanded;
-    Ok(())
+    POPOVER.show(app, frame(app, expanded))
 }
 
 pub(crate) fn set_expanded_internal(app: &tauri::AppHandle, expanded: bool) -> Result<(), String> {
-    POPOVER.reposition(app, frame(app, expanded))?;
-    *app.state::<State>()
-        .query_popover_expanded
-        .lock_or_recover() = expanded;
-    Ok(())
+    POPOVER.reposition(app, frame(app, expanded))
 }
 
 pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
@@ -70,22 +61,4 @@ pub(crate) fn hide_internal(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
     POPOVER.apply_initial_size(app, WIDTH, COMPACT_HEIGHT);
-}
-
-/// Reposition a visible query surface after the overlay moves or resizes while
-/// preserving the query's independently owned compact/expanded size class.
-pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
-    let Some(window) = app.get_webview_window(POPOVER.label) else {
-        return;
-    };
-    if !window.is_visible().unwrap_or(false) {
-        return;
-    }
-    let expanded = *app
-        .state::<State>()
-        .query_popover_expanded
-        .lock_or_recover();
-    if let Err(error) = POPOVER.reposition(app, frame(app, expanded)) {
-        tracing::warn!(target: "system", "query popover could not follow overlay: {}", error);
-    }
 }
