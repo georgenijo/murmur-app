@@ -12,8 +12,10 @@ export interface RecordingOriginTracker {
 }
 
 /**
- * Track whether the in-flight recording was started by physically holding the
- * trigger key. `'hold'` spans exactly `hold-down-start` → `hold-down-stop`;
+ * Track whether the trigger key is physically held during the in-flight
+ * recording. `'hold'` spans `hold-down-start` → `hold-down-stop`, and
+ * `hold-over-recording-start` → `hold-over-recording-end` (or `hold-down-stop`)
+ * for a hold over a recording it did not start;
  * everything else — double-tap, the main-window button, the overlay click,
  * locked mode — never emits a hold event, so the `'toggle'` default covers it.
  *
@@ -39,6 +41,10 @@ export function useRecordingOrigin(): RecordingOriginTracker {
       }).catch(() => {});
     };
     subscribe('hold-down-start', 'hold');
+    // A hold over a recording it did not start (Shift held for Cmd+Shift+4
+    // during a double-tap recording) is still a physical hold until it ends.
+    subscribe('hold-over-recording-start', 'hold');
+    subscribe('hold-over-recording-end', 'toggle');
     subscribe('hold-down-stop', 'toggle');
     subscribe('hold-down-cancel', 'toggle');
     subscribe('double-tap-toggle', 'toggle');

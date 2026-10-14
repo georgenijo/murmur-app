@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   returns you to the app you were in. If the app you switched to has a text
   field focused, Murmur cannot tell what is focused, or text was selected in
   the original field, the text stays on the clipboard as before.
+- In the combined double-tap and hold mode, pressing a shortcut that uses the
+  trigger key as a modifier (for example Cmd+Shift+4 for a screenshot) no
+  longer stops a running double-tap dictation. Releasing the trigger key on
+  its own still stops it.
 
 ## [0.51.10] - 2026-10-14
 
