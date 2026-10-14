@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.3] - 2026-10-14
+
 ### Overlay
 
 - Fixed the live dictation preview appearing far below the notch on MacBook
