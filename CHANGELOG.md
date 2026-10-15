@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.13] - 2026-10-15
+
 ### Dictation
 
 - With Smart destination on, a dictation you start in one app and finish in
@@ -18,6 +20,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Diagnostics now name why a paste was held back (app changed, field not
   editable, or clipboard changed) and why a paste was checked against the app
   where the recording started.
+
+### Home
+
+- The recording bar and monthly summary share one strip, and the dictation
+  list now spans the full width. Each day is one grouped list, copy and more
+  actions appear on hover or keyboard focus, and times read `3:26 PM` instead
+  of `03:26 PM`.
+
+### Meetings
+
+- The Notetaker header is now one compact status bar, and the meeting list is
+  grouped by day with the title, time, a one-line preview, and duration. Only
+  incomplete meetings show a status badge.
+- Meeting search runs as you type. Delete All Meetings moves into the list's
+  menu and needs a press-and-hold to confirm.
+- The meeting detail view has one header, a single Play/Pause audio control,
+  and a Speakers menu beside the transcript.
+
+### Assistant
+
+- Previous queries no longer collapse into a narrow column in smaller
+  windows, and answers render as formatted text under their question instead
+  of showing raw Markdown markers.
 
 ## [0.51.12] - 2026-10-14
 
