@@ -354,9 +354,27 @@ function pad(value: number): string {
   return String(value).padStart(2, '0');
 }
 
+/** Local calendar-day key used to group history and meeting lists. */
+export function historyDayKey(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+/** "Today", "Yesterday", or a short date for a day group heading. */
+export function historyDayLabel(timestamp: number): string {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  const key = historyDayKey(timestamp);
+  if (key === historyDayKey(today.getTime())) return 'Today';
+  if (key === historyDayKey(yesterday.getTime())) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export function formatTimestamp(timestamp: number): string {
   const date = new Date(timestamp);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 /** Local `YYYY-MM-DD HH:MM:SS`, used in exports so they read the same on every

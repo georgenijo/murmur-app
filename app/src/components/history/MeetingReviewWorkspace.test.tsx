@@ -275,11 +275,9 @@ describe('MeetingReviewWorkspace', () => {
     );
     await act(async () => themSegment?.click());
     expect(audio.playSegment).toHaveBeenCalledWith({ speaker: 'them', startMs: 2_000 });
-    const playAll = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Play all',
-    );
-    await act(async () => playAll?.click());
-    expect(audio.playAll).toHaveBeenCalledOnce();
+    const play = container.querySelector<HTMLButtonElement>('[aria-label="Play"]');
+    await act(async () => play?.click());
+    expect(audio.play).toHaveBeenCalledOnce();
 
     const channel = container.querySelector<HTMLSelectElement>('[aria-label="Playback channel"]');
     if (!channel) throw new Error('Missing playback channel control');
@@ -342,9 +340,7 @@ describe('MeetingReviewWorkspace', () => {
       />,
     ));
 
-    const pauseButton = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Pause',
-    );
+    const pauseButton = container.querySelector<HTMLButtonElement>('button[aria-label="Pause"]');
     expect(pauseButton?.disabled).toBe(false);
     await act(async () => pauseButton?.click());
     expect(pause).toHaveBeenCalledOnce();

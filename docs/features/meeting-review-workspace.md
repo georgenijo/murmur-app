@@ -10,9 +10,17 @@ provenance, or letting regeneration erase reviewed work.
 ## Usage
 
 Sessions with retained audio expose [audio playback](meeting-audio-playback.md).
-Play all follows the original Me/Them timeline. Selecting a segment seeks to its
+Play follows the original Me/Them timeline. Selecting a segment seeks to its
 offset on the canonical channel, regardless of its editable speaker label.
 Sessions without retained audio explain why playback is unavailable.
+
+The Notetaker list groups meetings under Today, Yesterday, and dated headings.
+Each row shows the title (or "Untitled meeting"), start time, duration, a
+one-line preview, and a status badge only when the session did not complete.
+Search runs as you type. **Delete all meetings** lives in the list's **···**
+menu as a hold-to-confirm action. The detail header holds the title, the
+session facts, naming, calendar naming, and Delete; speaker names live in the
+**Speakers** menu beside the transcript heading.
 
 The Notetaker loads one Rust-owned workspace snapshot for the selected meeting.
 The user can name the meeting, maintain its attendee list, rename the two capture
@@ -116,7 +124,8 @@ duplicates or cross-section moves. Rust rehydrates the original source IDs,
 validates all bounds and dates, checks the expected revisions, then commits labels
 and the complete review document in one `BEGIN IMMEDIATE` transaction.
 
-Select **Use as source** on one or more transcript rows, then choose **New
+Once a review exists, each transcript row shows a **Use as source** checkbox.
+Select it on one or more rows, then choose **New
 decision**, **New action item**, or **New open question**. Enter the claim text
 and optional action owner/due date, then **Save review**. The selected sources
 are fixed for that new claim; choosing other rows creates a separate claim.

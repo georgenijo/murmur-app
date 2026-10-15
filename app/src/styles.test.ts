@@ -131,10 +131,10 @@ describe('Murmur layout contracts', () => {
       /\.transcript-copy-feedback\s*\{[^}]*position:\s*absolute;[^}]*right:\s*var\(--ui-space-4\);[^}]*bottom:\s*var\(--ui-space-3\);/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-text\s*\{[^}]*grid-column:\s*1 \/ -1;[^}]*padding-right:\s*0;/s,
+      /\.home-history \.transcript-text\s*\{[^}]*padding-right:\s*0;/s,
     );
     expect(css).toMatch(
-      /\.home-insights-rail\s*\{[^}]*width:\s*var\(--ui-dashboard-rail\);/s,
+      /\.home-history \.transcript-actions\s*\{[^}]*grid-column:\s*3;[^}]*opacity:\s*0;/s,
     );
   });
 

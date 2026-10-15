@@ -366,6 +366,16 @@ export function formatBundleSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/** Human duration for meeting lists and headers, e.g. "45 sec", "18 min", "1 hr 5 min". */
+export function formatMeetingDuration(ms: number): string {
+  const totalMinutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (totalMinutes < 1) return `${Math.max(0, Math.round(ms / 1000))} sec`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes} min`;
+  return minutes === 0 ? `${hours} hr` : `${hours} hr ${minutes} min`;
+}
+
 export function formatMeetingTimestamp(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(seconds / 3600);
