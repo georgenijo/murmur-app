@@ -322,6 +322,22 @@ describe('MeetingReviewWorkspace', () => {
       .every((button) => button.disabled)).toBe(true);
   });
 
+  it('keeps draft-generation cancellation reachable while editing the review', async () => {
+    const meetings = controller({
+      summaryStatus: { generation: 1, sessionId: detail.session.id, phase: 'running', completedChunks: 1, totalChunks: 3, elapsedMs: 2_000, peakRssMb: 0, errorCode: null },
+    });
+    await act(async () => root.render(
+      <MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />,
+    ));
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+    expect(container.querySelector('form[aria-label="Edit meeting review"]')).not.toBeNull();
+    const cancelGeneration = container.querySelectorAll<HTMLButtonElement>('button[aria-label="Cancel draft generation"]');
+    expect(cancelGeneration).toHaveLength(1);
+    await act(async () => cancelGeneration[0].click());
+    expect(meetings.cancelSummary).toHaveBeenCalledOnce();
+    expect(container.querySelector('form[aria-label="Edit meeting review"]')).not.toBeNull();
+  });
+
   it('keeps Pause available while retained audio is buffering', async () => {
     const retainedSegments = segments.map((segment) => ({ ...segment, audioAvailable: true }));
     const retainedDetail: MeetingDetail = {

@@ -1247,10 +1247,12 @@ textarea {
 .meeting-transcript-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4); margin-bottom: var(--ui-space-3); }
 .meeting-transcript-header h3 { color: var(--murmur-on-surface); font-size: var(--ui-font-body); font-weight: 650; }
 .meeting-transcript-count { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); }
-.meeting-speakers { position: relative; }
+/* The panel anchors to the transcript header, not the summary, so it never exceeds the detail pane. */
+.meeting-transcript-header { position: relative; }
+.meeting-speakers { position: static; }
 .meeting-speakers > summary { max-width: 18rem; cursor: pointer; list-style: none; overflow: hidden; text-overflow: ellipsis; }
 .meeting-speakers > summary::-webkit-details-marker { display: none; }
-.meeting-speakers-panel { position: absolute; top: calc(100% + var(--ui-space-3)); right: 0; z-index: 20; width: min(28rem, 70vw); border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-popover); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-6); box-shadow: var(--ui-shadow-3); }
+.meeting-speakers-panel { position: absolute; top: calc(100% + var(--ui-space-3)); right: 0; z-index: 20; width: min(28rem, 100%); border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-popover); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-6); box-shadow: var(--ui-shadow-3); }
 .meeting-claim-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); margin-bottom: var(--ui-space-4); border-radius: var(--ui-radius-control); background: var(--ui-tint-sunken); padding: var(--ui-space-4) var(--ui-space-5); }
 .meeting-transcript-row { display: grid; scroll-margin: 5rem; grid-template-columns: 3.75rem 5.5rem minmax(0, 1fr); align-items: start; gap: var(--ui-space-4); padding: var(--ui-space-3) var(--ui-space-2); font-size: var(--ui-font-label); line-height: 1.5; }
 .meeting-transcript-row + .meeting-transcript-row { border-top: 1px solid var(--ui-dashboard-border-subtle); }

@@ -1015,3 +1015,22 @@ test('Voice Query history keeps its heading readable at the narrow window width'
   expect((await heading.boundingBox())!.height).toBeLessThan(30);
   await expect(page.getByRole('region', { name: 'Answer' }).first().locator('ol li')).toHaveCount(3);
 });
+
+for (const width of [720, 800, 880] as const) {
+  test(`meeting speaker names stay inside the detail pane at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto('/visual-fixtures.html?state=meetings-many&appearance=light');
+    await page.locator('summary', { hasText: 'Speakers:' }).click();
+    const panel = page.locator('.meeting-speakers-panel');
+    await expect(panel).toBeVisible();
+    const [panelBox, paneBox] = await Promise.all([
+      panel.boundingBox(),
+      page.locator('.meetings-detail-column').boundingBox(),
+    ]);
+    expect(panelBox!.x).toBeGreaterThanOrEqual(paneBox!.x);
+    expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(paneBox!.x + paneBox!.width + 0.5);
+    const input = page.getByLabel('Me speaker label');
+    const inputBox = await input.boundingBox();
+    expect(inputBox!.x).toBeGreaterThanOrEqual(paneBox!.x);
+  });
+}

@@ -361,7 +361,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     </button>
   );
   const cancelSummaryButton = summaryBusy && (
-    <button type="button" onClick={() => void meetings.cancelSummary()} className="meeting-header-action" data-tone="danger">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>
+    <button type="button" aria-label="Cancel draft generation" onClick={() => void meetings.cancelSummary()} className="meeting-header-action" data-tone="danger">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>
   );
   const speakerSummary = [labels.me, labels.them, ...remoteSpeakers.map((speaker) => speaker.label)].filter(Boolean).join(', ');
 
@@ -387,7 +387,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
       ) : null}
 
       {summaryStatus && summaryStatus.phase !== 'idle' && (
-        <div role="status" className="meeting-quiet-note">
+        <div className="meeting-quiet-note flex flex-wrap items-center gap-2">
+          <span role="status" className="min-w-0 flex-1">
           {summaryBusy
             ? `Generating draft ${summaryStatus.completedChunks} of ${summaryStatus.totalChunks || '…'} · ${formatMeetingTimestamp(summaryStatus.elapsedMs)}`
             : summaryStatus.phase === 'failed'
@@ -397,6 +398,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
                 : summaryStatus.phase === 'complete'
                   ? 'Generated draft updated. Any saved review was kept.'
                   : 'Draft generation is stopping…'}
+          </span>
+          {cancelSummaryButton}
         </div>
       )}
 
@@ -433,7 +436,6 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
                 </button>
               )}
               {generateButton}
-              {cancelSummaryButton}
             </div>
           </div>
           <p className="mt-2 text-xs leading-relaxed">{activeDocument.summary.text}<SourceLinks label="Summary" ids={activeDocument.summary.sourceSegmentIds} onActivate={jumpToSource} /></p>
@@ -448,7 +450,6 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
             <p className="mt-0.5 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p>
           </div>
           {generateButton}
-          {cancelSummaryButton}
         </div>
       )}
 
