@@ -105,9 +105,11 @@ editable or unreadable), it is the user's new destination rather than a detour.
 Nothing is activated and delivery uses the normal policy with its stop-time
 anchor, exactly as with Smart destination off: the transcript pastes into the
 app the user stopped in, still subject to the identity, focus, and secure-field
-checks. A handoff whose app in front positively holds no text input but whose
-retained field changed, or a handoff preparation that does not complete after
-activation was requested, leaves the transcript on the clipboard.
+checks, and Paste Last retries that same normal paste. A handoff whose app in
+front positively holds no text input but whose retained field changed, a field
+in front that preparation positively saw as secure, a preparation that does not
+complete after activation was requested, and a preparation whose reply misses
+its one-second deadline all leave the transcript on the clipboard.
 
 When a field captured in the app that was frontmost at recording start can no
 longer be re-verified at delivery (for example its text, caret, or focus changed

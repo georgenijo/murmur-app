@@ -1300,18 +1300,19 @@ fn emit_auto_paste_failure_if_current(
 /// keeps the anchored delivery target (the complete stop sample when one
 /// exists), exactly as with Smart destination off: a user who moved to another
 /// app while speaking and stopped there gets the paste in that app instead of
-/// a refusal against the start app. A media-handoff capture, or a refused
-/// handoff to an app that holds no text input, stays clipboard-only because
-/// normal paste would target the wrong app.
+/// a refusal against the start app. A media-handoff capture, a refused handoff
+/// to an app that holds no text input or a secure field, or a preparation
+/// whose reply never arrived stays clipboard-only because normal paste could
+/// target the wrong app or field.
 fn smart_prepare_fallback(
     smart: &crate::smart_destination::Snapshot,
-    refused_clipboard_only: bool,
+    refused_without_activation: bool,
     anchored_target: &crate::frontmost::DeliveryTargetSnapshot,
 ) -> (
     crate::smart_destination::Snapshot,
     crate::frontmost::DeliveryTargetSnapshot,
 ) {
-    let route = if smart.allows_same_app_fallback() && !refused_clipboard_only {
+    let route = if smart.allows_same_app_fallback() && refused_without_activation {
         crate::smart_destination::Snapshot::Unverified
     } else {
         crate::smart_destination::Snapshot::Unavailable
@@ -2519,8 +2520,9 @@ async fn run_transcription_pipeline(
         let stop_sample = crate::frontmost::StopSampleStatus::of(stop_delivery_target.as_ref());
         let mut delivery_target = anchored_target.clone();
         let mut smart_destination = context.app.smart_destination.clone();
-        let recovery_smart_destination = smart_destination.clone();
-        let recovery_target = smart_destination
+        let accepted_route = smart_destination.route_code();
+        let mut recovery_smart_destination = smart_destination.clone();
+        let mut recovery_target = smart_destination
             .identity()
             .unwrap_or(&delivery_target)
             .clone();
@@ -2561,11 +2563,12 @@ async fn run_transcription_pipeline(
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
                 outcome => {
-                    let refused_clipboard_only = matches!(
+                    // Only a delivered `Refused` proves nothing was activated
+                    // and no handoff refusal is pending. A timeout or lost
+                    // reply may hide a late clipboard-only decision.
+                    let refused_without_activation = matches!(
                         outcome,
-                        Ok(Ok(Some(
-                            crate::smart_destination::PrepareOutcome::RefusedClipboardOnly
-                        )))
+                        Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Refused)))
                     );
                     let abandoned = smart_destination.clone();
                     let _ = app_handle.run_on_main_thread(move || {
@@ -2573,13 +2576,18 @@ async fn run_transcription_pipeline(
                     });
                     (smart_destination, delivery_target) = smart_prepare_fallback(
                         &smart_destination,
-                        refused_clipboard_only,
+                        refused_without_activation,
                         anchored_target,
                     );
+                    if smart_destination.uses_normal_paste() {
+                        // Paste Last retries the same normal paste, bound to
+                        // the same anchored target, not the abandoned field.
+                        recovery_smart_destination = smart_destination.clone();
+                        recovery_target = delivery_target.clone();
+                    }
                 }
             }
         }
-        let accepted_route = recovery_smart_destination.route_code();
         let delivery_route = smart_destination.route_code();
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
@@ -7575,8 +7583,7 @@ pub(crate) mod tests {
         let (anchored, anchor) = select_delivery_anchor(&start_app, Some(&stop_app));
         assert_eq!(anchor, DeliveryAnchor::Stop);
 
-        let (route, delivery_target) =
-            smart_prepare_fallback(&current_app_capture, false, anchored);
+        let (route, delivery_target) = smart_prepare_fallback(&current_app_capture, true, anchored);
         assert!(matches!(route, Snapshot::Unverified));
         assert!(
             delivery_target == stop_app,
@@ -7587,13 +7594,13 @@ pub(crate) mod tests {
         let (anchored, anchor) =
             select_delivery_anchor(&start_app, Some(&DeliveryTargetSnapshot::SelfTarget));
         assert_eq!(anchor, DeliveryAnchor::Start);
-        let (route, delivery_target) =
-            smart_prepare_fallback(&current_app_capture, false, anchored);
+        let (route, delivery_target) = smart_prepare_fallback(&current_app_capture, true, anchored);
         assert!(matches!(route, Snapshot::Unverified));
         assert!(delivery_target == start_app);
 
-        // An explicit switched-away refusal and a media handoff stay closed.
-        let (route, _) = smart_prepare_fallback(&current_app_capture, true, &stop_app);
+        // A clipboard-only handoff refusal, a lost preparation reply, and a
+        // media handoff stay closed.
+        let (route, _) = smart_prepare_fallback(&current_app_capture, false, &stop_app);
         assert!(matches!(route, Snapshot::Unavailable));
         let media_capture = Snapshot::Target {
             token: 8,
@@ -7601,7 +7608,7 @@ pub(crate) mod tests {
             identity: start_app.clone(),
             current_app: false,
         };
-        let (route, _) = smart_prepare_fallback(&media_capture, false, &stop_app);
+        let (route, _) = smart_prepare_fallback(&media_capture, true, &stop_app);
         assert!(matches!(route, Snapshot::Unavailable));
     }
 

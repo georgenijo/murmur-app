@@ -532,6 +532,17 @@ fn handoff_focus_allowed(observation: Observation) -> bool {
     )
 }
 
+/// Whether a switched-away recording whose retained field cannot be handed
+/// back must stay on the clipboard. An app now in front that positively holds
+/// no text input is not a paste target, and a positively secure field must
+/// never receive a paste even if a later probe cannot see it. Any other focus
+/// (editable or unreadable) makes that app the user's new destination for the
+/// normal verified paste.
+#[cfg(any(target_os = "macos", test))]
+fn switched_away_refusal_keeps_clipboard(observation: Observation) -> bool {
+    handoff_focus_allowed(observation) || observation == Observation::Secure
+}
+
 /// How long after a failed `AXManualAccessibility` attempt the same process is
 /// retried. A permanent latch would leave a T3 window without an exposed
 /// accessibility tree untracked until Smart destination is toggled.
@@ -839,6 +850,25 @@ mod tests {
             Observation::SelfOverlay,
         ] {
             assert!(!handoff_focus_allowed(observation));
+        }
+    }
+
+    #[test]
+    fn switched_away_refusal_falls_back_only_to_a_possible_text_input() {
+        for observation in [
+            Observation::SupportedMedia,
+            Observation::Other,
+            Observation::Secure,
+        ] {
+            assert!(switched_away_refusal_keeps_clipboard(observation));
+        }
+        for observation in [
+            Observation::Editable,
+            Observation::EditableUnverified,
+            Observation::Unavailable,
+            Observation::SelfOverlay,
+        ] {
+            assert!(!switched_away_refusal_keeps_clipboard(observation));
         }
     }
 

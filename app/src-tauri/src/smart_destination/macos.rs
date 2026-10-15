@@ -3,9 +3,10 @@ use super::{
     classify_foreground_focus, delivery_is_confirmed, editable_observation, generation_is_current,
     generation_is_latest, handoff_focus_allowed, hands_off, identity_relation,
     manual_failure_to_record, manual_retry_due, notification_invalidates, selection_allowed,
-    t3_empty_composer_delivery_is_confirmed, verifies_after_post, CandidateAction,
-    CandidateNotification, CapabilityStage, DeliveryRoute, EditableStatus, IdentityRelation,
-    InsertOutcome, ManualAccessibilityAttempt, Observation, PrepareOutcome, Snapshot,
+    switched_away_refusal_keeps_clipboard, t3_empty_composer_delivery_is_confirmed,
+    verifies_after_post, CandidateAction, CandidateNotification, CapabilityStage, DeliveryRoute,
+    EditableStatus, IdentityRelation, InsertOutcome, ManualAccessibilityAttempt, Observation,
+    PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
 use objc2_app_kit::NSRunningApplication;
@@ -592,9 +593,12 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
             };
             // One focus observation of the app now in front. Only an app that
             // positively holds no text input may hand the paste back to the
-            // retained field; any other app is the user's new destination.
-            let handoff_focus =
-                switched_away && handoff_focus_allowed(foreground_focus_observation(&current));
+            // retained field; any other app is the user's new destination,
+            // unless its focused field is positively secure.
+            let foreground_focus = switched_away.then(|| foreground_focus_observation(&current));
+            let handoff_focus = foreground_focus.is_some_and(handoff_focus_allowed);
+            let refusal_keeps_clipboard =
+                foreground_focus.is_some_and(switched_away_refusal_keeps_clipboard);
             let valid = state.frozen.get(token).is_some_and(|frozen| {
                 frozen.revision == *revision
                     && frozen.destination_identity == *identity
@@ -613,8 +617,10 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                 state.frozen.remove(token);
                 // Nothing was activated. When the app in front may hold a
                 // text input, the caller's normal verified paste goes to the
-                // app the user stopped in, exactly as with the feature off.
-                return refused(switched_away && handoff_focus);
+                // app the user stopped in, exactly as with the feature off. A
+                // positively secure field there stays clipboard-only even if
+                // the later injector probe cannot see it.
+                return refused(refusal_keeps_clipboard);
             }
 
             // The capability becomes one-shot before activation is attempted.
