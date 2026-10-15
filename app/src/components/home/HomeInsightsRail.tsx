@@ -1,27 +1,27 @@
 import type { DictationStats } from '../../lib/stats';
 import { getUsageOverview } from '../../lib/homeDashboard';
-import { DashboardAction, DashboardSectionHeader, DashboardSurface } from '../ui/DashboardPrimitives';
+import { DashboardAction } from '../ui/DashboardPrimitives';
 
 interface HomeInsightsRailProps {
   stats: DictationStats;
   onOpenInsights: () => void;
 }
 
+/** Compact month summary that shares the recording bar's row instead of taking a column. */
 export function HomeInsightsRail({ stats, onOpenInsights }: HomeInsightsRailProps) {
   const usage = getUsageOverview(stats);
 
   return (
-    <aside className="home-insights-rail" aria-label="Usage summary">
-      <DashboardSurface as="section" variant="outlined" padding="standard">
-        <DashboardSectionHeader eyebrow="This month" />
-        <p className="home-month-words">{usage.wordsThisMonth.toLocaleString()}</p>
-        <p className="home-month-caption">
-          words · {usage.recordingsThisMonth.toLocaleString()} {usage.recordingsThisMonth === 1 ? 'dictation' : 'dictations'}
+    <aside className="home-month-stat" aria-label="Usage summary">
+      <div className="home-month-stat-text">
+        <span className="dashboard-eyebrow">This month</span>
+        <p className="home-month-stat-value">
+          <strong>{usage.wordsThisMonth.toLocaleString()}</strong> words · {usage.recordingsThisMonth.toLocaleString()} {usage.recordingsThisMonth === 1 ? 'dictation' : 'dictations'}
         </p>
-        <DashboardAction variant="quiet" icon="forward" onActivate={onOpenInsights}>
-          View insights
-        </DashboardAction>
-      </DashboardSurface>
+      </div>
+      <DashboardAction variant="quiet" icon="forward" onActivate={onOpenInsights}>
+        View insights
+      </DashboardAction>
     </aside>
   );
 }

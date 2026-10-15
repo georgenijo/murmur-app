@@ -1,3 +1,5 @@
+import Markdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { useQueryHistory } from '../../lib/hooks/useQueryHistory';
 import { QUERY_HISTORY_MAX_SEARCH_CHARS } from '../../lib/queryHistory';
@@ -77,7 +79,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="shrink-0 border-b border-[var(--ui-hairline)] px-4 py-3">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-[1_1_16rem]">
             <h2 className="text-sm font-semibold text-on-surface">Voice Query history</h2>
             <p className="mt-0.5 text-[11px] leading-relaxed text-on-surface-variant">
               {retentionEnabled
@@ -86,7 +88,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
               {' '}Context is never stored as a separate field; provider stderr, commands, paths, and environment values are never stored here.
             </p>
           </div>
-          <div className="min-w-52">
+          <div className="min-w-0 flex-[1_1_13rem]">
             <label
               htmlFor={searchInputId}
               className="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant"
@@ -217,24 +219,28 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
                       )
                     )}
                   </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <section aria-label="Question" className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
-                      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Question</h3>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">{entry.question}</p>
-                    </section>
-                    <section aria-label={failureMessage ? 'Outcome' : 'Answer'} className="min-w-0 rounded-[var(--ui-radius-control)] bg-surface-container-low p-3">
-                      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">{failureMessage ? 'Outcome' : 'Answer'}</h3>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-on-surface">
-                        {failureMessage ?? (entry.answer || 'Empty answer')}
+                  <section aria-label="Question" className="mt-2 min-w-0">
+                    <h3 className="ui-visually-hidden">Question</h3>
+                    <p className="whitespace-pre-wrap break-words text-sm font-semibold text-on-surface">{entry.question}</p>
+                  </section>
+                  <section aria-label={failureMessage ? 'Outcome' : 'Answer'} className="mt-2 min-w-0 border-l-2 border-[var(--ui-hairline)] pl-3">
+                    <h3 className="ui-visually-hidden">{failureMessage ? 'Outcome' : 'Answer'}</h3>
+                    {failureMessage || !entry.answer ? (
+                      <p className="whitespace-pre-wrap break-words text-sm text-on-surface">
+                        {failureMessage ?? 'Empty answer'}
                       </p>
+                    ) : (
+                      <div className="query-history-markdown break-words text-sm text-on-surface">
+                        <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{entry.answer}</Markdown>
+                      </div>
+                    )}
                       {failureMessage && entry.answer && (
                         <details className="mt-2 text-xs text-on-surface-variant">
                           <summary className="cursor-pointer font-medium">Show partial answer</summary>
                           <p className="mt-1 whitespace-pre-wrap break-words text-on-surface">{entry.answer}</p>
                         </details>
-                      )}
-                    </section>
-                  </div>
+                    )}
+                  </section>
                 </article>
               );
             })}

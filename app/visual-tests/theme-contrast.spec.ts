@@ -6,22 +6,21 @@ test.beforeEach(async ({ page }) => {
 });
 
 for (const theme of ['sonic', 'flat-dark', 'open-vsx-low-contrast', 'open-vsx-high-saturation']) {
-  test(`${theme} separates dark transcript cards and keeps recording compact`, async ({ page }) => {
+  test(`${theme} separates dark transcript days and rows and keeps recording compact`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=recording&appearance=dark&theme=${theme}`);
     const cards = page.locator('.home-history .transcript-card');
-    const first = await cards.nth(0).boundingBox();
-    const second = await cards.nth(1).boundingBox();
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
-    if (!first || !second) throw new Error('Transcript cards must be laid out');
-    expect(second.y - first.y - first.height).toBeGreaterThanOrEqual(6);
-    const colors = await cards.nth(1).evaluate((card) => {
-      const css = getComputedStyle(card);
+    const dayStart = cards.nth(0);
+    const row = cards.nth(1);
+    await expect(dayStart).toHaveAttribute('data-day-start', 'true');
+    await expect(row).toHaveAttribute('data-day-start', 'false');
+    const dayEnd = page.locator('.home-history .transcript-card[data-day-end="true"]').first();
+    const sample = (card: typeof row, edge: 'top' | 'bottom') => card.evaluate((element, side) => {
+      const css = getComputedStyle(element);
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = 1;
       const context = canvas.getContext('2d');
       if (!context) throw new Error('Canvas color sampling unavailable');
-      const sample = (background: string, foreground?: string) => {
+      const paint = (background: string, foreground?: string) => {
         context.clearRect(0, 0, 1, 1);
         context.fillStyle = background;
         context.fillRect(0, 0, 1, 1);
@@ -44,20 +43,28 @@ for (const theme of ['sonic', 'flat-dark', 'open-vsx-low-contrast', 'open-vsx-hi
         return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
       };
       const background = getComputedStyle(document.documentElement).getPropertyValue('--murmur-background');
+      const border = side === 'top' ? css.borderTopColor : css.borderBottomColor;
       return {
-        cardContrast: contrast(sample(background), sample(background, css.backgroundColor)),
-        borderContrast: contrast(sample(css.backgroundColor), sample(css.backgroundColor, css.borderTopColor)),
-        radius: parseFloat(css.borderTopLeftRadius),
+        surfaceContrast: contrast(paint(background), paint(background, css.backgroundColor)),
+        borderContrast: contrast(paint(css.backgroundColor), paint(css.backgroundColor, border)),
+        radius: parseFloat(side === 'top' ? css.borderTopLeftRadius : css.borderBottomLeftRadius),
         shadow: css.boxShadow,
       };
-    });
-    expect(colors.cardContrast).toBeGreaterThan(1.2);
-    expect(colors.borderContrast).toBeGreaterThan(1.25);
-    expect(colors.radius).toBeGreaterThanOrEqual(8);
-    expect(colors.shadow).toContain('0, 0, 0');
+    }, edge);
+    const top = await sample(dayStart, 'top');
+    const divider = await sample(row, 'top');
+    const bottom = await sample(dayEnd, 'bottom');
+    // The day surface stands off the page, with a visible rounded outline and a shadow.
+    expect(top.surfaceContrast).toBeGreaterThan(1.2);
+    expect(top.borderContrast).toBeGreaterThan(1.25);
+    expect(top.radius).toBeGreaterThanOrEqual(8);
+    expect(bottom.radius).toBeGreaterThanOrEqual(8);
+    expect(bottom.shadow).toContain('0, 0, 0');
+    // Rows inside a day stay separated by a hairline divider.
+    expect(divider.borderContrast).toBeGreaterThan(1.1);
     const recording = page.locator('.home-talk');
-    await expect(recording).toHaveCSS('width', '416px');
     await expect(recording).toContainText('Listening');
+    expect((await recording.boundingBox())!.height).toBeLessThanOrEqual(56);
     await expect(page.locator('[data-visual-ready=true]')).toHaveScreenshot(`${theme}-recording-cards.png`);
     await page.setViewportSize({ width: 720, height: 560 });
     const box = await recording.boundingBox();

@@ -193,27 +193,45 @@ test('the window header flows into the history toolbar without a divider', async
   ))).toBe(8);
 });
 
-test('native default keeps the approved three-column dashboard geometry', async ({ page }) => {
+test('native default keeps the sidebar and one-column dashboard geometry', async ({ page }) => {
   await page.setViewportSize({ width: 1120, height: 820 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
 
   const sidebar = page.locator('.home-sidebar');
   const main = page.locator('.home-dashboard-main');
-  const rail = page.locator('.home-insights-rail');
-  const [sidebarBox, mainBox, railBox] = await Promise.all([
+  const talk = page.locator('.home-talk');
+  const month = page.locator('.home-month-stat');
+  const history = page.locator('.home-history');
+  const [sidebarBox, mainBox, talkBox, monthBox, historyBox] = await Promise.all([
     sidebar.boundingBox(),
     main.boundingBox(),
-    rail.boundingBox(),
+    talk.boundingBox(),
+    month.boundingBox(),
+    history.boundingBox(),
   ]);
 
   expect(sidebarBox?.width).toBe(160);
-  expect(mainBox?.width).toBeGreaterThan(650);
-  expect(railBox?.width).toBe(212);
-  expect(railBox?.y).toBe(mainBox?.y);
+  expect(mainBox?.width).toBeGreaterThan(900);
+  // The month summary shares the recording bar's row instead of a separate rail.
+  expect(monthBox?.y).toBe(talkBox?.y);
+  expect(monthBox?.height).toBe(talkBox?.height);
+  // The dictation list spans the whole content column.
+  expect(historyBox?.width).toBe(mainBox?.width);
   await expect(page.getByText('This month', { exact: true })).toBeVisible();
   await expect(page.getByText('Voice profile', { exact: true })).toHaveCount(0);
   await expect(page.getByTestId('main-status-chip')).toHaveCount(0);
   await expect(page.locator('.home-history .history-date-label')).toHaveCount(14);
+});
+
+test('each history day renders as one grouped surface', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=idle&appearance=light');
+  const today = page.locator('.home-history .transcript-card').filter({ hasText: 'compact transcript' });
+  const next = page.locator('.home-history .transcript-card').nth(1);
+  const [first, second] = await Promise.all([today.boundingBox(), next.boundingBox()]);
+  // Rows of the same day touch (shared hairline) instead of floating as separate cards.
+  expect(Math.abs((first!.y + first!.height) - second!.y)).toBeLessThanOrEqual(1);
+  await expect(today).toHaveAttribute('data-day-start', 'true');
+  await expect(next).toHaveAttribute('data-day-start', 'false');
 });
 
 for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] as const) {
@@ -770,7 +788,7 @@ test('meeting review keeps provenance, actions, and transcript evidence usable a
   const fixture = page.locator('[data-visual-ready="true"]');
   await expect(page.getByRole('heading', { name: 'Meeting review' })).toBeVisible();
   await expect(page.getByRole('button', { name: /Summary source 1/ })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Transcript evidence' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Transcript', exact: true })).toBeVisible();
   await page.mouse.move(0, 0);
   await expect(fixture).toHaveScreenshot('light-meeting-review.png');
 
@@ -788,7 +806,7 @@ test('synthetic retained-WAV review exposes playback transport and segment contr
 
   await expect(page.getByText('Synthetic retained-audio review', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('region', { name: 'Meeting audio playback' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Play all' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
   await expect(page.getByRole('slider', { name: 'Playback position' })).toHaveAttribute('aria-valuetext', '0:00 of 18:00');
   await expect(page.getByRole('button', { name: 'Play segment at 0:12, Me channel' })).toBeVisible();
   await page.mouse.move(0, 0);
@@ -987,3 +1005,32 @@ test('the compact 720x560 Insights view stacks analytics without horizontal clip
   expect(overflow.scrollWidth).toBe(overflow.clientWidth);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights-compact-720x560.png');
 });
+
+test('Voice Query history keeps its heading readable at the narrow window width', async ({ page }) => {
+  await page.setViewportSize({ width: 727, height: 560 });
+  await page.goto('/visual-fixtures.html?state=assistant-history&appearance=dark');
+  const heading = page.getByRole('heading', { name: 'Voice Query history', exact: true });
+  await expect(heading).toBeVisible();
+  // The heading block used to collapse to a one-word column beside the filters.
+  expect((await heading.boundingBox())!.height).toBeLessThan(30);
+  await expect(page.getByRole('region', { name: 'Answer' }).first().locator('ol li')).toHaveCount(3);
+});
+
+for (const width of [720, 800, 880] as const) {
+  test(`meeting speaker names stay inside the detail pane at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto('/visual-fixtures.html?state=meetings-many&appearance=light');
+    await page.locator('summary', { hasText: 'Speakers:' }).click();
+    const panel = page.locator('.meeting-speakers-panel');
+    await expect(panel).toBeVisible();
+    const [panelBox, paneBox] = await Promise.all([
+      panel.boundingBox(),
+      page.locator('.meetings-detail-column').boundingBox(),
+    ]);
+    expect(panelBox!.x).toBeGreaterThanOrEqual(paneBox!.x);
+    expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(paneBox!.x + paneBox!.width + 0.5);
+    const input = page.getByLabel('Me speaker label');
+    const inputBox = await input.boundingBox();
+    expect(inputBox!.x).toBeGreaterThanOrEqual(paneBox!.x);
+  });
+}

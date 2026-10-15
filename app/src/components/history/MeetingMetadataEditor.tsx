@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { MeetingSession, SaveMeetingMetadataRequest } from '../../lib/meetings';
 import { MeetingCalendarNaming } from './MeetingCalendarNaming';
 
@@ -8,9 +8,14 @@ interface MeetingMetadataEditorProps {
   onSave: (request: SaveMeetingMetadataRequest) => Promise<boolean>;
   onApplyCalendar: (sessionId: string, selectionToken: string) => Promise<boolean>;
   onNotice: (message: string) => void;
+  /** One-line session facts shown under the title (date, duration, audio). */
+  meta?: string;
+  /** Extra header actions, such as Delete, placed after the naming actions. */
+  actions?: ReactNode;
 }
 
-export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalendar, onNotice }: MeetingMetadataEditorProps) {
+/** Meeting detail header: title, facts, and naming actions in one block. */
+export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalendar, onNotice, meta, actions }: MeetingMetadataEditorProps) {
   const [draft, setDraft] = useState<{ title: string; attendees: string } | null>(null);
   const title = draft?.title ?? session.title ?? '';
   const attendees = draft?.attendees ?? session.attendees.join('\n');
@@ -41,31 +46,47 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
     }
   };
 
+  const titleSource = session.titleSource === 'calendar'
+    ? 'Named from calendar'
+    : session.titleSource === 'generated'
+      ? 'Generated title'
+      : session.titleSource === 'manual'
+        ? 'Manually named'
+        : null;
+
   return (
-    <section className="dialog-card mb-3 p-3" aria-label="Meeting details">
+    <section className="meeting-detail-header" aria-label="Meeting details">
       {draft ? (
-        <form aria-label="Name meeting" aria-busy={saving} onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        <form className="meeting-detail-header-form" aria-label="Name meeting" aria-busy={saving} onSubmit={(event) => { event.preventDefault(); void save(); }}>
           <fieldset disabled={disabled || saving || applyingCalendar} className="space-y-2">
             <label className="block text-xs font-semibold text-on-surface">Meeting title
-              <input autoFocus value={title} maxLength={200} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Untitled meeting" className="mt-1 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" />
+              <input autoFocus value={title} maxLength={200} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Untitled meeting" className="meeting-field mt-1" />
             </label>
             <label className="block text-xs font-semibold text-on-surface">Attendees, one per line
-              <textarea value={attendees} maxLength={20100} rows={2} onChange={(event) => setDraft({ ...draft, attendees: event.target.value })} className="mt-1 w-full resize-y rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" />
+              <textarea value={attendees} maxLength={20100} rows={2} onChange={(event) => setDraft({ ...draft, attendees: event.target.value })} className="meeting-field mt-1 resize-y" />
             </label>
             <div className="flex gap-2">
-              <button type="submit" className="dialog-pill-btn px-3 py-1.5 text-xs text-primary">{saving ? 'Saving…' : 'Save details'}</button>
-              <button type="button" onClick={() => setDraft(null)} className="dialog-pill-btn px-3 py-1.5 text-xs">Cancel naming</button>
+              <button type="submit" className="meeting-header-action" data-tone="accent">{saving ? 'Saving…' : 'Save details'}</button>
+              <button type="button" onClick={() => setDraft(null)} className="meeting-header-action">Cancel naming</button>
             </div>
           </fieldset>
         </form>
       ) : (
         <>
-          <div className="flex items-center gap-2">
-            <h3 className="min-w-0 flex-1 break-words text-sm font-semibold text-on-surface">{session.title || 'Untitled meeting'}</h3>
-            <button type="button" disabled={disabled || applyingCalendar} onClick={beginEdit} className="dialog-pill-btn shrink-0 px-3 py-1.5 text-xs text-primary disabled:opacity-40">{session.title ? 'Rename' : 'Name meeting'}</button>
-          </div>
-          {session.attendees.length > 0 && <p className="mt-1 break-words text-xs text-on-surface-variant">Attendees: {session.attendees.join(', ')}</p>}
-          {session.titleSource && <p className="mt-1 text-xs text-on-surface-variant">{session.titleSource === 'calendar' ? 'Named from calendar' : session.titleSource === 'generated' ? 'Generated title' : 'Manually named'}</p>}
+          <h3 className="meeting-detail-title" data-untitled={!session.title}>{session.title || 'Untitled meeting'}</h3>
+          {(meta || session.attendees.length > 0 || titleSource) && (
+            <div className="meeting-detail-meta">
+              {meta && <p>{meta}</p>}
+              {(session.attendees.length > 0 || titleSource) && (
+                <p>
+                  {session.attendees.length > 0 && <>Attendees: {session.attendees.join(', ')}</>}
+                  {session.attendees.length > 0 && titleSource && ' · '}
+                  {titleSource}
+                </p>
+              )}
+            </div>
+          )}
+          <button type="button" disabled={disabled || applyingCalendar} onClick={beginEdit} className="meeting-header-action">{session.title ? 'Rename' : 'Name meeting'}</button>
         </>
       )}
       <MeetingCalendarNaming
@@ -83,6 +104,7 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
         onManualNaming={beginEdit}
         onNotice={onNotice}
       />
+      {actions}
     </section>
   );
 }

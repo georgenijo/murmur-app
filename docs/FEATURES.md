@@ -204,9 +204,11 @@ macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker,
 Queries, and Insights. A single gear/keyboard entry opens the Customize hub and
 the complete Settings workspace; customization no longer competes with the four
 primary destinations in the Home sidebar. Home uses
-one 64px recording row for the real recording state, configured shortcut, and
-file transcription, then gives Recent Dictations the remaining workspace.
-The responsive Home insights rail and full Insights destination use only
+one 64px row for the real recording state and configured shortcut, with this
+month's word and dictation totals beside it, then gives Recent Dictations the
+remaining workspace. Dictations are grouped into one surface per day with a time
+column; row actions appear on hover or keyboard focus.
+The Home month summary and full Insights destination use only
 durable local statistics. Insights includes total dictation minutes, estimated
 typing time saved at 40 words per minute minus dictation time, the most-used
 Mode, this month's completed meetings and capture minutes, this month's

@@ -11,6 +11,8 @@ import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
+import { QueryHistoryPanel } from './components/history/QueryHistoryPanel';
+import { useQueryHistory } from './lib/hooks/useQueryHistory';
 import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
 import { QueryReviewView } from './components/query-review/QueryReviewApp';
 import './components/assistant/assistant.css';
@@ -151,7 +153,102 @@ const meetingFixture = {
   activeOrigin: requestedState === 'meetings-review-audio' ? null : 'reviewed',
 };
 
+// A realistic backlog: many sessions across weeks, mostly untitled, with a long
+// retained-audio transcript and no review yet.
+const manyMeetings = requestedState === 'meetings-many';
+const manyMeetingLines = [
+  'Thanks for jumping on. I wanted to walk through the launch checklist before Friday.',
+  'Sounds good. I pulled the latest numbers this morning, so we can start there.',
+  'The onboarding drop-off is still mostly at the microphone permission step.',
+  'Right, and the new copy should help, but I want to see a week of data first.',
+  'Can we also confirm the export formats work with the calendar names?',
+  'I tested Markdown and plain text. Captions still need a pass.',
+  'Okay. Let us put captions on the list for next sprint then.',
+  'One more thing: the notetaker list gets hard to scan once there are a lot of meetings.',
+  'Agreed. Grouping by day would already help a lot.',
+  'I will draft something and share it by Thursday.',
+  'Perfect. Anything else before we wrap?',
+  'No, I think that covers it. Thanks everyone.',
+];
+const manyMeetingSessions = Array.from({ length: 14 }, (_, index) => {
+  const startedAtMs = Date.UTC(2026, 8, 4, 18, 0) - index * 19 * 60 * 60 * 1000;
+  const titles: Record<number, string> = { 1: 'Launch checklist sync', 4: 'Design review', 9: 'Weekly planning' };
+  return {
+    id: `meeting-${index}`,
+    title: titles[index] ?? null,
+    titleSource: titles[index] ? 'manual' : null,
+    attendees: [],
+    startedAtMs,
+    endedAtMs: startedAtMs + (12 + index * 3) * 60_000,
+    status: index === 6 ? 'interrupted' : 'complete',
+    modelName: 'base.en', language: 'en', smartPunctuation: true,
+    retainAudio: index % 3 === 0,
+    durationMs: (12 + index * 3) * 60_000,
+    segmentCount: 40 + index * 23,
+    preview: manyMeetingLines[index % manyMeetingLines.length],
+    errorCode: null,
+  };
+});
+const manyMeetingDetail = (id: string) => {
+  const session = manyMeetingSessions.find((candidate) => candidate.id === id) ?? manyMeetingSessions[0];
+  return {
+    session,
+    segments: manyMeetingLines.map((text, index) => ({
+      id: 500 + index, sessionId: session.id, speaker: index % 2 === 0 ? 'me' : 'them', remoteSpeakerId: null,
+      sequence: index, startMs: 4_000 + index * 21_000, endMs: 4_000 + index * 21_000 + 15_000,
+      status: 'final', text, audioAvailable: session.retainAudio, errorCode: null,
+    })),
+    labels: { me: 'Me', them: 'Them' },
+    remoteSpeakers: [],
+    generated: null,
+    review: null,
+    activeDocument: null,
+    activeOrigin: null,
+  };
+};
+
+function QueryHistoryFixture() {
+  const history = useQueryHistory(true);
+  return <QueryHistoryPanel history={history} retentionEnabled />;
+}
+
+const queryHistoryFixture = {
+  schemaVersion: 1,
+  entries: [
+    {
+      schemaVersion: 1, id: 'a'.repeat(32), timestampMs: Date.UTC(2026, 8, 4, 17, 12), provider: 'claude',
+      question: 'What should I review before the launch sync?',
+      answer: 'Three things are worth a look:\n\n1. **Onboarding drop-off** at the microphone step.\n2. Caption export, which still needs a pass.\n3. The meeting list once many sessions pile up.',
+      tokens: null, durationMs: 6_400, errorCode: null,
+    },
+    {
+      schemaVersion: 1, id: 'b'.repeat(32), timestampMs: Date.UTC(2026, 8, 3, 21, 40), provider: 'codex',
+      question: 'Summarize yesterday in one line.',
+      answer: 'Mostly planning: the launch checklist, export formats, and a design review.',
+      tokens: null, durationMs: 3_100, errorCode: null,
+    },
+  ],
+  total: 2, offset: 0, hasMore: false,
+};
+
 mockIPC((command, payload) => {
+  if (command === 'list_query_history') return queryHistoryFixture;
+  if (manyMeetings) {
+    if (command === 'get_system_audio_permission_status') return 'unknown';
+    if (command === 'list_meetings') {
+      return { sessions: manyMeetingSessions, searchMatches: {}, total: manyMeetingSessions.length, offset: 0, limit: 50 };
+    }
+    if (command === 'get_meeting') {
+      const id = payload && typeof payload === 'object' && 'id' in payload ? String(payload.id) : 'meeting-0';
+      return manyMeetingDetail(id);
+    }
+    if (command === 'get_meeting_audio_manifest') {
+      return {
+        kind: 'available', sessionId: 'meeting-0', durationMs: 12 * 60_000,
+        chunks: [{ segmentId: 500, channel: 'me', startMs: 4_000, endMs: 19_000 }], nextCursor: null,
+      };
+    }
+  }
   if (requestedState === 'update-flow') {
     if (command === 'plugin:app|version') return '0.44.1';
     if (command === 'get_update_install_environment') return { appTranslocated: false };
@@ -474,6 +571,7 @@ function VisualFixture() {
 
   React.useEffect(() => {
     if (requestedState.startsWith('meetings-review')) void meetings.select('meeting-fixture');
+    if (manyMeetings) void meetings.select('meeting-0');
   }, [meetings.select]);
 
   return (
@@ -565,10 +663,10 @@ function VisualFixture() {
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
                 <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
-                  <button type="button" aria-pressed="true">Conversations</button>
-                  <button type="button" aria-pressed="false">Previous queries</button>
+                  <button type="button" aria-pressed={requestedState !== 'assistant-history'}>Conversations</button>
+                  <button type="button" aria-pressed={requestedState === 'assistant-history'}>Previous queries</button>
                 </div>
-                <AssistantWorkspace
+                {requestedState === 'assistant-history' ? <QueryHistoryFixture /> : <AssistantWorkspace
                   connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
                   conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
                   selectedId="fixture" confirmationOutcomeUnknownActionIds={[]} messages={requestedState === 'assistant-empty' ? [] : [
@@ -579,7 +677,7 @@ function VisualFixture() {
                   onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
                   onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}}
                   onConfirmAction={async () => {}} onCancelAction={async () => {}} onRefreshAction={async () => {}} onSettings={() => {}}
-                />
+                />}
               </section>
             ) : (
               <HomeDashboard
