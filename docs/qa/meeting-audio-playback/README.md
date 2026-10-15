@@ -25,7 +25,7 @@ bundle's data directory. Delete the fixture through the app before reseeding.
 | Them | 0:17 | 0:20 | 880 Hz tone |
 
 Clicking the second segment should select **Them** and begin at **0:07**.
-**Play all** should preserve the 0:09–0:12 overlap and both silent gaps. Pause,
+**Play** from 0:00 with Both channels should preserve the 0:09–0:12 overlap and both silent gaps. Pause,
 resume, channel changes, and keyboard seeking should retain the global session
 position. Deleting the selected session should stop playback and remove all
 four WAVs from its audio directory.

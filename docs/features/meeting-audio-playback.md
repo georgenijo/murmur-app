@@ -1,9 +1,12 @@
 # Retained meeting audio playback
 
-The review workspace can play retained audio from a finished meeting. **Play all**
-starts the whole timeline with both Me and Them. Selecting a transcript segment
-seeks to its saved offset and selects its canonical channel. The transport can
-switch between All, Me, and Them without rewriting the timeline. Display labels
+The review workspace can play retained audio from a finished meeting. The compact
+transport has one Play/Pause control, a seek slider, the position, and a channel
+menu. **Play** starts at the current position on the selected channel; a newly
+opened meeting starts at 0:00 with **Both channels**, so it plays the whole
+timeline with Me and Them. Selecting a transcript segment seeks to its saved
+offset and selects its canonical channel. The channel menu can switch between
+Both channels, Me only, and Them only without rewriting the timeline. Display labels
 and remote-speaker names do not change audio channel ownership.
 All adds the retained channels at their recorded levels. Single-channel playback
 also preserves its recorded level; playback does not add a gain or normalization setting.

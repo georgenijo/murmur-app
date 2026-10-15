@@ -101,10 +101,10 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
 
   const picking = state.kind === 'choosing' || state.kind === 'applying';
   return (
-    <div className="mt-2 text-xs">
-      <button type="button" disabled={disabled || state.kind === 'loading' || state.kind === 'applying'} onClick={() => void lookup()} className="dialog-pill-btn px-3 py-1.5 text-primary disabled:opacity-40">{state.kind === 'loading' ? 'Reading calendar…' : 'Name from calendar'}</button>
+    <div className="contents text-xs">
+      <button type="button" disabled={disabled || state.kind === 'loading' || state.kind === 'applying'} onClick={() => void lookup()} className="meeting-header-action">{state.kind === 'loading' ? 'Reading calendar…' : 'Name from calendar'}</button>
       {state.kind === 'unavailable' && (
-        <div role="status" className="mt-2 space-y-2 text-on-surface-variant">
+        <div role="status" className="meeting-detail-header-panel space-y-2 text-xs text-on-surface-variant">
           <p>{state.message}</p>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={onManualNaming} className="dialog-pill-btn px-3 py-1.5 text-primary">Name manually</button>
@@ -114,7 +114,7 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
         </div>
       )}
       {picking && (
-        <fieldset disabled={disabled || state.kind === 'applying'} aria-busy={state.kind === 'applying'} className="mt-2 space-y-2">
+        <fieldset disabled={disabled || state.kind === 'applying'} aria-busy={state.kind === 'applying'} className="meeting-detail-header-panel space-y-2 text-xs">
           <legend className="font-semibold text-on-surface">Choose an overlapping event</legend>
           {state.events.length === 0 ? <p className="text-on-surface-variant">No calendar events overlap this meeting. You can still name it manually.</p> : (
             <>

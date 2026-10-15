@@ -68,8 +68,8 @@ export function HomeDashboard({
 
   return (
     <div className="home-dashboard">
-      <div className="home-dashboard-grid">
-        <div className="home-dashboard-main">
+      <div className="home-dashboard-main">
+        <div className="home-dashboard-top">
           <HomeRecordingBar
             status={status}
             initialized={initialized}
@@ -83,34 +83,33 @@ export function HomeDashboard({
             onRecord={onRecord}
             onStop={onStop}
           />
-
-          {discovery && (
-            <DiscoveryChecklist
-              completed={discovery.completed}
-              onAction={discovery.onAction}
-              onDismiss={discovery.onDismiss}
-            />
-          )}
-
-          <section className="home-history" aria-labelledby="recent-dictations-title">
-            <HistoryPanel
-              title="Your dictations"
-              titleId="recent-dictations-title"
-              entries={historyEntries}
-              onClear={onClearHistory}
-              onDeleteEntries={onDeleteHistoryEntries}
-              onUpdateEntry={onUpdateHistoryEntry}
-              onTogglePinned={onToggleHistoryPinned}
-              pinnedCount={historyEntries.filter((entry) => entry.pinned === true).length}
-              focusSearchToken={focusSearchToken}
-              teachLatestToken={teachLatestToken}
-              onTeachLatestHandled={onTeachLatestHandled}
-              onTranscribeFile={onTranscribeFile}
-            />
-          </section>
+          <HomeInsightsRail stats={stats} onOpenInsights={onOpenInsights} />
         </div>
 
-        <HomeInsightsRail stats={stats} onOpenInsights={onOpenInsights} />
+        {discovery && (
+          <DiscoveryChecklist
+            completed={discovery.completed}
+            onAction={discovery.onAction}
+            onDismiss={discovery.onDismiss}
+          />
+        )}
+
+        <section className="home-history" aria-labelledby="recent-dictations-title">
+          <HistoryPanel
+            title="Your dictations"
+            titleId="recent-dictations-title"
+            entries={historyEntries}
+            onClear={onClearHistory}
+            onDeleteEntries={onDeleteHistoryEntries}
+            onUpdateEntry={onUpdateHistoryEntry}
+            onTogglePinned={onToggleHistoryPinned}
+            pinnedCount={historyEntries.filter((entry) => entry.pinned === true).length}
+            focusSearchToken={focusSearchToken}
+            teachLatestToken={teachLatestToken}
+            onTeachLatestHandled={onTeachLatestHandled}
+            onTranscribeFile={onTranscribeFile}
+          />
+        </section>
       </div>
     </div>
   );

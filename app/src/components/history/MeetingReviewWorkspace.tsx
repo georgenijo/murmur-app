@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
@@ -25,6 +25,10 @@ interface MeetingReviewWorkspaceProps {
   captureBusy: boolean;
   meetingAudio?: MeetingAudioController;
   onNotice: (message: string) => void;
+  /** Session facts shown under the meeting title. */
+  headerMeta?: string;
+  /** Header actions owned by the panel, such as Delete. */
+  headerActions?: ReactNode;
 }
 
 interface WorkspaceActivation {
@@ -61,12 +65,13 @@ function SourceLinks({ label, ids, onActivate }: {
   );
 }
 
-function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabled, selected, onSelect, selectionDisabled }: {
+function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabled, selectable, selected, onSelect, selectionDisabled }: {
   segment: MeetingSegment;
   labels: { me: string; them: string };
   remoteSpeakers: RemoteSpeakerLabel[];
   onPlay?: () => void;
   playbackDisabled?: boolean;
+  selectable: boolean;
   selected: boolean;
   onSelect: () => void;
   selectionDisabled: boolean;
@@ -78,7 +83,8 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
       id={`meeting-segment-${segment.id}`}
       tabIndex={-1}
       aria-label={`${canonical} channel, ${display}, at ${formatMeetingTimestamp(segment.startMs)}`}
-      className="grid scroll-m-20 grid-cols-[3.75rem_7rem_minmax(0,1fr)] gap-2 border-b border-[var(--ui-hairline)] py-2 text-sm last:border-0 focus-visible:rounded-[var(--ui-radius-control)] focus-visible:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+      className="meeting-transcript-row"
+      data-selected={selected}
     >
       {onPlay ? (
         <button
@@ -86,22 +92,25 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
           disabled={playbackDisabled}
           aria-label={`Play segment at ${formatMeetingTimestamp(segment.startMs)}, ${canonical} channel`}
           onClick={onPlay}
-          className="w-fit rounded-[var(--ui-radius-control)] font-mono text-[11px] tabular-nums text-primary hover:bg-primary-container/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary disabled:text-on-surface-variant disabled:opacity-50"
+          className="meeting-transcript-time"
+          data-playable="true"
         >
           ▶ {formatMeetingTimestamp(segment.startMs)}
         </button>
       ) : (
-        <span className="font-mono text-[11px] tabular-nums text-on-surface-variant">{formatMeetingTimestamp(segment.startMs)}</span>
+        <span className="meeting-transcript-time">{formatMeetingTimestamp(segment.startMs)}</span>
       )}
-      <span className={`truncate text-xs font-bold ${segment.speaker === 'me' ? 'text-primary' : 'text-success'}`} title={`${display} (${canonical})`}>
-        {display} <span className="font-normal text-on-surface-variant">({canonical})</span>
+      <span className="meeting-transcript-speaker" data-speaker={segment.speaker} title={`${display} (${canonical})`}>
+        {display}{display !== canonical && <span className="font-normal text-on-surface-variant"> ({canonical})</span>}
       </span>
-      <div className="min-w-0">
-        <label className="mb-1 flex w-fit items-center gap-1.5 text-[11px] text-on-surface-variant">
-          <input type="checkbox" checked={selected} onChange={onSelect} disabled={selectionDisabled} aria-label={`Use as source: transcript segment ${segment.id} at ${formatMeetingTimestamp(segment.startMs)}`} aria-controls={`meeting-segment-${segment.id}`} className="accent-primary" />
-          Use as source
-        </label>
-        <p className="min-w-0 whitespace-pre-wrap break-words text-on-surface">
+      <div className="flex min-w-0 items-start gap-2">
+        {selectable && (
+          <label className="mt-0.5 flex shrink-0 items-center" title="Use as source">
+            <input type="checkbox" checked={selected} onChange={onSelect} disabled={selectionDisabled} aria-label={`Use as source: transcript segment ${segment.id} at ${formatMeetingTimestamp(segment.startMs)}`} aria-controls={`meeting-segment-${segment.id}`} className="accent-primary" />
+            <span className="ui-visually-hidden">Use as source</span>
+          </label>
+        )}
+        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-on-surface">
           {segment.status === 'final' ? segment.text : segment.status === 'pending' ? 'Transcript pending…' : 'Transcription failed.'}
         </p>
       </div>
@@ -109,7 +118,7 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
   );
 }
 
-export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice }: MeetingReviewWorkspaceProps) {
+export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice, headerMeta, headerActions }: MeetingReviewWorkspaceProps) {
   const detail = meetings.detail!;
   const activeWorkspace = useRef<WorkspaceActivation | null>(null);
   const [editing, setEditing] = useState(false);
@@ -346,10 +355,40 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     </section>
   );
 
+  const generateButton = (
+    <button type="button" disabled={captureBusy || summaryBusy} onClick={() => void meetings.summarize(detail.session.id)} className="ui-dashboard-action" data-action={activeDocument ? 'secondary' : 'primary'}>
+      {detail.generated ? 'Regenerate draft' : 'Generate review draft'}
+    </button>
+  );
+  const cancelSummaryButton = summaryBusy && (
+    <button type="button" aria-label="Cancel draft generation" onClick={() => void meetings.cancelSummary()} className="meeting-header-action" data-tone="danger">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>
+  );
+  const speakerSummary = [labels.me, labels.them, ...remoteSpeakers.map((speaker) => speaker.label)].filter(Boolean).join(', ');
+
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+    <div className="meeting-workspace">
+      <MeetingMetadataEditor
+        key={detail.session.id}
+        session={detail.session}
+        disabled={captureBusy}
+        onSave={meetings.saveMetadata}
+        onApplyCalendar={meetings.applyCalendarEvent}
+        onNotice={onNotice}
+        meta={headerMeta}
+        actions={headerActions}
+      />
+
+      {detail.session.retainAudio && meetingAudio ? (
+        <MeetingAudioPlayer audio={meetingAudio} captureBusy={captureBusy} />
+      ) : !detail.session.retainAudio ? (
+        <p className="meeting-quiet-note">
+          Audio was not retained for this meeting. Enable Keep Meeting Audio in Meetings settings to play future sessions.
+        </p>
+      ) : null}
+
       {summaryStatus && summaryStatus.phase !== 'idle' && (
-        <div role="status" className="dialog-card mb-3 p-3 text-xs text-on-surface-variant">
+        <div className="meeting-quiet-note flex flex-wrap items-center gap-2">
+          <span role="status" className="min-w-0 flex-1">
           {summaryBusy
             ? `Generating draft ${summaryStatus.completedChunks} of ${summaryStatus.totalChunks || '…'} · ${formatMeetingTimestamp(summaryStatus.elapsedMs)}`
             : summaryStatus.phase === 'failed'
@@ -359,93 +398,79 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
                 : summaryStatus.phase === 'complete'
                   ? 'Generated draft updated. Any saved review was kept.'
                   : 'Draft generation is stopping…'}
+          </span>
+          {cancelSummaryButton}
         </div>
       )}
 
-      <MeetingMetadataEditor
-        key={detail.session.id}
-        session={detail.session}
-        disabled={captureBusy}
-        onSave={meetings.saveMetadata}
-        onApplyCalendar={meetings.applyCalendarEvent}
-        onNotice={onNotice}
-      />
-
-      {detail.session.retainAudio && meetingAudio ? (
-        <MeetingAudioPlayer audio={meetingAudio} captureBusy={captureBusy} />
-      ) : !detail.session.retainAudio ? (
-        <p className="dialog-card mb-3 p-3 text-xs leading-relaxed text-on-surface-variant">
-          Audio was not retained for this meeting. Enable Keep Meeting Audio in Meetings settings to play future sessions.
-        </p>
-      ) : null}
-
-      <div className="dialog-card mb-3 flex flex-wrap items-end gap-2 p-3">
-        <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Me channel
-          <input aria-label="Me speaker label" value={labels.me} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, me: event.target.value }))} className="mt-1 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs" />
-        </label>
-        <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Them channel
-          <input aria-label="Them speaker label" value={labels.them} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, them: event.target.value }))} className="mt-1 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs" />
-        </label>
-        {!editing && <button type="button" onClick={() => void saveLabels()} className="dialog-pill-btn px-3 py-2 text-xs text-primary">Save labels</button>}
-      </div>
-
-      {remoteSpeakers.length > 0 && (
-        <div className="dialog-card mb-3 p-3">
-          <h3 className="text-xs font-semibold text-on-surface">Remote speakers</h3>
-          <p className="mt-1 text-[11px] text-on-surface-variant">Names apply only to this meeting. Uncertain passages remain {labels.them}.</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            {remoteSpeakers.map((speaker) => (
-              <label key={speaker.speakerId} className="text-[11px] font-semibold text-on-surface">
-                Speaker {speaker.speakerId}
-                <span className="mt-1 flex gap-2">
-                  <input
-                    aria-label={`Remote speaker ${speaker.speakerId} label`}
-                    value={speaker.label}
-                    maxLength={80}
-                    onChange={(event) => setRemoteSpeakerDrafts((current) => ({
-                      ...current,
-                      [speaker.speakerId]: event.target.value,
-                    }))}
-                    className="min-w-0 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-low px-2 py-1.5 text-xs"
-                  />
-                  <button type="button" onClick={() => void saveRemoteSpeaker(speaker)} className="dialog-pill-btn px-3 py-1.5 text-xs text-primary">Save</button>
-                </span>
-              </label>
-            ))}
+      {editing && draft ? (
+        <form aria-label="Edit meeting review" aria-busy={saving} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="meeting-review-card space-y-3">
+          <fieldset disabled={saving} className="space-y-3">
+          <label className="block text-xs font-semibold">Summary<textarea aria-label="Review summary" value={draft.summary.text} onChange={(event) => setDraft({ ...draft, summary: { ...draft.summary, text: event.target.value } })} className="meeting-field mt-1 min-h-20" /></label>
+          {(['decisions', 'openQuestions'] as const).map((section) => <fieldset key={section} className="space-y-2"><legend className="text-xs font-semibold">{section === 'decisions' ? 'Decisions' : 'Open questions'}</legend>{draft[section].length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft[section].map((item, index) => <div key={item.key} className="flex gap-2"><textarea aria-label={`${section} ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, [section]: draft[section].map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="meeting-field min-h-14 flex-1" /><button type="button" aria-label={`Remove ${section} ${index + 1}`} onClick={() => setDraft({ ...draft, [section]: draft[section].filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>)}
+          <fieldset className="space-y-2"><legend className="text-xs font-semibold">Action items</legend>{draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft.actionItems.map((item, index) => <div key={item.key} className="grid gap-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2 sm:grid-cols-[minmax(0,1fr)_8rem_8rem_auto]"><input aria-label={`Action item ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="meeting-field" /><input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} className="meeting-field" /><input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} className="meeting-field" /><button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>
+          {newClaims.length > 0 && <fieldset className="space-y-3"><legend className="text-xs font-semibold">New claims · unsaved</legend>{newClaims.map(({ id, claim }, index) => {
+            const number = newClaims.slice(0, index).filter((entry) => entry.claim.kind === claim.kind).length + 1;
+            const kindLabel = claim.kind === 'decision' ? 'New decision' : claim.kind === 'action_item' ? 'New action item' : 'New open question';
+            const label = `${kindLabel} ${number}`;
+            const update = (next: NewReviewClaim) => setNewClaims((current) => current.map((entry) => entry.id === id ? { id, claim: next } : entry));
+            return <div key={id} className="space-y-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2">
+              <label className="block text-xs font-semibold">{label}<textarea id={`new-meeting-claim-${id}`} aria-label={`${label} text`} maxLength={16_384} value={claim.text} onChange={(event) => update({ ...claim, text: event.target.value })} className="meeting-field mt-1 min-h-14" /></label>
+              {claim.kind === 'action_item' && <div className="flex flex-wrap gap-2"><input aria-label={`New action owner ${number}`} maxLength={256} placeholder="Unknown owner" value={claim.owner ?? ''} onChange={(event) => update({ ...claim, owner: event.target.value || null })} className="meeting-field w-auto" /><input aria-label={`New action due date ${number}`} type="date" value={claim.dueDate ?? ''} onChange={(event) => update({ ...claim, dueDate: event.target.value || null })} className="meeting-field w-auto" /></div>}
+              <div className="flex items-center justify-between text-xs"><span>Sources<SourceLinks label={label} ids={claim.sourceSegmentIds} onActivate={jumpToSource} /></span><button type="button" aria-label={`Remove ${label.toLowerCase()}`} onClick={() => setNewClaims((current) => current.filter((entry) => entry.id !== id))} className="text-error">Remove</button></div>
+            </div>;
+          })}</fieldset>}
+          <div className="flex gap-2"><button type="submit" className="ui-dashboard-action" data-action="primary">Save review</button><button type="button" onClick={() => { setEditing(false); setDraft(null); setLabelDrafts({}); setNewClaims([]); setSelectedIds([]); }} className="ui-dashboard-action" data-action="quiet">Cancel</button></div>
+          </fieldset>
+        </form>
+      ) : activeDocument ? (
+        <article className="meeting-review-card" aria-labelledby="meeting-review-title">
+          <div className="meeting-review-card-header">
+            <h3 id="meeting-review-title" className="text-sm font-semibold">Meeting review</h3>
+            <span className="meeting-review-origin">{detail.activeOrigin === 'reviewed' ? 'Reviewed' : 'Generated draft'}</span>
+            <div className="meeting-review-actions">
+              {!editing && <button type="button" onClick={beginEdit} className="meeting-header-action">Edit review</button>}
+              {detail.review?.document && detail.generated && (
+                <button type="button" aria-label="Replace review with generated draft" onClick={() => void restore()} className="meeting-header-action" data-confirming={restoreConfirm}>
+                  {restoreConfirm ? 'Confirm replace review' : 'Use generated draft'}
+                </button>
+              )}
+              {generateButton}
+            </div>
           </div>
+          <p className="mt-2 text-xs leading-relaxed">{activeDocument.summary.text}<SourceLinks label="Summary" ids={activeDocument.summary.sourceSegmentIds} onActivate={jumpToSource} /></p>
+          {renderTextItems('Decisions', activeDocument.decisions)}
+          <section className="mt-3"><h4 className="text-xs font-semibold">Action items</h4>{activeDocument.actionItems.length === 0 ? <p className="mt-1 text-xs text-on-surface-variant">None recorded.</p> : activeDocument.actionItems.map((item) => <p key={item.key} className="mt-1 text-xs">• {item.text} — {item.owner ?? 'Unknown'} · {item.dueDate ?? 'Unknown'}<SourceLinks label="Action item" ids={item.sourceSegmentIds} onActivate={jumpToSource} /></p>)}</section>
+          {renderTextItems('Open questions', activeDocument.openQuestions)}
+        </article>
+      ) : (
+        <div className="meeting-review-empty">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">No review draft yet</p>
+            <p className="mt-0.5 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p>
+          </div>
+          {generateButton}
         </div>
       )}
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button type="button" disabled={captureBusy || summaryBusy} onClick={() => void meetings.summarize(detail.session.id)} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">
-          {detail.generated ? 'Regenerate draft' : 'Generate review draft'}
-        </button>
-        {summaryBusy && <button type="button" onClick={() => void meetings.cancelSummary()} className="rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold text-error">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>}
-        {activeDocument && !editing && <button type="button" onClick={beginEdit} className="dialog-pill-btn px-3 py-2 text-xs">Edit review</button>}
-        {detail.review?.document && detail.generated && (
-          <button type="button" aria-label="Replace review with generated draft" onClick={() => void restore()} className={`rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold ${restoreConfirm ? 'bg-error-container text-on-error-container' : 'dialog-pill-btn'}`}>
-            {restoreConfirm ? 'Confirm replace review' : 'Use generated draft'}
-          </button>
-        )}
-      </div>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <label className="text-[11px] font-semibold">Format
+      <div className="meeting-export-bar" role="group" aria-label="Copy or export">
+        <label className="meeting-export-format">Format
           <select aria-label="Meeting review export format" value={format} onChange={(event) => {
             const option = MEETING_EXPORT_FORMATS.find((candidate) => candidate.value === event.target.value);
             if (option) setFormat(option.value);
-          }} className="ml-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest px-2 py-1.5 text-xs">
+          }}>
             {MEETING_EXPORT_FORMATS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
-        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{captions ? 'Copy captions' : 'Copy review'}</button>
-        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export…</button>
+        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="meeting-header-action">{captions ? 'Copy captions' : 'Copy review'}</button>
+        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="meeting-header-action">Export…</button>
         {detail.session.retainAudio && (
-          <button type="button" disabled={detail.session.status === 'active' || captureBusy || bundleBusy} onClick={() => void planBundle()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export with audio…</button>
+          <button type="button" disabled={detail.session.status === 'active' || captureBusy || bundleBusy} onClick={() => void planBundle()} className="meeting-header-action">Export with audio…</button>
         )}
       </div>
 
       {bundlePlan && bundlePlan.sessionId === detail.session.id && (
-        <section aria-label="Export with audio" className="dialog-card mb-3 p-3 text-xs leading-relaxed">
+        <section aria-label="Export with audio" className="meeting-quiet-note leading-relaxed">
           <p role="status">
             The .zip holds the {captions ? 'captions' : 'review'} as {format}, {bundlePlan.preview.audioSegments} audio segments ({formatBundleSize(bundlePlan.preview.audioBytes)}), and a manifest. Audio is saved exactly as recorded.
           </p>
@@ -460,53 +485,72 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
             </p>
           )}
           <div className="mt-2 flex gap-2">
-            <button type="button" disabled={bundleBusy || captureBusy || bundlePlan.preview.audioBytes > bundlePlan.preview.maxAudioBytes} onClick={() => void exportBundle()} className="dialog-pill-btn px-3 py-1.5 text-xs disabled:opacity-40">Choose location…</button>
-            <button type="button" disabled={bundleBusy} onClick={() => setBundlePlan(null)} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Cancel</button>
+            <button type="button" disabled={bundleBusy || captureBusy || bundlePlan.preview.audioBytes > bundlePlan.preview.maxAudioBytes} onClick={() => void exportBundle()} className="meeting-header-action" data-tone="accent">Choose location…</button>
+            <button type="button" disabled={bundleBusy} onClick={() => setBundlePlan(null)} className="meeting-header-action">Cancel</button>
           </div>
         </section>
       )}
 
-      {captions && <p className="mb-3 text-xs text-on-surface-variant" role="status">{detail.session.status === 'active'
+      {captions && <p className="meeting-quiet-note" role="status">{detail.session.status === 'active'
         ? 'Stop this meeting before exporting captions.'
         : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
 
-      {editing && draft ? (
-        <form aria-label="Edit meeting review" aria-busy={saving} onSubmit={(event) => { event.preventDefault(); void saveEdits(); }} className="mb-4 space-y-3 rounded-[var(--ui-radius-card)] border border-primary/25 bg-surface-container-low p-4">
-          <fieldset disabled={saving} className="space-y-3">
-          <label className="block text-xs font-semibold">Summary<textarea aria-label="Review summary" value={draft.summary.text} onChange={(event) => setDraft({ ...draft, summary: { ...draft.summary, text: event.target.value } })} className="mt-1 min-h-20 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /></label>
-          {(['decisions', 'openQuestions'] as const).map((section) => <fieldset key={section} className="space-y-2"><legend className="text-xs font-semibold">{section === 'decisions' ? 'Decisions' : 'Open questions'}</legend>{draft[section].length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft[section].map((item, index) => <div key={item.key} className="flex gap-2"><textarea aria-label={`${section} ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, [section]: draft[section].map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="min-h-14 flex-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /><button type="button" aria-label={`Remove ${section} ${index + 1}`} onClick={() => setDraft({ ...draft, [section]: draft[section].filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>)}
-          <fieldset className="space-y-2"><legend className="text-xs font-semibold">Action items</legend>{draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft.actionItems.map((item, index) => <div key={item.key} className="grid gap-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2 sm:grid-cols-[minmax(0,1fr)_8rem_8rem_auto]"><input aria-label={`Action item ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} /><input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} /><input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} /><button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>
-          {newClaims.length > 0 && <fieldset className="space-y-3"><legend className="text-xs font-semibold">New claims · unsaved</legend>{newClaims.map(({ id, claim }, index) => {
-            const number = newClaims.slice(0, index).filter((entry) => entry.claim.kind === claim.kind).length + 1;
-            const kindLabel = claim.kind === 'decision' ? 'New decision' : claim.kind === 'action_item' ? 'New action item' : 'New open question';
-            const label = `${kindLabel} ${number}`;
-            const update = (next: NewReviewClaim) => setNewClaims((current) => current.map((entry) => entry.id === id ? { id, claim: next } : entry));
-            return <div key={id} className="space-y-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2">
-              <label className="block text-xs font-semibold">{label}<textarea id={`new-meeting-claim-${id}`} aria-label={`${label} text`} maxLength={16_384} value={claim.text} onChange={(event) => update({ ...claim, text: event.target.value })} className="mt-1 min-h-14 w-full rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] bg-surface-container-lowest p-2 text-xs" /></label>
-              {claim.kind === 'action_item' && <div className="flex flex-wrap gap-2"><input aria-label={`New action owner ${number}`} maxLength={256} placeholder="Unknown owner" value={claim.owner ?? ''} onChange={(event) => update({ ...claim, owner: event.target.value || null })} className="rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] p-2 text-xs" /><input aria-label={`New action due date ${number}`} type="date" value={claim.dueDate ?? ''} onChange={(event) => update({ ...claim, dueDate: event.target.value || null })} className="rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] p-2 text-xs" /></div>}
-              <div className="flex items-center justify-between text-xs"><span>Sources<SourceLinks label={label} ids={claim.sourceSegmentIds} onActivate={jumpToSource} /></span><button type="button" aria-label={`Remove ${label.toLowerCase()}`} onClick={() => setNewClaims((current) => current.filter((entry) => entry.id !== id))} className="text-error">Remove</button></div>
-            </div>;
-          })}</fieldset>}
-          <div className="flex gap-2"><button type="submit" className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)]">Save review</button><button type="button" onClick={() => { setEditing(false); setDraft(null); setLabelDrafts({}); setNewClaims([]); setSelectedIds([]); }} className="rounded-[var(--ui-radius-control)] px-3 py-2 text-xs font-semibold">Cancel</button></div>
-          </fieldset>
-        </form>
-      ) : activeDocument ? (
-        <article className="mb-4 rounded-[var(--ui-radius-card)] border border-primary/25 bg-[var(--ui-tint-accent-subtle)] p-4">
-          <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Meeting review</h3><span className="text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">{detail.activeOrigin === 'reviewed' ? 'Reviewed' : 'Generated draft'}</span></div>
-          <p className="mt-2 text-xs leading-relaxed">{activeDocument.summary.text}<SourceLinks label="Summary" ids={activeDocument.summary.sourceSegmentIds} onActivate={jumpToSource} /></p>
-          {renderTextItems('Decisions', activeDocument.decisions)}
-          <section className="mt-3"><h4 className="text-xs font-semibold">Action items</h4>{activeDocument.actionItems.length === 0 ? <p className="mt-1 text-xs text-on-surface-variant">None recorded.</p> : activeDocument.actionItems.map((item) => <p key={item.key} className="mt-1 text-xs">• {item.text} — {item.owner ?? 'Unknown'} · {item.dueDate ?? 'Unknown'}<SourceLinks label="Action item" ids={item.sourceSegmentIds} onActivate={jumpToSource} /></p>)}</section>
-          {renderTextItems('Open questions', activeDocument.openQuestions)}
-        </article>
-      ) : <div className="mb-4 rounded-[var(--ui-radius-card)] border border-dashed border-[var(--ui-hairline-strong)] p-5 text-center"><p className="text-sm font-semibold">No review draft yet</p><p className="mt-1 text-xs text-on-surface-variant">Generate one locally from the completed transcript. Nothing is sent to the cloud.</p></div>}
-
-      <section aria-labelledby="meeting-transcript-title">
-        {activeDocument && <div className="dialog-card mb-3 flex flex-wrap items-center gap-2 p-3">
-          <span role="status" className="text-xs text-on-surface-variant">{selectedIds.length} transcript sources selected</span>
-          {(['decision', 'action_item', 'open_question'] as const).map((kind) => <button key={kind} type="button" disabled={captureBusy || saving} onClick={() => createClaim(kind)} className="dialog-pill-btn px-3 py-2 text-xs disabled:opacity-40">{kind === 'decision' ? 'New decision' : kind === 'action_item' ? 'New action item' : 'New open question'}</button>)}
-          {selectedIds.length > 0 && <button type="button" disabled={saving} onClick={() => setSelectedIds([])} className="dialog-pill-btn px-3 py-2 text-xs">Clear selection</button>}
-        </div>}
-        <h3 id="meeting-transcript-title" className="mb-1 text-sm font-semibold">Transcript evidence</h3><p className="mb-2 text-[11px] text-on-surface-variant">Select transcript sources to add a claim to your review. Raw text and canonical Me/Them channels are never changed by review edits.</p>{segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} selected={selectedIds.includes(segment.id)} onSelect={() => setSelectedIds((current) => current.includes(segment.id) ? current.filter((id) => id !== segment.id) : [...current, segment.id])} selectionDisabled={!activeDocument || captureBusy || saving || segment.status !== 'final' || !segment.text.trim()} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}</section>
+      <section className="meeting-transcript" aria-labelledby="meeting-transcript-title">
+        <div className="meeting-transcript-header">
+          <h3 id="meeting-transcript-title">Transcript</h3>
+          <span className="meeting-transcript-count">{segments.length} {segments.length === 1 ? 'segment' : 'segments'}</span>
+          <span className="flex-1" />
+          <details className="meeting-speakers">
+            <summary className="meeting-header-action">Speakers: {speakerSummary}</summary>
+            <div className="meeting-speakers-panel">
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Me channel
+                  <input aria-label="Me speaker label" value={labels.me} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, me: event.target.value }))} className="meeting-field mt-1" />
+                </label>
+                <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Them channel
+                  <input aria-label="Them speaker label" value={labels.them} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, them: event.target.value }))} className="meeting-field mt-1" />
+                </label>
+                {!editing && <button type="button" onClick={() => void saveLabels()} className="meeting-header-action" data-tone="accent">Save labels</button>}
+              </div>
+              {remoteSpeakers.length > 0 && (
+                <div className="mt-3 border-t border-[var(--ui-hairline)] pt-3">
+                  <h4 className="text-xs font-semibold text-on-surface">Remote speakers</h4>
+                  <p className="mt-1 text-[11px] text-on-surface-variant">Names apply only to this meeting. Uncertain passages remain {labels.them}.</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    {remoteSpeakers.map((speaker) => (
+                      <label key={speaker.speakerId} className="text-[11px] font-semibold text-on-surface">
+                        Speaker {speaker.speakerId}
+                        <span className="mt-1 flex gap-2">
+                          <input
+                            aria-label={`Remote speaker ${speaker.speakerId} label`}
+                            value={speaker.label}
+                            maxLength={80}
+                            onChange={(event) => setRemoteSpeakerDrafts((current) => ({
+                              ...current,
+                              [speaker.speakerId]: event.target.value,
+                            }))}
+                            className="meeting-field min-w-0 flex-1"
+                          />
+                          <button type="button" onClick={() => void saveRemoteSpeaker(speaker)} className="meeting-header-action" data-tone="accent">Save</button>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </details>
+        </div>
+        {activeDocument && (
+          <div className="meeting-claim-bar">
+            <p className="w-full text-[11px] text-on-surface-variant">Select transcript sources to add a claim to your review. Raw text and canonical Me/Them channels are never changed by review edits.</p>
+            <span role="status" className="text-xs text-on-surface-variant">{selectedIds.length} transcript sources selected</span>
+            {(['decision', 'action_item', 'open_question'] as const).map((kind) => <button key={kind} type="button" disabled={captureBusy || saving} onClick={() => createClaim(kind)} className="meeting-header-action">{kind === 'decision' ? 'New decision' : kind === 'action_item' ? 'New action item' : 'New open question'}</button>)}
+            {selectedIds.length > 0 && <button type="button" disabled={saving} onClick={() => setSelectedIds([])} className="meeting-header-action">Clear selection</button>}
+          </div>
+        )}
+        {segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} selectable={Boolean(activeDocument)} selected={selectedIds.includes(segment.id)} onSelect={() => setSelectedIds((current) => current.includes(segment.id) ? current.filter((id) => id !== segment.id) : [...current, segment.id])} selectionDisabled={!activeDocument || captureBusy || saving || segment.status !== 'final' || !segment.text.trim()} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}
+      </section>
     </div>
   );
 }

@@ -282,7 +282,8 @@ describe('HistoryPanel', () => {
   it('tags only file entries, not every spoken one', async () => {
     await render();
     const spoken = Array.from(container.querySelectorAll('article')).find((card) => card.textContent?.includes('ship the Tauri'))!;
-    expect(spoken.querySelector('.transcript-meta')?.textContent).not.toContain('Mic');
+    expect(spoken.querySelector('.transcript-meta')).toBeNull();
+    expect(spoken.textContent).not.toContain('Mic');
     expect(cardText().find((text) => text.includes('imported meeting audio'))).toContain('standup.wav');
   });
 
