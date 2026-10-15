@@ -681,6 +681,39 @@ impl DeliveryAnchor {
     }
 }
 
+/// Content-free shape of the accepted stop sample. A start-anchored delivery is
+/// otherwise ambiguous: this says why the stop sample could not anchor it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopSampleStatus {
+    Complete,
+    SelfTarget,
+    Incomplete,
+    Mismatch,
+    Absent,
+}
+
+impl StopSampleStatus {
+    pub(crate) fn of(stop: Option<&DeliveryTargetSnapshot>) -> Self {
+        match stop {
+            Some(DeliveryTargetSnapshot::Complete(_)) => Self::Complete,
+            Some(DeliveryTargetSnapshot::SelfTarget) => Self::SelfTarget,
+            Some(DeliveryTargetSnapshot::Incomplete) => Self::Incomplete,
+            Some(DeliveryTargetSnapshot::Mismatch(_)) => Self::Mismatch,
+            None => Self::Absent,
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::SelfTarget => "self",
+            Self::Incomplete => "incomplete",
+            Self::Mismatch => "mismatch",
+            Self::Absent => "absent",
+        }
+    }
+}
+
 /// Choose the identity that delivery must match. The accepted stop transition is
 /// the user's last deliberate act, so it bounds the fail-closed window to
 /// transcription instead of the whole recording. Only a complete stop identity

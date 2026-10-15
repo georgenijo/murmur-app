@@ -551,7 +551,14 @@ fn inject_text_with_policy(
                     total_ms = inject_started.elapsed().as_millis() as u64,
                     "inject timing"
                 );
-                tracing::warn!(target: "pipeline", "inject_text: first paste preflight refused before key post");
+                // Target change, non-editable focus, and clipboard interference
+                // share this exit; name the reason so they stay separable.
+                tracing::warn!(
+                    target: "pipeline",
+                    outcome_code = InjectionOutcome::ClipboardOnly(reason).code(),
+                    verification_code = verification.outcome.as_str(),
+                    "inject_text: first paste preflight refused before key post"
+                );
                 return Ok(InjectionResult {
                     outcome: InjectionOutcome::ClipboardOnly(reason),
                     verification: Some(verification),

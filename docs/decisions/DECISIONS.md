@@ -1,5 +1,21 @@
 # Decisions Log
 
+## 2026-10-15: Smart destination falls back to the stop-anchored paste after an app switch
+
+**Decision:** When a Smart destination recording ends in an app other than the
+one it started in, and that app may hold a text input (editable or unreadable
+focus), the transcript goes to the app the user stopped in through the normal
+verified paste, exactly as with Smart destination off (#596's stop anchor).
+This replaces the 0.51.11 rule that left it on the clipboard. Only an app that
+positively holds no text input hands the paste back to the original field; if
+that handoff cannot complete, the transcript stays on the clipboard.
+
+**Why:** Production logs from 0.51.9 to 0.51.12 attributed 10 of 12 recent
+missed pastes to this case: the same-app fallback re-bound verification to the
+start app, so every paste after a mid-recording app switch was refused as
+`different_application`. The normal paste path still verifies the exact app
+instance and refuses secure fields, so this adds no new authorization path.
+
 ## 2026-09-09: AGENTS.md is a symlink to CLAUDE.md
 
 **Decision:** AGENTS.md and CLAUDE.md were two hand-maintained copies of the

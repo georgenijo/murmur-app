@@ -972,6 +972,12 @@ fn is_safe_delivery_target_verification_field(key: &str, value: &serde_json::Val
         "anchor_code" => value
             .as_str()
             .is_some_and(|value| matches!(value, "stop" | "start")),
+        "stop_sample_code" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "complete" | "self" | "incomplete" | "mismatch" | "absent"
+            )
+        }),
         "source_code" => value
             .as_str()
             .is_some_and(|value| matches!(value, "native" | "none")),
@@ -994,10 +1000,11 @@ fn is_safe_delivery_target_verification_field(key: &str, value: &serde_json::Val
 fn valid_delivery_target_verification_shape(
     data: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
-    const REQUIRED_FIELDS: [&str; 15] = [
+    const REQUIRED_FIELDS: [&str; 16] = [
         "event_code",
         "recording_id",
         "anchor_code",
+        "stop_sample_code",
         "outcome_code",
         "source_code",
         "retry_count",
@@ -1057,6 +1064,10 @@ fn valid_delivery_target_verification_evidence(
     let Some(ownership_current) = boolean("ownership_current") else {
         return false;
     };
+    // Only a complete stop sample may anchor delivery at stop.
+    if (string("anchor_code") == Some("stop")) != (string("stop_sample_code") == Some("complete")) {
+        return false;
+    }
     let window_relation = string("window_relation_code");
     let no_identity_comparison = !same_application
         && !same_process
@@ -1139,6 +1150,8 @@ fn sanitize_delivery_target_verification_event(
             key.as_str(),
             "event_code"
                 | "recording_id"
+                | "anchor_code"
+                | "stop_sample_code"
                 | "outcome_code"
                 | "source_code"
                 | "retry_count"
@@ -3232,6 +3245,7 @@ mod tests {
                 "event_code": "pipeline.delivery_target_verified",
                 "recording_id": 574,
                 "anchor_code": "stop",
+                "stop_sample_code": "complete",
                 "outcome_code": "different_process",
                 "source_code": "native",
                 "retry_count": 2,
@@ -3260,6 +3274,7 @@ mod tests {
             assert_eq!(data["event_code"], "pipeline.delivery_target_verified");
             assert_eq!(data["recording_id"], 574);
             assert_eq!(data["anchor_code"], "stop");
+            assert_eq!(data["stop_sample_code"], "complete");
             assert_eq!(data["outcome_code"], "different_process");
             assert_eq!(data["source_code"], "native");
             assert_eq!(data["retry_count"], 2);
@@ -3272,7 +3287,7 @@ mod tests {
             assert_eq!(data["space_changed"], false);
             assert_eq!(data["current_is_self"], false);
             assert_eq!(data["ownership_current"], true);
-            assert_eq!(data.as_object().unwrap().len(), 15);
+            assert_eq!(data.as_object().unwrap().len(), 16);
 
             let encoded = serde_json::to_string(&data).unwrap();
             for sentinel in [
@@ -3313,6 +3328,7 @@ mod tests {
             "event_code": "pipeline.delivery_target_verified",
             "recording_id": 1,
             "anchor_code": "stop",
+            "stop_sample_code": "complete",
             "outcome_code": "verified",
             "source_code": "native",
             "retry_count": 0,
@@ -3448,21 +3464,45 @@ mod tests {
                 data["window_relation_code"] = "unknown".into();
             }
             sanitize_event_data("pipeline", &mut data, true);
-            assert_eq!(data.as_object().unwrap().len(), 15, "outcome {outcome}");
+            assert_eq!(data.as_object().unwrap().len(), 16, "outcome {outcome}");
         }
 
         for relation in ["unknown", "same", "different"] {
             let mut data = base.clone();
             data["window_relation_code"] = relation.into();
             sanitize_event_data("pipeline", &mut data, true);
-            assert_eq!(data.as_object().unwrap().len(), 15, "relation {relation}");
+            assert_eq!(data.as_object().unwrap().len(), 16, "relation {relation}");
         }
 
-        for anchor in ["stop", "start"] {
+        for (anchor, stop_sample) in [
+            ("stop", "complete"),
+            ("start", "self"),
+            ("start", "incomplete"),
+            ("start", "mismatch"),
+            ("start", "absent"),
+        ] {
             let mut data = base.clone();
             data["anchor_code"] = anchor.into();
+            data["stop_sample_code"] = stop_sample.into();
             sanitize_event_data("pipeline", &mut data, true);
-            assert_eq!(data.as_object().unwrap().len(), 15, "anchor {anchor}");
+            assert_eq!(
+                data.as_object().unwrap().len(),
+                16,
+                "anchor {anchor} stop sample {stop_sample}"
+            );
+        }
+
+        // Only a complete stop sample may anchor delivery at stop.
+        for (anchor, stop_sample) in [("stop", "self"), ("stop", "absent"), ("start", "complete")] {
+            let mut data = base.clone();
+            data["anchor_code"] = anchor.into();
+            data["stop_sample_code"] = stop_sample.into();
+            sanitize_event_data("pipeline", &mut data, true);
+            assert_eq!(
+                data.as_object().unwrap().len(),
+                1,
+                "anchor {anchor} stop sample {stop_sample}"
+            );
         }
     }
 
@@ -3472,6 +3512,7 @@ mod tests {
             "event_code": "pipeline.delivery_target_verified",
             "recording_id": 1,
             "anchor_code": "start",
+            "stop_sample_code": "absent",
             "outcome_code": "lookup_unavailable",
             "source_code": "none",
             "retry_count": 2,
@@ -3490,6 +3531,10 @@ mod tests {
         for (key, value) in [
             ("recording_id", serde_json::json!(0)),
             ("anchor_code", serde_json::json!("SENTINEL_PRIVATE_ANCHOR")),
+            (
+                "stop_sample_code",
+                serde_json::json!("SENTINEL_PRIVATE_STOP_SAMPLE"),
+            ),
             (
                 "outcome_code",
                 serde_json::json!("SENTINEL_PRIVATE_OUTCOME"),
@@ -3544,6 +3589,7 @@ mod tests {
                 "event_code": "pipeline.delivery_target_verified",
                 "recording_id": 9,
                 "anchor_code": "stop",
+                "stop_sample_code": "complete",
                 "outcome_code": outcome,
                 "source_code": source,
                 "retry_count": retry_count,
