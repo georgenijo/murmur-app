@@ -98,17 +98,25 @@ theirs. The captured field must still be the same field, with a collapsed caret
 where it was, since a background selection is never replaced. The same
 application must still be in front right before activation. Murmur then
 activates the captured app, posts Cmd+V once, reads the field back, and returns
-focus to the application the user switched to. An unreadable focus, another
-editable field, or a secure field leaves the transcript on the clipboard, and a
-switched-away preparation that does not complete never falls back to normal
-paste into the captured app.
+focus to the application the user switched to.
+
+When the application now in front may hold a text input (its focused element is
+editable or unreadable), it is the user's new destination rather than a detour.
+Nothing is activated and delivery uses the normal policy with its stop-time
+anchor, exactly as with Smart destination off: the transcript pastes into the
+app the user stopped in, still subject to the identity, focus, and secure-field
+checks. A handoff whose app in front positively holds no text input but whose
+retained field changed, or a handoff preparation that does not complete after
+activation was requested, leaves the transcript on the clipboard.
 
 When a field captured in the app that was frontmost at recording start can no
 longer be re-verified at delivery (for example its text, caret, or focus changed
-while you spoke), nothing has been activated yet, so delivery uses that same
-normal policy bound to the captured app: it pastes only if that app instance is
-still frontmost, and still refuses a positively secure field. A field retained
-across a media handoff in another app never falls back this way.
+while you spoke, or its capture was revoked), nothing has been activated yet, so
+delivery uses that same normal policy bound to the anchored target: the complete
+stop-time sample when one exists, otherwise the start sample. It pastes only if
+that app instance is still frontmost, and still refuses a positively secure
+field. A field retained across a media handoff in another app never falls back
+this way.
 
 Only these stay clipboard-only: a secure field (the secure role is checked
 before any other fallible query), a supported media control with no retained
@@ -160,6 +168,9 @@ Each auto-paste delivery that reaches target verification emits its final struct
 - `anchor_code`: `stop` when the accepted stop transition produced the complete
   identity that authorized verification, or `start` when the immutable
   recording-start sample was used instead;
+- `stop_sample_code`: `complete`, `self`, `incomplete`, `mismatch`, or
+  `absent`, the shape of the accepted stop sample. Only `complete` anchors at
+  stop, so a `start` anchor always names why the stop sample could not;
 - `outcome_code`: `verified`, `different_application`, `different_process`,
   `process_relaunched`, `partial_identity_mismatch`, `lookup_unavailable`,
   `start_identity_incomplete`, `start_target_is_self`, or `stale_owner`;

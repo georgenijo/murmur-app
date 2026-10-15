@@ -207,6 +207,9 @@ and raw errors are never admitted.
 Delivery-target verification uses the separate exact-schema code
 `pipeline.delivery_target_verified`. It carries a positive `recording_id`;
 `anchor_code` as `stop` or `start`, naming the frozen sample that was verified;
+`stop_sample_code` as `complete`, `self`, `incomplete`, `mismatch`, or
+`absent`, the shape of the accepted stop sample (`stop` requires `complete`,
+and any other value requires `start`);
 `outcome_code` from `verified`, `different_application`, `different_process`,
 `process_relaunched`, `partial_identity_mismatch`, `lookup_unavailable`,
 `start_identity_incomplete`, `start_target_is_self`, or `stale_owner`;

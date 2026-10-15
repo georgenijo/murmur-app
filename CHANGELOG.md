@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Dictation
+
+- With Smart destination on, a dictation you start in one app and finish in
+  another app with a text field now pastes into the app you finished in, the
+  same as with Smart destination off. Previously Murmur checked the paste
+  against the app where you started, saw a different app in front, and left
+  the text on the clipboard. This caused most of the recent missed pastes.
+  Switching to an app with no text field, such as a screenshot tool, still
+  hands the text back to the original field.
+- Diagnostics now name why a paste was held back (app changed, field not
+  editable, or clipboard changed) and why a paste was checked against the app
+  where the recording started.
+
 ## [0.51.12] - 2026-10-14
 
 ### Overlay

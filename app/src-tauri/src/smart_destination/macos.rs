@@ -590,6 +590,11 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
             } else {
                 None
             };
+            // One focus observation of the app now in front. Only an app that
+            // positively holds no text input may hand the paste back to the
+            // retained field; any other app is the user's new destination.
+            let handoff_focus =
+                switched_away && handoff_focus_allowed(foreground_focus_observation(&current));
             let valid = state.frozen.get(token).is_some_and(|frozen| {
                 frozen.revision == *revision
                     && frozen.destination_identity == *identity
@@ -598,14 +603,18 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                     && generation_is_current(frozen.generation)
                     && if switched_away {
                         switched_away_from.is_some()
-                            && validate_switched_away_for_prepare(&state, frozen, &current)
+                            && handoff_focus
+                            && validate_switched_away_for_prepare(&state, frozen)
                     } else {
                         validate_frozen_for_prepare(&state, frozen)
                     }
             });
             if !valid {
                 state.frozen.remove(token);
-                return refused(switched_away);
+                // Nothing was activated. When the app in front may hold a
+                // text input, the caller's normal verified paste goes to the
+                // app the user stopped in, exactly as with the feature off.
+                return refused(switched_away && handoff_focus);
             }
 
             // The capability becomes one-shot before activation is attempted.
@@ -929,9 +938,10 @@ fn validate_frozen_for_prepare(state: &State, frozen: &Frozen) -> bool {
     }
 }
 
-/// A switched-away preparation that does not complete keeps the transcript on
-/// the clipboard: an activation may already have moved focus, so the
-/// same-app normal paste fallback is no longer bound to a known field.
+/// A handoff preparation that does not complete keeps the transcript on the
+/// clipboard: the app in front holds no text input to paste into, and an
+/// activation may already have moved focus, so the normal paste fallback is no
+/// longer bound to a known field.
 fn refused(switched_away: bool) -> PrepareOutcome {
     if switched_away {
         PrepareOutcome::RefusedClipboardOnly
@@ -940,19 +950,13 @@ fn refused(switched_away: bool) -> PrepareOutcome {
     }
 }
 
-/// A current-app destination after the user switched to `current` while
-/// speaking. Exactly what a media handoff requires: the application now in
-/// front must positively hold no text input (one focus observation), and the
+/// A current-app destination after the user switched apps while speaking.
+/// Exactly what a media handoff requires: the caller has already observed that
+/// the application now in front positively holds no text input, and the
 /// retained field must still be the captured one with a collapsed caret where
 /// it was. A background selection is never replaced.
-fn validate_switched_away_for_prepare(
-    state: &State,
-    frozen: &Frozen,
-    current: &DeliveryTargetSnapshot,
-) -> bool {
-    if !handoff_focus_allowed(foreground_focus_observation(current))
-        || !validate_frozen_candidate(state, frozen)
-    {
+fn validate_switched_away_for_prepare(state: &State, frozen: &Frozen) -> bool {
+    if !validate_frozen_candidate(state, frozen) {
         return false;
     }
     decode_range(frozen.range.as_type()).is_some_and(|expected_range| {

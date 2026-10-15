@@ -1294,9 +1294,35 @@ fn emit_auto_paste_failure_if_current(
     });
 }
 
+/// Route after a current-app or media smart preparation could not proceed.
+///
+/// A current-app capture falls back to the normal verified paste. That paste
+/// keeps the anchored delivery target (the complete stop sample when one
+/// exists), exactly as with Smart destination off: a user who moved to another
+/// app while speaking and stopped there gets the paste in that app instead of
+/// a refusal against the start app. A media-handoff capture, or a refused
+/// handoff to an app that holds no text input, stays clipboard-only because
+/// normal paste would target the wrong app.
+fn smart_prepare_fallback(
+    smart: &crate::smart_destination::Snapshot,
+    refused_clipboard_only: bool,
+    anchored_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> (
+    crate::smart_destination::Snapshot,
+    crate::frontmost::DeliveryTargetSnapshot,
+) {
+    let route = if smart.allows_same_app_fallback() && !refused_clipboard_only {
+        crate::smart_destination::Snapshot::Unverified
+    } else {
+        crate::smart_destination::Snapshot::Unavailable
+    };
+    (route, anchored_target.clone())
+}
+
 fn emit_delivery_target_verification(
     recording_id: u64,
     anchor: crate::frontmost::DeliveryAnchor,
+    stop_sample: crate::frontmost::StopSampleStatus,
     evidence: crate::frontmost::VerificationEvidence,
 ) {
     tracing::info!(
@@ -1304,6 +1330,7 @@ fn emit_delivery_target_verification(
         event_code = "pipeline.delivery_target_verified",
         recording_id,
         anchor_code = anchor.as_str(),
+        stop_sample_code = stop_sample.as_str(),
         outcome_code = evidence.outcome.as_str(),
         source_code = evidence.source.as_str(),
         retry_count = evidence.retry_count,
@@ -2489,6 +2516,7 @@ async fn run_transcription_pipeline(
             &context.app.delivery_target,
             stop_delivery_target.as_ref(),
         );
+        let stop_sample = crate::frontmost::StopSampleStatus::of(stop_delivery_target.as_ref());
         let mut delivery_target = anchored_target.clone();
         let mut smart_destination = context.app.smart_destination.clone();
         let recovery_smart_destination = smart_destination.clone();
@@ -2533,27 +2561,21 @@ async fn run_transcription_pipeline(
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
                 outcome => {
-                    let same_app_fallback = smart_destination.allows_same_app_fallback()
-                        && !matches!(
-                            outcome,
-                            Ok(Ok(Some(
-                                crate::smart_destination::PrepareOutcome::RefusedClipboardOnly
-                            )))
-                        );
+                    let refused_clipboard_only = matches!(
+                        outcome,
+                        Ok(Ok(Some(
+                            crate::smart_destination::PrepareOutcome::RefusedClipboardOnly
+                        )))
+                    );
                     let abandoned = smart_destination.clone();
                     let _ = app_handle.run_on_main_thread(move || {
                         crate::smart_destination::abort(&abandoned, None);
                     });
-                    smart_destination = if same_app_fallback {
-                        // The field changed while speaking (typing, caret,
-                        // or focus inside the same app). Nothing was
-                        // activated, so use the normal verified paste bound
-                        // to that app, exactly as with the feature off.
-                        delivery_target = recovery_target.clone();
-                        crate::smart_destination::Snapshot::Unverified
-                    } else {
-                        crate::smart_destination::Snapshot::Unavailable
-                    };
+                    (smart_destination, delivery_target) = smart_prepare_fallback(
+                        &smart_destination,
+                        refused_clipboard_only,
+                        anchored_target,
+                    );
                 }
             }
         }
@@ -2581,6 +2603,7 @@ async fn run_transcription_pipeline(
                             emit_delivery_target_verification(
                                 recording_id,
                                 delivery_anchor,
+                                stop_sample,
                                 evidence,
                             );
                         }
@@ -2588,6 +2611,7 @@ async fn run_transcription_pipeline(
                     None => emit_delivery_target_verification(
                         recording_id,
                         delivery_anchor,
+                        stop_sample,
                         crate::frontmost::verify_delivery_target(&delivery_target, false),
                     ),
                     Some(Err(_)) => {}
@@ -7514,6 +7538,71 @@ pub(crate) mod tests {
             context.app.smart_destination,
             crate::smart_destination::Snapshot::Disabled
         ));
+    }
+
+    #[test]
+    fn smart_prepare_fallback_keeps_the_anchored_stop_target() {
+        use crate::frontmost::{
+            select_delivery_anchor, AppTransitionSnapshot, DeliveryAnchor, DeliveryTargetIdentity,
+            DeliveryTargetSnapshot, ProcessInstanceToken,
+        };
+        use crate::smart_destination::Snapshot;
+
+        let target = |bundle_id: &str, process_id: i32, instance: u64| {
+            DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+                bundle_id: bundle_id.into(),
+                process_id,
+                process_instance: ProcessInstanceToken::for_test(instance),
+                window_token: None,
+                transitions: AppTransitionSnapshot {
+                    activation_generation: 0,
+                    space_generation: 0,
+                },
+            })
+        };
+        // Production 0.51.12: dictation started with a field focused in the
+        // start app, the user moved to another app while speaking and stopped
+        // there. The same-app fallback re-bound the paste to the start app and
+        // refused it as different_application.
+        let start_app = target("com.example.Start", 41, 1);
+        let stop_app = target("com.example.Stop", 42, 2);
+        let current_app_capture = Snapshot::Target {
+            token: 7,
+            revision: 1,
+            identity: start_app.clone(),
+            current_app: true,
+        };
+        let (anchored, anchor) = select_delivery_anchor(&start_app, Some(&stop_app));
+        assert_eq!(anchor, DeliveryAnchor::Stop);
+
+        let (route, delivery_target) =
+            smart_prepare_fallback(&current_app_capture, false, anchored);
+        assert!(matches!(route, Snapshot::Unverified));
+        assert!(
+            delivery_target == stop_app,
+            "fallback must keep the stop anchor"
+        );
+
+        // Without a complete stop sample the anchor is still the start app.
+        let (anchored, anchor) =
+            select_delivery_anchor(&start_app, Some(&DeliveryTargetSnapshot::SelfTarget));
+        assert_eq!(anchor, DeliveryAnchor::Start);
+        let (route, delivery_target) =
+            smart_prepare_fallback(&current_app_capture, false, anchored);
+        assert!(matches!(route, Snapshot::Unverified));
+        assert!(delivery_target == start_app);
+
+        // An explicit switched-away refusal and a media handoff stay closed.
+        let (route, _) = smart_prepare_fallback(&current_app_capture, true, &stop_app);
+        assert!(matches!(route, Snapshot::Unavailable));
+        let media_capture = Snapshot::Target {
+            token: 8,
+            revision: 1,
+            identity: start_app.clone(),
+            current_app: false,
+        };
+        let (route, _) = smart_prepare_fallback(&media_capture, false, &stop_app);
+        assert!(matches!(route, Snapshot::Unavailable));
     }
 
     #[test]
