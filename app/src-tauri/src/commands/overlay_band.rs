@@ -267,11 +267,21 @@ impl MenuSample {
 }
 
 /// Content-free metadata about the process selected as menu-bar owner.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MenuOwnerInfo {
     pub policy: &'static str,
     pub is_self: bool,
     pub equals_frontmost: bool,
+}
+
+impl Default for MenuOwnerInfo {
+    fn default() -> Self {
+        Self {
+            policy: "none",
+            is_self: false,
+            equals_frontmost: false,
+        }
+    }
 }
 
 /// One application's status items (`AXExtrasMenuBar` children), as read.
@@ -409,20 +419,49 @@ mod native {
         (!value.is_null()).then(|| CFGuard(value))
     }
 
-    fn copy_attribute(element: AXUIElementRef, name: &str) -> Result<CFGuard, i32> {
-        let attribute = cf_string(name).ok_or(AX_ERROR_FAILURE)?;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum AttributeError {
+        Ax(i32),
+        NullValue,
+    }
+
+    impl AttributeError {
+        fn ax_code(self) -> i32 {
+            match self {
+                Self::Ax(code) => code,
+                Self::NullValue => AX_ERROR_NO_VALUE,
+            }
+        }
+
+        fn extras_read(self) -> ExtrasRead {
+            match self {
+                Self::Ax(AX_ERROR_NO_VALUE | AX_ERROR_ATTRIBUTE_UNSUPPORTED) => ExtrasRead::NoItems,
+                Self::NullValue | Self::Ax(_) => ExtrasRead::Failed,
+            }
+        }
+    }
+
+    // Keep malformed success distinct from a genuine AX no-value response.
+    // Menus report both as a no-value code, but status scanning must reserve
+    // space for the former, exactly as it did before the menu classification.
+    fn copy_attribute_raw(element: AXUIElementRef, name: &str) -> Result<CFGuard, AttributeError> {
+        let attribute = cf_string(name).ok_or(AttributeError::Ax(AX_ERROR_FAILURE))?;
         let mut value: CFTypeRef = std::ptr::null();
         let status = unsafe { AXUIElementCopyAttributeValue(element, attribute.0, &mut value) };
         if status != AX_SUCCESS {
             if !value.is_null() {
                 unsafe { CFRelease(value) };
             }
-            return Err(status);
+            return Err(AttributeError::Ax(status));
         }
         if value.is_null() {
-            return Err(AX_ERROR_NO_VALUE);
+            return Err(AttributeError::NullValue);
         }
         Ok(CFGuard(value))
+    }
+
+    fn copy_attribute(element: AXUIElementRef, name: &str) -> Result<CFGuard, i32> {
+        copy_attribute_raw(element, name).map_err(AttributeError::ax_code)
     }
 
     fn item_frame(item: AXUIElementRef) -> Result<FrameRect, MenuUnavailable> {
@@ -582,12 +621,11 @@ mod native {
         {
             return ExtrasRead::Failed;
         }
-        match copy_attribute(application.0, "AXExtrasMenuBar") {
+        match copy_attribute_raw(application.0, "AXExtrasMenuBar") {
             Ok(bar) => {
                 children_frames(&bar, started).map_or(ExtrasRead::Failed, ExtrasRead::Frames)
             }
-            Err(AX_ERROR_NO_VALUE | AX_ERROR_ATTRIBUTE_UNSUPPORTED) => ExtrasRead::NoItems,
-            Err(_) => ExtrasRead::Failed,
+            Err(error) => error.extras_read(),
         }
     }
 
@@ -614,6 +652,35 @@ mod native {
                 .collect()
         });
         collect_status_items(process_ids, extras_frames)
+    }
+    #[cfg(test)]
+    mod attribute_tests {
+        use super::*;
+
+        #[test]
+        fn null_success_preserves_the_unanswered_status_reserve() {
+            assert_eq!(AttributeError::NullValue.ax_code(), AX_ERROR_NO_VALUE);
+            for error in [
+                AttributeError::NullValue,
+                AttributeError::Ax(AX_ERROR_FAILURE),
+                AttributeError::Ax(-25204),
+            ] {
+                assert_eq!(error.extras_read(), ExtrasRead::Failed);
+                let items = collect_status_items([1], |_| error.extras_read()).unwrap();
+                assert_eq!(items.unanswered, 1);
+            }
+            for code in [AX_ERROR_NO_VALUE, AX_ERROR_ATTRIBUTE_UNSUPPORTED] {
+                let error = AttributeError::Ax(code);
+                assert_eq!(error.ax_code(), code);
+                assert_eq!(error.extras_read(), ExtrasRead::NoItems);
+                assert_eq!(
+                    collect_status_items([1], |_| error.extras_read())
+                        .unwrap()
+                        .unanswered,
+                    0
+                );
+            }
+        }
     }
 }
 

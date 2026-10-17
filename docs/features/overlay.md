@@ -84,7 +84,8 @@ frames from unavailable occupancy. Content-free reason codes are `no_owner`,
 `own_process`, `non_regular_owner`, `no_menu_bar`, `item_read`, `timeout`,
 `malformed`, and `empty`; known frames use `frames`. Raw AX error integers
 are preserved only for `no_menu_bar` and `item_read`. The `overlay.menu_sample`
-telemetry event records the reason, policy, self/owner-equals-frontmost flags,
+telemetry event records whether sampling ran, the reason, policy,
+self/owner-equals-frontmost flags,
 sample durations, counts, retained centre and placement outcome. It carries
 no app names, bundle identifiers, menu titles or window titles.
 
@@ -137,9 +138,10 @@ any startup, display, app or Space trigger, the same ladder re-checks after
 runs even if the trigger's sample was known, to catch menu repopulation. The
 ladder stops as soon as a settle sample is known, including a crowded menu
 that cannot fit the pill; unavailable samples exhaust the bounded ladder.
-Any new trigger supersedes the remaining re-checks. Each refresh samples menu-owner titles and status items
-off the main thread, then on the main thread re-measures the screen, builds one `DisplaySnapshot`, and, only if it differs from the cached
-one, updates `State.notch_info`, repositions and resizes the native window while
+Any new trigger supersedes the remaining re-checks. Each refresh samples
+menu-owner titles and status items off the main thread, then on the main thread
+re-measures the screen, builds one `DisplaySnapshot`, and, only if it differs
+from the cached one, updates `State.notch_info`, repositions and resizes the native window while
 retaining its calibration intent and recomputing the effective offset, and emits
 `overlay-geometry-changed` (the frontend collapses its expansion state). A
 physical notch skips Accessibility sampling on app, Space and settle refreshes;

@@ -860,6 +860,7 @@ fn continue_settling(last_sample_known: bool) -> bool {
 
 #[cfg(target_os = "macos")]
 struct PlacementSamples {
+    sampled: bool,
     menu: MenuSample,
     owner: overlay_band::MenuOwnerInfo,
     status: Option<StatusItems>,
@@ -880,6 +881,7 @@ fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) -
     let skip = cached_physical_notch && !trigger.forces_sampling();
     let samples = if skip {
         PlacementSamples {
+            sampled: false,
             menu: MenuSample::Unavailable(MenuUnavailable::NoOwner),
             owner: overlay_band::MenuOwnerInfo::default(),
             status: None,
@@ -893,6 +895,7 @@ fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) -
         let started = std::time::Instant::now();
         let status = overlay_band::status_items();
         PlacementSamples {
+            sampled: true,
             menu,
             owner,
             status,
@@ -944,6 +947,7 @@ fn apply_placement(
     tracing::info!(
         target: "system",
         event_code = "overlay.menu_sample",
+        sampled = samples.sampled,
         trigger = trigger.as_str(),
         menu_sample = samples.menu.code(),
         menu_ax_error = samples.menu.ax_error(),
