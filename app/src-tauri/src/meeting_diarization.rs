@@ -535,7 +535,7 @@ mod tests {
         let completed_while_control_held = rx.recv_timeout(Duration::from_secs(1));
         drop(control);
         worker.join().unwrap();
-        assert_eq!(completed_while_control_held.unwrap(), false);
+        assert!(!completed_while_control_held.unwrap());
     }
 
     #[test]

@@ -6404,7 +6404,7 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
         let completed_while_status_held = rx.recv_timeout(Duration::from_secs(1));
         drop(status); // Release even on regression, so the test does not hang.
         worker.join().unwrap();
-        assert_eq!(completed_while_status_held.unwrap(), false);
+        assert!(!completed_while_status_held.unwrap());
         assert!(query.is_listening_if_uncontended(pass_id));
         query.set_status(pass_id, QueryStatus::Transcribing);
         assert!(!query.is_listening_if_uncontended(pass_id));

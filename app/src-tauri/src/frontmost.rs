@@ -495,7 +495,7 @@ fn ax_systemwide_focused_application_pid() -> Option<i32> {
     let attribute = Owned(unsafe {
         CFStringCreateWithCString(
             std::ptr::null(),
-            b"AXFocusedApplication\0".as_ptr().cast(),
+            c"AXFocusedApplication".as_ptr(),
             0x0800_0100,
         )
     });
