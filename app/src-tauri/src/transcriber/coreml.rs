@@ -5,7 +5,7 @@
 //! this the new-install default while keeping the existing Whisper and
 //! sherpa-onnx paths selectable.
 
-use super::TranscriptionBackend;
+use super::{PreviewPass, TranscriptionBackend};
 use fluidaudio_rs::FluidAudio;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -220,6 +220,46 @@ pub struct CoreMlBackend {
 }
 
 impl CoreMlBackend {
+    fn transcribe_pass(
+        &mut self,
+        samples: &[f32],
+        smart_punctuation: bool,
+        pass: Option<PreviewPass>,
+    ) -> Result<String, String> {
+        let pass_kind = if pass.is_some() { "preview" } else { "final" };
+        let recording_id = pass.and_then(PreviewPass::recording_id);
+        let query_pass_id = pass.and_then(PreviewPass::query_pass_id);
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| "Core ML model not loaded. Call load_model() first.".to_string())?;
+        let result = engine.transcribe_samples(samples).map_err(|error| {
+            tracing::warn!(target: "pipeline", pass_kind, recording_id, query_pass_id, "coreml_transcription_failed");
+            format!("Core ML transcription failed: {error}")
+        })?;
+        let text = normalize_result_text(&result.text);
+        let output = if smart_punctuation {
+            text.clone()
+        } else {
+            strip_punctuation(&text)
+        };
+
+        tracing::info!(
+            target: "pipeline",
+            pass_kind,
+            recording_id,
+            query_pass_id,
+            confidence = result.confidence as f64,
+            model_processing_ms = (result.processing_time * 1000.0) as u64,
+            "coreml_transcription_complete"
+        );
+
+        if output.trim().is_empty() {
+            report_empty_output(pass, samples.len(), &result.text, &text);
+        }
+        Ok(output)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -283,40 +323,18 @@ impl TranscriptionBackend for CoreMlBackend {
         _initial_prompt: Option<&str>,
         smart_punctuation: bool,
     ) -> Result<String, String> {
-        let engine = self
-            .engine
-            .as_ref()
-            .ok_or_else(|| "Core ML model not loaded. Call load_model() first.".to_string())?;
-        let result = engine
-            .transcribe_samples(samples)
-            .map_err(|error| format!("Core ML transcription failed: {error}"))?;
-        let text = normalize_result_text(&result.text);
-        let output = if smart_punctuation {
-            text.clone()
-        } else {
-            strip_punctuation(&text)
-        };
+        self.transcribe_pass(samples, smart_punctuation, None)
+    }
 
-        tracing::info!(
-            target: "pipeline",
-            confidence = result.confidence as f64,
-            model_processing_ms = (result.processing_time * 1000.0) as u64,
-            "coreml_transcription_complete"
-        );
-
-        if output.trim().is_empty() {
-            let diagnostics = empty_output_diagnostics(samples.len(), &result.text, &text);
-            tracing::warn!(
-                target: "pipeline",
-                input_sample_count = diagnostics.input_sample_count,
-                raw_output_length = diagnostics.raw_output_length,
-                normalized_length = diagnostics.normalized_length,
-                period_only = diagnostics.period_only,
-                "coreml_empty_output"
-            );
-        }
-
-        Ok(output)
+    fn transcribe_preview(
+        &mut self,
+        samples: &[f32],
+        _language: &str,
+        _initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+        pass: PreviewPass,
+    ) -> Result<String, String> {
+        self.transcribe_pass(samples, smart_punctuation, Some(pass))
     }
 
     fn token_count(&self, _text: &str) -> Option<usize> {
@@ -337,6 +355,31 @@ impl TranscriptionBackend for CoreMlBackend {
         }
         self.engine = None;
         self.loaded_model_name = None;
+    }
+}
+
+fn report_empty_output(
+    pass: Option<PreviewPass>,
+    sample_count: usize,
+    raw: &str,
+    normalized: &str,
+) {
+    let pass_kind = if pass.is_some() { "preview" } else { "final" };
+    let recording_id = pass.and_then(PreviewPass::recording_id);
+    let query_pass_id = pass.and_then(PreviewPass::query_pass_id);
+    if pass.is_some() {
+        tracing::debug!(target: "pipeline", pass_kind, recording_id, query_pass_id, input_sample_count = sample_count, "coreml_empty_output");
+    } else {
+        let diagnostics = empty_output_diagnostics(sample_count, raw, normalized);
+        tracing::warn!(
+            target: "pipeline",
+            pass_kind,
+            input_sample_count = diagnostics.input_sample_count,
+            raw_output_length = diagnostics.raw_output_length,
+            normalized_length = diagnostics.normalized_length,
+            period_only = diagnostics.period_only,
+            "coreml_empty_output"
+        );
     }
 }
 
@@ -406,6 +449,35 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn preview_empty_diagnostics_are_debug_but_final_remains_warn() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::Layer;
+        #[derive(Clone)]
+        struct Levels(Arc<Mutex<Vec<tracing::Level>>>);
+        impl<S: tracing::Subscriber> Layer<S> for Levels {
+            fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+                self.0.lock().unwrap().push(*event.metadata().level());
+            }
+        }
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::Registry::default().with(Levels(levels.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            report_empty_output(Some(PreviewPass::Dictation(41)), 16_000, ".", "");
+            report_empty_output(Some(PreviewPass::VoiceQuery(42)), 16_000, ".", "");
+            report_empty_output(None, 16_000, ".", "");
+        });
+        assert_eq!(
+            *levels.lock().unwrap(),
+            [
+                tracing::Level::DEBUG,
+                tracing::Level::DEBUG,
+                tracing::Level::WARN
+            ]
+        );
+    }
 
     fn test_dir() -> PathBuf {
         let nonce = SystemTime::now()

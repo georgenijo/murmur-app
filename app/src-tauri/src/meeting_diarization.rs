@@ -89,6 +89,16 @@ pub fn cancel_all() -> Result<(), String> {
 /// Every ASR operation reserves its entire model lifetime against child startup.
 pub struct ForegroundReservation;
 impl ForegroundReservation {
+    /// A preview must neither wait for nor preempt a speaker-refinement job.
+    pub(crate) fn try_acquire() -> Option<Self> {
+        let mut control = CONTROL.try_lock().ok()?;
+        if control.child.is_some() {
+            return None;
+        }
+        control.foreground_users += 1;
+        Some(Self)
+    }
+
     pub fn acquire() -> Result<Self, String> {
         let mut control = CONTROL.lock_or_recover();
         stop_owned(&mut control)?;

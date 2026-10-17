@@ -230,6 +230,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_metrics" => Some("pipeline.dictation_metrics"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
+        "pipeline.preview_vad_disagreement" => Some("pipeline.preview_vad_disagreement"),
+        "query.preview_vad_disagreement" => Some("query.preview_vad_disagreement"),
         "pipeline.dictation_preview_presentation" => {
             Some("pipeline.dictation_preview_presentation")
         }
@@ -423,6 +425,11 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
                     | "emit_failed"
                     | "stale"
                     | "empty"
+                    | "stopped"
+                    | "model_unavailable"
+                    | "backend_unavailable"
+                    | "decode_error"
+                    | "worker_failed"
             )
         }),
         _ => false,
@@ -1332,6 +1339,11 @@ fn sanitized_summary(
         )
     ) {
         "Dictation reliability event".to_string()
+    } else if matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some("pipeline.preview_vad_disagreement" | "query.preview_vad_disagreement")
+    ) {
+        "Preview and final VAD disagreement".to_string()
     } else if data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("pipeline.delivery_target_verified")
     {
@@ -1531,6 +1543,10 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "unsupported_model"
                 | "no_session"
                 | "stale"
+                | "stopped"
+                | "backend_unavailable"
+                | "decode_error"
+                | "worker_failed"
         ),
         "state" => matches!(
             value,
@@ -1691,6 +1707,20 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         sanitize_dictation_slo_event(obj);
         return;
     }
+    let disagreement_owner = match obj.get("event_code").and_then(serde_json::Value::as_str) {
+        Some("pipeline.preview_vad_disagreement") => Some("recording_id"),
+        Some("query.preview_vad_disagreement") => Some("query_pass_id"),
+        _ => None,
+    };
+    if let Some(owner_field) = disagreement_owner {
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => true,
+            "sample_count" => value.as_u64().is_some(),
+            key if key == owner_field => value.as_u64().is_some_and(|id| id > 0),
+            _ => false,
+        });
+        return;
+    }
     if is_dictation_partial_tick_event(obj) {
         sanitize_dictation_partial_tick_event(obj);
         return;
@@ -1733,6 +1763,7 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
                 || value.as_str().is_some_and(|value| match key.as_str() {
                     "event_code" => canonical_event_code(value).is_some(),
                     "outcome" => is_safe_dictation_outcome(value),
+                    "pass_kind" => matches!(value, "preview" | "final"),
                     "error_code" => is_safe_dictation_error_code(value),
                     _ => false,
                 })
@@ -2872,9 +2903,64 @@ mod tests {
     }
 
     #[test]
+    fn coreml_pass_kind_and_preview_skip_outcomes_survive_release_sanitization() {
+        let mut data =
+            serde_json::json!({"pass_kind": "preview", "recording_id": 41, "text": "PRIVATE"});
+        sanitize_event_data("pipeline", &mut data, false);
+        assert_eq!(
+            data,
+            serde_json::json!({"pass_kind": "preview", "recording_id": 41})
+        );
+        for debug_build in [true, false] {
+            for outcome in [
+                "backend_unavailable",
+                "stopped",
+                "decode_error",
+                "worker_failed",
+            ] {
+                let mut data = serde_json::json!({"event_code":"query.partial_tick", "query_pass_id":42, "outcome":outcome, "text":"PRIVATE"});
+                sanitize_event_data("query", &mut data, debug_build);
+                assert_eq!(
+                    data,
+                    serde_json::json!({"event_code":"query.partial_tick", "query_pass_id":42, "outcome":outcome})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preview_vad_disagreement_schema_is_exact_in_every_build() {
+        for debug_build in [true, false] {
+            for (code, owner) in [
+                ("pipeline.preview_vad_disagreement", "recording_id"),
+                ("query.preview_vad_disagreement", "query_pass_id"),
+            ] {
+                assert_eq!(canonical_event_code(code), Some(code));
+                let mut data = serde_json::json!({
+                    "event_code": code, owner: 41, "sample_count": 62_050,
+                    "text": "SENTINEL_TRANSCRIPT", "other_id": 42, "nested": {"text": "PRIVATE"}
+                });
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(
+                    data,
+                    serde_json::json!({"event_code": code, owner: 41, "sample_count": 62_050})
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dictation_partial_tick_schema_is_exact_and_content_free_in_every_build() {
         for debug_build in [true, false] {
-            for outcome in ["emitted", "emit_failed"] {
+            for outcome in [
+                "emitted",
+                "emit_failed",
+                "stopped",
+                "model_unavailable",
+                "backend_unavailable",
+                "decode_error",
+                "worker_failed",
+            ] {
                 let mut data = serde_json::json!({
                     "event_code": "pipeline.dictation_partial_tick",
                     "recording_id": 9,

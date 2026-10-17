@@ -766,6 +766,31 @@ impl ModelRuntimeManager {
         Ok((result, report))
     }
 
+    /// Opportunistic display-only inference: never queue or load/switch models.
+    /// Revalidate ownership under the backend lock immediately before decode.
+    pub(crate) fn try_with_ready_backend<T>(
+        &self,
+        model_name: &str,
+        is_current: impl FnOnce() -> bool,
+        operation: impl FnOnce(&mut dyn TranscriptionBackend) -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        let Some(_reservation) = crate::meeting_diarization::ForegroundReservation::try_acquire()
+        else {
+            return Ok(None);
+        };
+        // Fail closed on poison as well as contention; a final pass owns recovery.
+        let Ok(mut inner) = self.inner.try_lock() else {
+            return Ok(None);
+        };
+        if inner.active_model.as_deref() != Some(model_name)
+            || !inner.backend.is_model_loaded(model_name)
+            || !is_current()
+        {
+            return Ok(None);
+        }
+        operation(inner.backend.as_mut()).map(Some)
+    }
+
     pub fn select_model(
         &self,
         app: Option<&tauri::AppHandle>,
@@ -1132,6 +1157,82 @@ mod tests {
             }),
             ..ModelRuntimeManager::default()
         }
+    }
+
+    #[test]
+    fn preview_never_loads_or_switches_models() {
+        let manager = fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Some("must not load"),
+        );
+        assert_eq!(
+            manager
+                .try_with_ready_backend("fake-translation", || true, |_| panic!("must not decode"))
+                .unwrap(),
+            None::<()>
+        );
+        assert!(manager.inner.lock_or_recover().active_model.is_none());
+        manager.inner.lock_or_recover().active_model = Some("other-model".into());
+        assert_eq!(
+            manager
+                .try_with_ready_backend("fake-translation", || true, |_| panic!("must not decode"))
+                .unwrap(),
+            None::<()>
+        );
+    }
+
+    #[test]
+    fn preview_skips_busy_backend_and_rechecks_owner_under_lock() {
+        let manager = Arc::new(fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        ));
+        manager
+            .prepare(None, "fake-translation", PreparationReason::Recording)
+            .unwrap();
+        let lock = manager.inner.lock_or_recover();
+        let worker = manager.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let join = thread::spawn(move || {
+            tx.send(worker.try_with_ready_backend(
+                "fake-translation",
+                || panic!("busy must skip ownership/decode"),
+                |_| Ok(()),
+            ))
+            .unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        drop(lock); // Release before assertion, even on failure.
+        assert_eq!(result.unwrap().unwrap(), None);
+        join.join().unwrap();
+        let current = std::sync::atomic::AtomicBool::new(true);
+        assert!(current.load(Ordering::SeqCst)); // Worker was scheduled while recording.
+        current.store(false, Ordering::SeqCst); // Stop before backend acquisition.
+        let mut checked = false;
+        let result = manager
+            .try_with_ready_backend(
+                "fake-translation",
+                || {
+                    assert!(
+                        manager.inner.try_lock().is_err(),
+                        "ownership must be checked with backend held"
+                    );
+                    checked = true;
+                    current.load(Ordering::SeqCst)
+                },
+                |_| panic!("stopped recording must never start decode"),
+            )
+            .unwrap();
+        assert!(checked);
+        assert_eq!(result, None::<()>);
+        assert_eq!(
+            manager
+                .try_with_ready_backend("fake-translation", || true, |_| Ok(7))
+                .unwrap(),
+            Some(7)
+        );
     }
 
     #[test]

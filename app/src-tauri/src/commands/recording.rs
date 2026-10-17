@@ -109,6 +109,36 @@ fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool
         && !app_state.is_cancelled(recording_id)
 }
 
+fn note_nonempty_dictation_preview(app_state: &AppState, recording_id: u64) {
+    if dictation_partial_is_current(app_state, recording_id) {
+        // A late old worker cannot overwrite evidence already owned by a newer ID.
+        app_state
+            .dictation_nonempty_preview_id
+            .fetch_max(recording_id, Ordering::SeqCst);
+    }
+}
+
+fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample_count: usize) {
+    if recording_id > 0
+        && app_state
+            .dictation_nonempty_preview_id
+            .load(Ordering::SeqCst)
+            == recording_id
+    {
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.preview_vad_disagreement",
+            recording_id,
+            sample_count,
+            "nonempty preview followed by final VAD no speech"
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "recording_preview_tests.rs"]
+mod preview_tests;
+
 fn try_begin_dictation_partial(app_state: &AppState, recording_id: u64) -> bool {
     dictation_partial_is_current(app_state, recording_id)
         && app_state
@@ -231,25 +261,32 @@ async fn decode_one_dictation_partial(
     }
     let window = dictation_partial_window(&samples).to_vec();
     let worker_app = app.clone();
-    let text = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || -> Result<Option<String>, &'static str> {
         // The blocking worker outlives cancellation of its awaiting task. Its
         // model locks and last preview Arc must drop before completion.
         let _lease = lease;
         let worker_preview = retained_preview;
         let state = worker_app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
-            return None;
+            return Err("stopped");
         }
         let raw = if whisper {
             let mut preview = worker_preview.lock_or_recover();
+            if !dictation_partial_is_current(&state.app_state, recording_id) {
+                return Err("stopped");
+            }
             if preview.is_none() {
                 *preview =
                     transcriber::whisper::WhisperPreviewBackend::load(&transcription.model_name)
                         .ok();
             }
+            if !dictation_partial_is_current(&state.app_state, recording_id) {
+                return Err("stopped");
+            }
             let deadline = std::time::Instant::now() + WHISPER_PARTIAL_DEADLINE;
             preview
-                .as_mut()?
+                .as_mut()
+                .ok_or("model_unavailable")?
                 .transcribe(
                     &window,
                     &transcription.language,
@@ -260,33 +297,40 @@ async fn decode_one_dictation_partial(
                             || std::time::Instant::now() >= deadline
                     },
                 )
-                .ok()?
+                .map_err(|_| "decode_error")?
         } else {
-            let (raw, _) = state
+            let raw = state
                 .app_state
                 .model_runtime
-                .with_ready_backend(
-                    Some(&worker_app),
+                .try_with_ready_backend(
                     &transcription.model_name,
-                    PreparationReason::Pipeline,
+                    || dictation_partial_is_current(&state.app_state, recording_id),
                     |backend| {
-                        backend.transcribe(
+                        backend.transcribe_preview(
                             &window,
                             &transcription.language,
                             transcription.prompt.as_deref(),
                             transcription.smart_punctuation,
+                            transcriber::PreviewPass::Dictation(recording_id),
                         )
                     },
                 )
-                .ok()?;
+                .map_err(|_| "decode_error")?
+                .ok_or("backend_unavailable")?;
             raw
         };
         let cleaned = raw.trim().to_string();
-        (!cleaned.is_empty()).then_some(cleaned)
+        if !cleaned.is_empty() {
+            note_nonempty_dictation_preview(&state.app_state, recording_id);
+        }
+        Ok((!cleaned.is_empty()).then_some(cleaned))
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or(Err("worker_failed"));
+    let (text, no_text_outcome) = match result {
+        Ok(text) => (text, "empty"),
+        Err(outcome) => (None, outcome),
+    };
     let state = app.state::<State>();
     if let Some(text) = text {
         if dictation_partial_is_current(&state.app_state, recording_id) {
@@ -303,7 +347,7 @@ async fn decode_one_dictation_partial(
             emit_dictation_partial_tick(recording_id, "stale", sample_count);
         }
     } else {
-        emit_dictation_partial_tick(recording_id, "empty", sample_count);
+        emit_dictation_partial_tick(recording_id, no_text_outcome, sample_count);
     }
     dictation_partial_is_current(&state.app_state, recording_id)
 }
@@ -2301,6 +2345,7 @@ async fn run_transcription_pipeline(
 
                 match vad_result {
                     Ok(vad::VadResult::NoSpeech) => {
+                        emit_preview_vad_disagreement(app_state, recording_id, samples.len());
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
                         return Ok(PipelineResult {

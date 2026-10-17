@@ -480,6 +480,7 @@ pub(crate) struct QueryCoordinator {
     draft: Mutex<Option<(u64, String)>>,
     cancelled_pass_id: AtomicU64,
     partial_in_flight_pass: AtomicU64,
+    nonempty_preview_pass: AtomicU64,
     worker_pass_id: AtomicU64,
     worker_state_changed: Condvar,
     status: Mutex<QueryStatus>,
@@ -503,6 +504,7 @@ impl Default for QueryCoordinator {
             draft: Mutex::new(None),
             cancelled_pass_id: AtomicU64::new(0),
             partial_in_flight_pass: AtomicU64::new(0),
+            nonempty_preview_pass: AtomicU64::new(0),
             worker_pass_id: AtomicU64::new(0),
             worker_state_changed: Condvar::new(),
             status: Mutex::new(QueryStatus::Idle),
@@ -3101,7 +3103,10 @@ async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool 
                 transcribe_query_partial(&worker_app, pass_id, window, &transcription)
             })
             .await;
-            let text = result.ok().flatten();
+            let (text, no_text_outcome) = match result.unwrap_or(Err("worker_failed")) {
+                Ok(text) => (text, "empty"),
+                Err(outcome) => (None, outcome),
+            };
             let state = app.state::<crate::State>();
             state.query.finish_partial(pass_id);
             // Fence both validity and destination through emission. A cancelled
@@ -3140,7 +3145,7 @@ async fn decode_one_query_partial(app: &tauri::AppHandle, pass_id: u64) -> bool 
                     emit_partial_tick(pass_id, "stale", sample_count);
                 }
             } else {
-                emit_partial_tick(pass_id, "empty", sample_count);
+                emit_partial_tick(pass_id, no_text_outcome, sample_count);
             }
             state.query.is_listening(pass_id)
         }
@@ -3152,30 +3157,37 @@ fn transcribe_query_partial(
     pass_id: u64,
     samples: Vec<f32>,
     transcription: &crate::dictation_context::TranscriptionSettings,
-) -> Option<String> {
+) -> Result<Option<String>, &'static str> {
     let state = app.state::<crate::State>();
     if !state.query.is_listening(pass_id) {
-        return None;
+        return Err("stopped");
     }
-    let (raw, _) = state
+    let raw = state
         .app_state
         .model_runtime
-        .with_ready_backend(
-            Some(app),
+        .try_with_ready_backend(
             &transcription.model_name,
-            PreparationReason::Pipeline,
+            || state.query.is_listening(pass_id),
             |backend| {
-                backend.transcribe(
+                backend.transcribe_preview(
                     &samples,
                     &transcription.language,
                     transcription.prompt.as_deref(),
                     transcription.smart_punctuation,
+                    crate::transcriber::PreviewPass::VoiceQuery(pass_id),
                 )
             },
         )
-        .ok()?;
+        .map_err(|_| "decode_error")?
+        .ok_or("backend_unavailable")?;
     let cleaned = raw.trim().to_string();
-    (!cleaned.is_empty()).then_some(cleaned)
+    if !cleaned.is_empty() && state.query.is_listening(pass_id) {
+        state
+            .query
+            .nonempty_preview_pass
+            .fetch_max(pass_id, Ordering::SeqCst);
+    }
+    Ok((!cleaned.is_empty()).then_some(cleaned))
 }
 
 async fn transcribe_query(
@@ -3189,32 +3201,38 @@ async fn transcribe_query(
         return Err("no_speech");
     }
     let transcription = &context.transcription;
-    let (samples_for_transcription, vad_trimmed) =
-        if !crate::vad::is_enabled(transcription.vad_sensitivity) {
-            (samples.clone(), false)
-        } else {
-            let threshold = crate::vad::threshold_for_sensitivity(transcription.vad_sensitivity);
-            match crate::vad::vad_model_path().filter(|path| path.exists()) {
-                Some(path) => {
-                    let path = path.to_string_lossy().into_owned();
-                    let input = samples.clone();
-                    match tokio::task::spawn_blocking(move || {
-                        crate::vad::filter_speech(&path, &input, threshold)
-                    })
-                    .await
-                    .map_err(|_| "transcription_failed")?
-                    {
-                        Ok(crate::vad::VadResult::NoSpeech) => return Err("no_speech"),
-                        Ok(crate::vad::VadResult::Speech(filtered)) => {
-                            let trimmed = filtered.len() != samples.len();
-                            (filtered, trimmed)
+    let (samples_for_transcription, vad_trimmed) = if !crate::vad::is_enabled(
+        transcription.vad_sensitivity,
+    ) {
+        (samples.clone(), false)
+    } else {
+        let threshold = crate::vad::threshold_for_sensitivity(transcription.vad_sensitivity);
+        match crate::vad::vad_model_path().filter(|path| path.exists()) {
+            Some(path) => {
+                let path = path.to_string_lossy().into_owned();
+                let input = samples.clone();
+                match tokio::task::spawn_blocking(move || {
+                    crate::vad::filter_speech(&path, &input, threshold)
+                })
+                .await
+                .map_err(|_| "transcription_failed")?
+                {
+                    Ok(crate::vad::VadResult::NoSpeech) => {
+                        if state.query.nonempty_preview_pass.load(Ordering::SeqCst) == pass_id {
+                            tracing::info!(target: "pipeline", event_code = "query.preview_vad_disagreement", query_pass_id = pass_id, sample_count = samples.len(), "nonempty preview followed by final VAD no speech");
                         }
-                        Err(_) => (samples.clone(), false),
+                        return Err("no_speech");
                     }
+                    Ok(crate::vad::VadResult::Speech(filtered)) => {
+                        let trimmed = filtered.len() != samples.len();
+                        (filtered, trimmed)
+                    }
+                    Err(_) => (samples.clone(), false),
                 }
-                None => (samples.clone(), false),
             }
-        };
+            None => (samples.clone(), false),
+        }
+    };
     if !state.query.is_active(pass_id) {
         return Err("cancelled");
     }
