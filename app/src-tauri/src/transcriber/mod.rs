@@ -24,6 +24,29 @@ pub fn is_coreml_model(model_name: &str) -> bool {
 /// Sample rate required by transcription models (16kHz).
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 
+/// Content-free ownership attached to display-only Core ML diagnostics.
+#[derive(Clone, Copy)]
+pub enum PreviewPass {
+    Dictation(u64),
+    VoiceQuery(u64),
+    SyntheticDiagnostic,
+}
+
+impl PreviewPass {
+    pub fn recording_id(self) -> Option<u64> {
+        match self {
+            Self::Dictation(id) => Some(id),
+            _ => None,
+        }
+    }
+    pub fn query_pass_id(self) -> Option<u64> {
+        match self {
+            Self::VoiceQuery(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
 /// Abstraction over transcription engines (whisper, etc.)
 pub trait TranscriptionBackend: Send + Sync {
     /// Human-readable backend name (e.g., "whisper")
@@ -43,6 +66,18 @@ pub trait TranscriptionBackend: Send + Sync {
         initial_prompt: Option<&str>,
         smart_punctuation: bool,
     ) -> Result<String, String>;
+
+    /// Display-only inference. Backends may lower expected empty-output diagnostics.
+    fn transcribe_preview(
+        &mut self,
+        samples: &[f32],
+        language: &str,
+        initial_prompt: Option<&str>,
+        smart_punctuation: bool,
+        _pass: PreviewPass,
+    ) -> Result<String, String> {
+        self.transcribe(samples, language, initial_prompt, smart_punctuation)
+    }
 
     /// Count tokens in text using the model's tokenizer. Returns None if model not loaded.
     fn token_count(&self, text: &str) -> Option<usize>;

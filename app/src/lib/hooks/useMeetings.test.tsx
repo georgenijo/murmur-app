@@ -156,6 +156,240 @@ describe('useMeetings remote speaker refresh', () => {
     expect(meetingMocks.listMeetings.mock.calls).toEqual([['reviewword'], ['reviewword']]);
   });
 
+  it('loads older meetings for the applied search, deduplicates overlap, and blocks double requests', async () => {
+    const first = detail('first', 'Team').session;
+    const second = detail('second', 'Team').session;
+    const third = detail('third', 'Team').session;
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [first, second], searchMatches: {}, total: 4, offset: 0, limit: 2 });
+    await act(async () => controller().refresh('search'));
+    const pending = deferred<MeetingPage>();
+    meetingMocks.listMeetings.mockReturnValueOnce(pending.promise);
+    let loading: Promise<void>;
+    await act(async () => {
+      loading = controller().loadMore();
+      void controller().loadMore();
+    });
+    expect(meetingMocks.listMeetings).toHaveBeenLastCalledWith('search', 2, 2);
+    expect(controller().loadingMore).toBe(true);
+    await act(async () => {
+      pending.resolve({ sessions: [second, third], searchMatches: { third: ['title'] }, total: 4, offset: 2, limit: 2 });
+      await loading;
+    });
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(['first', 'second', 'third']);
+    expect(controller().page.searchMatches.third).toEqual(['title']);
+    expect(controller().hasMore).toBe(false);
+    expect(controller().appliedQuery).toBe('search');
+  });
+
+  it.each(['search', 'refresh', 'delete', 'clear'])('rejects an old load-more reply after %s', async (operation) => {
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [detail('first', 'Team').session], searchMatches: {}, total: 2, offset: 0, limit: 1 });
+    await act(async () => controller().refresh('old'));
+    const pending = deferred<MeetingPage>();
+    meetingMocks.listMeetings.mockReturnValueOnce(pending.promise);
+    let loading: Promise<void>;
+    await act(async () => { loading = controller().loadMore(); });
+    const next = { sessions: operation === 'clear' ? [] : [detail('second', 'Team').session], searchMatches: {}, total: 1, offset: 0, limit: operation === 'search' ? 50 : 1 };
+    meetingMocks.listMeetings.mockResolvedValueOnce(next);
+    await act(async () => {
+      if (operation === 'delete') await controller().remove('first');
+      else if (operation === 'clear') await controller().clear();
+      else await controller().refresh(operation === 'search' ? 'new' : undefined);
+    });
+    await act(async () => {
+      pending.resolve({ sessions: [detail('first', 'Team').session], searchMatches: {}, total: 2, offset: 1, limit: 1 });
+      await loading;
+    });
+    expect(controller().page).toEqual(next);
+    expect(controller().loadingMore).toBe(false);
+    expect(controller().appliedQuery).toBe(operation === 'search' ? 'new' : 'old');
+  });
+
+  it('retries a failed next page at the same offset without losing the current results', async () => {
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [detail('first', 'Team').session], searchMatches: {}, total: 2, offset: 0, limit: 1 });
+    await act(async () => controller().refresh('search'));
+    meetingMocks.listMeetings.mockRejectedValueOnce(new Error('Synthetic page failure'));
+    await act(async () => controller().loadMore());
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(['first']);
+    expect(controller().hasMore).toBe(true);
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [detail('second', 'Team').session], searchMatches: {}, total: 2, offset: 1, limit: 1 });
+    await act(async () => controller().loadMore());
+    expect(meetingMocks.listMeetings).toHaveBeenLastCalledWith('search', 1, 1);
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(['first', 'second']);
+    expect(controller().error).toBeNull();
+  });
+
+  function mockPagedMeetings(count = 180) {
+    const sessions = Array.from({ length: count }, (_, index) => detail(`meeting-${index}`, 'Team').session);
+    meetingMocks.listMeetings.mockImplementation(async (_query: string, offset = 0, limit = 50) => {
+      const bounded = Math.min(100, limit);
+      return { sessions: sessions.slice(offset, offset + bounded), searchMatches: {}, total: sessions.length, offset, limit: bounded };
+    });
+    return sessions;
+  }
+
+  it.each(['refresh', 'summary', 'capture-idle', 'metadata', 'delete'])('preserves three loaded pages and selection after %s, respecting the 100-row maximum', async (source) => {
+    const sessions = mockPagedMeetings();
+    meetingMocks.getMeeting.mockResolvedValue(detail('meeting-120', 'Team'));
+    meetingMocks.saveMeetingMetadata.mockResolvedValue(detail('meeting-120', 'Team'));
+    await act(async () => controller().refresh('active-search'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().select('meeting-120'));
+    expect(controller().page.sessions).toHaveLength(150);
+    meetingMocks.listMeetings.mockClear();
+    if (source === 'delete') sessions.splice(20, 1);
+    await act(async () => {
+      if (source === 'summary') eventMocks.listeners.get('meeting-summary-status-changed')?.({ payload: { phase: 'complete', sessionId: 'other' } });
+      else if (source === 'capture-idle') eventMocks.listeners.get('meeting-status-changed')?.({ payload: { generation: 1, phase: 'idle', sessionId: null } });
+      else if (source === 'metadata') await controller().saveMetadata({ sessionId: 'meeting-120', title: 'Synthetic title', attendees: [] });
+      else if (source === 'delete') await controller().remove('meeting-20');
+      else await controller().refresh();
+    });
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.slice(0, 150).map((s) => s.id));
+    expect(controller().page.sessions.some((s) => s.id === 'meeting-120')).toBe(true);
+    expect(controller().detail?.session.id).toBe('meeting-120');
+    expect(controller().appliedQuery).toBe('active-search');
+    expect(meetingMocks.listMeetings.mock.calls.every(([query, , limit = 50]) => query === 'active-search' && limit <= 100)).toBe(true);
+    await act(async () => controller().loadMore());
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.map((s) => s.id));
+    expect(new Set(controller().page.sessions.map((s) => s.id)).size).toBe(sessions.length);
+    expect(controller().hasMore).toBe(false);
+  });
+
+  it('expands the refreshed prefix when insertions move a visible selection past its boundary', async () => {
+    const sessions = mockPagedMeetings(200);
+    meetingMocks.getMeeting.mockResolvedValue(detail('meeting-145', 'Team'));
+    await act(async () => controller().refresh());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().select('meeting-145'));
+    sessions.unshift(...Array.from({ length: 20 }, (_, i) => detail(`new-${i}`, 'Team').session));
+    await act(async () => controller().refresh());
+    expect(controller().page.sessions.length).toBeGreaterThanOrEqual(166);
+    expect(controller().page.sessions.some((s) => s.id === 'meeting-145')).toBe(true);
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.slice(0, controller().page.sessions.length).map((s) => s.id));
+  });
+
+  it.each(['same', 'lower'])('bounds refresh and keeps the saved page count when a selection disappears from 1000 results with %s total', async (change) => {
+    const sessions = mockPagedMeetings(1000);
+    meetingMocks.getMeeting.mockResolvedValue(detail('meeting-20', 'Team'));
+    await act(async () => controller().refresh('search'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().select('meeting-20'));
+    sessions.splice(20, 1);
+    if (change === 'same') sessions.push(detail('replacement', 'Team').session);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      meetingMocks.listMeetings.mockClear();
+      await act(async () => controller().refresh());
+      expect(meetingMocks.listMeetings.mock.calls).toEqual([['search', 0, 100], ['search', 100, 50]]);
+      expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.slice(0, 150).map((s) => s.id));
+      expect(controller().page.sessions.some((s) => s.id === 'meeting-20')).toBe(false);
+      expect(controller().hasMore).toBe(true);
+    }
+  });
+
+  it('caps a missing-selection extension at first-page net growth rounded up to a page', async () => {
+    const sessions = mockPagedMeetings(1000);
+    meetingMocks.getMeeting.mockResolvedValue(detail('meeting-20', 'Team'));
+    await act(async () => controller().refresh('search'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().select('meeting-20'));
+    sessions.splice(20, 1);
+    sessions.push(detail('new-1', 'Team').session, detail('new-2', 'Team').session);
+    const original = meetingMocks.listMeetings.getMockImplementation()!;
+    // Later pages observe much larger growth; only the first page sets the budget.
+    meetingMocks.listMeetings.mockImplementation(async (query, offset = 0, limit = 50) => ({
+      ...await original(query, offset, limit), total: offset === 0 ? 1001 : 2000,
+    }));
+    meetingMocks.listMeetings.mockClear();
+    await act(async () => controller().refresh());
+    expect(meetingMocks.listMeetings.mock.calls).toEqual([['search', 0, 100], ['search', 100, 50], ['search', 150, 50]]);
+    expect(controller().page.sessions).toHaveLength(200);
+    expect(controller().hasMore).toBe(true);
+  });
+
+  it('resets the loaded window for a new search filter', async () => {
+    mockPagedMeetings();
+    await act(async () => controller().refresh('old'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().refresh('new'));
+    expect(controller().page.sessions).toHaveLength(50);
+    expect(controller().appliedQuery).toBe('new');
+    await act(async () => controller().loadMore());
+    expect(meetingMocks.listMeetings).toHaveBeenLastCalledWith('new', 50, 50);
+  });
+
+  it('discards a partially rebuilt refresh after the search changes without issuing its remaining pages', async () => {
+    mockPagedMeetings();
+    await act(async () => controller().refresh('old'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    const blocked = deferred<MeetingPage>();
+    const original = meetingMocks.listMeetings.getMockImplementation()!;
+    meetingMocks.listMeetings.mockImplementation((query, offset = 0, limit = 50) => query === 'old' ? blocked.promise : original(query, offset, limit));
+    meetingMocks.listMeetings.mockClear();
+    let pending: Promise<void>;
+    await act(async () => { pending = controller().refresh(); });
+    await act(async () => controller().refresh('new'));
+    await act(async () => {
+      blocked.resolve({ sessions: [], searchMatches: {}, total: 180, offset: 0, limit: 100 });
+      await pending;
+    });
+    expect(controller().page.sessions).toHaveLength(50);
+    expect(controller().appliedQuery).toBe('new');
+    expect(meetingMocks.listMeetings.mock.calls.filter(([query]) => query === 'old')).toHaveLength(1);
+    expect(controller().loading).toBe(false);
+    expect(controller().hasMore).toBe(true);
+  });
+
+  it('keeps the old window until all refreshed pages finish and drops a stale second page', async () => {
+    const sessions = mockPagedMeetings();
+    await act(async () => controller().refresh('old'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    const blocked = deferred<MeetingPage>();
+    const original = meetingMocks.listMeetings.getMockImplementation()!;
+    meetingMocks.listMeetings.mockImplementation((query, offset = 0, limit = 50) => query === 'old' && offset > 0 ? blocked.promise : original(query, offset, limit));
+    let pending: Promise<void>;
+    await act(async () => { pending = controller().refresh(); });
+    expect(controller().page.sessions).toHaveLength(150);
+    expect(controller().loading).toBe(true);
+    expect(meetingMocks.listMeetings).toHaveBeenLastCalledWith('old', 100, 50);
+    const calls = meetingMocks.listMeetings.mock.calls.length;
+    await act(async () => controller().loadMore());
+    expect(meetingMocks.listMeetings).toHaveBeenCalledTimes(calls);
+    await act(async () => controller().refresh('new'));
+    await act(async () => {
+      blocked.resolve({ sessions: sessions.slice(100, 150), searchMatches: {}, total: 180, offset: 100, limit: 50 });
+      await pending;
+    });
+    expect(controller().page.sessions).toHaveLength(50);
+    expect(controller().appliedQuery).toBe('new');
+    expect(controller().loading).toBe(false);
+  });
+
+  it('keeps the complete old window if a later refresh page fails and retries from zero', async () => {
+    const sessions = mockPagedMeetings();
+    await act(async () => controller().refresh('search'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    sessions.splice(10, 2);
+    const original = meetingMocks.listMeetings.getMockImplementation()!;
+    meetingMocks.listMeetings.mockImplementation((query, offset = 0, limit = 50) => offset > 0 ? Promise.reject(new Error('Synthetic refresh failure')) : original(query, offset, limit));
+    await act(async () => controller().refresh());
+    expect(controller().page.sessions).toHaveLength(150);
+    expect(controller().page.sessions.some((s) => s.id === 'meeting-10')).toBe(true);
+    expect(controller().error).toContain('Synthetic refresh failure');
+    meetingMocks.listMeetings.mockImplementation(original).mockClear();
+    await act(async () => controller().refresh());
+    expect(meetingMocks.listMeetings.mock.calls).toEqual([['search', 0, 100], ['search', 100, 50]]);
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.slice(0, 150).map((s) => s.id));
+    expect(controller().error).toBeNull();
+  });
+
   it('drops a speaker event refresh when the selected meeting changes before it resolves', async () => {
     const staleRefresh = deferred<MeetingDetail>();
     let firstRequests = 0;

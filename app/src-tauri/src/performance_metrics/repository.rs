@@ -758,6 +758,7 @@ const ALL_STAGES: &[PerformanceStageV1] = &[
     PerformanceStageV1::Vad,
     PerformanceStageV1::ModelQueue,
     PerformanceStageV1::ModelLoad,
+    PerformanceStageV1::InferenceQueue,
     PerformanceStageV1::InferenceDecode,
     PerformanceStageV1::TranscriptTransform,
     PerformanceStageV1::Cleanup,
@@ -1178,6 +1179,60 @@ mod tests {
         RunCorrelationV1::Dictation { recording_id: id }
     }
 
+    #[test]
+    fn final_inference_wait_survives_zero_preparation_queue_and_reload() {
+        let (_temp, repository) = repository();
+        let correlation = correlation(41);
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation.clone(),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        repository
+            .update_active(&correlation, |active| {
+                active
+                    .stages
+                    .push(StageTimingV1::measured(PerformanceStageV1::ModelQueue, 0));
+                active
+                    .stages
+                    .push(StageTimingV1::measured(PerformanceStageV1::ModelLoad, 12));
+            })
+            .unwrap();
+        repository
+            .complete(
+                &correlation,
+                RunOutcomeV1::Success,
+                vec![
+                    StageTimingV1::measured(PerformanceStageV1::InferenceQueue, 64),
+                    StageTimingV1::measured(PerformanceStageV1::ModelLoad, 0),
+                    StageTimingV1::measured(PerformanceStageV1::InferenceDecode, 97),
+                ],
+                None,
+                None,
+            )
+            .unwrap();
+        let runs = repository.list(1).unwrap();
+        let stages = &runs[0].stages;
+        for (stage, expected) in [
+            (PerformanceStageV1::ModelQueue, 0),
+            (PerformanceStageV1::ModelLoad, 12),
+            (PerformanceStageV1::InferenceQueue, 64),
+            (PerformanceStageV1::InferenceDecode, 97),
+        ] {
+            assert_eq!(
+                stages
+                    .iter()
+                    .find(|timing| timing.stage == stage)
+                    .unwrap()
+                    .duration_ms,
+                MeasurementV1::measured(expected),
+            );
+        }
+    }
+
     fn sample(at: i64, cpu: MeasurementV1<f32>) -> ResourceSampleV1 {
         ResourceSampleV1 {
             schema_version: RESOURCE_SAMPLE_SCHEMA_VERSION,
@@ -1551,7 +1606,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(run.schema_version, 1);
-        assert_eq!(run.stages.len(), 27);
+        assert_eq!(run.stages.len(), 28);
         assert_eq!(
             run.query_process,
             Some(QueryProcessSummaryV1 {

@@ -36,6 +36,7 @@ export type PerformanceStageV1 =
   | 'vad'
   | 'modelQueue'
   | 'modelLoad'
+  | 'inferenceQueue'
   | 'inferenceDecode'
   | 'transcriptTransform'
   | 'cleanup'
@@ -295,7 +296,7 @@ const unavailableReasons = new Set<UnavailableReasonV1>([
 ]);
 export const PERFORMANCE_STAGES_V1: readonly PerformanceStageV1[] = [
   'captureFinalization', 'fileDecode', 'vad', 'modelQueue', 'modelLoad',
-  'inferenceDecode', 'transcriptTransform', 'cleanup', 'voiceCommands',
+  'inferenceQueue', 'inferenceDecode', 'transcriptTransform', 'cleanup', 'voiceCommands',
   'smartCorrection', 'smartFormatting', 'spokenStructure', 'spokenNumbers',
   'ideContext', 'cliCommand',
   'fileOutput', 'clipboardPaste', 'fileReturn', 'totalProcessing',
@@ -683,8 +684,11 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));
-  if (stages.size !== PERFORMANCE_STAGES_V1.length
-    || !PERFORMANCE_STAGES_V1.every(stage => stages.has(stage))) {
+  // inferenceQueue is additive: historical v1 records did not measure it.
+  // Accept that one absent stage, without accepting missing legacy stages or
+  // inventing a zero-duration measurement for an older run.
+  if (stages.size !== value.stages.length
+    || !PERFORMANCE_STAGES_V1.every(stage => stage === 'inferenceQueue' || stages.has(stage))) {
     return false;
   }
   return isRunCorrelation(value.correlation, value.kind as PerformanceRunKindV1)

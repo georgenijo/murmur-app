@@ -109,6 +109,51 @@ fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool
         && !app_state.is_cancelled(recording_id)
 }
 
+/// Called with the backend held: never wait on the status lock, since idle
+/// unload holds status while acquiring that backend in the opposite order.
+pub(crate) fn dictation_partial_is_current_if_uncontended(
+    app_state: &AppState,
+    recording_id: u64,
+) -> bool {
+    let Some(dictation) = app_state.dictation.try_lock_or_recover() else {
+        return false;
+    };
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && dictation.status == DictationStatus::Recording
+        && !app_state.is_cancelled(recording_id)
+}
+
+fn note_nonempty_dictation_preview(app_state: &AppState, recording_id: u64) {
+    if dictation_partial_is_current(app_state, recording_id) {
+        // A late old worker cannot overwrite evidence already owned by a newer ID.
+        app_state
+            .dictation_nonempty_preview_id
+            .fetch_max(recording_id, Ordering::SeqCst);
+    }
+}
+
+fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample_count: usize) {
+    if recording_id > 0
+        && app_state
+            .dictation_nonempty_preview_id
+            .load(Ordering::SeqCst)
+            == recording_id
+    {
+        tracing::info!(
+            target: "pipeline",
+            event_code = "pipeline.preview_vad_disagreement",
+            recording_id,
+            sample_count,
+            "nonempty preview followed by final VAD no speech"
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "recording_preview_tests.rs"]
+mod preview_tests;
+
 fn try_begin_dictation_partial(app_state: &AppState, recording_id: u64) -> bool {
     dictation_partial_is_current(app_state, recording_id)
         && app_state
@@ -231,25 +276,32 @@ async fn decode_one_dictation_partial(
     }
     let window = dictation_partial_window(&samples).to_vec();
     let worker_app = app.clone();
-    let text = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || -> Result<Option<String>, &'static str> {
         // The blocking worker outlives cancellation of its awaiting task. Its
         // model locks and last preview Arc must drop before completion.
         let _lease = lease;
         let worker_preview = retained_preview;
         let state = worker_app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
-            return None;
+            return Err("stopped");
         }
         let raw = if whisper {
             let mut preview = worker_preview.lock_or_recover();
+            if !dictation_partial_is_current(&state.app_state, recording_id) {
+                return Err("stopped");
+            }
             if preview.is_none() {
                 *preview =
                     transcriber::whisper::WhisperPreviewBackend::load(&transcription.model_name)
                         .ok();
             }
+            if !dictation_partial_is_current(&state.app_state, recording_id) {
+                return Err("stopped");
+            }
             let deadline = std::time::Instant::now() + WHISPER_PARTIAL_DEADLINE;
             preview
-                .as_mut()?
+                .as_mut()
+                .ok_or("model_unavailable")?
                 .transcribe(
                     &window,
                     &transcription.language,
@@ -260,33 +312,40 @@ async fn decode_one_dictation_partial(
                             || std::time::Instant::now() >= deadline
                     },
                 )
-                .ok()?
+                .map_err(|_| "decode_error")?
         } else {
-            let (raw, _) = state
+            let raw = state
                 .app_state
                 .model_runtime
-                .with_ready_backend(
-                    Some(&worker_app),
+                .try_with_ready_backend(
                     &transcription.model_name,
-                    PreparationReason::Pipeline,
+                    || dictation_partial_is_current_if_uncontended(&state.app_state, recording_id),
                     |backend| {
-                        backend.transcribe(
+                        backend.transcribe_preview(
                             &window,
                             &transcription.language,
                             transcription.prompt.as_deref(),
                             transcription.smart_punctuation,
+                            transcriber::PreviewPass::Dictation(recording_id),
                         )
                     },
                 )
-                .ok()?;
+                .map_err(|_| "decode_error")?
+                .ok_or("backend_unavailable")?;
             raw
         };
         let cleaned = raw.trim().to_string();
-        (!cleaned.is_empty()).then_some(cleaned)
+        if !cleaned.is_empty() {
+            note_nonempty_dictation_preview(&state.app_state, recording_id);
+        }
+        Ok((!cleaned.is_empty()).then_some(cleaned))
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or(Err("worker_failed"));
+    let (text, no_text_outcome) = match result {
+        Ok(text) => (text, "empty"),
+        Err(outcome) => (None, outcome),
+    };
     let state = app.state::<State>();
     if let Some(text) = text {
         if dictation_partial_is_current(&state.app_state, recording_id) {
@@ -303,7 +362,7 @@ async fn decode_one_dictation_partial(
             emit_dictation_partial_tick(recording_id, "stale", sample_count);
         }
     } else {
-        emit_dictation_partial_tick(recording_id, "empty", sample_count);
+        emit_dictation_partial_tick(recording_id, no_text_outcome, sample_count);
     }
     dictation_partial_is_current(&state.app_state, recording_id)
 }
@@ -1102,7 +1161,9 @@ impl DictationDeliveryOutcome {
 
 fn confirmed_delivery_outcome(outcome: injector::InjectionOutcome) -> DictationDeliveryOutcome {
     match outcome {
-        injector::InjectionOutcome::NoText => DictationDeliveryOutcome::Unconfirmed,
+        injector::InjectionOutcome::NoText | injector::InjectionOutcome::Stopped(_) => {
+            DictationDeliveryOutcome::Unconfirmed
+        }
         injector::InjectionOutcome::ClipboardOnly(
             injector::ClipboardOnlyReason::ClipboardChanged,
         ) => DictationDeliveryOutcome::Unconfirmed,
@@ -2091,7 +2152,14 @@ fn transcript_stage_timing(
 fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV1> {
     let mut stages = vec![
         StageTimingV1::measured(PerformanceStageV1::Vad, timings.vad_ms),
-        StageTimingV1::measured(PerformanceStageV1::ModelQueue, timings.model_queue_ms),
+        // Preparation may overlap capture and has its own ModelQueue sample.
+        // Preserve the final pass's wait separately; do not replace preparation
+        // or silently discard contention behind a preview decode.
+        if timings.warm_state.is_some() {
+            StageTimingV1::measured(PerformanceStageV1::InferenceQueue, timings.model_queue_ms)
+        } else {
+            StageTimingV1::not_applicable(PerformanceStageV1::InferenceQueue)
+        },
         StageTimingV1::measured(PerformanceStageV1::ModelLoad, timings.model_load_ms),
         StageTimingV1::measured(PerformanceStageV1::InferenceDecode, timings.decode_ms),
         StageTimingV1::measured(
@@ -2294,6 +2362,7 @@ async fn run_transcription_pipeline(
 
                 match vad_result {
                     Ok(vad::VadResult::NoSpeech) => {
+                        emit_preview_vad_disagreement(app_state, recording_id, samples.len());
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
                         return Ok(PipelineResult {
@@ -2520,6 +2589,10 @@ async fn run_transcription_pipeline(
         let stop_sample = crate::frontmost::StopSampleStatus::of(stop_delivery_target.as_ref());
         let mut delivery_target = anchored_target.clone();
         let mut smart_destination = context.app.smart_destination.clone();
+        let _smart_cleanup = crate::smart_destination::AbortOnDrop::new(
+            app_handle.clone(),
+            smart_destination.clone(),
+        );
         let accepted_route = smart_destination.route_code();
         let mut recovery_smart_destination = smart_destination.clone();
         let mut recovery_target = smart_destination
@@ -2544,15 +2617,21 @@ async fn run_transcription_pipeline(
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let prepare_app = app_handle.clone();
             let preparing = smart_destination.clone();
+            let preparation_authority = Arc::new(injector::authority::PasteAttempt::new(
+                std::time::Duration::from_secs(1),
+                recording_id,
+            ));
+            let _cancel_preparation = injector::authority::CancelOnDrop(&preparation_authority);
+            let worker_authority = preparation_authority.clone();
             app_handle
                 .run_on_main_thread(move || {
-                    if sender.is_closed() {
+                    if sender.is_closed() || !worker_authority.is_current() {
                         return;
                     }
                     let state = prepare_app.state::<State>();
                     let outcome =
                         with_current_delivery_owner(&state.app_state, recording_id, || {
-                            crate::smart_destination::prepare(&preparing)
+                            crate::smart_destination::prepare(&preparing, Some(&worker_authority))
                         });
                     let _ = sender.send(outcome);
                 })
@@ -2592,16 +2671,23 @@ async fn run_transcription_pipeline(
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
+        let injection_authority = Arc::new(injector::authority::PasteAttempt::new(
+            std::time::Duration::from_secs(2),
+            recording_id,
+        ));
+        let _cancel_injection = injector::authority::CancelOnDrop(&injection_authority);
+        let worker_authority = injection_authority.clone();
         app_handle
             .run_on_main_thread(move || {
                 let state = injection_app_handle.state::<State>();
                 let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
-                    injector::inject_with_destination(
+                    injector::inject_with_destination_authorized(
                         &text_to_inject,
                         effective_auto_paste,
                         paste_delay_ms,
                         &delivery_target,
                         &smart_destination,
+                        Some(&worker_authority),
                     )
                 });
                 crate::smart_destination::abort(&smart_destination, None);
@@ -2638,7 +2724,10 @@ async fn run_transcription_pipeline(
         {
             Ok(Ok(Some(Ok(result)))) => {
                 injection_outcome_code = result.outcome.code();
-                if result.outcome != injector::InjectionOutcome::NoText {
+                if !matches!(
+                    result.outcome,
+                    injector::InjectionOutcome::NoText | injector::InjectionOutcome::Stopped(_)
+                ) {
                     app_handle.state::<State>().delivery_recovery.remember(
                         recording_id,
                         text.clone(),
@@ -2680,6 +2769,15 @@ async fn run_transcription_pipeline(
                         );
                     }
                 }
+                if let injector::InjectionOutcome::Stopped(reason) = result.outcome {
+                    app_handle
+                        .state::<State>()
+                        .delivery_recovery
+                        .forget_through(recording_id);
+                    tracing::info!(target: "pipeline", reason_code = reason.code(), "Text delivery stopped before completion");
+                    emit_auto_paste_failure_if_current(app_handle, app_state, recording_id,
+                        "Text delivery stopped before completion. Check the destination and clipboard before pasting.");
+                }
                 confirmed_delivery_outcome(result.outcome)
             }
             Ok(Ok(Some(Err(e)))) => {
@@ -2712,6 +2810,10 @@ async fn run_transcription_pipeline(
                 });
             }
             Ok(Err(_)) => {
+                app_handle
+                    .state::<State>()
+                    .delivery_recovery
+                    .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
                 emit_auto_paste_failure_if_current(
                     app_handle,
@@ -2722,6 +2824,10 @@ async fn run_transcription_pipeline(
                 DictationDeliveryOutcome::Unconfirmed
             }
             Err(_) => {
+                app_handle
+                    .state::<State>()
+                    .delivery_recovery
+                    .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection timed out");
                 emit_auto_paste_failure_if_current(
                     app_handle,
@@ -6060,7 +6166,7 @@ pub async fn transcribe_file(
     let mut stages = vec![
         StageTimingV1::measured(PerformanceStageV1::FileDecode, file_decode_ms),
         StageTimingV1::measured(PerformanceStageV1::Vad, vad_ms),
-        StageTimingV1::measured(PerformanceStageV1::ModelQueue, load_report.lock_wait_ms),
+        StageTimingV1::measured(PerformanceStageV1::InferenceQueue, load_report.lock_wait_ms),
         StageTimingV1::measured(PerformanceStageV1::ModelLoad, model_load_ms),
         StageTimingV1::measured(PerformanceStageV1::InferenceDecode, decode_ms),
         StageTimingV1::measured(PerformanceStageV1::TranscriptTransform, transform_ms),
@@ -6158,6 +6264,19 @@ pub(crate) mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         fields
+    }
+
+    #[test]
+    fn stopped_paste_is_unconfirmed_and_never_clipboard_write_failed() {
+        for reason in [
+            injector::authority::AttemptStop::Cancelled,
+            injector::authority::AttemptStop::Expired,
+        ] {
+            assert_eq!(
+                confirmed_delivery_outcome(injector::InjectionOutcome::Stopped(reason)),
+                DictationDeliveryOutcome::Unconfirmed
+            );
+        }
     }
 
     #[test]
@@ -8117,6 +8236,37 @@ pub(crate) mod tests {
             1
         ))
         .is_none());
+    }
+
+    #[test]
+    fn pipeline_stages_separates_final_queue_from_preparation_and_skipped_inference() {
+        let timings = PipelineTimings {
+            model_queue_ms: 64,
+            decode_ms: 97,
+            warm_state: Some(ModelWarmStateV1::Warm),
+            ..PipelineTimings::default()
+        };
+        let stages = pipeline_stages(&timings, 161);
+        assert_eq!(
+            stages
+                .iter()
+                .find(|stage| stage.stage == PerformanceStageV1::InferenceQueue)
+                .unwrap()
+                .duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(64),
+        );
+        assert!(!stages
+            .iter()
+            .any(|stage| stage.stage == PerformanceStageV1::ModelQueue));
+        let skipped = pipeline_stages(&PipelineTimings::default(), 0);
+        assert_eq!(
+            skipped
+                .iter()
+                .find(|stage| stage.stage == PerformanceStageV1::InferenceQueue)
+                .unwrap()
+                .duration_ms,
+            crate::performance_metrics::MeasurementV1::NotApplicable,
+        );
     }
 
     #[test]

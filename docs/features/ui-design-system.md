@@ -84,6 +84,20 @@ Use these before creating a feature-local control or surface.
 | Voice Query | Theme-aware flat popover, question then answer on one text gutter; compact state header with Close, bounded scrolling body and pinned actions. Technical summaries live in Details rather than the header or footer. Open in Assistant is one explicit handoff, not a nested save dialog. |
 | Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, and tooltips never move the plot |
 
+## Input contracts
+
+Destructive hold controls accept only a primary pointer with matching pointer
+ownership, or Enter/Space. Two discrete activations arm then confirm; click-only
+assistive activation follows the same path without requiring a physical press.
+Cancellation disarms rather than confirming. Generated clicks from an already
+handled press must not add a second activation.
+
+Settings range controls have an associated label. Paste Delay exposes its draft
+value in milliseconds and coalesces pointer-drag steps into one settings commit
+on release. Blur, pointer cancellation/capture loss, window blur, and unmount
+also save the final visible draft once. Keyboard and assistive value changes
+without a pointer drag persist immediately.
+
 ## Review and verification
 
 Every main-dashboard change should be checked at the native 1120×820 default,

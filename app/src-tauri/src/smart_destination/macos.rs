@@ -247,6 +247,8 @@ struct Frozen {
     /// current-app destination handed back to at delivery. Set at prepare;
     /// focus returns there afterwards, as it does to the media app.
     switched_away_from: Option<(DeliveryTargetSnapshot, u64)>,
+    activation_before: Option<crate::frontmost::AppTransitionSnapshot>,
+    activation_clipboard_change: Option<i64>,
 }
 
 impl Frozen {
@@ -560,7 +562,11 @@ pub(super) fn capture(
     })
 }
 
-pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOutcome {
+pub(super) fn prepare(
+    snapshot: &Snapshot,
+    allow_activation: bool,
+    authority: Option<&crate::injector::authority::PasteAttempt>,
+) -> PrepareOutcome {
     if !is_main_thread() {
         return PrepareOutcome::Refused;
     }
@@ -653,13 +659,20 @@ pub(super) fn prepare(snapshot: &Snapshot, allow_activation: bool) -> PrepareOut
                 return PrepareOutcome::RefusedClipboardOnly;
             }
 
+            if authority.is_some_and(|attempt| !attempt.is_current()) {
+                state.frozen.remove(token);
+                return PrepareOutcome::RefusedClipboardOnly;
+            }
             match route {
                 DeliveryRoute::CurrentEditable if !switched_away => PrepareOutcome::Ready,
                 DeliveryRoute::CurrentEditable | DeliveryRoute::RecentMedia => {
-                    let activated = state
-                        .frozen
-                        .get(token)
-                        .is_some_and(request_recent_destination_activation);
+                    let activated = state.frozen.get_mut(token).is_some_and(|frozen| {
+                        frozen.activation_before =
+                            Some(crate::frontmost::app_transition_snapshot());
+                        frozen.activation_clipboard_change =
+                            crate::injector::pasteboard_change_count();
+                        request_recent_destination_activation(frozen, authority)
+                    });
                     if activated {
                         PrepareOutcome::WaitForActivation
                     } else {
@@ -701,22 +714,18 @@ pub(super) fn abort(snapshot: &Snapshot, pasteboard_change: Option<i64>) {
             {
                 return;
             }
-            if let (Some(expected_range), Some(pasteboard_change)) =
-                (decode_range(frozen.range.as_type()), pasteboard_change)
-            {
-                maybe_restore_media_before_post(
-                    &frozen,
-                    expected_range,
-                    frozen.prepared_character_count,
-                    pasteboard_change,
-                );
-            }
+            rollback_before_post(&frozen, pasteboard_change);
             state.invalidate_candidate();
         });
     });
 }
 
-pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) -> InsertOutcome {
+pub(super) fn insert(
+    snapshot: &Snapshot,
+    text: &str,
+    pasteboard_change: i64,
+    authority: Option<&crate::injector::authority::PasteAttempt>,
+) -> InsertOutcome {
     if !is_main_thread() {
         return InsertOutcome::Refused;
     }
@@ -742,7 +751,9 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
                     && validate_frozen_candidate(&state, frozen)
             });
             if !valid {
-                state.frozen.remove(token);
+                if let Some(frozen) = state.frozen.remove(token) {
+                    rollback_before_post(&frozen, Some(pasteboard_change));
+                }
                 return InsertOutcome::Refused;
             }
 
@@ -765,29 +776,22 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
             let character_count_before =
                 copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
 
-            let ready_to_post = destination_is_active(&frozen)
-                && validate_exact_field(&frozen, expected_range)
-                && (!frozen.hands_off()
-                    || frozen.prepared_character_count == character_count_before)
-                && crate::injector::pasteboard_change_count() == Some(pasteboard_change);
+            let ready_to_post = crate::injector::authority::validated_side_effect(
+                || validate_exact_field(&frozen, expected_range)
+                    && (!frozen.hands_off()
+                        || frozen.prepared_character_count == character_count_before),
+                || crate::injector::simulate_smart_paste_native_guarded(authority, || {
+                    // All field AX work and event construction precede the live
+                    // systemwide focus query. Cancellation remains nonblocking;
+                    // commitment follows the bounded query and clipboard check.
+                    generation_is_current(frozen.generation)
+                        && destination_is_active(&frozen)
+                        && generation_is_current(frozen.generation)
+                        && crate::injector::pasteboard_change_count() == Some(pasteboard_change)
+                }).is_ok_and(|decision| decision.is_posted()),
+            );
             if !ready_to_post {
-                maybe_restore_media_before_post(
-                    &frozen,
-                    expected_range,
-                    frozen.prepared_character_count,
-                    pasteboard_change,
-                );
-                state.invalidate_candidate();
-                return InsertOutcome::Refused;
-            }
-
-            if crate::injector::simulate_smart_paste_native().is_err() {
-                maybe_restore_media_before_post(
-                    &frozen,
-                    expected_range,
-                    frozen.prepared_character_count,
-                    pasteboard_change,
-                );
+                rollback_before_post(&frozen, Some(pasteboard_change));
                 state.invalidate_candidate();
                 return InsertOutcome::Refused;
             }
@@ -817,6 +821,8 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
                         character_count_before,
                         character_count_after,
                     );
+                tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "confirmation",
+                    outcome_code = if confirmed { "structurally_confirmed" } else { "unconfirmed" }, "Paste safety decision");
                 if confirmed {
                     maybe_restore_media_after_post(
                         &frozen,
@@ -825,6 +831,10 @@ pub(super) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) ->
                         pasteboard_change,
                     );
                 }
+            }
+            if !verifies_after_post(frozen.route, frozen.switched_away_from.is_some()) {
+                tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "confirmation",
+                    outcome_code = "not_observed", "Paste safety decision");
             }
             state.invalidate_candidate();
             InsertOutcome::Posted
@@ -896,6 +906,8 @@ fn freeze_candidate(
         stage: CapabilityStage::Captured,
         prepared_character_count: None,
         switched_away_from: None,
+        activation_before: None,
+        activation_clipboard_change: None,
     };
     // One live capability is sufficient for the single recording owner and
     // bounds retained native references even if a caller abandons a snapshot.
@@ -1013,45 +1025,62 @@ fn validate_exact_field(frozen: &Frozen, expected_range: (usize, usize)) -> bool
 }
 
 fn destination_is_active(frozen: &Frozen) -> bool {
-    running_application(
-        &frozen.destination_identity,
-        frozen.destination_launch_token_bits,
-    )
-    .is_some_and(|application| application.isActive())
+    crate::frontmost::delivery_target_is_active(&frozen.destination_identity)
 }
 
-fn request_recent_destination_activation(frozen: &Frozen) -> bool {
-    request_application_activation(
-        &frozen.destination_identity,
-        frozen.destination_launch_token_bits,
-        &frozen.app,
-    )
-}
-
-fn request_application_activation(
-    identity: &DeliveryTargetSnapshot,
-    launch_token_bits: u64,
-    app: &OwnedCf,
-) -> bool {
-    // AppKit may refuse cooperative activation from background Murmur. Use
-    // the granted Accessibility capability to activate this exact application,
-    // without changing the focused field or selection. The later main-thread
-    // insertion turn must still prove that the original field gained focus.
-    attribute_settable(app.as_element(), "AXFrontmost")
-        && process_is_running(identity, launch_token_bits)
-        && set_attribute(app.as_element(), "AXFrontmost", unsafe { kCFBooleanTrue }) == AX_SUCCESS
-}
-
-fn maybe_restore_media_before_post(
+fn request_recent_destination_activation(
     frozen: &Frozen,
-    expected_range: (usize, usize),
-    expected_count: Option<usize>,
-    pasteboard_change: i64,
-) {
-    let Some(expected_count) = expected_count else {
+    authority: Option<&crate::injector::authority::PasteAttempt>,
+) -> bool {
+    if !attribute_settable(frozen.app.as_element(), "AXFrontmost") {
+        return false;
+    }
+    let (return_to, _) = frozen.return_target();
+    // Complete all AX queries before claiming the native mutation. The final
+    // live focus query is bounded and cannot block cancel() on an attempt lock.
+    if !generation_is_current(frozen.generation)
+        || !process_is_running(
+            &frozen.destination_identity,
+            frozen.destination_launch_token_bits,
+        )
+        || !crate::frontmost::delivery_target_is_active(return_to)
+        || frozen.activation_clipboard_change.is_none()
+        || frozen.activation_clipboard_change != crate::injector::pasteboard_change_count()
+    {
+        return false;
+    }
+    let activate = || {
+        // The live focus query can itself take time. Recheck revocation and
+        // immutable process/clipboard ownership immediately before native IPC.
+        generation_is_current(frozen.generation)
+            && process_is_running(
+                &frozen.destination_identity,
+                frozen.destination_launch_token_bits,
+            )
+            && frozen.activation_clipboard_change == crate::injector::pasteboard_change_count()
+            && set_attribute(frozen.app.as_element(), "AXFrontmost", unsafe {
+                kCFBooleanTrue
+            }) == AX_SUCCESS
+    };
+    match authority {
+        Some(attempt) => attempt.mutate(activate).unwrap_or(false),
+        None => activate(),
+    }
+}
+
+fn rollback_before_post(frozen: &Frozen, pasteboard_change: Option<i64>) {
+    let (Some(expected_range), Some(expected_count)) = (
+        decode_range(frozen.range.as_type()),
+        frozen.prepared_character_count,
+    ) else {
         return;
     };
-    maybe_restore_media(frozen, expected_range, expected_count, pasteboard_change);
+    // Before any delivery clipboard write, the activation snapshot is the
+    // ownership token. Cancellation can roll back without inventing a write.
+    let Some(clipboard) = pasteboard_change.or(frozen.activation_clipboard_change) else {
+        return;
+    };
+    maybe_restore_media(frozen, expected_range, expected_count, clipboard);
 }
 
 fn maybe_restore_media_after_post(
@@ -1069,22 +1098,46 @@ fn maybe_restore_media(
     expected_count: usize,
     pasteboard_change: i64,
 ) {
-    let (return_to, return_launch_token_bits) = frozen.return_target();
-    if !frozen.hands_off()
-        || crate::injector::pasteboard_change_count() != Some(pasteboard_change)
-        || !destination_is_active(frozen)
-        || !validate_exact_field(frozen, expected_range)
-        || copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters")
-            != Some(expected_count)
-        || !process_is_running(return_to, return_launch_token_bits)
-    {
+    if !frozen.hands_off() || frozen.activation_before.is_none() {
         return;
     }
-    if let Some(app) =
-        complete_identity(return_to).and_then(|identity| create_application(identity.process_id))
-    {
-        let _ = request_application_activation(return_to, return_launch_token_bits, &app);
-    }
+    let (return_to, return_launch_token_bits) = frozen.return_target();
+    let restored = crate::injector::authority::validated_side_effect(
+        || {
+            validate_exact_field(frozen, expected_range)
+                && copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters")
+                    == Some(expected_count)
+        },
+        || {
+            let Some(app) = complete_identity(return_to)
+                .and_then(|identity| create_application(identity.process_id))
+            else {
+                return false;
+            };
+            // Settable is an AX query too: finish it before the final lease,
+            // process/activation and (when supplied) clipboard checks.
+            if !attribute_settable(app.as_element(), "AXFrontmost") {
+                return false;
+            }
+            let before = frozen.activation_before.expect("activation lease present");
+            let current = crate::frontmost::app_transition_snapshot();
+            if !crate::injector::authority::rollback_transition_matches(
+                (before.activation_generation, before.space_generation),
+                (current.activation_generation, current.space_generation),
+            ) || !process_is_running(return_to, return_launch_token_bits)
+                || !destination_is_active(frozen)
+                || !process_is_running(return_to, return_launch_token_bits)
+                || crate::injector::pasteboard_change_count() != Some(pasteboard_change)
+            {
+                return false;
+            }
+            // There is no OS-wide atomic focus+paste/activation API. This is
+            // the last in-process proof immediately before the native mutation.
+            set_attribute(app.as_element(), "AXFrontmost", unsafe { kCFBooleanTrue }) == AX_SUCCESS
+        },
+    );
+    tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "rollback",
+        outcome_code = if restored { "restored" } else { "refused" }, "Paste safety decision");
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

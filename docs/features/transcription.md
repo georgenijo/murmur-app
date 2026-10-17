@@ -474,7 +474,16 @@ is then delivered exactly once.
 Core ML and Whisper Tiny/Base offer a display-only live preview while capture
 remains in `Recording`. The shared ticker waits for at least 800ms of audio
 and permits only one decode in flight across recording generations, skipping
-busy ticks. Core ML snapshots at most the trailing 20 seconds every 700ms.
+busy ticks. Core ML snapshots at most the trailing 20 seconds every 700ms. A tick uses
+only an already-loaded matching shared backend, skipping contention or an
+unprepared model. Ownership is rechecked after acquiring the backend and before
+decode. An already-running Core ML call is not cancellable and may still delay
+the final pass; stopped or superseded results cannot publish. Empty Core ML
+previews are debug diagnostics; final empty output and inference errors remain
+warnings, with numeric preview ownership attached to backend diagnostics.
+A generation-bound, content-free `pipeline.preview_vad_disagreement` event
+records when a nonempty preview precedes final VAD no-speech. This evidence does
+not override final VAD or authorize provisional delivery.
 Whisper snapshots the trailing six seconds every 1.5 seconds; it uses a separate
 recording-local CPU context with two threads and a three-second decode deadline.
 Stop, cancellation, or a newer generation aborts that provisional decode. Final

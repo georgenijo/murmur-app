@@ -1,4 +1,6 @@
+pub(crate) mod authority;
 use arboard::Clipboard;
+use authority::{AttemptStop, PasteAttempt, PostDecision};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -28,6 +30,7 @@ pub(crate) enum InjectionOutcome {
     NoText,
     ClipboardOnly(ClipboardOnlyReason),
     AutoPasted,
+    Stopped(AttemptStop),
 }
 
 impl InjectionOutcome {
@@ -35,6 +38,7 @@ impl InjectionOutcome {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::NoText => "no_text",
+            Self::Stopped(reason) => reason.code(),
             Self::AutoPasted => "auto_pasted",
             Self::ClipboardOnly(reason) => match reason {
                 ClipboardOnlyReason::AutoPasteDisabled => "clipboard_only_auto_paste_disabled",
@@ -57,6 +61,31 @@ pub(crate) struct InjectionResult {
     pub verification: Option<crate::frontmost::VerificationEvidence>,
 }
 
+#[derive(Debug)]
+enum InjectionError {
+    ClipboardWrite(String),
+    Stopped(AttemptStop),
+}
+
+impl From<String> for InjectionError {
+    fn from(error: String) -> Self {
+        Self::ClipboardWrite(error)
+    }
+}
+
+fn resolved_injection(
+    result: Result<InjectionResult, InjectionError>,
+) -> Result<InjectionResult, String> {
+    match result {
+        Err(InjectionError::Stopped(reason)) => Ok(InjectionResult {
+            outcome: InjectionOutcome::Stopped(reason),
+            verification: None,
+        }),
+        Err(InjectionError::ClipboardWrite(error)) => Err(error),
+        Ok(result) => Ok(result),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct PasteboardChangeToken(i64);
 
@@ -76,9 +105,9 @@ fn refuse_after_clipboard_write<W, C>(
     verification: crate::frontmost::VerificationEvidence,
     write_clipboard: &mut W,
     pasteboard_unchanged: &mut C,
-) -> Result<FirstPastePreflight, String>
+) -> Result<FirstPastePreflight, InjectionError>
 where
-    W: FnMut() -> Result<Option<i64>, String>,
+    W: FnMut() -> Result<Option<i64>, InjectionError>,
     C: FnMut(PasteboardChangeToken) -> bool,
 {
     let pasteboard_change = write_clipboard()?.map(PasteboardChangeToken);
@@ -97,11 +126,11 @@ fn first_paste_preflight<V, F, W, C>(
     mut focused_state: F,
     mut write_clipboard: W,
     mut pasteboard_unchanged: C,
-) -> Result<FirstPastePreflight, String>
+) -> Result<FirstPastePreflight, InjectionError>
 where
     V: FnMut() -> crate::frontmost::VerificationEvidence,
     F: FnMut() -> FocusedFieldState,
-    W: FnMut() -> Result<Option<i64>, String>,
+    W: FnMut() -> Result<Option<i64>, InjectionError>,
     C: FnMut(PasteboardChangeToken) -> bool,
 {
     let initial_verification = verify();
@@ -170,17 +199,21 @@ fn retry_paste_if_safe<F, V, C, P>(
     mut verify: V,
     mut pasteboard_unchanged: C,
     mut paste: P,
+    authority: Option<&PasteAttempt>,
 ) -> (InjectionOutcome, crate::frontmost::VerificationEvidence)
 where
     F: FnMut() -> FocusedFieldState,
     V: FnMut() -> crate::frontmost::VerificationEvidence,
     C: FnMut() -> bool,
-    P: FnMut() -> Result<(), String>,
+    P: FnMut() -> Result<PostDecision, String>,
 {
     let focused_state = focused_state();
     let verification = verify();
-    let pasteboard_unchanged = pasteboard_unchanged();
-    if !pasteboard_unchanged {
+    let clipboard_current = pasteboard_unchanged();
+    if let Some(reason) = authority.and_then(PasteAttempt::stop_reason) {
+        return (InjectionOutcome::Stopped(reason), verification);
+    }
+    if !clipboard_current {
         return (
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
             verification,
@@ -199,10 +232,25 @@ where
         );
     }
     let outcome = match paste() {
-        Ok(()) => InjectionOutcome::AutoPasted,
+        Ok(decision) => post_decision_outcome(decision, &mut pasteboard_unchanged),
         Err(_) => InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::PasteFailed),
     };
     (outcome, verification)
+}
+
+fn post_decision_outcome(
+    decision: PostDecision,
+    mut clipboard_current: impl FnMut() -> bool,
+) -> InjectionOutcome {
+    match decision {
+        PostDecision::Posted => InjectionOutcome::AutoPasted,
+        PostDecision::Stopped(reason) => InjectionOutcome::Stopped(reason),
+        PostDecision::Refused => InjectionOutcome::ClipboardOnly(if clipboard_current() {
+            ClipboardOnlyReason::TargetChanged
+        } else {
+            ClipboardOnlyReason::ClipboardChanged
+        }),
+    }
 }
 
 pub(crate) fn clipboard_write_generation() -> u64 {
@@ -248,6 +296,21 @@ pub(crate) fn pasteboard_change_count() -> Option<i64> {
 fn write_clipboard_text_with_change_count(text: &str) -> Result<Option<i64>, String> {
     write_clipboard_text(text)?;
     Ok(pasteboard_change_count())
+}
+
+fn authorized_clipboard_write(
+    text: &str,
+    authority: Option<&PasteAttempt>,
+) -> Result<Option<i64>, InjectionError> {
+    match authority {
+        Some(attempt) => attempt
+            .mutate(|| write_clipboard_text_with_change_count(text))
+            .map_err(InjectionError::Stopped)?
+            .map_err(InjectionError::ClipboardWrite),
+        None => {
+            write_clipboard_text_with_change_count(text).map_err(InjectionError::ClipboardWrite)
+        }
+    }
 }
 
 fn smart_refusal_reason(
@@ -391,20 +454,46 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
 
 /// Exact-field delivery for the opt-in mode. The destination module chooses
 /// its transport once and never falls through to the ordinary paste route.
-pub(crate) fn inject_with_destination(
+pub(crate) fn inject_with_destination_authorized(
     text: &str,
     auto_paste: bool,
     delay_ms: u64,
     target: &crate::frontmost::DeliveryTargetSnapshot,
     smart: &crate::smart_destination::Snapshot,
+    authority: Option<&PasteAttempt>,
 ) -> Result<InjectionResult, String> {
+    let result = resolved_injection(inject_with_destination(
+        text, auto_paste, delay_ms, target, smart, authority,
+    ));
+    if let Ok(InjectionResult {
+        outcome: InjectionOutcome::Stopped(reason),
+        ..
+    }) = &result
+    {
+        tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "authority",
+            outcome_code = reason.code(), "Paste safety decision");
+    }
+    result
+}
+
+fn inject_with_destination(
+    text: &str,
+    auto_paste: bool,
+    delay_ms: u64,
+    target: &crate::frontmost::DeliveryTargetSnapshot,
+    smart: &crate::smart_destination::Snapshot,
+    authority: Option<&PasteAttempt>,
+) -> Result<InjectionResult, InjectionError> {
+    if let Some(reason) = authority.and_then(PasteAttempt::stop_reason) {
+        return Err(InjectionError::Stopped(reason));
+    }
     if matches!(smart, crate::smart_destination::Snapshot::Disabled) || !auto_paste {
-        return inject_text(text, auto_paste, delay_ms, target);
+        return inject_text_with_policy(text, auto_paste, delay_ms, target, false, authority);
     }
     if smart.uses_normal_paste() {
         // Unverified: Smart destination proved no field, so use normal paste,
         // but keep its secure-field promise against the field focused now.
-        return inject_text_with_policy(text, auto_paste, delay_ms, target, true);
+        return inject_text_with_policy(text, auto_paste, delay_ms, target, true, authority);
     }
     if text.trim().is_empty() {
         return Ok(InjectionResult {
@@ -412,7 +501,7 @@ pub(crate) fn inject_with_destination(
             verification: None,
         });
     }
-    let pasteboard_change = write_clipboard_text_with_change_count(text)?;
+    let pasteboard_change = authorized_clipboard_write(text, authority)?;
     let accessible = is_accessibility_enabled();
     let outcome = match pasteboard_change {
         None => InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
@@ -422,11 +511,17 @@ pub(crate) fn inject_with_destination(
         Some(_) if !accessible => {
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied)
         }
-        Some(change) => match crate::smart_destination::insert(smart, text, change) {
+        Some(change) => match crate::smart_destination::insert(smart, text, change, authority) {
             crate::smart_destination::InsertOutcome::Posted => InjectionOutcome::AutoPasted,
-            crate::smart_destination::InsertOutcome::Refused => InjectionOutcome::ClipboardOnly(
-                smart_refusal_reason(pasteboard_change, pasteboard_change_count()),
-            ),
+            crate::smart_destination::InsertOutcome::Refused => {
+                match authority.and_then(PasteAttempt::stop_reason) {
+                    Some(reason) => InjectionOutcome::Stopped(reason),
+                    None => InjectionOutcome::ClipboardOnly(smart_refusal_reason(
+                        pasteboard_change,
+                        pasteboard_change_count(),
+                    )),
+                }
+            }
         },
     };
     Ok(InjectionResult {
@@ -442,15 +537,6 @@ pub(crate) fn inject_with_destination(
 /// accepted recording transition. Target verification is repeated after the
 /// focused-field query and before either key post, closing focus changes during
 /// those potentially blocking operations.
-pub(crate) fn inject_text(
-    text: &str,
-    auto_paste: bool,
-    delay_ms: u64,
-    delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
-) -> Result<InjectionResult, String> {
-    inject_text_with_policy(text, auto_paste, delay_ms, delivery_target, false)
-}
-
 /// `refuse_secure` keeps a positively secure focused field clipboard-only.
 fn inject_text_with_policy(
     text: &str,
@@ -458,7 +544,8 @@ fn inject_text_with_policy(
     delay_ms: u64,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
     refuse_secure: bool,
-) -> Result<InjectionResult, String> {
+    authority: Option<&PasteAttempt>,
+) -> Result<InjectionResult, InjectionError> {
     let inject_started = Instant::now();
     tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
@@ -473,7 +560,7 @@ fn inject_text_with_policy(
 
     // If auto-paste is disabled, we're done
     if !auto_paste {
-        write_clipboard_text(text)?;
+        authorized_clipboard_write(text, authority)?;
         let clipboard_ms = inject_started.elapsed().as_millis() as u64;
         tracing::info!(target: "pipeline", "inject_text: text copied to clipboard");
         tracing::info!(
@@ -497,7 +584,7 @@ fn inject_text_with_policy(
 
         // Check accessibility permission before attempting paste simulation (macOS only)
         if !is_accessibility_enabled() {
-            write_clipboard_text(text)?;
+            authorized_clipboard_write(text, authority)?;
             tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
             return Ok(InjectionResult {
                 outcome: InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied),
@@ -527,7 +614,7 @@ fn inject_text_with_policy(
             },
             || {
                 let started = Instant::now();
-                let result = write_clipboard_text_with_change_count(text);
+                let result = authorized_clipboard_write(text, authority);
                 clipboard_ms = started.elapsed().as_millis() as u64;
                 result
             },
@@ -569,8 +656,14 @@ fn inject_text_with_policy(
 
         // Simulate paste keystroke, retry once on failure
         let key_event_started = Instant::now();
-        let outcome = match simulate_paste_native() {
-            Ok(()) => InjectionOutcome::AutoPasted,
+        let final_check = || {
+            crate::frontmost::delivery_target_is_active(delivery_target)
+                && pasteboard_change_count() == Some(expected_pasteboard_change.0)
+        };
+        let outcome = match post_paste_native_guarded(3, authority, final_check) {
+            Ok(decision) => post_decision_outcome(decision, || {
+                pasteboard_change_count() == Some(expected_pasteboard_change.0)
+            }),
             Err(first_err) => {
                 tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
                 thread::sleep(Duration::from_millis(100));
@@ -590,7 +683,8 @@ fn inject_text_with_policy(
                     // nothing else wrote the clipboard after Murmur. Never
                     // read arbitrary clipboard content on this path.
                     || pasteboard_change_count() == Some(expected_pasteboard_change.0),
-                    simulate_paste_native,
+                    || post_paste_native_guarded(3, authority, final_check),
+                    authority,
                 );
                 verification = retry_verification;
                 retry_outcome
@@ -657,23 +751,51 @@ pub(crate) fn simulate_paste_native() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn simulate_smart_paste_native() -> Result<(), String> {
-    post_paste_native(10)
+pub(crate) fn simulate_smart_paste_native_guarded(
+    authority: Option<&PasteAttempt>,
+    final_check: impl FnOnce() -> bool,
+) -> Result<PostDecision, String> {
+    post_paste_native_guarded(10, authority, final_check)
 }
 
 #[cfg(target_os = "macos")]
 fn post_paste_native(hold_ms: u64) -> Result<(), String> {
+    post_paste_native_guarded(hold_ms, None, || true).map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn post_paste_native_guarded(
+    hold_ms: u64,
+    authority: Option<&PasteAttempt>,
+    final_check: impl FnOnce() -> bool,
+) -> Result<PostDecision, String> {
     use core_graphics::event::CGEventTapLocation;
     use std::thread;
     use std::time::Duration;
 
     let (key_down, key_up) = create_native_paste_events()?;
-    key_down.post(CGEventTapLocation::HID);
-    // Some applications drop an instantaneous down/up burst. This remains far
-    // below the old subprocess cost while matching hardware-like key timing.
-    thread::sleep(Duration::from_millis(hold_ms));
-    key_up.post(CGEventTapLocation::HID);
-    Ok(())
+    let post = || {
+        key_down.post(CGEventTapLocation::HID);
+        // Always release the key, including when cancellation races the post.
+        thread::sleep(Duration::from_millis(hold_ms));
+        key_up.post(CGEventTapLocation::HID);
+    };
+    let posted = match authority {
+        Some(attempt) => attempt.post(final_check, post),
+        None => {
+            if final_check() {
+                post();
+                PostDecision::Posted
+            } else {
+                PostDecision::Refused
+            }
+        }
+    };
+    if !posted.is_posted() {
+        return Ok(posted);
+    }
+    tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "post", outcome_code = "key_posted", "Paste safety decision");
+    Ok(PostDecision::Posted)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1231,6 +1353,93 @@ mod focus_tests {
     }
 
     #[test]
+    fn expired_and_cancelled_entry_are_outcomes_without_clipboard_access() {
+        for (attempt, expected) in [
+            (
+                PasteAttempt::new(std::time::Duration::ZERO, 1),
+                AttemptStop::Expired,
+            ),
+            (
+                PasteAttempt::new(std::time::Duration::from_secs(1), 1),
+                AttemptStop::Cancelled,
+            ),
+        ] {
+            if expected == AttemptStop::Cancelled {
+                attempt.cancel();
+            }
+            let result = inject_with_destination_authorized(
+                "synthetic fixture",
+                true,
+                0,
+                &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+                &crate::smart_destination::Snapshot::Disabled,
+                Some(&attempt),
+            )
+            .unwrap();
+            assert_eq!(result.outcome, InjectionOutcome::Stopped(expected));
+            assert_eq!(result.outcome.code(), expected.code());
+        }
+    }
+
+    #[test]
+    fn cancelled_post_is_neither_target_change_nor_clipboard_failure() {
+        assert_eq!(
+            post_decision_outcome(PostDecision::Stopped(AttemptStop::Cancelled), || true),
+            InjectionOutcome::Stopped(AttemptStop::Cancelled)
+        );
+        let result =
+            resolved_injection(Err(InjectionError::Stopped(AttemptStop::Expired))).unwrap();
+        assert_eq!(
+            result.outcome,
+            InjectionOutcome::Stopped(AttemptStop::Expired)
+        );
+        assert!(resolved_injection(Err(InjectionError::ClipboardWrite(
+            "synthetic failure".into()
+        )))
+        .is_err());
+    }
+
+    #[test]
+    fn cancellation_during_real_preflight_validation_prevents_clipboard_write() {
+        let attempt = PasteAttempt::new(std::time::Duration::from_secs(1), 1);
+        let writes = Cell::new(0);
+        let result = first_paste_preflight(
+            || verification(VerificationOutcome::Verified),
+            || {
+                attempt.cancel();
+                FocusedFieldState::Editable
+            },
+            || {
+                attempt
+                    .mutate(|| {
+                        writes.set(writes.get() + 1);
+                        Some(7)
+                    })
+                    .map_err(InjectionError::Stopped)
+            },
+            |_| true,
+        );
+        assert!(result.is_err());
+        assert_eq!(writes.get(), 0);
+    }
+
+    #[test]
+    fn cancellation_during_real_retry_validation_prevents_key_post() {
+        let attempt = PasteAttempt::new(std::time::Duration::from_secs(1), 1);
+        let (outcome, _) = retry_paste_if_safe(
+            || {
+                attempt.cancel();
+                FocusedFieldState::Editable
+            },
+            || verification(VerificationOutcome::Verified),
+            || true,
+            || Ok(attempt.post(|| true, || panic!("cancelled retry posted"))),
+            Some(&attempt),
+        );
+        assert_ne!(outcome, InjectionOutcome::AutoPasted);
+    }
+
+    #[test]
     fn first_preflight_catches_target_switch_during_ax_and_writes_clipboard_once() {
         let mut verifications = std::collections::VecDeque::from([
             verification(VerificationOutcome::Verified),
@@ -1388,8 +1597,9 @@ mod focus_tests {
             },
             || {
                 paste_posts.set(paste_posts.get() + 1);
-                Ok(())
+                Ok(PostDecision::Posted)
             },
+            None,
         );
 
         assert_eq!(
@@ -1410,8 +1620,9 @@ mod focus_tests {
             || false,
             || {
                 paste_posts.set(paste_posts.get() + 1);
-                Ok(())
+                Ok(PostDecision::Posted)
             },
+            None,
         );
 
         assert_eq!(
@@ -1431,8 +1642,9 @@ mod focus_tests {
             || true,
             || {
                 paste_posts.set(paste_posts.get() + 1);
-                Ok(())
+                Ok(PostDecision::Posted)
             },
+            None,
         );
 
         assert_eq!(outcome, InjectionOutcome::AutoPasted);
@@ -1457,8 +1669,9 @@ mod focus_tests {
             },
             || {
                 paste_posts.set(paste_posts.get() + 1);
-                Ok(())
+                Ok(PostDecision::Posted)
             },
+            None,
         );
 
         assert_eq!(

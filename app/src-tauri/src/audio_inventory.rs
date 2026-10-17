@@ -509,7 +509,9 @@ fn start_input_topology_watch_supervisor() {
                         .unwrap_or(WATCH_RESTART_BASE_DELAY);
                     let deadline = Instant::now() + delay;
                     while !worker_shutdown.load(Ordering::Acquire) && Instant::now() < deadline {
-                        std::thread::park_timeout(Duration::from_millis(50));
+                        std::thread::park_timeout(
+                            deadline.saturating_duration_since(Instant::now()),
+                        );
                     }
                 }
             }
@@ -614,6 +616,7 @@ pub(crate) fn shutdown() {
     if let Some(supervisor) = supervisor.as_mut() {
         supervisor.shutdown.store(true, Ordering::Release);
         if let Some(join) = supervisor.join.take() {
+            join.thread().unpark();
             let _ = join.join();
         }
     }

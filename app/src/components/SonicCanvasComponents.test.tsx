@@ -351,7 +351,7 @@ describe('Sonic Canvas component details', () => {
 
     vi.useFakeTimers();
     await act(async () => {
-      clearButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clearButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     expect(onClear).not.toHaveBeenCalled();
     await act(async () => {

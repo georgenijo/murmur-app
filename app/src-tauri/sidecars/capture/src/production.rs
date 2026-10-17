@@ -1,3 +1,7 @@
+#[path = "topology_wake.rs"]
+mod topology_wake;
+use topology_wake::TopologyWake;
+
 use core_foundation_sys::base::CFTypeRef;
 use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString, CFStringRef};
 use core_graphics::display::CGDisplay;
@@ -71,7 +75,8 @@ const SYSTEM_AUDIO_FLOW_OBSERVATION: Duration = Duration::from_millis(500);
 // The passive watcher is the worker's only production session. Keep callback
 // state alive until process exit because Core Audio does not promise that a
 // failed/best-effort listener removal has drained every racing callback.
-static INPUT_TOPOLOGY_CHANGED: ProcessAtomicBool = ProcessAtomicBool::new(false);
+static INPUT_TOPOLOGY_WAKE: std::sync::OnceLock<Result<TopologyWake, ()>> =
+    std::sync::OnceLock::new();
 const LEGACY_CONTINUITY_CAPTURE_TRANSPORT: u32 = 0x6363_6170;
 const MAX_STREAM_CONFIGURATION_BYTES: usize = 64 * 1024;
 
@@ -989,10 +994,8 @@ unsafe extern "C" fn input_topology_changed(
     _addresses: *const AudioObjectPropertyAddress,
     client_data: *mut c_void,
 ) -> i32 {
-    if let Some(changed) = unsafe { (client_data as *const ProcessAtomicBool).as_ref() } {
-        // Core Audio callback boundary: one content-free atomic only. The
-        // worker's ordinary control loop serializes the notification later.
-        changed.store(true, ProcessOrdering::Release);
+    if let Some(wake) = unsafe { (client_data as *const TopologyWake).as_ref() } {
+        wake.invalidate();
     }
     0
 }
@@ -1010,10 +1013,11 @@ fn watch_input_topology(
     capture_id: u64,
     nonce: SessionNonce,
 ) -> Result<(), ()> {
-    INPUT_TOPOLOGY_CHANGED.store(false, ProcessOrdering::Release);
-    let client_data = (&INPUT_TOPOLOGY_CHANGED as *const ProcessAtomicBool)
-        .cast_mut()
-        .cast::<c_void>();
+    let wake = INPUT_TOPOLOGY_WAKE
+        .get_or_init(|| TopologyWake::new().map_err(|_| ()))
+        .as_ref()
+        .map_err(|_| ())?;
+    let client_data = (wake as *const TopologyWake).cast_mut().cast::<c_void>();
     let devices_address = input_topology_address(kAudioHardwarePropertyDevices);
     let default_address = input_topology_address(kAudioHardwarePropertyDefaultInputDevice);
     let listener: AudioObjectPropertyListenerProc = Some(input_topology_changed);
@@ -1049,7 +1053,7 @@ fn watch_input_topology(
         return Err(());
     }
 
-    let watch_result = (|| -> Result<(), ()> {
+    let watch_result = (|| -> Result<bool, ()> {
         write_production_control(
             stdout,
             capture_id,
@@ -1064,18 +1068,30 @@ fn watch_input_topology(
             .spawn(move || {
                 let mut stdin = std::io::stdin().lock();
                 while let Ok(message) = read_control(&mut stdin, capture_id, nonce) {
-                    if host_sender.send(message).is_err() {
+                    if host_sender.send(Some(message)).is_err() {
                         return;
                     }
+                    wake.notify();
                 }
-                // Stdin is the ownership channel. The parent watchdog is a
-                // second line of defence, but EOF should reap this worker now.
-                unsafe { libc::_exit(0) }
+                // EOF is ownership loss; wake the same loop for orderly teardown.
+                let _ = host_sender.send(None);
+                wake.notify();
             })
             .map_err(|_| ())?;
 
         loop {
-            if INPUT_TOPOLOGY_CHANGED.swap(false, ProcessOrdering::AcqRel) {
+            wake.wait(None).map_err(|_| ())?;
+            // Stop/EOF wins over a coalesced invalidation in the same wake.
+            match host_receiver.try_recv() {
+                Ok(Some(ProductionHostMessage::Stop | ProductionHostMessage::Cancel)) => {
+                    return Ok(true)
+                }
+                Ok(None) => return Ok(false),
+                Ok(_) => return Err(()),
+                Err(mpsc::TryRecvError::Disconnected) => return Err(()),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if wake.take_changed() {
                 write_production_control(
                     stdout,
                     capture_id,
@@ -1083,12 +1099,6 @@ fn watch_input_topology(
                     &ProductionHelperMessage::InputTopologyChanged,
                 )
                 .map_err(|_| ())?;
-            }
-            match host_receiver.recv_timeout(Duration::from_millis(25)) {
-                Ok(ProductionHostMessage::Stop | ProductionHostMessage::Cancel) => return Ok(()),
-                Ok(_) => return Err(()),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(()),
             }
         }
     })();
@@ -1107,7 +1117,10 @@ fn watch_input_topology(
             client_data,
         );
     }
-    watch_result?;
+    if !watch_result? {
+        // Preserve EOF ownership-loss exit semantics without retaining listeners.
+        return Ok(());
+    }
     write_production_control(
         stdout,
         capture_id,
@@ -2720,14 +2733,16 @@ mod tests {
 
     #[test]
     fn topology_callback_uses_process_lifetime_atomic_state() {
-        INPUT_TOPOLOGY_CHANGED.store(false, ProcessOrdering::Release);
-        let client_data = (&INPUT_TOPOLOGY_CHANGED as *const ProcessAtomicBool)
-            .cast_mut()
-            .cast::<c_void>();
+        let wake = INPUT_TOPOLOGY_WAKE
+            .get_or_init(|| TopologyWake::new().map_err(|_| ()))
+            .as_ref()
+            .unwrap();
+        wake.take_changed();
+        let client_data = (wake as *const TopologyWake).cast_mut().cast::<c_void>();
         unsafe {
             input_topology_changed(0, 0, std::ptr::null(), client_data);
         }
-        assert!(INPUT_TOPOLOGY_CHANGED.load(ProcessOrdering::Acquire));
+        assert!(wake.take_changed());
     }
 
     #[test]

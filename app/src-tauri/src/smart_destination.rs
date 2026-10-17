@@ -304,30 +304,75 @@ fn identity_relation(
 ///
 /// This is the only stage that checks the original foreground/media target.
 /// It performs no clipboard write or key post and never waits for activation.
-pub(crate) fn prepare(snapshot: &Snapshot) -> PrepareOutcome {
-    native::prepare(snapshot, true)
+pub(crate) fn prepare(
+    snapshot: &Snapshot,
+    authority: Option<&crate::injector::authority::PasteAttempt>,
+) -> PrepareOutcome {
+    trace_preparation(snapshot, native::prepare(snapshot, true, authority))
 }
 
 /// Explicit retries require a currently focused field and never activate a
 /// remembered background destination.
-pub(crate) fn prepare_focused(snapshot: &Snapshot) -> PrepareOutcome {
-    native::prepare(snapshot, false)
+pub(crate) fn prepare_focused(
+    snapshot: &Snapshot,
+    authority: Option<&crate::injector::authority::PasteAttempt>,
+) -> PrepareOutcome {
+    trace_preparation(snapshot, native::prepare(snapshot, false, authority))
+}
+
+fn trace_preparation(snapshot: &Snapshot, outcome: PrepareOutcome) -> PrepareOutcome {
+    tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "preparation",
+        route_code = snapshot.route_code(), outcome_code = match outcome {
+            PrepareOutcome::Ready => "ready",
+            PrepareOutcome::WaitForActivation => "activation_requested",
+            PrepareOutcome::Refused => "refused",
+            PrepareOutcome::RefusedClipboardOnly => "refused_clipboard_only",
+        }, "Paste safety decision");
+    outcome
 }
 
 /// Retire a prepared token without posting and, when native proof shows the
 /// activated destination is still untouched, return focus to the media app.
-/// Passing `None` only retires the token, without changing focus. This is
-/// intentionally synchronous and main-thread only.
+/// Rollback before posting is independent of clipboard ownership: `None`
+/// permits returning focus only while the activation lease and unchanged
+/// field still prove that Murmur owns the handoff. Main-thread only.
 pub(crate) fn abort(snapshot: &Snapshot, pasteboard_change: Option<i64>) {
     native::abort(snapshot, pasteboard_change);
+}
+
+/// Schedules guarded rollback even when the async delivery future is dropped
+/// during activation settling, or dispatch fails before insertion is queued.
+pub(crate) struct AbortOnDrop {
+    app: tauri::AppHandle,
+    snapshot: Snapshot,
+}
+
+impl AbortOnDrop {
+    pub(crate) fn new(app: tauri::AppHandle, snapshot: Snapshot) -> Self {
+        Self { app, snapshot }
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if matches!(self.snapshot, Snapshot::Target { .. }) {
+            let snapshot = self.snapshot.clone();
+            let _ = self.app.run_on_main_thread(move || abort(&snapshot, None));
+        }
+    }
 }
 
 /// Perform at most one native Cmd+V post for a prepared token. The pasteboard
 /// change count is rechecked inside the exact-field transport immediately
 /// before the key post. This is intentionally synchronous and may only be
 /// called from the native main thread.
-pub(crate) fn insert(snapshot: &Snapshot, text: &str, pasteboard_change: i64) -> InsertOutcome {
-    native::insert(snapshot, text, pasteboard_change)
+pub(crate) fn insert(
+    snapshot: &Snapshot,
+    text: &str,
+    pasteboard_change: i64,
+    authority: Option<&crate::injector::authority::PasteAttempt>,
+) -> InsertOutcome {
+    native::insert(snapshot, text, pasteboard_change, authority)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -620,7 +665,11 @@ mod native {
         Snapshot::Unavailable
     }
 
-    pub(super) fn prepare(_snapshot: &Snapshot, _allow_activation: bool) -> PrepareOutcome {
+    pub(super) fn prepare(
+        _snapshot: &Snapshot,
+        _allow_activation: bool,
+        _authority: Option<&crate::injector::authority::PasteAttempt>,
+    ) -> PrepareOutcome {
         PrepareOutcome::Refused
     }
 
@@ -630,6 +679,7 @@ mod native {
         _snapshot: &Snapshot,
         _text: &str,
         _pasteboard_change: i64,
+        _authority: Option<&crate::injector::authority::PasteAttempt>,
     ) -> InsertOutcome {
         InsertOutcome::Refused
     }

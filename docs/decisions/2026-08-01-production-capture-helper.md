@@ -85,3 +85,15 @@ without transcription. User cancellation remains a distinct discard path.
   overlay; non-device failures retain the generic cue.
 - This repairs the bounded-fallback contract and adds attribution evidence. It
   does not claim to remove the underlying Core Audio hang.
+
+## Passive topology wake ownership
+
+The topology helper blocks on a self-pipe rather than a periodic control timeout.
+Its Core Audio listener coalesces invalidations with an atomic and a nonblocking
+one-byte write. The pipe and listener client data live until process exit, so
+listener removal cannot race descriptor reuse or freed client data. A normal
+stdin reader publishes Stop, Cancel, or EOF and wakes the same pipe; callback
+work never allocates or acquires a mutex. The parent reader and shutdown owner
+publish state before unparking the supervisor. Parent waits retain the existing
+absolute readiness and post-Stop deadlines, and idle waiting has no periodic
+timeout. The separate bounded restart policy and inventory refresh timer remain.

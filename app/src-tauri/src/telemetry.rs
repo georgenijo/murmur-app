@@ -230,11 +230,14 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_metrics" => Some("pipeline.dictation_metrics"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
+        "pipeline.preview_vad_disagreement" => Some("pipeline.preview_vad_disagreement"),
+        "query.preview_vad_disagreement" => Some("query.preview_vad_disagreement"),
         "pipeline.dictation_preview_presentation" => {
             Some("pipeline.dictation_preview_presentation")
         }
         "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
         "pipeline.smart_destination_delivery" => Some("pipeline.smart_destination_delivery"),
+        "pipeline.paste_safety" => Some("pipeline.paste_safety"),
         "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
         "system.model_install_started" => Some("system.model_install_started"),
@@ -422,6 +425,11 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
                     | "emit_failed"
                     | "stale"
                     | "empty"
+                    | "stopped"
+                    | "model_unavailable"
+                    | "backend_unavailable"
+                    | "decode_error"
+                    | "worker_failed"
             )
         }),
         _ => false,
@@ -885,6 +893,51 @@ fn sanitize_dictation_terminal_event(data: &mut serde_json::Map<String, serde_js
     }
 }
 
+fn sanitize_paste_safety_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let phase = data.get("phase_code").and_then(serde_json::Value::as_str);
+    let outcome = data.get("outcome_code").and_then(serde_json::Value::as_str);
+    let valid = matches!(
+        (phase, outcome),
+        (
+            Some("preparation"),
+            Some(
+                "ready"
+                    | "activation_requested"
+                    | "refused"
+                    | "refused_clipboard_only"
+                    | "timed_out"
+                    | "reply_lost"
+            )
+        ) | (
+            Some("authority"),
+            Some("cancelled" | "expired" | "already_committed" | "operation_in_flight")
+        ) | (Some("post"), Some("key_posted"))
+            | (
+                Some("confirmation"),
+                Some("structurally_confirmed" | "unconfirmed" | "not_observed")
+            )
+            | (Some("rollback"), Some("restored" | "refused"))
+    );
+    let route_valid = match data.get("route_code") {
+        None => phase != Some("preparation"),
+        Some(value) => {
+            phase == Some("preparation")
+                && value.as_str().is_some_and(|route| {
+                    matches!(
+                        route,
+                        "disabled" | "clipboard_only" | "normal_paste" | "smart_target"
+                    )
+                })
+        }
+    };
+    data.retain(|key, _| {
+        key == "event_code"
+            || (valid
+                && route_valid
+                && matches!(key.as_str(), "phase_code" | "outcome_code" | "route_code"))
+    });
+}
+
 fn is_smart_destination_delivery_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
     data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("pipeline.smart_destination_delivery")
@@ -917,6 +970,10 @@ fn is_safe_smart_destination_delivery_field(key: &str, value: &serde_json::Value
                     | "clipboard_only_smart_target_unavailable"
                     | "clipboard_write_failed"
                     | "unconfirmed"
+                    | "cancelled"
+                    | "expired"
+                    | "already_committed"
+                    | "operation_in_flight"
             )
         }),
         _ => false,
@@ -1296,10 +1353,19 @@ fn sanitized_summary(
         )
     ) {
         "Dictation reliability event".to_string()
+    } else if matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some("pipeline.preview_vad_disagreement" | "query.preview_vad_disagreement")
+    ) {
+        "Preview and final VAD disagreement".to_string()
     } else if data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("pipeline.delivery_target_verified")
     {
         "Dictation delivery target verification".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.paste_safety")
+    {
+        "Paste safety decision".to_string()
     } else if data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("pipeline.smart_destination_delivery")
     {
@@ -1491,6 +1557,10 @@ fn is_safe_query_string(key: &str, value: &str) -> bool {
                 | "unsupported_model"
                 | "no_session"
                 | "stale"
+                | "stopped"
+                | "backend_unavailable"
+                | "decode_error"
+                | "worker_failed"
         ),
         "state" => matches!(
             value,
@@ -1651,6 +1721,20 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         sanitize_dictation_slo_event(obj);
         return;
     }
+    let disagreement_owner = match obj.get("event_code").and_then(serde_json::Value::as_str) {
+        Some("pipeline.preview_vad_disagreement") => Some("recording_id"),
+        Some("query.preview_vad_disagreement") => Some("query_pass_id"),
+        _ => None,
+    };
+    if let Some(owner_field) = disagreement_owner {
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => true,
+            "sample_count" => value.as_u64().is_some(),
+            key if key == owner_field => value.as_u64().is_some_and(|id| id > 0),
+            _ => false,
+        });
+        return;
+    }
     if is_dictation_partial_tick_event(obj) {
         sanitize_dictation_partial_tick_event(obj);
         return;
@@ -1663,6 +1747,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         // Terminal lifecycle records share the event file with Fleet uploads.
         // Keep the exact content-free schema in debug and release builds.
         sanitize_dictation_terminal_event(obj);
+        return;
+    }
+    if obj.get("event_code").and_then(serde_json::Value::as_str) == Some("pipeline.paste_safety") {
+        sanitize_paste_safety_event(obj);
         return;
     }
     if is_smart_destination_delivery_event(obj) {
@@ -1689,6 +1777,7 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
                 || value.as_str().is_some_and(|value| match key.as_str() {
                     "event_code" => canonical_event_code(value).is_some(),
                     "outcome" => is_safe_dictation_outcome(value),
+                    "pass_kind" => matches!(value, "preview" | "final"),
                     "error_code" => is_safe_dictation_error_code(value),
                     _ => false,
                 })
@@ -2828,9 +2917,64 @@ mod tests {
     }
 
     #[test]
+    fn coreml_pass_kind_and_preview_skip_outcomes_survive_release_sanitization() {
+        let mut data =
+            serde_json::json!({"pass_kind": "preview", "recording_id": 41, "text": "PRIVATE"});
+        sanitize_event_data("pipeline", &mut data, false);
+        assert_eq!(
+            data,
+            serde_json::json!({"pass_kind": "preview", "recording_id": 41})
+        );
+        for debug_build in [true, false] {
+            for outcome in [
+                "backend_unavailable",
+                "stopped",
+                "decode_error",
+                "worker_failed",
+            ] {
+                let mut data = serde_json::json!({"event_code":"query.partial_tick", "query_pass_id":42, "outcome":outcome, "text":"PRIVATE"});
+                sanitize_event_data("query", &mut data, debug_build);
+                assert_eq!(
+                    data,
+                    serde_json::json!({"event_code":"query.partial_tick", "query_pass_id":42, "outcome":outcome})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preview_vad_disagreement_schema_is_exact_in_every_build() {
+        for debug_build in [true, false] {
+            for (code, owner) in [
+                ("pipeline.preview_vad_disagreement", "recording_id"),
+                ("query.preview_vad_disagreement", "query_pass_id"),
+            ] {
+                assert_eq!(canonical_event_code(code), Some(code));
+                let mut data = serde_json::json!({
+                    "event_code": code, owner: 41, "sample_count": 62_050,
+                    "text": "SENTINEL_TRANSCRIPT", "other_id": 42, "nested": {"text": "PRIVATE"}
+                });
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(
+                    data,
+                    serde_json::json!({"event_code": code, owner: 41, "sample_count": 62_050})
+                );
+            }
+        }
+    }
+
+    #[test]
     fn dictation_partial_tick_schema_is_exact_and_content_free_in_every_build() {
         for debug_build in [true, false] {
-            for outcome in ["emitted", "emit_failed"] {
+            for outcome in [
+                "emitted",
+                "emit_failed",
+                "stopped",
+                "model_unavailable",
+                "backend_unavailable",
+                "decode_error",
+                "worker_failed",
+            ] {
                 let mut data = serde_json::json!({
                     "event_code": "pipeline.dictation_partial_tick",
                     "recording_id": 9,
@@ -3168,6 +3312,57 @@ mod tests {
     }
 
     #[test]
+    fn paste_safety_schema_is_bounded_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for (phase, outcome) in [
+                ("preparation", "ready"),
+                ("preparation", "activation_requested"),
+                ("preparation", "refused"),
+                ("preparation", "refused_clipboard_only"),
+                ("preparation", "timed_out"),
+                ("preparation", "reply_lost"),
+                ("authority", "cancelled"),
+                ("authority", "expired"),
+                ("authority", "already_committed"),
+                ("authority", "operation_in_flight"),
+                ("post", "key_posted"),
+                ("confirmation", "structurally_confirmed"),
+                ("confirmation", "unconfirmed"),
+                ("confirmation", "not_observed"),
+                ("rollback", "restored"),
+                ("rollback", "refused"),
+            ] {
+                let mut data = serde_json::json!({"event_code":"pipeline.paste_safety",
+                    "phase_code":phase, "outcome_code":outcome,
+                    "window_title":"synthetic-private-value", "transcript":"synthetic-private-value"});
+                if phase == "preparation" {
+                    data["route_code"] = "smart_target".into();
+                }
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(
+                    data.as_object().unwrap().len(),
+                    if phase == "preparation" { 4 } else { 3 }
+                );
+                assert!(!serde_json::to_string(&data)
+                    .unwrap()
+                    .contains("synthetic-private-value"));
+                assert_eq!(
+                    sanitized_summary(
+                        "pipeline",
+                        Some("synthetic-private-value".into()),
+                        &data,
+                        debug_build
+                    ),
+                    "Paste safety decision"
+                );
+                data["outcome_code"] = "arbitrary-native-error".into();
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data.as_object().unwrap().len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn smart_destination_delivery_schema_is_exact_and_content_free_in_every_build() {
         for debug_build in [true, false] {
             let mut data = serde_json::json!({
@@ -3213,6 +3408,10 @@ mod tests {
         use crate::injector::{ClipboardOnlyReason, InjectionOutcome};
         let outcomes = [
             InjectionOutcome::NoText,
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::Cancelled),
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::Expired),
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::AlreadyCommitted),
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::OperationInFlight),
             InjectionOutcome::AutoPasted,
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AutoPasteDisabled),
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied),

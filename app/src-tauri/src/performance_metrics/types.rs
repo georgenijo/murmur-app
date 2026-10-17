@@ -211,6 +211,7 @@ pub enum PerformanceStageV1 {
     Vad,
     ModelQueue,
     ModelLoad,
+    InferenceQueue,
     InferenceDecode,
     TranscriptTransform,
     Cleanup,

@@ -1010,6 +1010,44 @@ fn input_topology_watch_timeout(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum TopologyWaitError {
+    Shutdown,
+    Timeout,
+    Disconnected,
+}
+
+/// The reader and shutdown owner unpark this thread after publishing state.
+/// The retained unpark token closes the check/park race without periodic wakes.
+#[cfg(any(target_os = "macos", test))]
+fn wait_for_topology_event<T>(
+    receiver: &mpsc::Receiver<T>,
+    shutdown: &AtomicBool,
+    stop_sent: bool,
+    deadline: Option<Instant>,
+) -> Result<T, TopologyWaitError> {
+    loop {
+        if !stop_sent && shutdown.load(Ordering::Acquire) {
+            return Err(TopologyWaitError::Shutdown);
+        }
+        match receiver.try_recv() {
+            Ok(event) => return Ok(event),
+            Err(mpsc::TryRecvError::Disconnected) => return Err(TopologyWaitError::Disconnected),
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TopologyWaitError::Timeout);
+            }
+            thread::park_timeout(remaining);
+        } else {
+            thread::park();
+        }
+    }
+}
+
 /// Own one passive topology watcher until shutdown or protocol failure. The
 /// callback is invoked only for a content-free invalidation; callers decide
 /// when it is safe to enumerate.
@@ -1043,6 +1081,7 @@ pub(crate) fn run_input_topology_watch(
     }
 
     let (reader_sender, reader_receiver) = mpsc::channel();
+    let supervisor_thread = thread::current();
     let reader_spawn = thread::Builder::new()
         .name("murmur-input-topology-reader".to_string())
         .spawn(move || {
@@ -1053,9 +1092,11 @@ pub(crate) fn run_input_topology_watch(
                         if reader_sender.send(Some(frame)).is_err() {
                             return;
                         }
+                        supervisor_thread.unpark();
                     }
                     Err(_) => {
                         let _ = reader_sender.send(None);
+                        supervisor_thread.unpark();
                         return;
                     }
                 }
@@ -1090,7 +1131,8 @@ pub(crate) fn run_input_topology_watch(
         ) {
             break Err(message.to_string());
         }
-        match reader_receiver.recv_timeout(Duration::from_millis(50)) {
+        let deadline = stop_deadline.or_else(|| (!ready).then_some(ready_deadline));
+        match wait_for_topology_event(&reader_receiver, shutdown, stop_sent, deadline) {
             Ok(Some(ProductionFrame::Control(
                 ProductionHelperMessage::InputTopologyWatchReady,
             ))) if !ready => {
@@ -1115,8 +1157,8 @@ pub(crate) fn run_input_topology_watch(
             Ok(Some(_)) | Ok(None) => {
                 break Err("The microphone topology watcher stopped unexpectedly.".to_string())
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
+            Err(TopologyWaitError::Shutdown | TopologyWaitError::Timeout) => {}
+            Err(TopologyWaitError::Disconnected) => {
                 break Err("The microphone topology watcher disconnected.".to_string())
             }
         }
@@ -3346,6 +3388,70 @@ mod tests {
         assert_eq!(
             inventory_reaper_shutdown_action(false, deadline, deadline),
             InventoryReaperShutdownAction::Detach
+        );
+    }
+
+    #[test]
+    fn topology_wait_wakes_on_shutdown_frames_and_eof_without_polling() {
+        use std::sync::Arc;
+        for shutdown_first in [true, false] {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let worker_shutdown = shutdown.clone();
+            let (tx, rx) = mpsc::channel::<Option<u8>>();
+            let (thread_tx, thread_rx) = mpsc::channel();
+            let join = thread::spawn(move || {
+                thread_tx.send(thread::current()).unwrap();
+                wait_for_topology_event(&rx, &worker_shutdown, false, None)
+            });
+            let worker_thread = thread_rx.recv().unwrap();
+            if shutdown_first {
+                shutdown.store(true, Ordering::Release);
+            } else {
+                tx.send(None).unwrap();
+            } // Helper EOF.
+            worker_thread.unpark();
+            let result = join.join().unwrap();
+            if shutdown_first {
+                assert_eq!(result, Err(TopologyWaitError::Shutdown));
+            } else {
+                assert_eq!(result, Ok(None));
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        tx.send(1).unwrap(); // Published before entering wait: no lost wake.
+        assert_eq!(
+            wait_for_topology_event(&rx, &AtomicBool::new(false), false, None),
+            Ok(1)
+        );
+        drop(tx);
+        assert_eq!(
+            wait_for_topology_event(&rx, &AtomicBool::new(false), false, None),
+            Err(TopologyWaitError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn topology_wait_preserves_ready_and_stop_deadlines_despite_spurious_wakes() {
+        let (_tx, rx) = mpsc::channel::<()>();
+        let shutdown = AtomicBool::new(true);
+        assert_eq!(
+            wait_for_topology_event(&rx, &shutdown, false, None),
+            Err(TopologyWaitError::Shutdown)
+        );
+        // Once Stop is sent, shutdown must not spin or suppress the stop deadline.
+        thread::current().unpark();
+        assert_eq!(
+            wait_for_topology_event(
+                &rx,
+                &shutdown,
+                true,
+                Some(Instant::now() + Duration::from_millis(10))
+            ),
+            Err(TopologyWaitError::Timeout)
+        );
+        assert_eq!(
+            wait_for_topology_event(&rx, &AtomicBool::new(false), false, Some(Instant::now())),
+            Err(TopologyWaitError::Timeout)
         );
     }
 

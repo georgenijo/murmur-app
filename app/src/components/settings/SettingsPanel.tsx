@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -81,12 +81,51 @@ import {
 } from './KeyboardShortcutsSettings';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+  const id = useId();
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const dragRef = useRef<{ pointerId: number; value: number } | null>(null);
+  const committedRef = useRef(value);
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+
+  useEffect(() => {
+    committedRef.current = value;
+    if (!dragRef.current) setDraft(value);
+  }, [value]);
+
+  const commit = (next: number) => {
+    if (next === committedRef.current) return;
+    committedRef.current = next;
+    commitRef.current(next);
+  };
+  const flushDrag = () => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    commit(drag.value);
+  };
+
+  useEffect(() => {
+    const finishPointer = (event: PointerEvent) => {
+      if (dragRef.current?.pointerId === event.pointerId
+        && (event.type === 'pointercancel' || event.button === 0)) flushDrag();
+    };
+    window.addEventListener('pointerup', finishPointer);
+    window.addEventListener('pointercancel', finishPointer);
+    window.addEventListener('blur', flushDrag);
+    return () => {
+      window.removeEventListener('pointerup', finishPointer);
+      window.removeEventListener('pointercancel', finishPointer);
+      window.removeEventListener('blur', flushDrag);
+      // Navigation/cancellation saves the last visible draft once as well.
+      flushDrag();
+    };
+  }, []);
+
   return (
     <div className="settings-field">
       <div className="flex items-center justify-between">
-        <label className="text-xs text-on-surface-variant">Paste Delay</label>
+        <label htmlFor={id} className="text-xs text-on-surface-variant">Paste Delay</label>
         <span className="text-xs font-medium text-on-surface">{draft}ms</span>
       </div>
       <input
@@ -94,9 +133,24 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
         min={0}
         max={500}
         step={10}
+        id={id}
         value={draft}
-        onChange={(event) => setDraft(Number(event.target.value))}
-        onPointerUp={() => onCommit(draft)}
+        aria-valuetext={`${draft} milliseconds`}
+        onPointerDown={(event) => {
+          if (event.button === 0 && event.isPrimary && !dragRef.current) {
+            dragRef.current = { pointerId: event.pointerId, value: Number(event.currentTarget.value) };
+          }
+        }}
+        onLostPointerCapture={(event) => {
+          if (dragRef.current?.pointerId === event.pointerId) flushDrag();
+        }}
+        onBlur={flushDrag}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          setDraft(next);
+          if (dragRef.current) dragRef.current.value = next;
+          else commit(next);
+        }}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
       <p className="text-xs text-on-surface-variant">Increase this only if paste lands in the wrong window.</p>

@@ -42,15 +42,22 @@ import {
 
 const EMPTY_PAGE: MeetingPage = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
 const MAX_LIVE_SEGMENTS = 200;
+const MAX_MEETING_PAGE_SIZE = 100; // Rust's per-request clamp; loaded windows can span requests.
 
 export function useMeetings(settings: Settings) {
   const [status, setStatus] = useState<MeetingRuntimeStatus>(IDLE_MEETING_STATUS);
   const [permission, setPermission] = useState<SystemAudioPermissionState>('unknown');
   const [access, setAccess] = useState<SystemAudioAccess | null>(null);
   const [page, setPage] = useState<MeetingPage>(EMPTY_PAGE);
+  const pageRef = useRef<MeetingPage>(EMPTY_PAGE);
+  const loadedWindowRef = useRef<{ query: string; pageSize: number; pages: number } | null>(null);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [liveSegments, setLiveSegments] = useState<MeetingSegment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const pageCursorRef = useRef<{ offset: number; limit: number } | null>(null);
+  const listRequestRef = useRef<'refresh' | 'more' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
@@ -63,21 +70,111 @@ export function useMeetings(settings: Settings) {
   const terminalReceiptRef = useRef<string | null>(null);
 
   const refresh = useCallback(async (query = queryRef.current) => {
+    const previous = loadedWindowRef.current;
+    const previousTotal = pageRef.current.total;
+    const sameFilter = previous?.query === query.trim();
+    let pageSize = sameFilter ? previous.pageSize : EMPTY_PAGE.limit;
+    const pages = sameFilter ? previous.pages : 1;
+    let targetRows = pages * pageSize;
+    let maxTargetRows = targetRows;
+    // Only retain a selection that belonged to this visible filter/window.
+    const selected = sameFilter && pageRef.current.sessions.some((session) => session.id === selectedIdRef.current)
+      ? selectedIdRef.current : null;
     queryRef.current = query;
     const ticket = ++searchTicketRef.current;
+    listRequestRef.current = 'refresh';
+    pageCursorRef.current = null;
+    setLoadingMore(false);
+    setHasMore(false);
     setLoading(true);
     try {
-      const next = await listMeetings(query);
-      if (ticket !== searchTicketRef.current) return;
+      // Rebuild from offset zero so deleted rows cannot leave holes between an
+      // old prefix and a new page. Publish the entire replacement atomically.
+      const sessions = new Map<string, MeetingPage['sessions'][number]>();
+      let searchMatches: MeetingPage['searchMatches'] = {};
+      let offset = 0;
+      let total = 0;
+      let more = false;
+      do {
+        const limit = Math.min(MAX_MEETING_PAGE_SIZE, Math.max(pageSize, targetRows - offset));
+        const next = offset === 0 && limit === EMPTY_PAGE.limit
+          ? await listMeetings(query)
+          : await listMeetings(query, offset, limit);
+        if (ticket !== searchTicketRef.current) return;
+        if (offset === 0 && !sameFilter) {
+          pageSize = Math.min(MAX_MEETING_PAGE_SIZE, Math.max(1, next.limit));
+          targetRows = pageSize;
+        }
+        if (offset === 0) {
+          // Freeze the selection budget at the first response. A missing or
+          // pruned selection must not turn a refresh into a full-list scan.
+          const growthPages = sameFilter ? Math.ceil(Math.max(0, next.total - previousTotal) / pageSize) : 0;
+          maxTargetRows = targetRows + growthPages * pageSize;
+        }
+        next.sessions.forEach((session) => sessions.set(session.id, session));
+        searchMatches = { ...searchMatches, ...next.searchMatches };
+        offset += next.sessions.length;
+        total = next.total;
+        more = next.sessions.length > 0 && offset < total;
+        // New sessions can move the selected row just beyond the old window.
+        if (more && offset >= targetRows && targetRows < maxTargetRows
+          && selected && selectedIdRef.current === selected && !sessions.has(selected)) {
+          targetRows += pageSize;
+        }
+      } while (more && offset < targetRows);
+      const next = { sessions: [...sessions.values()], searchMatches, total, offset: 0, limit: pageSize };
+      pageRef.current = next;
       setPage(next);
+      loadedWindowRef.current = { query: query.trim(), pageSize, pages: Math.ceil(targetRows / pageSize) };
+      pageCursorRef.current = { offset, limit: pageSize };
+      setHasMore(more);
       setAppliedQuery(query.trim());
       setError(null);
     } catch (cause) {
       if (ticket === searchTicketRef.current) setError(String(cause));
     } finally {
-      if (ticket === searchTicketRef.current) setLoading(false);
+      if (ticket === searchTicketRef.current) {
+        listRequestRef.current = null;
+        setLoading(false);
+      }
     }
   }, []);
+
+  const loadMore = useCallback(async () => {
+    const cursor = pageCursorRef.current;
+    if (listRequestRef.current || !cursor || !hasMore) return;
+    const ticket = ++searchTicketRef.current;
+    listRequestRef.current = 'more';
+    setLoadingMore(true);
+    try {
+      const next = await listMeetings(queryRef.current, cursor.offset, Math.min(MAX_MEETING_PAGE_SIZE, cursor.limit));
+      if (ticket !== searchTicketRef.current) return;
+      // Advance by fetched rows, not unique rows: insertions can make adjacent
+      // offset pages overlap. A refresh replaces the prefix and invalidates it.
+      const offset = next.offset + next.sessions.length;
+      pageCursorRef.current = { offset, limit: next.limit };
+      setHasMore(next.sessions.length > 0 && offset < next.total);
+      const current = pageRef.current;
+      const sessions = new Map(current.sessions.map((session) => [session.id, session]));
+      next.sessions.forEach((session) => sessions.set(session.id, session));
+      const merged = {
+        ...current, total: next.total, sessions: [...sessions.values()],
+        searchMatches: { ...current.searchMatches, ...next.searchMatches },
+      };
+      pageRef.current = merged;
+      setPage(merged);
+      const loaded = loadedWindowRef.current;
+      if (loaded) loadedWindowRef.current = { ...loaded, pages: loaded.pages + 1 };
+      setError(null);
+    } catch (cause) {
+      if (ticket === searchTicketRef.current) setError(String(cause));
+    } finally {
+      if (ticket === searchTicketRef.current) {
+        listRequestRef.current = null;
+        setLoadingMore(false);
+      }
+    }
+  }, [hasMore]);
 
   const select = useCallback(async (id: string | null) => {
     const ticket = ++selectionTicketRef.current;
@@ -203,6 +300,7 @@ export function useMeetings(settings: Settings) {
     });
     return () => {
       disposed = true;
+      ++searchTicketRef.current;
       ++detailRequestTicketRef.current;
       unlisteners.forEach((unlisten) => unlisten());
     };
@@ -234,11 +332,9 @@ export function useMeetings(settings: Settings) {
         diarization: settings.meetingDiarization,
         suggestionToken,
       });
-      setPage((current) => ({
-        ...current,
-        sessions: [session, ...current.sessions.filter((item) => item.id !== session.id)],
-        total: current.total + 1,
-      }));
+      // Capture can insert/prune rows and move every offset. Rebase the list
+      // using its current search instead of prepending into a paginated prefix.
+      await refresh();
       await select(session.id);
     } catch (cause) {
       if (suggestionToken) {
@@ -250,6 +346,7 @@ export function useMeetings(settings: Settings) {
     }
   }, [
     select,
+    refresh,
     settings.meetingDiarization,
     settings.meetingEchoCancellationEnabled,
     settings.meetingMaxSessions,
@@ -488,6 +585,9 @@ export function useMeetings(settings: Settings) {
     detail,
     liveSegments,
     loading,
+    loadingMore,
+    hasMore,
+    loadMore,
     error,
     summaryStatus,
     refresh,

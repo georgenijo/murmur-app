@@ -76,11 +76,11 @@ describe('HistoryPanel', () => {
 
   async function quickClick(button: HTMLButtonElement) {
     await act(async () => {
-      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(50);
-      button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
   }
 
@@ -565,7 +565,7 @@ describe('HistoryPanel', () => {
     expect(clear).toBeTruthy();
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     expect(onClear).not.toHaveBeenCalled();
 
@@ -585,11 +585,11 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(300);
-      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(2000);
@@ -607,7 +607,7 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(300);
@@ -629,7 +629,7 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(300);
@@ -651,11 +651,11 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(50);
-      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
 
     expect(onClear).not.toHaveBeenCalled();
@@ -672,20 +672,20 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(50);
-      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     expect(onClear).not.toHaveBeenCalled();
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(50);
-      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     expect(onClear).toHaveBeenCalledOnce();
     vi.useRealTimers();
@@ -700,11 +700,11 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(50);
-      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     expect(clear.textContent).toContain('Click again to clear history');
 
@@ -716,11 +716,11 @@ describe('HistoryPanel', () => {
     // A subsequent quick click re-arms rather than committing, since the
     // earlier arm expired.
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(50);
-      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     expect(onClear).not.toHaveBeenCalled();
     expect(clear.textContent).toContain('Click again to clear history');
@@ -736,7 +736,7 @@ describe('HistoryPanel', () => {
     const clear = buttons().find((b) => b.textContent?.includes('Hold to clear history'))!;
 
     await act(async () => {
-      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
+      clear.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
     });
     await act(async () => {
       vi.advanceTimersByTime(1200);

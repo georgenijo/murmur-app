@@ -132,6 +132,79 @@ fn filter_speech_with_context(
 mod tests {
     use super::*;
 
+    /// Public synthetic speech only; never accepts a private corpus path.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "loads installed Core ML and VAD models; synthetic fixture diagnostic"]
+    fn synthetic_attenuated_speech_and_silence_diagnostic() {
+        use crate::transcriber::{
+            parse_wav_to_samples, CoreMlBackend, TranscriptionBackend, COREML_MODEL_NAME,
+        };
+        let path = vad_model_path()
+            .filter(|path| path.exists())
+            .expect("installed VAD required");
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/audio/short.wav");
+        let clean = parse_wav_to_samples(&std::fs::read(fixture).unwrap()).unwrap();
+        assert!(!clean.is_empty());
+        let mut backend = CoreMlBackend::new();
+        backend
+            .load_model(COREML_MODEL_NAME)
+            .expect("installed Core ML required");
+        for gain_db in [0, -12, -24, -30, -36, -48, -96] {
+            let gain = if gain_db == -96 {
+                0.0
+            } else {
+                10.0f32.powf(gain_db as f32 / 20.0)
+            };
+            let mut samples: Vec<f32> = clean.iter().map(|sample| sample * gain).collect();
+            samples.resize(samples.len() + 24_000, 0.0); // 1.5 seconds trailing silence.
+            let mut nonempty_previews = 0;
+            for end in (12_800..samples.len()).step_by(11_200) {
+                let window = &samples[end.saturating_sub(320_000)..end];
+                let preview = backend
+                    .transcribe_preview(
+                        window,
+                        "auto",
+                        None,
+                        true,
+                        crate::transcriber::PreviewPass::SyntheticDiagnostic,
+                    )
+                    .unwrap();
+                nonempty_previews += usize::from(!preview.trim().is_empty());
+            }
+            let (vad_speech, kept_samples, final_nonempty) = match filter_speech(
+                path.to_str().unwrap(),
+                &samples,
+                threshold_for_sensitivity(50),
+            )
+            .unwrap()
+            {
+                VadResult::NoSpeech => (false, 0, false),
+                VadResult::Speech(kept) => {
+                    let final_text = backend.transcribe(&kept, "auto", None, true).unwrap();
+                    (true, kept.len(), !final_text.trim().is_empty())
+                }
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "fixture": if gain == 0.0 { "synthetic_silence" } else { "synthetic_short" },
+                    "gain_db": gain_db, "input_samples": samples.len(), "kept_samples": kept_samples,
+                    "rms": crate::audio::compute_rms(&samples), "peak": crate::audio::compute_peak(&samples),
+                    "nonempty_previews": nonempty_previews, "vad_speech": vad_speech,
+                    "final_nonempty": final_nonempty, "disagreement": nonempty_previews > 0 && !vad_speech,
+                })
+            );
+            if gain_db == 0 {
+                assert!(nonempty_previews > 0 && vad_speech && final_nonempty);
+            }
+            if gain == 0.0 {
+                assert!(!vad_speech);
+            }
+        }
+    }
+
     #[test]
     fn zero_sensitivity_disables_vad() {
         assert!(!is_enabled(0));

@@ -401,6 +401,8 @@ pub struct AppState {
     pub recording_id: AtomicU64,
     /// Exact recording generation currently owning the single live partial decode.
     pub dictation_partial_in_flight_id: AtomicU64,
+    /// Last generation with a nonempty display-only decode; contains no text.
+    pub dictation_nonempty_preview_id: AtomicU64,
     /// Exactly-once producer guard for accepted live-dictation terminal events.
     pub dictation_telemetry: crate::dictation_telemetry::DictationTelemetry,
     /// Monotonically increasing opaque ID assigned to every post-recognition
@@ -716,6 +718,7 @@ impl Default for AppState {
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             dictation_partial_in_flight_id: AtomicU64::new(0),
+            dictation_nonempty_preview_id: AtomicU64::new(0),
             dictation_telemetry: crate::dictation_telemetry::DictationTelemetry::default(),
             transcript_session_id: AtomicU64::new(0),
             file_run_id: AtomicU64::new(0),

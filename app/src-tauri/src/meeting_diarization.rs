@@ -89,6 +89,16 @@ pub fn cancel_all() -> Result<(), String> {
 /// Every ASR operation reserves its entire model lifetime against child startup.
 pub struct ForegroundReservation;
 impl ForegroundReservation {
+    /// A preview must neither wait for nor preempt a speaker-refinement job.
+    pub(crate) fn try_acquire() -> Option<Self> {
+        let mut control = CONTROL.try_lock_or_recover()?;
+        if control.child.is_some() {
+            return None;
+        }
+        control.foreground_users += 1;
+        Some(Self)
+    }
+
     pub fn acquire() -> Result<Self, String> {
         let mut control = CONTROL.lock_or_recover();
         stop_owned(&mut control)?;
@@ -512,6 +522,59 @@ mod tests {
         );
         drop((input, output));
     }
+    #[test]
+    fn preview_reservation_skips_contended_control_before_release() {
+        let control = CONTROL.lock_or_recover();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let reservation = ForegroundReservation::try_acquire();
+            let acquired = reservation.is_some();
+            drop(reservation);
+            tx.send(acquired).unwrap();
+        });
+        let completed_while_control_held = rx.recv_timeout(Duration::from_secs(1));
+        drop(control);
+        worker.join().unwrap();
+        assert!(!completed_while_control_held.unwrap());
+    }
+
+    #[test]
+    fn preview_reservation_recovers_poison_and_balances_foreground_users() {
+        let was_poisoned = CONTROL.is_poisoned();
+        let before = CONTROL.lock_or_recover().foreground_users;
+        let poisoned = std::panic::catch_unwind(|| {
+            let _control = CONTROL.lock_or_recover();
+            panic!("intentional diarization-control poison");
+        });
+        assert!(poisoned.is_err() && CONTROL.is_poisoned());
+        let mut counts = Vec::new();
+        for _ in 0..2 {
+            let reservation = ForegroundReservation::try_acquire();
+            counts.push((
+                reservation.is_some(),
+                CONTROL.lock_or_recover().foreground_users,
+            ));
+            drop(reservation);
+            counts.push((false, CONTROL.lock_or_recover().foreground_users));
+        }
+        let retained_poison = CONTROL.is_poisoned();
+        // This fixture deliberately poisoned process-global test state. Restore
+        // its original flag only after exercising repeated production recovery.
+        if !was_poisoned {
+            CONTROL.clear_poison();
+        }
+        assert!(retained_poison);
+        assert_eq!(
+            counts,
+            [
+                (true, before + 1),
+                (false, before),
+                (true, before + 1),
+                (false, before)
+            ]
+        );
+    }
+
     #[test]
     fn foreground_reservation_prevents_new_worker_ownership() {
         let before = CONTROL.lock_or_recover().foreground_users;
