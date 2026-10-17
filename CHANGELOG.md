@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Ignore secondary mouse buttons on Delete All controls and support assistive
+  click activation with a separate confirmation.
+- Let Notetaker load meetings beyond the first 50 and keep interrupted badges
+  readable in narrow windows.
+- Save Paste Delay changes made with the keyboard or accessibility controls.
+- Recheck the foreground app immediately before posting a paste, fence expired
+  retry attempts, and restore focus after a cancelled destination handoff when
+  Murmur still owns that handoff.
+- Keep hold-to-record start and release events ordered during hold promotion.
+- Show final inference queue time separately from model preparation time.
+
+### Improved
+
+- Skip live previews when the model is busy or unavailable, distinguish preview
+  diagnostics from final results, and record content-free preview/VAD disagreements.
+- Wake passive microphone topology watchers on events instead of frequent polling.
+- Clarify idle keyboard diagnostics and document the actual 50 ms retrigger gap.
+
 ## [0.51.14] - 2026-10-17
 
 ### Fixed
