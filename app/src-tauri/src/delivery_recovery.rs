@@ -122,6 +122,18 @@ impl DeliveryRecoveryState {
     pub(crate) fn latest(&self) -> Option<LastDelivery> {
         self.latest.lock_or_recover().clone()
     }
+
+    /// An uncertain newer write must not leave Paste Last pointing at older
+    /// text. A late completion cannot invalidate a subsequently retained run.
+    pub(crate) fn forget_through(&self, recording_id: u64) {
+        let mut latest = self.latest.lock_or_recover();
+        if latest
+            .as_ref()
+            .is_some_and(|entry| entry.recording_id <= recording_id)
+        {
+            *latest = None;
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -452,6 +464,32 @@ mod tests {
         assert_eq!(latest.text, "hello");
         assert_eq!(latest.delay_ms, 500);
         assert!(matches!(latest.target, DeliveryTargetSnapshot::Incomplete));
+    }
+
+    #[test]
+    fn uncertain_delivery_retires_older_text_but_not_a_newer_result() {
+        let state = DeliveryRecoveryState::default();
+        let remember = |id| {
+            state.remember(
+                id,
+                format!("recording {id}"),
+                DeliveryTargetSnapshot::Incomplete,
+                crate::smart_destination::Snapshot::Disabled,
+                0,
+                None,
+            )
+        };
+        remember(1);
+        state.forget_through(2);
+        assert!(
+            state.latest().is_none(),
+            "Paste Last must not replay recording 1 after an uncertain write of 2"
+        );
+        remember(3);
+        state.forget_through(2);
+        assert_eq!(state.latest().unwrap().recording_id, 3);
+        state.forget_through(3);
+        assert!(state.latest().is_none());
     }
     #[test]
     fn corrections_build_on_approved_text_and_cannot_replace_a_newer_delivery() {

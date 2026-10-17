@@ -2770,6 +2770,10 @@ async fn run_transcription_pipeline(
                     }
                 }
                 if let injector::InjectionOutcome::Stopped(reason) = result.outcome {
+                    app_handle
+                        .state::<State>()
+                        .delivery_recovery
+                        .forget_through(recording_id);
                     tracing::info!(target: "pipeline", reason_code = reason.code(), "Text delivery stopped before completion");
                     emit_auto_paste_failure_if_current(app_handle, app_state, recording_id,
                         "Text delivery stopped before completion. Check the destination and clipboard before pasting.");
@@ -2806,6 +2810,10 @@ async fn run_transcription_pipeline(
                 });
             }
             Ok(Err(_)) => {
+                app_handle
+                    .state::<State>()
+                    .delivery_recovery
+                    .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
                 emit_auto_paste_failure_if_current(
                     app_handle,
@@ -2816,6 +2824,10 @@ async fn run_transcription_pipeline(
                 DictationDeliveryOutcome::Unconfirmed
             }
             Err(_) => {
+                app_handle
+                    .state::<State>()
+                    .delivery_recovery
+                    .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection timed out");
                 emit_auto_paste_failure_if_current(
                     app_handle,
