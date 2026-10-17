@@ -6129,7 +6129,7 @@ pub async fn transcribe_file(
     let mut stages = vec![
         StageTimingV1::measured(PerformanceStageV1::FileDecode, file_decode_ms),
         StageTimingV1::measured(PerformanceStageV1::Vad, vad_ms),
-        StageTimingV1::measured(PerformanceStageV1::ModelQueue, load_report.lock_wait_ms),
+        StageTimingV1::measured(PerformanceStageV1::InferenceQueue, load_report.lock_wait_ms),
         StageTimingV1::measured(PerformanceStageV1::ModelLoad, model_load_ms),
         StageTimingV1::measured(PerformanceStageV1::InferenceDecode, decode_ms),
         StageTimingV1::measured(PerformanceStageV1::TranscriptTransform, transform_ms),

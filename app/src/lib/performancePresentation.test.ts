@@ -39,6 +39,14 @@ describe('performance presentation semantics', () => {
     });
   });
 
+  it('shows final inference queue for file transcription while retaining legacy queue rows', () => {
+    const run = makeRun({ kind: 'fileTranscription', correlation: { kind: 'fileTranscription', fileRunId: 9 } });
+    expect(orderedStages(run).map(timing => timing.stage)).toContain('inferenceQueue');
+    run.stages = run.stages.filter(timing => timing.stage !== 'inferenceQueue');
+    expect(orderedStages(run).map(timing => timing.stage)).toContain('modelQueue');
+    expect(orderedStages(run).map(timing => timing.stage)).not.toContain('inferenceQueue');
+  });
+
   it('orders each run kind without inventing stage offsets', () => {
     expect(orderedStages(makeRun()).map(stage => stage.stage)).toEqual([
       'captureFinalization',

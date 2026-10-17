@@ -74,6 +74,7 @@ const STAGES_BY_KIND: Record<PerformanceRunKindV1, readonly PerformanceStageV1[]
     'vad',
     'modelQueue',
     'modelLoad',
+    'inferenceQueue',
     'inferenceDecode',
     'transcriptTransform',
     'cleanup',
