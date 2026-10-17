@@ -132,8 +132,8 @@
   --ui-motion-fast: 120ms;
   --ui-motion-standard: 200ms;
   --ui-ease-out: cubic-bezier(.2, .86, .24, 1);
-  --ui-sidebar-width: 10rem;
-  --ui-sidebar-compact-width: 3.5rem;
+  --ui-sidebar-width: 200px;
+  --ui-sidebar-compact-width: 184px;
   --ui-dashboard-inset: 1rem;
   --ui-dashboard-compact-inset: 0.75rem;
   --ui-dashboard-rail: 13.25rem;
@@ -241,6 +241,46 @@
   --color-ring: var(--murmur-primary);
   --radius-sona: 0.75rem;
   --color-danger-border: var(--danger-border);
+}
+
+/* The main webview is an app viewport. Only its content panes may scroll.
+   Keep this opt-in: diagnostics, overlays and review windows import this CSS. */
+html.murmur-main-window,
+html.murmur-main-window body,
+html.murmur-main-window #root {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.murmur-main-window #root {
+  position: fixed;
+  inset: 0;
+}
+
+/* First-run gates precede the app shell. Keep their overflow reachable inside
+   the locked viewport, and center only when the content fits. */
+html.murmur-main-window .main-first-run,
+html.murmur-main-window .main-first-run > div {
+  height: 100%;
+}
+
+html.murmur-main-window .main-first-run-model > div {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  justify-content: safe center;
+}
+
+html.murmur-main-window .main-first-run-model > div > div {
+  flex-shrink: 0;
+}
+
+html.murmur-main-window .main-first-run-onboarding > div > div {
+  align-items: safe center;
+  overscroll-behavior-y: contain;
 }
 
 body {
@@ -855,6 +895,7 @@ textarea {
   min-height: 0;
   flex-shrink: 0;
   flex-direction: column;
+  overflow: hidden;
   border-right: 1px solid var(--ui-dashboard-border-subtle);
   background: linear-gradient(
     to bottom,
@@ -863,6 +904,21 @@ textarea {
   );
   padding: var(--ui-space-4);
 }
+
+.settings-sidebar { width: var(--ui-sidebar-width); }
+
+.home-nav,
+.home-dashboard,
+.history-list,
+.insights-view,
+.meetings-list,
+.meeting-workspace,
+.settings-sidebar nav,
+[data-testid="settings-content"] {
+  overscroll-behavior-y: contain;
+}
+
+.home-sidebar .ui-main-nav-item { font-size: var(--ui-font-label); }
 
 .home-brand {
   display: flex;
@@ -969,7 +1025,7 @@ textarea {
   display: flex;
   min-height: 0;
   min-width: 0;
-  flex: 1;
+  flex: 1 0 auto;
   flex-direction: column;
 }
 
@@ -978,13 +1034,15 @@ textarea {
 .home-dashboard-top {
   display: flex;
   flex-shrink: 0;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: var(--ui-dashboard-gap);
 }
 
 .home-talk {
   min-width: 0;
-  flex: 1 1 22rem;
+  max-width: 100%;
+  flex: 0 1 auto;
   border: 1px solid var(--ui-hairline);
   border-radius: var(--ui-radius-card);
   background: var(--ui-tint-raised);
@@ -993,7 +1051,7 @@ textarea {
 }
 .home-talk-action {
   display: flex;
-  width: 100%;
+  max-width: 100%;
   align-items: center;
   gap: var(--ui-space-5);
   border-radius: inherit;
@@ -1045,7 +1103,7 @@ textarea {
 .home-talk-text { display: flex; min-width: 0; flex-direction: column; gap: 0.0625rem; line-height: 1.3; }
 .home-talk-title { display: flex; min-width: 0; align-items: center; gap: var(--ui-space-4); color: var(--murmur-on-surface); font-size: var(--ui-font-body); }
 .home-talk-title strong { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.home-talk-hint { overflow: hidden; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.home-talk-hint { overflow: hidden; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .home-talk-destination { color: var(--murmur-primary); font-weight: 600; }
 .home-talk-key {
   border: 1px solid var(--ui-hairline);
@@ -1061,8 +1119,10 @@ textarea {
 .home-record-waveform span { width: 2px; border-radius: 999px; background: var(--murmur-error); transition: height 50ms ease-out; }
 
 .home-dashboard { overflow-y: auto; }
-/* The list keeps a usable height; when the checklist is open on a short window the page scrolls instead. */
-.home-history { display: flex; min-height: 18rem; flex: 1; flex-direction: column; margin-top: var(--ui-space-6); }
+/* Home owns one scroll range, including the checklist and expanded transcripts.
+   Its children keep their natural height so short windows cannot clip content. */
+.home-history { display: flex; min-height: 18rem; flex: 1 0 auto; flex-direction: column; margin-top: var(--ui-space-6); }
+.home-history > div { flex: 1 0 auto; overflow: visible; }
 .discovery-checklist {
   flex-shrink: 0;
   margin-top: var(--ui-space-6);
@@ -1098,10 +1158,11 @@ textarea {
 .transform-practice textarea:focus { border-color: var(--murmur-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 20%, transparent); }
 /* Search wraps at its 7rem floor and then grows into free space, so the row stays whole when it fits and wraps rather than clipping when it doesn't. */
 .home-history .history-toolbar { padding-inline: 0; }
-.home-history .history-search { width: auto; max-width: 13rem; flex: 1 1 7rem; transition: max-width 250ms var(--ui-ease-out), border-color var(--ui-motion-standard), box-shadow var(--ui-motion-standard); }
-.home-history .history-search:focus-within { width: auto; max-width: 17rem; }
+.home-history .history-filter-trigger { height: var(--ui-control-standard); }
+.home-history .history-search { width: auto; max-width: 13rem; flex: 1 1 7rem; transition: border-color var(--ui-motion-standard), box-shadow var(--ui-motion-standard); }
+.home-history .history-search:focus-within { width: auto; }
 .home-history .history-filtered-note { padding-inline: 0; }
-.home-history .history-list { gap: 0; padding-inline: 0; padding-bottom: var(--ui-space-2); }
+.home-history .history-list { flex: 1 0 auto; gap: 0; overflow: visible; padding-inline: 0; padding-bottom: var(--ui-space-2); }
 .home-history .history-date-label { display: block; padding: var(--ui-space-6) 0 var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: var(--ui-track-caps); text-transform: uppercase; }
 .home-history .history-date-label:first-child { padding-top: 0; }
 /* Each day is one continuous surface: rows share side borders, are divided by
@@ -1127,10 +1188,10 @@ textarea {
 .home-history .transcript-card:hover { background: var(--ui-dashboard-hover); }
 .home-history .transcript-card[data-copied="true"] { background: color-mix(in srgb, var(--murmur-success) 9%, var(--ui-tint-raised)); }
 .home-history .transcript-card:focus-visible { z-index: 1; outline-offset: -2px; }
-.home-history .transcript-time { grid-column: 1; grid-row: 1; padding-top: 0.125rem; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); font-variant-numeric: tabular-nums; line-height: 1rem; white-space: nowrap; }
+.home-history .transcript-time { grid-column: 1; grid-row: 1; padding-top: 0.125rem; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-label); font-variant-numeric: tabular-nums; line-height: 1rem; white-space: nowrap; }
 .home-history .transcript-body { display: flex; min-width: 0; grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-start; gap: var(--ui-space-2); }
 .home-history .transcript-meta { display: flex; min-width: 0; max-width: 100%; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); margin: 0; }
-.home-history .transcript-text { align-self: stretch; padding-right: 0; font-size: var(--ui-font-label); line-height: 1.45; }
+.home-history .transcript-text { align-self: stretch; padding-right: 0; font-size: var(--ui-font-body); line-height: 1.5; }
 .home-history .transcript-actions { grid-column: 3; grid-row: 1; align-self: start; justify-self: end; margin: -0.1875rem 0 0; border: 0; padding: 0; opacity: 0; transition: opacity var(--ui-motion-fast); }
 /* Actions stay in the layout (no reflow) and appear on hover, keyboard focus, or after a copy. */
 .home-history .transcript-card:hover .transcript-actions,
@@ -1149,6 +1210,7 @@ textarea {
   flex: 0 1 auto;
   align-items: center;
   gap: var(--ui-space-4);
+  margin-left: auto;
   border: 1px solid var(--ui-hairline);
   border-radius: var(--ui-radius-card);
   background: var(--ui-tint-raised);
@@ -1156,9 +1218,9 @@ textarea {
   box-shadow: var(--ui-shadow-1);
 }
 .home-month-stat-text { display: flex; min-width: 0; flex-direction: column; gap: 0.125rem; }
-.home-month-stat-value { overflow: hidden; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.home-month-stat-value { overflow: hidden; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .home-month-stat-value strong { color: var(--murmur-on-surface); font-size: var(--ui-font-body); font-weight: 700; font-variant-numeric: tabular-nums; }
-.home-month-stat .ui-dashboard-action { flex-shrink: 0; }
+.home-month-stat .ui-dashboard-action { flex-shrink: 0; font-size: var(--ui-font-label); }
 .personalization-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-5); }
 .dashboard-eyebrow { color: var(--murmur-on-surface-variant); font-size: 0.625rem; font-weight: 700; letter-spacing: var(--ui-track-caps); text-transform: uppercase; }
 
@@ -1312,19 +1374,10 @@ textarea {
 }
 
 @media (max-width: 760px) {
-  .home-sidebar { width: var(--ui-sidebar-compact-width); align-items: center; padding-inline: var(--ui-space-4); }
-  .home-brand { justify-content: center; padding-inline: 0; }
-  .home-brand-name,
-  .home-nav-label,
-  .home-nav-section,
-  .home-nav-badge,
-  .home-privacy-note { display: none; }
-  .home-nav { width: 100%; align-items: center; }
-  .ui-main-nav-item { width: 2.5rem; justify-content: center; padding-inline: 0; }
-  .home-sidebar-bottom { width: 100%; }
+  :root { --ui-sidebar-width: var(--ui-sidebar-compact-width); }
   .main-error-banner {
-    left: calc(var(--ui-sidebar-compact-width) + var(--ui-dashboard-compact-inset));
-    max-width: calc(100% - var(--ui-sidebar-compact-width) - var(--ui-dashboard-compact-inset) - var(--ui-dashboard-compact-inset));
+    left: calc(var(--ui-sidebar-width) + var(--ui-dashboard-compact-inset));
+    max-width: calc(100% - var(--ui-sidebar-width) - var(--ui-dashboard-compact-inset) - var(--ui-dashboard-compact-inset));
   }
   .home-dashboard,
   .insights-view,
@@ -1333,12 +1386,13 @@ textarea {
   .usage-dashboard-content[data-display-mode="page"] .usage-dashboard-sections { grid-template-columns: minmax(0, 1fr); }
 }
 
+.main-app-shell > .ui-window-header,
 .settings-window-header {
   background-image: linear-gradient(
     to right,
     var(--murmur-surface-container-low) 0,
-    var(--murmur-surface-container-low) 210px,
-    var(--murmur-background) 210px,
+    var(--murmur-surface-container-low) var(--ui-sidebar-width),
+    var(--murmur-background) var(--ui-sidebar-width),
     var(--murmur-background) 100%
   );
 }
@@ -1346,18 +1400,6 @@ textarea {
 .settings-search input[type='search']::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
-}
-
-@media (max-width: 760px) {
-  .settings-window-header {
-    background-image: linear-gradient(
-      to right,
-      var(--murmur-surface-container-low) 0,
-      var(--murmur-surface-container-low) 184px,
-      var(--murmur-background) 184px,
-      var(--murmur-background) 100%
-    );
-  }
 }
 
 /* History and Settings stay rasterized on separate compositor layers so

@@ -9,6 +9,9 @@ import {
 } from "./lib/durableUserData";
 import "./styles.css";
 
+// Only the main entry owns the document viewport; companion windows share CSS.
+document.documentElement.classList.add("murmur-main-window");
+
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
 // Seed synchronous localStorage caches from their Rust-owned durable copies

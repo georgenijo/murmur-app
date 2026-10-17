@@ -1,8 +1,17 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Markdown from 'react-markdown';
 import { AssistantWorkspace, type AssistantWorkspaceProps } from './AssistantWorkspace';
 import type { AssistantAction, AssistantActionStatus } from '../../lib/assistant';
+
+// Count real Markdown renders while keeping parsing, sanitization and the
+// resulting DOM in every workspace test.
+vi.mock('react-markdown', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-markdown')>();
+  const { createElement } = await import('react');
+  return { ...actual, default: vi.fn((props: Parameters<typeof actual.default>[0]) => createElement(actual.default, props)) };
+});
 
 const action = (status: AssistantActionStatus = 'proposed'): AssistantAction => ({
   schema_version: 1,
@@ -34,10 +43,160 @@ function props(overrides: Partial<AssistantWorkspaceProps> = {}): AssistantWorks
 }
 describe('Assistant workspace', () => {
   let container: HTMLDivElement; let root: Root;
-  beforeEach(() => { container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  beforeEach(() => { vi.mocked(Markdown).mockClear(); container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
   const button = (text: string) => Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === text)!;
   const render = async (p: AssistantWorkspaceProps) => act(async () => root.render(<AssistantWorkspace {...p} />));
+  function scrollPane(top: number, height = 1000, viewportHeight = 400) {
+    const pane = container.querySelector('[role="log"]') as HTMLDivElement;
+    let scrollTop = top;
+    let scrollHeight = height;
+    let clientHeight = viewportHeight;
+    const write = vi.fn((value: number) => { scrollTop = value; });
+    Object.defineProperties(pane, {
+      scrollTop: { configurable: true, get: () => scrollTop, set: write },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => clientHeight },
+    });
+    const scrollIntoView = vi.fn();
+    for (const node of container.querySelectorAll<HTMLElement>('*')) node.scrollIntoView = scrollIntoView;
+    return {
+      pane, write, scrollIntoView,
+      growTo: (height: number) => { scrollHeight = height; },
+      resizeTo: (height: number) => { clientHeight = height; },
+      scrollTo: async (top: number) => {
+        scrollTop = top;
+        await act(async () => pane.dispatchEvent(new Event('scroll')));
+      },
+    };
+  }
+  const reply = (text = 'An earlier reply', id = 'answer'): AssistantWorkspaceProps['messages'][number] => ({
+    id, role: 'assistant', text, status: 'complete', actions: [],
+  });
+  it('skips unchanged Markdown while drafting and updates streamed text, actions and appended messages', async () => {
+    const messages = Array.from({ length: 199 }, (_, index) => reply(`**Saved** reply ${index}`, `answer-${index}`));
+    messages[0] = { ...messages[0], actions: [action()] };
+    const p = props({ messages });
+    await render(p);
+    expect(Markdown).toHaveBeenCalledTimes(199);
+    const input = container.querySelector('textarea')!;
+    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+    for (const draft of ['A', 'A new', 'A new draft']) {
+      await act(async () => { set.call(input, draft); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    }
+    expect(input.value).toBe('A new draft');
+    expect(Markdown).toHaveBeenCalledTimes(199);
+
+    // Full conversation hydration may replace every message object, even
+    // when only admission state changed. Equal text still skips the parser.
+    await render({ ...p, pending: true, messages: messages.map((message) => ({ ...message })) });
+    expect(button('Confirm').disabled).toBe(true);
+    expect(Markdown).toHaveBeenCalledTimes(199);
+
+    const streamed = messages.map((message, index) => index === messages.length - 1
+      ? { ...message, text: '**Streamed** response', status: 'running' as const }
+      : { ...message });
+    await render({ ...p, phase: 'running', messages: streamed });
+    expect(container.querySelector('.assistant-message:last-of-type strong')?.textContent).toBe('Streamed');
+    expect(container.querySelector('.assistant-message:last-of-type .assistant-turn-status')?.textContent).toContain('Pi is working');
+    expect(Markdown).toHaveBeenCalledTimes(200);
+
+    const finished = streamed.map((message, index) => ({ ...message, status: 'complete' as const,
+      actions: index === 0 ? [action('uncertain')] : message.actions }));
+    await render({ ...p, messages: finished });
+    expect(container.querySelector('.assistant-turn-status')).toBeNull();
+    expect(button('Confirm')).toBeUndefined();
+    await act(async () => button('Refresh status').click());
+    expect(p.onRefreshAction).toHaveBeenCalledWith(action().action_id);
+    expect(Markdown).toHaveBeenCalledTimes(200);
+
+    await render({ ...p, messages: [...finished, reply('**New** reply', 'new-answer')] });
+    expect(container.querySelectorAll('.assistant-message')).toHaveLength(200);
+    expect(container.querySelector('.assistant-message:last-of-type strong')?.textContent).toBe('New');
+    expect(Markdown).toHaveBeenCalledTimes(201);
+  });
+  it('leaves scroll alone on unrelated rerenders, including equivalent message arrays', async () => {
+    const p = props({ messages: [reply()] });
+    await render(p);
+    const scroll = scrollPane(600);
+    container.scrollTop = 75;
+    await render({ ...p, pending: true, messages: p.messages.map((message) => ({ ...message })) });
+    expect(scroll.pane.scrollTop).toBe(600);
+    expect(scroll.write).not.toHaveBeenCalled();
+    expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+    expect(container.scrollTop).toBe(75);
+  });
+  it('follows appends and streamed growth locally while at the bottom', async () => {
+    const p = props({ messages: [reply()] });
+    await render(p);
+    const scroll = scrollPane(600);
+    await scroll.scrollTo(600);
+    container.scrollTop = 75;
+    scroll.growTo(1200);
+    const appended = [...p.messages, { ...reply('First streamed words', 'next'), status: 'running' as const }];
+    await render({ ...p, messages: appended, phase: 'running' });
+    expect(scroll.pane.scrollTop).toBe(800);
+    scroll.growTo(1450);
+    await render({ ...p, messages: [p.messages[0], { ...appended[1], text: 'More streamed words' }], phase: 'running' });
+    expect(scroll.pane.scrollTop).toBe(1050);
+    expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+    expect(container.scrollTop).toBe(75);
+  });
+  it('preserves earlier-message reading through appends until the reader returns to the bottom', async () => {
+    const p = props({ messages: [reply()] });
+    await render(p);
+    const scroll = scrollPane(600);
+    await scroll.scrollTo(120);
+    scroll.growTo(1250);
+    const appended = [...p.messages, reply('A new reply', 'next')];
+    await render({ ...p, messages: appended });
+    expect(scroll.pane.scrollTop).toBe(120);
+    expect(scroll.write).not.toHaveBeenCalled();
+    expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+    await scroll.scrollTo(850);
+    scroll.growTo(1500);
+    await render({ ...p, messages: [...appended, reply('Another reply', 'last')] });
+    expect(scroll.pane.scrollTop).toBe(1100);
+  });
+  it('opens a different conversation at its bottom after reading an earlier turn', async () => {
+    const p = props({ messages: [reply()] });
+    await render(p);
+    const scroll = scrollPane(600);
+    await scroll.scrollTo(120);
+    scroll.growTo(1400);
+    await render({ ...p, selectedId: 'another-thread', messages: [reply('Another conversation', 'other')] });
+    expect(scroll.pane.scrollTop).toBe(1000);
+    expect(scroll.scrollIntoView).not.toHaveBeenCalled();
+    // Following is reset for the newly selected conversation as well.
+    scroll.growTo(1600);
+    await render({ ...p, selectedId: 'another-thread', messages: [reply('More content', 'other')] });
+    expect(scroll.pane.scrollTop).toBe(1200);
+  });
+  it('follows content and pane resizing only while following, and disconnects its observer', async () => {
+    let onResize: ResizeObserverCallback | undefined;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) { onResize = callback; }
+      observe = observe;
+      disconnect = disconnect;
+    });
+    const p = props({ messages: [reply()] });
+    await render(p);
+    const scroll = scrollPane(600);
+    expect(observe).toHaveBeenCalledTimes(2);
+    scroll.resizeTo(300);
+    await act(async () => onResize!([], {} as ResizeObserver));
+    expect(scroll.pane.scrollTop).toBe(700);
+    await scroll.scrollTo(100);
+    scroll.write.mockClear();
+    scroll.growTo(1400);
+    await act(async () => onResize!([], {} as ResizeObserver));
+    expect(scroll.pane.scrollTop).toBe(100);
+    expect(scroll.write).not.toHaveBeenCalled();
+    await render({ ...p, connected: false });
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
   it('obtains explicit persistence consent and never connects merely by rendering', async () => {
     const p = props({ connected: false }); await render(p);
     expect(container.textContent).toContain('saved on this Mac');
