@@ -23,7 +23,7 @@ When `auto_paste` is enabled in settings:
 7. Verify the exact target again because the Accessibility query may have blocked while focus changed.
 8. Write the transcript to `NSPasteboard` and capture only its numeric `changeCount` generation. Clipboard contents are never read back.
 9. Verify the exact target a third time, then require the pasteboard generation to remain unchanged. A different generation means another app or the user changed the clipboard; return the unconfirmed `ClipboardChanged` outcome without posting a key or claiming clipboard-only success.
-10. Post Command-modified `V` key-down and key-up events through the CoreGraphics HID event tap. There is no AppleScript paste fallback.
+10. Construct Command-modified `V` events, then check the attempt deadline/cancellation, exact frontmost process instance and pasteboard generation again at the key-post boundary, after all blocking AX queries. Post key-down and key-up through the CoreGraphics HID event tap. There is no AppleScript paste fallback.
 11. If native event construction fails, wait 100ms, re-check the focused role, exact target, and unchanged pasteboard generation, then make one native retry only when all three remain safe.
 12. Report a typed delivery outcome: automatic paste posted, confirmed clipboard-only, clipboard write failed, or delivery unconfirmed.
 
@@ -68,10 +68,21 @@ Murmur never replaces a hidden selection. To deliver to a recent field, it
 activates that application through its Accessibility `AXFrontmost` attribute
 (without changing the field or selection), lets macOS settle between main-thread dispatches,
 rechecks recording ownership, the exact field, and clipboard generation,
-and posts native Cmd+V once. Only a handoff (to media, or back from an app the
+and posts native Cmd+V once. Event construction and blocking AX checks finish
+before the final frontmost/process-instance and clipboard checks. Those checks
+and posting share an in-process cancellation fence. macOS provides no OS-wide
+atomic focus/clipboard/paste operation: focus or clipboard ownership can still
+change after the last check, and a posted key is not proof of text insertion. Only a handoff (to media, or back from an app the
 user switched to) waits 40 ms after the post and reads the field back, to decide
 whether focus can safely return to that application; delivery into the current
-app returns right after the post. There is no whole-field replacement, automatic submit,
+app returns right after the post. Cancellation during the activation-settle
+wait schedules guarded rollback even if no clipboard write happened. Rollback
+requires the exact unchanged field/range/count, the pasteboard generation
+captured before activation when no delivery write occurred, the destination still active,
+the same return process, and exactly Murmur's one activation with no later app
+or Space transition. It refuses after the user moves on, including away and
+back. Post-delivery restoration also requires the clipboard token and structural
+insertion confirmation. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
 
 Smart destination is additive. Whenever it does not hold a verified field, for
@@ -141,7 +152,14 @@ only after the user focuses the original destination process. It never replays
 the recording's consumed capability or pastes back into an unseen background
 field. If that fresh check cannot prove a field in the focused original process,
 the retry uses the normal auto-paste policy. A concurrent recording prevents the
-retry from changing the clipboard.
+retry from changing the clipboard. Each retry shares a cancellation/deadline
+capability with its queued callbacks, clipboard writer, and native key poster.
+Timeout cancels pending side effects, including work already in validation;
+callbacks retain the retry slot until cleanup finishes. If a key was posted but
+the receiver timed out or lost the result, the same retained delivery cannot be
+retried again. Check the destination manually; a later completed delivery starts
+a new retry slot. A received `auto_pasted` result preserves the existing API
+name and means that the shortcut was posted, not verified insertion.
 
 ### Delay Rationale
 
@@ -154,6 +172,12 @@ The paste delay is configurable via a range slider in the settings panel (0–50
 ### Retry Behavior
 
 Target verification and paste dispatch have separate retry contracts. Each target verification performs at most two bounded retries only when the native frontmost lookup is unavailable. Every retry compares against the original immutable identity; a mismatch is terminal and is never retried into another process. CoreGraphics event posting has no delivery result, so a successful native post completes immediately. If native event construction fails, the injector waits 100ms, re-checks the focused role, target identity, and pasteboard generation, and retries the native post once. A target mismatch stops as confirmed clipboard-only only while Murmur's pasteboard generation is still current. A generation change returns `ClipboardChanged`, an unconfirmed delivery: Murmur does not read or restore the new contents, post a key, claim the transcript is still ready, or show the manual-paste cue. If both native construction attempts fail while the generation remains current, the result is confirmed clipboard-only `PasteFailed`. `Err` is reserved for failure to confirm the initial clipboard write. The caller also enforces a 2s timeout for the complete injection operation.
+Queued recording injection has its own two-second authority deadline; Paste
+Last has a four-second whole-attempt deadline plus the two-second injection
+receiver timeout. Deadline/cancellation checks run at clipboard and key-post
+boundaries, rather than only when a callback enters. A side effect already
+committed before cancellation cannot be undone; it remains owned until the
+worker exits, and an unacknowledged key post blocks duplicate retry.
 
 ### Failure Notification
 

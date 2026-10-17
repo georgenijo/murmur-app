@@ -2527,6 +2527,10 @@ async fn run_transcription_pipeline(
         let stop_sample = crate::frontmost::StopSampleStatus::of(stop_delivery_target.as_ref());
         let mut delivery_target = anchored_target.clone();
         let mut smart_destination = context.app.smart_destination.clone();
+        let _smart_cleanup = crate::smart_destination::AbortOnDrop::new(
+            app_handle.clone(),
+            smart_destination.clone(),
+        );
         let accepted_route = smart_destination.route_code();
         let mut recovery_smart_destination = smart_destination.clone();
         let mut recovery_target = smart_destination
@@ -2551,15 +2555,21 @@ async fn run_transcription_pipeline(
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let prepare_app = app_handle.clone();
             let preparing = smart_destination.clone();
+            let preparation_authority = Arc::new(injector::authority::PasteAttempt::new(
+                std::time::Duration::from_secs(1),
+                recording_id,
+            ));
+            let _cancel_preparation = injector::authority::CancelOnDrop(&preparation_authority);
+            let worker_authority = preparation_authority.clone();
             app_handle
                 .run_on_main_thread(move || {
-                    if sender.is_closed() {
+                    if sender.is_closed() || !worker_authority.is_current() {
                         return;
                     }
                     let state = prepare_app.state::<State>();
                     let outcome =
                         with_current_delivery_owner(&state.app_state, recording_id, || {
-                            crate::smart_destination::prepare(&preparing)
+                            crate::smart_destination::prepare(&preparing, Some(&worker_authority))
                         });
                     let _ = sender.send(outcome);
                 })
@@ -2599,16 +2609,23 @@ async fn run_transcription_pipeline(
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
+        let injection_authority = Arc::new(injector::authority::PasteAttempt::new(
+            std::time::Duration::from_secs(2),
+            recording_id,
+        ));
+        let _cancel_injection = injector::authority::CancelOnDrop(&injection_authority);
+        let worker_authority = injection_authority.clone();
         app_handle
             .run_on_main_thread(move || {
                 let state = injection_app_handle.state::<State>();
                 let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
-                    injector::inject_with_destination(
+                    injector::inject_with_destination_authorized(
                         &text_to_inject,
                         effective_auto_paste,
                         paste_delay_ms,
                         &delivery_target,
                         &smart_destination,
+                        Some(&worker_authority),
                     )
                 });
                 crate::smart_destination::abort(&smart_destination, None);

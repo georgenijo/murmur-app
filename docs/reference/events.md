@@ -246,6 +246,22 @@ smart preparation), each one of `disabled`, `clipboard_only`, `normal_paste`, or
 `clipboard_only_smart_target_unavailable`, `clipboard_write_failed`, or
 `unconfirmed`. The same all-build sanitizer rules apply.
 
+`pipeline.paste_safety` records fixed, content-free native delivery decisions.
+Its exact all-build schema has `event_code`, `phase_code`, and `outcome_code`.
+Preparation additionally requires `route_code` with the same four route values
+as `pipeline.smart_destination_delivery`. Allowed phase/outcome pairs are:
+
+- `preparation`: `ready`, `activation_requested`, `refused`, `refused_clipboard_only`;
+- `post`: `key_posted` (CoreGraphics dispatch, not insertion confirmation);
+- `confirmation`: `structurally_confirmed`, `unconfirmed`, `not_observed`;
+- `rollback`: `restored`, `refused`.
+
+Unknown fields are removed; invalid codes collapse to the event code alone.
+The summary is constant. No app/process identifiers, window titles, field
+values, clipboard contents, transcript text, or raw native errors are admitted.
+The existing `auto_pasted` result and delivery event code remain compatible and
+mean a key was posted; only structural read-back produces insertion evidence.
+
 A capture backend that exceeds its initialization budget emits the stable
 structured code `audio.system_audio_graph_observed` from every install, armed
 for hang diagnostics or not. It is a strictly content-free aggregate of the

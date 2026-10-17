@@ -1,8 +1,9 @@
 use crate::frontmost::DeliveryTargetSnapshot;
+use crate::injector::authority::{CancelOnDrop, RetrySlot};
 use crate::injector::{self, ClipboardOnlyReason, InjectionOutcome};
 use crate::{MutexExt, State};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -47,7 +48,7 @@ fn retry_target_matches(
 #[derive(Default)]
 pub(crate) struct DeliveryRecoveryState {
     latest: Mutex<Option<LastDelivery>>,
-    retry_active: AtomicBool,
+    retry: RetrySlot,
 }
 
 impl DeliveryRecoveryState {
@@ -86,14 +87,6 @@ impl DeliveryRecoveryState {
     }
 }
 
-struct RetryGuard<'a>(&'a AtomicBool);
-
-impl Drop for RetryGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 enum RetryResultKind {
@@ -129,17 +122,13 @@ pub(crate) async fn retry_last_delivery(
         publish(&app_handle, &response);
         return Ok(response);
     };
-    if state
-        .delivery_recovery
-        .retry_active
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        let response = result(RetryResultKind::Busy, "Paste Last is already running.");
+    let Some(work) = state.delivery_recovery.retry.begin(latest.recording_id) else {
+        let response = result(RetryResultKind::Busy,
+            "Paste Last is running or a previous paste is unconfirmed. Check the destination before a new delivery.");
         publish(&app_handle, &response);
         return Ok(response);
-    }
-    let _guard = RetryGuard(&state.delivery_recovery.retry_active);
+    };
+    let _cancel = CancelOnDrop(work.attempt());
 
     let retry_generation = {
         let dictation = state.app_state.dictation.lock_or_recover();
@@ -181,6 +170,10 @@ pub(crate) async fn retry_last_delivery(
     if latest.delay_ms > 0 && injector::is_accessibility_enabled() {
         tokio::time::sleep(std::time::Duration::from_millis(latest.delay_ms)).await;
     }
+    let _smart_cleanup = crate::smart_destination::AbortOnDrop::new(
+        app_handle.clone(),
+        latest.smart_destination.clone(),
+    );
     if matches!(
         latest.smart_destination,
         crate::smart_destination::Snapshot::Target { .. }
@@ -188,9 +181,10 @@ pub(crate) async fn retry_last_delivery(
         let preparing = latest.smart_destination.clone();
         let prepare_app = app_handle.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
+        let worker = work.clone();
         app_handle
             .run_on_main_thread(move || {
-                if sender.is_closed() {
+                if sender.is_closed() || !worker.attempt().is_current() {
                     return;
                 }
                 let state = prepare_app.state::<State>();
@@ -198,23 +192,33 @@ pub(crate) async fn retry_last_delivery(
                 let outcome = if dictation.status == crate::state::DictationStatus::Idle
                     && state.app_state.recording_id.load(Ordering::SeqCst) == retry_generation
                 {
-                    crate::smart_destination::prepare_focused(&preparing)
+                    crate::smart_destination::prepare_focused(&preparing, Some(worker.attempt()))
                 } else {
                     crate::smart_destination::PrepareOutcome::Refused
                 };
                 let _ = sender.send(outcome);
             })
             .map_err(|error| error.to_string())?;
+        let prepared = tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await;
         if !matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await,
+            prepared,
             Ok(Ok(crate::smart_destination::PrepareOutcome::Ready))
         ) {
-            let same_app_fallback = latest.smart_destination.allows_same_app_fallback();
+            // Only an explicit refusal proves no activation/commit happened.
+            // A timeout cancels the whole attempt, including work already in AX.
+            let same_app_fallback = matches!(
+                prepared,
+                Ok(Ok(crate::smart_destination::PrepareOutcome::Refused))
+            ) && latest.smart_destination.allows_same_app_fallback();
+            if !matches!(prepared, Ok(Ok(_))) {
+                work.attempt().cancel();
+            }
             let abandoned = latest.smart_destination.clone();
-            let _ = app_handle
-                .run_on_main_thread(move || crate::smart_destination::abort(&abandoned, None));
-            // `latest.target` is the original process the fresh capture just
-            // matched, so a same-app fallback stays bound to it.
+            let worker = work.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                let _worker = worker;
+                crate::smart_destination::abort(&abandoned, None);
+            });
             latest.smart_destination = if same_app_fallback {
                 crate::smart_destination::Snapshot::Unverified
             } else {
@@ -224,11 +228,13 @@ pub(crate) async fn retry_last_delivery(
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let retry_app = app_handle.clone();
+    let worker = work.clone();
     app_handle
         .run_on_main_thread(move || {
             let state = retry_app.state::<State>();
             let dictation = state.app_state.dictation.lock_or_recover();
-            if dictation.status != crate::state::DictationStatus::Idle
+            if !worker.attempt().is_current()
+                || dictation.status != crate::state::DictationStatus::Idle
                 || state.app_state.recording_id.load(Ordering::SeqCst) != retry_generation
             {
                 crate::smart_destination::abort(&latest.smart_destination, None);
@@ -238,23 +244,29 @@ pub(crate) async fn retry_last_delivery(
             // Routes on the snapshot itself: Disabled uses legacy normal paste,
             // Unverified uses normal paste with the secure-field veto, and a
             // fresh smart Target uses its one-shot capability.
-            let attempt = injector::inject_with_destination(
+            let attempt = injector::inject_with_destination_authorized(
                 &latest.text,
                 true,
                 latest.delay_ms,
                 &latest.target,
                 &latest.smart_destination,
+                Some(worker.attempt()),
             );
             crate::smart_destination::abort(&latest.smart_destination, None);
             let _ = tx.send(Some(attempt));
         })
         .map_err(|error| error.to_string())?;
 
-    let response = match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+    match &received {
+        Ok(Ok(_)) => work.attempt().acknowledge(),
+        _ => work.attempt().cancel(),
+    }
+    let response = match received {
         Ok(Ok(Some(Ok(injection)))) => match injection.outcome {
             InjectionOutcome::AutoPasted => result(
                 RetryResultKind::AutoPasted,
-                "Last delivery pasted securely.",
+                "Paste shortcut sent. Check your destination.",
             ),
             InjectionOutcome::ClipboardOnly(reason) => {
                 let message = match reason {

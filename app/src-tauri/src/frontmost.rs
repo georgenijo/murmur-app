@@ -350,7 +350,7 @@ where
     }
 }
 
-fn app_transition_snapshot() -> AppTransitionSnapshot {
+pub(crate) fn app_transition_snapshot() -> AppTransitionSnapshot {
     AppTransitionSnapshot {
         activation_generation: ACTIVATION_GENERATION.load(Ordering::SeqCst),
         space_generation: SPACE_GENERATION.load(Ordering::SeqCst),
@@ -406,6 +406,33 @@ pub(crate) fn register_delivery_transition_observers() {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn register_delivery_transition_observers() {}
+
+/// Cheap final check: no Accessibility query between this proof and key post.
+#[cfg(target_os = "macos")]
+pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bool {
+    use objc2_app_kit::NSWorkspace;
+    let DeliveryTargetSnapshot::Complete(expected) = expected else {
+        return false;
+    };
+    let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+        return false;
+    };
+    app.processIdentifier() == expected.process_id
+        && app
+            .bundleIdentifier()
+            .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
+        && app.launchDate().is_some_and(|date| {
+            let interval = date.timeIntervalSinceReferenceDate();
+            interval.is_finite()
+                && interval > 0.0
+                && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn delivery_target_is_active(_expected: &DeliveryTargetSnapshot) -> bool {
+    false
+}
 
 /// Capture exactly one native frontmost-application sample for delivery. The
 /// compatibility bundle detector is intentionally not used: auto-paste needs a
