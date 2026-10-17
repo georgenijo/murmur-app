@@ -10,6 +10,10 @@ const DB_FILE: &str = "performance.sqlite3";
 const LATEST_DB_SCHEMA_VERSION: u32 = 2;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
+const PRUNE_RESOURCE_SAMPLES_SQL: &str = "DELETE FROM resource_samples
+    WHERE id <= (
+        SELECT id FROM resource_samples ORDER BY id DESC LIMIT 1 OFFSET ?
+    )";
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
 const PRAGMAS: crate::sqlite_support::PragmaOptions = crate::sqlite_support::PragmaOptions {
@@ -811,14 +815,13 @@ fn prune_completed_tx(transaction: &Transaction<'_>) -> StoreResult<()> {
 }
 
 fn prune_resource_samples_tx(transaction: &Transaction<'_>) -> StoreResult<()> {
+    // Select the first excluded row by rank, not by subtracting from MAX(id):
+    // clears, deletions, and imported IDs can leave arbitrary gaps. The scalar
+    // subquery is NULL below the cap (so nothing is deleted). Otherwise SQLite
+    // uses the INTEGER PRIMARY KEY for both the reverse walk and range delete,
+    // without building a 600-ID NOT IN set or scanning every retained row again.
     transaction
-        .execute(
-            "DELETE FROM resource_samples
-             WHERE id NOT IN (
-                 SELECT id FROM resource_samples ORDER BY id DESC LIMIT ?
-             )",
-            [MAX_RESOURCE_SAMPLES as u32],
-        )
+        .execute(PRUNE_RESOURCE_SAMPLES_SQL, [MAX_RESOURCE_SAMPLES as u32])
         .map_err(db_error)?;
     Ok(())
 }
@@ -1332,6 +1335,340 @@ mod tests {
             run.resources.sidecar_process.rss_bytes.start,
             MeasurementV1::NotApplicable
         ));
+    }
+
+    fn seed_resource_samples(repository: &PerformanceRepository, rows: &[(i64, ResourceSampleV1)]) {
+        let mut connection = repository.open().unwrap();
+        let transaction = connection.transaction().unwrap();
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO resource_samples(id, record_version, observed_at_ms, payload_json)
+                     VALUES (?, ?, ?, ?)",
+                )
+                .unwrap();
+            for (id, sample) in rows {
+                insert
+                    .execute(params![
+                        id,
+                        RESOURCE_SAMPLE_SCHEMA_VERSION,
+                        sample.observed_at_ms,
+                        serde_json::to_string(sample).unwrap()
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+
+    fn populated_resource_rows() -> Vec<(i64, ResourceSampleV1)> {
+        (0..MAX_RESOURCE_SAMPLES)
+            .map(|index| {
+                (
+                    1_000_000 + index as i64 * 97,
+                    sample(index as i64, MeasurementV1::measured(index as f32)),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resource_retention_uses_row_rank_with_sparse_and_arbitrary_ids() {
+        for size in [0_usize, 1, 599, 600, 601, 1_203] {
+            let (_temp, repository) = repository();
+            let rows: Vec<_> = (0..size)
+                .map(|index| {
+                    let id = if index == 0 {
+                        i64::MIN
+                    } else if index == size - 1 {
+                        i64::MAX
+                    } else {
+                        (index as i64 - 700) * 1_000_003
+                    };
+                    // Deliberately out-of-order timestamps and ties: retention
+                    // follows IDs, while presentation follows (timestamp, ID).
+                    let resource =
+                        sample((index % 7) as i64, MeasurementV1::measured(index as f32));
+                    (id, resource)
+                })
+                .collect();
+            seed_resource_samples(&repository, &rows);
+            let mut connection = repository.open().unwrap();
+            let transaction = connection.transaction().unwrap();
+            prune_resource_samples_tx(&transaction).unwrap();
+            transaction.commit().unwrap();
+            let ids: Vec<i64> = connection
+                .prepare("SELECT id FROM resource_samples ORDER BY id")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let retained = &rows[size.saturating_sub(MAX_RESOURCE_SAMPLES)..];
+            assert_eq!(ids, retained.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+            let mut expected = retained.to_vec();
+            expected.sort_by_key(|(id, resource)| (resource.observed_at_ms, *id));
+            assert_eq!(
+                repository.resource_window().unwrap(),
+                expected
+                    .into_iter()
+                    .map(|(_, resource)| resource)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn resource_retention_after_clear_and_reopen_keeps_new_samples_with_large_ids() {
+        let (_temp, repository) = repository();
+        seed_resource_samples(&repository, &populated_resource_rows());
+        repository.clear().unwrap();
+        let reopened = PerformanceRepository::reopen(repository.root.clone())
+            .unwrap()
+            .0;
+        let first = sample(9, MeasurementV1::measured(1.0));
+        let second = sample(9, MeasurementV1::measured(2.0));
+        reopened.insert_resource_sample(&first).unwrap();
+        reopened.insert_resource_sample(&second).unwrap();
+        let connection = reopened.open().unwrap();
+        let first_id: i64 = connection
+            .query_row("SELECT MIN(id) FROM resource_samples", [], |row| row.get(0))
+            .unwrap();
+        assert!(first_id > populated_resource_rows().last().unwrap().0);
+        let restarted = PerformanceRepository::reopen(repository.root.clone())
+            .unwrap()
+            .0;
+        assert_eq!(restarted.resource_window().unwrap(), vec![first, second]);
+    }
+
+    #[test]
+    fn resource_prune_failure_rolls_back_insert_and_later_write_recovers() {
+        let (_temp, repository) = repository();
+        let rows = populated_resource_rows();
+        seed_resource_samples(&repository, &rows);
+        let before = repository.resource_window().unwrap();
+        repository
+            .open()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_resource_prune BEFORE DELETE ON resource_samples
+             BEGIN SELECT RAISE(ABORT, 'test prune failure'); END;",
+            )
+            .unwrap();
+        let newest = sample(700, MeasurementV1::measured(700.0));
+        let error = repository.insert_resource_sample(&newest).unwrap_err();
+        assert_eq!(error.class, PerformanceStoreErrorClassV1::Io);
+        assert_eq!(error.attempts, 1);
+        assert_eq!(repository.resource_window().unwrap(), before);
+        repository
+            .open()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_resource_prune;")
+            .unwrap();
+        repository.insert_resource_sample(&newest).unwrap();
+        let restarted = PerformanceRepository::reopen(repository.root.clone())
+            .unwrap()
+            .0;
+        let mut expected = before[1..].to_vec();
+        expected.push(newest);
+        assert_eq!(restarted.resource_window().unwrap(), expected);
+    }
+
+    #[test]
+    fn resource_locked_writer_keeps_existing_samples_and_later_write_recovers() {
+        let (_temp, repository) = repository();
+        seed_resource_samples(&repository, &populated_resource_rows());
+        let before = repository.resource_window().unwrap();
+        let blocker = repository.open().unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let newest = sample(700, MeasurementV1::measured(700.0));
+        let error = repository.insert_resource_sample(&newest).unwrap_err();
+        assert_eq!(error.class, PerformanceStoreErrorClassV1::BusyLocked);
+        // Resource writes retain their existing single-attempt policy. Run
+        // begin/update/complete retain the existing bounded retry wrapper.
+        assert_eq!(error.attempts, 1);
+        assert_eq!(repository.resource_window().unwrap(), before);
+        blocker.execute_batch("ROLLBACK;").unwrap();
+        repository.insert_resource_sample(&newest).unwrap();
+        let mut expected = before[1..].to_vec();
+        expected.push(newest);
+        assert_eq!(repository.resource_window().unwrap(), expected);
+    }
+
+    #[test]
+    fn resource_writes_reopen_the_path_and_report_external_database_loss() {
+        let (_temp, repository) = repository();
+        let first = sample(1, MeasurementV1::measured(1.0));
+        repository.insert_resource_sample(&first).unwrap();
+        // No SQLite handles are held between operations: replacing the file
+        // must never leave subsequent writes attached to the old database.
+        let archived = repository.root.join("archived.sqlite3");
+        fs::rename(&repository.db_path, &archived).unwrap();
+        let error = repository
+            .insert_resource_sample(&sample(2, MeasurementV1::measured(2.0)))
+            .unwrap_err();
+        assert_eq!(error.class, PerformanceStoreErrorClassV1::Io);
+        let recovered = PerformanceRepository::reopen(repository.root.clone())
+            .unwrap()
+            .0;
+        assert!(recovered.resource_window().unwrap().is_empty());
+        let second = sample(3, MeasurementV1::measured(3.0));
+        // Even the original repository resolves the recovered file afresh.
+        repository.insert_resource_sample(&second).unwrap();
+        assert_eq!(recovered.resource_window().unwrap(), vec![second]);
+        let archived_connection = Connection::open(archived).unwrap();
+        assert_eq!(
+            resource_samples_tx(&archived_connection, i64::MIN, i64::MAX).unwrap(),
+            vec![first]
+        );
+    }
+
+    const BASELINE_PRUNE_RESOURCE_SAMPLES_SQL: &str = "DELETE FROM resource_samples
+        WHERE id NOT IN (
+            SELECT id FROM resource_samples ORDER BY id DESC LIMIT ?
+        )";
+
+    // Preserve the previous entire write path for an end-to-end comparison.
+    // Both paths reopen/configure/close for every durable, transactional sample.
+    fn baseline_insert_resource_sample(
+        repository: &PerformanceRepository,
+        resource: &ResourceSampleV1,
+    ) -> StoreResult<()> {
+        let mut connection = repository.open()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let payload = serde_json::to_string(resource).map_err(|_| invalid_record())?;
+        transaction
+            .execute(
+                "INSERT INTO resource_samples(record_version, observed_at_ms, payload_json)
+             VALUES (?, ?, ?)",
+                params![
+                    RESOURCE_SAMPLE_SCHEMA_VERSION,
+                    resource.observed_at_ms,
+                    payload
+                ],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                BASELINE_PRUNE_RESOURCE_SAMPLES_SQL,
+                [MAX_RESOURCE_SAMPLES as u32],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)
+    }
+
+    #[derive(Debug)]
+    struct PruneOperationCounts {
+        deleted_rows: usize,
+        vm_steps: i32,
+        fullscan_steps: i32,
+        sorts: i32,
+        autoindex_rows: i32,
+        statement_runs: i32,
+    }
+
+    fn prune_operation_counts(
+        repository: &PerformanceRepository,
+        sql: &str,
+    ) -> PruneOperationCounts {
+        use rusqlite::StatementStatus;
+        let mut connection = repository.open().unwrap();
+        let transaction = connection.transaction().unwrap();
+        // Match the steady write state: 600 retained rows plus this transaction's
+        // just-inserted sample. Counters come from SQLite, not estimated costs.
+        transaction
+            .execute(
+                "INSERT INTO resource_samples(record_version, observed_at_ms, payload_json)
+             SELECT record_version, observed_at_ms, payload_json FROM resource_samples LIMIT 1",
+                [],
+            )
+            .unwrap();
+        let counts = {
+            let mut statement = transaction.prepare(sql).unwrap();
+            let deleted_rows = statement.execute([MAX_RESOURCE_SAMPLES as u32]).unwrap();
+            PruneOperationCounts {
+                deleted_rows,
+                vm_steps: statement.get_status(StatementStatus::VmStep),
+                fullscan_steps: statement.get_status(StatementStatus::FullscanStep),
+                sorts: statement.get_status(StatementStatus::Sort),
+                autoindex_rows: statement.get_status(StatementStatus::AutoIndex),
+                statement_runs: statement.get_status(StatementStatus::Run),
+            }
+        };
+        transaction.rollback().unwrap();
+        counts
+    }
+
+    #[test]
+    #[ignore = "comparative disk-write benchmark; parent schedules on an idle trusted Mac"]
+    fn resource_sample_write_comparative_benchmark() {
+        const ROUNDS: usize = 5;
+        const WRITES_PER_ROUND: usize = 120;
+        let (_baseline_temp, baseline) = repository();
+        let (_candidate_temp, candidate) = repository();
+        let rows = populated_resource_rows();
+        seed_resource_samples(&baseline, &rows);
+        seed_resource_samples(&candidate, &rows);
+        let baseline_counts =
+            prune_operation_counts(&baseline, BASELINE_PRUNE_RESOURCE_SAMPLES_SQL);
+        let candidate_counts = prune_operation_counts(&candidate, PRUNE_RESOURCE_SAMPLES_SQL);
+        for counts in [&baseline_counts, &candidate_counts] {
+            assert_eq!(counts.deleted_rows, 1);
+            assert_eq!(counts.statement_runs, 1);
+            assert_eq!(counts.sorts, 0);
+            assert_eq!(counts.autoindex_rows, 0);
+        }
+        assert!(candidate_counts.vm_steps < baseline_counts.vm_steps);
+        // Read fullscan_steps too: print the actual primary-key walk cost even
+        // though the optimized delete no longer scans retained rows a second time.
+        eprintln!(
+            "resource_prune_actual_counts populated={} baseline={baseline_counts:?} candidate={candidate_counts:?} fullscan_step_delta={}",
+            MAX_RESOURCE_SAMPLES,
+            candidate_counts.fullscan_steps - baseline_counts.fullscan_steps,
+        );
+        let mut baseline_us = Vec::new();
+        let mut candidate_us = Vec::new();
+        let mut expected = Vec::new();
+        for round in 0..ROUNDS {
+            for index in 0..WRITES_PER_ROUND {
+                let sequence = round * WRITES_PER_ROUND + index;
+                let resource = sample(
+                    1_000 + sequence as i64,
+                    MeasurementV1::measured(sequence as f32),
+                );
+                // Reverse order every round to expose ordering/thermal effects.
+                for lane in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let started = Instant::now();
+                    if lane == 0 {
+                        baseline_insert_resource_sample(&baseline, &resource).unwrap();
+                        baseline_us.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+                    } else {
+                        candidate.insert_resource_sample(&resource).unwrap();
+                        candidate_us.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+                    }
+                }
+                expected.push(resource);
+            }
+            assert_eq!(baseline.counts().unwrap().2, MAX_RESOURCE_SAMPLES as u64);
+            assert_eq!(candidate.counts().unwrap().2, MAX_RESOURCE_SAMPLES as u64);
+        }
+        assert_eq!(expected.len(), MAX_RESOURCE_SAMPLES);
+        // Reopening performs integrity and supported-record validation and
+        // confirms every retained sample, including its ordering, was durable.
+        for store in [&baseline, &candidate] {
+            let restarted = PerformanceRepository::reopen(store.root.clone()).unwrap().0;
+            assert_eq!(restarted.resource_window().unwrap(), expected);
+        }
+        for (name, mut timings) in [("baseline", baseline_us), ("candidate", candidate_us)] {
+            timings.sort_by(f64::total_cmp);
+            let percentile = |percent: usize| timings[(timings.len() - 1) * percent / 100];
+            let mean = timings.iter().sum::<f64>() / timings.len() as f64;
+            eprintln!(
+                "resource_write_latency path={name} populated={} writes={} rounds={ROUNDS} mean_us={mean:.3} p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
+                MAX_RESOURCE_SAMPLES, timings.len(), percentile(50), percentile(95),
+                percentile(99), timings.last().unwrap(),
+            );
+        }
     }
 
     #[test]

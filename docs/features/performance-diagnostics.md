@@ -29,6 +29,33 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
+Resource writes retain one transaction and one newly opened/configured SQLite
+connection per sample, with the existing WAL/`synchronous=NORMAL` settings. The
+600-row cap uses the 601st-highest primary key as an inclusive deletion cutoff.
+This preserves retention by ID rank across gaps, negative IDs, and Clear's
+non-resetting autoincrement sequence. It avoids materializing a 600-ID `NOT IN`
+set and rescanning the retained rows; it still walks up to 601 primary keys to
+find the cutoff. Samples remain presented by timestamp, then ID for ties.
+Sampling cadence, supported-record validation, operation locking, and recovery
+remain unchanged. Connections are deliberately not cached: each operation must
+resolve the current database file after external loss/replacement and recovery.
+
+The ignored `resource_sample_write_comparative_benchmark` compares the previous
+full write path with the production write path using two temporary, on-disk
+stores prepopulated with 600 samples. It alternates execution order over five
+rounds, writes 600 samples per path, verifies the exact retained samples after
+reopening, and prints mean/p50/p95/p99/max write latency in microseconds. Timings
+include open/configuration, serialization, insert, prune, commit, and connection
+close. SQLite statement-status counters separately report actual pruning VM
+instructions, full-scan steps, sorts, autoindex rows, statement runs, and deleted
+rows for the 600-plus-one steady state. They do not count filesystem syscalls or
+all SQL executed during connection configuration. Run only when scheduled:
+
+```bash
+cd app/src-tauri
+cargo test --lib performance_metrics::repository::tests::resource_sample_write_comparative_benchmark -- --ignored --exact --nocapture --test-threads=1
+```
+
 The database currently uses SQLite `user_version = 2`; the v2 migration adds
 Voice Query support without changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. A database created by a newer Murmur
