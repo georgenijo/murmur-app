@@ -172,6 +172,46 @@ describe('Assistant workspace', () => {
     await render({ ...p, selectedId: 'another-thread', messages: [reply('More content', 'other')] });
     expect(scroll.pane.scrollTop).toBe(1200);
   });
+  it.each([
+    { position: 'reading earlier messages', top: 120, following: false },
+    { position: 'following the latest messages', top: 600, following: true },
+  ])('preserves $position across a same-conversation disconnect/reconnect', async ({ top, following }) => {
+    let height = 1000;
+    const scrollHeight = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(() => height);
+    const clientHeight = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(400);
+    let onResize: ResizeObserverCallback | undefined;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) { onResize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      const p = props({ messages: [reply()] });
+      await render(p);
+      const originalPane = container.querySelector('[role="log"]') as HTMLDivElement;
+      await act(async () => {
+        originalPane.scrollTop = top;
+        originalPane.dispatchEvent(new Event('scroll'));
+      });
+      await render({ ...p, connected: false });
+      expect(container.querySelector('[role="log"]')).toBeNull();
+      height = 1400;
+      const messages = [...p.messages, reply('Arrived while disconnected', 'next')];
+      await render({ ...p, messages });
+      const restoredPane = container.querySelector('[role="log"]') as HTMLDivElement;
+      expect(restoredPane).not.toBe(originalPane);
+      expect(restoredPane.scrollTop).toBe(following ? 1000 : top);
+      height = 1600;
+      await act(async () => onResize!([], {} as ResizeObserver));
+      expect(restoredPane.scrollTop).toBe(following ? 1200 : top);
+      height = 1800;
+      await render({ ...p, messages: [...messages, reply('Another new reply', 'last')] });
+      expect(restoredPane.scrollTop).toBe(following ? 1400 : top);
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
   it('follows content and pane resizing only while following, and disconnects its observer', async () => {
     let onResize: ResizeObserverCallback | undefined;
     const observe = vi.fn();

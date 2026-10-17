@@ -836,7 +836,7 @@ function App() {
   ]);
 
   if (onboardingState === 'unknown' || modelReady === null) {
-    return <div className="h-screen bg-background" />;
+    return <div className="h-full min-h-0 bg-background" />;
   }
   if (onboardingState === 'needed') {
     return (

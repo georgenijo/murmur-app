@@ -4,6 +4,8 @@ import { Channel } from '@tauri-apps/api/core';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
+import { ModelDownloader } from './components/ModelDownloader';
+import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { CommandPalette } from './components/CommandPalette';
 import { AboutModal } from './components/AboutModal';
 import { DictationPreviewCard } from './components/dictation-preview/DictationPreviewApp';
@@ -577,6 +579,13 @@ function VisualFixture() {
     if (requestedState.startsWith('meetings-review')) void meetings.select('meeting-fixture');
     if (manyMeetings) void meetings.select('meeting-0');
   }, [meetings.select]);
+
+  if (requestedState === 'first-run-model') return <div className="main-first-run main-first-run-model">
+    <ModelDownloader initialModel={fixtureSettings.model} onComplete={() => {}} />
+  </div>;
+  if (requestedState === 'first-run-onboarding') return <div className="main-first-run main-first-run-onboarding">
+    <OnboardingFlow initialModel={fixtureSettings.model} recordingMode="both" triggerKey="shift_l" onComplete={() => {}} />
+  </div>;
 
   return (
     <div

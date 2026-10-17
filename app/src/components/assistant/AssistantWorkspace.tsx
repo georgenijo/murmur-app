@@ -94,6 +94,8 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
   const messagesRef = useRef<HTMLDivElement>(null);
   const messageContentRef = useRef<HTMLDivElement>(null);
   const followingBottomRef = useRef(true);
+  const messageScrollTopRef = useRef(0);
+  const scrollConversationRef = useRef(props.selectedId);
   const keepChatRef = useRef<HTMLButtonElement>(null);
   const chatOptionsRef = useRef<HTMLElement>(null);
   const voiceBaseRef = useRef('');
@@ -113,8 +115,17 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
   }, [draft, props.dictation]);
   useEffect(() => { if (deleteId) keepChatRef.current?.focus(); }, [deleteId]);
   useLayoutEffect(() => {
-    followingBottomRef.current = true;
-    scrollFollowingMessages(messagesRef.current, true);
+    if (scrollConversationRef.current !== props.selectedId) {
+      scrollConversationRef.current = props.selectedId;
+      followingBottomRef.current = true;
+      messageScrollTopRef.current = 0;
+    }
+    const pane = messagesRef.current;
+    if (!pane) return;
+    if (followingBottomRef.current) scrollFollowingMessages(pane, true);
+    // Disconnect removes the pane. Restore a same-conversation reader before
+    // paint without changing their follow intent or scrolling an ancestor.
+    else pane.scrollTop = messageScrollTopRef.current;
   }, [props.selectedId, props.connected]);
   useLayoutEffect(() => {
     scrollFollowingMessages(messagesRef.current, followingBottomRef.current);
@@ -211,6 +222,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
       <div ref={messagesRef} className="assistant-message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"
         onScroll={(event) => {
           const pane = event.currentTarget;
+          messageScrollTopRef.current = pane.scrollTop;
           followingBottomRef.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop <= 4;
         }}>
         <div ref={messageContentRef}>

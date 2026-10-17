@@ -12,6 +12,11 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }, {
       sidebarWidth ??= before!.width;
       expect(before!.width).toBe(sidebarWidth);
       expect(before!.y + before!.height).toBe(size.height);
+      if (state !== 'settings') for (const label of ['Home', 'Notetaker', 'Assistant', 'Insights']) {
+        const button = await sidebar.getByRole('button', { name: label, exact: true }).boundingBox();
+        expect(button!.y).toBeGreaterThanOrEqual(before!.y);
+        expect(button!.y + button!.height).toBeLessThanOrEqual(size.height);
+      }
       const pane = page.locator(state === 'idle' ? '.home-dashboard' : state === 'settings' ? '[data-testid="settings-content"]' : '.assistant-message-list');
       await expect(pane).toBeVisible();
       await pane.hover();
@@ -48,3 +53,20 @@ test('resizing across the old compact breakpoint preserves the shared sidebar', 
     }
   }
 });
+
+for (const state of ['first-run-model', 'first-run-onboarding']) {
+  test(`${state} remains accessible in a short window`, async ({ page }) => {
+    await page.setViewportSize({ width: 720, height: 560 });
+    await page.goto(`/visual-fixtures.html?state=${state}&appearance=dark`);
+    await expect(page.locator('.main-first-run')).toBeVisible();
+    const first = page.locator('.main-first-run button').first();
+    const last = page.locator('.main-first-run button').last();
+    for (const control of [last, first]) {
+      await control.focus();
+      const bounds = await control.boundingBox();
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(560);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    }
+  });
+}
