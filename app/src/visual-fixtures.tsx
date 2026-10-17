@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Channel } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
@@ -570,6 +571,12 @@ function VisualFixture() {
   }, [destination]);
 
   React.useEffect(() => {
+    // Child waveform effects register with mockIPC before this fixture effect.
+    // Seed the real leaf subscription without lifting audio state into Home.
+    if (status === 'recording' && destination === 'home') void emit('audio-level', 0.045);
+  }, [destination]);
+
+  React.useEffect(() => {
     if (requestedState.startsWith('meetings-review')) void meetings.select('meeting-fixture');
     if (manyMeetings) void meetings.select('meeting-0');
   }, [meetings.select]);
@@ -690,7 +697,6 @@ function VisualFixture() {
                 status={status}
                 initialized
                 recordingDuration={12}
-                audioLevel={status === 'recording' ? 0.045 : 0}
                 settings={fixtureSettings}
                 meetings={meetings}
                 statsVersion={0}

@@ -835,25 +835,26 @@ describe('SettingsPanel information architecture', () => {
     expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
   });
 
-  it('accepts precise sidebar destinations for an editor or setting target', async () => {
-    const renderRequest = (pageRequest: { page: string; token: number; editorTab?: 'aliases' | 'commands'; target?: string }) => root.render(
-      <SettingsPanel
-        settings={DEFAULT_SETTINGS}
-        onUpdateSettings={onUpdateSettings}
-        initialized
-        status="idle"
-        onResetStats={vi.fn()}
-        onRerunSetup={vi.fn()}
-        accessibilityGranted
-        onCheckForUpdate={vi.fn(async () => {})}
-        onDownloadUpdate={vi.fn()}
-        onRestartUpdate={vi.fn()}
-        onOpenUpdate={vi.fn()}
-        updateStatus={{ phase: 'idle' }}
-        configureError={null}
-        pageRequest={pageRequest}
-      />,
+  it.each([
+    ['aliases', 'Aliases', 'Vocabulary editor', 'Text & Vocabulary'],
+    ['commands', 'Voice Commands', 'Voice commands editor', 'Voice Commands'],
+  ] as const)('opens an initial %s sidebar request on first mount', async (editorTab, heading, content, returnRow) => {
+    // A retained Settings panel and its very first mount must honor the same request.
+    await act(async () => root.render(null));
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', editorTab, token: 1 }));
+    expect(container.querySelector('h1')?.textContent).toBe(heading);
+    expect(container.textContent).toContain(content);
+    const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Back to Customize'),
     );
+    expect(back).toBeDefined();
+    await act(async () => back!.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(document.activeElement?.textContent).toContain(returnRow);
+  });
+
+  it('accepts precise sidebar destinations for an editor or setting target', async () => {
+    const renderRequest = (pageRequest: SettingsPageRequest) => renderPanel(true, DEFAULT_SETTINGS, pageRequest);
 
     await act(async () => renderRequest({ page: 'text', editorTab: 'aliases', token: 1 }));
     expect(container.querySelector('h1')?.textContent).toBe('Aliases');
@@ -1049,23 +1050,7 @@ describe('SettingsPanel information architecture', () => {
       shortcut: 'command_option_v',
     });
     expect(onUpdateSettings).toHaveBeenCalledWith({ pasteLastShortcut: 'command_option_v' });
-    await act(async () => root.render(
-      <SettingsPanel
-        settings={{ ...DEFAULT_SETTINGS, pasteLastShortcut: 'command_option_v' }}
-        onUpdateSettings={onUpdateSettings}
-        initialized
-        status="idle"
-        onResetStats={vi.fn()}
-        onRerunSetup={vi.fn()}
-        accessibilityGranted
-        onCheckForUpdate={vi.fn(async () => {})}
-        onDownloadUpdate={vi.fn()}
-        onRestartUpdate={vi.fn()}
-        onOpenUpdate={vi.fn()}
-        updateStatus={{ phase: 'idle' }}
-        configureError={null}
-      />,
-    ));
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, pasteLastShortcut: 'command_option_v' }));
     expect(container.textContent).toContain('Active: ⌘⌥V');
     expect(container.textContent).toContain('secure target checks');
   });

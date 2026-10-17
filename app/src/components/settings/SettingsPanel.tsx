@@ -414,7 +414,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
+  const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(pageRequest?.editorTab ?? null);
   const [targetRequest, setTargetRequest] = useState<SettingTargetRequest | null>(() => (
     settingTargetRequest(pageRequest?.target)
   ));
