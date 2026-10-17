@@ -105,6 +105,7 @@ vi.mock('../../lib/dictationDiagnostics', () => ({
 }));
 
 import { DiagnosticsWorkspace, type DiagnosticsTab } from './DiagnosticsWorkspace';
+import { listTransformAttempts } from '../../lib/transformDiagnostics';
 
 describe('DiagnosticsWorkspace shared diagnostics shell', () => {
   let container: HTMLDivElement;
@@ -113,12 +114,14 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
   let popOutSpy: ReturnType<typeof vi.fn<(tab: DiagnosticsTab) => void>>;
 
   beforeEach(async () => {
+    vi.useFakeTimers();
     hookMocks.events = [];
     hookMocks.useEventStore.mockClear();
     hookMocks.usePerformanceDiagnostics.mockClear();
     hookMocks.usePerformanceStoreHealth.mockClear();
     hookMocks.getDictationCaptureStatus.mockReset();
     hookMocks.getDictationCaptureStatus.mockResolvedValue({ state: 'unarmed' });
+    vi.mocked(listTransformAttempts).mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -129,6 +132,7 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
   });
 
@@ -187,6 +191,43 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     ));
     expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
     expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+  });
+
+  it('activates only the visible Events or performance data source', async () => {
+    expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(true);
+    expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+    await act(async () => root.render(<DiagnosticsWorkspace requestedTab="runs" />));
+    expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
+    expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(true);
+    await act(async () => root.render(<DiagnosticsWorkspace requestedTab="reports" />));
+    expect(hookMocks.useEventStore).toHaveBeenLastCalledWith(false);
+    expect(hookMocks.usePerformanceDiagnostics).toHaveBeenLastCalledWith(false);
+  });
+
+  it('stops private-capture polling while hidden and refreshes immediately on resume', async () => {
+    await act(async () => root.render(<DiagnosticsWorkspace active={false} requestedTab="dictation" />));
+    hookMocks.getDictationCaptureStatus.mockClear();
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    expect(hookMocks.getDictationCaptureStatus).not.toHaveBeenCalled();
+    await act(async () => root.render(<DiagnosticsWorkspace active requestedTab="dictation" />));
+    // Badge plus visible dictation pane each hydrate once on resume.
+    expect(hookMocks.getDictationCaptureStatus).toHaveBeenCalledTimes(2);
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    expect(hookMocks.getDictationCaptureStatus).toHaveBeenCalledTimes(4);
+    await act(async () => root.render(<DiagnosticsWorkspace active={false} requestedTab="dictation" />));
+    hookMocks.getDictationCaptureStatus.mockClear();
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    expect(hookMocks.getDictationCaptureStatus).not.toHaveBeenCalled();
+  });
+
+  it('defers transform reads while hidden and refreshes retained state on resume', async () => {
+    await act(async () => root.render(<DiagnosticsWorkspace active={false} requestedTab="transforms" />));
+    expect(listTransformAttempts).not.toHaveBeenCalled();
+    await act(async () => root.render(<DiagnosticsWorkspace active requestedTab="transforms" />));
+    expect(listTransformAttempts).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(<DiagnosticsWorkspace active={false} requestedTab="transforms" />));
+    await act(async () => root.render(<DiagnosticsWorkspace active requestedTab="transforms" />));
+    expect(listTransformAttempts).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the private capture badge visible while switching diagnostics tabs', async () => {

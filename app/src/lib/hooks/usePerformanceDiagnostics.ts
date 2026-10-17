@@ -51,37 +51,61 @@ export function usePerformanceDiagnostics(enabled: boolean) {
   const [cleared, setCleared] = useState(false);
   const [clearing, setClearing] = useState(false);
   const dataGenerationRef = useRef(0);
+  const activeRef = useRef(false);
+  const runsRequestRef = useRef(0);
+  const resourcesRequestRef = useRef(0);
+  const liveRunsRef = useRef<PerformanceRunV1[] | null>(null);
+  const liveSamplesRef = useRef<ResourceSampleV1[] | null>(null);
 
   const refreshRuns = useCallback(async () => {
+    if (!activeRef.current) return;
     const generation = dataGenerationRef.current;
+    const request = ++runsRequestRef.current;
+    liveRunsRef.current = [];
+    const currentRequest = () => activeRef.current
+      && generation === dataGenerationRef.current && request === runsRequestRef.current;
     setRunsLoading(true);
     setRunsError(null);
     try {
       const response = await listPerformanceRuns(MAX_RUNS);
-      if (generation === dataGenerationRef.current) {
-        setRuns(current => mergeRuns(response.runs, current));
+      if (currentRequest()) {
+        // The backend snapshot is authoritative after a hidden interval (it
+        // may have been cleared elsewhere). Retain only live arrivals since
+        // this read began, rather than resurrecting the old cached snapshot.
+        setRuns(mergeRuns(response.runs, liveRunsRef.current ?? []));
         if (response.runs.length > 0) setCleared(false);
       }
     } catch (reason) {
-      setRunsError(errorMessage(reason));
+      if (currentRequest()) setRunsError(errorMessage(reason));
     } finally {
-      setRunsLoading(false);
+      if (currentRequest()) {
+        liveRunsRef.current = null;
+        setRunsLoading(false);
+      }
     }
   }, []);
 
   const refreshResources = useCallback(async () => {
+    if (!activeRef.current) return;
     const generation = dataGenerationRef.current;
+    const request = ++resourcesRequestRef.current;
+    liveSamplesRef.current = [];
+    const currentRequest = () => activeRef.current
+      && generation === dataGenerationRef.current && request === resourcesRequestRef.current;
     setResourcesLoading(true);
     setResourcesError(null);
     try {
       const response = await getPerformanceResourceWindow();
-      if (generation === dataGenerationRef.current) {
-        setSamples(current => mergeResourceSamples(response, current));
+      if (currentRequest()) {
+        setSamples(mergeResourceSamples(response, liveSamplesRef.current ?? []));
       }
     } catch (reason) {
-      setResourcesError(errorMessage(reason));
+      if (currentRequest()) setResourcesError(errorMessage(reason));
     } finally {
-      setResourcesLoading(false);
+      if (currentRequest()) {
+        liveSamplesRef.current = null;
+        setResourcesLoading(false);
+      }
     }
   }, []);
 
@@ -91,6 +115,8 @@ export function usePerformanceDiagnostics(enabled: boolean) {
 
   const clear = useCallback(async () => {
     dataGenerationRef.current += 1;
+    liveRunsRef.current = null;
+    liveSamplesRef.current = null;
     setClearing(true);
     setClearError(null);
     try {
@@ -110,11 +136,15 @@ export function usePerformanceDiagnostics(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) return;
+    activeRef.current = true;
     let disposed = false;
     const unlisteners: Array<Promise<() => void>> = [];
 
     unlisteners.push(onPerformanceRunCompleted(run => {
       if (disposed) return;
+      if (liveRunsRef.current !== null) {
+        liveRunsRef.current = mergeRuns(liveRunsRef.current, [run]);
+      }
       setRuns(current => mergeRuns(current, [run]));
       setRunsLoading(false);
       setRunsError(null);
@@ -122,6 +152,9 @@ export function usePerformanceDiagnostics(enabled: boolean) {
     }));
     unlisteners.push(onPerformanceResourceSample(sample => {
       if (disposed) return;
+      if (liveSamplesRef.current !== null) {
+        liveSamplesRef.current = mergeResourceSamples(liveSamplesRef.current, [sample]);
+      }
       setSamples(current => mergeResourceSamples(current, [sample]));
       setResourcesLoading(false);
       setResourcesError(null);
@@ -129,6 +162,8 @@ export function usePerformanceDiagnostics(enabled: boolean) {
     unlisteners.push(onPerformanceDiagnosticsCleared(() => {
       if (disposed) return;
       dataGenerationRef.current += 1;
+      liveRunsRef.current = null;
+      liveSamplesRef.current = null;
       setRuns([]);
       setSamples([]);
       setRunsLoading(false);
@@ -139,6 +174,10 @@ export function usePerformanceDiagnostics(enabled: boolean) {
     void refresh();
     return () => {
       disposed = true;
+      activeRef.current = false;
+      dataGenerationRef.current += 1;
+      liveRunsRef.current = null;
+      liveSamplesRef.current = null;
       for (const unlisten of unlisteners) void unlisten.then(stop => stop());
     };
   }, [enabled, refresh]);

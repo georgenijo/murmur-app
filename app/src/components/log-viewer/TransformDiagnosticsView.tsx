@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   armNextTransformCapture,
   deleteTransformCapture,
@@ -27,15 +27,17 @@ function textPanel(label: string, value: string | null) {
   );
 }
 
-export function TransformDiagnosticsView() {
+export function TransformDiagnosticsView({ active = true }: { active?: boolean }) {
   const [attempts, setAttempts] = useState<TransformAttemptV1[]>([]);
   const [captures, setCaptures] = useState<DiagnosticCaptureSummaryV1[]>([]);
   const [arm, setArm] = useState<CaptureArmStatusV1>({ armed: false, expiresAtMs: null });
   const [selected, setSelected] = useState<DiagnosticCaptureV1 | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const requestRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const request = ++requestRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -44,19 +46,22 @@ export function TransformDiagnosticsView() {
         listTransformCaptures(),
         getCaptureArmStatus(),
       ]);
+      if (request !== requestRef.current) return;
       setAttempts(nextAttempts);
       setCaptures(nextCaptures);
       setArm(status);
     } catch {
+      if (request !== requestRef.current) return;
       setError('Transform diagnostics could not be refreshed.');
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (active) void refresh();
+    return () => { requestRef.current += 1; };
+  }, [active, refresh]);
 
   const armCapture = async () => {
     const confirmed = window.confirm(

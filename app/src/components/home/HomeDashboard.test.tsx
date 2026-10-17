@@ -32,7 +32,6 @@ describe('home dashboard interactions', () => {
           status={status}
           initialized
           recordingDuration={12}
-          audioLevel={0.04}
           triggerKey="shift_l"
           recordingMode={recordingMode}
           meetingPhase="idle"
@@ -80,7 +79,6 @@ describe('home dashboard interactions', () => {
           status={status}
           initialized
           recordingDuration={12}
-          audioLevel={0.04}
           smartDestinationStatus={smartDestinationStatus}
           triggerKey="shift_l"
           recordingMode="hold_down"
@@ -110,7 +108,6 @@ describe('home dashboard interactions', () => {
           status="recording"
           initialized
           recordingDuration={12}
-          audioLevel={0.04}
           smartDestinationStatus={smartDestinationStatus}
           smartDestinationAppName="T3 Code"
           triggerKey="shift_l"

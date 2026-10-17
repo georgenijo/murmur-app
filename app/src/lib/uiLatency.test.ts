@@ -10,6 +10,7 @@ import {
   summarizeUiLatency,
   type UiLatencySampleV1,
   useUiLatencyDestination,
+  useUiLatencySamples,
 } from './uiLatency';
 
 function sample(
@@ -133,5 +134,30 @@ describe('UI latency metrics', () => {
     expect(getUiLatencySamples()[0].frameIntervalMs).toBeCloseTo(16.67, 2);
     await act(async () => root.unmount());
     vi.unstubAllGlobals();
+  });
+
+  it('unsubscribes a hidden latency pane and reads the current snapshot when resumed', async () => {
+    let renders = 0;
+    function Samples({ enabled }: { enabled: boolean }) {
+      renders += 1;
+      const samples = useUiLatencySamples(enabled);
+      return createElement('output', null, samples.length);
+    }
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(Samples, { enabled: true })));
+      const visibleRenders = renders;
+      await act(async () => clearUiLatencySamples());
+      expect(renders).toBeGreaterThan(visibleRenders);
+      await act(async () => root.render(createElement(Samples, { enabled: false })));
+      const hiddenRenders = renders;
+      await act(async () => clearUiLatencySamples());
+      expect(renders).toBe(hiddenRenders);
+      await act(async () => root.render(createElement(Samples, { enabled: true })));
+      expect(container.textContent).toBe('0');
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });

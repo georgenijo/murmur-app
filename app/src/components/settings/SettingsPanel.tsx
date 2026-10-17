@@ -1472,7 +1472,7 @@ export const SettingsPanel = memo(function SettingsPanel({
           <SettingsSection card={false} pageId="diagnostics" activePage={activeCat} title="Diagnostics" subtitle="Events, run history, performance, reports, and transform traces">
             <div data-setting-target="diagnostics" className="settings-card h-[520px] min-h-0 overflow-hidden">
               <DiagnosticsWorkspace
-                active={activeCat === 'diagnostics'}
+                active={pageVisible && activeCat === 'diagnostics'}
                 storeHealthEnabled
                 onPopOut={(tab) => { void popOutDiagnostics(tab); }}
               />

@@ -42,6 +42,7 @@ describe('usePerformanceHealth capture hydration', () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    vi.useRealTimers();
     container.remove();
   });
 
@@ -59,6 +60,28 @@ describe('usePerformanceHealth capture hydration', () => {
 
   it('does no diagnostic work while disabled', async () => {
     await act(async () => root.render(<Probe enabled={false} />));
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('stops polling on hide and hydrates again on resume', async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<Probe enabled />));
+    await act(async () => root.render(<Probe enabled={false} />));
+    mocks.invoke.mockClear();
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await act(async () => root.render(<Probe enabled />));
+    expect(mocks.invoke).toHaveBeenCalledWith('get_capture_health_history');
+  });
+
+  it('does not continue a hidden hydration into another runtime read', async () => {
+    let resolve!: (status: { state: string; model: string }) => void;
+    const status = new Promise<{ state: string; model: string }>(done => { resolve = done; });
+    mocks.invoke.mockReturnValueOnce(status);
+    await act(async () => root.render(<Probe enabled />));
+    await act(async () => root.render(<Probe enabled={false} />));
+    mocks.invoke.mockClear();
+    await act(async () => resolve({ state: 'idle', model: 'base.en' }));
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 });

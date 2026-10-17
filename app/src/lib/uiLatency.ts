@@ -225,8 +225,10 @@ function subscribeUiLatency(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-export function useUiLatencySamples(): UiLatencySampleV1[] {
-  return useSyncExternalStore(subscribeUiLatency, getUiLatencySamples, () => SERVER_SNAPSHOT);
+const subscribeToNoSamples = () => () => {};
+
+export function useUiLatencySamples(enabled = true): UiLatencySampleV1[] {
+  return useSyncExternalStore(enabled ? subscribeUiLatency : subscribeToNoSamples, getUiLatencySamples, () => SERVER_SNAPSHOT);
 }
 
 export function beginUiTransition(

@@ -46,7 +46,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const [errorPresentation, setErrorPresentation] = useState<RecordingErrorPresentation | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
   const [statsVersion, setStatsVersion] = useState(0);
   const [smartDestinationSelection, setSmartDestinationSelection] =
@@ -305,18 +304,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       unlistens.forEach((fn) => fn());
     };
   }, [clearError, presentError]);
-
-  // Subscribe to live audio level for waveform visualisation
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<number>('audio-level', (event) => {
-      setAudioLevel(event.payload);
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, []);
 
   // Listen for auto-paste failures and surface a hint to the user
   const pasteErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -585,7 +572,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     handleHoldStart,
     handleStop,
     toggleRecording,
-    audioLevel,
     smartDestinationStatus: smartDestinationSelection?.status ?? null,
     smartDestinationAppName: smartDestinationSelection?.appName ?? null,
     lockedMode,

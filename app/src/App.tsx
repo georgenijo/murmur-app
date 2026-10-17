@@ -37,6 +37,7 @@ import { useMeetingSuggestionAcceptance } from './lib/hooks/useMeetingSuggestion
 import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
+import { useNativeWindowVisible } from './lib/hooks/useNativeWindowVisible';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
 import { useTransformFlow } from './lib/hooks/useTransformFlow';
@@ -121,6 +122,7 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const mainWindowVisible = useNativeWindowVisible();
 
   const { settings, getCurrentSettings, getConfirmedSettings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
@@ -292,7 +294,7 @@ function App() {
     status, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
+    handleStart, handleHoldStart, handleStop, toggleRecording,
     smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
     addEntry,
@@ -465,6 +467,11 @@ function App() {
     beginCurrentUiTransition(`main.${destination}`, trigger);
     setMainDestination(destination);
   }, [closeSettings]);
+
+  const reopenDiscoveryChecklist = useCallback(() => {
+    discovery.reopenChecklist();
+    navigateMain('home', 'programmatic');
+  }, [discovery.reopenChecklist, navigateMain]);
 
   const backToHome = useCallback(() => {
     restoreHomeNavigationFocusRef.current = true;
@@ -868,7 +875,6 @@ function App() {
         status={status}
         initialized={initialized}
         recordingDuration={recordingDuration}
-        audioLevel={audioLevel}
         triggerKey={settings.doubleTapKey}
         recordingMode={settings.recordingMode}
         onRecord={handleStart}
@@ -924,7 +930,7 @@ function App() {
                   status={status}
                   initialized={initialized}
                   recordingDuration={recordingDuration}
-                  audioLevel={audioLevel}
+                  active={mainWindowVisible && !isSettingsOpen}
                   smartDestinationStatus={smartDestinationStatus}
                   smartDestinationAppName={smartDestinationAppName}
                   settings={settings}
@@ -1014,7 +1020,7 @@ function App() {
           {...(!isSettingsOpen ? { inert: '' } : {})}
           className={`ui-persistent-surface absolute inset-0 flex min-h-0 overflow-hidden ${isSettingsOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
         >
-          <SettingsSurfaceActiveContext.Provider value={isSettingsOpen}>
+          <SettingsSurfaceActiveContext.Provider value={isSettingsOpen && mainWindowVisible}>
             <SettingsPanel
               settings={settings}
               onUpdateSettings={updateSettings}
@@ -1022,10 +1028,7 @@ function App() {
               status={status}
               onResetStats={handleResetStats}
               onRerunSetup={rerunSetup}
-              onDiscoveryChecklistReopen={() => {
-                discovery.reopenChecklist();
-                navigateMain('home', 'programmatic');
-              }}
+              onDiscoveryChecklistReopen={reopenDiscoveryChecklist}
               onPageOpened={handleSettingsPageOpened}
               onModeBound={handleModeBound}
               accessibilityGranted={accessibilityGranted}

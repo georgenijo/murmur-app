@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Mic, Square } from 'lucide-react';
 import {
   dictationKeyLabel,
@@ -16,7 +17,7 @@ interface HomeRecordingBarProps {
   status: DictationStatus;
   initialized: boolean;
   recordingDuration: number;
-  audioLevel: number;
+  active?: boolean;
   smartDestinationStatus?: SmartDestinationStatus | null;
   smartDestinationAppName?: string | null;
   triggerKey: DictationKey;
@@ -35,11 +36,40 @@ function Shortcut({ triggerKey }: { triggerKey: DictationKey }) {
   return <kbd className="home-talk-key">{dictationKeyLabel(triggerKey)}</kbd>;
 }
 
+// Audio presentation owns its updates at the leaf. Recording lifecycle and
+// silence auto-stop keep their independent, unthrottled event subscriptions.
+function RecordingWaveform({ active }: { active: boolean }) {
+  const [audioLevel, setAudioLevel] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setAudioLevel(0);
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<number>('audio-level', ({ payload }) => {
+      if (!disposed) setAudioLevel(payload);
+    }).then(stop => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); };
+  }, [active]);
+  const normalized = Math.min(1, Math.max(0, audioLevel) * 16);
+  return (
+    <span className="home-record-waveform" aria-hidden="true">
+      {[0.52, 0.78, 1, 0.78, 0.52].map((envelope, index) => (
+        <span key={index} style={{ height: `${Math.max(3, Math.round((0.15 + normalized * envelope) * 16))}px` }} />
+      ))}
+    </span>
+  );
+}
+
 export function HomeRecordingBar({
   status,
   initialized,
   recordingDuration,
-  audioLevel,
+  active = true,
   smartDestinationStatus = null,
   smartDestinationAppName = null,
   triggerKey,
@@ -51,8 +81,6 @@ export function HomeRecordingBar({
   const isCapturing = status === 'starting' || status === 'recording';
   const busy = status === 'processing' || status === 'recovering';
   const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
-  const normalized = Math.min(1, Math.max(0, audioLevel) * 16);
-  const envelopes = [0.52, 0.78, 1, 0.78, 0.52];
   const destinationLabel = (status === 'recording' || status === 'processing')
     && smartDestinationStatus
     ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
@@ -108,11 +136,7 @@ export function HomeRecordingBar({
           <span className="home-talk-title">
             <strong>{title}</strong>
             {status === 'recording' && (
-              <span className="home-record-waveform" aria-hidden="true">
-                {envelopes.map((envelope, index) => (
-                  <span key={index} style={{ height: `${Math.max(3, Math.round((0.15 + normalized * envelope) * 16))}px` }} />
-                ))}
-              </span>
+              <RecordingWaveform active={active} />
             )}
           </span>
           <span className="home-talk-hint">

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getStatus } from '../dictation';
 import {
   deriveCaptureHealth,
@@ -44,6 +44,7 @@ function isTransformStatus(value: unknown): value is TransformPipelineStatus {
 }
 
 export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { refresh: () => void } {
+  const requestRef = useRef(0);
   const [health, setHealth] = useState<PerformanceHealth>({
     loading: true,
     error: null,
@@ -56,6 +57,7 @@ export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { re
 
   const refresh = useCallback(() => {
     if (!enabled) return;
+    const request = ++requestRef.current;
     void (async () => {
       try {
         const [status, transformStatus, captureHistoryValue] = await Promise.all([
@@ -63,9 +65,11 @@ export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { re
           invoke<unknown>('transform_status'),
           invoke<unknown>('get_capture_health_history'),
         ]);
+        if (request !== requestRef.current) return;
         const captureHistory = parseCaptureHealthHistory(captureHistoryValue);
         const modelName = typeof status.model === 'string' ? status.model : null;
         const runtime = modelName ? await getModelRuntimeStatus(modelName) : null;
+        if (request !== requestRef.current) return;
         setHealth({
           loading: false,
           error: null,
@@ -76,6 +80,7 @@ export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { re
           capture: deriveCaptureHealth(captureHistory.observations),
         });
       } catch (reason) {
+        if (request !== requestRef.current) return;
         setHealth(current => ({
           ...current,
           loading: false,
@@ -89,7 +94,10 @@ export function usePerformanceHealth(enabled: boolean): PerformanceHealth & { re
     if (!enabled) return;
     refresh();
     const interval = window.setInterval(refresh, 2_000);
-    return () => window.clearInterval(interval);
+    return () => {
+      requestRef.current += 1;
+      window.clearInterval(interval);
+    };
   }, [enabled, refresh]);
 
   return { ...health, refresh };

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { WindowHeader } from '../ui/WindowHeader';
+import { useNativeWindowVisible } from '../../lib/hooks/useNativeWindowVisible';
 import {
   DiagnosticsWorkspace,
   isDiagnosticsTab,
@@ -10,6 +11,7 @@ import {
 const DIAGNOSTICS_TAB_REQUESTED_EVENT = 'diagnostics-tab-requested';
 
 export function DiagnosticsWindowApp() {
+  const visible = useNativeWindowVisible();
   const [requestedTab, setRequestedTab] = useState<DiagnosticsTab>('events');
 
   useEffect(() => {
@@ -32,6 +34,7 @@ export function DiagnosticsWindowApp() {
       <WindowHeader contextLabel="Diagnostics" />
       <main className="min-h-0 flex-1 overflow-hidden">
         <DiagnosticsWorkspace
+          active={visible}
           requestedTab={requestedTab}
           storeHealthEnabled
           canArmPrivateCapture={false}

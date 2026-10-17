@@ -24,7 +24,7 @@ interface HomeDashboardProps {
   status: DictationStatus;
   initialized: boolean;
   recordingDuration: number;
-  audioLevel: number;
+  active?: boolean;
   smartDestinationStatus?: SmartDestinationStatus | null;
   smartDestinationAppName?: string | null;
   settings: Settings;
@@ -53,7 +53,7 @@ export function HomeDashboard({
   status,
   initialized,
   recordingDuration,
-  audioLevel,
+  active = true,
   smartDestinationStatus = null,
   smartDestinationAppName = null,
   settings,
@@ -74,7 +74,7 @@ export function HomeDashboard({
             status={status}
             initialized={initialized}
             recordingDuration={recordingDuration}
-            audioLevel={audioLevel}
+            active={active}
             smartDestinationStatus={smartDestinationStatus}
             smartDestinationAppName={smartDestinationAppName}
             triggerKey={settings.doubleTapKey}

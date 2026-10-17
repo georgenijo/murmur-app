@@ -8,6 +8,11 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 const workspaceMock = vi.hoisted(() => vi.fn());
+const visibility = vi.hoisted(() => ({ visible: false }));
+
+vi.mock('../../lib/hooks/useNativeWindowVisible', () => ({
+  useNativeWindowVisible: () => visibility.visible,
+}));
 
 vi.mock('./DiagnosticsWorkspace', () => ({
   DiagnosticsWorkspace: (props: unknown) => {
@@ -24,6 +29,8 @@ describe('DiagnosticsWindowApp native chrome', () => {
   let root: Root;
 
   beforeEach(async () => {
+    visibility.visible = false;
+    workspaceMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -53,5 +60,15 @@ describe('DiagnosticsWindowApp native chrome', () => {
     expect(workspaceMock).toHaveBeenCalledWith(expect.objectContaining({
       storeHealthEnabled: true,
     }));
+  });
+
+  it('keeps a hidden native window inactive and resumes its retained workspace on reopen', async () => {
+    expect(workspaceMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
+    visibility.visible = true;
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(workspaceMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+    visibility.visible = false;
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(workspaceMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
   });
 });

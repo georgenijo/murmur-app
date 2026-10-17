@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   armNextDictationCapture,
   deleteDictationCapture,
@@ -49,6 +49,7 @@ export function DictationCaptureStatusBadge({
 
   useEffect(() => {
     if (!active) return undefined;
+    setNow(Date.now());
     let disposed = false;
     const refresh = () => {
       void getDictationCaptureStatus().then(nextStatus => {
@@ -91,29 +92,37 @@ export function DictationDiagnosticsView({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
+  const requestRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const request = ++requestRef.current;
     try {
       const [nextStatus, nextCaptures] = await Promise.all([
         getDictationCaptureStatus(),
         listDictationCaptures(),
       ]);
+      if (request !== requestRef.current) return;
       setStatus(nextStatus);
       setCaptures(nextCaptures);
       setError(null);
     } catch {
+      if (request !== requestRef.current) return;
       setError('Private dictation captures could not be refreshed.');
     }
   }, []);
 
   useEffect(() => {
     if (!active) return undefined;
+    setNow(Date.now());
     void refresh();
     const timer = window.setInterval(() => {
       setNow(Date.now());
       void refresh();
     }, 1_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      requestRef.current += 1;
+      window.clearInterval(timer);
+    };
   }, [active, refresh]);
 
   const arm = async () => {

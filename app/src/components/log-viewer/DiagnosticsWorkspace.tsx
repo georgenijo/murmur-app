@@ -57,10 +57,10 @@ export function DiagnosticsWorkspace({
   storeHealthEnabled = false,
   canArmPrivateCapture = true,
 }: DiagnosticsWorkspaceProps) {
-  const { events, clear } = useEventStore(active);
   const [tab, setTab] = useState<DiagnosticsTab>(requestedTab ?? 'events');
+  const { events, clear } = useEventStore(active && tab === 'events');
   useUiLatencyDestination(active ? `settings.model.diagnostics.${tab}` : null);
-  const performance = usePerformanceDiagnostics(active);
+  const performance = usePerformanceDiagnostics(active && (tab === 'performance' || tab === 'runs'));
   const health = usePerformanceHealth(active && tab === 'performance');
   const storeHealth = usePerformanceStoreHealth(
     active && storeHealthEnabled && (tab === 'performance' || tab === 'runs'),
@@ -306,7 +306,7 @@ export function DiagnosticsWorkspace({
           aria-labelledby="diagnostics-tab-latency"
           className="flex-1 overflow-y-auto"
         >
-          <LatencyMapView />
+          <LatencyMapView active={active} />
         </div>
       )}
       {tab === 'runs' && (
@@ -337,7 +337,7 @@ export function DiagnosticsWorkspace({
           aria-labelledby="diagnostics-tab-transforms"
           className="flex-1 overflow-y-auto"
         >
-          <TransformDiagnosticsView />
+          <TransformDiagnosticsView active={active} />
         </div>
       )}
       {tab === 'dictation' && (

@@ -168,25 +168,26 @@ describe('SettingsPanel information architecture', () => {
     pageRequest: SettingsPageRequest | null = null,
     extras: Pick<Parameters<typeof SettingsPanel>[0], 'onDiscoveryChecklistReopen' | 'onPageOpened' | 'activeRef'> = {},
   ) {
-    void isOpen;
     return root.render(
-      <SettingsPanel
-        settings={settings}
-        onUpdateSettings={onUpdateSettings}
-        initialized
-        status="idle"
-        onResetStats={vi.fn()}
-        onRerunSetup={vi.fn()}
-        accessibilityGranted
-        onCheckForUpdate={vi.fn(async () => {})}
-        onDownloadUpdate={vi.fn()}
-        onRestartUpdate={vi.fn()}
-        onOpenUpdate={vi.fn()}
-        updateStatus={{ phase: 'idle' }}
-        configureError={null}
-        pageRequest={pageRequest}
-        {...extras}
-      />,
+      <SettingsSurfaceActiveContext.Provider value={isOpen}>
+        <SettingsPanel
+          settings={settings}
+          onUpdateSettings={onUpdateSettings}
+          initialized
+          status="idle"
+          onResetStats={vi.fn()}
+          onRerunSetup={vi.fn()}
+          accessibilityGranted
+          onCheckForUpdate={vi.fn(async () => {})}
+          onDownloadUpdate={vi.fn()}
+          onRestartUpdate={vi.fn()}
+          onOpenUpdate={vi.fn()}
+          updateStatus={{ phase: 'idle' }}
+          configureError={null}
+          pageRequest={pageRequest}
+          {...extras}
+        />
+      </SettingsSurfaceActiveContext.Provider>,
     );
   }
 
@@ -315,6 +316,19 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => renderVisiblePanel(true, token));
     expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
     expect(onPageOpened).toHaveBeenCalledExactlyOnceWith('shortcuts');
+  });
+
+  it('pauses retained Diagnostics when Settings is covered, then resumes the same page', async () => {
+    const request = { page: 'diagnostics', token: 1 };
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, request));
+    expect(diagnosticsWorkspaceMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+
+    await act(async () => renderPanel(false, DEFAULT_SETTINGS, request));
+    expect(diagnosticsWorkspaceMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }));
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, request));
+    expect(diagnosticsWorkspaceMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+    expect(container.querySelector('h1')?.textContent).toBe('Diagnostics');
   });
 
   it('reopens the feature checklist from General and reports rendered pages', async () => {

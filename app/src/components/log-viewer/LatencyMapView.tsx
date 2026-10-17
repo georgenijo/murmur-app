@@ -9,6 +9,7 @@ import {
 import { percentile } from '../../lib/numeric';
 
 interface LatencyMapViewProps {
+  active?: boolean;
   samples?: UiLatencySampleV1[];
 }
 
@@ -23,8 +24,8 @@ function shortView(view: string): string {
     .replace('settings.text.editor.', 'text editor.');
 }
 
-export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps) {
-  const liveSamples = useUiLatencySamples();
+export function LatencyMapView({ active = true, samples: suppliedSamples }: LatencyMapViewProps) {
+  const liveSamples = useUiLatencySamples(active && suppliedSamples === undefined);
   const samples = suppliedSamples ?? liveSamples;
   const currentBuild = getUiLatencyBuild();
   const builds = useMemo(
