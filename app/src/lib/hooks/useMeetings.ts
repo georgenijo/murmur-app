@@ -71,10 +71,12 @@ export function useMeetings(settings: Settings) {
 
   const refresh = useCallback(async (query = queryRef.current) => {
     const previous = loadedWindowRef.current;
+    const previousTotal = pageRef.current.total;
     const sameFilter = previous?.query === query.trim();
     let pageSize = sameFilter ? previous.pageSize : EMPTY_PAGE.limit;
     const pages = sameFilter ? previous.pages : 1;
     let targetRows = pages * pageSize;
+    let maxTargetRows = targetRows;
     // Only retain a selection that belonged to this visible filter/window.
     const selected = sameFilter && pageRef.current.sessions.some((session) => session.id === selectedIdRef.current)
       ? selectedIdRef.current : null;
@@ -103,13 +105,20 @@ export function useMeetings(settings: Settings) {
           pageSize = Math.min(MAX_MEETING_PAGE_SIZE, Math.max(1, next.limit));
           targetRows = pageSize;
         }
+        if (offset === 0) {
+          // Freeze the selection budget at the first response. A missing or
+          // pruned selection must not turn a refresh into a full-list scan.
+          const growthPages = sameFilter ? Math.ceil(Math.max(0, next.total - previousTotal) / pageSize) : 0;
+          maxTargetRows = targetRows + growthPages * pageSize;
+        }
         next.sessions.forEach((session) => sessions.set(session.id, session));
         searchMatches = { ...searchMatches, ...next.searchMatches };
         offset += next.sessions.length;
         total = next.total;
         more = next.sessions.length > 0 && offset < total;
         // New sessions can move the selected row just beyond the old window.
-        if (more && offset >= targetRows && selected && selectedIdRef.current === selected && !sessions.has(selected)) {
+        if (more && offset >= targetRows && targetRows < maxTargetRows
+          && selected && selectedIdRef.current === selected && !sessions.has(selected)) {
           targetRows += pageSize;
         }
       } while (more && offset < targetRows);

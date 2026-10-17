@@ -270,6 +270,46 @@ describe('useMeetings remote speaker refresh', () => {
     expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.slice(0, controller().page.sessions.length).map((s) => s.id));
   });
 
+  it.each(['same', 'lower'])('bounds refresh and keeps the saved page count when a selection disappears from 1000 results with %s total', async (change) => {
+    const sessions = mockPagedMeetings(1000);
+    meetingMocks.getMeeting.mockResolvedValue(detail('meeting-20', 'Team'));
+    await act(async () => controller().refresh('search'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().select('meeting-20'));
+    sessions.splice(20, 1);
+    if (change === 'same') sessions.push(detail('replacement', 'Team').session);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      meetingMocks.listMeetings.mockClear();
+      await act(async () => controller().refresh());
+      expect(meetingMocks.listMeetings.mock.calls).toEqual([['search', 0, 100], ['search', 100, 50]]);
+      expect(controller().page.sessions.map((s) => s.id)).toEqual(sessions.slice(0, 150).map((s) => s.id));
+      expect(controller().page.sessions.some((s) => s.id === 'meeting-20')).toBe(false);
+      expect(controller().hasMore).toBe(true);
+    }
+  });
+
+  it('caps a missing-selection extension at first-page net growth rounded up to a page', async () => {
+    const sessions = mockPagedMeetings(1000);
+    meetingMocks.getMeeting.mockResolvedValue(detail('meeting-20', 'Team'));
+    await act(async () => controller().refresh('search'));
+    await act(async () => controller().loadMore());
+    await act(async () => controller().loadMore());
+    await act(async () => controller().select('meeting-20'));
+    sessions.splice(20, 1);
+    sessions.push(detail('new-1', 'Team').session, detail('new-2', 'Team').session);
+    const original = meetingMocks.listMeetings.getMockImplementation()!;
+    // Later pages observe much larger growth; only the first page sets the budget.
+    meetingMocks.listMeetings.mockImplementation(async (query, offset = 0, limit = 50) => ({
+      ...await original(query, offset, limit), total: offset === 0 ? 1001 : 2000,
+    }));
+    meetingMocks.listMeetings.mockClear();
+    await act(async () => controller().refresh());
+    expect(meetingMocks.listMeetings.mock.calls).toEqual([['search', 0, 100], ['search', 100, 50], ['search', 150, 50]]);
+    expect(controller().page.sessions).toHaveLength(200);
+    expect(controller().hasMore).toBe(true);
+  });
+
   it('resets the loaded window for a new search filter', async () => {
     mockPagedMeetings();
     await act(async () => controller().refresh('old'));

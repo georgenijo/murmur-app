@@ -25,9 +25,12 @@ refreshes, including background events, saves, and deletion, retain the number
 of loaded pages. They rebuild that range from offset zero in requests of at most
 100 sessions, filling gaps after deletions, and publish it together after all
 requests succeed. The old range stays visible while refreshing or on failure.
-A previously visible selection remains in the refreshed range; if insertions
-move it past that range, refresh extends the range until it finds the selection
-or reaches the end. A newer refresh/search invalidates every older page request.
+If insertions move a previously visible selection past that range, refresh may
+extend it by the net increase in result count, rounded up to whole pages. That
+budget compares the first refresh response with the total captured at refresh
+start; later responses cannot increase it. A missing selection with an unchanged
+or smaller result count does not extend the range or its stored page count.
+A newer refresh/search invalidates every older page request.
 Overlapping rows are deduplicated by session ID. Long titles ellipsize separately
 from their status badges.
 
