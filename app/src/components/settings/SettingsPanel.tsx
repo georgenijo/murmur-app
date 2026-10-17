@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -81,22 +81,22 @@ import {
 } from './KeyboardShortcutsSettings';
 
 function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const id = useId();
   return (
     <div className="settings-field">
       <div className="flex items-center justify-between">
-        <label className="text-xs text-on-surface-variant">Paste Delay</label>
-        <span className="text-xs font-medium text-on-surface">{draft}ms</span>
+        <label htmlFor={id} className="text-xs text-on-surface-variant">Paste Delay</label>
+        <span className="text-xs font-medium text-on-surface">{value}ms</span>
       </div>
       <input
         type="range"
         min={0}
         max={500}
         step={10}
-        value={draft}
-        onChange={(event) => setDraft(Number(event.target.value))}
-        onPointerUp={() => onCommit(draft)}
+        id={id}
+        value={value}
+        aria-valuetext={`${value} milliseconds`}
+        onChange={(event) => onCommit(Number(event.target.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
       <p className="text-xs text-on-surface-variant">Increase this only if paste lands in the wrong window.</p>

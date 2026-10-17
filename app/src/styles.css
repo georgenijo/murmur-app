@@ -1196,7 +1196,8 @@ textarea {
 .meetings-row:hover { background: var(--ui-dashboard-hover); }
 .meetings-row[aria-pressed="true"] { background: var(--ui-tint-accent-subtle); box-shadow: inset 2px 0 0 var(--murmur-primary); }
 .meetings-row:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: -2px; }
-.meetings-row-title { display: flex; min-width: 0; align-items: center; gap: var(--ui-space-3); overflow: hidden; color: var(--murmur-on-surface); font-size: var(--ui-font-label); font-weight: 600; white-space: nowrap; }
+.meetings-row-title { display: flex; min-width: 0; align-items: center; gap: var(--ui-space-3); color: var(--murmur-on-surface); font-size: var(--ui-font-label); font-weight: 600; white-space: nowrap; }
+.meetings-row-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .meetings-row-title[data-untitled="true"] { color: var(--murmur-on-surface-variant); font-weight: 500; }
 .meetings-row-status { flex-shrink: 0; border-radius: var(--ui-radius-pill); background: color-mix(in srgb, var(--murmur-warning) 14%, transparent); padding: 0 var(--ui-space-3); color: var(--murmur-on-surface); font-size: 0.625rem; font-weight: 600; text-transform: capitalize; }
 .meetings-row-status[data-status="failed"] { background: color-mix(in srgb, var(--murmur-error) 14%, transparent); }

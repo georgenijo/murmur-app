@@ -67,6 +67,22 @@ export default function HoldToDeleteButton({
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startedAtRef = useRef(0);
+  const inputRef = useRef<{ pointerId: number } | { key: string } | null>(null);
+  const armedRef = useRef(false);
+  const completedRef = useRef(false);
+  const suppressClickRef = useRef(false);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // A release already handled below can also generate a native click. Ignore
+  // that click in this event turn; later click-only assistive actions work normally.
+  const suppressGeneratedClick = () => {
+    suppressClickRef.current = true;
+    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    clickTimerRef.current = setTimeout(() => {
+      suppressClickRef.current = false;
+      clickTimerRef.current = null;
+    }, 0);
+  };
   // Captures whether the button was already armed at the moment the current
   // press started, so a fast second press commits instead of re-arming.
   const wasArmedRef = useRef(false);
@@ -94,19 +110,25 @@ export default function HoldToDeleteButton({
 
   const disarm = () => {
     clearConfirmTimer();
+    armedRef.current = false;
     setIsArmed(false);
   };
 
   const arm = () => {
     clearConfirmTimer();
+    armedRef.current = true;
     setIsArmed(true);
     confirmTimerRef.current = setTimeout(() => {
       confirmTimerRef.current = null;
+      armedRef.current = false;
       setIsArmed(false);
     }, resolvedConfirmTimeout);
   };
 
   const commit = () => {
+    if (disabled || completedRef.current) return;
+    completedRef.current = true;
+    armedRef.current = false;
     clearHoldTimer();
     clearConfirmTimer();
     setIsHolding(false);
@@ -172,23 +194,21 @@ export default function HoldToDeleteButton({
    * pending confirm state.
    */
   const forceCancelHold = () => {
+    if (inputRef.current) suppressGeneratedClick();
+    inputRef.current = null;
+    disarm();
     if (!holdTimerRef.current) return;
     const elapsedMs = performance.now() - startedAtRef.current;
     clearHoldTimer();
     setIsHolding(false);
-    disarm();
     runCancelAnimation(elapsedMs);
-  };
-
-  const handleBlur = () => {
-    forceCancelHold();
-    disarm();
   };
 
   const resetState = () => {
     clearHoldTimer();
     if (successTimerRef.current) clearTimeout(successTimerRef.current);
     successTimerRef.current = null;
+    completedRef.current = false;
     setIsCompleted(false);
     buttonControls.start({ transform: "translateX(0) scale(1)" });
     animate(progress, 0, {
@@ -199,8 +219,8 @@ export default function HoldToDeleteButton({
   };
 
   const handlePressStart = () => {
-    if (isCompleted || disabled) return;
-    wasArmedRef.current = isArmed;
+    if (completedRef.current || disabled) return;
+    wasArmedRef.current = armedRef.current;
     clearHoldTimer();
     startedAtRef.current = performance.now();
     setIsHolding(true);
@@ -270,14 +290,21 @@ export default function HoldToDeleteButton({
   // that would normally cancel it can land elsewhere (global hotkey steals
   // focus, Cmd-Tab away, app backgrounded, pointer released outside the
   // window) and never reach this element's own handlers.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: forceCancelHold reads refs/props via stable closures re-created when isHolding flips
+  // Listen even while armed so backgrounding/Escape also cancels click-only confirmation.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: interaction state is read through refs
   useEffect(() => {
-    if (!isHolding) return;
     const handleWindowBlur = () => forceCancelHold();
     const handleVisibilityChange = () => {
       if (document.hidden) forceCancelHold();
     };
-    const handleWindowPointerUp = () => forceCancelHold();
+    const handleWindowPointerUp = (event: PointerEvent) => {
+      const input = inputRef.current;
+      if (input && 'pointerId' in input && input.pointerId === event.pointerId && event.button === 0) forceCancelHold();
+    };
+    const handleWindowKeyUp = (event: KeyboardEvent) => {
+      const input = inputRef.current;
+      if (input && 'key' in input && input.key === event.key) forceCancelHold();
+    };
     const handleWindowKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") forceCancelHold();
     };
@@ -285,19 +312,26 @@ export default function HoldToDeleteButton({
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pointerup", handleWindowPointerUp);
     window.addEventListener("keydown", handleWindowKeyDown);
+    window.addEventListener("keyup", handleWindowKeyUp);
     return () => {
       window.removeEventListener("blur", handleWindowBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pointerup", handleWindowPointerUp);
       window.removeEventListener("keydown", handleWindowKeyDown);
+      window.removeEventListener("keyup", handleWindowKeyUp);
     };
   }, [isHolding]);
+
+  useEffect(() => {
+    if (disabled) forceCancelHold();
+  }, [disabled]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: unmount-only cleanup
   useEffect(
     () => () => {
       clearHoldTimer();
       clearConfirmTimer();
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       if (successTimerRef.current) clearTimeout(successTimerRef.current);
     },
     [],
@@ -371,35 +405,59 @@ export default function HoldToDeleteButton({
       aria-label={label}
       animate={buttonControls}
       onPointerDown={(e) => {
-        if (disabled) return;
-        // Capture the pointer so a small drift off the row (still holding)
-        // doesn't fire pointerleave and cancel the hold: per the Pointer
-        // Events spec, boundary events (over/enter/out/leave) don't fire for
-        // a captured pointer, so pointermove/pointerup keep targeting this
-        // button until release. This also makes onLostPointerCapture below
-        // reachable for genuine involuntary interruptions.
+        if (disabled || completedRef.current || e.button !== 0 || !e.isPrimary || inputRef.current) return;
+        inputRef.current = { pointerId: e.pointerId };
         e.currentTarget.setPointerCapture?.(e.pointerId);
         handlePressStart();
       }}
       onPointerUp={(e) => {
+        const input = inputRef.current;
+        if (!input || !('pointerId' in input) || input.pointerId !== e.pointerId || e.button !== 0) return;
+        inputRef.current = null;
+        suppressGeneratedClick();
         handlePressEnd();
         e.currentTarget.releasePointerCapture?.(e.pointerId);
       }}
-      onPointerLeave={forceCancelHold}
-      onPointerCancel={(e) => {
-        forceCancelHold();
-        e.currentTarget.releasePointerCapture?.(e.pointerId);
+      onPointerLeave={(e) => {
+        const input = inputRef.current;
+        if (input && 'pointerId' in input && input.pointerId === e.pointerId) forceCancelHold();
       }}
-      onLostPointerCapture={forceCancelHold}
-      onBlur={handleBlur}
+      onPointerCancel={(e) => {
+        const input = inputRef.current;
+        if (input && 'pointerId' in input && input.pointerId === e.pointerId) {
+          forceCancelHold();
+          e.currentTarget.releasePointerCapture?.(e.pointerId);
+        }
+      }}
+      onLostPointerCapture={(e) => {
+        const input = inputRef.current;
+        if (input && 'pointerId' in input && input.pointerId === e.pointerId) forceCancelHold();
+      }}
+      onBlur={forceCancelHold}
       onKeyDown={(e) => {
-        if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+        if (e.key === "Escape") forceCancelHold();
+        if (e.key === " " || e.key === "Enter") {
           e.preventDefault();
+          if (e.repeat || disabled || completedRef.current || inputRef.current) return;
+          inputRef.current = { key: e.key };
           handlePressStart();
         }
       }}
       onKeyUp={(e) => {
-        if (e.key === " " || e.key === "Enter") handlePressEnd();
+        if (e.key !== " " && e.key !== "Enter") return;
+        e.preventDefault();
+        const input = inputRef.current;
+        if (!input || !('key' in input) || input.key !== e.key) return;
+        inputRef.current = null;
+        suppressGeneratedClick();
+        handlePressEnd();
+      }}
+      onClick={(e) => {
+        // Pointer clicks are handled on release. AT and programmatic button
+        // activation have no press sequence and arrive with detail === 0.
+        if (disabled || completedRef.current || inputRef.current || suppressClickRef.current || e.button !== 0 || e.detail !== 0) return;
+        if (armedRef.current) commit();
+        else arm();
       }}
     >
       <span className="relative flex items-center justify-center gap-2">

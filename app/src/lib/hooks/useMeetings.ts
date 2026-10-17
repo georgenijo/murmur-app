@@ -51,6 +51,10 @@ export function useMeetings(settings: Settings) {
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [liveSegments, setLiveSegments] = useState<MeetingSegment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const pageCursorRef = useRef<{ offset: number; limit: number } | null>(null);
+  const listRequestRef = useRef<'refresh' | 'more' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
@@ -65,19 +69,62 @@ export function useMeetings(settings: Settings) {
   const refresh = useCallback(async (query = queryRef.current) => {
     queryRef.current = query;
     const ticket = ++searchTicketRef.current;
+    listRequestRef.current = 'refresh';
+    pageCursorRef.current = null;
+    setLoadingMore(false);
+    setHasMore(false);
     setLoading(true);
     try {
       const next = await listMeetings(query);
       if (ticket !== searchTicketRef.current) return;
       setPage(next);
+      const offset = next.offset + next.sessions.length;
+      pageCursorRef.current = { offset, limit: next.limit };
+      setHasMore(next.sessions.length > 0 && offset < next.total);
       setAppliedQuery(query.trim());
       setError(null);
     } catch (cause) {
       if (ticket === searchTicketRef.current) setError(String(cause));
     } finally {
-      if (ticket === searchTicketRef.current) setLoading(false);
+      if (ticket === searchTicketRef.current) {
+        listRequestRef.current = null;
+        setLoading(false);
+      }
     }
   }, []);
+
+  const loadMore = useCallback(async () => {
+    const cursor = pageCursorRef.current;
+    if (listRequestRef.current || !cursor || !hasMore) return;
+    const ticket = ++searchTicketRef.current;
+    listRequestRef.current = 'more';
+    setLoadingMore(true);
+    try {
+      const next = await listMeetings(queryRef.current, cursor.offset, cursor.limit);
+      if (ticket !== searchTicketRef.current) return;
+      // Advance by fetched rows, not unique rows: insertions can make adjacent
+      // offset pages overlap. A refresh replaces the prefix and invalidates it.
+      const offset = next.offset + next.sessions.length;
+      pageCursorRef.current = { offset, limit: next.limit };
+      setHasMore(next.sessions.length > 0 && offset < next.total);
+      setPage((current) => {
+        const sessions = new Map(current.sessions.map((session) => [session.id, session]));
+        next.sessions.forEach((session) => sessions.set(session.id, session));
+        return {
+          ...current, total: next.total, sessions: [...sessions.values()],
+          searchMatches: { ...current.searchMatches, ...next.searchMatches },
+        };
+      });
+      setError(null);
+    } catch (cause) {
+      if (ticket === searchTicketRef.current) setError(String(cause));
+    } finally {
+      if (ticket === searchTicketRef.current) {
+        listRequestRef.current = null;
+        setLoadingMore(false);
+      }
+    }
+  }, [hasMore]);
 
   const select = useCallback(async (id: string | null) => {
     const ticket = ++selectionTicketRef.current;
@@ -203,6 +250,7 @@ export function useMeetings(settings: Settings) {
     });
     return () => {
       disposed = true;
+      ++searchTicketRef.current;
       ++detailRequestTicketRef.current;
       unlisteners.forEach((unlisten) => unlisten());
     };
@@ -234,11 +282,9 @@ export function useMeetings(settings: Settings) {
         diarization: settings.meetingDiarization,
         suggestionToken,
       });
-      setPage((current) => ({
-        ...current,
-        sessions: [session, ...current.sessions.filter((item) => item.id !== session.id)],
-        total: current.total + 1,
-      }));
+      // Capture can insert/prune rows and move every offset. Rebase the list
+      // using its current search instead of prepending into a paginated prefix.
+      await refresh();
       await select(session.id);
     } catch (cause) {
       if (suggestionToken) {
@@ -250,6 +296,7 @@ export function useMeetings(settings: Settings) {
     }
   }, [
     select,
+    refresh,
     settings.meetingDiarization,
     settings.meetingEchoCancellationEnabled,
     settings.meetingMaxSessions,
@@ -488,6 +535,9 @@ export function useMeetings(settings: Settings) {
     detail,
     liveSegments,
     loading,
+    loadingMore,
+    hasMore,
+    loadMore,
     error,
     summaryStatus,
     refresh,

@@ -381,6 +381,28 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Editor');
   });
 
+  it.each(['keyboard', 'assistive'])('persists and labels Paste Delay changes from %s input', async (input) => {
+    let persistedSettings = { ...DEFAULT_SETTINGS, autoPaste: true };
+    onUpdateSettings.mockImplementation((patch: Partial<Settings>) => {
+      persistedSettings = { ...persistedSettings, ...patch };
+      renderPanel(true, persistedSettings, { page: 'delivery', token: 1 });
+    });
+    await act(async () => renderPanel(true, persistedSettings, { page: 'delivery', token: 1 }));
+    const slider = container.querySelector<HTMLInputElement>('input[type="range"]')!;
+    expect(slider).not.toBeNull();
+    await act(async () => {
+      // Use the native setter so React receives a genuine input change.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(slider, '80');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      if (input === 'keyboard') slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(onUpdateSettings).toHaveBeenCalledWith({ autoPasteDelayMs: 80 });
+    expect(slider.labels?.[0]?.textContent).toBe('Paste Delay');
+    await act(async () => renderPanel(true, persistedSettings, { page: 'general', token: 2 }));
+    await act(async () => renderPanel(true, persistedSettings, { page: 'delivery', token: 3 }));
+    expect(container.querySelector<HTMLInputElement>('input[type="range"]')!.value).toBe('80');
+  });
+
   it('commits keyboard changes to voice-detection sensitivity', async () => {
     const recording = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Recording',

@@ -33,12 +33,13 @@ function phaseLabel(phase: ReturnType<typeof useMeetings>['status']['phase']): s
 const meetingTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(meetings.appliedQuery);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = ['starting', 'recording', 'stopping'].includes(meetings.status.phase);
   const processing = meetings.status.phase === 'processing';
   const captureBusy = active || processing || playbackBusy;
@@ -63,8 +64,10 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   // Search as you type; Enter still searches immediately.
   useEffect(() => {
     if (query.trim() === appliedQuery) return;
-    const timer = setTimeout(() => void refresh(query), SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    searchTimerRef.current = setTimeout(() => void refresh(query), SEARCH_DEBOUNCE_MS);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
   }, [query, appliedQuery, refresh]);
 
   const showNotice = (message: string) => {
@@ -190,7 +193,10 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') void refresh(query);
+                  if (event.key === 'Enter') {
+                    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                    void refresh(query);
+                  }
                   if (event.key === 'Escape' && query) {
                     event.preventDefault();
                     setQuery('');
@@ -240,7 +246,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                     className="meetings-row"
                   >
                     <span className="meetings-row-title" data-untitled={!session.title}>
-                      {session.title || 'Untitled meeting'}
+                      <span className="meetings-row-title-text">{session.title || 'Untitled meeting'}</span>
                       {session.status !== 'complete' && (
                         <span className="meetings-row-status" data-status={session.status}>{session.status}</span>
                       )}
@@ -259,6 +265,20 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                 </Fragment>
               );
             })}
+            {meetings.hasMore && (
+              <button
+                type="button"
+                className="meeting-header-action my-2 w-full justify-center"
+                aria-label="Load more meetings"
+                disabled={meetings.loading || meetings.loadingMore || query.trim() !== appliedQuery}
+                onClick={() => void meetings.loadMore()}
+              >
+                Load more meetings
+              </button>
+            )}
+            <p role="status" className="ui-visually-hidden">
+              {meetings.loadingMore ? 'Loading more meetings…' : `${sessions.length} meetings shown`}
+            </p>
           </div>
         </aside>
 

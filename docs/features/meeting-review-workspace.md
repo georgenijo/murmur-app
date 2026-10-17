@@ -17,8 +17,20 @@ Sessions without retained audio explain why playback is unavailable.
 The Notetaker list groups meetings under Today, Yesterday, and dated headings.
 Each row shows the title (or "Untitled meeting"), start time, duration, a
 one-line preview, and a status badge only when the session did not complete.
-Search runs as you type. **Delete all meetings** lives in the list's **···**
-menu as a hold-to-confirm action. The detail header holds the title, the
+Search runs as you type across all retained meetings, including older sessions
+not yet displayed. The list starts with 50 sessions; **Load more meetings**
+appends the next page for the same search and announces loading/results to
+assistive technology. A search or refresh (including deletion) replaces the list
+with its first page, invalidates pending page requests, and resets pagination.
+Overlapping rows are deduplicated by session ID. Long titles ellipsize separately
+from their status badges.
+
+**Delete all meetings** lives in the list's **···** menu. Hold the primary pointer,
+Enter, or Space to confirm, or activate twice within four seconds. Click-only
+assistive activation uses the same arm/confirm path. Secondary mouse buttons and
+unrelated pointers cannot arm, confirm, or interrupt an owned press. Escape,
+focus loss, cancellation, and disabling disarm it; a release's generated click
+cannot count as another activation. The detail header holds the title, the
 session facts, naming, calendar naming, and Delete; speaker names live in the
 **Speakers** menu beside the transcript heading.
 

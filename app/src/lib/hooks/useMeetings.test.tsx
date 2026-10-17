@@ -156,6 +156,68 @@ describe('useMeetings remote speaker refresh', () => {
     expect(meetingMocks.listMeetings.mock.calls).toEqual([['reviewword'], ['reviewword']]);
   });
 
+  it('loads older meetings for the applied search, deduplicates overlap, and blocks double requests', async () => {
+    const first = detail('first', 'Team').session;
+    const second = detail('second', 'Team').session;
+    const third = detail('third', 'Team').session;
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [first, second], searchMatches: {}, total: 4, offset: 0, limit: 2 });
+    await act(async () => controller().refresh('search'));
+    const pending = deferred<MeetingPage>();
+    meetingMocks.listMeetings.mockReturnValueOnce(pending.promise);
+    let loading: Promise<void>;
+    await act(async () => {
+      loading = controller().loadMore();
+      void controller().loadMore();
+    });
+    expect(meetingMocks.listMeetings).toHaveBeenLastCalledWith('search', 2, 2);
+    expect(controller().loadingMore).toBe(true);
+    await act(async () => {
+      pending.resolve({ sessions: [second, third], searchMatches: { third: ['title'] }, total: 4, offset: 2, limit: 2 });
+      await loading;
+    });
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(['first', 'second', 'third']);
+    expect(controller().page.searchMatches.third).toEqual(['title']);
+    expect(controller().hasMore).toBe(false);
+    expect(controller().appliedQuery).toBe('search');
+  });
+
+  it.each(['search', 'refresh', 'delete', 'clear'])('rejects an old load-more reply after %s', async (operation) => {
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [detail('first', 'Team').session], searchMatches: {}, total: 2, offset: 0, limit: 1 });
+    await act(async () => controller().refresh('old'));
+    const pending = deferred<MeetingPage>();
+    meetingMocks.listMeetings.mockReturnValueOnce(pending.promise);
+    let loading: Promise<void>;
+    await act(async () => { loading = controller().loadMore(); });
+    const next = { sessions: operation === 'clear' ? [] : [detail('second', 'Team').session], searchMatches: {}, total: 1, offset: 0, limit: 50 };
+    meetingMocks.listMeetings.mockResolvedValueOnce(next);
+    await act(async () => {
+      if (operation === 'delete') await controller().remove('first');
+      else if (operation === 'clear') await controller().clear();
+      else await controller().refresh(operation === 'search' ? 'new' : undefined);
+    });
+    await act(async () => {
+      pending.resolve({ sessions: [detail('first', 'Team').session], searchMatches: {}, total: 2, offset: 1, limit: 1 });
+      await loading;
+    });
+    expect(controller().page).toEqual(next);
+    expect(controller().loadingMore).toBe(false);
+    expect(controller().appliedQuery).toBe(operation === 'search' ? 'new' : 'old');
+  });
+
+  it('retries a failed next page at the same offset without losing the current results', async () => {
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [detail('first', 'Team').session], searchMatches: {}, total: 2, offset: 0, limit: 1 });
+    await act(async () => controller().refresh('search'));
+    meetingMocks.listMeetings.mockRejectedValueOnce(new Error('Synthetic page failure'));
+    await act(async () => controller().loadMore());
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(['first']);
+    expect(controller().hasMore).toBe(true);
+    meetingMocks.listMeetings.mockResolvedValueOnce({ sessions: [detail('second', 'Team').session], searchMatches: {}, total: 2, offset: 1, limit: 1 });
+    await act(async () => controller().loadMore());
+    expect(meetingMocks.listMeetings).toHaveBeenLastCalledWith('search', 1, 1);
+    expect(controller().page.sessions.map((s) => s.id)).toEqual(['first', 'second']);
+    expect(controller().error).toBeNull();
+  });
+
   it('drops a speaker event refresh when the selected meeting changes before it resolves', async () => {
     const staleRefresh = deferred<MeetingDetail>();
     let firstRequests = 0;

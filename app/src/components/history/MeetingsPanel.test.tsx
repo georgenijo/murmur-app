@@ -47,7 +47,7 @@ function meetingsController(remove: (id: string) => Promise<boolean>): ReturnTyp
     },
     permission: 'granted', access: null,
     page: { sessions: [detail.session], searchMatches: {}, total: 1, offset: 0, limit: 50 },
-    detail, appliedQuery: '', liveSegments: [], loading: false, error: null,
+    detail, appliedQuery: '', liveSegments: [], loading: false, loadingMore: false, hasMore: false, loadMore: vi.fn(), error: null,
     summaryStatus: {
       generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0,
       elapsedMs: 0, peakRssMb: 0, errorCode: null,
@@ -95,6 +95,60 @@ describe('MeetingsPanel retained audio deletion', () => {
     meetings.appliedQuery = '';
     await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
     expect(container.textContent).toContain('No meeting transcripts yet.');
+  });
+
+  it('exposes a named load-more button with loading and search-pending states', async () => {
+    const meetings = meetingsController(vi.fn());
+    Object.assign(meetings, { hasMore: true, loadingMore: false, loadMore: vi.fn() });
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    const more = () => container.querySelector<HTMLButtonElement>('button[aria-label="Load more meetings"]');
+    expect(more()).not.toBeNull();
+    await act(async () => more()!.click());
+    expect(meetings.loadMore).toHaveBeenCalledOnce();
+    Object.assign(meetings, { loadingMore: true });
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(more()!.disabled).toBe(true);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Loading more meetings');
+    Object.assign(meetings, { loadingMore: false });
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'pending');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(more()!.disabled).toBe(true);
+  });
+
+  it('restores the applied search and submits Enter without a second debounced request', async () => {
+    vi.useFakeTimers();
+    try {
+      const meetings = meetingsController(vi.fn());
+      meetings.appliedQuery = 'existing';
+      await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+      const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      expect(search.value).toBe('existing');
+      await act(async () => vi.advanceTimersByTime(250));
+      expect(meetings.refresh).not.toHaveBeenCalled();
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'next');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      await act(async () => vi.advanceTimersByTime(250));
+      expect(meetings.refresh).toHaveBeenCalledExactlyOnceWith('next');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('puts title truncation on its own span, beside the interrupted badge', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.page.sessions = [{ ...detail.session, title: 'A very long synthetic meeting title', status: 'interrupted' }];
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    const title = container.querySelector('.meetings-row-title-text');
+    expect(title?.textContent).toBe('A very long synthetic meeting title');
+    expect(title?.nextElementSibling?.className).toBe('meetings-row-status');
+    expect(title?.nextElementSibling?.textContent).toBe('interrupted');
   });
 
   it('invalidates local playback before deleting the selected meeting', async () => {
