@@ -1,5 +1,24 @@
 # Decisions Log
 
+## 2026-10-17: Unknown menu-bar occupancy retains the last proven slot
+
+**Decision:** Read the menu-bar owning application, falling back to the
+frontmost app only if no owner is reported. Skip AX reads for Murmur itself
+and non-Regular owners, and classify unavailable samples without recording
+identity. An unavailable menu sample retains the last proven overlay slot
+only on an unchanged, fully measured display with a visible bar. Fresh status
+items revalidate the entire slot and the unanswered-app reserve; successful
+menu samples remain authoritative and can move or evict it. Startup/display
+triggers discard retention. All placement triggers share the 600/1500/3000ms
+settle ladder, ending after the first known settle sample.
+
+**Why:** The three investigations behind this fix found every observed
+below-band placement followed an unavailable menu sample (an accessory owner
+or Murmur's own process), never a measured lack of space. Unknown occupancy
+should not be treated as proof that an established slot is crowded. Status
+revalidation, display identity checks and bounded retries limit stale-slot
+risk without restoring the status-item cache reverted in #800.
+
 ## 2026-10-15: Smart destination falls back to the stop-anchored paste after an app switch
 
 **Decision:** When a Smart destination recording ends in an app other than the

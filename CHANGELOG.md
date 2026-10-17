@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep the floating overlay in its proven menu-bar slot when opening status
+  menus or Murmur Settings temporarily makes menu titles unreadable. Fresh
+  crowded menus and display changes still re-evaluate placement.
+
 ## [0.51.13] - 2026-10-15
 
 ### Dictation

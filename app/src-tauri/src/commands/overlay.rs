@@ -1,4 +1,7 @@
-use super::overlay_band::{self, resolve_band_center, Band, FrameRect, StatusItems};
+use super::overlay_band::{
+    self, resolve_band_center, slot_clear_of_status, Band, FrameRect, MenuSample, MenuUnavailable,
+    StatusItems,
+};
 use crate::{MutexExt, State};
 use tauri::Emitter;
 use tauri::Manager;
@@ -84,7 +87,8 @@ pub(crate) struct NotchInfo {
     menu_bar_visible: bool,
     /// Global logical x of the centre of the free menu-bar slot the collapsed
     /// floating pill occupies. `Some` only when the bar is visible and its
-    /// occupancy was sampled and left a gap wide enough; `None` means the
+    /// occupancy proved a gap wide enough (or that slot was retained during an
+    /// unavailable menu sample on the same display); `None` means the
     /// standalone placement below the menu bar. Every placement decision
     /// (height, anchoring, x) derives from this one resolved value.
     band_center_x: Option<f64>,
@@ -561,18 +565,15 @@ async fn settled_outer_position(
     last_observed.ok_or_else(|| "overlay position was not observed".to_string())
 }
 
-/// Resolve where the collapsed floating pill may sit in the menu-bar band of
-/// the display spanning `[display_left, display_left + display_w]` at the top
-/// of global logical coordinates, from the sampled menu and status items.
-/// Notched displays and hidden bars are returned unchanged; unknown occupancy
-/// or a band with no wide enough gap leaves `band_center_x` unset, which selects
-/// the standalone placement.
+/// Resolve fresh occupancy, or retain the last proven slot while menu titles
+/// are unavailable. Fresh status items can still evict a retained slot.
 fn with_menu_bar_slot(
     info: NotchInfo,
     display_left: f64,
     display_w: f64,
-    menu_items: Option<&[FrameRect]>,
+    menu: &MenuSample,
     status_items: Option<&StatusItems>,
+    retained_band_center: Option<f64>,
 ) -> NotchInfo {
     if info.physical_notch || !info.menu_bar_visible {
         return NotchInfo {
@@ -586,28 +587,80 @@ fn with_menu_bar_slot(
         top: 0.0,
         bottom: info.height,
     };
-    NotchInfo {
-        band_center_x: resolve_band_center(
+    let band_center_x = match menu {
+        MenuSample::Frames(frames) => resolve_band_center(
             band,
-            menu_items,
+            Some(frames),
             status_items.map(|items| items.frames.as_slice()),
             status_items.map_or(0, |items| items.unanswered),
             BAND_ITEM_MARGIN,
             BAND_REQUIRED_CLEAR_W,
         ),
+        MenuSample::Unavailable(_) => retained_band_center.filter(|&center| {
+            // Even without a status sample, validate the retained coordinates
+            // and full slot against the freshly measured display bounds.
+            let inset = BAND_ITEM_MARGIN + BAND_REQUIRED_CLEAR_W / 2.0;
+            [display_left, display_w, info.height, center]
+                .iter()
+                .all(|v| v.is_finite())
+                && display_w > 0.0
+                && info.height > 0.0
+                && center >= band.left + inset
+                && center <= band.right - inset
+                && status_items.is_none_or(|items| {
+                    slot_clear_of_status(
+                        band,
+                        center,
+                        &items.frames,
+                        items.unanswered,
+                        BAND_ITEM_MARGIN,
+                        BAND_REQUIRED_CLEAR_W,
+                    ) == Some(true)
+                })
+        }),
+    };
+    NotchInfo {
+        band_center_x,
         ..info
     }
 }
 
+/// Retention requires a complete, unchanged monitor measurement. Startup and
+/// topology notifications explicitly discard it even if the dimensions match.
+fn retained_band_center(
+    cached: Option<&DisplaySnapshot>,
+    current: &DisplaySnapshot,
+    allow_retention: bool,
+) -> Option<f64> {
+    let cached = cached.filter(|cached| {
+        allow_retention
+            && current.monitor_position.is_some()
+            && current.monitor_size.is_some()
+            && current.monitor_work_area.is_some()
+            && current
+                .scale_factor
+                .is_some_and(|scale| scale.is_finite() && scale > 0.0)
+            && cached.monitor_position == current.monitor_position
+            && cached.monitor_size == current.monitor_size
+            && cached.monitor_work_area == current.monitor_work_area
+            && cached.scale_factor == current.scale_factor
+    })?;
+    cached
+        .notch_info
+        .filter(|info| info.in_menu_band())?
+        .band_center_x
+}
+
 /// Detect notch width and the menu-bar slot, and configure the overlay as a
 /// notch-level window. Uses native NSScreen APIs — no subprocess needed.
-/// `menu_items` are the frontmost application's menu-title frames and
+/// `menu` contains the menu-bar owner's menu-title frames and
 /// `status_items` every status item's frame, both sampled off the main thread
-/// because Accessibility can block; `None` means unknown.
+/// because Accessibility can block; unavailable samples carry no identity.
 #[cfg(target_os = "macos")]
 pub(crate) fn detect_notch_info(
-    menu_items: Option<&[FrameRect]>,
+    menu: &MenuSample,
     status_items: Option<&StatusItems>,
+    retained_band_center: Option<f64>,
 ) -> Option<NotchInfo> {
     // Returns (notch_or_synthetic_center_width, actual_menu_bar_height) in
     // logical points.
@@ -660,45 +713,50 @@ pub(crate) fn detect_notch_info(
         measured,
         frame.origin.x,
         frame.size.width,
-        menu_items,
+        menu,
         status_items,
+        retained_band_center,
     );
     tracing::info!(
         target: "system",
-        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}, band_center_x={:?}, menu_items={:?}, status_items={:?}, status_unanswered={:?}",
+        "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, screen_w={}, band_center_x={:?}, menu_items={:?}, status_items={:?}, status_unanswered={:?}, menu_sample={}, menu_ax_error={:?}, retained={}",
         info.width,
         info.height,
         insets.top,
         (frame_top - visible_frame_top).max(0.0),
         frame.size.width,
         info.band_center_x,
-        menu_items.map(<[FrameRect]>::len),
+        menu.frames().map(<[FrameRect]>::len),
         status_items.map(|items| items.frames.len()),
-        status_items.map(|items| items.unanswered)
+        status_items.map(|items| items.unanswered),
+        menu.code(),
+        menu.ax_error(),
+        !menu.is_known() && info.in_menu_band(),
     );
     Some(info)
 }
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn detect_notch_info(
-    _menu_items: Option<&[FrameRect]>,
+    _menu: &MenuSample,
     _status_items: Option<&StatusItems>,
+    _retained_band_center: Option<f64>,
 ) -> Option<NotchInfo> {
     None
 }
 
-/// Capture one display snapshot on the main thread. `menu_items` is the
-/// frontmost application's menu-title sample and `status_items` the status-item
-/// sample (`None` while unknown, which selects the standalone placement).
+/// Capture fresh display measurements on the main thread before deciding
+/// whether an unavailable menu sample may retain the previous slot.
 pub(crate) fn capture_display_snapshot(
     app_handle: &tauri::AppHandle,
-    menu_items: Option<&[FrameRect]>,
+    menu: &MenuSample,
     status_items: Option<&StatusItems>,
+    cached: Option<&DisplaySnapshot>,
+    allow_retention: bool,
 ) -> DisplaySnapshot {
     let monitor = app_handle.primary_monitor().ok().flatten();
-    let notch_info = detect_notch_info(menu_items, status_items);
-    DisplaySnapshot {
-        notch_info,
+    let mut snapshot = DisplaySnapshot {
+        notch_info: None,
         monitor_position: monitor.as_ref().map(|monitor| {
             let position = monitor.position();
             (position.x, position.y)
@@ -717,7 +775,10 @@ pub(crate) fn capture_display_snapshot(
             )
         }),
         scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
-    }
+    };
+    let retained = retained_band_center(cached, &snapshot, allow_retention);
+    snapshot.notch_info = detect_notch_info(menu, status_items, retained);
+    snapshot
 }
 
 /// What prompted a placement refresh. Every trigger re-resolves the same state
@@ -729,8 +790,7 @@ pub(crate) enum PlacementTrigger {
     DisplayChange,
     FrontmostApp,
     SpaceChange,
-    /// One delayed re-check after an app or Space change, once the menu bar has
-    /// finished repopulating or animating in/out.
+    /// A delayed re-check while the menu bar repopulates or animates in/out.
     Settle,
 }
 
@@ -751,22 +811,16 @@ impl PlacementTrigger {
         matches!(self, Self::Startup | Self::DisplayChange)
     }
 
-    /// Delayed re-checks after this trigger, each measured from the previous
-    /// refresh. App and Space changes need one, once the menu bar finishes
-    /// repopulating. Startup and display changes get a short series: Murmur is
-    /// usually frontmost while it launches (an update relaunches it), and its
-    /// own menu bar cannot answer Accessibility while setup occupies the main
-    /// thread, so the first sample is often unknown.
+    /// Shared bounded ladder, each delay measured from the previous refresh.
+    /// Every trigger gets at least one re-check; known settle samples end it.
     fn settle_delays(self) -> &'static [std::time::Duration] {
-        const APP: &[std::time::Duration] = &[PLACEMENT_SETTLE];
-        const LAUNCH: &[std::time::Duration] = &[
+        const LADDER: &[std::time::Duration] = &[
             PLACEMENT_SETTLE,
             std::time::Duration::from_millis(1500),
             std::time::Duration::from_millis(3000),
         ];
         match self {
-            Self::FrontmostApp | Self::SpaceChange => APP,
-            Self::Startup | Self::DisplayChange => LAUNCH,
+            Self::FrontmostApp | Self::SpaceChange | Self::Startup | Self::DisplayChange => LADDER,
             Self::Settle => &[],
         }
     }
@@ -799,40 +853,62 @@ pub(crate) fn request_placement_refresh(trigger: PlacementTrigger) {
     }
 }
 
-/// Re-resolve the whole placement for `trigger`: sample the frontmost menus and
-/// the status items off the main thread, then apply everything together on it.
+/// Whether another settle re-check is useful after the last settle sample.
+fn continue_settling(last_sample_known: bool) -> bool {
+    !last_sample_known
+}
+
 #[cfg(target_os = "macos")]
-fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
+struct PlacementSamples {
+    menu: MenuSample,
+    owner: overlay_band::MenuOwnerInfo,
+    status: Option<StatusItems>,
+    menu_ms: u64,
+    status_ms: u64,
+}
+
+/// Sample the menu-bar owner and status items off the main thread, then apply
+/// the whole placement on it. A physical notch needs no occupancy retries.
+#[cfg(target_os = "macos")]
+fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) -> bool {
     let cached_physical_notch = app_handle.try_state::<State>().is_some_and(|state| {
         state
             .notch_info
             .lock_or_recover()
             .is_some_and(|info| info.physical_notch)
     });
-    // A physical notch never uses the band, so skip the Accessibility round trips.
-    let (menu_items, status_items) = if cached_physical_notch && !trigger.forces_sampling() {
-        (None, None)
+    let skip = cached_physical_notch && !trigger.forces_sampling();
+    let samples = if skip {
+        PlacementSamples {
+            menu: MenuSample::Unavailable(MenuUnavailable::NoOwner),
+            owner: overlay_band::MenuOwnerInfo::default(),
+            status: None,
+            menu_ms: 0,
+            status_ms: 0,
+        }
     } else {
-        (
-            overlay_band::frontmost_menu_item_frames(),
-            overlay_band::status_items(),
-        )
+        let started = std::time::Instant::now();
+        let (menu, owner) = overlay_band::menu_bar_owner_sample();
+        let menu_ms = started.elapsed().as_millis() as u64;
+        let started = std::time::Instant::now();
+        let status = overlay_band::status_items();
+        PlacementSamples {
+            menu,
+            owner,
+            status,
+            menu_ms,
+            status_ms: started.elapsed().as_millis() as u64,
+        }
     };
+    let known = skip || samples.menu.is_known();
     let handle = app_handle.clone();
     if let Err(error) = app_handle.run_on_main_thread(move || {
-        apply_placement(
-            &handle,
-            trigger,
-            menu_items.as_deref(),
-            status_items.as_ref(),
-        );
+        apply_placement(&handle, trigger, &samples);
     }) {
-        tracing::warn!(
-            target: "system",
-            "overlay placement main-thread dispatch failed: {}",
-            error
-        );
+        tracing::warn!(target: "system", "overlay placement main-thread dispatch failed: {}", error);
+        return false;
     }
+    known
 }
 
 /// Main-thread half of `refresh_placement`: one snapshot, one resolved mode.
@@ -841,28 +917,49 @@ fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
 fn apply_placement(
     handle: &tauri::AppHandle,
     trigger: PlacementTrigger,
-    menu_items: Option<&[FrameRect]>,
-    status_items: Option<&StatusItems>,
+    samples: &PlacementSamples,
 ) {
-    let snapshot = capture_display_snapshot(handle, menu_items, status_items);
+    let state = handle.state::<State>();
+    let previous = state.display_snapshot.lock_or_recover().clone();
+    let snapshot = capture_display_snapshot(
+        handle,
+        &samples.menu,
+        samples.status.as_ref(),
+        previous.as_ref(),
+        !trigger.forces_sampling(),
+    );
     let notch = snapshot.notch_info;
-    let changed = {
-        let state = handle.state::<State>();
-        let mut cached = state.display_snapshot.lock_or_recover();
-        if cached.as_ref() == Some(&snapshot) {
-            false
-        } else {
-            *cached = Some(snapshot.clone());
-            *state.notch_info.lock_or_recover() = notch;
-            true
-        }
-    };
+    let changed = previous.as_ref() != Some(&snapshot);
+    if changed {
+        *state.display_snapshot.lock_or_recover() = Some(snapshot);
+        *state.notch_info.lock_or_recover() = notch;
+    }
     tracing::info!(
         target: "system",
         changed,
         trigger = trigger.as_str(),
         in_menu_bar_band = floating_in_menu_bar_band(notch),
         "overlay placement refreshed"
+    );
+    tracing::info!(
+        target: "system",
+        event_code = "overlay.menu_sample",
+        trigger = trigger.as_str(),
+        menu_sample = samples.menu.code(),
+        menu_ax_error = samples.menu.ax_error(),
+        owner_policy = samples.owner.policy,
+        owner_is_self = samples.owner.is_self,
+        owner_equals_frontmost = samples.owner.equals_frontmost,
+        menu_ms = samples.menu_ms,
+        status_ms = samples.status_ms,
+        menu_items = samples.menu.frames().map(|frames| frames.len() as u64),
+        status_items = samples.status.as_ref().map(|items| items.frames.len() as u64),
+        status_unanswered = samples.status.as_ref().map(|items| items.unanswered as u64),
+        band_center_x = notch.and_then(|info| info.band_center_x),
+        retained = !samples.menu.is_known() && floating_in_menu_bar_band(notch),
+        in_menu_bar_band = floating_in_menu_bar_band(notch),
+        changed,
+        "overlay menu sample"
     );
     if !changed {
         return;
@@ -919,7 +1016,10 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
                             break;
                         }
                         Err(RecvTimeoutError::Timeout) => {
-                            refresh_placement(&app_handle, PlacementTrigger::Settle)
+                            let known = refresh_placement(&app_handle, PlacementTrigger::Settle);
+                            if !continue_settling(known) {
+                                break;
+                            }
                         }
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
@@ -1855,7 +1955,11 @@ mod tests {
             unanswered: 0,
         };
         let resolve = |menus: Option<&[FrameRect]>, status: Option<&StatusItems>| {
-            with_menu_bar_slot(measured, 0.0, 2560.0, menus, status).band_center_x
+            let sample = menus.map_or(
+                MenuSample::Unavailable(MenuUnavailable::NoOwner),
+                |frames| MenuSample::Frames(frames.to_vec()),
+            );
+            with_menu_bar_slot(measured, 0.0, 2560.0, &sample, status, None).band_center_x
         };
         assert_eq!(resolve(Some(&menus), Some(&status)), Some(1280.0));
         // Unknown occupancy (Accessibility failure or timeout).
@@ -1875,14 +1979,262 @@ mod tests {
         // Hidden bar and physical notch never get a slot.
         let hidden = notch_info_from_screen_measurements(2560.0, 1440.0, 1440.0, 0.0, 0.0, 0.0);
         assert_eq!(
-            with_menu_bar_slot(hidden, 0.0, 2560.0, Some(&menus), Some(&status)).band_center_x,
+            with_menu_bar_slot(
+                hidden,
+                0.0,
+                2560.0,
+                &MenuSample::Frames(menus.to_vec()),
+                Some(&status),
+                None
+            )
+            .band_center_x,
             None
         );
         let notch = notch_info_from_screen_measurements(1512.0, 982.0, 950.0, 32.0, 663.5, 663.5);
         assert_eq!(
-            with_menu_bar_slot(notch, 0.0, 1512.0, Some(&menus), Some(&status)).band_center_x,
+            with_menu_bar_slot(
+                notch,
+                0.0,
+                1512.0,
+                &MenuSample::Frames(menus.to_vec()),
+                Some(&status),
+                None
+            )
+            .band_center_x,
             None
         );
+    }
+
+    fn menu_frame(x: f64, width: f64) -> FrameRect {
+        FrameRect {
+            x,
+            y: 0.0,
+            width,
+            height: 24.0,
+        }
+    }
+
+    fn clear_status() -> StatusItems {
+        StatusItems {
+            frames: vec![menu_frame(2300.0, 260.0)],
+            unanswered: 0,
+        }
+    }
+
+    #[test]
+    fn unknown_menu_sample_retains_the_band_slot() {
+        for reason in [
+            MenuUnavailable::NonRegularOwner,
+            MenuUnavailable::OwnProcess,
+            MenuUnavailable::Timeout,
+        ] {
+            for status in [Some(clear_status()), None] {
+                let result = with_menu_bar_slot(
+                    external_without_slot(24.0),
+                    0.0,
+                    2560.0,
+                    &MenuSample::Unavailable(reason),
+                    status.as_ref(),
+                    Some(1280.0),
+                );
+                assert_eq!(result.band_center_x, Some(1280.0));
+                assert!(result.in_menu_band());
+                // No geometry change means no resize or geometry event.
+                assert_eq!(result, external(24.0));
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_menu_sample_without_a_retained_slot_falls_back() {
+        assert_eq!(
+            with_menu_bar_slot(
+                external_without_slot(24.0),
+                0.0,
+                2560.0,
+                &MenuSample::Unavailable(MenuUnavailable::NoOwner),
+                Some(&clear_status()),
+                None
+            )
+            .band_center_x,
+            None
+        );
+    }
+
+    #[test]
+    fn retained_slot_is_dropped_when_status_items_now_cover_it() {
+        for status in [
+            StatusItems {
+                frames: vec![menu_frame(1200.0, 1360.0)],
+                unanswered: 0,
+            },
+            StatusItems {
+                unanswered: 8,
+                ..clear_status()
+            },
+            StatusItems {
+                frames: vec![menu_frame(f64::NAN, 30.0)],
+                unanswered: 0,
+            },
+        ] {
+            assert_eq!(
+                with_menu_bar_slot(
+                    external_without_slot(24.0),
+                    0.0,
+                    2560.0,
+                    &MenuSample::Unavailable(MenuUnavailable::OwnProcess),
+                    Some(&status),
+                    Some(1280.0)
+                )
+                .band_center_x,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn retained_slot_must_fit_fresh_band_bounds() {
+        for center in [f64::NAN, f64::INFINITY, 167.0, 2393.0] {
+            assert_eq!(
+                with_menu_bar_slot(
+                    external_without_slot(24.0),
+                    0.0,
+                    2560.0,
+                    &MenuSample::Unavailable(MenuUnavailable::OwnProcess),
+                    None,
+                    Some(center)
+                )
+                .band_center_x,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_menu_sample_overrides_the_retained_slot() {
+        for (width, expected) in [(1400.0, Some(1568.0)), (2000.0, None)] {
+            assert_eq!(
+                with_menu_bar_slot(
+                    external_without_slot(24.0),
+                    0.0,
+                    2560.0,
+                    &MenuSample::Frames(vec![menu_frame(0.0, width)]),
+                    Some(&clear_status()),
+                    Some(1280.0)
+                )
+                .band_center_x,
+                expected
+            );
+        }
+        // A known menu with unknown status occupancy remains fail-closed.
+        assert_eq!(
+            with_menu_bar_slot(
+                external_without_slot(24.0),
+                0.0,
+                2560.0,
+                &MenuSample::Frames(vec![menu_frame(0.0, 500.0)]),
+                None,
+                Some(1280.0)
+            )
+            .band_center_x,
+            None
+        );
+    }
+
+    #[test]
+    fn retention_requires_the_same_display() {
+        let baseline = DisplaySnapshot {
+            notch_info: Some(external(24.0)),
+            monitor_position: Some((0, 0)),
+            monitor_size: Some((5120, 2880)),
+            monitor_work_area: Some((0, 48, 5120, 2832)),
+            scale_factor: Some(2.0),
+        };
+        assert_eq!(
+            retained_band_center(Some(&baseline), &baseline, true),
+            Some(1280.0)
+        );
+        assert_eq!(retained_band_center(None, &baseline, true), None);
+        assert_eq!(
+            retained_band_center(Some(&baseline), &baseline, false),
+            None
+        );
+        for changed in [
+            DisplaySnapshot {
+                monitor_position: Some((5120, 0)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_size: Some((2560, 1440)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_work_area: Some((0, 0, 5120, 2880)),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                scale_factor: Some(1.0),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_position: None,
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_size: None,
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                monitor_work_area: None,
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                scale_factor: None,
+                ..baseline.clone()
+            },
+        ] {
+            assert_eq!(retained_band_center(Some(&baseline), &changed, true), None);
+        }
+        for notch_info in [
+            Some(external_without_slot(24.0)),
+            Some(notched(185.0, 32.0)),
+            None,
+        ] {
+            let cached = DisplaySnapshot {
+                notch_info,
+                ..baseline.clone()
+            };
+            assert_eq!(retained_band_center(Some(&cached), &baseline, true), None);
+        }
+        let missing = DisplaySnapshot {
+            monitor_position: None,
+            ..baseline.clone()
+        };
+        assert_eq!(retained_band_center(Some(&missing), &missing, true), None);
+    }
+
+    #[test]
+    fn hidden_or_notched_displays_ignore_retention() {
+        for measured in [external_without_menu_bar(), notched(185.0, 32.0)] {
+            assert_eq!(
+                with_menu_bar_slot(
+                    measured,
+                    0.0,
+                    2560.0,
+                    &MenuSample::Unavailable(MenuUnavailable::OwnProcess),
+                    Some(&clear_status()),
+                    Some(1280.0)
+                )
+                .band_center_x,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn settle_ladder_stops_once_a_sample_is_known() {
+        assert!(continue_settling(false));
+        assert!(!continue_settling(true));
     }
 
     #[test]
@@ -1902,12 +2254,10 @@ mod tests {
         let total = |trigger: PlacementTrigger| -> std::time::Duration {
             trigger.settle_delays().iter().sum()
         };
-        assert_eq!(FrontmostApp.settle_delays(), &[PLACEMENT_SETTLE]);
-        assert_eq!(SpaceChange.settle_delays(), &[PLACEMENT_SETTLE]);
         assert!(Settle.settle_delays().is_empty());
-        // Startup and display changes keep re-checking for a few seconds, so
+        // All triggers keep re-checking for a few seconds, so
         // an unknown first sample cannot strand the pill below the bar.
-        for trigger in [Startup, DisplayChange] {
+        for trigger in [Startup, DisplayChange, FrontmostApp, SpaceChange] {
             assert!(trigger.settle_delays().len() > 1);
             assert!(total(trigger) >= std::time::Duration::from_secs(4));
             assert!(total(trigger) <= std::time::Duration::from_secs(10));
