@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.14] - 2026-10-17
+
 ### Fixed
 
 - Keep the floating overlay in its proven menu-bar slot when opening status
