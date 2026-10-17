@@ -1,8 +1,8 @@
 # Frontend visibility and recording render work
 
-These are static mechanisms and proposed measurements, not timing results.
-Builds, automated checks, and native measurements are deferred to the parent
-task's scheduled verification window.
+This document describes the performance mechanisms and repeatable verification
+workloads. It does not claim a measured whole-app speedup; compare matching
+release builds and retain the resulting measurements with the change.
 
 ## Mechanism before and after
 
@@ -57,7 +57,7 @@ for both paths before considering this gate complete.
 - `usePerformanceHealth.test.tsx`: hidden polling stops, resume hydrates, and
   a pending hidden read cannot continue into a model-runtime query.
 
-## Parent verification and exact measurement workloads
+## Native verification and measurement workloads
 
 Use the same production configuration, model, corpus, and capture backend for
 baseline and candidate. Record immutable SHAs, app build identity, OS version,
@@ -95,4 +95,5 @@ and host. Do not compare a debug build with a release baseline.
 Run the targeted suites above, existing `useRecordingState`,
 `useSilenceAutoStop`, `useEventStore`, `usePerformanceDiagnostics`,
 `HomeDashboard`, and UI-latency suites, then the repository's scheduled TypeScript
-and full frontend checks. Native UI and corpus gates remain owned by the parent.
+and full frontend checks. Run native UI checks and corpus comparisons separately
+from compilation and other benchmark processes to avoid host contention.
