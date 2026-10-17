@@ -1,7 +1,7 @@
 //! Structured telemetry: tracing subscriber with file + event-emitter layers.
 
 use std::collections::VecDeque;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
@@ -1869,26 +1869,109 @@ pub(crate) fn event_jsonl_paths() -> Vec<PathBuf> {
     vec![current.with_extension("jsonl.1"), current]
 }
 
-/// Read the last `n` AppEvent entries from the JSONL file to seed the ring buffer.
-fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
-    let path = match jsonl_path() {
-        Some(p) if p.exists() => p,
-        _ => return,
-    };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    let mut buf = buffer.lock().unwrap_or_else(|p| p.into_inner());
-    for line in &lines[start..] {
-        if let Ok(event) = serde_json::from_str::<AppEvent>(line) {
-            if buf.len() >= 500 {
-                buf.pop_front();
+const JSONL_TAIL_CHUNK_BYTES: usize = 16 * 1024;
+const JSONL_TAIL_MAX_BYTES: usize = 2 * 1024 * 1024;
+const JSONL_TAIL_MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Read at most the last `n` physical lines, not the last `n` valid events.
+///
+/// Bound startup work to the newest 2 MiB and skip records over 64 KiB (excluding
+/// LF/CRLF). If the byte budget cuts a line, discard that entire leftmost
+/// fragment. Oversized, invalid-UTF-8, and malformed lines consume their normal
+/// line slot; none cause a search for older replacement events. Decode only
+/// complete lines so chunk boundaries may split UTF-8 code points safely.
+///
+/// The initial length excludes later appends. A seek/read failure (including
+/// truncation during a read) discards the staged result, before the ring buffer
+/// is touched. No file content, path, or raw error is emitted as telemetry.
+fn read_jsonl_tail<R: Read + Seek>(
+    reader: &mut R,
+    n: usize,
+) -> std::io::Result<VecDeque<AppEvent>> {
+    let mut events = VecDeque::new();
+    if n == 0 {
+        return Ok(events);
+    }
+
+    let end = reader.seek(SeekFrom::End(0))?;
+    let mut position = end;
+    let mut lines_remaining = n;
+    let mut boundary_found = false;
+    let mut tail = Vec::new();
+    let mut chunk = [0_u8; JSONL_TAIL_CHUNK_BYTES];
+
+    while position > 0 && tail.len() < JSONL_TAIL_MAX_BYTES {
+        let length = position
+            .min(JSONL_TAIL_CHUNK_BYTES as u64)
+            .min((JSONL_TAIL_MAX_BYTES - tail.len()) as u64) as usize;
+        position -= length as u64;
+        reader.seek(SeekFrom::Start(position))?;
+        reader.read_exact(&mut chunk[..length])?;
+
+        let mut start = 0;
+        for index in (0..length).rev() {
+            // Like str::lines(), a final LF terminates a line rather than
+            // introducing an extra empty line. Other empty lines still count.
+            if chunk[index] == b'\n' && position + index as u64 != end - 1 {
+                lines_remaining -= 1;
+                if lines_remaining == 0 {
+                    start = index + 1;
+                    boundary_found = true;
+                    break;
+                }
             }
-            buf.push_back(event);
         }
+        // Store chunks in reverse byte order, then reverse once after seeking.
+        // This avoids repeatedly copying an ever-growing suffix to prepend it.
+        tail.extend(chunk[start..length].iter().rev().copied());
+        if boundary_found {
+            break;
+        }
+    }
+    tail.reverse();
+
+    let start = if position > 0 && !boundary_found {
+        // The budget ended before a proven line boundary. Never parse a suffix
+        // of an oversized record as though it were a standalone event.
+        match tail.iter().position(|byte| *byte == b'\n') {
+            Some(index) => index + 1,
+            None => return Ok(events),
+        }
+    } else {
+        0
+    };
+    for line in tail[start..].split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.len() <= JSONL_TAIL_MAX_LINE_BYTES {
+            if let Ok(event) = serde_json::from_slice::<AppEvent>(line) {
+                if events.len() >= 500 {
+                    events.pop_front();
+                }
+                events.push_back(event);
+            }
+        }
+    }
+    Ok(events)
+}
+
+/// Seed atomically from a bounded tail; missing/unreadable logs are best-effort.
+fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let events = match jsonl_path()
+        .and_then(|path| std::fs::File::open(path).ok())
+        .and_then(|mut file| read_jsonl_tail(&mut file, n).ok())
+    {
+        Some(events) => events,
+        None => return,
+    };
+    let mut buf = buffer.lock().unwrap_or_else(|p| p.into_inner());
+    for event in events {
+        if buf.len() >= 500 {
+            buf.pop_front();
+        }
+        buf.push_back(event);
     }
 }
 
@@ -2060,6 +2143,414 @@ pub fn clear_event_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn jsonl_fixture_event(sequence: u64) -> AppEvent {
+        AppEvent {
+            timestamp: "2026-01-01T00:00:00.000Z".into(),
+            stream: "system".into(),
+            level: "info".into(),
+            summary: "Structured event".into(),
+            data: serde_json::json!({ "sequence": sequence }),
+        }
+    }
+
+    fn jsonl_fixture_line(sequence: u64) -> String {
+        serde_json::to_string(&jsonl_fixture_event(sequence)).unwrap()
+    }
+
+    fn jsonl_sequences(events: &VecDeque<AppEvent>) -> Vec<u64> {
+        events
+            .iter()
+            .map(|event| event.data["sequence"].as_u64().unwrap())
+            .collect()
+    }
+
+    /// Retain the original full-file allocation + all-lines Vec algorithm for
+    /// semantic comparisons and the opt-in benchmark. Never used in production.
+    fn baseline_jsonl_tail<R: Read>(
+        reader: &mut R,
+        n: usize,
+    ) -> std::io::Result<VecDeque<AppEvent>> {
+        let mut content = String::new();
+        reader.read_to_string(&mut content)?;
+        Ok(baseline_jsonl_events(&content, n))
+    }
+
+    fn baseline_jsonl_events(content: &str, n: usize) -> VecDeque<AppEvent> {
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(n);
+        let mut events = VecDeque::new();
+        for line in &lines[start..] {
+            if let Ok(event) = serde_json::from_str::<AppEvent>(line) {
+                if events.len() >= 500 {
+                    events.pop_front();
+                }
+                events.push_back(event);
+            }
+        }
+        events
+    }
+
+    struct ObservedReader<R> {
+        inner: R,
+        bytes_read: usize,
+        read_calls: usize,
+        seek_calls: usize,
+        max_read: usize,
+        fail_read_at: Option<usize>,
+        fail_seek_at: Option<usize>,
+    }
+
+    impl<R> ObservedReader<R> {
+        fn new(inner: R) -> Self {
+            Self {
+                inner,
+                bytes_read: 0,
+                read_calls: 0,
+                seek_calls: 0,
+                max_read: usize::MAX,
+                fail_read_at: None,
+                fail_seek_at: None,
+            }
+        }
+    }
+
+    impl<R: Read> Read for ObservedReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.read_calls += 1;
+            if self.fail_read_at == Some(self.read_calls) {
+                return Err(std::io::Error::other("synthetic read failure"));
+            }
+            let length = buffer.len().min(self.max_read);
+            let read = self.inner.read(&mut buffer[..length])?;
+            self.bytes_read += read;
+            Ok(read)
+        }
+    }
+
+    impl<R: Seek> Seek for ObservedReader<R> {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.seek_calls += 1;
+            if self.fail_seek_at == Some(self.seek_calls) {
+                return Err(std::io::Error::other("synthetic seek failure"));
+            }
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn jsonl_tail_matches_baseline_physical_line_selection_and_ring_capacity() {
+        for count in [0, 1, 5, 499, 500, 501, 605] {
+            for separator in ["\n", "\r\n"] {
+                let lines: Vec<_> = (0..count)
+                    .map(|index| match index % 17 {
+                        3 => String::new(),
+                        4 => "malformed".into(),
+                        5 => "{}".into(),
+                        _ => jsonl_fixture_line(index),
+                    })
+                    .collect();
+                for trailing in ["", separator] {
+                    let content = format!("{}{trailing}", lines.join(separator));
+                    for n in [0, 1, 2, 5, 499, 500, 501, 1_000, usize::MAX] {
+                        let expected = baseline_jsonl_tail(&mut content.as_bytes(), n).unwrap();
+                        let actual =
+                            read_jsonl_tail(&mut std::io::Cursor::new(content.as_bytes()), n)
+                                .unwrap();
+                        assert_eq!(
+                            serde_json::to_value(&actual).unwrap(),
+                            serde_json::to_value(&expected).unwrap(),
+                            "count={count}, separator={separator:?}, trailing={trailing:?}, n={n}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jsonl_tail_does_not_backfill_invalid_blank_or_partial_final_lines() {
+        let first = jsonl_fixture_line(1);
+        let second = jsonl_fixture_line(2);
+        for ending in ["malformed", "{\"timestamp\":", "", "\r"] {
+            let content = format!("{first}\n{second}\n{ending}\n");
+            let mut reader = std::io::Cursor::new(content.as_bytes());
+            assert!(read_jsonl_tail(&mut reader, 1).unwrap().is_empty());
+            assert_eq!(
+                jsonl_sequences(&read_jsonl_tail(&mut reader, 2).unwrap()),
+                [2]
+            );
+        }
+        let content = format!("{first}\n{{\"timestamp\":");
+        assert!(read_jsonl_tail(&mut std::io::Cursor::new(content), 1)
+            .unwrap()
+            .is_empty());
+        let content = format!("{first}\n{second}");
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut std::io::Cursor::new(content), 1).unwrap()),
+            [2],
+            "a complete JSON object without a trailing newline is retained"
+        );
+    }
+
+    #[test]
+    fn jsonl_tail_zero_does_not_seek_read_or_allocate_a_file_buffer() {
+        let mut reader = ObservedReader::new(std::io::Cursor::new(Vec::<u8>::new()));
+        reader.fail_read_at = Some(1);
+        reader.fail_seek_at = Some(1);
+        assert!(read_jsonl_tail(&mut reader, 0).unwrap().is_empty());
+        assert_eq!((reader.read_calls, reader.seek_calls), (0, 0));
+    }
+
+    #[test]
+    fn jsonl_tail_reassembles_utf8_split_at_a_chunk_boundary() {
+        let mut event = jsonl_fixture_event(7);
+        event.summary = "é".into();
+        let mut content = serde_json::to_string(&event).unwrap().into_bytes();
+        let codepoint = content.iter().position(|byte| *byte == 0xc3).unwrap();
+        // Align the first backward chunk exactly on the second byte of é.
+        let padding = JSONL_TAIL_CHUNK_BYTES - (content.len() - codepoint);
+        content.extend(std::iter::repeat(b' ').take(padding));
+        content.push(b'\n');
+        assert_eq!(content.len() - JSONL_TAIL_CHUNK_BYTES, codepoint + 1);
+        let events = read_jsonl_tail(&mut std::io::Cursor::new(content), 1).unwrap();
+        assert_eq!(events.front().unwrap().summary, "é");
+        assert_eq!(jsonl_sequences(&events), [7]);
+    }
+
+    #[test]
+    fn jsonl_tail_invalid_utf8_is_skipped_per_line_without_losing_valid_neighbors() {
+        let mut content = format!("{}\n", jsonl_fixture_line(1)).into_bytes();
+        content.extend_from_slice(b"\xff\xfe\n");
+        content.extend_from_slice(format!("{}\n", jsonl_fixture_line(3)).as_bytes());
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut std::io::Cursor::new(&content), 3).unwrap()),
+            [1, 3]
+        );
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut std::io::Cursor::new(&content), 2).unwrap()),
+            [3]
+        );
+        assert!(baseline_jsonl_tail(&mut content.as_slice(), 3).is_err());
+
+        let mut content = vec![0xff; JSONL_TAIL_CHUNK_BYTES * 2];
+        content.push(b'\n');
+        content.extend_from_slice(jsonl_fixture_line(4).as_bytes());
+        let mut reader = ObservedReader::new(std::io::Cursor::new(content));
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut reader, 1).unwrap()),
+            [4]
+        );
+        assert_eq!(reader.bytes_read, JSONL_TAIL_CHUNK_BYTES);
+    }
+
+    #[test]
+    fn jsonl_tail_skips_oversized_lines_but_accepts_the_exact_limit_with_crlf() {
+        let mut content = format!("{}\n", jsonl_fixture_line(1)).into_bytes();
+        let mut exact = jsonl_fixture_line(2).into_bytes();
+        exact.resize(JSONL_TAIL_MAX_LINE_BYTES, b' ');
+        content.extend_from_slice(&exact);
+        content.extend_from_slice(b"\r\n");
+        let mut oversized = jsonl_fixture_line(3).into_bytes();
+        oversized.resize(JSONL_TAIL_MAX_LINE_BYTES + 1, b' ');
+        content.extend_from_slice(&oversized);
+        content.extend_from_slice(b"\n");
+        content.extend_from_slice(jsonl_fixture_line(4).as_bytes());
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut std::io::Cursor::new(&content), 3).unwrap()),
+            [2, 4]
+        );
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut std::io::Cursor::new(&content), 2).unwrap()),
+            [4],
+            "oversized lines consume a slot rather than pulling older events in"
+        );
+    }
+
+    #[test]
+    fn jsonl_tail_byte_budget_discards_unproven_fragments_and_bounds_reads() {
+        let mut content = format!("{}\n", jsonl_fixture_line(1)).into_bytes();
+        content.resize(JSONL_TAIL_MAX_BYTES * 2, b'x');
+        // A valid JSON suffix of a giant malformed line must never become an
+        // event when the budget happens to cut immediately before the JSON.
+        let mut boundary = jsonl_fixture_line(2).into_bytes();
+        boundary.push(b'\n');
+        let suffix = format!("\n{}\n", jsonl_fixture_line(3));
+        boundary.resize(JSONL_TAIL_MAX_BYTES - suffix.len(), b' ');
+        boundary.extend_from_slice(suffix.as_bytes());
+        content.extend_from_slice(&boundary);
+        let mut reader = ObservedReader::new(std::io::Cursor::new(content));
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut reader, 500).unwrap()),
+            [3]
+        );
+        assert_eq!(reader.bytes_read, JSONL_TAIL_MAX_BYTES);
+
+        let mut reader =
+            ObservedReader::new(std::io::Cursor::new(vec![b'x'; JSONL_TAIL_MAX_BYTES + 1]));
+        assert!(read_jsonl_tail(&mut reader, usize::MAX).unwrap().is_empty());
+        assert_eq!(reader.bytes_read, JSONL_TAIL_MAX_BYTES);
+    }
+
+    #[test]
+    fn jsonl_tail_read_exact_handles_short_reads_and_propagates_io_errors() {
+        let content = format!("{}\n{}\n", jsonl_fixture_line(1), jsonl_fixture_line(2));
+        let mut reader = ObservedReader::new(std::io::Cursor::new(content.as_bytes()));
+        reader.max_read = 7;
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut reader, 2).unwrap()),
+            [1, 2]
+        );
+        assert!(reader.read_calls > 1);
+
+        for failed_seek in [1, 2, 3] {
+            let content = vec![b'x'; JSONL_TAIL_CHUNK_BYTES * 2];
+            let mut reader = ObservedReader::new(std::io::Cursor::new(content));
+            reader.fail_seek_at = Some(failed_seek);
+            assert!(read_jsonl_tail(&mut reader, 500).is_err());
+        }
+        for failed_read in [1, 2] {
+            let content = vec![b'x'; JSONL_TAIL_CHUNK_BYTES * 2];
+            let mut reader = ObservedReader::new(std::io::Cursor::new(content));
+            reader.fail_read_at = Some(failed_read);
+            assert!(read_jsonl_tail(&mut reader, 500).is_err());
+        }
+    }
+
+    #[test]
+    fn jsonl_tail_uses_initial_length_and_rejects_truncation_during_read() {
+        struct ChangingReader {
+            inner: std::io::Cursor<Vec<u8>>,
+            append: bool,
+        }
+        impl Read for ChangingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.inner.read(buffer)
+            }
+        }
+        impl Seek for ChangingReader {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                let result = self.inner.seek(position)?;
+                if matches!(position, SeekFrom::End(0)) {
+                    if self.append {
+                        self.inner
+                            .get_mut()
+                            .extend_from_slice(format!("{}\n", jsonl_fixture_line(99)).as_bytes());
+                    } else {
+                        self.inner.get_mut().truncate(0);
+                    }
+                }
+                Ok(result)
+            }
+        }
+        let content = format!("{}\n", jsonl_fixture_line(1)).into_bytes();
+        let mut reader = ChangingReader {
+            inner: std::io::Cursor::new(content.clone()),
+            append: true,
+        };
+        assert_eq!(
+            jsonl_sequences(&read_jsonl_tail(&mut reader, 500).unwrap()),
+            [1]
+        );
+        let mut reader = ChangingReader {
+            inner: std::io::Cursor::new(content),
+            append: false,
+        };
+        assert_eq!(
+            read_jsonl_tail(&mut reader, 500).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    /// Run only when the parent schedules an uncontended measurement:
+    /// cargo test --release --lib telemetry::tests::jsonl_tail_comparative_microbenchmark \
+    ///   -- --ignored --exact --nocapture --test-threads=1
+    #[test]
+    #[ignore = "opt-in synthetic file-I/O comparison; run without other workloads"]
+    fn jsonl_tail_comparative_microbenchmark() {
+        use std::time::Instant;
+
+        fn measure(path: &Path, baseline: bool) -> (u128, usize, VecDeque<AppEvent>) {
+            let start = Instant::now();
+            let (bytes_read, events) = if baseline {
+                // Match the old std::fs::read_to_string path, including its
+                // metadata-based reservation. Wrapping File in ObservedReader
+                // here would lose that optimization and bias the comparison.
+                let content = std::fs::read_to_string(path).unwrap();
+                (content.len(), baseline_jsonl_events(&content, 500))
+            } else {
+                let mut reader = ObservedReader::new(std::fs::File::open(path).unwrap());
+                let events = read_jsonl_tail(&mut reader, 500).unwrap();
+                (reader.bytes_read, events)
+            };
+            std::hint::black_box(&events);
+            (start.elapsed().as_nanos(), bytes_read, events)
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        // Exactly 256 bytes per physical line, containing fixed synthetic
+        // enums/numbers only. No installed application logs are accessed.
+        let mut line = jsonl_fixture_line(7).into_bytes();
+        assert!(line.len() < 256);
+        line.resize(255, b' ');
+        line.push(b'\n');
+        let block = line.repeat(256);
+        println!("size_mib,algorithm,samples,min_us,p50_us,p90_us,bytes_read,p50_speedup");
+        for mib in [1, 5, 50] {
+            let path = directory.path().join(format!("synthetic-{mib}.jsonl"));
+            {
+                let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+                for _ in 0..(mib * 1024 * 1024 / block.len()) {
+                    file.write_all(&block).unwrap();
+                }
+                file.flush().unwrap();
+            }
+            let (_, baseline_bytes, expected) = measure(&path, true);
+            let (_, tail_bytes, actual) = measure(&path, false);
+            assert_eq!(
+                serde_json::to_value(&actual).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert_eq!(actual.len(), 500);
+            assert_eq!(baseline_bytes, mib * 1024 * 1024);
+            assert!(tail_bytes <= 500 * line.len() + JSONL_TAIL_CHUNK_BYTES);
+
+            // Warm-cache benchmark, with one warmup per algorithm above.
+            // Alternate execution order to reduce systematic ordering bias.
+            let mut baseline_ns = Vec::new();
+            let mut tail_ns = Vec::new();
+            for round in 0..15 {
+                for baseline in if round % 2 == 0 {
+                    [true, false]
+                } else {
+                    [false, true]
+                } {
+                    let (elapsed, bytes, events) = measure(&path, baseline);
+                    assert_eq!(events.len(), 500);
+                    assert_eq!(bytes, if baseline { baseline_bytes } else { tail_bytes });
+                    if baseline {
+                        baseline_ns.push(elapsed);
+                    } else {
+                        tail_ns.push(elapsed);
+                    }
+                }
+            }
+            baseline_ns.sort_unstable();
+            tail_ns.sort_unstable();
+            let speedup = baseline_ns[7] as f64 / tail_ns[7] as f64;
+            for (name, samples, bytes) in [
+                ("full_file", baseline_ns, baseline_bytes),
+                ("reverse_tail", tail_ns, tail_bytes),
+            ] {
+                println!(
+                    "{mib},{name},15,{:.3},{:.3},{:.3},{bytes},{speedup:.3}",
+                    samples[0] as f64 / 1_000.0,
+                    samples[7] as f64 / 1_000.0,
+                    samples[13] as f64 / 1_000.0,
+                );
+            }
+        }
+    }
 
     #[test]
     fn refactor_test_logs_are_isolated_from_production() {

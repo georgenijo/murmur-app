@@ -45,6 +45,38 @@ type AppEvent = {
 
 When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and a fresh file is started. On startup, the ring buffer is pre-populated with up to 500 events from the existing JSONL file.
 
+Startup hydration seeks backward in 16 KiB chunks rather than reading the full
+file. It selects the last 500 **physical lines**, preserving their original
+order; blank, malformed, or oversized lines consume a slot and are skipped
+without fetching older replacement events. LF and CRLF are supported, as is a
+complete final JSON object without a newline; a partially written JSON object is
+skipped. Chunk boundaries may split UTF-8 characters because decoding happens
+only after complete lines are reassembled. Invalid UTF-8 skips the affected line
+rather than preventing all hydration, including when corruption is in an older
+part of the file that is no longer read.
+
+To bound startup I/O and memory even for pathological records, hydration reads
+at most the newest **2 MiB** and skips individual lines over **64 KiB**, excluding
+LF/CRLF. If the byte budget stops before a proven line boundary, its leftmost
+fragment is discarded entirely; fewer than 500 events may be restored. These
+bounds apply only to startup replay. Appends after the initial file-length snapshot are
+excluded; seek/read errors, including an observed truncation, abandon hydration
+before changing the ring buffer. This is a best-effort read, not an atomic
+snapshot against concurrent in-place rewrites. No contents, paths, or raw errors
+are logged by the reader. Event sanitization, synchronous event delivery, log
+writing/shipping, and rotation are unchanged.
+
+The ignored synthetic comparison retains the previous full-file/all-lines
+algorithm and checks equal results for 1, 5, and 50 MiB files. It reports
+warm-cache minimum/median/p90 latency and application bytes read (not physical
+disk I/O or peak heap), with one warmup per algorithm and 15 alternating-order
+samples. Fixtures use only synthetic fixed fields and numbers in a temporary
+directory. Run it on an otherwise idle machine from `app/src-tauri`:
+
+```bash
+cargo test --release --lib telemetry::tests::jsonl_tail_comparative_microbenchmark -- --ignored --exact --nocapture --test-threads=1
+```
+
 ### Privacy Stripping
 
 In release builds, arbitrary string-valued fields from `pipeline` target events are stripped from the `data` object. Numeric fields survive, and the dictation lifecycle's exact `event_code`, `outcome`, and `error_code` values survive only when they match their key-specific allowlists. For the `transform` stream in both debug and release builds, each string must likewise match an explicit key-specific enum/bucket vocabulary; unknown keys or values are dropped. Numeric and boolean diagnostic fields are retained. Release `summary` values are derived only from an allowlisted `event_code`, with `Structured event` as the fallback; meeting and frontend summaries are constant in every build. This prevents transcription, transform, or caller-provided frontend content from being persisted in structured log data.
