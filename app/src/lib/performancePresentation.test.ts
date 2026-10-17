@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makeRun, measured, notApplicable, unavailable } from '../components/log-viewer/testFixtures';
 import {
   correlationFilterForRun,
+  stageLabel,
   formatMeasurement,
   orderedStages,
   rateForRun,
@@ -9,6 +10,20 @@ import {
 } from './performancePresentation';
 
 describe('performance presentation semantics', () => {
+  it('shows final inference contention separately from preparation without inventing legacy measurements', () => {
+    const run = makeRun();
+    run.stages = run.stages.map(timing => timing.stage === 'modelQueue'
+      ? { ...timing, durationMs: measured(0) }
+      : timing.stage === 'inferenceQueue'
+        ? { ...timing, durationMs: measured(64) }
+        : timing);
+    expect(stageLabel('inferenceQueue', 'dictation')).toBe('Final inference queue');
+    expect(orderedStages(run).find(timing => timing.stage === 'modelQueue')?.durationMs).toEqual(measured(0));
+    expect(orderedStages(run).find(timing => timing.stage === 'inferenceQueue')?.durationMs).toEqual(measured(64));
+    run.stages = run.stages.filter(timing => timing.stage !== 'inferenceQueue');
+    expect(orderedStages(run).some(timing => timing.stage === 'inferenceQueue')).toBe(false);
+  });
+
   it('keeps measured zero, unavailable, and not-applicable distinct', () => {
     expect(formatMeasurement(measured(0), value => `${value} ms`)).toEqual({
       text: '0 ms',
@@ -30,6 +45,7 @@ describe('performance presentation semantics', () => {
       'vad',
       'modelQueue',
       'modelLoad',
+      'inferenceQueue',
       'inferenceDecode',
       'transcriptTransform',
       'cleanup',

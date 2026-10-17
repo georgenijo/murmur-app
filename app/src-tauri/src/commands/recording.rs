@@ -2091,7 +2091,14 @@ fn transcript_stage_timing(
 fn pipeline_stages(timings: &PipelineTimings, total_ms: u64) -> Vec<StageTimingV1> {
     let mut stages = vec![
         StageTimingV1::measured(PerformanceStageV1::Vad, timings.vad_ms),
-        StageTimingV1::measured(PerformanceStageV1::ModelQueue, timings.model_queue_ms),
+        // Preparation may overlap capture and has its own ModelQueue sample.
+        // Preserve the final pass's wait separately; do not replace preparation
+        // or silently discard contention behind a preview decode.
+        if timings.warm_state.is_some() {
+            StageTimingV1::measured(PerformanceStageV1::InferenceQueue, timings.model_queue_ms)
+        } else {
+            StageTimingV1::not_applicable(PerformanceStageV1::InferenceQueue)
+        },
         StageTimingV1::measured(PerformanceStageV1::ModelLoad, timings.model_load_ms),
         StageTimingV1::measured(PerformanceStageV1::InferenceDecode, timings.decode_ms),
         StageTimingV1::measured(
@@ -8117,6 +8124,37 @@ pub(crate) mod tests {
             1
         ))
         .is_none());
+    }
+
+    #[test]
+    fn pipeline_stages_separates_final_queue_from_preparation_and_skipped_inference() {
+        let timings = PipelineTimings {
+            model_queue_ms: 64,
+            decode_ms: 97,
+            warm_state: Some(ModelWarmStateV1::Warm),
+            ..PipelineTimings::default()
+        };
+        let stages = pipeline_stages(&timings, 161);
+        assert_eq!(
+            stages
+                .iter()
+                .find(|stage| stage.stage == PerformanceStageV1::InferenceQueue)
+                .unwrap()
+                .duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(64),
+        );
+        assert!(!stages
+            .iter()
+            .any(|stage| stage.stage == PerformanceStageV1::ModelQueue));
+        let skipped = pipeline_stages(&PipelineTimings::default(), 0);
+        assert_eq!(
+            skipped
+                .iter()
+                .find(|stage| stage.stage == PerformanceStageV1::InferenceQueue)
+                .unwrap()
+                .duration_ms,
+            crate::performance_metrics::MeasurementV1::NotApplicable,
+        );
     }
 
     #[test]

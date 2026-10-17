@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeRun } from '../components/log-viewer/testFixtures';
 import {
   isMeasurementV1,
   isPerformanceRunV1,
@@ -10,6 +11,15 @@ import {
 } from './performance';
 
 describe('performance contracts', () => {
+  it('accepts historical v1 runs without final inference queue but rejects other missing or duplicate stages', () => {
+    const run = makeRun();
+    expect(isPerformanceRunV1(run)).toBe(true);
+    const legacy = { ...run, stages: run.stages.filter(timing => timing.stage !== 'inferenceQueue') };
+    expect(isPerformanceRunV1(legacy)).toBe(true);
+    expect(isPerformanceRunV1({ ...legacy, stages: legacy.stages.filter(timing => timing.stage !== 'modelQueue') })).toBe(false);
+    expect(isPerformanceRunV1({ ...run, stages: [...run.stages, run.stages[0]] })).toBe(false);
+  });
+
   it('accepts only the bounded, content-free diagnostics-health schema', () => {
     const health = {
       schemaVersion: 1,

@@ -85,7 +85,12 @@ The contract never uses numeric zero as a missing-data sentinel.
 
 - capture finalization/resampling;
 - VAD;
-- model queue/lock wait and model load;
+- model preparation queue/lock wait and model load;
+- final inference queue/lock wait, recorded separately as `inferenceQueue` so
+  waiting behind a live preview is preserved even when preparation was instant;
+  preparation can overlap capture, so these rows are not an additive timeline;
+  historical v1 records without this new stage remain readable and omit the
+  unrecorded measurement rather than displaying a measured zero;
 - inference/decode;
 - aggregate deterministic transcript transformation and the existing
   content-free cleanup, Voice Commands, Smart Correction, Smart Formatting,
