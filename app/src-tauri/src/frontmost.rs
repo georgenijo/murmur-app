@@ -407,26 +407,118 @@ pub(crate) fn register_delivery_transition_observers() {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn register_delivery_transition_observers() {}
 
-/// Cheap final check: no Accessibility query between this proof and key post.
+/// A cached frontmost application is not final authority while the main loop
+/// is blocked in AX. Read the systemwide AXFocusedApplication PID afresh after
+/// all target-field queries; unknown, timed-out and relaunched targets refuse.
 #[cfg(target_os = "macos")]
 pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bool {
-    use objc2_app_kit::NSWorkspace;
+    use objc2_app_kit::NSRunningApplication;
     let DeliveryTargetSnapshot::Complete(expected) = expected else {
         return false;
     };
-    let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
-        return false;
-    };
-    app.processIdentifier() == expected.process_id
-        && app
-            .bundleIdentifier()
-            .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
-        && app.launchDate().is_some_and(|date| {
-            let interval = date.timeIntervalSinceReferenceDate();
-            interval.is_finite()
-                && interval > 0.0
-                && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
-        })
+    live_focus_matches(
+        expected.process_id,
+        || {
+            let Some(app) =
+                NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)
+            else {
+                return false;
+            };
+            app.bundleIdentifier()
+                .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
+                && app.launchDate().is_some_and(|date| {
+                    let interval = date.timeIntervalSinceReferenceDate();
+                    interval.is_finite()
+                        && interval > 0.0
+                        && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
+                })
+        },
+        ax_systemwide_focused_application_pid,
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn live_focus_matches(
+    expected_pid: i32,
+    mut identity_matches: impl FnMut() -> bool,
+    query_live_pid: impl FnOnce() -> Option<i32>,
+) -> bool {
+    expected_pid > 0
+        && identity_matches()
+        && query_live_pid() == Some(expected_pid)
+        && identity_matches()
+}
+
+#[cfg(target_os = "macos")]
+fn ax_systemwide_focused_application_pid() -> Option<i32> {
+    use std::ffi::{c_char, c_void};
+    use std::time::{Duration, Instant};
+    type Ref = *const c_void;
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXUIElementCreateSystemWide() -> Ref;
+        fn AXUIElementSetMessagingTimeout(element: Ref, timeout: f32) -> i32;
+        fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
+        fn AXUIElementGetPid(element: Ref, pid: *mut i32) -> i32;
+        fn AXUIElementGetTypeID() -> usize;
+        fn CFGetTypeID(value: Ref) -> usize;
+        fn CFStringCreateWithCString(allocator: Ref, text: *const c_char, encoding: u32) -> Ref;
+        fn CFRelease(value: Ref);
+    }
+    struct Owned(Ref);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    CFRelease(self.0);
+                }
+            }
+        }
+    }
+    // The SDK documents systemwide timeout as the process default. Restore its
+    // normal default on every exit; explicitly configured element timeouts are
+    // unaffected. All callers are main-thread native delivery/rollback turns.
+    struct Timeout(Ref);
+    impl Drop for Timeout {
+        fn drop(&mut self) {
+            unsafe {
+                AXUIElementSetMessagingTimeout(self.0, 0.0);
+            }
+        }
+    }
+    let started = Instant::now();
+    let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+    if system.0.is_null() || unsafe { AXUIElementSetMessagingTimeout(system.0, 0.020) } != 0 {
+        return None;
+    }
+    let _timeout = Timeout(system.0);
+    let attribute = Owned(unsafe {
+        CFStringCreateWithCString(
+            std::ptr::null(),
+            b"AXFocusedApplication\0".as_ptr().cast(),
+            0x0800_0100,
+        )
+    });
+    if attribute.0.is_null() {
+        return None;
+    }
+    let mut value = std::ptr::null();
+    let status = unsafe { AXUIElementCopyAttributeValue(system.0, attribute.0, &mut value) };
+    let focused = Owned(value);
+    if status != 0
+        || focused.0.is_null()
+        || unsafe { CFGetTypeID(focused.0) != AXUIElementGetTypeID() }
+    {
+        return None;
+    }
+    let mut pid = 0;
+    if unsafe { AXUIElementGetPid(focused.0, &mut pid) } != 0
+        || pid <= 0
+        || started.elapsed() > Duration::from_millis(20)
+    {
+        return None;
+    }
+    Some(pid)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1339,6 +1431,82 @@ mod tests {
                 space_generation: 20,
             },
         }
+    }
+
+    #[test]
+    fn final_focus_uses_live_ax_pid_even_when_cached_app_still_matches() {
+        let cached_pid = 42;
+        let live_pid = std::cell::Cell::new(42);
+        assert!(live_focus_matches(
+            cached_pid,
+            || true,
+            || Some(live_pid.get())
+        ));
+        // Slow target-field AX work does not pump the main loop. AppKit's
+        // cached PID remains 42 while the actual focused application is 43.
+        live_pid.set(43);
+        assert!(!live_focus_matches(
+            cached_pid,
+            || true,
+            || Some(live_pid.get())
+        ));
+    }
+
+    #[test]
+    fn rollback_refuses_live_focus_switch_during_field_and_settable_queries() {
+        let live_pid = std::cell::Cell::new(42);
+        let restored = std::cell::Cell::new(false);
+        assert!(!crate::injector::authority::validated_side_effect(
+            || {
+                live_pid.set(43); // target AX validation / AXFrontmost-settable query
+                true
+            },
+            || {
+                if !live_focus_matches(42, || true, || Some(live_pid.get())) {
+                    return false;
+                }
+                restored.set(true);
+                true
+            }
+        ));
+        assert!(!restored.get());
+    }
+
+    #[test]
+    fn final_focus_refuses_timeout_missing_pid_and_process_relaunch() {
+        assert!(!live_focus_matches(42, || true, || None));
+        assert!(!live_focus_matches(42, || false, || Some(42)));
+        assert!(!live_focus_matches(0, || true, || Some(0)));
+    }
+
+    #[test]
+    fn final_live_focus_query_is_bracketed_by_process_identity_checks() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        assert!(live_focus_matches(
+            42,
+            || {
+                steps.borrow_mut().push("identity");
+                true
+            },
+            || {
+                steps.borrow_mut().push("live_pid");
+                Some(42)
+            }
+        ));
+        assert_eq!(*steps.borrow(), ["identity", "live_pid", "identity"]);
+    }
+
+    #[test]
+    fn final_focus_rejects_process_relaunch_during_live_query() {
+        let same_instance = std::cell::Cell::new(true);
+        assert!(!live_focus_matches(
+            42,
+            || same_instance.get(),
+            || {
+                same_instance.set(false);
+                Some(42)
+            }
+        ));
     }
 
     #[test]

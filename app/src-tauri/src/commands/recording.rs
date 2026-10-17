@@ -1161,7 +1161,9 @@ impl DictationDeliveryOutcome {
 
 fn confirmed_delivery_outcome(outcome: injector::InjectionOutcome) -> DictationDeliveryOutcome {
     match outcome {
-        injector::InjectionOutcome::NoText => DictationDeliveryOutcome::Unconfirmed,
+        injector::InjectionOutcome::NoText | injector::InjectionOutcome::Stopped(_) => {
+            DictationDeliveryOutcome::Unconfirmed
+        }
         injector::InjectionOutcome::ClipboardOnly(
             injector::ClipboardOnlyReason::ClipboardChanged,
         ) => DictationDeliveryOutcome::Unconfirmed,
@@ -2722,7 +2724,10 @@ async fn run_transcription_pipeline(
         {
             Ok(Ok(Some(Ok(result)))) => {
                 injection_outcome_code = result.outcome.code();
-                if result.outcome != injector::InjectionOutcome::NoText {
+                if !matches!(
+                    result.outcome,
+                    injector::InjectionOutcome::NoText | injector::InjectionOutcome::Stopped(_)
+                ) {
                     app_handle.state::<State>().delivery_recovery.remember(
                         recording_id,
                         text.clone(),
@@ -2763,6 +2768,11 @@ async fn run_transcription_pipeline(
                             message,
                         );
                     }
+                }
+                if let injector::InjectionOutcome::Stopped(reason) = result.outcome {
+                    tracing::info!(target: "pipeline", reason_code = reason.code(), "Text delivery stopped before completion");
+                    emit_auto_paste_failure_if_current(app_handle, app_state, recording_id,
+                        "Text delivery stopped before completion. Check the destination and clipboard before pasting.");
                 }
                 confirmed_delivery_outcome(result.outcome)
             }
@@ -6242,6 +6252,19 @@ pub(crate) mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         fields
+    }
+
+    #[test]
+    fn stopped_paste_is_unconfirmed_and_never_clipboard_write_failed() {
+        for reason in [
+            injector::authority::AttemptStop::Cancelled,
+            injector::authority::AttemptStop::Expired,
+        ] {
+            assert_eq!(
+                confirmed_delivery_outcome(injector::InjectionOutcome::Stopped(reason)),
+                DictationDeliveryOutcome::Unconfirmed
+            );
+        }
     }
 
     #[test]

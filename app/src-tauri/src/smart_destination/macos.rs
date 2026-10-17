@@ -781,12 +781,14 @@ pub(super) fn insert(
                     && (!frozen.hands_off()
                         || frozen.prepared_character_count == character_count_before),
                 || crate::injector::simulate_smart_paste_native_guarded(authority, || {
-                    // No AX calls after this final proof. Event construction is
-                    // also complete before the authority fence checks it.
+                    // All field AX work and event construction precede the live
+                    // systemwide focus query. Cancellation remains nonblocking;
+                    // commitment follows the bounded query and clipboard check.
                     generation_is_current(frozen.generation)
                         && destination_is_active(&frozen)
+                        && generation_is_current(frozen.generation)
                         && crate::injector::pasteboard_change_count() == Some(pasteboard_change)
-                }).is_ok_and(|posted| posted),
+                }).is_ok_and(|decision| decision.is_posted()),
             );
             if !ready_to_post {
                 rollback_before_post(&frozen, Some(pasteboard_change));
@@ -1024,11 +1026,6 @@ fn validate_exact_field(frozen: &Frozen, expected_range: (usize, usize)) -> bool
 
 fn destination_is_active(frozen: &Frozen) -> bool {
     crate::frontmost::delivery_target_is_active(&frozen.destination_identity)
-        && running_application(
-            &frozen.destination_identity,
-            frozen.destination_launch_token_bits,
-        )
-        .is_some_and(|application| application.isActive())
 }
 
 fn request_recent_destination_activation(
@@ -1038,27 +1035,36 @@ fn request_recent_destination_activation(
     if !attribute_settable(frozen.app.as_element(), "AXFrontmost") {
         return false;
     }
+    let (return_to, _) = frozen.return_target();
+    // Complete all AX queries before claiming the native mutation. The final
+    // live focus query is bounded and cannot block cancel() on an attempt lock.
+    if !generation_is_current(frozen.generation)
+        || !process_is_running(
+            &frozen.destination_identity,
+            frozen.destination_launch_token_bits,
+        )
+        || !crate::frontmost::delivery_target_is_active(return_to)
+        || frozen.activation_clipboard_change.is_none()
+        || frozen.activation_clipboard_change != crate::injector::pasteboard_change_count()
+    {
+        return false;
+    }
     let activate = || {
-        let (return_to, return_bits) = frozen.return_target();
-        let lease_current = frozen
-            .activation_before
-            .is_some_and(|before| before == crate::frontmost::app_transition_snapshot());
-        Ok(generation_is_current(frozen.generation)
-            && lease_current
-            && frozen.activation_clipboard_change.is_some()
-            && frozen.activation_clipboard_change == crate::injector::pasteboard_change_count()
-            && running_application(return_to, return_bits).is_some_and(|app| app.isActive())
+        // The live focus query can itself take time. Recheck revocation and
+        // immutable process/clipboard ownership immediately before native IPC.
+        generation_is_current(frozen.generation)
             && process_is_running(
                 &frozen.destination_identity,
                 frozen.destination_launch_token_bits,
             )
+            && frozen.activation_clipboard_change == crate::injector::pasteboard_change_count()
             && set_attribute(frozen.app.as_element(), "AXFrontmost", unsafe {
                 kCFBooleanTrue
-            }) == AX_SUCCESS)
+            }) == AX_SUCCESS
     };
     match authority {
-        Some(attempt) => attempt.write(activate).unwrap_or(false),
-        None => activate().unwrap_or(false),
+        Some(attempt) => attempt.mutate(activate).unwrap_or(false),
+        None => activate(),
     }
 }
 
@@ -1118,7 +1124,8 @@ fn maybe_restore_media(
             if !crate::injector::authority::rollback_transition_matches(
                 (before.activation_generation, before.space_generation),
                 (current.activation_generation, current.space_generation),
-            ) || !destination_is_active(frozen)
+            ) || !process_is_running(return_to, return_launch_token_bits)
+                || !destination_is_active(frozen)
                 || !process_is_running(return_to, return_launch_token_bits)
                 || crate::injector::pasteboard_change_count() != Some(pasteboard_change)
             {

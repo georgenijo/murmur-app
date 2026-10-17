@@ -900,7 +900,17 @@ fn sanitize_paste_safety_event(data: &mut serde_json::Map<String, serde_json::Va
         (phase, outcome),
         (
             Some("preparation"),
-            Some("ready" | "activation_requested" | "refused" | "refused_clipboard_only")
+            Some(
+                "ready"
+                    | "activation_requested"
+                    | "refused"
+                    | "refused_clipboard_only"
+                    | "timed_out"
+                    | "reply_lost"
+            )
+        ) | (
+            Some("authority"),
+            Some("cancelled" | "expired" | "already_committed" | "operation_in_flight")
         ) | (Some("post"), Some("key_posted"))
             | (
                 Some("confirmation"),
@@ -960,6 +970,10 @@ fn is_safe_smart_destination_delivery_field(key: &str, value: &serde_json::Value
                     | "clipboard_only_smart_target_unavailable"
                     | "clipboard_write_failed"
                     | "unconfirmed"
+                    | "cancelled"
+                    | "expired"
+                    | "already_committed"
+                    | "operation_in_flight"
             )
         }),
         _ => false,
@@ -3305,6 +3319,12 @@ mod tests {
                 ("preparation", "activation_requested"),
                 ("preparation", "refused"),
                 ("preparation", "refused_clipboard_only"),
+                ("preparation", "timed_out"),
+                ("preparation", "reply_lost"),
+                ("authority", "cancelled"),
+                ("authority", "expired"),
+                ("authority", "already_committed"),
+                ("authority", "operation_in_flight"),
                 ("post", "key_posted"),
                 ("confirmation", "structurally_confirmed"),
                 ("confirmation", "unconfirmed"),
@@ -3388,6 +3408,10 @@ mod tests {
         use crate::injector::{ClipboardOnlyReason, InjectionOutcome};
         let outcomes = [
             InjectionOutcome::NoText,
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::Cancelled),
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::Expired),
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::AlreadyCommitted),
+            InjectionOutcome::Stopped(crate::injector::authority::AttemptStop::OperationInFlight),
             InjectionOutcome::AutoPasted,
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AutoPasteDisabled),
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::AccessibilityDenied),

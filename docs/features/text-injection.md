@@ -68,9 +68,15 @@ Murmur never replaces a hidden selection. To deliver to a recent field, it
 activates that application through its Accessibility `AXFrontmost` attribute
 (without changing the field or selection), lets macOS settle between main-thread dispatches,
 rechecks recording ownership, the exact field, and clipboard generation,
-and posts native Cmd+V once. Event construction and blocking AX checks finish
-before the final frontmost/process-instance and clipboard checks. Those checks
-and posting share an in-process cancellation fence. macOS provides no OS-wide
+and posts native Cmd+V once. Event construction and target-field AX checks
+finish before a fresh systemwide `AXFocusedApplication` PID query, followed by
+the clipboard-generation check. The focused PID must match the expected process
+whose bundle and launch identity remain verified. This final query has a 20 ms
+messaging timeout and rejects missing, failed, or late results; AppKit's cached
+frontmost app and `isActive` flags never authorize this final boundary. The
+systemwide timeout temporarily sets the process default and restores the normal
+default afterward; existing explicit per-element timeouts are retained.
+Cancellation and native commitment share one atomic operation state. macOS provides no OS-wide
 atomic focus/clipboard/paste operation: focus or clipboard ownership can still
 change after the last check, and a posted key is not proof of text insertion. Only a handoff (to media, or back from an app the
 user switched to) waits 40 ms after the post and reads the field back, to decide
@@ -78,9 +84,12 @@ whether focus can safely return to that application; delivery into the current
 app returns right after the post. Cancellation during the activation-settle
 wait schedules guarded rollback even if no clipboard write happened. Rollback
 requires the exact unchanged field/range/count, the pasteboard generation
-captured before activation when no delivery write occurred, the destination still active,
-the same return process, and exactly Murmur's one activation with no later app
-or Space transition. It refuses after the user moves on, including away and
+captured before activation when no delivery write occurred, a fresh systemwide
+AX focused PID still identifying the destination, the same return process, and
+exactly Murmur's one observed activation with no later observed app or Space
+transition. The live focus query follows all field/count/settable AX queries
+before restoration, so a switch during those calls cannot pass on cached
+AppKit state. It refuses after the user moves on, including away and
 back. Post-delivery restoration also requires the clipboard token and structural
 insertion confirmation. There is no whole-field replacement, automatic submit,
 or fallback paste into a different field after an attempted delivery.
@@ -155,7 +164,12 @@ the retry uses the normal auto-paste policy. A concurrent recording prevents the
 retry from changing the clipboard. Each retry shares a cancellation/deadline
 capability with its queued callbacks, clipboard writer, and native key poster.
 Timeout cancels pending side effects, including work already in validation;
-callbacks retain the retry slot until cleanup finishes. If a key was posted but
+callbacks retain the retry slot until cleanup finishes. Paste Last preparation
+has a separate one-second child authority. A preparation timeout or lost reply
+revokes only that child, leaves the route clipboard-only, and preserves the
+parent's safe clipboard write while its four-second deadline and recording
+ownership still hold. The feedback names verification timeout or lost reply
+rather than claiming the recording changed. If a key was posted but
 the receiver timed out or lost the result, the same retained delivery cannot be
 retried again. Check the destination manually; a later completed delivery starts
 a new retry slot. A received `auto_pasted` result preserves the existing API
@@ -177,7 +191,19 @@ Last has a four-second whole-attempt deadline plus the two-second injection
 receiver timeout. Deadline/cancellation checks run at clipboard and key-post
 boundaries, rather than only when a callback enters. A side effect already
 committed before cancellation cannot be undone; it remains owned until the
-worker exits, and an unacknowledged key post blocks duplicate retry.
+worker exits, and an unacknowledged key post blocks duplicate retry. Cancellation does not wait for native IPC:
+a clipboard write or `AXFrontmost` mutation that won commitment first is
+explicitly in flight, and can complete after cancellation. No attempt mutex is
+held during IPC or the final AX focus query. Atomic compare-and-exchange orders
+cancellation against write/activation/key-post commitment. If cancellation wins
+that atomic race, the side effect cannot start. Once an operation claims its
+state, it is explicitly in flight: its native call may start or finish after
+cancellation returns. Cancellation after a write or activation claim prevents
+a subsequent paste claim; an already committed paste still completes key-up.
+The worker retains ownership through completion and guarded cleanup. `cancelled`, `expired`,
+`already_committed`, and `operation_in_flight` are content-free stopped outcomes,
+not clipboard-write failure or target-change outcomes. They map to the existing
+unconfirmed delivery presentation and never claim a confirmed clipboard copy.
 
 ### Failure Notification
 

@@ -244,14 +244,18 @@ smart preparation), each one of `disabled`, `clipboard_only`, `normal_paste`, or
 `clipboard_only_target_changed`, `clipboard_only_focus_not_editable`,
 `clipboard_only_clipboard_changed`, `clipboard_only_paste_failed`,
 `clipboard_only_smart_target_unavailable`, `clipboard_write_failed`, or
-`unconfirmed`. The same all-build sanitizer rules apply.
+`unconfirmed`, `cancelled`, `expired`, `already_committed`, or
+`operation_in_flight`. The stopped codes preserve their actual reason and use
+the existing unconfirmed delivery presentation. The same all-build sanitizer
+rules apply.
 
 `pipeline.paste_safety` records fixed, content-free native delivery decisions.
 Its exact all-build schema has `event_code`, `phase_code`, and `outcome_code`.
 Preparation additionally requires `route_code` with the same four route values
 as `pipeline.smart_destination_delivery`. Allowed phase/outcome pairs are:
 
-- `preparation`: `ready`, `activation_requested`, `refused`, `refused_clipboard_only`;
+- `preparation`: `ready`, `activation_requested`, `refused`, `refused_clipboard_only`, `timed_out`, `reply_lost`;
+- `authority`: `cancelled`, `expired`, `already_committed`, `operation_in_flight`;
 - `post`: `key_posted` (CoreGraphics dispatch, not insertion confirmation);
 - `confirmation`: `structurally_confirmed`, `unconfirmed`, `not_observed`;
 - `rollback`: `restored`, `refused`.

@@ -1,10 +1,10 @@
 use crate::frontmost::DeliveryTargetSnapshot;
-use crate::injector::authority::{CancelOnDrop, RetrySlot};
+use crate::injector::authority::{AttemptStop, CancelOnDrop, PasteAttempt, RetrySlot};
 use crate::injector::{self, ClipboardOnlyReason, InjectionOutcome};
 use crate::{MutexExt, State};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 #[derive(Clone)]
@@ -43,6 +43,43 @@ fn retry_target_matches(
         }
         _ => false,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreparationFailure {
+    TimedOut,
+    ReplyLost,
+}
+
+impl PreparationFailure {
+    fn copied_message(self) -> &'static str {
+        match self {
+            Self::TimedOut => "Destination verification timed out. Last delivery copied to the clipboard; paste manually.",
+            Self::ReplyLost => "Destination verification did not finish. Last delivery copied to the clipboard; paste manually.",
+        }
+    }
+}
+
+fn preparation_fallback(
+    snapshot: &crate::smart_destination::Snapshot,
+    reply: Option<crate::smart_destination::PrepareOutcome>,
+) -> crate::smart_destination::Snapshot {
+    if reply == Some(crate::smart_destination::PrepareOutcome::Refused)
+        && snapshot.allows_same_app_fallback()
+    {
+        crate::smart_destination::Snapshot::Unverified
+    } else {
+        crate::smart_destination::Snapshot::Unavailable
+    }
+}
+
+fn stopped_retry(reason: AttemptStop) -> RetryResult {
+    result(RetryResultKind::Failed, match reason {
+        AttemptStop::Expired => "Paste Last expired before completion. Check the destination and clipboard before trying again.",
+        AttemptStop::Cancelled => "Paste Last was cancelled. Check the destination and clipboard before trying again.",
+        AttemptStop::AlreadyCommitted => "Paste Last already committed a shortcut. Check the destination before trying again.",
+        AttemptStop::OperationInFlight => "Paste Last still has a native operation in flight. Check the destination before trying again.",
+    })
 }
 
 #[derive(Default)]
@@ -174,6 +211,7 @@ pub(crate) async fn retry_last_delivery(
         app_handle.clone(),
         latest.smart_destination.clone(),
     );
+    let mut preparation_failure = None;
     if matches!(
         latest.smart_destination,
         crate::smart_destination::Snapshot::Target { .. }
@@ -182,9 +220,18 @@ pub(crate) async fn retry_last_delivery(
         let prepare_app = app_handle.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let worker = work.clone();
+        // Preparation expires independently. The parent retains clipboard-first
+        // authority; prepare_focused never activates or posts a shortcut.
+        let preparation_authority = Arc::new(PasteAttempt::new(
+            std::time::Duration::from_secs(1),
+            latest.recording_id,
+        ));
+        let _cancel_preparation = CancelOnDrop(&preparation_authority);
+        let preparation_worker = preparation_authority.clone();
         app_handle
             .run_on_main_thread(move || {
-                if sender.is_closed() || !worker.attempt().is_current() {
+                let _worker = worker;
+                if sender.is_closed() || !preparation_worker.is_current() {
                     return;
                 }
                 let state = prepare_app.state::<State>();
@@ -192,38 +239,39 @@ pub(crate) async fn retry_last_delivery(
                 let outcome = if dictation.status == crate::state::DictationStatus::Idle
                     && state.app_state.recording_id.load(Ordering::SeqCst) == retry_generation
                 {
-                    crate::smart_destination::prepare_focused(&preparing, Some(worker.attempt()))
+                    crate::smart_destination::prepare_focused(&preparing, Some(&preparation_worker))
                 } else {
                     crate::smart_destination::PrepareOutcome::Refused
                 };
                 let _ = sender.send(outcome);
             })
             .map_err(|error| error.to_string())?;
-        let prepared = tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await;
-        if !matches!(
-            prepared,
-            Ok(Ok(crate::smart_destination::PrepareOutcome::Ready))
-        ) {
-            // Only an explicit refusal proves no activation/commit happened.
-            // A timeout cancels the whole attempt, including work already in AX.
-            let same_app_fallback = matches!(
-                prepared,
-                Ok(Ok(crate::smart_destination::PrepareOutcome::Refused))
-            ) && latest.smart_destination.allows_same_app_fallback();
-            if !matches!(prepared, Ok(Ok(_))) {
-                work.attempt().cancel();
+        let reply = match tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await {
+            Ok(Ok(reply)) => Some(reply),
+            Err(_) => {
+                preparation_failure = Some(PreparationFailure::TimedOut);
+                None
             }
+            Ok(Err(_)) => {
+                preparation_failure = Some(PreparationFailure::ReplyLost);
+                None
+            }
+        };
+        preparation_authority.cancel();
+        if let Some(failure) = preparation_failure {
+            tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "preparation",
+                route_code = latest.smart_destination.route_code(), outcome_code = match failure {
+                    PreparationFailure::TimedOut => "timed_out", PreparationFailure::ReplyLost => "reply_lost",
+                }, "Paste safety decision");
+        }
+        if reply != Some(crate::smart_destination::PrepareOutcome::Ready) {
             let abandoned = latest.smart_destination.clone();
             let worker = work.clone();
             let _ = app_handle.run_on_main_thread(move || {
                 let _worker = worker;
                 crate::smart_destination::abort(&abandoned, None);
             });
-            latest.smart_destination = if same_app_fallback {
-                crate::smart_destination::Snapshot::Unverified
-            } else {
-                crate::smart_destination::Snapshot::Unavailable
-            };
+            latest.smart_destination = preparation_fallback(&latest.smart_destination, reply);
         }
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -233,8 +281,7 @@ pub(crate) async fn retry_last_delivery(
         .run_on_main_thread(move || {
             let state = retry_app.state::<State>();
             let dictation = state.app_state.dictation.lock_or_recover();
-            if !worker.attempt().is_current()
-                || dictation.status != crate::state::DictationStatus::Idle
+            if dictation.status != crate::state::DictationStatus::Idle
                 || state.app_state.recording_id.load(Ordering::SeqCst) != retry_generation
             {
                 crate::smart_destination::abort(&latest.smart_destination, None);
@@ -271,7 +318,8 @@ pub(crate) async fn retry_last_delivery(
             InjectionOutcome::ClipboardOnly(reason) => {
                 let message = match reason {
                     ClipboardOnlyReason::SmartTargetUnavailable => {
-                        "The original text field is no longer verified. Click your destination and press Cmd+V."
+                        preparation_failure.map(PreparationFailure::copied_message).unwrap_or(
+                            "The original text field is no longer verified. Click your destination and press Cmd+V.")
                     }
                     ClipboardOnlyReason::TargetChanged => {
                         "The original app is no longer focused. Text was copied to the clipboard."
@@ -295,6 +343,7 @@ pub(crate) async fn retry_last_delivery(
                 result(RetryResultKind::ClipboardOnly, message)
             }
             InjectionOutcome::NoText => result(RetryResultKind::Empty, "Nothing to paste yet."),
+            InjectionOutcome::Stopped(reason) => stopped_retry(reason),
         },
         Ok(Ok(None)) => result(
             RetryResultKind::Busy,
@@ -331,6 +380,53 @@ pub(crate) fn spawn_retry(app_handle: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_timeout_revokes_only_the_child_and_keeps_safe_clipboard_fallback() {
+        let slot = RetrySlot::default();
+        let parent = slot.begin(1).unwrap();
+        let child = PasteAttempt::new(std::time::Duration::ZERO, 1);
+        child.cancel();
+        let snapshot = crate::smart_destination::Snapshot::Target {
+            token: 1,
+            revision: 1,
+            identity: DeliveryTargetSnapshot::Incomplete,
+            current_app: true,
+        };
+        let fallback = preparation_fallback(&snapshot, None);
+        assert!(matches!(
+            fallback,
+            crate::smart_destination::Snapshot::Unavailable
+        ));
+        assert!(
+            !fallback.uses_normal_paste(),
+            "timeout cannot authorize a shortcut fallback"
+        );
+        let wrote = std::cell::Cell::new(false);
+        assert_eq!(parent.attempt().mutate(|| wrote.set(true)), Ok(()));
+        assert!(
+            wrote.get(),
+            "unexpired parent still owns clipboard-first fallback"
+        );
+        assert!(PreparationFailure::TimedOut
+            .copied_message()
+            .contains("timed out"));
+        assert!(PreparationFailure::ReplyLost
+            .copied_message()
+            .contains("did not finish"));
+        assert!(!PreparationFailure::TimedOut
+            .copied_message()
+            .contains("Recording changed"));
+    }
+
+    #[test]
+    fn stopped_retry_reports_failure_reason_instead_of_recording_changed_busy() {
+        for reason in [AttemptStop::Cancelled, AttemptStop::Expired] {
+            let response = stopped_retry(reason);
+            assert!(matches!(response.kind, RetryResultKind::Failed));
+            assert!(!response.message.contains("Recording changed"));
+        }
+    }
 
     #[test]
     fn empty_and_whitespace_never_replace_the_latest_delivery() {

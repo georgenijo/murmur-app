@@ -1,82 +1,152 @@
 //! Per-attempt authority shared by the async receiver and queued native work.
-//! Blocking validation runs outside the fence. Only clipboard writes and the
-//! final key-post boundary run inside it. Activation also uses the fence after
-//! its AX queries; an already-dispatched native mutation cannot be undone.
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Cancellation and side-effect commitment linearize through one atomic state.
+//! Slow validation runs before commitment; native IPC already in flight cannot
+//! be revoked. Its worker retains ownership and performs guarded cleanup.
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[derive(Default)]
-struct Status {
-    cancelled: bool,
-    posted: bool,
-    acknowledged: bool,
+const CANCELLED: u8 = 1;
+const POSTED: u8 = 2;
+const MUTATING: u8 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptStop {
+    Cancelled,
+    Expired,
+    AlreadyCommitted,
+    OperationInFlight,
+}
+
+impl AttemptStop {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+            Self::AlreadyCommitted => "already_committed",
+            Self::OperationInFlight => "operation_in_flight",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PostDecision {
+    Posted,
+    Refused,
+    Stopped(AttemptStop),
+}
+
+impl PostDecision {
+    pub(crate) fn is_posted(self) -> bool {
+        self == Self::Posted
+    }
 }
 
 pub(crate) struct PasteAttempt {
     deadline: Instant,
-    status: Mutex<Status>,
+    operation: AtomicU8,
+    acknowledged: AtomicBool,
     finished: AtomicBool,
     delivery_id: u64,
+}
+
+struct Mutation<'a>(&'a AtomicU8);
+impl Drop for Mutation<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_and(!MUTATING, Ordering::SeqCst);
+    }
 }
 
 impl PasteAttempt {
     pub(crate) fn new(timeout: Duration, delivery_id: u64) -> Self {
         Self {
             deadline: Instant::now() + timeout,
-            status: Mutex::new(Status::default()),
+            operation: AtomicU8::new(0),
+            acknowledged: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             delivery_id,
         }
     }
 
-    pub(crate) fn is_current(&self) -> bool {
-        let status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        !status.cancelled && !status.posted && Instant::now() < self.deadline
+    fn stopped(&self, state: u8) -> Option<AttemptStop> {
+        if state & CANCELLED != 0 {
+            Some(AttemptStop::Cancelled)
+        } else if Instant::now() >= self.deadline {
+            Some(AttemptStop::Expired)
+        } else if state & POSTED != 0 {
+            Some(AttemptStop::AlreadyCommitted)
+        } else if state & MUTATING != 0 {
+            Some(AttemptStop::OperationInFlight)
+        } else {
+            None
+        }
     }
 
+    pub(crate) fn stop_reason(&self) -> Option<AttemptStop> {
+        self.stopped(self.operation.load(Ordering::SeqCst))
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        self.stop_reason().is_none()
+    }
+
+    /// Never waits for clipboard, AX, focus probing, or key-up. If commitment
+    /// won the CAS first, that native operation remains explicitly in flight.
     pub(crate) fn cancel(&self) {
-        self.status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .cancelled = true;
+        self.operation.fetch_or(CANCELLED, Ordering::SeqCst);
     }
 
     pub(crate) fn acknowledge(&self) {
-        self.status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .acknowledged = true;
+        self.acknowledged.store(true, Ordering::SeqCst);
     }
 
     fn ambiguous(&self) -> bool {
-        let status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        status.posted && !status.acknowledged
+        self.operation.load(Ordering::SeqCst) & POSTED != 0
+            && !self.acknowledged.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn write<T>(&self, write: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        let status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        if status.cancelled || status.posted || Instant::now() >= self.deadline {
-            return Err("Paste attempt expired or cancelled.".into());
+    fn claim(&self, operation: u8) -> Result<(), AttemptStop> {
+        if let Some(reason) = self.stop_reason() {
+            return Err(reason);
         }
-        // Keep cancellation and this synchronous mutation ordered. Blocking
-        // validation must finish before entering this fence.
-        write()
+        self.operation
+            .compare_exchange(0, operation, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| ())
+            .map_err(|state| {
+                self.stopped(state)
+                    .expect("nonzero operation has a stop reason")
+            })
     }
 
-    pub(crate) fn post(&self, check: impl FnOnce() -> bool, post: impl FnOnce()) -> bool {
-        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        if status.cancelled || status.posted || Instant::now() >= self.deadline || !check() {
-            return false;
+    /// Clipboard writes and AX activation are synchronous native mutations.
+    /// Claim before dispatch, without holding a mutex across IPC. A cancellation
+    /// after this claim cannot undo the write/activation; the caller must keep
+    /// its worker alive through completion and guarded focus rollback.
+    pub(crate) fn mutate<T>(&self, mutate: impl FnOnce() -> T) -> Result<T, AttemptStop> {
+        self.claim(MUTATING)?;
+        let _in_flight = Mutation(&self.operation);
+        Ok(mutate())
+    }
+
+    pub(crate) fn post(&self, check: impl FnOnce() -> bool, post: impl FnOnce()) -> PostDecision {
+        if let Some(reason) = self.stop_reason() {
+            return PostDecision::Stopped(reason);
         }
-        // Even a final native check may take time. Recheck the deadline before
-        // committing; cancellation serializes with the actual key post.
-        if Instant::now() >= self.deadline {
-            return false;
+        // The bounded live AX focus query runs WITHOUT a held authority mutex.
+        let safe = check();
+        if let Some(reason) = self.stop_reason() {
+            return PostDecision::Stopped(reason);
         }
-        status.posted = true;
-        post();
-        true
+        if !safe {
+            return PostDecision::Refused;
+        }
+        match self.claim(POSTED) {
+            Ok(()) => {
+                post();
+                PostDecision::Posted
+            }
+            Err(reason) => PostDecision::Stopped(reason),
+        }
     }
 }
 
@@ -123,8 +193,8 @@ impl Drop for CancelOnDrop<'_> {
     }
 }
 
-/// Validation may block while focus changes. Always put the cheap native
-/// process/activation/clipboard checks AFTER it, at the side-effect boundary.
+/// Target-field validation may block while focus changes. The final bounded
+/// systemwide focus query and clipboard proof must follow it before commitment.
 pub(crate) fn validated_side_effect(
     validate: impl FnOnce() -> bool,
     commit: impl FnOnce() -> bool,
@@ -144,21 +214,156 @@ mod tests {
     use std::cell::Cell;
 
     #[test]
+    fn cancellation_returns_while_native_activation_is_still_in_flight() {
+        let slot = RetrySlot::default();
+        let owner = slot.begin(1).unwrap();
+        let worker = owner.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let operation = std::thread::spawn(move || {
+            worker.attempt().mutate(|| {
+                entered_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                true
+            })
+        });
+        entered_rx.recv().unwrap();
+        let cancelling = owner.clone();
+        let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
+        let canceller = std::thread::spawn(move || {
+            cancelling.attempt().cancel();
+            cancelled_tx.send(()).unwrap();
+        });
+        let immediate = cancelled_rx
+            .recv_timeout(Duration::from_millis(500))
+            .is_ok();
+        assert!(slot.begin(1).is_none());
+        resume_tx.send(()).unwrap();
+        canceller.join().unwrap();
+        assert_eq!(
+            operation.join().unwrap(),
+            Ok(true),
+            "already committed IPC completes honestly"
+        );
+        assert!(immediate, "cancel must not wait for native AXFrontmost");
+        assert_eq!(owner.attempt().stop_reason(), Some(AttemptStop::Cancelled));
+        assert_eq!(
+            owner
+                .attempt()
+                .post(|| true, || panic!("post after cancelled activation")),
+            PostDecision::Stopped(AttemptStop::Cancelled)
+        );
+    }
+
+    #[test]
+    fn cancellation_during_final_live_focus_query_prevents_commit_without_waiting() {
+        let attempt = Arc::new(PasteAttempt::new(Duration::from_secs(1), 1));
+        let worker = attempt.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let operation = std::thread::spawn(move || {
+            worker.post(
+                || {
+                    entered_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    true
+                },
+                || panic!("cancelled focus query posted"),
+            )
+        });
+        entered_rx.recv().unwrap();
+        let cancelling = attempt.clone();
+        let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
+        let canceller = std::thread::spawn(move || {
+            cancelling.cancel();
+            cancelled_tx.send(()).unwrap();
+        });
+        let immediate = cancelled_rx
+            .recv_timeout(Duration::from_millis(500))
+            .is_ok();
+        resume_tx.send(()).unwrap();
+        canceller.join().unwrap();
+        assert!(immediate, "cancel must not wait for live focus IPC");
+        assert_eq!(
+            operation.join().unwrap(),
+            PostDecision::Stopped(AttemptStop::Cancelled)
+        );
+    }
+
+    #[test]
+    fn cancellation_after_post_commit_keeps_ambiguous_retry_latched() {
+        let slot = RetrySlot::default();
+        let owner = slot.begin(1).unwrap();
+        let worker = owner.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let operation = std::thread::spawn(move || {
+            worker.attempt().post(
+                || true,
+                || {
+                    entered_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                },
+            )
+        });
+        entered_rx.recv().unwrap();
+        let cancelling = owner.clone();
+        let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
+        let canceller = std::thread::spawn(move || {
+            cancelling.attempt().cancel();
+            cancelled_tx.send(()).unwrap();
+        });
+        let immediate = cancelled_rx
+            .recv_timeout(Duration::from_millis(500))
+            .is_ok();
+        assert!(slot.begin(1).is_none());
+        resume_tx.send(()).unwrap();
+        canceller.join().unwrap();
+        assert!(
+            immediate,
+            "cancel must not wait for key-up after commitment"
+        );
+        assert_eq!(operation.join().unwrap(), PostDecision::Posted);
+        drop(owner);
+        assert!(slot.begin(1).is_none());
+        assert!(slot.begin(2).is_some());
+    }
+
+    #[test]
+    fn stop_reasons_are_typed_and_mutation_does_not_clear_cancellation() {
+        let expired = PasteAttempt::new(Duration::ZERO, 1);
+        assert_eq!(
+            expired.mutate::<()>(|| panic!("expired activation")),
+            Err(AttemptStop::Expired)
+        );
+        assert_eq!(
+            expired.post(|| true, || panic!("expired post")),
+            PostDecision::Stopped(AttemptStop::Expired)
+        );
+        let cancelled = PasteAttempt::new(Duration::from_secs(1), 1);
+        cancelled.cancel();
+        assert_eq!(
+            cancelled.mutate::<()>(|| panic!("cancelled activation")),
+            Err(AttemptStop::Cancelled)
+        );
+    }
+
+    #[test]
     fn timeout_before_queued_execution_prevents_clipboard_and_post() {
         let attempt = PasteAttempt::new(Duration::from_secs(1), 1);
         attempt.cancel();
         assert!(attempt
-            .write::<()>(|| panic!("stale clipboard write"))
+            .mutate::<()>(|| panic!("stale clipboard write"))
             .is_err());
-        assert!(!attempt.post(|| true, || panic!("stale post")));
+        assert!(!attempt.post(|| true, || panic!("stale post")).is_posted());
     }
 
     #[test]
     fn deadline_before_execution_needs_no_receiver_flag() {
         let attempt = PasteAttempt::new(Duration::ZERO, 1);
         assert!(!attempt.is_current());
-        assert!(attempt.write(|| Ok(())).is_err());
-        assert!(!attempt.post(|| true, || panic!("expired post")));
+        assert!(attempt.mutate(|| ()).is_err());
+        assert!(!attempt.post(|| true, || panic!("expired post")).is_posted());
     }
 
     #[test]
@@ -169,7 +374,7 @@ mod tests {
                 attempt.cancel();
                 true
             },
-            || attempt.post(|| true, || panic!("late post"))
+            || attempt.post(|| true, || panic!("late post")).is_posted()
         ));
     }
 
@@ -177,7 +382,7 @@ mod tests {
     fn cancellation_before_clipboard_is_checked_after_validation() {
         let attempt = PasteAttempt::new(Duration::from_secs(1), 1);
         attempt.cancel();
-        assert!(attempt.write(|| Ok(())).is_err());
+        assert!(attempt.mutate(|| ()).is_err());
     }
 
     #[test]
@@ -201,24 +406,30 @@ mod tests {
                 clipboard.set(2);
                 true
             },
-            || attempt.post(|| clipboard.get() == 1, || panic!("changed clipboard"))
+            || attempt
+                .post(|| clipboard.get() == 1, || panic!("changed clipboard"))
+                .is_posted()
         ));
     }
 
     #[test]
     fn cancellation_after_clipboard_prevents_post() {
         let attempt = PasteAttempt::new(Duration::from_secs(1), 1);
-        assert!(attempt.write(|| Ok(())).is_ok());
+        assert!(attempt.mutate(|| ()).is_ok());
         attempt.cancel();
-        assert!(!attempt.post(|| true, || panic!("cancelled post")));
+        assert!(!attempt
+            .post(|| true, || panic!("cancelled post"))
+            .is_posted());
     }
 
     #[test]
     fn a_post_is_one_shot() {
         let attempt = PasteAttempt::new(Duration::from_secs(1), 1);
-        assert!(attempt.post(|| true, || {}));
-        assert!(!attempt.post(|| true, || panic!("duplicate post")));
-        assert!(attempt.write(|| Ok(())).is_err());
+        assert!(attempt.post(|| true, || {}).is_posted());
+        assert!(!attempt
+            .post(|| true, || panic!("duplicate post"))
+            .is_posted());
+        assert!(attempt.mutate(|| ()).is_err());
     }
 
     #[test]
@@ -239,6 +450,7 @@ mod tests {
                     worker
                         .attempt()
                         .post(|| true, || panic!("timed-out worker posted"))
+                        .is_posted()
                 },
             )
         });
@@ -258,7 +470,7 @@ mod tests {
             let _cancel = CancelOnDrop(&attempt);
         }
         assert!(!attempt.is_current());
-        assert!(attempt.write(|| Ok(())).is_err());
+        assert!(attempt.mutate(|| ()).is_err());
     }
 
     #[test]
@@ -278,7 +490,7 @@ mod tests {
     fn ambiguous_post_blocks_duplicate_retry_until_a_new_delivery() {
         let slot = RetrySlot::default();
         let owner = slot.begin(1).unwrap();
-        assert!(owner.attempt().post(|| true, || {}));
+        assert!(owner.attempt().post(|| true, || {}).is_posted());
         owner.attempt().cancel();
         drop(owner);
         assert!(slot.begin(1).is_none());
@@ -289,7 +501,7 @@ mod tests {
     fn acknowledged_post_allows_a_later_explicit_retry() {
         let slot = RetrySlot::default();
         let owner = slot.begin(1).unwrap();
-        assert!(owner.attempt().post(|| true, || {}));
+        assert!(owner.attempt().post(|| true, || {}).is_posted());
         owner.attempt().acknowledge();
         drop(owner);
         assert!(slot.begin(1).is_some());
