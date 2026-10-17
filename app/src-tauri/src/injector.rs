@@ -403,16 +403,6 @@ fn write_caption_to(dir: &std::path::Path, text: &str) -> bool {
 
 /// Exact-field delivery for the opt-in mode. The destination module chooses
 /// its transport once and never falls through to the ordinary paste route.
-pub(crate) fn inject_with_destination(
-    text: &str,
-    auto_paste: bool,
-    delay_ms: u64,
-    target: &crate::frontmost::DeliveryTargetSnapshot,
-    smart: &crate::smart_destination::Snapshot,
-) -> Result<InjectionResult, String> {
-    inject_with_destination_authorized(text, auto_paste, delay_ms, target, smart, None)
-}
-
 pub(crate) fn inject_with_destination_authorized(
     text: &str,
     auto_paste: bool,
@@ -468,15 +458,6 @@ pub(crate) fn inject_with_destination_authorized(
 /// accepted recording transition. Target verification is repeated after the
 /// focused-field query and before either key post, closing focus changes during
 /// those potentially blocking operations.
-pub(crate) fn inject_text(
-    text: &str,
-    auto_paste: bool,
-    delay_ms: u64,
-    delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
-) -> Result<InjectionResult, String> {
-    inject_text_with_policy(text, auto_paste, delay_ms, delivery_target, false, None)
-}
-
 /// `refuse_secure` keeps a positively secure focused field clipboard-only.
 fn inject_text_with_policy(
     text: &str,
