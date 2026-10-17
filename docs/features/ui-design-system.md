@@ -92,9 +92,11 @@ assistive activation follows the same path without requiring a physical press.
 Cancellation disarms rather than confirming. Generated clicks from an already
 handled press must not add a second activation.
 
-Settings range controls have an associated label. Paste Delay commits each value
-change through the settings persistence callback, including keyboard and
-assistive changes without a pointer release, and exposes its value in milliseconds.
+Settings range controls have an associated label. Paste Delay exposes its draft
+value in milliseconds and coalesces pointer-drag steps into one settings commit
+on release. Blur, pointer cancellation/capture loss, window blur, and unmount
+also save the final visible draft once. Keyboard and assistive value changes
+without a pointer drag persist immediately.
 
 ## Review and verification
 

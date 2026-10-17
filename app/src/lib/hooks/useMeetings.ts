@@ -42,12 +42,15 @@ import {
 
 const EMPTY_PAGE: MeetingPage = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
 const MAX_LIVE_SEGMENTS = 200;
+const MAX_MEETING_PAGE_SIZE = 100; // Rust's per-request clamp; loaded windows can span requests.
 
 export function useMeetings(settings: Settings) {
   const [status, setStatus] = useState<MeetingRuntimeStatus>(IDLE_MEETING_STATUS);
   const [permission, setPermission] = useState<SystemAudioPermissionState>('unknown');
   const [access, setAccess] = useState<SystemAudioAccess | null>(null);
   const [page, setPage] = useState<MeetingPage>(EMPTY_PAGE);
+  const pageRef = useRef<MeetingPage>(EMPTY_PAGE);
+  const loadedWindowRef = useRef<{ query: string; pageSize: number; pages: number } | null>(null);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [liveSegments, setLiveSegments] = useState<MeetingSegment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,6 +70,14 @@ export function useMeetings(settings: Settings) {
   const terminalReceiptRef = useRef<string | null>(null);
 
   const refresh = useCallback(async (query = queryRef.current) => {
+    const previous = loadedWindowRef.current;
+    const sameFilter = previous?.query === query.trim();
+    let pageSize = sameFilter ? previous.pageSize : EMPTY_PAGE.limit;
+    const pages = sameFilter ? previous.pages : 1;
+    let targetRows = pages * pageSize;
+    // Only retain a selection that belonged to this visible filter/window.
+    const selected = sameFilter && pageRef.current.sessions.some((session) => session.id === selectedIdRef.current)
+      ? selectedIdRef.current : null;
     queryRef.current = query;
     const ticket = ++searchTicketRef.current;
     listRequestRef.current = 'refresh';
@@ -75,12 +86,39 @@ export function useMeetings(settings: Settings) {
     setHasMore(false);
     setLoading(true);
     try {
-      const next = await listMeetings(query);
-      if (ticket !== searchTicketRef.current) return;
+      // Rebuild from offset zero so deleted rows cannot leave holes between an
+      // old prefix and a new page. Publish the entire replacement atomically.
+      const sessions = new Map<string, MeetingPage['sessions'][number]>();
+      let searchMatches: MeetingPage['searchMatches'] = {};
+      let offset = 0;
+      let total = 0;
+      let more = false;
+      do {
+        const limit = Math.min(MAX_MEETING_PAGE_SIZE, Math.max(pageSize, targetRows - offset));
+        const next = offset === 0 && limit === EMPTY_PAGE.limit
+          ? await listMeetings(query)
+          : await listMeetings(query, offset, limit);
+        if (ticket !== searchTicketRef.current) return;
+        if (offset === 0 && !sameFilter) {
+          pageSize = Math.min(MAX_MEETING_PAGE_SIZE, Math.max(1, next.limit));
+          targetRows = pageSize;
+        }
+        next.sessions.forEach((session) => sessions.set(session.id, session));
+        searchMatches = { ...searchMatches, ...next.searchMatches };
+        offset += next.sessions.length;
+        total = next.total;
+        more = next.sessions.length > 0 && offset < total;
+        // New sessions can move the selected row just beyond the old window.
+        if (more && offset >= targetRows && selected && selectedIdRef.current === selected && !sessions.has(selected)) {
+          targetRows += pageSize;
+        }
+      } while (more && offset < targetRows);
+      const next = { sessions: [...sessions.values()], searchMatches, total, offset: 0, limit: pageSize };
+      pageRef.current = next;
       setPage(next);
-      const offset = next.offset + next.sessions.length;
-      pageCursorRef.current = { offset, limit: next.limit };
-      setHasMore(next.sessions.length > 0 && offset < next.total);
+      loadedWindowRef.current = { query: query.trim(), pageSize, pages: Math.ceil(targetRows / pageSize) };
+      pageCursorRef.current = { offset, limit: pageSize };
+      setHasMore(more);
       setAppliedQuery(query.trim());
       setError(null);
     } catch (cause) {
@@ -100,21 +138,24 @@ export function useMeetings(settings: Settings) {
     listRequestRef.current = 'more';
     setLoadingMore(true);
     try {
-      const next = await listMeetings(queryRef.current, cursor.offset, cursor.limit);
+      const next = await listMeetings(queryRef.current, cursor.offset, Math.min(MAX_MEETING_PAGE_SIZE, cursor.limit));
       if (ticket !== searchTicketRef.current) return;
       // Advance by fetched rows, not unique rows: insertions can make adjacent
       // offset pages overlap. A refresh replaces the prefix and invalidates it.
       const offset = next.offset + next.sessions.length;
       pageCursorRef.current = { offset, limit: next.limit };
       setHasMore(next.sessions.length > 0 && offset < next.total);
-      setPage((current) => {
-        const sessions = new Map(current.sessions.map((session) => [session.id, session]));
-        next.sessions.forEach((session) => sessions.set(session.id, session));
-        return {
-          ...current, total: next.total, sessions: [...sessions.values()],
-          searchMatches: { ...current.searchMatches, ...next.searchMatches },
-        };
-      });
+      const current = pageRef.current;
+      const sessions = new Map(current.sessions.map((session) => [session.id, session]));
+      next.sessions.forEach((session) => sessions.set(session.id, session));
+      const merged = {
+        ...current, total: next.total, sessions: [...sessions.values()],
+        searchMatches: { ...current.searchMatches, ...next.searchMatches },
+      };
+      pageRef.current = merged;
+      setPage(merged);
+      const loaded = loadedWindowRef.current;
+      if (loaded) loadedWindowRef.current = { ...loaded, pages: loaded.pages + 1 };
       setError(null);
     } catch (cause) {
       if (ticket === searchTicketRef.current) setError(String(cause));

@@ -403,6 +403,48 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector<HTMLInputElement>('input[type="range"]')!.value).toBe('80');
   });
 
+  it('coalesces all pointer-drag input steps into one final Paste Delay commit', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true }, { page: 'delivery', token: 1 }));
+    const slider = container.querySelector<HTMLInputElement>('input[type="range"]')!;
+    await act(async () => slider.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 7, button: 0, isPrimary: true, bubbles: true })));
+    for (let value = 10; value <= 500; value += 10) {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(slider, String(value));
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+    expect(slider.value).toBe('500');
+    expect(slider.getAttribute('aria-valuetext')).toBe('500 milliseconds');
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+    await act(async () => slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, button: 0, bubbles: true })));
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+    await act(async () => slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, button: 0, bubbles: true })));
+    expect(onUpdateSettings).toHaveBeenCalledExactlyOnceWith({ autoPasteDelayMs: 500 });
+    await act(async () => slider.dispatchEvent(new Event('input', { bubbles: true })));
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['blur', 'pointercancel', 'lostpointercapture', 'window-blur', 'outside-release', 'unmount'])('flushes a Paste Delay draft once on %s', async (ending) => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true }, { page: 'delivery', token: 1 }));
+    const slider = container.querySelector<HTMLInputElement>('input[type="range"]')!;
+    await act(async () => slider.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 7, button: 0, isPrimary: true, bubbles: true })));
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(slider, '120');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+    await act(async () => {
+      if (ending === 'unmount') renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true }, { page: 'general', token: 2 });
+      else if (ending === 'blur') slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      else if (ending === 'window-blur') window.dispatchEvent(new Event('blur'));
+      else if (ending === 'outside-release') window.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, button: 0 }));
+      else slider.dispatchEvent(new PointerEvent(ending, { pointerId: 7, bubbles: true }));
+    });
+    expect(onUpdateSettings).toHaveBeenCalledExactlyOnceWith({ autoPasteDelayMs: 120 });
+    await act(async () => slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, button: 0, bubbles: true })));
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
+  });
+
   it('commits keyboard changes to voice-detection sensitivity', async () => {
     const recording = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Recording',

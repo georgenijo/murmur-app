@@ -20,8 +20,14 @@ one-line preview, and a status badge only when the session did not complete.
 Search runs as you type across all retained meetings, including older sessions
 not yet displayed. The list starts with 50 sessions; **Load more meetings**
 appends the next page for the same search and announces loading/results to
-assistive technology. A search or refresh (including deletion) replaces the list
-with its first page, invalidates pending page requests, and resets pagination.
+assistive technology. A changed search filter starts at the first page. Other
+refreshes, including background events, saves, and deletion, retain the number
+of loaded pages. They rebuild that range from offset zero in requests of at most
+100 sessions, filling gaps after deletions, and publish it together after all
+requests succeed. The old range stays visible while refreshing or on failure.
+A previously visible selection remains in the refreshed range; if insertions
+move it past that range, refresh extends the range until it finds the selection
+or reaches the end. A newer refresh/search invalidates every older page request.
 Overlapping rows are deduplicated by session ID. Long titles ellipsize separately
 from their status badges.
 
