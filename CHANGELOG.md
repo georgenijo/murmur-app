@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.15] - 2026-10-17
+
 ### Fixed
 
 - Ignore secondary mouse buttons on Delete All controls and support assistive
