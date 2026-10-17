@@ -2310,7 +2310,7 @@ mod tests {
         let codepoint = content.iter().position(|byte| *byte == 0xc3).unwrap();
         // Align the first backward chunk exactly on the second byte of é.
         let padding = JSONL_TAIL_CHUNK_BYTES - (content.len() - codepoint);
-        content.extend(std::iter::repeat(b' ').take(padding));
+        content.extend(std::iter::repeat_n(b' ', padding));
         content.push(b'\n');
         assert_eq!(content.len() - JSONL_TAIL_CHUNK_BYTES, codepoint + 1);
         let events = read_jsonl_tail(&mut std::io::Cursor::new(content), 1).unwrap();
