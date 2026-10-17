@@ -33,7 +33,7 @@ const COOLDOWN_MS: u128 = 50;
 /// Cooldown after hold-down stop to prevent accidental re-trigger
 const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
 
-/// Warn if the active listener sees no callbacks for this long.
+/// Report callback inactivity after this duration; it is not a health check.
 const TAP_SILENCE_WARNING_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -850,15 +850,10 @@ fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &Event
 
 // -- Both-mode arbitration state --
 
-/// Monotonic counter to invalidate stale hold-promotion timers.
-static HOLD_PRESS_COUNTER: AtomicU64 = AtomicU64::new(0);
-/// Set to true by the timer thread when it promotes a press to a real hold.
-static HOLD_PROMOTED: AtomicBool = AtomicBool::new(false);
-/// The current hold was promoted while a recording it did not start was
-/// already running. Decided at promotion from the backend's own dictation
-/// state (the frontend-synced double-tap flag can lag a fresh start), and
-/// stored before `HOLD_PROMOTED`.
-static HOLD_OVER_RECORDING: AtomicBool = AtomicBool::new(false);
+mod hold_promotion;
+use hold_promotion::HoldPromotion;
+
+static HOLD_PROMOTION: HoldPromotion = HoldPromotion::new();
 
 /// Whether a promoted hold ending with `event_type` stops the recording. A
 /// hold promoted over a running recording did not start it: the held key is
@@ -909,8 +904,7 @@ pub fn set_processing(processing: bool) {
     if !was_processing && processing {
         // Entering processing: invalidate any pending hold-promotion timer
         // so it can't fire hold-down-start during active processing.
-        HOLD_PROMOTED.store(false, Ordering::SeqCst);
-        HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+        HOLD_PROMOTION.invalidate();
         if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
             if let Some(d) = det.as_mut() {
                 d.reset();
@@ -942,8 +936,7 @@ pub fn set_processing(processing: bool) {
                 d.last_fired_at = Some(Instant::now());
             }
         }
-        HOLD_PROMOTED.store(false, Ordering::SeqCst);
-        HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+        HOLD_PROMOTION.invalidate();
     }
 }
 
@@ -960,8 +953,7 @@ pub fn set_app_disabled(disabled: bool) {
     let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
-        HOLD_PROMOTED.store(false, Ordering::SeqCst);
-        HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+        HOLD_PROMOTION.invalidate();
         if let Ok(mut det) = HOLD_DOWN_DETECTOR.lock() {
             if let Some(d) = det.as_mut() {
                 d.reset();
@@ -1122,6 +1114,7 @@ fn handle_paste_last_chord(event_type: &EventType) -> bool {
 ///
 /// `mode` should be `"double_tap"`, `"hold_down"`, or `"both"`.
 pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
+    HOLD_PROMOTION.invalidate();
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
 
@@ -1345,8 +1338,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         None
                     };
                     // Invalidate pending hold-promotion timers
-                    HOLD_PROMOTED.store(false, Ordering::SeqCst);
-                    HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
+                    HOLD_PROMOTION.invalidate();
 
                     tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
                     let _ = handle.emit(
@@ -1660,64 +1652,58 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             HoldDownEvent::Start => {
                                 // Don't emit hold-down-start yet — start a timer.
                                 // The timer will promote after MAX_HOLD_DURATION_MS.
-                                HOLD_PROMOTED.store(false, Ordering::SeqCst);
-                                HOLD_OVER_RECORDING.store(false, Ordering::SeqCst);
-                                let press_id =
-                                    HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
+                                let press_id = HOLD_PROMOTION.begin();
                                 let timer_handle = handle.clone();
                                 std::thread::spawn(move || {
                                     std::thread::sleep(std::time::Duration::from_millis(
                                         MAX_HOLD_DURATION_MS as u64,
                                     ));
-                                    if HOLD_PRESS_COUNTER.load(Ordering::SeqCst) == press_id {
-                                        let still_held = {
-                                            let det = HOLD_DOWN_DETECTOR
-                                                .lock()
-                                                .unwrap_or_else(|p| p.into_inner());
-                                            det.as_ref()
-                                                .map(|d| d.state == HoldState::Held)
-                                                .unwrap_or(false)
-                                        };
-                                        if still_held && dictation_in_flight(&timer_handle) {
-                                            // Already recording: the hold starts nothing, but a
-                                            // physical hold still pauses silence auto-stop.
-                                            HOLD_OVER_RECORDING.store(true, Ordering::SeqCst);
-                                            HOLD_PROMOTED.store(true, Ordering::SeqCst);
-                                            tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-start");
-                                            let _ =
-                                                timer_handle.emit("hold-over-recording-start", ());
-                                        } else if still_held {
-                                            HOLD_PROMOTED.store(true, Ordering::SeqCst);
-                                            tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
-                                            let _ = timer_handle.emit("hold-down-start", ());
-                                        }
-                                    }
+                                    // Never hold the promotion lock while acquiring the
+                                    // backend dictation lock: backend transitions invalidate
+                                    // pending timers too.
+                                    let over_recording = dictation_in_flight(&timer_handle);
+                                    HOLD_PROMOTION.promote(
+                                        press_id,
+                                        over_recording,
+                                        || {
+                                            listener_context_matches(DetectorMode::Both, listener_generation)
+                                                && !IS_PROCESSING.load(Ordering::SeqCst)
+                                                && !APP_DISABLED.load(Ordering::SeqCst)
+                                                && HOLD_DOWN_DETECTOR.lock_or_recover()
+                                                    .as_ref().is_some_and(|d| d.state == HoldState::Held)
+                                        },
+                                        || {
+                                            if over_recording {
+                                                tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-start");
+                                                let _ = timer_handle.emit("hold-over-recording-start", ());
+                                            } else {
+                                                tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
+                                                let _ = timer_handle.emit("hold-down-start", ());
+                                            }
+                                        },
+                                    );
                                 });
                             }
                             HoldDownEvent::Stop => {
-                                let promoted = HOLD_PROMOTED.load(Ordering::SeqCst);
-                                HOLD_PROMOTED.store(false, Ordering::SeqCst);
-                                // Invalidate any pending timer
-                                HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-                                if promoted
-                                    && !promoted_hold_stops_recording(
-                                        HOLD_OVER_RECORDING.load(Ordering::SeqCst),
-                                        &event.event_type,
-                                    )
-                                {
-                                    tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-end (combo; recording continues)");
-                                    let _ = handle.emit("hold-over-recording-end", ());
-                                } else if promoted {
-                                    // Recorder transitions are serialized, so a stop safely
-                                    // waits for an in-flight start even on an immediate release.
-                                    tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
-                                    let _ = handle.emit("hold-down-stop", ());
-                                } else if dtap_fired {
-                                    // Double-tap completed
-                                    tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
-                                    let _ = handle.emit("double-tap-toggle", ());
-                                } else {
+                                let handled = HOLD_PROMOTION.finish(|promoted| {
+                                    if let Some(over_recording) = promoted {
+                                        if !promoted_hold_stops_recording(over_recording, &event.event_type) {
+                                            tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-end (combo; recording continues)");
+                                            let _ = handle.emit("hold-over-recording-end", ());
+                                        } else {
+                                            tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
+                                            let _ = handle.emit("hold-down-stop", ());
+                                        }
+                                        true
+                                    } else if dtap_fired {
+                                        tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
+                                        let _ = handle.emit("double-tap-toggle", ());
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                                if !handled {
                                     log_rejection(
                                         RejectionReason::SingleShortTapNoop,
                                         mode,
@@ -1774,7 +1760,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         event_code = "keyboard.listener_silent",
                         silent_for_ms = silent_for_ms,
                         threshold_ms = TAP_SILENCE_WARNING_MS,
-                        "listener heartbeat — no rdev callbacks observed"
+                        "keyboard callbacks idle — inactivity alone does not establish listener failure"
                     );
                 }
                 tracing::trace!(target: "keyboard", "listener heartbeat — active");
@@ -1904,13 +1890,14 @@ pub fn stop_listener() {
             d.reset();
         }
     }
-    HOLD_PROMOTED.store(false, Ordering::SeqCst);
-    HOLD_PRESS_COUNTER.fetch_add(1, Ordering::SeqCst); // invalidate pending timers
+    HOLD_PROMOTION.invalidate();
 }
 
 /// Update the target key without stopping/restarting the listener.
 /// Returns `true` if a hold-down stop event should be emitted (key changed while held).
 pub fn set_target_key(hotkey: &str) -> bool {
+    HOLD_PROMOTION.invalidate();
+    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
     let mode = {
         let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
@@ -3116,7 +3103,7 @@ mod tests {
 
     /// Simulate the Both-mode deferred-hold arbitration logic.
     /// `promoted` simulates whether the timer thread promoted the press
-    /// to a real hold (i.e. HOLD_PROMOTED was true).
+    /// to a real hold.
     fn both_handle_event(
         hold: &mut HoldDownDetector,
         dtap: &mut DoubleTapDetector,
@@ -3127,7 +3114,7 @@ mod tests {
     }
 
     /// `over_recording` simulates a hold the timer promoted while a recording
-    /// it did not start was already running (HOLD_OVER_RECORDING).
+    /// it did not start was already running.
     fn both_handle_event_over(
         hold: &mut HoldDownDetector,
         dtap: &mut DoubleTapDetector,

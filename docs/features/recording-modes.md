@@ -48,7 +48,7 @@ Held → KeyRelease(target) → Idle (emit hold-down-stop)
 - **Trigger key + another non-modifier** (for example Shift+A or F8+A): Cancels hold, emits stop
 - **Shortcut modifier held before a function key** (for example Command, then F8): Ignored while idle; Fn remains allowed for Apple function-key rows
 - **Shortcut modifier pressed during a function-key hold**: Cancels the hold and emits stop if recording already started
-- **Cooldown**: 300ms after stop before re-trigger is allowed
+- **Cooldown**: 50ms after stop before re-trigger is allowed
 
 ### Code Path
 
@@ -127,6 +127,17 @@ buffer drives the `Recording` transition.
 The hold/toggle origin is latched across `Starting` and resets after either a
 normal recording end or a pre-readiness cancellation. Model preparation begins
 when startup is accepted so model loading still overlaps microphone latency.
+
+### Both-mode promotion ordering
+
+The 200ms hold promotion and key release share one arbitration lock through
+start/stop event publication. A release before promotion invalidates the timer;
+a release after promotion publishes its stop after the start. Listener changes,
+Escape, processing transitions, and disabling the app invalidate pending presses.
+A timer also checks the listener generation and current held state. Reading
+backend recording status happens outside this lock to avoid reversing the
+backend-to-keyboard lock order. Hold timing and shortcut-combination behavior
+are unchanged.
 
 ### Threading
 
