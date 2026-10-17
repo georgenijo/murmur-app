@@ -276,8 +276,8 @@ fail-closed.
 If a newer delivery stops or loses its reply after it may have written the
 clipboard, Murmur clears older retained retry text. Paste Last must not replay
 the previous recording while the clipboard may contain the newer one. A late
-uncertain completion never clears a subsequently retained recording; the text
-of an uncertain delivery remains recoverable from History.
+uncertain completion never clears a subsequently retained recording. Use
+History to recover a completed transcription.
 
 The latest nonempty final text that completed clipboard delivery is retained in
 one process-memory slot with its immutable delivery target. The command palette,
