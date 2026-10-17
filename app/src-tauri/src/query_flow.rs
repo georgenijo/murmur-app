@@ -1068,6 +1068,14 @@ impl QueryCoordinator {
         self.is_active(pass_id) && self.status() == QueryStatus::Listening
     }
 
+    /// Called with the backend held; status contention must skip, never wait.
+    fn is_listening_if_uncontended(&self, pass_id: u64) -> bool {
+        let Some(status) = self.status.try_lock_or_recover() else {
+            return false;
+        };
+        self.is_active(pass_id) && *status == QueryStatus::Listening
+    }
+
     fn try_begin_partial(&self, pass_id: u64) -> bool {
         self.is_listening(pass_id)
             && self
@@ -3167,7 +3175,7 @@ fn transcribe_query_partial(
         .model_runtime
         .try_with_ready_backend(
             &transcription.model_name,
-            || state.query.is_listening(pass_id),
+            || state.query.is_listening_if_uncontended(pass_id),
             |backend| {
                 backend.transcribe_preview(
                     &samples,
@@ -6379,6 +6387,52 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
 
         let short: Vec<f32> = (0..PARTIAL_MIN_SAMPLES).map(|index| index as f32).collect();
         assert_eq!(partial_decode_window(&short), short.as_slice());
+    }
+
+    #[test]
+    fn preview_ownership_skips_contended_query_status_before_it_is_released() {
+        let query = Arc::new(QueryCoordinator::default());
+        let pass_id = query.allocate_keyboard_pass().unwrap();
+        query.set_status(pass_id, QueryStatus::Listening);
+        let status = query.status.lock_or_recover();
+        let worker_query = query.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(worker_query.is_listening_if_uncontended(pass_id))
+                .unwrap();
+        });
+        let completed_while_status_held = rx.recv_timeout(Duration::from_secs(1));
+        drop(status); // Release even on regression, so the test does not hang.
+        worker.join().unwrap();
+        assert_eq!(completed_while_status_held.unwrap(), false);
+        assert!(query.is_listening_if_uncontended(pass_id));
+        query.set_status(pass_id, QueryStatus::Transcribing);
+        assert!(!query.is_listening_if_uncontended(pass_id));
+    }
+
+    #[test]
+    fn preview_ownership_recovers_query_status_poison_and_keeps_pass_fences() {
+        let query = QueryCoordinator::default();
+        let first = query.allocate_keyboard_pass().unwrap();
+        query.set_status(first, QueryStatus::Listening);
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _status = query.status.lock_or_recover();
+            panic!("intentional query-status poison");
+        }));
+        assert!(poisoned.is_err() && query.status.is_poisoned());
+        assert!(query.is_listening_if_uncontended(first));
+        assert!(!query.is_listening_if_uncontended(0));
+        query.set_status(first, QueryStatus::Ready);
+        let second = query.allocate_keyboard_pass().unwrap();
+        query.set_status(second, QueryStatus::Listening);
+        assert!(!query.is_listening_if_uncontended(first));
+        assert!(query.is_listening_if_uncontended(second));
+        query.begin_cancel(second);
+        assert!(!query.is_listening_if_uncontended(second));
+        assert!(
+            query.status.is_poisoned(),
+            "recovery must not depend on clearing poison"
+        );
     }
 
     #[test]

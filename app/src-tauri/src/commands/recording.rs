@@ -109,6 +109,21 @@ fn dictation_partial_is_current(app_state: &AppState, recording_id: u64) -> bool
         && !app_state.is_cancelled(recording_id)
 }
 
+/// Called with the backend held: never wait on the status lock, since idle
+/// unload holds status while acquiring that backend in the opposite order.
+pub(crate) fn dictation_partial_is_current_if_uncontended(
+    app_state: &AppState,
+    recording_id: u64,
+) -> bool {
+    let Some(dictation) = app_state.dictation.try_lock_or_recover() else {
+        return false;
+    };
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && dictation.status == DictationStatus::Recording
+        && !app_state.is_cancelled(recording_id)
+}
+
 fn note_nonempty_dictation_preview(app_state: &AppState, recording_id: u64) {
     if dictation_partial_is_current(app_state, recording_id) {
         // A late old worker cannot overwrite evidence already owned by a newer ID.
@@ -304,7 +319,7 @@ async fn decode_one_dictation_partial(
                 .model_runtime
                 .try_with_ready_backend(
                     &transcription.model_name,
-                    || dictation_partial_is_current(&state.app_state, recording_id),
+                    || dictation_partial_is_current_if_uncontended(&state.app_state, recording_id),
                     |backend| {
                         backend.transcribe_preview(
                             &window,

@@ -768,6 +768,7 @@ impl ModelRuntimeManager {
 
     /// Opportunistic display-only inference: never queue or load/switch models.
     /// Revalidate ownership under the backend lock immediately before decode.
+    /// That callback must not block on any other ownership/status lock.
     pub(crate) fn try_with_ready_backend<T>(
         &self,
         model_name: &str,
@@ -778,8 +779,8 @@ impl ModelRuntimeManager {
         else {
             return Ok(None);
         };
-        // Fail closed on poison as well as contention; a final pass owns recovery.
-        let Ok(mut inner) = self.inner.try_lock() else {
+        // Recover poison consistently with final passes; skip only contention.
+        let Some(mut inner) = self.inner.try_lock_or_recover() else {
             return Ok(None);
         };
         if inner.active_model.as_deref() != Some(model_name)
@@ -1233,6 +1234,83 @@ mod tests {
                 .unwrap(),
             Some(7)
         );
+    }
+
+    #[test]
+    fn preview_skips_status_contention_under_backend_and_allows_idle_unload() {
+        let manager = Arc::new(fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        ));
+        manager
+            .prepare(None, "fake-translation", PreparationReason::Recording)
+            .unwrap();
+        let state = Arc::new(crate::state::AppState::default());
+        state.recording_id.store(41, Ordering::SeqCst);
+        state.dictation.lock_or_recover().status = crate::state::DictationStatus::Recording;
+        let mut status = state.dictation.lock_or_recover();
+        // Model the idle unload side of the inversion: status is already held
+        // while a previously scheduled preview acquires the backend.
+        status.status = crate::state::DictationStatus::Idle;
+        state.cancel_recording(41);
+        let worker_manager = manager.clone();
+        let worker_state = state.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            tx.send(worker_manager.try_with_ready_backend(
+                "fake-translation",
+                || {
+                    assert!(
+                        worker_manager.inner.try_lock_or_recover().is_none(),
+                        "owner check must execute with backend held"
+                    );
+                    crate::commands::recording::dictation_partial_is_current_if_uncontended(
+                        &worker_state,
+                        41,
+                    )
+                },
+                |_| panic!("contended ownership must never decode"),
+            ))
+            .unwrap();
+        });
+        let completed_while_status_held = rx.recv_timeout(Duration::from_secs(1));
+        if completed_while_status_held.is_ok() {
+            // Idle unload can now take the backend without releasing status.
+            assert!(manager
+                .unload(None, UnloadReason::IdleTimeout)
+                .unwrap()
+                .is_some());
+        }
+        drop(status); // Unstick a regressed blocking check before asserting.
+        worker.join().unwrap();
+        assert_eq!(completed_while_status_held.unwrap().unwrap(), None::<()>);
+    }
+
+    #[test]
+    fn preview_recovers_poisoned_backend_repeatedly_without_clearing_poison() {
+        let manager = fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+        manager
+            .prepare(None, "fake-translation", PreparationReason::Recording)
+            .unwrap();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _backend = manager.inner.lock_or_recover();
+            panic!("intentional backend poison");
+        }));
+        assert!(poisoned.is_err() && manager.inner.is_poisoned());
+        for _ in 0..2 {
+            assert_eq!(
+                manager
+                    .try_with_ready_backend("fake-translation", || true, |_| Ok(7))
+                    .unwrap(),
+                Some(7)
+            );
+            assert!(manager.inner.is_poisoned());
+        }
     }
 
     #[test]
