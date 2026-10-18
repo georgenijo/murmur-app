@@ -359,9 +359,9 @@ pub(crate) fn app_transition_snapshot() -> AppTransitionSnapshot {
 
 /// Register app-lifetime, content-free transition counters. Observer callbacks
 /// deliberately do no native lookup and capture no application identity. They
-/// also nudge the overlay placement worker (a non-blocking channel send), which
-/// does its own debounced sampling elsewhere, so a changed frontmost
-/// application's menus or a Space switch re-resolve the overlay placement.
+/// also nudge the overlay placement worker (a non-blocking channel send) to
+/// re-measure menu-bar visibility, which an app activation or a fullscreen
+/// Space can change. The overlay's centred x never depends on the app.
 #[cfg(target_os = "macos")]
 pub(crate) fn register_delivery_transition_observers() {
     use crate::commands::overlay::{request_placement_refresh, PlacementTrigger};

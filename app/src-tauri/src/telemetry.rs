@@ -243,7 +243,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.model_install_started" => Some("system.model_install_started"),
         "system.model_install_phase" => Some("system.model_install_phase"),
         "system.model_install_terminal" => Some("system.model_install_terminal"),
-        "overlay.menu_sample" => Some("overlay.menu_sample"),
+        "overlay.placement" => Some("overlay.placement"),
         "overlay.position_default" => Some("overlay.position_default"),
         "overlay.position_offset_applied" => Some("overlay.position_offset_applied"),
         "overlay.position_read_failed" => Some("overlay.position_read_failed"),
