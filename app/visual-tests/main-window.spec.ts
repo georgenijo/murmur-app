@@ -210,8 +210,8 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
     history.boundingBox(),
   ]);
 
-  expect(sidebarBox?.width).toBe(160);
-  expect(mainBox?.width).toBeGreaterThan(900);
+  expect(sidebarBox?.width).toBe(200);
+  expect(mainBox?.width).toBeGreaterThan(850);
   // The month summary shares the recording bar's row instead of a separate rail.
   expect(monthBox?.y).toBe(talkBox?.y);
   expect(monthBox?.height).toBe(talkBox?.height);

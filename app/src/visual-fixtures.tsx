@@ -4,6 +4,8 @@ import { Channel } from '@tauri-apps/api/core';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
+import { ModelDownloader } from './components/ModelDownloader';
+import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { CommandPalette } from './components/CommandPalette';
 import { AboutModal } from './components/AboutModal';
 import { DictationPreviewCard } from './components/dictation-preview/DictationPreviewApp';
@@ -543,6 +545,10 @@ localStorage.setItem('dictation-stats', JSON.stringify({
 }));
 
 function VisualFixture() {
+  React.useLayoutEffect(() => {
+    document.documentElement.classList.add('murmur-main-window');
+    return () => document.documentElement.classList.remove('murmur-main-window');
+  }, []);
   const settingsOpen = requestedState === 'settings'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
@@ -574,12 +580,19 @@ function VisualFixture() {
     if (manyMeetings) void meetings.select('meeting-0');
   }, [meetings.select]);
 
+  if (requestedState === 'first-run-model') return <div className="main-first-run main-first-run-model">
+    <ModelDownloader initialModel={fixtureSettings.model} onComplete={() => {}} />
+  </div>;
+  if (requestedState === 'first-run-onboarding') return <div className="main-first-run main-first-run-onboarding">
+    <OnboardingFlow initialModel={fixtureSettings.model} recordingMode="both" triggerKey="shift_l" onComplete={() => {}} />
+  </div>;
+
   return (
     <div
       data-appearance={appearance}
       data-theme-fixture={importedThemeFixture ?? 'sonic'}
       data-visual-ready="true"
-      className="flex h-screen w-screen flex-col overflow-hidden bg-background text-on-surface"
+      className="main-app-shell flex h-full min-h-0 w-full flex-col overflow-hidden bg-background text-on-surface"
     >
       <MainHeader
         status={status}
@@ -669,7 +682,11 @@ function VisualFixture() {
                 {requestedState === 'assistant-history' ? <QueryHistoryFixture /> : <AssistantWorkspace
                   connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
                   conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
-                  selectedId="fixture" confirmationOutcomeUnknownActionIds={[]} messages={requestedState === 'assistant-empty' ? [] : [
+                  selectedId="fixture" confirmationOutcomeUnknownActionIds={[]} messages={requestedState === 'assistant-empty' ? [] : requestedState === 'assistant-long' ? Array.from({ length: 80 }, (_, index) => ({
+                    id: `message-${index}`, role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+                    text: `Message ${index + 1}. A synthetic conversation for checking scroll boundaries and readable text.`,
+                    status: 'complete' as const, actions: [],
+                  })) : [
                     { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete', actions: [] },
                     { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete', actions: [] },
                   ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
@@ -697,7 +714,7 @@ function VisualFixture() {
                 onRecord={() => {}}
                 onStop={() => {}}
                 onOpenInsights={() => setDestination('insights')}
-                discovery={{
+                discovery={query.get('checklist') === 'hidden' ? undefined : {
                   completed: ['transform', 'voice_query', 'meeting', 'correction'],
                   onAction: () => {},
                   onDismiss: () => {},

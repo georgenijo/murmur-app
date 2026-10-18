@@ -358,7 +358,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">

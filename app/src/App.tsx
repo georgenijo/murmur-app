@@ -836,29 +836,33 @@ function App() {
   ]);
 
   if (onboardingState === 'unknown' || modelReady === null) {
-    return <div className="h-screen bg-background" />;
+    return <div className="h-full min-h-0 bg-background" />;
   }
   if (onboardingState === 'needed') {
     return (
-      <OnboardingFlow
-        initialModel={settings.model}
-        recordingMode={settings.recordingMode}
-        triggerKey={settings.doubleTapKey}
-        onComplete={completeOnboarding}
-      />
+      <div className="main-first-run main-first-run-onboarding">
+        <OnboardingFlow
+          initialModel={settings.model}
+          recordingMode={settings.recordingMode}
+          triggerKey={settings.doubleTapKey}
+          onComplete={completeOnboarding}
+        />
+      </div>
     );
   }
   if (modelReady === false) {
     return (
-      <ModelDownloader
-        initialModel={settings.model}
-        onComplete={markModelReady}
-      />
+      <div className="main-first-run main-first-run-model">
+        <ModelDownloader
+          initialModel={settings.model}
+          onComplete={markModelReady}
+        />
+      </div>
     );
   }
 
   return (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <div className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       {import.meta.env.DEV && (
         <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning select-none">
           Dev

@@ -328,7 +328,7 @@ export function ModelDownloadPanel({
  */
 export function ModelDownloader({ initialModel, onComplete }: Props) {
   return (
-    <div className="h-screen bg-background flex flex-col items-center justify-center p-8">
+    <div className="h-full min-h-0 bg-background flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
         <h1 className="text-xl font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface mb-1">
           Download a Model

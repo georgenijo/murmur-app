@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { ArrowUp, Check, Mic, MoreHorizontal, Plus, Settings2, Square } from 'lucide-react';
@@ -71,11 +71,31 @@ const PHASE_LABELS: Record<AssistantPhase, string> = {
   running: 'Pi is working…',
 };
 
+function scrollFollowingMessages(pane: HTMLDivElement | null, following: boolean) {
+  if (!pane || !following) return;
+  const bottom = Math.max(0, pane.scrollHeight - pane.clientHeight);
+  // Assigning only when needed also leaves an unrelated render's scroll alone.
+  if (Math.abs(pane.scrollTop - bottom) > 1) pane.scrollTop = bottom;
+}
+
+// Text and role are primitive inputs: drafting, status and action updates do
+// not need to parse an unchanged Markdown document again.
+const AssistantMessageBody = memo(function AssistantMessageBody({ role, text }: Pick<AssistantThreadMessage, 'role' | 'text'>) {
+  return <div className="assistant-message-body">{role === 'user'
+    ? <p className="assistant-user-text">{text}</p>
+    : <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{text}</Markdown>}
+  </div>;
+});
+
 export function AssistantWorkspace(props: AssistantWorkspaceProps) {
   const [draft, setDraft] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const messageContentRef = useRef<HTMLDivElement>(null);
+  const followingBottomRef = useRef(true);
+  const messageScrollTopRef = useRef(0);
+  const scrollConversationRef = useRef(props.selectedId);
   const keepChatRef = useRef<HTMLButtonElement>(null);
   const chatOptionsRef = useRef<HTMLElement>(null);
   const voiceBaseRef = useRef('');
@@ -94,9 +114,35 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
     if (props.dictation?.status === 'partial' && composerRef.current) composerRef.current.scrollTop = composerRef.current.scrollHeight;
   }, [draft, props.dictation]);
   useEffect(() => { if (deleteId) keepChatRef.current?.focus(); }, [deleteId]);
-  useEffect(() => {
-    endRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
+  useLayoutEffect(() => {
+    if (scrollConversationRef.current !== props.selectedId) {
+      scrollConversationRef.current = props.selectedId;
+      followingBottomRef.current = true;
+      messageScrollTopRef.current = 0;
+    }
+    const pane = messagesRef.current;
+    if (!pane) return;
+    if (followingBottomRef.current) scrollFollowingMessages(pane, true);
+    // Disconnect removes the pane. Restore a same-conversation reader before
+    // paint without changing their follow intent or scrolling an ancestor.
+    else pane.scrollTop = messageScrollTopRef.current;
+  }, [props.selectedId, props.connected]);
+  useLayoutEffect(() => {
+    scrollFollowingMessages(messagesRef.current, followingBottomRef.current);
   }, [props.messages]);
+  useEffect(() => {
+    const pane = messagesRef.current;
+    const content = messageContentRef.current;
+    if (!pane || !content || typeof ResizeObserver === 'undefined') return;
+    // Follow streamed content, expanded actions and viewport changes without
+    // scrolling any ancestor or moving someone reading earlier messages.
+    const observer = new ResizeObserver(() => {
+      scrollFollowingMessages(pane, followingBottomRef.current);
+    });
+    observer.observe(pane);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [props.connected]);
   useEffect(() => {
     const cancel = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape' && props.phase !== 'idle') {
@@ -158,7 +204,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
         </div>
       </details>
     </aside>
-    <div className="assistant-conversation">
+    <div className="assistant-conversation" data-empty={props.messages.length === 0}>
       <header className="assistant-conversation-header">
         <div className="assistant-conversation-heading"><h2>Pi Assistant</h2><p role="status"><span className="assistant-status-dot" data-busy={busy} />{PHASE_LABELS[props.phase]}</p></div>
         {props.selectedId && <details className="assistant-chat-options" onKeyDown={dismissDetails}>
@@ -173,7 +219,13 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
         <button ref={keepChatRef} type="button" className="assistant-text-button" onClick={() => { setDeleteId(null); chatOptionsRef.current?.focus(); }}>Keep chat</button>
         <button type="button" className="assistant-text-button" disabled={busy} onClick={async () => { await props.onDelete(deleteId); setDeleteId(null); }}>Delete from this Mac</button>
       </div>}
-      <div className="assistant-message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text">
+      <div ref={messagesRef} className="assistant-message-list" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions text"
+        onScroll={(event) => {
+          const pane = event.currentTarget;
+          messageScrollTopRef.current = pane.scrollTop;
+          followingBottomRef.current = pane.scrollHeight - pane.clientHeight - pane.scrollTop <= 4;
+        }}>
+        <div ref={messageContentRef}>
         {props.messages.length === 0 && <div className="assistant-empty">
           <h3>What’s on your mind?</h3>
           <p>{props.selectedId ? 'Type below or use the microphone. Follow-ups stay in this conversation.' : 'Start a new chat to talk with Pi.'}</p>
@@ -183,10 +235,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
         </div>}
         {props.messages.map((message) => <article key={message.id} className="assistant-message" data-role={message.role} aria-label={message.role === 'user' ? 'Your message' : 'Pi response'}>
           <p className="assistant-message-author">{message.role === 'user' ? 'You' : 'Pi'}</p>
-          <div className="assistant-message-body">{message.role === 'user'
-            ? <p className="assistant-user-text">{message.text}</p>
-            : <Markdown rehypePlugins={[rehypeSanitize]} components={{ img: () => null, a: ({ children }) => <span>{children}</span> }}>{message.text}</Markdown>}
-          </div>
+          <AssistantMessageBody role={message.role} text={message.text} />
           {message.actions.map((action) => <AssistantActionCard key={action.action_id} action={action}
             confirmationOutcomeUnknown={props.confirmationOutcomeUnknownActionIds.includes(action.action_id)}
             disabled={busy} onConfirm={props.onConfirmAction} onCancel={props.onCancelAction} onRefresh={props.onRefreshAction} />)}
@@ -194,7 +243,7 @@ export function AssistantWorkspace(props: AssistantWorkspaceProps) {
           {message.status === 'cancelled' && <p className="assistant-muted">Stopped. This response may be incomplete.</p>}
           {message.status === 'failed' && <p className="assistant-error">This response did not complete. You can send another message.</p>}
         </article>)}
-        <div ref={endRef} />
+        </div>
       </div>
       {props.error && <p role="alert" className="assistant-error assistant-inline-notice">{props.error}</p>}
       <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
