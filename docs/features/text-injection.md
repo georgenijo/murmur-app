@@ -72,8 +72,16 @@ and posts native Cmd+V once. Event construction and target-field AX checks
 finish before a fresh systemwide `AXFocusedApplication` PID query, followed by
 the clipboard-generation check. The focused PID must match the expected process
 whose bundle and launch identity remain verified. This final query has a 20 ms
-messaging timeout and rejects missing, failed, or late results; AppKit's cached
-frontmost app and `isActive` flags never authorize this final boundary. The
+messaging timeout. A live PID for a different process always refuses, even
+when it arrives after the timeout, and
+AppKit's cached frontmost app never overrides it. Some apps (often Chromium or
+Electron) leave the query unanswered, failed, or late with the expected PID; at the key-post
+boundary for both normal and smart paste, that unknown answer falls back to
+the NSWorkspace frontmost-process check used before the live proof, so
+uncertainty never makes paste stricter than the frontmost-application policy.
+Murmur-initiated activation and focus rollback keep the strict live proof and
+refuse when it is unanswered. Each key-post decision logs a `focus_proof`
+`pipeline.paste_safety` event with the reason. The
 systemwide timeout temporarily sets the process default and restores the normal
 default afterward; existing explicit per-element timeouts are retained.
 Cancellation and native commitment share one atomic operation state. macOS provides no OS-wide

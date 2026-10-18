@@ -258,7 +258,17 @@ as `pipeline.smart_destination_delivery`. Allowed phase/outcome pairs are:
 - `authority`: `cancelled`, `expired`, `already_committed`, `operation_in_flight`;
 - `post`: `key_posted` (CoreGraphics dispatch, not insertion confirmation);
 - `confirmation`: `structurally_confirmed`, `unconfirmed`, `not_observed`;
-- `rollback`: `restored`, `refused`.
+- `rollback`: `restored`, `refused`;
+- `focus_proof`: `live_match`, `live_mismatch`, `identity_mismatch`, `frontmost_fallback_match`, `frontmost_fallback_mismatch`.
+
+`focus_proof` is the final key-post focus decision. It additionally requires
+`live_code` (`answered`, `not_attempted`, `setup_failed`, `ax_error`, `wrong_type`,
+`pid_unavailable`, `slow`), the numeric `ax_status` (an `AXError` from -30000 to 0;
+0 unless `live_code` is `ax_error`), and `live_elapsed_us` (at most 10,000,000).
+A `frontmost_fallback_*` outcome means the systemwide AX query produced no PID.
+`not_attempted` means the process-identity check refused before the query ran.
+The record is emitted after the key post or refusal, never between the proof and
+the post.
 
 Unknown fields are removed; invalid codes collapse to the event code alone.
 The summary is constant. No app/process identifiers, window titles, field
