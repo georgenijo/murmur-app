@@ -358,10 +358,10 @@ pub(crate) fn app_transition_snapshot() -> AppTransitionSnapshot {
 }
 
 /// Register app-lifetime, content-free transition counters. Observer callbacks
-/// deliberately do no native lookup and capture no application identity. They
-/// also nudge the overlay placement worker (a non-blocking channel send), which
-/// does its own debounced sampling elsewhere, so a changed frontmost
-/// application's menus or a Space switch re-resolve the overlay placement.
+/// deliberately do no native lookup and capture no application identity. A
+/// Space switch also nudges the overlay placement worker (a non-blocking
+/// channel send), because a fullscreen Space hides the menu bar. Frontmost
+/// application changes never move the overlay.
 #[cfg(target_os = "macos")]
 pub(crate) fn register_delivery_transition_observers() {
     use crate::commands::overlay::{request_placement_refresh, PlacementTrigger};
@@ -375,12 +375,14 @@ pub(crate) fn register_delivery_transition_observers() {
         center: &objc2_foundation::NSNotificationCenter,
         name: &objc2_foundation::NSNotificationName,
         generation: &'static AtomicU64,
-        placement: PlacementTrigger,
+        placement: Option<PlacementTrigger>,
     ) {
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
                 generation.fetch_add(1, Ordering::SeqCst);
-                request_placement_refresh(placement);
+                if let Some(trigger) = placement {
+                    request_placement_refresh(trigger);
+                }
             });
         unsafe {
             let observer =
@@ -394,13 +396,13 @@ pub(crate) fn register_delivery_transition_observers() {
         &center,
         unsafe { NSWorkspaceDidActivateApplicationNotification },
         &ACTIVATION_GENERATION,
-        PlacementTrigger::FrontmostApp,
+        None,
     );
     register(
         &center,
         unsafe { NSWorkspaceActiveSpaceDidChangeNotification },
         &SPACE_GENERATION,
-        PlacementTrigger::SpaceChange,
+        Some(PlacementTrigger::SpaceChange),
     );
 }
 

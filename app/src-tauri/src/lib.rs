@@ -733,14 +733,9 @@ pub fn run() {
             }
 
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
-            // Menu occupancy is unknown this early (Accessibility can block), so
-            // the overlay starts in the standalone placement; the placement
-            // worker refreshes it right after the observers below are registered.
-            use commands::overlay_band::{MenuSample, MenuUnavailable};
-            let initial_menu = MenuSample::Unavailable(MenuUnavailable::NoOwner);
-            let display_snapshot = commands::overlay::capture_display_snapshot(
-                app.handle(), &initial_menu, None, None, false,
-            );
+            // The placement worker re-checks them right after the observers
+            // below are registered, while the menu bar settles.
+            let display_snapshot = commands::overlay::capture_display_snapshot(app.handle());
             let notch = display_snapshot.notch_info;
             {
                 let state = app.state::<State>();
