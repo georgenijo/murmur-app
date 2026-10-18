@@ -61,18 +61,23 @@ by a synthetic narrow center. `get_overlay_geometry` and the
 
 ### Placement refresh
 
-Menu-bar visibility and size can change without the frontmost application
-changing, so one worker thread (`murmur-overlay-placement`) re-resolves the
-whole placement together for each of these triggers (`PlacementTrigger`):
+Menu-bar visibility and size can change with the display, the Space, or an
+app that hides the menu bar on the current Space, so one worker thread
+(`murmur-overlay-placement`) re-measures the whole placement together for each
+of these triggers (`PlacementTrigger`):
 
 - startup;
 - `NSApplicationDidChangeScreenParametersNotification`;
+- `NSWorkspaceDidActivateApplicationNotification` (an app can hide or restore
+  the menu bar without a Space change);
 - `NSWorkspaceActiveSpaceDidChangeNotification` (a fullscreen Space hides the
   menu bar, a desktop Space restores it).
 
-The Space observer lives in `frontmost.rs` and only posts a non-blocking
-channel message, in addition to its delivery counter. Frontmost-application
-changes update their delivery counter only and never refresh placement. Bursts
+The activation and Space observers live in `frontmost.rs` and only post a
+non-blocking channel message, in addition to their delivery counters. A
+re-measure reads only screen geometry; the centred x never depends on the
+frontmost application, so an app switch moves the overlay only if menu-bar
+visibility or height actually changed. Bursts
 are debounced (125ms quiet, 1s cap). After any trigger, the same ladder
 re-checks after 600ms, then 1.5s and 3s from the preceding refresh, to catch
 the menu bar animating in or out; any new trigger supersedes the remaining

@@ -673,6 +673,9 @@ pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> Display
 pub(crate) enum PlacementTrigger {
     Startup,
     DisplayChange,
+    /// An app activation can hide or restore the menu bar on the current
+    /// Space. It only re-measures; the centred x never depends on the app.
+    FrontmostApp,
     SpaceChange,
     /// A delayed re-check while the menu bar animates in or out.
     Settle,
@@ -683,6 +686,7 @@ impl PlacementTrigger {
         match self {
             Self::Startup => "startup_refresh",
             Self::DisplayChange => "display_change",
+            Self::FrontmostApp => "frontmost_app_change",
             Self::SpaceChange => "space_change",
             Self::Settle => "placement_settle",
         }
@@ -696,7 +700,7 @@ impl PlacementTrigger {
             std::time::Duration::from_millis(3000),
         ];
         match self {
-            Self::SpaceChange | Self::Startup | Self::DisplayChange => LADDER,
+            Self::FrontmostApp | Self::SpaceChange | Self::Startup | Self::DisplayChange => LADDER,
             Self::Settle => &[],
         }
     }
@@ -1807,7 +1811,7 @@ mod tests {
         assert!(Settle.settle_delays().is_empty());
         // A Space or display change can animate the menu bar in or out after
         // the notification, so every trigger re-checks for a few seconds.
-        for trigger in [Startup, DisplayChange, SpaceChange] {
+        for trigger in [Startup, DisplayChange, FrontmostApp, SpaceChange] {
             assert!(trigger.settle_delays().len() > 1);
             assert!(total(trigger) >= std::time::Duration::from_secs(4));
             assert!(total(trigger) <= std::time::Duration::from_secs(10));
