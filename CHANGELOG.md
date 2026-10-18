@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-18
+
+### Added
+
+- Keep a Check for Updates button beside Settings so you can check from the main window and open available updates directly.
+
 ## [0.51.17] - 2026-10-18
 
 ### Fixed
