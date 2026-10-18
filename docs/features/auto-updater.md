@@ -128,8 +128,9 @@ verified `min_version` (or no verifiable minimum policy is available):
 
 1. **Available** — Background discovery shows a download icon with an availability
    dot in the header. Settings changes **Check for Updates** to **Download Update**.
-   Either control starts the download directly. Manual checks open the release
-   notes dialog with **Download Update** and **Later**. Later closes the dialog
+   The header icon opens the release notes dialog; Settings starts the download
+   directly. Manual checks open the release notes dialog with **Download Update**
+   and **Later**. Later closes the dialog
    and keeps both update controls available. Releases are no longer skippable.
 2. **Preparing** — A single updater owner verifies the install location. Duplicate
    actions and background checks cannot enter while an update is downloading,
@@ -281,6 +282,11 @@ an already-installed release as an available update.
 
 - General Settings and the header use the same `UpdateIndicator` component.
   Settings shows text labels; the header uses an icon and accessible action name.
+  The header icon stays visible immediately left of Settings, including on Home
+  while idle or up to date. Click it to check again, or to view an available update.
+  During a check it spins and ignores repeated activation while retaining keyboard
+  focus. A persistent live region announces checking, current-version, and error
+  results; the up-to-date state also shows a checkmark and tooltip.
 - Settings changes from **Check for Updates** to **Download Update** and then
   **Restart Now**. Busy states show progress and disable repeated actions.
 - The native menu brings the main window forward. It checks when there is no
