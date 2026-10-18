@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.16] - 2026-10-17
+
+### Fixed
+
+- Keep the main window header and sidebar fixed while scrolling Home and Assistant.
+- Use matching sidebar widths in Home and Settings, including compact windows.
+- Align Search and Filter controls and prevent Search focus from shifting the toolbar.
+- Preserve the Assistant reading position across reconnects and follow new content only when already at the bottom.
+
+### Improved
+
+- Avoid rendering unchanged saved Assistant responses again while typing a draft.
+- Bring the Assistant empty-state prompt, suggestions and composer together.
+- Fit the recording status control to its content and improve transcript readability.
+
 ## [0.51.15] - 2026-10-17
 
 ### Fixed
