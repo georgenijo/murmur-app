@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.51.17] - 2026-10-18
+
+### Fixed
+
+- Restore automatic paste when an app cannot answer the live Accessibility focus query, while still refusing delivery when another app is focused.
+- Keep the floating overlay centered in the menu bar on displays without a notch instead of moving it when switching apps.
+
+### Improved
+
+- Add content-free paste focus diagnostics to help explain missed deliveries.
+
 ## [0.51.16] - 2026-10-17
 
 ### Fixed
