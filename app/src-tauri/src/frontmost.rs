@@ -407,34 +407,163 @@ pub(crate) fn register_delivery_transition_observers() {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn register_delivery_transition_observers() {}
 
-/// A cached frontmost application is not final authority while the main loop
-/// is blocked in AX. Read the systemwide AXFocusedApplication PID afresh after
-/// all target-field queries; unknown, timed-out and relaunched targets refuse.
+/// Why the systemwide AXFocusedApplication query produced no PID.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveFocusUnavailable {
+    Setup,
+    AxError(i32),
+    WrongType,
+    PidUnavailable,
+    Slow,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl LiveFocusUnavailable {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Setup => "setup_failed",
+            Self::AxError(_) => "ax_error",
+            Self::WrongType => "wrong_type",
+            Self::PidUnavailable => "pid_unavailable",
+            Self::Slow => "slow",
+        }
+    }
+
+    fn ax_status(self) -> i32 {
+        match self {
+            Self::AxError(status) => status,
+            _ => 0,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusProof {
+    LiveMatch,
+    LiveMismatch,
+    IdentityMismatch,
+    FrontmostFallbackMatch,
+    FrontmostFallbackMismatch,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl FocusProof {
+    fn allows_paste(self) -> bool {
+        matches!(self, Self::LiveMatch | Self::FrontmostFallbackMatch)
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::LiveMatch => "live_match",
+            Self::LiveMismatch => "live_mismatch",
+            Self::IdentityMismatch => "identity_mismatch",
+            Self::FrontmostFallbackMatch => "frontmost_fallback_match",
+            Self::FrontmostFallbackMismatch => "frontmost_fallback_mismatch",
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn running_process_instance_matches(expected: &DeliveryTargetIdentity) -> bool {
+    use objc2_app_kit::NSRunningApplication;
+    let Some(app) =
+        NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)
+    else {
+        return false;
+    };
+    app.bundleIdentifier()
+        .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
+        && app.launchDate().is_some_and(|date| {
+            let interval = date.timeIntervalSinceReferenceDate();
+            interval.is_finite()
+                && interval > 0.0
+                && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn workspace_frontmost_matches(expected: &DeliveryTargetIdentity) -> bool {
+    use objc2_app_kit::NSWorkspace;
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .is_some_and(|app| app.processIdentifier() == expected.process_id)
+}
+
+/// Final key-post focus proof. A cached frontmost application is not final
+/// authority while the main loop is blocked in AX, so the systemwide
+/// AXFocusedApplication PID is read afresh after all target-field queries and a
+/// different live PID always refuses. Some apps (often Chromium/Electron) leave
+/// that query unanswered; an unknown live answer must not make paste stricter
+/// than the frontmost-application check, so it falls back to NSWorkspace.
 #[cfg(target_os = "macos")]
 pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bool {
-    use objc2_app_kit::NSRunningApplication;
+    let DeliveryTargetSnapshot::Complete(expected) = expected else {
+        return false;
+    };
+    let mut live_failure = None;
+    let mut live_elapsed_us = 0_u64;
+    let proof = final_focus_proof(
+        expected.process_id,
+        || running_process_instance_matches(expected),
+        || {
+            let started = std::time::Instant::now();
+            let result = ax_systemwide_focused_application_pid();
+            live_elapsed_us = started.elapsed().as_micros().min(10_000_000) as u64;
+            live_failure = result.err();
+            result
+        },
+        || workspace_frontmost_matches(expected),
+    );
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.paste_safety",
+        phase_code = "focus_proof",
+        outcome_code = proof.code(),
+        live_code = live_failure.map_or("answered", LiveFocusUnavailable::code),
+        ax_status = live_failure.map_or(0, LiveFocusUnavailable::ax_status),
+        live_elapsed_us,
+        "Paste safety decision"
+    );
+    proof.allows_paste()
+}
+
+/// Strict live focus check for Murmur-initiated activation and focus rollback:
+/// an unanswered live query refuses rather than falling back.
+#[cfg(target_os = "macos")]
+pub(crate) fn delivery_target_is_live_focused(expected: &DeliveryTargetSnapshot) -> bool {
     let DeliveryTargetSnapshot::Complete(expected) = expected else {
         return false;
     };
     live_focus_matches(
         expected.process_id,
-        || {
-            let Some(app) =
-                NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)
-            else {
-                return false;
-            };
-            app.bundleIdentifier()
-                .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
-                && app.launchDate().is_some_and(|date| {
-                    let interval = date.timeIntervalSinceReferenceDate();
-                    interval.is_finite()
-                        && interval > 0.0
-                        && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
-                })
-        },
-        ax_systemwide_focused_application_pid,
+        || running_process_instance_matches(expected),
+        || ax_systemwide_focused_application_pid().ok(),
     )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn final_focus_proof(
+    expected_pid: i32,
+    mut identity_matches: impl FnMut() -> bool,
+    query_live_pid: impl FnOnce() -> Result<i32, LiveFocusUnavailable>,
+    frontmost_matches: impl FnOnce() -> bool,
+) -> FocusProof {
+    if expected_pid <= 0 || !identity_matches() {
+        return FocusProof::IdentityMismatch;
+    }
+    let proof = match query_live_pid() {
+        Ok(pid) if pid == expected_pid => FocusProof::LiveMatch,
+        Ok(_) => return FocusProof::LiveMismatch,
+        Err(_) if frontmost_matches() => FocusProof::FrontmostFallbackMatch,
+        Err(_) => return FocusProof::FrontmostFallbackMismatch,
+    };
+    if identity_matches() {
+        proof
+    } else {
+        FocusProof::IdentityMismatch
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -450,7 +579,7 @@ fn live_focus_matches(
 }
 
 #[cfg(target_os = "macos")]
-fn ax_systemwide_focused_application_pid() -> Option<i32> {
+fn ax_systemwide_focused_application_pid() -> Result<i32, LiveFocusUnavailable> {
     use std::ffi::{c_char, c_void};
     use std::time::{Duration, Instant};
     type Ref = *const c_void;
@@ -489,7 +618,7 @@ fn ax_systemwide_focused_application_pid() -> Option<i32> {
     let started = Instant::now();
     let system = Owned(unsafe { AXUIElementCreateSystemWide() });
     if system.0.is_null() || unsafe { AXUIElementSetMessagingTimeout(system.0, 0.020) } != 0 {
-        return None;
+        return Err(LiveFocusUnavailable::Setup);
     }
     let _timeout = Timeout(system.0);
     let attribute = Owned(unsafe {
@@ -500,25 +629,25 @@ fn ax_systemwide_focused_application_pid() -> Option<i32> {
         )
     });
     if attribute.0.is_null() {
-        return None;
+        return Err(LiveFocusUnavailable::Setup);
     }
     let mut value = std::ptr::null();
     let status = unsafe { AXUIElementCopyAttributeValue(system.0, attribute.0, &mut value) };
     let focused = Owned(value);
-    if status != 0
-        || focused.0.is_null()
-        || unsafe { CFGetTypeID(focused.0) != AXUIElementGetTypeID() }
-    {
-        return None;
+    if status != 0 {
+        return Err(LiveFocusUnavailable::AxError(status));
+    }
+    if focused.0.is_null() || unsafe { CFGetTypeID(focused.0) != AXUIElementGetTypeID() } {
+        return Err(LiveFocusUnavailable::WrongType);
     }
     let mut pid = 0;
-    if unsafe { AXUIElementGetPid(focused.0, &mut pid) } != 0
-        || pid <= 0
-        || started.elapsed() > Duration::from_millis(20)
-    {
-        return None;
+    if unsafe { AXUIElementGetPid(focused.0, &mut pid) } != 0 || pid <= 0 {
+        return Err(LiveFocusUnavailable::PidUnavailable);
     }
-    Some(pid)
+    if started.elapsed() > Duration::from_millis(20) {
+        return Err(LiveFocusUnavailable::Slow);
+    }
+    Ok(pid)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1507,6 +1636,70 @@ mod tests {
                 Some(42)
             }
         ));
+    }
+
+    #[test]
+    fn final_focus_proof_falls_back_to_frontmost_only_when_live_focus_is_unknown() {
+        for failure in [
+            LiveFocusUnavailable::Setup,
+            LiveFocusUnavailable::AxError(-25204),
+            LiveFocusUnavailable::WrongType,
+            LiveFocusUnavailable::PidUnavailable,
+            LiveFocusUnavailable::Slow,
+        ] {
+            let proof = final_focus_proof(42, || true, || Err(failure), || true);
+            assert_eq!(proof, FocusProof::FrontmostFallbackMatch);
+            assert!(proof.allows_paste());
+            let proof = final_focus_proof(42, || true, || Err(failure), || false);
+            assert_eq!(proof, FocusProof::FrontmostFallbackMismatch);
+            assert!(!proof.allows_paste());
+        }
+    }
+
+    #[test]
+    fn final_focus_proof_refuses_a_different_live_pid_even_when_frontmost_matches() {
+        let fallback_consulted = std::cell::Cell::new(false);
+        let proof = final_focus_proof(
+            42,
+            || true,
+            || Ok(43),
+            || {
+                fallback_consulted.set(true);
+                true
+            },
+        );
+        assert_eq!(proof, FocusProof::LiveMismatch);
+        assert!(!proof.allows_paste());
+        assert!(!fallback_consulted.get());
+        assert_eq!(
+            final_focus_proof(42, || true, || Ok(42), || false),
+            FocusProof::LiveMatch
+        );
+    }
+
+    #[test]
+    fn final_focus_proof_is_bracketed_by_process_identity_checks() {
+        assert_eq!(
+            final_focus_proof(42, || false, || Ok(42), || true),
+            FocusProof::IdentityMismatch
+        );
+        assert_eq!(
+            final_focus_proof(0, || true, || Ok(0), || true),
+            FocusProof::IdentityMismatch
+        );
+        let same_instance = std::cell::Cell::new(true);
+        assert_eq!(
+            final_focus_proof(
+                42,
+                || same_instance.get(),
+                || {
+                    same_instance.set(false);
+                    Err(LiveFocusUnavailable::Slow)
+                },
+                || true,
+            ),
+            FocusProof::IdentityMismatch
+        );
     }
 
     #[test]

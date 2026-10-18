@@ -917,7 +917,36 @@ fn sanitize_paste_safety_event(data: &mut serde_json::Map<String, serde_json::Va
                 Some("structurally_confirmed" | "unconfirmed" | "not_observed")
             )
             | (Some("rollback"), Some("restored" | "refused"))
+            | (
+                Some("focus_proof"),
+                Some(
+                    "live_match"
+                        | "live_mismatch"
+                        | "identity_mismatch"
+                        | "frontmost_fallback_match"
+                        | "frontmost_fallback_mismatch"
+                )
+            )
     );
+    let focus_fields_valid = phase != Some("focus_proof")
+        || (matches!(
+            data.get("live_code").and_then(serde_json::Value::as_str),
+            Some(
+                "answered"
+                    | "setup_failed"
+                    | "ax_error"
+                    | "wrong_type"
+                    | "pid_unavailable"
+                    | "slow"
+            )
+        ) && data
+            .get("ax_status")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|status| (-30_000..=0).contains(&status))
+            && data
+                .get("live_elapsed_us")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|elapsed| elapsed <= 10_000_000));
     let route_valid = match data.get("route_code") {
         None => phase != Some("preparation"),
         Some(value) => {
@@ -930,11 +959,15 @@ fn sanitize_paste_safety_event(data: &mut serde_json::Map<String, serde_json::Va
                 })
         }
     };
+    let focus_proof = phase == Some("focus_proof");
     data.retain(|key, _| {
         key == "event_code"
             || (valid
                 && route_valid
-                && matches!(key.as_str(), "phase_code" | "outcome_code" | "route_code"))
+                && focus_fields_valid
+                && (matches!(key.as_str(), "phase_code" | "outcome_code" | "route_code")
+                    || (focus_proof
+                        && matches!(key.as_str(), "live_code" | "ax_status" | "live_elapsed_us"))))
     });
 }
 
@@ -3359,6 +3392,39 @@ mod tests {
                 sanitize_event_data("pipeline", &mut data, debug_build);
                 assert_eq!(data.as_object().unwrap().len(), 1);
             }
+        }
+    }
+
+    #[test]
+    fn paste_focus_proof_schema_keeps_only_bounded_diagnostics() {
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({"event_code":"pipeline.paste_safety",
+                "phase_code":"focus_proof", "outcome_code":"frontmost_fallback_match",
+                "live_code":"ax_error", "ax_status":-25204, "live_elapsed_us":20_150,
+                "bundle_id":"synthetic-private-value"});
+            sanitize_event_data("pipeline", &mut data, debug_build);
+            assert_eq!(data.as_object().unwrap().len(), 6);
+            assert!(!serde_json::to_string(&data)
+                .unwrap()
+                .contains("synthetic-private-value"));
+
+            for (field, value) in [
+                ("live_code", serde_json::json!("free text")),
+                ("ax_status", serde_json::json!(12)),
+                ("live_elapsed_us", serde_json::json!(10_000_001_u64)),
+            ] {
+                let mut data = serde_json::json!({"event_code":"pipeline.paste_safety",
+                    "phase_code":"focus_proof", "outcome_code":"live_match",
+                    "live_code":"answered", "ax_status":0, "live_elapsed_us":40});
+                data[field] = value;
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data.as_object().unwrap().len(), 1);
+            }
+
+            let mut data = serde_json::json!({"event_code":"pipeline.paste_safety",
+                "phase_code":"post", "outcome_code":"key_posted", "live_code":"answered"});
+            sanitize_event_data("pipeline", &mut data, debug_build);
+            assert_eq!(data.as_object().unwrap().len(), 3);
         }
     }
 

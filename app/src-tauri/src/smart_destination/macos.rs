@@ -1043,7 +1043,7 @@ fn request_recent_destination_activation(
             &frozen.destination_identity,
             frozen.destination_launch_token_bits,
         )
-        || !crate::frontmost::delivery_target_is_active(return_to)
+        || !crate::frontmost::delivery_target_is_live_focused(return_to)
         || frozen.activation_clipboard_change.is_none()
         || frozen.activation_clipboard_change != crate::injector::pasteboard_change_count()
     {
@@ -1125,7 +1125,7 @@ fn maybe_restore_media(
                 (before.activation_generation, before.space_generation),
                 (current.activation_generation, current.space_generation),
             ) || !process_is_running(return_to, return_launch_token_bits)
-                || !destination_is_active(frozen)
+                || !crate::frontmost::delivery_target_is_live_focused(&frozen.destination_identity)
                 || !process_is_running(return_to, return_launch_token_bits)
                 || crate::injector::pasteboard_change_count() != Some(pasteboard_change)
             {
