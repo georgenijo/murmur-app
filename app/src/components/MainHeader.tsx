@@ -148,8 +148,6 @@ export function MainHeader({
         </button>
       ) : (
         <>
-          {updateIndicator}
-
           {showRecordControls && (
             <>
               <p
@@ -199,6 +197,8 @@ export function MainHeader({
               </button>
             </>
           )}
+
+          {updateIndicator}
 
           <button
             type="button"

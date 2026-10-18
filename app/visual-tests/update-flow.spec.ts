@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 for (const appearance of ['light', 'dark']) {
   test(`update controls download, defer, and restart in ${appearance} appearance`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=update-flow&appearance=${appearance}`);
-    await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
+    await page.locator('header').getByRole('button', { name: 'Check for Updates', exact: true }).click();
     const available = page.getByRole('dialog', { name: 'Update Available', exact: true });
     await expect(available.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
     await available.getByRole('button', { name: 'Later', exact: true }).click();
@@ -33,4 +33,23 @@ for (const appearance of ['light', 'dark']) {
       await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot(`${appearance}-update-${state}.png`);
     });
   }
+}
+
+for (const width of [640, 880]) {
+  test(`Home update check sits immediately left of Settings at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto('/visual-fixtures.html?state=home-update-check&appearance=dark');
+    const check = page.getByRole('button', { name: 'Check for Updates', exact: true });
+    const settings = page.getByRole('button', { name: 'Open customization and settings', exact: true });
+    await expect(check).toBeVisible();
+    await expect(check).toBeEnabled();
+    await expect(check).toHaveAttribute('title', 'Check for Updates');
+    const checkBounds = await check.boundingBox();
+    const settingsBounds = await settings.boundingBox();
+    expect(checkBounds).not.toBeNull();
+    expect(settingsBounds).not.toBeNull();
+    expect(settingsBounds!.x - (checkBounds!.x + checkBounds!.width)).toBeGreaterThanOrEqual(0);
+    expect(settingsBounds!.x - (checkBounds!.x + checkBounds!.width)).toBeLessThanOrEqual(16);
+    expect(checkBounds!.y).toBe(settingsBounds!.y);
+  });
 }

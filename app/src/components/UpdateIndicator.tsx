@@ -13,17 +13,13 @@ interface UpdateIndicatorProps {
 
 export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRestart, variant = 'compact' }: UpdateIndicatorProps) {
   const compact = variant === 'compact';
-  if (compact && status.phase === 'idle') return null;
-  if (compact && status.phase === 'up-to-date') {
-    return <span role="status" className="ui-visually-hidden">Murmur is up to date</span>;
-  }
 
   const busy = status.phase === 'checking' || status.phase === 'preparing' || status.phase === 'downloading' || status.phase === 'restarting';
   const progress = status.phase === 'downloading' ? status.progress : null;
   const available = status.phase === 'available';
   const ready = status.phase === 'ready';
   const failed = status.phase === 'error';
-  const label = available ? 'Download Update'
+  const label = available ? (compact ? 'View Update' : 'Download Update')
     : ready ? 'Restart Now'
     : status.phase === 'checking' ? 'Checking for Updates…'
     : status.phase === 'preparing' ? 'Preparing Update…'
@@ -36,23 +32,25 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRe
     : status.phase === 'up-to-date' ? 'You’re up to date.'
     : failed ? (status.stage === 'check' ? 'Couldn’t check for updates. Try again.' : 'Open the update dialog to continue.')
     : null;
-  const action = available ? onDownload : ready ? onRestart : failed && status.stage !== 'check' ? onOpen : onRetryCheck;
+  const action = available ? (compact ? onOpen : onDownload) : ready ? onRestart : failed && status.stage !== 'check' ? onOpen : onRetryCheck;
   const Icon = ready || status.phase === 'restarting' ? RotateCw
     : failed ? TriangleAlert
     : busy && status.phase !== 'downloading' ? LoaderCircle
-    : available || status.phase === 'downloading' ? Download : RefreshCw;
+    : available || status.phase === 'downloading' ? Download
+    : status.phase === 'up-to-date' ? Check : RefreshCw;
 
   return (
-    <div className={compact ? 'ml-auto' : 'settings-field'}>
+    <div className={compact ? 'ml-auto shrink-0' : 'settings-field'}>
       <button
         data-testid="update-indicator"
         type="button"
-        onClick={action}
-        disabled={busy}
+        onClick={() => { if (!busy) action(); }}
+        disabled={!compact && busy}
+        aria-disabled={busy}
         title={detail ? `${label}. ${detail}` : label}
         aria-label={compact && detail ? `${label}. ${detail}` : label}
         className={cn(
-          'relative flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait',
+          'relative flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait aria-disabled:cursor-wait',
           compact ? 'ui-icon-button bg-surface-container-low hover:bg-surface-container'
             : 'w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium transition-colors hover:bg-surface-container',
           failed ? 'text-error' : available || ready ? 'text-primary' : 'text-on-surface-variant',
@@ -71,7 +69,8 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRe
           </svg>
         )}
       </button>
-      {busy && <span className="ui-visually-hidden" role="status">{label}</span>}
+      {compact && <span className="ui-visually-hidden" role="status">{busy ? label : status.phase === 'up-to-date' ? 'You’re up to date.' : failed ? detail : ''}</span>}
+      {!compact && busy && <span className="ui-visually-hidden" role="status">{label}</span>}
       {!compact && detail && <p role="status" className={cn('text-xs', failed ? 'text-error' : status.phase === 'up-to-date' ? 'text-success' : 'text-on-surface-variant')}>{detail}</p>}
     </div>
   );

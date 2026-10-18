@@ -608,7 +608,9 @@ function VisualFixture() {
         mode={settingsOpen ? 'settings' : 'main'}
         showRecordControls={false}
         showStatusChip={destination !== 'home'}
-        updateIndicator={requestedState === 'update-recovering' ? (
+        updateIndicator={requestedState === 'home-update-check' ? (
+          <UpdateIndicator status={{ phase: 'idle' }} onOpen={() => {}} onDownload={() => {}} onRestart={() => {}} onRetryCheck={() => {}} />
+        ) : requestedState === 'update-recovering' ? (
           <UpdateIndicator
             status={{
               phase: 'available',
