@@ -415,7 +415,7 @@ enum LiveFocusUnavailable {
     AxError(i32),
     WrongType,
     PidUnavailable,
-    Slow,
+    Slow(i32),
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -426,7 +426,7 @@ impl LiveFocusUnavailable {
             Self::AxError(_) => "ax_error",
             Self::WrongType => "wrong_type",
             Self::PidUnavailable => "pid_unavailable",
-            Self::Slow => "slow",
+            Self::Slow(_) => "slow",
         }
     }
 
@@ -502,7 +502,8 @@ pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bo
     let DeliveryTargetSnapshot::Complete(expected) = expected else {
         return false;
     };
-    let mut live_failure = None;
+    let mut live_code = "not_attempted";
+    let mut ax_status = 0;
     let mut live_elapsed_us = 0_u64;
     let proof = final_focus_proof(
         expected.process_id,
@@ -511,22 +512,56 @@ pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bo
             let started = std::time::Instant::now();
             let result = ax_systemwide_focused_application_pid();
             live_elapsed_us = started.elapsed().as_micros().min(10_000_000) as u64;
-            live_failure = result.err();
+            (live_code, ax_status) = match result {
+                Ok(_) => ("answered", 0),
+                Err(failure) => (failure.code(), failure.ax_status()),
+            };
             result
         },
         || workspace_frontmost_matches(expected),
     );
+    // Logging is synchronous I/O; never put it between this proof and the key
+    // post. The poster emits the record after it posts or refuses.
+    PENDING_FOCUS_PROOF.set(Some(FocusProofRecord {
+        outcome_code: proof.code(),
+        live_code,
+        ax_status,
+        live_elapsed_us,
+    }));
+    proof.allows_paste()
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct FocusProofRecord {
+    outcome_code: &'static str,
+    live_code: &'static str,
+    ax_status: i32,
+    live_elapsed_us: u64,
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static PENDING_FOCUS_PROOF: std::cell::Cell<Option<FocusProofRecord>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Emit the final focus proof recorded on this thread, if any.
+#[cfg(target_os = "macos")]
+pub(crate) fn emit_pending_focus_proof() {
+    let Some(record) = PENDING_FOCUS_PROOF.take() else {
+        return;
+    };
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.paste_safety",
         phase_code = "focus_proof",
-        outcome_code = proof.code(),
-        live_code = live_failure.map_or("answered", LiveFocusUnavailable::code),
-        ax_status = live_failure.map_or(0, LiveFocusUnavailable::ax_status),
-        live_elapsed_us,
+        outcome_code = record.outcome_code,
+        live_code = record.live_code,
+        ax_status = record.ax_status,
+        live_elapsed_us = record.live_elapsed_us,
         "Paste safety decision"
     );
-    proof.allows_paste()
 }
 
 /// Strict live focus check for Murmur-initiated activation and focus rollback:
@@ -555,7 +590,11 @@ fn final_focus_proof(
     }
     let proof = match query_live_pid() {
         Ok(pid) if pid == expected_pid => FocusProof::LiveMatch,
+        // A late answer is still evidence: a different PID refuses.
         Ok(_) => return FocusProof::LiveMismatch,
+        Err(LiveFocusUnavailable::Slow(pid)) if pid != expected_pid => {
+            return FocusProof::LiveMismatch
+        }
         Err(_) if frontmost_matches() => FocusProof::FrontmostFallbackMatch,
         Err(_) => return FocusProof::FrontmostFallbackMismatch,
     };
@@ -645,7 +684,7 @@ fn ax_systemwide_focused_application_pid() -> Result<i32, LiveFocusUnavailable> 
         return Err(LiveFocusUnavailable::PidUnavailable);
     }
     if started.elapsed() > Duration::from_millis(20) {
-        return Err(LiveFocusUnavailable::Slow);
+        return Err(LiveFocusUnavailable::Slow(pid));
     }
     Ok(pid)
 }
@@ -1645,7 +1684,7 @@ mod tests {
             LiveFocusUnavailable::AxError(-25204),
             LiveFocusUnavailable::WrongType,
             LiveFocusUnavailable::PidUnavailable,
-            LiveFocusUnavailable::Slow,
+            LiveFocusUnavailable::Slow(42),
         ] {
             let proof = final_focus_proof(42, || true, || Err(failure), || true);
             assert_eq!(proof, FocusProof::FrontmostFallbackMatch);
@@ -1675,6 +1714,10 @@ mod tests {
             final_focus_proof(42, || true, || Ok(42), || false),
             FocusProof::LiveMatch
         );
+        assert_eq!(
+            final_focus_proof(42, || true, || Err(LiveFocusUnavailable::Slow(43)), || true),
+            FocusProof::LiveMismatch
+        );
     }
 
     #[test]
@@ -1694,7 +1737,7 @@ mod tests {
                 || same_instance.get(),
                 || {
                     same_instance.set(false);
-                    Err(LiveFocusUnavailable::Slow)
+                    Err(LiveFocusUnavailable::Slow(42))
                 },
                 || true,
             ),

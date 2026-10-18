@@ -933,6 +933,7 @@ fn sanitize_paste_safety_event(data: &mut serde_json::Map<String, serde_json::Va
             data.get("live_code").and_then(serde_json::Value::as_str),
             Some(
                 "answered"
+                    | "not_attempted"
                     | "setup_failed"
                     | "ax_error"
                     | "wrong_type"
@@ -3420,6 +3421,12 @@ mod tests {
                 sanitize_event_data("pipeline", &mut data, debug_build);
                 assert_eq!(data.as_object().unwrap().len(), 1);
             }
+
+            let mut data = serde_json::json!({"event_code":"pipeline.paste_safety",
+                "phase_code":"focus_proof", "outcome_code":"identity_mismatch",
+                "live_code":"not_attempted", "ax_status":0, "live_elapsed_us":0});
+            sanitize_event_data("pipeline", &mut data, debug_build);
+            assert_eq!(data.as_object().unwrap().len(), 6);
 
             let mut data = serde_json::json!({"event_code":"pipeline.paste_safety",
                 "phase_code":"post", "outcome_code":"key_posted", "live_code":"answered"});

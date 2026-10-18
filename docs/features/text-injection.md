@@ -72,9 +72,10 @@ and posts native Cmd+V once. Event construction and target-field AX checks
 finish before a fresh systemwide `AXFocusedApplication` PID query, followed by
 the clipboard-generation check. The focused PID must match the expected process
 whose bundle and launch identity remain verified. This final query has a 20 ms
-messaging timeout. A live PID for a different process always refuses, and
+messaging timeout. A live PID for a different process always refuses, even
+when it arrives after the timeout, and
 AppKit's cached frontmost app never overrides it. Some apps (often Chromium or
-Electron) leave the query unanswered, failed, or late; at the key-post
+Electron) leave the query unanswered, failed, or late with the expected PID; at the key-post
 boundary for both normal and smart paste, that unknown answer falls back to
 the NSWorkspace frontmost-process check used before the live proof, so
 uncertainty never makes paste stricter than the frontmost-application policy.
