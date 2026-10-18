@@ -54,7 +54,7 @@ describe('UpdateIndicator', () => {
       );
     });
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Checking for Updates…');
-    expect(container.querySelector('button')?.disabled).toBe(true);
+    expect(container.querySelector('button')?.getAttribute('aria-disabled')).toBe('true');
 
     await act(async () => {
       root.render(

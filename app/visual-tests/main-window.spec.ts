@@ -316,7 +316,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   const record = page.getByTestId('home-record-button');
 
   await expect(header).toBeVisible();
-  await expect(update).toHaveAccessibleName('Download Update. Murmur v0.27.1 is available');
+  await expect(update).toHaveAccessibleName('View Update. Murmur v0.27.1 is available');
   await expect(record).toHaveAccessibleName('Reconnecting your microphone…');
   await expect(record).toBeDisabled();
 

@@ -44,12 +44,13 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRe
       <button
         data-testid="update-indicator"
         type="button"
-        onClick={action}
-        disabled={busy}
+        onClick={() => { if (!busy) action(); }}
+        disabled={!compact && busy}
+        aria-disabled={busy}
         title={detail ? `${label}. ${detail}` : label}
         aria-label={compact && detail ? `${label}. ${detail}` : label}
         className={cn(
-          'relative flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait',
+          'relative flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait aria-disabled:cursor-wait',
           compact ? 'ui-icon-button bg-surface-container-low hover:bg-surface-container'
             : 'w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium transition-colors hover:bg-surface-container',
           failed ? 'text-error' : available || ready ? 'text-primary' : 'text-on-surface-variant',
@@ -68,8 +69,8 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRe
           </svg>
         )}
       </button>
-      {compact && status.phase === 'up-to-date' && <span className="ui-visually-hidden" role="status">You’re up to date.</span>}
-      {busy && <span className="ui-visually-hidden" role="status">{label}</span>}
+      {compact && <span className="ui-visually-hidden" role="status">{busy ? label : status.phase === 'up-to-date' ? 'You’re up to date.' : failed ? detail : ''}</span>}
+      {!compact && busy && <span className="ui-visually-hidden" role="status">{label}</span>}
       {!compact && detail && <p role="status" className={cn('text-xs', failed ? 'text-error' : status.phase === 'up-to-date' ? 'text-success' : 'text-on-surface-variant')}>{detail}</p>}
     </div>
   );
