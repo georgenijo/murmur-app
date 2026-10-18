@@ -19,12 +19,13 @@ describe('UpdateIndicator', () => {
   });
 
   it('keeps an available update actionable after passive discovery', async () => {
+    const onOpen = vi.fn();
     const onDownload = vi.fn();
     await act(async () => {
       root.render(
         <UpdateIndicator
           status={{ phase: 'available', version: 'v0.23.0', notes: '', isForced: false }}
-          onOpen={vi.fn()}
+          onOpen={onOpen}
           onDownload={onDownload}
           onRestart={vi.fn()}
           onRetryCheck={vi.fn()}
@@ -33,10 +34,11 @@ describe('UpdateIndicator', () => {
     });
 
     const button = container.querySelector('button');
-    expect(button?.getAttribute('aria-label')).toBe('Download Update. Murmur v0.23.0 is available');
+    expect(button?.getAttribute('aria-label')).toBe('View Update. Murmur v0.23.0 is available');
     expect(button?.textContent).toBe('');
     await act(async () => button?.click());
-    expect(onDownload).toHaveBeenCalledOnce();
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(onDownload).not.toHaveBeenCalled();
   });
 
   it('reports manual check progress and success without creating a dead button', async () => {
@@ -52,6 +54,7 @@ describe('UpdateIndicator', () => {
       );
     });
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Checking for Updates…');
+    expect(container.querySelector('button')?.disabled).toBe(true);
 
     await act(async () => {
       root.render(
@@ -65,6 +68,8 @@ describe('UpdateIndicator', () => {
       );
     });
     expect(container.querySelector('[role="status"]')?.textContent).toContain('up to date');
+    expect(container.querySelector('button')?.disabled).toBe(false);
+    expect(container.querySelector('button')?.title).toContain('You’re up to date.');
   });
 
   it('lets a failed check retry the check itself', async () => {
@@ -112,7 +117,8 @@ describe('UpdateIndicator', () => {
     expect(onRetryCheck).not.toHaveBeenCalled();
   });
 
-  it('stays absent while idle', async () => {
+  it('allows checking from the compact idle button', async () => {
+    const onRetryCheck = vi.fn();
     await act(async () => {
       root.render(
         <UpdateIndicator
@@ -120,10 +126,12 @@ describe('UpdateIndicator', () => {
           onOpen={vi.fn()}
           onDownload={vi.fn()}
           onRestart={vi.fn()}
-          onRetryCheck={vi.fn()}
+          onRetryCheck={onRetryCheck}
         />,
       );
     });
-    expect(container.innerHTML).toBe('');
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Check for Updates');
+    await act(async () => container.querySelector('button')?.click());
+    expect(onRetryCheck).toHaveBeenCalledOnce();
   });
 });
