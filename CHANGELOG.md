@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-20
+
 ### Fixed
 
 - The menu bar icon is no longer always white. Like other menu bar icons, it
