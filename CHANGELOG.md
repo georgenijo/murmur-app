@@ -8,8 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- The menu bar icon now follows the menu bar's appearance, showing dark on a light
-  wallpaper and light on a dark one, instead of always being white.
+- The menu bar icon is no longer always white. Like other menu bar icons, it
+  now switches between dark and light so it stays visible on light and dark
+  menu bars.
 
 ## [0.52.0] - 2026-10-18
 

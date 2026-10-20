@@ -137,7 +137,7 @@ pub(crate) fn register_update_wake_observer(_app_handle: tauri::AppHandle) {}
 
 /// Generate 66×66 RGBA pixel data for an audio-bar tray icon. It is installed as a
 /// macOS template image, so only alpha matters: the menu bar tints it to match.
-/// 66px = 3× resolution for a 22pt menu-bar icon (crisp on Retina).
+/// The macOS tray backend draws it at 18×18pt; 66px leaves ample Retina resolution.
 /// Draws 5 vertical capsule bars at varying heights (waveform / equalizer style).
 pub(crate) fn make_tray_icon_data() -> Vec<u8> {
     let (r, g, b): (u8, u8, u8) = (255, 255, 255);
