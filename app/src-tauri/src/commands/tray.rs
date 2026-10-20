@@ -135,8 +135,9 @@ pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
 #[cfg(all(not(target_os = "macos"), not(feature = "internal-benchmark")))]
 pub(crate) fn register_update_wake_observer(_app_handle: tauri::AppHandle) {}
 
-/// Generate 66×66 RGBA pixel data for an audio-bar tray icon (static white).
-/// 66px = 3× resolution for a 22pt menu-bar icon (crisp on Retina).
+/// Generate 66×66 RGBA pixel data for an audio-bar tray icon. It is installed as a
+/// macOS template image, so only alpha matters: the menu bar tints it to match.
+/// The macOS tray backend draws it at 18×18pt; 66px leaves ample Retina resolution.
 /// Draws 5 vertical capsule bars at varying heights (waveform / equalizer style).
 pub(crate) fn make_tray_icon_data() -> Vec<u8> {
     let (r, g, b): (u8, u8, u8) = (255, 255, 255);
@@ -186,7 +187,7 @@ pub(crate) fn make_tray_icon_data() -> Vec<u8> {
     data
 }
 
-/// No-op — tray icon is static white. Kept so the registered command doesn't break.
+/// No-op — tray icon is a static template image. Kept so the registered command doesn't break.
 #[tauri::command]
 pub fn update_tray_icon(_app: tauri::AppHandle, _icon_state: String) -> Result<(), String> {
     Ok(())

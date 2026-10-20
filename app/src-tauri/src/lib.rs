@@ -812,7 +812,7 @@ pub fn run() {
             let handle = app.handle().clone();
             TrayIconBuilder::with_id("main-tray")
                 .icon(tauri::image::Image::new(&idle_icon_data, 66, 66))
-                .icon_as_template(false)
+                .icon_as_template(true)
                 .tooltip("Murmur")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
