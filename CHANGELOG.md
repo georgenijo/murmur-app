@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The menu bar icon now follows the menu bar's appearance, showing dark on a light
+  wallpaper and light on a dark one, instead of always being white.
+
 ## [0.52.0] - 2026-10-18
 
 ### Added
