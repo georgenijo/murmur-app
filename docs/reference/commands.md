@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 233 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 234 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -118,6 +118,14 @@ or `{kind: available, sessionId, durationMs, chunks, nextCursor}`. Each chunk ha
 returns an available manifest with no chunks if another channel has retained audio.
 Manifest and range calls share two admitted workers; extra concurrent requests fail
 instead of forming an unbounded queue. See [Meeting audio playback](../features/meeting-audio-playback.md).
+
+## Meeting audio export (`meeting_audio_export.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `save_meeting_audio_export` | `id`, `format: markdown \| text \| json`, `path` | `Result<{bytes, audioFiles, missingFiles, pendingFiles}, String>` | Main window only. Atomically saves a `.zip` holding `meeting-review.{md,txt,json}` (byte-identical to `get_meeting_review_export`) and every retained WAV as `audio/{me\|them}-{sequence}.wav`. Refuses unretained, active, or audio-less sessions, busy capture, SRT/VTT, and non-`.zip` paths. WAVs are read through the playback boundary (exact owned path, no-follow open, WAV validation); an absent file, or a chunk still pending transcription, is omitted and listed in `audio/MISSING-AUDIO.txt` (counted in `missingFiles`/`pendingFiles`), while any unsafe or malformed file fails the whole export. Capture is rechecked during the export and at publication, the temp file is exclusive and unique, and a delete that wins the publish lock makes the export fail closed. Limits: 8,192 segments and 1 GiB of WAV data. |
+
+See [Meeting audio export](../features/meeting-audio-playback.md#zip-export-with-audio).
 
 ## Meeting suggestions (`meeting_suggestions.rs`)
 

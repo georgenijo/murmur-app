@@ -331,6 +331,33 @@ export async function saveMeetingExport(
   return path;
 }
 
+export type MeetingAudioExportFormat = Extract<MeetingReviewExportFormat, 'markdown' | 'text' | 'json'>;
+
+export interface MeetingAudioExportResult {
+  path: string;
+  bytes: number;
+  audioFiles: number;
+  missingFiles: number;
+  /** Chunks still awaiting transcription: listed as omitted, never read. */
+  pendingFiles: number;
+}
+
+/** Saves the review document plus every retained WAV as one ZIP chosen in the native save dialog. */
+export async function saveMeetingAudioExport(
+  id: string,
+  startedAtMs: number,
+  format: MeetingAudioExportFormat,
+): Promise<MeetingAudioExportResult | null> {
+  const stamp = new Date(startedAtMs).toISOString().slice(0, 10);
+  const path = await save({
+    defaultPath: `Murmur Meeting ${stamp} with audio.zip`,
+    filters: [{ name: 'Murmur meeting with audio', extensions: ['zip'] }],
+  });
+  if (typeof path !== 'string' || path.length === 0) return null;
+  const summary = await invoke<Omit<MeetingAudioExportResult, 'path'>>('save_meeting_audio_export', { id, format, path });
+  return { ...summary, path };
+}
+
 export function formatMeetingTimestamp(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(seconds / 3600);

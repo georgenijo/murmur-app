@@ -20,6 +20,13 @@ const MAX_EXPORT_BYTES: usize = 8 * 1024 * 1024;
 /// Reject anything that isn't an absolute path to a writable document with an
 /// allow-listed extension inside an existing directory.
 pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
+    validate_export_path_for(path, &ALLOWED_EXTENSIONS)
+}
+
+/// Same checks as [`validate_export_path`] against a caller-chosen allow-list,
+/// so a dedicated sink (the meeting audio ZIP) can accept its own extension
+/// without widening what `save_text_export` may write.
+pub(crate) fn validate_export_path_for(path: &Path, allowed: &[&str]) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("Export path must be absolute".to_string());
     }
@@ -39,9 +46,14 @@ pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .ok_or_else(|| "Export file name must have an extension".to_string())?;
-    if !ALLOWED_EXTENSIONS.contains(&extension.as_str()) {
+    if !allowed.contains(&extension.as_str()) {
+        let expected = allowed
+            .iter()
+            .map(|extension| format!(".{extension}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(format!(
-            "Unsupported export type '.{extension}' (expected .json, .md, .txt, .srt or .vtt)"
+            "Unsupported export type '.{extension}' (expected one of {expected})"
         ));
     }
     let parent = path

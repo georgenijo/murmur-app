@@ -76,6 +76,8 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
   Me/Them timeline or seeks from a selected segment on its canonical channel.
   Playback pauses for recording and voice work; unretained sessions explain
   why audio is unavailable.
+- Export the review document and every retained WAV as one ZIP; missing files are
+  listed in the archive and never replaced, and audio exports are size-bounded.
 - Copy or save speaker-labeled SRT/WebVTT captions using recorded segment times.
   Overlapping speech keeps its original timing and untranscribed sections are
   marked. Review summaries and audio are excluded from captions.
@@ -348,7 +350,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 233 registered commands |
+| Rust backend | `app/src-tauri/src/` — 234 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

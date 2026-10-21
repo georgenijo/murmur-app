@@ -14,7 +14,7 @@ pub(crate) const MAX_CHUNK_DURATION_MS: u64 = 15_500;
 pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const AUDIO_UNAVAILABLE: &str = "This retained meeting audio is unavailable.";
 const INVALID_REQUEST: &str = "The meeting audio request is invalid.";
-const CAPTURE_BUSY: &str =
+pub(crate) const CAPTURE_BUSY: &str =
     "Pause recording or finish the active voice task before playing meeting audio.";
 const INVALIDATED: &str =
     "Meeting audio changed or was deleted. Open the meeting again before playing.";
@@ -128,7 +128,7 @@ fn require_main_window(label: &str) -> Result<(), String> {
     }
 }
 
-fn capture_busy(state: &State) -> bool {
+pub(crate) fn capture_busy(state: &State) -> bool {
     state.app_state.dictation.lock_or_recover().status != crate::state::DictationStatus::Idle
         || state.app_state.meeting_blocks_asr()
         || state.app_state.transform_status().blocks_recording()
@@ -181,9 +181,9 @@ pub async fn get_meeting_audio_manifest(
 static AUDIO_READERS: AtomicUsize = AtomicUsize::new(0);
 static AUDIO_REVISION: AtomicU64 = AtomicU64::new(0);
 
-struct AudioReadPermit;
+pub(crate) struct AudioReadPermit;
 impl AudioReadPermit {
-    fn acquire() -> Result<Self, String> {
+    pub(crate) fn acquire() -> Result<Self, String> {
         AUDIO_READERS
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 2).then_some(count + 1)
@@ -196,6 +196,17 @@ impl Drop for AudioReadPermit {
     fn drop(&mut self) {
         AUDIO_READERS.fetch_sub(1, Ordering::Release);
     }
+}
+
+static AUDIO_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serializes deleting retained audio against publishing a ZIP export of it.
+/// Deletion holds it from revocation to removal; an export holds it from its
+/// final revalidation through the rename.
+pub(crate) fn lock_audio_mutation() -> std::sync::MutexGuard<'static, ()> {
+    AUDIO_MUTATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub(crate) fn revoke_audio_reads() {
@@ -343,21 +354,78 @@ fn revalidate_audio_read(
     Ok(())
 }
 
+/// Why a whole retained segment could not be read. `Missing` is reserved for a
+/// validly owned reference whose file is simply absent (pruned or deleted
+/// out-of-band); every unsafe or malformed file is `Unavailable`.
+pub(crate) enum AudioSegmentError {
+    Missing,
+    Unavailable(String),
+}
+
+impl From<String> for AudioSegmentError {
+    fn from(message: String) -> Self {
+        Self::Unavailable(message)
+    }
+}
+
 fn open_audio_file(path: &Path) -> Result<File, String> {
+    open_audio_file_classified(path).map_err(|error| match error {
+        AudioSegmentError::Missing => AUDIO_UNAVAILABLE.to_string(),
+        AudioSegmentError::Unavailable(message) => message,
+    })
+}
+
+fn open_audio_file_classified(path: &Path) -> Result<File, AudioSegmentError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)
-        .map_err(|_| AUDIO_UNAVAILABLE)?;
-    let metadata = file.metadata().map_err(|_| AUDIO_UNAVAILABLE)?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AudioSegmentError::Missing
+            } else {
+                AudioSegmentError::Unavailable(AUDIO_UNAVAILABLE.into())
+            }
+        })?;
+    let metadata = file.metadata().map_err(|_| AUDIO_UNAVAILABLE.to_string())?;
     if !metadata.is_file()
         || metadata.nlink() != 1
         || !(44..=MAX_AUDIO_FILE_BYTES).contains(&metadata.len())
     {
-        return Err(AUDIO_UNAVAILABLE.into());
+        return Err(AUDIO_UNAVAILABLE.to_string().into());
     }
     Ok(file)
+}
+
+/// Read one complete retained WAV through the same session-scoped boundary as
+/// playback: the SQLite join and exact generated path, no-follow open, bounded
+/// RIFF validation, and post-read identity revalidation. The file is at most
+/// `MAX_AUDIO_FILE_BYTES`, so holding it in memory is bounded.
+pub(crate) fn read_whole_audio_segment(
+    repository: &MeetingRepository,
+    session_id: &str,
+    segment_id: i64,
+    revision: u64,
+) -> Result<Vec<u8>, AudioSegmentError> {
+    validate_range_request(session_id, segment_id, 0, 1)?;
+    let reference = repository.audio_reference(session_id, segment_id)?;
+    let mut file = open_audio_file_classified(&reference.path)?;
+    let metadata = file.metadata().map_err(|_| AUDIO_UNAVAILABLE.to_string())?;
+    validate_wav(&mut file, metadata.len(), reference.duration_ms)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| AUDIO_UNAVAILABLE.to_string())?;
+    let mut bytes = vec![0; metadata.len() as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|_| AUDIO_UNAVAILABLE.to_string())?;
+    revalidate_audio_read(
+        repository, session_id, segment_id, &reference, &file, &metadata, revision,
+    )?;
+    Ok(bytes)
+}
+
+pub(crate) fn current_audio_revision() -> u64 {
+    AUDIO_REVISION.load(Ordering::Acquire)
 }
 
 fn validate_wav(file: &mut File, length: u64, expected_duration_ms: u64) -> Result<(), String> {

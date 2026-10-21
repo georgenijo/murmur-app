@@ -663,10 +663,93 @@ impl MeetingRepository {
         {
             return Err(AUDIO_UNAVAILABLE.into());
         }
+        // The exact generated reference must also pass the shared spool-path check.
+        let path = self
+            .audio_path(&expected)
+            .map_err(|_| AUDIO_UNAVAILABLE.to_string())?;
         Ok(OwnedAudioReference {
-            path: self.root.join(expected),
+            path,
             duration_ms: end_ms - start_ms,
         })
+    }
+
+    /// Every retained chunk of a finished, audio-retaining session in timeline
+    /// order, for the ZIP export. It applies the same retention and
+    /// finished-session gates as `audio_manifest`/`audio_reference` but is not
+    /// paged: more than `MAX_EXPORT_AUDIO_SEGMENTS` rows is refused outright.
+    /// Chunks still `pending` transcription are listed (flagged) so the export
+    /// can account for them, but `audio_reference` keeps refusing to read them.
+    pub(crate) fn audio_export_segments(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::meeting_audio_export::ExportSegment>, String> {
+        use crate::meeting_audio::{AUDIO_UNAVAILABLE, MAX_CHUNK_DURATION_MS, MAX_SAFE_INTEGER};
+        use crate::meeting_audio_export::{ExportSegment, MAX_EXPORT_AUDIO_SEGMENTS};
+        crate::meeting_audio::validate_session_id(session_id)?;
+        let connection = self.open_checked()?;
+        let (retained, status, ended_at_ms) = connection
+            .query_row(
+                "SELECT retain_audio, status, ended_at_ms FROM meeting_sessions WHERE id=?",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_error)?
+            .ok_or(AUDIO_UNAVAILABLE)?;
+        if !retained {
+            return Err(
+                "This meeting did not keep its audio, so there is no audio to export.".into(),
+            );
+        }
+        if status == "active" || ended_at_ms.is_none() {
+            return Err("Stop this meeting before exporting its audio.".into());
+        }
+        let mut statement = connection
+            .prepare(
+                "SELECT id, speaker, sequence, start_ms, end_ms, status='pending' FROM meeting_segments
+                 WHERE session_id=?1 AND status IN ('final','failed','pending') AND audio_relative_path IS NOT NULL
+                 ORDER BY start_ms ASC, id ASC LIMIT ?2",
+            )
+            .map_err(db_error)?;
+        let segments = statement
+            .query_map(
+                params![session_id, MAX_EXPORT_AUDIO_SEGMENTS as i64 + 1],
+                |row| {
+                    Ok(ExportSegment {
+                        segment_id: row.get(0)?,
+                        channel: MeetingSpeaker::from_db(&row.get::<_, String>(1)?)?,
+                        sequence: to_u64(row.get(2)?)?,
+                        start_ms: to_u64(row.get(3)?)?,
+                        end_ms: to_u64(row.get(4)?)?,
+                        pending: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        if segments.is_empty() {
+            return Err("This meeting has no retained audio to export.".into());
+        }
+        if segments.len() > MAX_EXPORT_AUDIO_SEGMENTS {
+            return Err(crate::meeting_audio_export::TOO_LARGE.into());
+        }
+        if segments.iter().any(|segment| {
+            segment.segment_id <= 0
+                || segment.segment_id as u64 > MAX_SAFE_INTEGER
+                || segment.end_ms > MAX_SAFE_INTEGER
+                || segment.start_ms >= segment.end_ms
+                || segment.end_ms - segment.start_ms > MAX_CHUNK_DURATION_MS
+        }) {
+            return Err(AUDIO_UNAVAILABLE.into());
+        }
+        Ok(segments)
     }
 
     pub fn save_metadata(
@@ -1228,8 +1311,25 @@ impl MeetingRepository {
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
+        self.delete_session_with(id, &|| {}, &|| {})
+    }
+
+    /// `before_lock` runs just before the audio mutation lock is requested and
+    /// `after_revoke` once reads are revoked but nothing is removed yet (test
+    /// seams, no-ops in production).
+    pub(crate) fn delete_session_with(
+        &self,
+        id: &str,
+        before_lock: &dyn Fn(),
+        after_revoke: &dyn Fn(),
+    ) -> Result<(), String> {
         crate::meeting_audio::validate_session_id(id)?;
+        before_lock();
+        // Held until the session and its audio are gone, so an in-flight ZIP
+        // export cannot publish between the revocation and the removal.
+        let _mutation = crate::meeting_audio::lock_audio_mutation();
         crate::meeting_audio::revoke_audio_reads();
+        after_revoke();
         let mut connection = self.open_checked()?;
         let paths = audio_paths_for_session(&connection, id)?;
         let transaction = connection
@@ -1266,6 +1366,7 @@ impl MeetingRepository {
     }
 
     pub fn delete_all(&self) -> Result<(), String> {
+        let _mutation = crate::meeting_audio::lock_audio_mutation();
         crate::meeting_audio::revoke_audio_reads();
         let mut connection = self.open_checked()?;
         let transaction = connection

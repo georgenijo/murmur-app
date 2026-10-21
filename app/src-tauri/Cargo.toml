@@ -51,6 +51,8 @@ tar = "0.4"
 bzip2 = "0.5"
 arboard = "3"
 hound = "3.5"
+# Stored-only (no compression features) ZIP writer for the meeting audio export (#735).
+zip = { version = "4", default-features = false }
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "isomp4", "aac", "alac"] }
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
