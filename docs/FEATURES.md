@@ -237,7 +237,7 @@ file-transcription toasts remain available.
 ### History workspace — [features/history-workspace.md](features/history-workspace.md)
 The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
-sessions, supports copy/text export, and deletes one or all sessions locally.
+sessions, supports copy/text export, review-and-audio ZIP export for meetings that kept audio, and deletes one or all sessions locally.
 The Queries tab pages through the separate opt-in Voice Query store by provider
 and can purge it directly. Query context and teaching context are never
 exported.
@@ -348,7 +348,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 233 registered commands |
+| Rust backend | `app/src-tauri/src/` — 234 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

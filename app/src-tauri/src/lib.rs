@@ -453,6 +453,7 @@ pub fn run() {
             meeting_audio::get_meeting_audio_manifest,
             meeting_audio::read_meeting_audio_range,
             meeting_audio::get_meeting_audio_capture_busy,
+            meeting_audio::save_meeting_review_audio_export,
             commands::meeting::save_meeting_review,
             commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,

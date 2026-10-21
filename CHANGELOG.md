@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Meetings
+
+- Finished meetings that kept their audio can be exported as one ZIP with the
+  chosen Markdown, plain text, or JSON review and every retained WAV chunk.
+  Missing audio is listed in the archive instead of being replaced, and exports
+  are limited to 2,048 chunks or 512 MiB of audio.
+
 ## [0.51.6] - 2026-10-14
 
 ### Dictation

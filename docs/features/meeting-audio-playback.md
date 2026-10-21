@@ -80,12 +80,74 @@ be gone after a partial failure; retry treats missing files as removed. Delete a
 similarly commits row deletion only after its audio directory is removed and
 recreated. None of these paths follows an audio-directory symlink.
 
+## Export with audio
+
+**Export with audio…** in the review workspace saves a ZIP of a finished meeting's
+review document and its retained audio. It is enabled only when the meeting kept
+audio, has finished, and the Format menu is Markdown, plain text, or JSON.
+Otherwise the button is disabled and the status line beside it says why. The
+native command refuses the same cases, so a stale UI cannot bypass them.
+
+The archive is stored without compression and holds:
+
+- `review.md`, `review.txt`, or `review.json`, byte for byte the string
+  `render_export` returns for that format;
+- `audio/me-00000000.wav`, `audio/them-00000000.wav`, and so on, one per retained
+  final or failed chunk, named by channel and capture sequence and containing the
+  original WAV bytes. Nothing is transcoded, resampled, merged, or synthesized;
+- `MISSING-AUDIO.txt`, only when something is not included.
+
+Each chunk goes through the playback read path: the session and segment are
+joined in SQLite, the reference must equal the generated
+`audio/{session}/{channel}-{sequence}.wav` path and passes the repository's
+`audio_path` check, the file is opened without following symlinks, and the same
+size, hardlink, RIFF/PCM16 and duration validation applies before the bytes are
+read and revalidated. The frontend sends a session ID, a format, and a
+user-chosen `.zip` destination; it never sends audio paths.
+
+**Missing audio.** A chunk that is absent, replaced, malformed, or has a forged
+reference is left out and listed in `MISSING-AUDIO.txt` by file name, segment ID,
+and time range (no transcript text or paths). Chunks still awaiting transcription
+are counted there too, because playback excludes them. The result message names
+both counts, for example "Not included: 2 missing or unreadable". If no chunk can
+be read, the export fails and no file is written.
+
+**Bounds.** One export holds at most 2,048 chunk files (about 8.8 hours of one
+channel) and 512 MiB of audio, below the 4 GiB ZIP32 limit; the document keeps its
+8 MiB ceiling. Exceeding either limit, a changed or deleted meeting during the
+export, or any write error aborts with a message and nothing saved. The file is
+built in a hidden temporary sibling of the destination, flushed, then renamed
+into place, so an existing file at the destination survives a refused export.
+One gate orders exports against every audio removal (single delete, delete all,
+prune, playback invalidation). A removal takes it before it revokes reads and
+holds it until its database transaction and file removal have finished. An export
+takes it briefly before reading any session state to record the starting
+revision, and again from its last revision check through the rename. An export
+that starts while a removal is running therefore waits for it and then sees the
+settled session (usually "unavailable"); it can never adopt a half-finished
+removal's revision. An export admitted earlier either publishes before the
+removal begins or sees the changed revision, refuses, and removes its temporary
+file, so a deletion can never finish between the final check and the rename.
+Chunks are read one at a time (at most 512 KiB buffered), and the export uses one
+of playback's two reader slots, so a busy reader returns "try again shortly".
+
+The button and its status line use the shared control styles and add no motion, so
+reduced-motion settings need no special case. The status line is a polite live
+region and the button references it with `aria-describedby`.
+
 ## Verification
 
 Synthetic WAV and SQLite tests cover retention and terminal-state gates,
 cross-session ownership, cursor pagination, overlaps and long gaps, binary range
 round trips, EOF, malformed headers, file limits, symlinks, hardlinks, deletion
-revocation, and retryable cleanup failures. Frontend tests cover bounded loading,
+revocation, and retryable cleanup failures. Export tests cover exact document and
+WAV bytes for all three formats, unretained/active/caption refusals, missing,
+symlinked and forged chunks, pending chunks, size and count bounds, atomic
+failure, and deletion racing publication (a deletion completing just before
+publication is refused and keeps an existing destination; revocation is blocked
+while the rename runs; an export that starts after a removal revoked but before it
+finished waits for it, then refuses and leaves an existing destination and the
+folder untouched, for both single delete and delete all). Frontend tests cover bounded loading,
 seek/channel behavior, pause events, and stale asynchronous work. Native smoke
 testing uses an isolated synthetic retained-audio fixture; it does not establish
 that microphone or system-audio recording succeeded.

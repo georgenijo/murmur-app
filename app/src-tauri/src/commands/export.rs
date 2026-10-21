@@ -20,6 +20,12 @@ const MAX_EXPORT_BYTES: usize = 8 * 1024 * 1024;
 /// Reject anything that isn't an absolute path to a writable document with an
 /// allow-listed extension inside an existing directory.
 pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
+    validate_export_path_for(path, &ALLOWED_EXTENSIONS)
+}
+
+/// Same checks as [`validate_export_path`] for a caller-chosen extension
+/// allow-list (the meeting audio bundle is the only `.zip` producer).
+pub(crate) fn validate_export_path_for(path: &Path, allowed: &[&str]) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("Export path must be absolute".to_string());
     }
@@ -39,9 +45,18 @@ pub(crate) fn validate_export_path(path: &Path) -> Result<(), String> {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .ok_or_else(|| "Export file name must have an extension".to_string())?;
-    if !ALLOWED_EXTENSIONS.contains(&extension.as_str()) {
+    if !allowed.contains(&extension.as_str()) {
+        let expected = if allowed == ALLOWED_EXTENSIONS {
+            ".json, .md, .txt, .srt or .vtt".to_string()
+        } else {
+            allowed
+                .iter()
+                .map(|extension| format!(".{extension}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         return Err(format!(
-            "Unsupported export type '.{extension}' (expected .json, .md, .txt, .srt or .vtt)"
+            "Unsupported export type '.{extension}' (expected {expected})"
         ));
     }
     let parent = path
@@ -85,6 +100,48 @@ pub(crate) fn write_text_export(path: &Path, contents: &str) -> Result<u64, Stri
         return Err(format!("Failed to publish export: {e}"));
     }
     Ok(contents.len() as u64)
+}
+
+/// Validate `path` against `allowed`, let `build` stream a new file into an
+/// exclusive temp sibling, then publish it with a rename. Any failure removes
+/// the temp file, so a refused or partial bundle never appears at `path`.
+///
+/// `authorize` runs after the file is built and flushed, immediately before
+/// the rename. The guard it returns is held across the rename, so the caller
+/// can make its final permission check and the publication one atomic step.
+pub(crate) fn write_file_export<G>(
+    path: &Path,
+    allowed: &[&str],
+    build: impl FnOnce(&mut std::fs::File) -> Result<(), String>,
+    authorize: impl FnOnce() -> Result<G, String>,
+) -> Result<u64, String> {
+    validate_export_path_for(path, allowed)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("export");
+    let temp = path.with_file_name(format!(".{name}.murmur-tmp-{}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|e| format!("Failed to write export: {e}"))?;
+    let result = build(&mut file).and_then(|()| {
+        file.sync_all()
+            .map_err(|e| format!("Failed to write export: {e}"))?;
+        let bytes = file
+            .metadata()
+            .map_err(|e| format!("Failed to write export: {e}"))?
+            .len();
+        drop(file);
+        let _guard = authorize()?;
+        std::fs::rename(&temp, path).map_err(|e| format!("Failed to publish export: {e}"))?;
+        Ok(bytes)
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 /// Write a user-authored text export to a path the user chose in the native
@@ -151,7 +208,13 @@ mod tests {
     #[test]
     fn rejects_unlisted_extensions() {
         let dir = temp_dir("bad_ext");
-        for name in ["script.sh", "app.command", "config.toml", "archive.tar.gz"] {
+        for name in [
+            "script.sh",
+            "app.command",
+            "config.toml",
+            "archive.tar.gz",
+            "bundle.zip",
+        ] {
             let error = write_text_export(&dir.join(name), "x").unwrap_err();
             assert!(error.contains("Unsupported export type"), "{name}: {error}");
         }

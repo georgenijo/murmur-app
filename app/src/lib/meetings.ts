@@ -331,6 +331,46 @@ export async function saveMeetingExport(
   return path;
 }
 
+export type MeetingAudioExportFormat = Extract<MeetingReviewExportFormat, 'markdown' | 'text' | 'json'>;
+export function supportsMeetingAudioExport(format: MeetingReviewExportFormat): format is MeetingAudioExportFormat {
+  return format === 'markdown' || format === 'text' || format === 'json';
+}
+
+export interface MeetingAudioExportResult {
+  path: string;
+  bytes: number;
+  audioFiles: number;
+  missingAudio: number;
+  pendingAudio: number;
+}
+
+/** Saves the chosen review document and every retained WAV chunk as one ZIP. */
+export async function saveMeetingAudioExport(
+  id: string,
+  startedAtMs: number,
+  format: MeetingAudioExportFormat,
+): Promise<MeetingAudioExportResult | null> {
+  const stamp = new Date(startedAtMs).toISOString().slice(0, 10);
+  const path = await save({
+    defaultPath: `Murmur Meeting ${stamp} with audio.zip`,
+    filters: [{ name: 'Murmur meeting with audio', extensions: ['zip'] }],
+  });
+  if (typeof path !== 'string' || path.length === 0) return null;
+  const summary = await invoke<Omit<MeetingAudioExportResult, 'path'>>('save_meeting_review_audio_export', { id, format, path });
+  return { ...summary, path };
+}
+
+export function meetingAudioExportNotice(result: MeetingAudioExportResult): string {
+  const files = `${result.audioFiles} audio file${result.audioFiles === 1 ? '' : 's'}`;
+  const gaps = [
+    result.missingAudio > 0 ? `${result.missingAudio} missing or unreadable` : null,
+    result.pendingAudio > 0 ? `${result.pendingAudio} still awaiting transcription` : null,
+  ].filter((part): part is string => part !== null);
+  return gaps.length === 0
+    ? `Review and ${files} exported.`
+    : `Review and ${files} exported. Not included: ${gaps.join(', ')}. See MISSING-AUDIO.txt in the ZIP.`;
+}
+
 export function formatMeetingTimestamp(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(seconds / 3600);
