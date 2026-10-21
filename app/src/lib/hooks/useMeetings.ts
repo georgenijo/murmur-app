@@ -21,6 +21,7 @@ import {
   renameMeetingRemoteSpeaker,
   restoreMeetingReviewFromGenerated,
   saveMeetingExport,
+  saveMeetingAudioExport,
   saveMeetingReview,
   saveMeetingMetadata,
   startMeeting,
@@ -31,6 +32,7 @@ import {
   type MeetingRuntimeStatus,
   type MeetingSummaryStatus,
   type MeetingSegment,
+  type MeetingAudioExportFormat,
   type MeetingReviewExportFormat,
   type SaveMeetingReviewRequest,
   type SaveMeetingMetadataRequest,
@@ -337,6 +339,20 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
+  const exportReviewWithAudio = useCallback(async (
+    id: string,
+    startedAtMs: number,
+    format: MeetingAudioExportFormat,
+  ) => {
+    setError(null);
+    try {
+      return await saveMeetingAudioExport(id, startedAtMs, format);
+    } catch (cause) {
+      setError(String(cause));
+      return null;
+    }
+  }, []);
+
   const saveReview = useCallback(async (request: SaveMeetingReviewRequest) => {
     setError(null);
     try {
@@ -472,6 +488,7 @@ export function useMeetings(settings: Settings) {
     openSystemAudioPreferences: openPreferences,
     copy,
     exportReview,
+    exportReviewWithAudio,
     saveReview,
     saveMetadata,
     applyCalendarEvent,

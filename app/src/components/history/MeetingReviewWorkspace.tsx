@@ -6,6 +6,7 @@ import {
   MEETING_EXPORT_FORMATS,
   meetingSegmentDisplayLabel,
   type EditableReviewDocument,
+  type MeetingAudioExportFormat,
   type MeetingReviewDocumentV1,
   type NewReviewClaim,
   type MeetingReviewExportFormat,
@@ -121,6 +122,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   const [newClaims, setNewClaims] = useState<Array<{ id: number; claim: NewReviewClaim }>>([]);
   const nextClaimId = useRef(0);
   const [saving, setSaving] = useState(false);
+  const [audioExporting, setAudioExporting] = useState(false);
+  const [audioExportNotice, setAudioExportNotice] = useState<string | null>(null);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
   const summaryBusy = summaryStatus?.phase === 'running' || summaryStatus?.phase === 'cancelling';
   const activeDocument = detail.activeDocument;
@@ -146,6 +149,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   useEffect(() => {
     setLabelDrafts({});
     setRemoteSpeakerDrafts({});
+    setAudioExporting(false);
+    setAudioExportNotice(null);
   }, [detail.session.id]);
 
   useLayoutEffect(() => {
@@ -310,7 +315,42 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     if (path && isCurrentWorkspace(activation)) onNotice(`Meeting ${captions ? 'captions' : 'review'} exported as ${format}.`);
   };
 
-  const renderTextItems = (title: string, items: MeetingReviewDocumentV1['decisions']) => (
+  const hasRetainedAudio = detail.session.retainAudio && segments.some((segment) => segment.audioAvailable);
+  const audioExportBlock = captions
+    ? 'Choose Markdown, plain text, or JSON to export with audio.'
+    : !detail.session.retainAudio
+      ? 'Audio was not retained for this meeting, so there is no audio to export.'
+      : detail.session.status === 'active'
+        ? 'Stop this meeting before exporting its audio.'
+        : !hasRetainedAudio
+          ? 'This meeting has no retained audio to export.'
+          : captureBusy
+            ? 'Finish the active recording or voice task before exporting audio.'
+            : null;
+
+  const exportReviewWithAudio = async () => {
+    if (audioExporting || audioExportBlock || captions) return;
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    setAudioExporting(true);
+    setAudioExportNotice(null);
+    const result = await meetings.exportReviewWithAudio(sessionId, detail.session.startedAtMs, format as MeetingAudioExportFormat);
+    if (!isCurrentWorkspace(activation)) return;
+    setAudioExporting(false);
+    if (!result) return;
+    const files = `${result.audioFiles} audio ${result.audioFiles === 1 ? 'file' : 'files'}`;
+    const gaps = [
+      result.missingFiles > 0 && `${result.missingFiles} retained audio ${result.missingFiles === 1 ? 'file was' : 'files were'} missing`,
+      result.pendingFiles > 0 && `${result.pendingFiles} ${result.pendingFiles === 1 ? 'file was' : 'files were'} still waiting for transcription and not included`,
+    ].filter(Boolean);
+    const message = gaps.length > 0
+      ? `Exported the ${format} review and ${files}. ${gaps.join(' and ')}; see audio/MISSING-AUDIO.txt inside the ZIP.`
+      : `Exported the ${format} review and ${files} as a ZIP.`;
+    setAudioExportNotice(message);
+    onNotice(message);
+  };
+
+  const renderTextItems =(title: string, items: MeetingReviewDocumentV1['decisions']) => (
     <section className="mt-3" aria-labelledby={`meeting-${title.toLowerCase().replace(/\s/g, '-')}`}>
       <h4 id={`meeting-${title.toLowerCase().replace(/\s/g, '-')}`} className="text-xs font-semibold text-on-surface">{title}</h4>
       {items.length === 0 ? <p className="mt-1 text-xs text-on-surface-variant">None recorded.</p> : items.map((item) => (
@@ -412,7 +452,11 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         </label>
         <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{captions ? 'Copy captions' : 'Copy review'}</button>
         <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export…</button>
+        <button type="button" disabled={audioExporting || audioExportBlock !== null} aria-busy={audioExporting} aria-describedby="meeting-audio-export-status" onClick={() => void exportReviewWithAudio()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{audioExporting ? 'Exporting audio…' : 'Export with audio…'}</button>
       </div>
+      <p id="meeting-audio-export-status" role="status" className="mb-3 text-xs text-on-surface-variant">
+        {audioExportNotice ?? audioExportBlock ?? 'Export with audio saves a ZIP with the selected review document and every retained WAV file. Missing files are listed in the ZIP, never replaced.'}
+      </p>
 
       {captions && <p className="mb-3 text-xs text-on-surface-variant" role="status">{detail.session.status === 'active'
         ? 'Stop this meeting before exporting captions.'

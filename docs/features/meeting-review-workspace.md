@@ -171,10 +171,13 @@ All three formats represent one fixed scope named a reviewed meeting:
 
 Markdown uses transcript anchors, plain text names segment IDs and timestamps, and
 JSON uses `murmur.meeting-review-export.v2`. Markdown, text, and JSON include the
-title and attendees. Exports exclude audio, local paths,
+title and attendees. Document exports exclude audio, local paths,
 prompts, discarded drafts, and hidden runtime metrics. Rust builds one validated
 snapshot and renders all formats from it. Clipboard rendering and the existing
 atomic `.md`/`.txt`/`.json` sink share the 8 MiB bound and never truncate evidence.
+
+Retained audio can be exported alongside a Markdown, text, or JSON document as one
+ZIP with **Export with audio…**; see [ZIP export with audio](meeting-audio-playback.md#zip-export-with-audio).
 
 ### Meeting captions
 

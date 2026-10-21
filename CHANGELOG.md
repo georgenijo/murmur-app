@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Meetings
+
+- Added Export with audio to the meeting review: one ZIP with the chosen
+  Markdown, text, or JSON review and every retained WAV segment, unmodified.
+  Missing or still-pending audio files are listed in the ZIP and in the app instead of being
+  replaced, and exports are limited to 8,192 segments and 1 GiB of audio.
+
 ## [0.51.6] - 2026-10-14
 
 ### Dictation
