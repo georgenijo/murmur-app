@@ -1139,8 +1139,6 @@ mod tests {
     mod bundle {
         use super::*;
         use crate::meeting_review::{render_export, MeetingReviewExportFormat};
-        use std::io::Read as _;
-
         type Archive = zip::ZipArchive<File>;
 
         fn open(path: &Path) -> Archive {
