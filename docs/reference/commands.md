@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 233 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 234 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -102,7 +102,7 @@ silently selecting or truncating details. See [Calendar naming](../features/meet
 
 ## Retained meeting audio (`meeting_audio.rs`)
 
-All three commands require the main window. The manifest carries no transcript,
+All four commands require the main window. The manifest carries no transcript,
 title, attendee, or filesystem path. Range responses use binary IPC rather
 than JSON or base64.
 
@@ -111,6 +111,7 @@ than JSON or base64.
 | `get_meeting_audio_manifest` | `sessionId`, `fromMs?`, `channel?: all \| me \| them`, `cursor?: {startMs, segmentId}`, `limit?` | `Result<AudioManifest, String>` | Metadata-only timeline of retained final/failed chunks for a finished session. Defaults to position zero, All, and 128 entries; caps pages at 256. Uses `(startMs, segmentId)` keyset pagination and includes chunks overlapping `fromMs`. The global duration is independent of the selected channel. |
 | `read_meeting_audio_range` | `sessionId`, `segmentId`, `offsetBytes`, `lengthBytes` | `Result<binary response, String>` | Revalidates session/segment ownership and retained-audio consent, refuses symlinks and nonregular files, validates mono 16 kHz PCM16 WAV structure, and returns at most 64 KiB. A file may be at most 512 KiB; exact EOF returns an empty response. Busy capture and invalidated reads fail without returning audio. |
 | `get_meeting_audio_capture_busy` | — | `Result<bool, String>` | Native playback-admission snapshot for dictation, meeting/recovery/summary, transform, query, microphone preview/startup checks, and actual capture activity. Performs no Calendar or model-installation probe. |
+| `save_meeting_review_audio_export` | `id`, `format: markdown \| text \| json`, `path` | `Result<{bytes, audioFiles, missingAudio, pendingAudio}, String>` | Atomically saves a stored (uncompressed) `.zip` holding `review.md`/`review.txt`/`review.json` (byte-identical to `get_meeting_review_export`) and every retained chunk as `audio/{me\|them}-{sequence}.wav`. Refuses SubRip/WebVTT, unretained or active sessions, and meetings with no audio. Each chunk is read through the same session-scoped path as playback; unreadable ones are omitted and listed in `MISSING-AUDIO.txt` (which also counts pending chunks), never replaced. Fails closed, leaving nothing at `path`, when no chunk is readable, when audio changes or is deleted during export, or above 2,048 files or 512 MiB of audio. Shares the two-reader admission limit with playback. |
 
 `AudioManifest` is either `{kind: unavailable, reason: notRetained | notFinished | noAudio}`
 or `{kind: available, sessionId, durationMs, chunks, nextCursor}`. Each chunk has

@@ -7,9 +7,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tauri::{Emitter, Manager};
 
+mod export;
+pub(crate) use export::export_review_with_audio;
+pub use export::AudioBundleSummary;
+
 pub(crate) const MAX_MANIFEST_CHUNKS: u32 = 256;
 pub(crate) const MAX_AUDIO_FILE_BYTES: u64 = 512 * 1024;
 const MAX_RANGE_BYTES: u32 = 64 * 1024;
+/// A review-and-audio export holds at most this many chunk files (about 8.8
+/// hours of one channel) and this many audio bytes. Over either limit the
+/// export is refused before anything is published; it never truncates.
+pub(crate) const MAX_EXPORT_AUDIO_FILES: u32 = 2_048;
+pub(crate) const MAX_EXPORT_AUDIO_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_CHUNK_DURATION_MS: u64 = 15_500;
 pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const AUDIO_UNAVAILABLE: &str = "This retained meeting audio is unavailable.";
@@ -83,6 +92,22 @@ pub enum AudioManifest {
 pub(crate) struct OwnedAudioReference {
     pub path: PathBuf,
     pub duration_ms: u64,
+}
+
+/// One retained chunk a review-and-audio export will try to include.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExportAudioSegment {
+    pub segment_id: i64,
+    pub channel: crate::meeting_store::MeetingSpeaker,
+    pub sequence: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+pub(crate) struct ExportAudioPlan {
+    pub segments: Vec<ExportAudioSegment>,
+    /// Chunks still waiting for transcription; playback excludes them too.
+    pub pending: u32,
 }
 
 pub(crate) fn validate_session_id(value: &str) -> Result<(), String> {
@@ -178,6 +203,37 @@ pub async fn get_meeting_audio_manifest(
     .map_err(|_| AUDIO_UNAVAILABLE.to_string())?
 }
 
+/// Saves the chosen review document plus every retained WAV chunk as one ZIP.
+/// Shares the playback reader admission limit; see `export.rs` for the bounds.
+#[tauri::command]
+pub async fn save_meeting_review_audio_export(
+    window: tauri::WebviewWindow,
+    id: String,
+    format: crate::meeting_review::MeetingReviewExportFormat,
+    path: String,
+    state: tauri::State<'_, State>,
+) -> Result<AudioBundleSummary, String> {
+    require_main_window(window.label())?;
+    validate_session_id(id.trim())?;
+    let repository = state.meeting_store.repository()?;
+    let permit = AudioReadPermit::acquire()?;
+    let summary = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        export_review_with_audio(&repository, id.trim(), format, Path::new(&path))
+    })
+    .await
+    .map_err(|_| AUDIO_UNAVAILABLE.to_string())??;
+    // Content-free: counts only, never names or audio.
+    tracing::info!(
+        target: "pipeline",
+        audio_files = summary.audio_files,
+        missing_audio = summary.missing_audio,
+        bytes = summary.bytes,
+        "meeting audio export written"
+    );
+    Ok(summary)
+}
+
 static AUDIO_READERS: AtomicUsize = AtomicUsize::new(0);
 static AUDIO_REVISION: AtomicU64 = AtomicU64::new(0);
 
@@ -198,8 +254,51 @@ impl Drop for AudioReadPermit {
     }
 }
 
-pub(crate) fn revoke_audio_reads() {
+/// Serializes audio removal with export admission and publication. Every
+/// removal holds this gate from its revocation until the database and files
+/// are settled, so an export either:
+/// - is admitted before the removal, keeps the older revision, and refuses at
+///   its final check (or publishes first, while it holds the gate), or
+/// - waits for the removal to finish and reads the settled session state.
+///
+/// An export can never adopt the revision of a removal that is still running.
+static PUBLISH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn publish_gate() -> std::sync::MutexGuard<'static, ()> {
+    PUBLISH_GATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Revision an export compares against at publication. Taken under the gate
+/// and before any session state is read.
+fn admit_export() -> u64 {
+    #[cfg(test)]
+    tests::before_admission();
+    let revision = {
+        let _gate = publish_gate();
+        AUDIO_REVISION.load(Ordering::Acquire)
+    };
+    #[cfg(test)]
+    tests::after_admission();
+    revision
+}
+
+/// Revokes outstanding audio reads and keeps export admission and publication
+/// blocked until dropped. Hold it for the whole of an audio removal.
+#[must_use = "dropping the guard immediately ends the removal window"]
+pub(crate) struct AudioRemoval(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+pub(crate) fn begin_audio_removal() -> AudioRemoval {
+    let gate = publish_gate();
     AUDIO_REVISION.fetch_add(1, Ordering::AcqRel);
+    #[cfg(test)]
+    tests::after_revocation();
+    AudioRemoval(gate)
+}
+
+pub(crate) fn revoke_audio_reads() {
+    drop(begin_audio_removal());
 }
 
 pub(crate) fn invalidate_playback(app: &tauri::AppHandle, session_id: Option<&str>) {
@@ -296,6 +395,29 @@ fn read_audio_range(
     file.seek(SeekFrom::Start(offset))
         .map_err(|_| AUDIO_UNAVAILABLE)?;
     let mut bytes = vec![0; amount];
+    file.read_exact(&mut bytes).map_err(|_| AUDIO_UNAVAILABLE)?;
+    revalidate_audio_read(
+        repository, session_id, segment_id, &reference, &file, &metadata, revision,
+    )?;
+    Ok(bytes)
+}
+
+/// Reads one whole retained chunk (at most `MAX_AUDIO_FILE_BYTES`) through the
+/// same reference, open, header, and revalidation checks as range reads.
+fn read_audio_file(
+    repository: &MeetingRepository,
+    session_id: &str,
+    segment_id: i64,
+    revision: u64,
+) -> Result<Vec<u8>, String> {
+    validate_session_id(session_id)?;
+    let reference = repository.audio_reference(session_id, segment_id)?;
+    let mut file = open_audio_file(&reference.path)?;
+    let metadata = file.metadata().map_err(|_| AUDIO_UNAVAILABLE)?;
+    validate_wav(&mut file, metadata.len(), reference.duration_ms)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| AUDIO_UNAVAILABLE)?;
+    let mut bytes = vec![0; metadata.len() as usize];
     file.read_exact(&mut bytes).map_err(|_| AUDIO_UNAVAILABLE)?;
     revalidate_audio_read(
         repository, session_id, segment_id, &reference, &file, &metadata, revision,
@@ -478,6 +600,49 @@ pub(crate) fn remove_empty_session_audio(root: &Path, session_id: &str) -> Resul
 mod tests {
     use super::*;
     use crate::meeting_store::{MeetingSessionStatus, MeetingSpeaker};
+
+    type Hook = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
+
+    thread_local! {
+        static BEFORE_PUBLICATION: Hook = const { std::cell::RefCell::new(None) };
+        static WHILE_PUBLISHING: Hook = const { std::cell::RefCell::new(None) };
+        static AFTER_REVOCATION: Hook = const { std::cell::RefCell::new(None) };
+        static BEFORE_ADMISSION: Hook = const { std::cell::RefCell::new(None) };
+        static AFTER_ADMISSION: Hook = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Runs on the deleting thread after it bumped the revision, while it
+    /// still holds the gate: the "revoked but not yet deleted" window.
+    pub(super) fn after_revocation() {
+        run_hook(&AFTER_REVOCATION);
+    }
+
+    /// Runs on the exporting thread just before it asks for admission.
+    pub(super) fn before_admission() {
+        run_hook(&BEFORE_ADMISSION);
+    }
+
+    /// Runs on the exporting thread once admission returned its revision.
+    pub(super) fn after_admission() {
+        run_hook(&AFTER_ADMISSION);
+    }
+
+    fn run_hook(hook: &'static std::thread::LocalKey<Hook>) {
+        if let Some(hook) = hook.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    /// Runs on the exporting thread after the archive is built and flushed,
+    /// before the publication gate is taken: the stalled-flush window.
+    pub(super) fn before_publication() {
+        run_hook(&BEFORE_PUBLICATION);
+    }
+
+    /// Runs on the exporting thread while it holds the publication gate.
+    pub(super) fn while_publishing() {
+        run_hook(&WHILE_PUBLISHING);
+    }
 
     fn repository() -> (tempfile::TempDir, MeetingRepository) {
         let temporary = tempfile::tempdir().unwrap();
@@ -969,5 +1134,496 @@ mod tests {
         drop(first);
         assert!(AudioReadPermit::acquire().is_ok());
         drop(second);
+    }
+
+    mod bundle {
+        use super::*;
+        use crate::meeting_review::{render_export, MeetingReviewExportFormat};
+        use std::io::Read as _;
+
+        type Archive = zip::ZipArchive<File>;
+
+        fn open(path: &Path) -> Archive {
+            Archive::new(File::open(path).unwrap()).unwrap()
+        }
+
+        fn names(archive: &mut Archive) -> Vec<String> {
+            (0..archive.len())
+                .map(|index| archive.by_index(index).unwrap().name().to_string())
+                .collect()
+        }
+
+        fn entry(archive: &mut Archive, name: &str) -> Vec<u8> {
+            let mut entry = archive.by_name(name).unwrap();
+            assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            bytes
+        }
+
+        /// Two retained, finished sessions' worth of synthetic audio: Me
+        /// 0-1s and 1-2.5s, Them 0.5-1.5s.
+        fn retained_meeting(repository: &MeetingRepository) -> Vec<(i64, PathBuf)> {
+            session(repository, "owner", true);
+            let clips = vec![
+                clip(repository, "owner", MeetingSpeaker::Me, 0, 0, 1_000),
+                clip(repository, "owner", MeetingSpeaker::Them, 0, 500, 1_000),
+                clip(repository, "owner", MeetingSpeaker::Me, 1, 1_000, 1_500),
+            ];
+            finish(repository, "owner");
+            clips
+        }
+
+        fn export(
+            repository: &MeetingRepository,
+            directory: &Path,
+            format: MeetingReviewExportFormat,
+        ) -> (PathBuf, Result<AudioBundleSummary, String>) {
+            let path = directory.join("bundle.zip");
+            (
+                path.clone(),
+                export_review_with_audio(repository, "owner", format, &path),
+            )
+        }
+
+        #[test]
+        fn meeting_audio_export_holds_the_exact_document_and_every_wav_for_each_format() {
+            for (format, name) in [
+                (MeetingReviewExportFormat::Markdown, "review.md"),
+                (MeetingReviewExportFormat::Text, "review.txt"),
+                (MeetingReviewExportFormat::Json, "review.json"),
+            ] {
+                let (temporary, repository) = repository();
+                let clips = retained_meeting(&repository);
+                let destination = tempfile::tempdir().unwrap();
+                let (path, summary) = export(&repository, destination.path(), format);
+                let summary = summary.unwrap();
+                assert_eq!(
+                    (
+                        summary.audio_files,
+                        summary.missing_audio,
+                        summary.pending_audio
+                    ),
+                    (3, 0, 0)
+                );
+                assert_eq!(summary.bytes, std::fs::metadata(&path).unwrap().len());
+                let mut archive = open(&path);
+                let mut listed = names(&mut archive);
+                listed.sort();
+                assert_eq!(
+                    listed,
+                    [
+                        "audio/me-00000000.wav",
+                        "audio/me-00000001.wav",
+                        "audio/them-00000000.wav",
+                        name
+                    ]
+                );
+                let workspace = repository.workspace("owner").unwrap();
+                assert_eq!(
+                    entry(&mut archive, name),
+                    render_export(&workspace, format).unwrap().into_bytes()
+                );
+                let entry_names = [
+                    "audio/me-00000000.wav",
+                    "audio/them-00000000.wav",
+                    "audio/me-00000001.wav",
+                ];
+                for ((_, source), entry_name) in clips.iter().zip(entry_names) {
+                    assert_eq!(
+                        entry(&mut archive, entry_name),
+                        std::fs::read(source).unwrap()
+                    );
+                }
+                drop(temporary);
+            }
+        }
+
+        #[test]
+        fn meeting_audio_export_refuses_unretained_active_and_caption_requests() {
+            let (_temporary, repository) = repository();
+            let destination = tempfile::tempdir().unwrap();
+            session(&repository, "owner", false);
+            finish(&repository, "owner");
+            let (path, result) = export(
+                &repository,
+                destination.path(),
+                MeetingReviewExportFormat::Markdown,
+            );
+            assert!(result.unwrap_err().contains("did not keep its audio"));
+            assert!(!path.exists());
+
+            session(&repository, "live", true);
+            clip(&repository, "live", MeetingSpeaker::Me, 0, 0, 1_000);
+            let live = destination.path().join("live.zip");
+            let error = export_review_with_audio(
+                &repository,
+                "live",
+                MeetingReviewExportFormat::Json,
+                &live,
+            )
+            .unwrap_err();
+            assert!(error.contains("Stop this meeting"));
+            assert!(!live.exists());
+
+            let (_temporary, repository) = repository_with_clips();
+            for format in [
+                MeetingReviewExportFormat::Srt,
+                MeetingReviewExportFormat::Vtt,
+            ] {
+                let (path, result) = export(&repository, destination.path(), format);
+                assert!(result
+                    .unwrap_err()
+                    .contains("Markdown, plain text, or JSON"));
+                assert!(!path.exists());
+            }
+            assert!(export_review_with_audio(
+                &repository,
+                "missing",
+                MeetingReviewExportFormat::Json,
+                &destination.path().join("x.zip")
+            )
+            .is_err());
+            assert!(export_review_with_audio(
+                &repository,
+                "../owner",
+                MeetingReviewExportFormat::Json,
+                &destination.path().join("x.zip")
+            )
+            .is_err());
+        }
+
+        fn repository_with_clips() -> (tempfile::TempDir, MeetingRepository) {
+            let (temporary, repository) = repository();
+            retained_meeting(&repository);
+            (temporary, repository)
+        }
+
+        #[test]
+        fn meeting_audio_export_lists_missing_chunks_instead_of_replacing_them() {
+            let (_temporary, repository) = repository();
+            let clips = retained_meeting(&repository);
+            std::fs::remove_file(&clips[1].1).unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let (path, summary) = export(
+                &repository,
+                destination.path(),
+                MeetingReviewExportFormat::Text,
+            );
+            let summary = summary.unwrap();
+            assert_eq!((summary.audio_files, summary.missing_audio), (2, 1));
+            let mut archive = open(&path);
+            let mut listed = names(&mut archive);
+            listed.sort();
+            assert_eq!(
+                listed,
+                [
+                    "MISSING-AUDIO.txt",
+                    "audio/me-00000000.wav",
+                    "audio/me-00000001.wav",
+                    "review.txt"
+                ]
+            );
+            let notice = String::from_utf8(entry(&mut archive, "MISSING-AUDIO.txt")).unwrap();
+            assert!(notice.contains("them-00000000.wav (segment"));
+            assert!(notice.contains("0:00-0:01"));
+            assert!(!notice.contains("synthetic test speech"));
+        }
+
+        #[test]
+        fn meeting_audio_export_refuses_a_deletion_that_completes_before_publication() {
+            let (_temporary, repository) = repository();
+            retained_meeting(&repository);
+            let destination = tempfile::tempdir().unwrap();
+            let path = destination.path().join("bundle.zip");
+            std::fs::write(&path, b"previous").unwrap();
+            let deleting = repository.clone();
+            BEFORE_PUBLICATION.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    deleting.delete_session("owner").unwrap();
+                }));
+            });
+            let error = export_review_with_audio(
+                &repository,
+                "owner",
+                MeetingReviewExportFormat::Markdown,
+                &path,
+            )
+            .unwrap_err();
+            assert!(error.contains("changed or was deleted"), "{error}");
+            assert!(error.contains("Nothing was saved"), "{error}");
+            // The existing destination survives and no temp sibling remains.
+            assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+            assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 1);
+            assert!(!repository.root().join("audio/owner").exists());
+        }
+
+        #[test]
+        fn meeting_audio_export_blocks_revocation_while_it_publishes() {
+            let (_temporary, repository) = repository();
+            retained_meeting(&repository);
+            let destination = tempfile::tempdir().unwrap();
+            let path = destination.path().join("bundle.zip");
+            let (revoked, revoked_rx) = std::sync::mpsc::channel();
+            let deleting = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let slot = deleting.clone();
+            let deleter = repository.clone();
+            let published = path.clone();
+            WHILE_PUBLISHING.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    // The gate is held by this thread, so revocation cannot run.
+                    assert!(PUBLISH_GATE.try_lock().is_err());
+                    *slot.borrow_mut() = Some(std::thread::spawn(move || {
+                        AFTER_REVOCATION.with(|hook| {
+                            *hook.borrow_mut() = Some(Box::new(move || {
+                                // Handshake: revocation really ran, and only
+                                // once the archive was already published.
+                                revoked.send(published.exists()).unwrap();
+                            }));
+                        });
+                        deleter.delete_session("owner")
+                    }));
+                }));
+            });
+            let summary = export_review_with_audio(
+                &repository,
+                "owner",
+                MeetingReviewExportFormat::Json,
+                &path,
+            )
+            .unwrap();
+            assert_eq!(summary.audio_files, 3);
+            // Deletion only proceeds after the archive was fully published.
+            deleting
+                .borrow_mut()
+                .take()
+                .unwrap()
+                .join()
+                .unwrap()
+                .unwrap();
+            assert!(
+                revoked_rx.recv().unwrap(),
+                "revocation ran before the archive was published"
+            );
+            let mut archive = open(&path);
+            assert_eq!(names(&mut archive).len(), 4);
+            assert!(PUBLISH_GATE.try_lock().is_ok());
+            assert!(!repository.root().join("audio/owner").exists());
+        }
+
+        #[test]
+        fn meeting_audio_export_waits_out_a_session_deletion_that_already_revoked() {
+            export_waits_out_removal(|repository| repository.delete_session("owner"));
+        }
+
+        #[test]
+        fn meeting_audio_export_waits_out_a_delete_all_that_already_revoked() {
+            export_waits_out_removal(MeetingRepository::delete_all);
+        }
+
+        fn export_waits_out_removal(delete: fn(&MeetingRepository) -> Result<(), String>) {
+            use std::sync::mpsc::{channel, RecvTimeoutError};
+            use std::time::Duration;
+            let (_temporary, repository) = repository();
+            retained_meeting(&repository);
+            let destination = tempfile::tempdir().unwrap();
+            let path = destination.path().join("bundle.zip");
+            std::fs::write(&path, b"previous").unwrap();
+
+            // The deleter bumps the revision, then stalls before it touches the
+            // database or any file, still inside its removal window.
+            let (revoked, revoked_rx) = channel();
+            let (resume, resume_rx) = channel::<()>();
+            let deleter = repository.clone();
+            let deletion = std::thread::spawn(move || {
+                AFTER_REVOCATION.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        revoked.send(()).unwrap();
+                        resume_rx.recv().unwrap();
+                    }));
+                });
+                delete(&deleter)
+            });
+            revoked_rx.recv().unwrap();
+            assert!(PUBLISH_GATE.try_lock().is_err());
+
+            // An export that starts now must not adopt the bumped revision and
+            // read the still-intact session.
+            let (asking, asking_rx) = channel();
+            let (admitted, admitted_rx) = channel();
+            let exporter = repository.clone();
+            let target = path.clone();
+            let export = std::thread::spawn(move || {
+                BEFORE_ADMISSION.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || asking.send(()).unwrap()));
+                });
+                AFTER_ADMISSION.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || admitted.send(()).unwrap()));
+                });
+                export_review_with_audio(
+                    &exporter,
+                    "owner",
+                    MeetingReviewExportFormat::Markdown,
+                    &target,
+                )
+            });
+            asking_rx.recv().unwrap();
+            assert_eq!(
+                admitted_rx.recv_timeout(Duration::from_millis(300)),
+                Err(RecvTimeoutError::Timeout),
+                "export was admitted while a removal was in progress"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+
+            resume.send(()).unwrap();
+            deletion.join().unwrap().unwrap();
+            let error = export.join().unwrap().unwrap_err();
+            assert_eq!(error, AUDIO_UNAVAILABLE);
+            assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+            assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 1);
+            assert!(!repository.root().join("audio/owner").exists());
+            assert!(PUBLISH_GATE.try_lock().is_ok());
+        }
+
+        #[test]
+        fn meeting_audio_export_fails_closed_when_no_chunk_is_readable() {
+            let (_temporary, repository) = repository();
+            for (_, path) in retained_meeting(&repository) {
+                std::fs::remove_file(path).unwrap();
+            }
+            let destination = tempfile::tempdir().unwrap();
+            let (path, result) = export(
+                &repository,
+                destination.path(),
+                MeetingReviewExportFormat::Json,
+            );
+            assert!(result.unwrap_err().contains("nothing was saved"));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
+        }
+
+        #[test]
+        fn meeting_audio_export_never_follows_unsafe_or_forged_audio_paths() {
+            use std::os::unix::fs::symlink;
+            let (_temporary, repository) = repository();
+            let clips = retained_meeting(&repository);
+            let outside = repository.root().join("outside.wav");
+            std::fs::copy(&clips[0].1, &outside).unwrap();
+            // A symlinked chunk and a forged traversal reference are both gaps.
+            std::fs::remove_file(&clips[1].1).unwrap();
+            symlink(&outside, &clips[1].1).unwrap();
+            let connection =
+                rusqlite::Connection::open(repository.root().join("meetings.sqlite3")).unwrap();
+            connection
+                .execute(
+                    "UPDATE meeting_segments SET audio_relative_path='audio/owner/../../outside.wav' WHERE id=?",
+                    [clips[2].0],
+                )
+                .unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let (path, summary) = export(
+                &repository,
+                destination.path(),
+                MeetingReviewExportFormat::Markdown,
+            );
+            let summary = summary.unwrap();
+            assert_eq!((summary.audio_files, summary.missing_audio), (1, 2));
+            let mut archive = open(&path);
+            assert_eq!(
+                entry(&mut archive, "audio/me-00000000.wav"),
+                std::fs::read(&clips[0].1).unwrap()
+            );
+            assert!(archive.by_name("audio/them-00000000.wav").is_err());
+            assert!(archive.by_name("audio/me-00000001.wav").is_err());
+            assert_eq!(
+                names(&mut archive).len(),
+                3,
+                "the document, the one safe chunk, and the gap notice"
+            );
+        }
+
+        #[test]
+        fn meeting_audio_export_enforces_size_and_count_bounds_before_publishing() {
+            let (_temporary, repository) = repository();
+            retained_meeting(&repository);
+            let destination = tempfile::tempdir().unwrap();
+            let path = destination.path().join("bundle.zip");
+            let format = MeetingReviewExportFormat::Markdown;
+            let error =
+                export::export_with_limits(&repository, "owner", format, &path, 2, u64::MAX)
+                    .unwrap_err();
+            assert!(error.contains("more than 2 audio files"));
+            let error = export::export_with_limits(&repository, "owner", format, &path, 10, 40_000)
+                .unwrap_err();
+            assert!(error.contains("Nothing was saved"));
+            assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 0);
+            assert!(
+                export::export_with_limits(&repository, "owner", format, &path, 3, u64::MAX)
+                    .is_ok()
+            );
+        }
+
+        #[test]
+        fn meeting_audio_export_reports_pending_chunks_without_exporting_them() {
+            let (_temporary, repository) = repository();
+            session(&repository, "owner", true);
+            clip(&repository, "owner", MeetingSpeaker::Me, 0, 0, 1_000);
+            let relative = "audio/owner/them-00000000.wav";
+            std::fs::write(repository.root().join(relative), b"pending").unwrap();
+            repository
+                .insert_pending_segment("owner", MeetingSpeaker::Them, 0, 0, 1_000, relative)
+                .unwrap();
+            finish(&repository, "owner");
+            let destination = tempfile::tempdir().unwrap();
+            let (path, summary) = export(
+                &repository,
+                destination.path(),
+                MeetingReviewExportFormat::Json,
+            );
+            let summary = summary.unwrap();
+            assert_eq!(
+                (
+                    summary.audio_files,
+                    summary.missing_audio,
+                    summary.pending_audio
+                ),
+                (1, 0, 1)
+            );
+            let mut archive = open(&path);
+            let notice = String::from_utf8(entry(&mut archive, "MISSING-AUDIO.txt")).unwrap();
+            assert!(notice.contains("waiting for transcription and not exported: 1"));
+            assert!(archive.by_name("audio/them-00000000.wav").is_err());
+        }
+
+        #[test]
+        fn meeting_audio_export_requires_a_zip_path_and_keeps_existing_files_on_refusal() {
+            let (_temporary, repository) = repository_with_clips();
+            let destination = tempfile::tempdir().unwrap();
+            let format = MeetingReviewExportFormat::Markdown;
+            for name in ["bundle.md", "bundle", ".bundle.zip"] {
+                let error = export_review_with_audio(
+                    &repository,
+                    "owner",
+                    format,
+                    &destination.path().join(name),
+                )
+                .unwrap_err();
+                assert!(!error.is_empty());
+            }
+            assert!(export_review_with_audio(
+                &repository,
+                "owner",
+                format,
+                Path::new("relative.zip")
+            )
+            .is_err());
+            let existing = destination.path().join("keep.zip");
+            std::fs::write(&existing, b"previous").unwrap();
+            std::fs::remove_dir_all(repository.root().join("audio")).unwrap();
+            assert!(export_review_with_audio(&repository, "owner", format, &existing).is_err());
+            assert_eq!(std::fs::read(&existing).unwrap(), b"previous");
+            let leftovers = std::fs::read_dir(destination.path()).unwrap().count();
+            assert_eq!(leftovers, 1);
+        }
     }
 }

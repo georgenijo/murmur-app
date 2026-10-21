@@ -187,6 +187,84 @@ describe('MeetingReviewWorkspace', () => {
     expect(buttons.every((button) => button.disabled)).toBe(true);
   });
 
+  describe('export with audio', () => {
+    const retainedDetail: MeetingDetail = { ...detail, session: { ...detail.session, retainAudio: true } };
+    const audioButton = () => [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => /Export(ing)? with audio/.test(button.textContent ?? ''));
+    const status = () => container.querySelector('#meeting-audio-export-status');
+    const chooseFormat = async (value: string) => {
+      const select = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting review export format"]');
+      if (!select) throw new Error('Missing export picker');
+      await act(async () => {
+        select.value = value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    };
+
+    it('exports the selected document format with retained audio and reports the result', async () => {
+      const exportReviewWithAudio = vi.fn().mockResolvedValue({ path: '/tmp/a.zip', bytes: 10, audioFiles: 3, missingAudio: 0, pendingAudio: 0 });
+      const onNotice = vi.fn();
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail, exportReviewWithAudio })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+      expect(audioButton()?.disabled).toBe(false);
+      expect(audioButton()?.getAttribute('aria-describedby')).toBe('meeting-audio-export-status');
+      await chooseFormat('json');
+      await clickInAct(audioButton()!);
+      expect(exportReviewWithAudio).toHaveBeenCalledWith('meeting', 1, 'json');
+      expect(onNotice).toHaveBeenCalledWith('Review and 3 audio files exported.');
+      expect(status()?.getAttribute('role')).toBe('status');
+      expect(status()?.textContent).toBe('Review and 3 audio files exported.');
+      expect(audioButton()?.disabled).toBe(false);
+    });
+
+    it('shows missing and pending audio gaps instead of reporting a clean export', async () => {
+      const exportReviewWithAudio = vi.fn().mockResolvedValue({ path: '/tmp/a.zip', bytes: 10, audioFiles: 1, missingAudio: 2, pendingAudio: 1 });
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail, exportReviewWithAudio })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+      await clickInAct(audioButton()!);
+      expect(status()?.textContent).toBe('Review and 1 audio file exported. Not included: 2 missing or unreadable, 1 still awaiting transcription. See MISSING-AUDIO.txt in the ZIP.');
+    });
+
+    it('stays quiet after a cancelled dialog or native refusal and re-enables the action', async () => {
+      const exportReviewWithAudio = vi.fn().mockResolvedValue(null);
+      const onNotice = vi.fn();
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail, exportReviewWithAudio })} segments={segments} captureBusy={false} onNotice={onNotice} />));
+      await clickInAct(audioButton()!);
+      expect(onNotice).not.toHaveBeenCalled();
+      expect(audioButton()?.disabled).toBe(false);
+    });
+
+    it('disables the action while exporting', async () => {
+      let finish: (value: null) => void = () => {};
+      const exportReviewWithAudio = vi.fn().mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail, exportReviewWithAudio })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+      await clickInAct(audioButton()!);
+      expect(audioButton()?.disabled).toBe(true);
+      expect(audioButton()?.textContent).toBe('Exporting with audio…');
+      await act(async () => finish(null));
+      expect(audioButton()?.disabled).toBe(false);
+    });
+
+    it('is disabled with an explanation for meetings that did not retain audio', async () => {
+      const exportReviewWithAudio = vi.fn();
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ exportReviewWithAudio })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+      expect(audioButton()?.disabled).toBe(true);
+      expect(status()?.textContent).toContain('Audio was not retained for this meeting');
+      await clickInAct(audioButton()!);
+      expect(exportReviewWithAudio).not.toHaveBeenCalled();
+    });
+
+    it('is disabled for caption formats and active meetings', async () => {
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+      await chooseFormat('srt');
+      expect(audioButton()?.disabled).toBe(true);
+      expect(status()?.textContent).toContain('Choose Markdown, plain text, or JSON');
+      const active: MeetingDetail = { ...retainedDetail, session: { ...retainedDetail.session, status: 'active' } };
+      await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: active })} segments={segments} captureBusy onNotice={() => {}} />));
+      await chooseFormat('markdown');
+      expect(audioButton()?.disabled).toBe(true);
+      expect(status()?.textContent).toContain('Stop this meeting before exporting its audio.');
+    });
+  });
+
   it('omits playback controls and explains audio retention for transcript-only meetings', async () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
 

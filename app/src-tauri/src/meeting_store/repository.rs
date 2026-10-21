@@ -664,8 +664,77 @@ impl MeetingRepository {
             return Err(AUDIO_UNAVAILABLE.into());
         }
         Ok(OwnedAudioReference {
-            path: self.root.join(expected),
+            path: self.audio_path(&expected)?,
             duration_ms: end_ms - start_ms,
+        })
+    }
+
+    /// Lists the retained chunks one finished session can export, in timeline
+    /// order. Gate and bounds match playback: consent, a finished session, and
+    /// final/failed chunks. Pending chunks are only counted. Every file is
+    /// later opened through `audio_reference`, never from this listing.
+    pub(crate) fn export_audio_plan(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::meeting_audio::ExportAudioPlan, String> {
+        use crate::meeting_audio::{
+            ExportAudioPlan, ExportAudioSegment, AUDIO_UNAVAILABLE, MAX_EXPORT_AUDIO_FILES,
+        };
+        crate::meeting_audio::validate_session_id(session_id)?;
+        let connection = self.open_checked()?;
+        let (retained, status, ended_at) = connection
+            .query_row(
+                "SELECT retain_audio, status, ended_at_ms FROM meeting_sessions WHERE id=?",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_error)?
+            .ok_or(AUDIO_UNAVAILABLE)?;
+        if !retained {
+            return Err(
+                "This meeting did not keep its audio, so there is no audio to export.".into(),
+            );
+        }
+        if status == "active" || ended_at.is_none() {
+            return Err("Stop this meeting before exporting its audio.".into());
+        }
+        let pending = connection
+            .query_row(
+                "SELECT COUNT(*) FROM meeting_segments WHERE session_id=? AND status='pending' AND audio_relative_path IS NOT NULL",
+                [session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(db_error)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, speaker, sequence, start_ms, end_ms FROM meeting_segments
+                 WHERE session_id=?1 AND status IN ('final','failed') AND audio_relative_path IS NOT NULL
+                 ORDER BY start_ms ASC, id ASC LIMIT ?2",
+            )
+            .map_err(db_error)?;
+        let segments = statement
+            .query_map(params![session_id, MAX_EXPORT_AUDIO_FILES + 1], |row| {
+                Ok(ExportAudioSegment {
+                    segment_id: row.get(0)?,
+                    channel: MeetingSpeaker::from_db(&row.get::<_, String>(1)?)?,
+                    sequence: to_u64(row.get(2)?)?,
+                    start_ms: to_u64(row.get(3)?)?,
+                    end_ms: to_u64(row.get(4)?)?,
+                })
+            })
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        Ok(ExportAudioPlan {
+            segments,
+            pending: u32::try_from(pending).unwrap_or(u32::MAX),
         })
     }
 
@@ -1229,7 +1298,7 @@ impl MeetingRepository {
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
         crate::meeting_audio::validate_session_id(id)?;
-        crate::meeting_audio::revoke_audio_reads();
+        let _removal = crate::meeting_audio::begin_audio_removal();
         let mut connection = self.open_checked()?;
         let paths = audio_paths_for_session(&connection, id)?;
         let transaction = connection
@@ -1266,7 +1335,7 @@ impl MeetingRepository {
     }
 
     pub fn delete_all(&self) -> Result<(), String> {
-        crate::meeting_audio::revoke_audio_reads();
+        let _removal = crate::meeting_audio::begin_audio_removal();
         let mut connection = self.open_checked()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)

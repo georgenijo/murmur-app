@@ -4,6 +4,8 @@ import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
   formatMeetingTimestamp,
   MEETING_EXPORT_FORMATS,
+  meetingAudioExportNotice,
+  supportsMeetingAudioExport,
   meetingSegmentDisplayLabel,
   type EditableReviewDocument,
   type MeetingReviewDocumentV1,
@@ -121,6 +123,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   const [newClaims, setNewClaims] = useState<Array<{ id: number; claim: NewReviewClaim }>>([]);
   const nextClaimId = useRef(0);
   const [saving, setSaving] = useState(false);
+  const [audioExporting, setAudioExporting] = useState(false);
+  const [audioExportStatus, setAudioExportStatus] = useState<string | null>(null);
   const summaryStatus = meetings.summaryStatus.sessionId === detail.session.id ? meetings.summaryStatus : null;
   const summaryBusy = summaryStatus?.phase === 'running' || summaryStatus?.phase === 'cancelling';
   const activeDocument = detail.activeDocument;
@@ -146,6 +150,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   useEffect(() => {
     setLabelDrafts({});
     setRemoteSpeakerDrafts({});
+    setAudioExporting(false);
+    setAudioExportStatus(null);
   }, [detail.session.id]);
 
   useLayoutEffect(() => {
@@ -310,6 +316,30 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     if (path && isCurrentWorkspace(activation)) onNotice(`Meeting ${captions ? 'captions' : 'review'} exported as ${format}.`);
   };
 
+  const audioExportBlock = !detail.session.retainAudio
+    ? 'Audio was not retained for this meeting, so it cannot be exported with audio.'
+    : detail.session.status === 'active'
+      ? 'Stop this meeting before exporting its audio.'
+      : !supportsMeetingAudioExport(format)
+        ? 'Choose Markdown, plain text, or JSON to export with audio.'
+        : null;
+
+  const exportReviewWithAudio = async () => {
+    if (audioExportBlock !== null || !supportsMeetingAudioExport(format) || audioExporting) return;
+    const activation = activeWorkspace.current;
+    const sessionId = detail.session.id;
+    setAudioExporting(true);
+    setAudioExportStatus(null);
+    const result = await meetings.exportReviewWithAudio(sessionId, detail.session.startedAtMs, format);
+    if (!isCurrentWorkspace(activation)) return;
+    setAudioExporting(false);
+    if (result) {
+      const notice = meetingAudioExportNotice(result);
+      setAudioExportStatus(notice);
+      onNotice(notice);
+    }
+  };
+
   const renderTextItems = (title: string, items: MeetingReviewDocumentV1['decisions']) => (
     <section className="mt-3" aria-labelledby={`meeting-${title.toLowerCase().replace(/\s/g, '-')}`}>
       <h4 id={`meeting-${title.toLowerCase().replace(/\s/g, '-')}`} className="text-xs font-semibold text-on-surface">{title}</h4>
@@ -412,7 +442,11 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         </label>
         <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{captions ? 'Copy captions' : 'Copy review'}</button>
         <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">Export…</button>
+        <button type="button" disabled={audioExportBlock !== null || audioExporting} aria-describedby="meeting-audio-export-status" onClick={() => void exportReviewWithAudio()} className="rounded-[var(--ui-radius-control)] px-2 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">{audioExporting ? 'Exporting with audio…' : 'Export with audio…'}</button>
       </div>
+      <p id="meeting-audio-export-status" className="mb-3 text-xs text-on-surface-variant" role="status" aria-live="polite">
+        {audioExportBlock ?? audioExportStatus ?? 'Export with audio saves one ZIP with the selected document and every retained WAV segment. Missing audio is listed, never replaced.'}
+      </p>
 
       {captions && <p className="mb-3 text-xs text-on-surface-variant" role="status">{detail.session.status === 'active'
         ? 'Stop this meeting before exporting captions.'
