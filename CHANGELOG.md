@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-10-23
+
+### Fixed
+
+- Keep the collapsed overlay from intercepting clicks after brief pointer re-entry.
+
 ## [0.52.1] - 2026-10-20
 
 ### Fixed
