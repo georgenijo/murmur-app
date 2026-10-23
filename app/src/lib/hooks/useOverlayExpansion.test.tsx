@@ -335,7 +335,7 @@ describe('useOverlayExpansion', () => {
     expect(current.phase).toBe('closing');
     surfaceCalls.length = 0;
 
-    // Re-enter while closing: cancels shrink, arms dwell, reopens.
+    // Re-enter while closing: arm dwell, then cancel shrink when reopening commits.
     await act(async () => { current.onHoverStart(); });
     await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
     await flush();
@@ -525,6 +525,34 @@ describe('useOverlayExpansion', () => {
     await flush();
     await act(async () => { vi.advanceTimersByTime(1); }); // fire the immediate close timer
     expect(current.phase).toBe('closing');
+  });
+
+  it('still shrinks after a brief re-entry during closing when DOM leave is missed', async () => {
+    mocks.cursorPosition.mockResolvedValue({ x: 0, y: 0 });
+    await mount({ withIsland: true });
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
+    await flush();
+    await act(async () => { surfaceCalls[0].resolve(APPLIED); });
+
+    await act(async () => { current.onHoverEnd(); });
+    await act(async () => { vi.advanceTimersByTime(COLLAPSE_DELAY_MS); });
+    expect(current.phase).toBe('closing');
+
+    // Re-enter the animating island, then leave before the open dwell commits.
+    // macOS can miss mouseleave; the cursor poller cancels the dwell instead.
+    await act(async () => { vi.advanceTimersByTime(50); });
+    await act(async () => { current.onHoverStart(); });
+    mocks.cursorPosition.mockResolvedValue({ x: 9999, y: 9999 });
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await flush();
+    await act(async () => { vi.advanceTimersByTime(SHRINK_DELAY_MS + HOVER_OPEN_DWELL_MS); });
+    await flush();
+
+    const shrink = surfaceCalls.find((call) => !call.args.expanded);
+    expect(shrink).toBeDefined();
+    await act(async () => { shrink!.resolve(APPLIED); });
+    expect(current.phase).toBe('collapsed');
   });
 
   it('retries a rejected shrink in the serialized writer before settling collapsed', async () => {
