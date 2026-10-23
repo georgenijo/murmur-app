@@ -253,11 +253,12 @@ export function useOverlayExpansion({
 
   // Opening requires hover intent: the cursor must dwell before the card expands,
   // so grazing the notch no longer pops the dropdown. Also cancels any pending
-  // close/shrink so re-entry keeps the card up (or reopens cleanly while closing).
+  // close so re-entry keeps the card up. During closing, keep the shrink armed
+  // until open() commits: the poller may cancel a brief re-entry's dwell without
+  // a DOM leave, and cancelling both timers would strand a tall invisible window.
   const onHoverStart = useCallback(() => {
     if (!visibleRef.current) return;
     if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
-    if (shrinkTimerRef.current) { clearTimeout(shrinkTimerRef.current); shrinkTimerRef.current = null; }
     const ph = phaseRef.current;
     if (ph === 'open' || ph === 'opening') return;
     if (dwellTimerRef.current) return;

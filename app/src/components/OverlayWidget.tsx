@@ -232,11 +232,6 @@ export function OverlayWidget() {
     <div
       className="relative flex h-full w-full"
       style={{ background: 'transparent' }}
-      onMouseDown={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleMouseDown}
-      onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
-      onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
-      onMouseEnter={calibrating ? undefined : onHoverStart}
-      onMouseMove={calibrating ? undefined : onHoverStart}
     >
       {/* Dynamic Island: top bar matches notch height; hover expands it downward
           to reveal the quick-settings dropdown. Idle/recording only changes the
@@ -244,6 +239,9 @@ export function OverlayWidget() {
       <div
         ref={islandRef}
         className="overlay-island cursor-pointer select-none overflow-hidden"
+        onMouseDown={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleMouseDown}
+        onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
+        onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
         onMouseEnter={calibrating ? undefined : onHoverStart}
         onMouseMove={calibrating ? undefined : onHoverStart}
         onMouseLeave={calibrating ? undefined : onHoverEnd}
