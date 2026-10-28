@@ -23,7 +23,7 @@
 use aho_corasick::{AhoCorasick, MatchKind};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use crate::state::TextRegister;
 
@@ -71,12 +71,12 @@ impl Default for CorrectionContext {
 }
 
 /// Lowercase words that must (or must not) occur within a bounded number of
-/// tokens before and after a candidate phrase.
+/// words before and after a candidate phrase, inside the same clause.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CueWindow {
-    pub words: Vec<String>,
-    pub before: usize,
-    pub after: usize,
+struct CueWindow {
+    words: Vec<String>,
+    before: usize,
+    after: usize,
 }
 
 impl CueWindow {
@@ -88,29 +88,36 @@ impl CueWindow {
         }
     }
 
-    /// `before_end` is the first phrase token and `after_start` the first
-    /// token after the phrase.
-    fn matches(&self, tokens: &[ContextToken], before_end: usize, after_start: usize) -> bool {
-        let before = &tokens[before_end.saturating_sub(self.before)..before_end];
-        let after_start = after_start.min(tokens.len());
-        let after = &tokens[after_start..(after_start + self.after).min(tokens.len())];
-        before
+    /// The phrase occupies tokens `first..end`. Neither side of the window
+    /// crosses a clause boundary, so "Ship the app. Tori is here" gives the
+    /// second sentence no cue.
+    fn matches(&self, tokens: &[ContextToken], first: usize, end: usize) -> bool {
+        let clause = tokens[first].clause;
+        let before = tokens[..first]
             .iter()
+            .rev()
+            .take(self.before)
+            .take_while(|token| token.clause == clause);
+        let after = tokens[end..]
+            .iter()
+            .take(self.after)
+            .take_while(|token| token.clause == clause);
+        before
             .chain(after)
             .any(|token| self.words.contains(&token.lower))
     }
 }
 
-/// When a contextual phrase may be rewritten. The frozen register or local
-/// project signal enables it outright; otherwise every window of at least one
-/// clause must match. Any blocker refuses the rewrite: a cue and a counter-cue
-/// together are ambiguous, so the phrase stays as recognized.
+/// When a built-in contextual phrase may be rewritten. The frozen register or
+/// local project signal enables it outright; otherwise every window of at
+/// least one clause must match. Any blocker refuses the rewrite: a cue and a
+/// counter-cue together are ambiguous, so the phrase stays as recognized.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ContextRequirement {
-    pub registers: Vec<TextRegister>,
-    pub project_context: bool,
-    pub clauses: Vec<Vec<CueWindow>>,
-    pub blockers: Vec<CueWindow>,
+struct ContextRequirement {
+    registers: Vec<TextRegister>,
+    project_context: bool,
+    clauses: Vec<Vec<CueWindow>>,
+    blockers: Vec<CueWindow>,
 }
 
 impl ContextRequirement {
@@ -118,42 +125,82 @@ impl ContextRequirement {
         &self,
         context: CorrectionContext,
         tokens: &[ContextToken],
-        before_end: usize,
-        after_start: usize,
+        first: usize,
+        end: usize,
     ) -> bool {
         if self
             .blockers
             .iter()
-            .any(|cue| cue.matches(tokens, before_end, after_start))
+            .any(|cue| cue.matches(tokens, first, end))
         {
             return false;
         }
         self.registers.contains(&context.register)
             || (self.project_context && context.project_context)
-            || self.clauses.iter().any(|clause| {
-                clause
-                    .iter()
-                    .all(|cue| cue.matches(tokens, before_end, after_start))
-            })
+            || self
+                .clauses
+                .iter()
+                .any(|clause| clause.iter().all(|cue| cue.matches(tokens, first, end)))
     }
 }
 
+/// A Unicode-aware whole word, so a rule for `tori` never matches inside
+/// `Torié` or a mixed-script name.
 #[derive(Debug, Clone)]
 struct ContextToken {
     lower: String,
     start: usize,
     end: usize,
+    /// Sentence or clause index; cue windows stop at `.`, `!`, `?`, `;`, and
+    /// line breaks.
+    clause: usize,
 }
 
 fn context_tokens(text: &str) -> Vec<ContextToken> {
-    tokenize(text)
-        .into_iter()
-        .map(|(token, start, end)| ContextToken {
-            lower: token.to_ascii_lowercase(),
-            start,
-            end,
-        })
-        .collect()
+    let mut tokens = Vec::new();
+    let mut clause = 0;
+    let mut word_start = None;
+    let mut gap_start = 0;
+    let is_word = |character: char| character.is_alphanumeric() || character == '_';
+    for (index, character) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        match (word_start, is_word(character) && index < text.len()) {
+            (None, true) => {
+                if is_clause_break(&text[gap_start..index]) {
+                    clause += 1;
+                }
+                word_start = Some(index);
+            }
+            (Some(start), false) => {
+                tokens.push(ContextToken {
+                    lower: text[start..index].to_lowercase(),
+                    start,
+                    end: index,
+                    clause,
+                });
+                word_start = None;
+                gap_start = index;
+            }
+            _ => {}
+        }
+    }
+    tokens
+}
+
+/// A gap ends a clause at `!`, `?`, `;`, a line break, or a `.` followed by
+/// whitespace. A `.` inside `tauri.conf` or `2.0` does not.
+fn is_clause_break(gap: &str) -> bool {
+    let mut characters = gap.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '!' | '?' | ';' | '\n' | '\r' => return true,
+            '.' if characters.peek().is_some_and(|next| next.is_whitespace()) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A built-in recognizer variant rewritten only in a proven context.
@@ -348,8 +395,6 @@ struct ExplicitAlias {
     spoken: Vec<char>,
     written: String,
     priority: u8,
-    /// User-declared context. `None` applies the alias everywhere.
-    requirement: Option<Arc<ContextRequirement>>,
 }
 
 /// Match one normalized lowercase alias at an original UTF-8 byte boundary.
@@ -427,21 +472,6 @@ impl CorrectionMatcher {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
-        Self::build_with_context(terms, pairs, &[], learned_pairs, fuzzy, include_builtins)
-    }
-
-    /// Build the matcher with explicit aliases that apply only when their
-    /// declared [`ContextRequirement`] holds. Contextual aliases share the
-    /// explicit-alias priority; when one does not apply, lower-precedence
-    /// rules for the same phrase still may.
-    pub(crate) fn build_with_context(
-        terms: &[String],
-        pairs: &[(String, String)],
-        contextual_pairs: &[(String, String, Arc<ContextRequirement>)],
-        learned_pairs: &[(String, String)],
-        fuzzy: bool,
-        include_builtins: bool,
-    ) -> Self {
         // spoken(lowercased) -> written for derived/built-in vocabulary.
         let mut map: HashMap<String, String> = HashMap::new();
 
@@ -462,39 +492,18 @@ impl CorrectionMatcher {
                 map.entry(spoken).or_insert_with(|| written.to_string());
             }
         }
-        let all_pairs = pairs
+        let mut explicit_aliases = pairs
             .iter()
-            .map(|(spoken, written)| (spoken, written, 2_u8, None))
-            .chain(
-                contextual_pairs
-                    .iter()
-                    .map(|(spoken, written, requirement)| {
-                        (spoken, written, 2_u8, Some(requirement.clone()))
-                    }),
-            )
-            .chain(
-                learned_pairs
-                    .iter()
-                    .map(|(spoken, written)| (spoken, written, 1_u8, None)),
-            )
-            .collect::<Vec<_>>();
-        let alias = |spoken: &str,
-                     written: &str,
-                     priority: u8,
-                     requirement: Option<Arc<ContextRequirement>>| {
-            let spoken = normalize_alias(spoken);
-            let written = written.trim();
-            (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
-                spoken: spoken.chars().collect(),
-                written: written.to_string(),
-                priority,
-                requirement,
-            })
-        };
-        let mut explicit_aliases = all_pairs
-            .iter()
-            .filter_map(|(spoken, written, priority, requirement)| {
-                alias(spoken, written, *priority, requirement.clone())
+            .map(|pair| (pair, 2_u8))
+            .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
+            .filter_map(|((spoken, written), priority)| {
+                let spoken = normalize_alias(spoken);
+                let written = written.trim();
+                (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                    spoken: spoken.chars().collect(),
+                    written: written.to_string(),
+                    priority,
+                })
             })
             .collect::<Vec<_>>();
         // Canonical written forms share the protected rule set. This makes
@@ -502,9 +511,19 @@ impl CorrectionMatcher {
         // canonical such as "standard error" into the lower-priority builtin
         // that would otherwise rewrite it to "stderr".
         explicit_aliases.extend(
-            all_pairs
+            pairs
                 .iter()
-                .filter_map(|(_, written, priority, _)| alias(written, written, *priority, None)),
+                .map(|pair| (pair, 2_u8))
+                .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
+                .filter_map(|((_, written), priority)| {
+                    let spoken = normalize_alias(written);
+                    let written = written.trim();
+                    (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                        spoken: spoken.chars().collect(),
+                        written: written.to_string(),
+                        priority,
+                    })
+                }),
         );
         explicit_aliases.sort_by(|left, right| {
             right
@@ -515,16 +534,7 @@ impl CorrectionMatcher {
                 .then_with(|| right.priority.cmp(&left.priority))
                 .then_with(|| left.written.cmp(&right.written))
         });
-        // An unconditional alias owns its phrase; later same-phrase aliases are
-        // unreachable. Contextual aliases keep their fallbacks.
-        let mut owned_phrase: Option<Vec<char>> = None;
-        explicit_aliases.retain(|alias| {
-            if owned_phrase.as_ref() == Some(&alias.spoken) {
-                return false;
-            }
-            owned_phrase = alias.requirement.is_none().then(|| alias.spoken.clone());
-            true
-        });
+        explicit_aliases.dedup_by(|left, right| left.spoken == right.spoken);
         let numeric_aliases = explicit_aliases
             .iter()
             .filter(|alias| alias.spoken.iter().any(char::is_ascii_digit))
@@ -608,12 +618,27 @@ impl CorrectionMatcher {
     /// Apply explicit aliases, contextual rules, Tier 1, then (if enabled)
     /// Tier 2 to `text`. Hot path: a few linear scans over a short transcript.
     pub(crate) fn apply_in(&self, text: &str, context: CorrectionContext) -> String {
+        self.apply_traced(text, context).0
+    }
+
+    /// [`apply_in`](Self::apply_in), also returning the output byte ranges
+    /// written by explicit aliases and learned rules (canonical forms
+    /// included). Later stages treat those spans as literal.
+    pub(crate) fn apply_traced(
+        &self,
+        text: &str,
+        context: CorrectionContext,
+    ) -> (String, Vec<Range<usize>>) {
         let tokens = context_tokens(text);
         let mut output = String::with_capacity(text.len());
-        for (range, protected) in explicit_segments(&self.explicit_aliases, text, &tokens, context)
-        {
+        let mut explicit = Vec::new();
+        for (range, protected) in explicit_segments(&self.explicit_aliases, text, |_| true) {
             match protected {
-                Some(written) => output.push_str(&written),
+                Some(written) => {
+                    let start = output.len();
+                    output.push_str(&written);
+                    explicit.push(start..output.len());
+                }
                 None => {
                     let contextual = apply_context_rules(text, range, &tokens, context);
                     let exact = self.apply_tier1(&contextual);
@@ -625,21 +650,34 @@ impl CorrectionMatcher {
                 }
             }
         }
-        output
+        (output, explicit)
     }
 
-    /// Re-apply explicit aliases whose spoken form contains a digit. The
-    /// spoken-numbers stage calls this after rendering digits, so a rule
-    /// learned from final text such as `GPT 5` can match `GPT five`.
-    pub(crate) fn apply_numeric_aliases(&self, text: &str, context: CorrectionContext) -> String {
-        if self.numeric_aliases.is_empty() {
+    /// Re-apply explicit aliases whose spoken form contains a digit after the
+    /// spoken-numbers stage, so a rule learned from final text such as
+    /// `GPT 5` matches `GPT five`. A match must overlap a span that stage just
+    /// `rendered` and must not touch a `literal` span an earlier tier wrote;
+    /// text Smart Correction already saw is never matched twice.
+    pub(crate) fn apply_numeric_aliases(
+        &self,
+        text: &str,
+        rendered: &[Range<usize>],
+        literal: &[Range<usize>],
+    ) -> String {
+        if self.numeric_aliases.is_empty() || rendered.is_empty() {
             return text.to_string();
         }
-        let tokens = context_tokens(text);
-        explicit_segments(&self.numeric_aliases, text, &tokens, context)
-            .into_iter()
-            .map(|(range, protected)| protected.unwrap_or_else(|| text[range].to_string()))
-            .collect()
+        let overlaps = |spans: &[Range<usize>], range: &Range<usize>| {
+            spans
+                .iter()
+                .any(|span| range.start < span.end && span.start < range.end)
+        };
+        explicit_segments(&self.numeric_aliases, text, |range| {
+            overlaps(rendered, &range) && !overlaps(literal, &range)
+        })
+        .into_iter()
+        .map(|(range, protected)| protected.unwrap_or_else(|| text[range].to_string()))
+        .collect()
     }
 
     /// Tier 1: single Aho-Corasick pass, replacing only word-boundary matches.
@@ -764,12 +802,11 @@ impl CorrectionMatcher {
 }
 
 /// Split `text` into explicit-alias spans (`Some(written)`, protected from
-/// lower tiers) and mutable gaps (`None`).
+/// lower tiers) and mutable gaps (`None`). `accept` can refuse a match span.
 fn explicit_segments(
     aliases: &[ExplicitAlias],
     text: &str,
-    tokens: &[ContextToken],
-    context: CorrectionContext,
+    accept: impl Fn(Range<usize>) -> bool,
 ) -> Vec<(Range<usize>, Option<String>)> {
     if aliases.is_empty() {
         return vec![(0..text.len(), None)];
@@ -784,7 +821,16 @@ fn explicit_segments(
             .next_back()
             .is_none_or(|character| !character.is_alphanumeric());
         let matched = before_ok
-            .then(|| explicit_alias_at(aliases, text, scan, tokens, context))
+            .then(|| {
+                aliases.iter().find_map(|alias| {
+                    let end = explicit_alias_match_end(text, scan, &alias.spoken)?;
+                    let after_ok = text[end..]
+                        .chars()
+                        .next()
+                        .is_none_or(|character| !character.is_alphanumeric());
+                    (after_ok && accept(scan..end)).then(|| (end, alias.written.clone()))
+                })
+            })
             .flatten();
         if let Some((end, written)) = matched {
             if mutable_start < scan {
@@ -807,53 +853,8 @@ fn explicit_segments(
     segments
 }
 
-/// The highest-precedence alias matching at `scan` whose context applies.
-/// Two same-priority aliases for one phrase that both apply are ambiguous: the
-/// recognized text is kept and protected rather than chosen by sort order.
-fn explicit_alias_at(
-    aliases: &[ExplicitAlias],
-    text: &str,
-    scan: usize,
-    tokens: &[ContextToken],
-    context: CorrectionContext,
-) -> Option<(usize, String)> {
-    let mut chosen: Option<(&ExplicitAlias, usize)> = None;
-    for alias in aliases {
-        if chosen.is_some_and(|(chosen, _)| {
-            alias.spoken != chosen.spoken || alias.priority != chosen.priority
-        }) {
-            break;
-        }
-        let Some(end) = explicit_alias_match_end(text, scan, &alias.spoken) else {
-            continue;
-        };
-        if text[end..]
-            .chars()
-            .next()
-            .is_some_and(char::is_alphanumeric)
-        {
-            continue;
-        }
-        if let Some(requirement) = &alias.requirement {
-            let before_end = tokens.partition_point(|token| token.start < scan);
-            let after_start = tokens.partition_point(|token| token.end <= end);
-            if !requirement.allows(context, tokens, before_end, after_start) {
-                continue;
-            }
-        }
-        match chosen {
-            None => chosen = Some((alias, end)),
-            Some((chosen, _)) if chosen.written != alias.written => {
-                return Some((end, text[scan..end].to_string()));
-            }
-            Some(_) => {}
-        }
-    }
-    chosen.map(|(alias, end)| (end, alias.written.clone()))
-}
-
 /// Rewrite built-in contextual variants inside `range`. Cue windows read the
-/// whole utterance, including explicitly corrected spans, so a nearby cue is
+/// whole clause, including explicitly corrected spans, so a nearby cue is
 /// visible even across an alias.
 fn apply_context_rules(
     text: &str,
@@ -1508,6 +1509,60 @@ mod tests {
     }
 
     #[test]
+    fn builtin_cue_windows_stop_at_clause_boundaries() {
+        // Review B2: a cue in the previous sentence no longer reaches Tori.
+        let m = CorrectionMatcher::build(&[], &[], true, false);
+        let everyday = CorrectionContext::default();
+        for text in [
+            "Ship the app. Tori is coming over for dinner.",
+            "Ship the app! Tori is coming over.",
+            "Did the build pass? Tori is here.",
+            "Update the plugin; Tori called.",
+            "Rust is fun\nTori is coming over.",
+        ] {
+            assert_eq!(m.apply_in(text, everyday), text);
+        }
+        // A dot inside a file name or version is not a clause boundary.
+        assert_eq!(
+            m.apply_in("The Tori config lives in app.json", everyday),
+            "The Tauri config lives in app.json"
+        );
+        assert_eq!(
+            m.apply_in("Ship the app. The Tori plugin is ready.", everyday),
+            "Ship the app. The Tauri plugin is ready."
+        );
+        // Blockers are bounded the same way.
+        assert_eq!(
+            m.apply_in("Thank you. Open the Tori plugin.", everyday),
+            "Thank you. Open the Tauri plugin."
+        );
+    }
+
+    #[test]
+    fn builtin_variants_match_only_whole_unicode_words() {
+        // Review B4: `Torié` and mixed-script names are not `Tori`.
+        let m = CorrectionMatcher::build(&[], &[], true, false);
+        for context in [
+            CorrectionContext::default(),
+            in_register(TextRegister::Technical),
+        ] {
+            for text in [
+                "editorial territory Torié app",
+                "Toriд plugin build",
+                "Tori日本 app",
+                "Maineé branch",
+                "ÉTori app",
+            ] {
+                assert_eq!(m.apply_in(text, context), text);
+            }
+        }
+        assert_eq!(
+            m.apply_in("Tori, app", in_register(TextRegister::Technical)),
+            "Tauri, app"
+        );
+    }
+
+    #[test]
     fn builtin_developer_pack_is_gated_to_technical_context() {
         let m = CorrectionMatcher::build(&[], &[], true, false);
         let technical = in_register(TextRegister::Technical);
@@ -1540,114 +1595,54 @@ mod tests {
         );
     }
 
-    fn requirement(
-        registers: &[TextRegister],
-        cues: &[&str],
-        blockers: &[&str],
-    ) -> Arc<ContextRequirement> {
-        Arc::new(ContextRequirement {
-            registers: registers.to_vec(),
-            project_context: false,
-            clauses: if cues.is_empty() {
-                Vec::new()
-            } else {
-                vec![vec![CueWindow::new(cues, 3, 3)]]
-            },
-            blockers: if blockers.is_empty() {
-                Vec::new()
-            } else {
-                vec![CueWindow::new(blockers, 3, 3)]
-            },
-        })
-    }
-
     #[test]
-    fn contextual_aliases_apply_only_in_their_declared_context() {
-        let contextual = vec![(
-            "best".to_string(),
-            "Best regards".to_string(),
-            requirement(&[TextRegister::Email], &["signoff"], &["very"]),
-        )];
-        let m = CorrectionMatcher::build_with_context(&[], &[], &contextual, &[], false, false);
-        assert_eq!(
-            m.apply_in("best", in_register(TextRegister::Email)),
-            "Best regards"
-        );
-        assert_eq!(m.apply_in("best", CorrectionContext::default()), "best");
-        assert_eq!(
-            m.apply_in("signoff with best", CorrectionContext::default()),
-            "signoff with Best regards"
-        );
-        // A blocker within the window refuses the alias in any context.
-        assert_eq!(
-            m.apply_in("very best", in_register(TextRegister::Email)),
-            "very best"
-        );
-        // The canonical form stays protected and idempotent.
-        assert_eq!(
-            m.apply_in("Best regards", in_register(TextRegister::Email)),
-            "Best regards"
-        );
-    }
-
-    #[test]
-    fn inapplicable_contextual_alias_falls_through_to_lower_precedence_rules() {
-        let contextual = vec![(
-            "Tori".to_string(),
-            "Tauri".to_string(),
-            requirement(&[TextRegister::Technical], &[], &[]),
-        )];
-        let learned = vec![("Tori".to_string(), "Torii".to_string())];
-        let m =
-            CorrectionMatcher::build_with_context(&[], &[], &contextual, &learned, false, false);
-        assert_eq!(
-            m.apply_in("meet Tori", in_register(TextRegister::Technical)),
-            "meet Tauri"
-        );
-        assert_eq!(
-            m.apply_in("meet Tori", CorrectionContext::default()),
-            "meet Torii"
-        );
-    }
-
-    #[test]
-    fn simultaneously_applicable_contextual_aliases_fail_closed() {
-        let contextual = vec![
-            (
-                "Tori".to_string(),
-                "Tauri".to_string(),
-                requirement(&[], &["rust"], &[]),
-            ),
-            (
-                "Tori".to_string(),
-                "Torii".to_string(),
-                requirement(&[], &["shrine"], &[]),
-            ),
-        ];
-        let m = CorrectionMatcher::build_with_context(&[], &[], &contextual, &[], false, false);
-        let everyday = CorrectionContext::default();
-        assert_eq!(m.apply_in("rust Tori", everyday), "rust Tauri");
-        assert_eq!(m.apply_in("shrine Tori", everyday), "shrine Torii");
-        assert_eq!(m.apply_in("rust Tori shrine", everyday), "rust Tori shrine");
-    }
-
-    #[test]
-    fn numeric_aliases_match_rendered_digits() {
+    fn numeric_aliases_match_only_freshly_rendered_digits() {
         let learned = vec![
             ("GPT 5".to_string(), "GPT-5".to_string()),
             ("20 pages".to_string(), "twenty pages".to_string()),
             ("Tori".to_string(), "Tauri".to_string()),
         ];
         let m = CorrectionMatcher::build_with_learned(&[], &[], &learned, false, false);
-        let everyday = CorrectionContext::default();
+        let text = "GPT 5 wrote 20 pages for Tori";
+        let gpt = 4..5;
+        let pages = 12..14;
         assert_eq!(
-            m.apply_numeric_aliases("GPT 5 wrote 20 pages for Tori", everyday),
+            m.apply_numeric_aliases(text, &[gpt.clone(), pages.clone()], &[]),
             "GPT-5 wrote twenty pages for Tori"
         );
-        let once = m.apply_numeric_aliases("GPT 5", everyday);
-        assert_eq!(m.apply_numeric_aliases(&once, everyday), once);
+        // Digits the number stage did not render were already seen by Smart
+        // Correction and are never matched twice.
+        assert_eq!(m.apply_numeric_aliases(text, &[], &[]), text);
+        assert_eq!(
+            m.apply_numeric_aliases(text, std::slice::from_ref(&gpt), &[]),
+            "GPT-5 wrote 20 pages for Tori"
+        );
+        // A match touching text an earlier tier wrote is refused.
+        assert_eq!(
+            m.apply_numeric_aliases(text, &[gpt, pages], std::slice::from_ref(&(0..3))),
+            "GPT 5 wrote twenty pages for Tori"
+        );
         let plain = CorrectionMatcher::build_with_learned(&[], &[], &learned[2..], false, false);
-        assert_eq!(plain.apply_numeric_aliases("GPT 5", everyday), "GPT 5");
+        assert_eq!(
+            plain.apply_numeric_aliases("GPT 5", std::slice::from_ref(&(4..5)), &[]),
+            "GPT 5"
+        );
+    }
+
+    #[test]
+    fn traced_application_reports_explicit_output_spans() {
+        let pairs = vec![("page count".to_string(), "twenty pages".to_string())];
+        let m = CorrectionMatcher::build(&["useEffect".to_string()], &pairs, false, false);
+        let (text, explicit) =
+            m.apply_traced("use effect for page count", CorrectionContext::default());
+        assert_eq!(text, "useEffect for twenty pages");
+        assert_eq!(
+            explicit
+                .iter()
+                .map(|range| &text[range.clone()])
+                .collect::<Vec<_>>(),
+            ["twenty pages"]
+        );
     }
 
     #[test]

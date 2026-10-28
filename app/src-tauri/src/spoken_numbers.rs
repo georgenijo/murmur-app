@@ -7,6 +7,8 @@
 //! Rendering follows a content-free [`NumberPolicy`] resolved once from the
 //! frozen recording context. The policy is never inferred from transcript text.
 
+use std::ops::Range;
+
 const MAX_NUMBER_WORDS: usize = 64;
 const MAX_FRACTION_DIGITS: usize = 32;
 const MAX_DOTTED_SEGMENTS: usize = 8;
@@ -219,6 +221,35 @@ const LEADING_POINT_CONTEXT: &[&str] = &[
     "to",
 ];
 
+/// Determiners after which `twenty second` reads as an ordinal.
+const ORDINAL_DETERMINERS: &[&str] = &[
+    "the", "my", "your", "his", "her", "its", "our", "their", "this", "that", "each",
+];
+
+/// Nouns after which `twenty second` reads as a duration.
+const DURATION_NOUNS: &[&str] = &[
+    "timeout",
+    "delay",
+    "wait",
+    "interval",
+    "pause",
+    "break",
+    "limit",
+    "window",
+    "countdown",
+    "cooldown",
+    "gap",
+    "buffer",
+    "sleep",
+    "clip",
+    "video",
+    "ad",
+    "spot",
+    "rule",
+    "timer",
+    "lag",
+];
+
 /// Connectors that join small counts such as "two or three days".
 const COUNT_COORDINATORS: &[&str] = &["and", "or", "to", "through"];
 
@@ -294,28 +325,83 @@ enum NumberSpan {
 
 /// Convert bounded English number phrases to decimal digits under `policy`
 /// while preserving every byte outside the matched word spans.
+#[cfg(test)]
 pub(crate) fn normalize_spoken_numbers(input: &str, policy: NumberPolicy) -> String {
+    render_spoken_numbers(input, policy, &[]).text
+}
+
+/// One number-rendering pass. Ranges are byte offsets into `text`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NumberRendering {
+    pub text: String,
+    /// Spans this pass rewrote.
+    pub rendered: Vec<Range<usize>>,
+    /// The caller's `literal` spans, copied verbatim, in output offsets.
+    pub literal: Vec<Range<usize>>,
+}
+
+/// Render number phrases as [`normalize_spoken_numbers`] does, but never
+/// inside or across a `literal` input span (for example, text an explicit
+/// vocabulary alias wrote). Reports where the output was rewritten.
+pub(crate) fn render_spoken_numbers(
+    input: &str,
+    policy: NumberPolicy,
+    literal: &[Range<usize>],
+) -> NumberRendering {
     if input.trim().is_empty() || input.len() > MAX_SPOKEN_NUMBER_INPUT_BYTES {
-        return input.to_string();
+        return NumberRendering {
+            text: input.to_string(),
+            rendered: Vec::new(),
+            literal: literal.to_vec(),
+        };
     }
 
     let words = word_spans(input);
+    let overlaps_literal = |range: Range<usize>| {
+        literal
+            .iter()
+            .any(|span| range.start < span.end && span.start < range.end)
+    };
+    let literal_word = words
+        .iter()
+        .map(|word| overlaps_literal(word.start..word.end))
+        .collect::<Vec<_>>();
     let mut output = String::with_capacity(input.len());
-    let mut word_index = 0;
+    // (input range, output range) of every rewrite, in order.
+    let mut rewrites: Vec<(Range<usize>, Range<usize>)> = Vec::new();
     let mut copied_through = 0;
-    let mut changed = false;
+    let mut rewrite = |output: &mut String, from: Range<usize>, rendered: &str| {
+        output.push_str(&input[copied_through..from.start]);
+        let output_start = output.len();
+        output.push_str(rendered);
+        rewrites.push((from.clone(), output_start..output.len()));
+        copied_through = from.end;
+    };
+    let mut word_index = 0;
 
     while word_index < words.len() {
-        // Dates and clock times outrank the prose `one` rule so that
-        // "September first" and "one PM" still render digits.
-        let span = match parse_calendar_or_clock(&words, input, word_index) {
+        if literal_word[word_index] {
+            word_index += 1;
+            continue;
+        }
+        // Dates, clock times, and complete dotted values outrank the prose
+        // `one` rule so that "September first", "one PM", and "one point
+        // twelve" still render digits.
+        let structured = parse_calendar_or_clock(&words, input, word_index).or_else(|| {
+            parse_dotted(
+                &words,
+                input,
+                word_index,
+                policy,
+                version_label_precedes(&words, input, word_index),
+            )
+        });
+        let span = match structured {
             Some(parsed) => Some(NumberSpan::Digits(parsed)),
             None if should_preserve_prose_one(&words, input, word_index) => {
                 if words[word_index].lower == "1" {
-                    output.push_str(&input[copied_through..words[word_index].start]);
-                    output.push_str("one");
-                    copied_through = words[word_index].end;
-                    changed = true;
+                    let word = &words[word_index];
+                    rewrite(&mut output, word.start..word.end, "one");
                 }
                 word_index += 1;
                 continue;
@@ -327,20 +413,47 @@ pub(crate) fn normalize_spoken_numbers(input: &str, policy: NumberPolicy) -> Str
             None => word_index += 1,
             Some(NumberSpan::Words { end_word }) => word_index = end_word.max(word_index + 1),
             Some(NumberSpan::Digits(parsed)) => {
-                output.push_str(&input[copied_through..words[word_index].start]);
-                output.push_str(&parsed.rendered);
-                copied_through = words[parsed.end_word - 1].end;
+                let from = words[word_index].start..words[parsed.end_word - 1].end;
+                if overlaps_literal(from.clone()) {
+                    word_index += 1;
+                    continue;
+                }
+                rewrite(&mut output, from, &parsed.rendered);
                 word_index = parsed.end_word;
-                changed = true;
             }
         }
     }
 
-    if !changed {
-        return input.to_string();
+    if rewrites.is_empty() {
+        return NumberRendering {
+            text: input.to_string(),
+            rendered: Vec::new(),
+            literal: literal.to_vec(),
+        };
     }
     output.push_str(&input[copied_through..]);
-    output
+    // Literal spans never overlap a rewrite, so each shifts by the length
+    // change of the rewrites before it.
+    let shifted = |offset: usize| {
+        rewrites
+            .iter()
+            .filter(|(from, _)| from.end <= offset)
+            .fold(offset as isize, |position, (from, to)| {
+                position + to.len() as isize - from.len() as isize
+            }) as usize
+    };
+    NumberRendering {
+        text: output,
+        rendered: rewrites.iter().map(|(_, to)| to.clone()).collect(),
+        literal: literal
+            .iter()
+            .map(|span| shifted(span.start)..shifted(span.end))
+            .collect(),
+    }
+}
+
+fn version_label_precedes(words: &[WordSpan], input: &str, start: usize) -> bool {
+    previous_word_in(words, input, start, VERSION_LABELS)
 }
 
 fn next_number_span(
@@ -353,18 +466,34 @@ fn next_number_span(
         .or_else(|| parse_dotted(words, input, start, policy, false))
         .or_else(|| {
             (policy == NumberPolicy::Technical)
-                .then(|| parse_digit_run(words, input, start, true, false))
+                .then(|| {
+                    parse_digit_run(
+                        words,
+                        input,
+                        start,
+                        true,
+                        false,
+                        MAX_NUMBER_WORDS,
+                        usize::MAX,
+                    )
+                })
                 .flatten()
         });
     if let Some(parsed) = structured {
         return Some(NumberSpan::Digits(parsed));
     }
 
-    if let Some((value, end_word)) = parse_ordinal(words, input, start, false) {
+    if let Some((value, end_word)) =
+        parse_ordinal(words, input, start, second_is_ordinal(words, input, start))
+    {
         // Unit ordinals ("first" through "ninth") are never rewritten outside
-        // a date. Larger ordinals become digits only where digits are chosen.
+        // a date. Larger ordinals become digits only where digits are chosen,
+        // and never inside a hyphenated compound ("twenty-first-century").
         if value < 10 {
             return None;
+        }
+        if hyphen_attached(words, input, start, end_word) {
+            return Some(NumberSpan::Words { end_word });
         }
         return Some(match policy {
             NumberPolicy::Technical => NumberSpan::Digits(ParsedNumber {
@@ -651,12 +780,20 @@ fn parse_labelled(
     {
         return Some(dotted);
     }
-    parse_digit_run(words, input, start, false, false)
-        .or_else(|| {
-            parse_number(words, input, start)
-                .filter(|parsed| !hyphen_attached(words, input, start, parsed.end_word))
-        })
-        .filter(|parsed| label_applies(words, input, label, parsed.end_word))
+    parse_digit_run(
+        words,
+        input,
+        start,
+        false,
+        false,
+        MAX_NUMBER_WORDS,
+        usize::MAX,
+    )
+    .or_else(|| {
+        parse_number(words, input, start)
+            .filter(|parsed| !hyphen_attached(words, input, start, parsed.end_word))
+    })
+    .filter(|parsed| label_applies(words, input, label, parsed.end_word))
 }
 
 /// Whether `label` labels a value ending at `end_word`. A verb-like label
@@ -683,10 +820,15 @@ fn parse_dotted(
     version_label: bool,
 ) -> Option<ParsedNumber> {
     let technical = policy == NumberPolicy::Technical;
-    let (mut rendered, mut end_word) = dotted_segment(words, input, start, false)?;
+    let (mut rendered, mut end_word) =
+        dotted_segment(words, input, start, false, MAX_NUMBER_WORDS, usize::MAX)?;
     let mut segments = 1;
+    // Every word of the value, separators included, counts toward the phrase
+    // bound, and digits after the first separator toward the fraction bound.
+    let mut fraction_digits = 0;
     while segments < MAX_DOTTED_SEGMENTS {
         let separator = end_word;
+        let remaining_words = MAX_NUMBER_WORDS.saturating_sub(separator + 1 - start);
         let is_separator = words.get(separator).is_some_and(|word| {
             word.lower == "point" || ((version_label || technical) && word.lower == "dot")
         });
@@ -697,9 +839,17 @@ fn parse_dotted(
         {
             break;
         }
-        let Some((segment, segment_end)) = dotted_segment(words, input, separator + 1, true) else {
+        let Some((segment, segment_end)) = dotted_segment(
+            words,
+            input,
+            separator + 1,
+            true,
+            remaining_words,
+            MAX_FRACTION_DIGITS - fraction_digits,
+        ) else {
             break;
         };
+        fraction_digits += segment.len();
         rendered.push('.');
         rendered.push_str(&segment);
         end_word = segment_end;
@@ -713,43 +863,65 @@ fn parse_dotted(
 }
 
 /// One dotted segment: a joined digit run (`one ninety two` → `192`) or a
-/// cardinal below one thousand.
+/// cardinal below one thousand, within the remaining word and digit budgets.
 fn dotted_segment(
     words: &[WordSpan],
     input: &str,
     start: usize,
     after_separator: bool,
+    max_words: usize,
+    max_digits: usize,
 ) -> Option<(String, usize)> {
-    if let Some(run) = parse_digit_run(words, input, start, false, after_separator) {
+    if max_words == 0 || max_digits == 0 {
+        return None;
+    }
+    if let Some(run) = parse_digit_run(
+        words,
+        input,
+        start,
+        false,
+        after_separator,
+        max_words,
+        max_digits,
+    ) {
         return Some((run.rendered, run.end_word));
     }
     if after_separator && words[start].lower == "oh" {
         return Some(("0".to_string(), start + 1));
     }
     let (value, end_word) = parse_cardinal(words, input, start)?;
-    (value < 1_000).then(|| (value.to_string(), end_word))
+    let digits = value.to_string();
+    (value < 1_000 && end_word - start <= max_words && digits.len() <= max_digits)
+        .then_some((digits, end_word))
 }
 
 /// Join two or more spoken digit chunks: `eight zero eight zero` → `8080`,
 /// `four oh two` → `402`. With `single_digits_only`, every chunk is one digit.
+/// The run consumes at most `max_words` words and emits at most `max_digits`
+/// digits; a longer phrase ends at the bound.
 fn parse_digit_run(
     words: &[WordSpan],
     input: &str,
     start: usize,
     single_digits_only: bool,
     leading_oh: bool,
+    max_words: usize,
+    max_digits: usize,
 ) -> Option<ParsedNumber> {
     let mut digits = String::new();
     let mut index = start;
     let mut chunks = 0;
-    while index < words.len() && chunks < MAX_NUMBER_WORDS {
+    while index < words.len() {
         if index > start && !connected(words, input, index - 1, index) {
             break;
         }
         let Some((chunk, end)) = digit_chunk(words, input, index, chunks > 0 || leading_oh) else {
             break;
         };
-        if single_digits_only && chunk.len() != 1 {
+        if (single_digits_only && chunk.len() != 1)
+            || end - start > max_words
+            || digits.len() + chunk.len() > max_digits
+        {
             break;
         }
         digits.push_str(&chunk);
@@ -794,6 +966,19 @@ fn digit_chunk(
         Some(unit) => ((tens + unit).to_string(), index + 2),
         None => (tens.to_string(), index + 1),
     })
+}
+
+/// `second` is also a unit of time. After a determiner such as `the` and
+/// before a word that is not a duration noun it closes an ordinal ("the
+/// twenty-second item"); otherwise it stays a duration ("a twenty second
+/// timeout", "the twenty second delay").
+fn second_is_ordinal(words: &[WordSpan], input: &str, start: usize) -> bool {
+    let after = start + 2;
+    previous_word_in(words, input, start, ORDINAL_DETERMINERS)
+        && !words.get(after).is_some_and(|next| {
+            space_between(words, input, after - 1, after)
+                && DURATION_NOUNS.contains(&next.lower.as_str())
+        })
 }
 
 /// Parse `seventeenth`, `twentieth`, or `twenty-first` / `twenty first`.
@@ -898,8 +1083,7 @@ fn prose_count_group(words: &[WordSpan], input: &str, start: usize) -> Option<us
     }
 
     let mut last = start;
-    let mut members = 1;
-    while members < MAX_NUMBER_WORDS {
+    loop {
         let next = last + 1;
         let Some(word) = words.get(next) else {
             break;
@@ -917,11 +1101,13 @@ fn prose_count_group(words: &[WordSpan], input: &str, start: usize) -> Option<us
         } else {
             break;
         };
+        if member - start >= MAX_NUMBER_WORDS {
+            break;
+        }
         if !is_small_count(words, input, member) {
             return None;
         }
         last = member;
-        members += 1;
     }
 
     let end = last + 1;
@@ -1824,6 +2010,107 @@ mod tests {
         both("point five", "0.5");
         both("the ratio is point five", "the ratio is 0.5");
         both("negative point two", "-0.2");
+    }
+
+    #[test]
+    fn complete_dotted_values_outrank_the_determiner_one() {
+        // Review A1: the `one` guard ran before dotted parsing.
+        both("Python one point twelve", "Python 1.12");
+        both("version one point two", "version 1.2");
+        assert_eq!(technical("one dot two dot three"), "1.2.3");
+        assert_eq!(prose("one dot two dot three"), "one dot two dot three");
+        both(
+            "the one point I want to make",
+            "the one point I want to make",
+        );
+    }
+
+    #[test]
+    fn second_closes_an_ordinal_only_outside_duration_context() {
+        // Review A2: `twenty second` is an ordinal after a determiner and a
+        // duration before a duration noun or after an indefinite article.
+        assert_eq!(technical("the twenty-second item"), "the 22nd item");
+        assert_eq!(technical("the twenty second item"), "the 22nd item");
+        assert_eq!(technical("a twenty second timeout"), "a 20 second timeout");
+        assert_eq!(technical("the twenty second delay"), "the 20 second delay");
+        assert_eq!(technical("a twenty-second delay"), "a twenty-second delay");
+        assert_eq!(prose("the twenty second item"), "the twenty second item");
+        both("September twenty second", "September 22");
+    }
+
+    #[test]
+    fn dotted_values_and_digit_runs_respect_word_and_fraction_bounds() {
+        // Review A3: the dotted parser counted chunks, not words or digits.
+        let nines = vec!["nine"; MAX_FRACTION_DIGITS + 1].join(" ");
+        for policy in [NumberPolicy::Prose, NumberPolicy::Technical] {
+            let output = normalize_spoken_numbers(&format!("three point {nines}"), policy);
+            let fraction = output
+                .strip_prefix("3.")
+                .and_then(|rest| rest.split(' ').next())
+                .unwrap();
+            assert_eq!(fraction.len(), MAX_FRACTION_DIGITS, "{output}");
+        }
+
+        let pairs = vec!["twenty one"; MAX_NUMBER_WORDS].join(" ");
+        for policy in [NumberPolicy::Prose, NumberPolicy::Technical] {
+            let output = normalize_spoken_numbers(&format!("port {pairs}"), policy);
+            let first = output
+                .strip_prefix("port ")
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap();
+            // 64 words make 32 "twenty one" chunks of two digits each.
+            assert_eq!(first, "21".repeat(MAX_NUMBER_WORDS / 2), "{output}");
+        }
+
+        let segments = ["one"; MAX_DOTTED_SEGMENTS + 2].join(" point ");
+        let output = technical(&segments);
+        assert_eq!(
+            output.split(' ').next().unwrap(),
+            ["1"; MAX_DOTTED_SEGMENTS].join(".")
+        );
+    }
+
+    #[test]
+    fn hyphenated_ordinal_compounds_stay_words() {
+        // Review A4.
+        both(
+            "a twenty-first-century design",
+            "a twenty-first-century design",
+        );
+        assert_eq!(technical("the twenty-first item"), "the 21st item");
+    }
+
+    #[test]
+    fn leading_point_after_to_is_a_documented_decimal() {
+        // Review A5: `to` introduces a value, so this stays a decimal; the
+        // destination reading is not inferred.
+        both("please go to point two", "please go to 0.2");
+        assert_eq!(
+            prose("at this point two people"),
+            "at this point two people"
+        );
+    }
+
+    #[test]
+    fn literal_spans_are_never_rendered_and_offsets_track_the_output() {
+        let input = "twenty pages and twenty pages";
+        let first = 0..12;
+        let rendering =
+            render_spoken_numbers(input, NumberPolicy::Prose, std::slice::from_ref(&first));
+        assert_eq!(rendering.text, "twenty pages and 20 pages");
+        assert_eq!(rendering.literal, [first]);
+        assert_eq!(&rendering.text[rendering.rendered[0].clone()], "20");
+
+        let second = 17..29;
+        let rendering =
+            render_spoken_numbers(input, NumberPolicy::Prose, std::slice::from_ref(&second));
+        assert_eq!(rendering.text, "20 pages and twenty pages");
+        assert_eq!(
+            &rendering.text[rendering.literal[0].clone()],
+            "twenty pages"
+        );
     }
 
     #[test]

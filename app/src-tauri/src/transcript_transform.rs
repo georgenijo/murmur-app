@@ -5,13 +5,15 @@
 //! paste, history, and stats) deliberately remain outside this module.
 
 use std::fmt;
-use std::sync::Arc;
+use std::ops::Range;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::cleanup::CleanupOptions;
 use crate::cli_command::{canonicalize_cli, is_cli_utterance, CliFormattingMode, CliLexicon};
 use crate::correction::CorrectionMatcher;
 use crate::ide_context::IdeContextIndex;
+use crate::MutexExt;
 
 pub(crate) const CLEANUP_STAGE: &str = "cleanup";
 pub(crate) const VOICE_COMMANDS_STAGE: &str = "voice_commands";
@@ -272,6 +274,7 @@ impl TranscriptPipeline {
             ide_context_index,
             voice_command_runtime,
         } = resources;
+        let correction_trace = SharedCorrectionTrace::default();
         Self::new(vec![
             Box::new(CleanupStage),
             Box::new(VoiceCommandsStage {
@@ -299,6 +302,7 @@ impl TranscriptPipeline {
             }),
             Box::new(SmartCorrectionStage {
                 matcher: correction_matcher.clone(),
+                trace: correction_trace.clone(),
             }),
             Box::new(SmartFormattingStage {
                 cli_lexicon: cli_lexicon.clone(),
@@ -306,7 +310,10 @@ impl TranscriptPipeline {
             Box::new(SpokenStructureStage {
                 cli_lexicon: cli_lexicon.clone(),
             }),
-            Box::new(SpokenNumbersStage { correction_matcher }),
+            Box::new(SpokenNumbersStage {
+                correction_matcher,
+                correction_trace,
+            }),
             Box::new(IdeContextStage {
                 index: ide_context_index,
             }),
@@ -528,7 +535,19 @@ impl TranscriptTransform for VoiceCommandsStage {
 
 struct SmartCorrectionStage {
     matcher: Option<Arc<CorrectionMatcher>>,
+    trace: SharedCorrectionTrace,
 }
+
+/// What Smart Correction wrote in one pipeline run, handed to the
+/// spoken-numbers stage of the same run. Never logged or persisted.
+struct CorrectionTrace {
+    /// Smart Correction's output.
+    text: String,
+    /// Byte ranges in `text` written by explicit aliases or learned rules.
+    explicit: Vec<Range<usize>>,
+}
+
+type SharedCorrectionTrace = Arc<Mutex<Option<CorrectionTrace>>>;
 
 struct CliCommandStage {
     lexicon: CliLexicon,
@@ -546,6 +565,7 @@ struct SpokenNumbersStage {
     /// Supplies explicit aliases whose spoken form contains digits; they are
     /// matched once numbers have been rendered.
     correction_matcher: Option<Arc<CorrectionMatcher>>,
+    correction_trace: SharedCorrectionTrace,
 }
 
 struct IdeContextStage {
@@ -637,13 +657,29 @@ impl TranscriptTransform for SpokenNumbersStage {
     }
 
     fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
-        let rendered =
-            crate::spoken_numbers::normalize_spoken_numbers(text, context.stages.number_policy());
+        // Explicit alias and learned-rule output is literal to number
+        // rendering. Its spans are known only while the text is exactly what
+        // Smart Correction produced; if Smart Formatting or Spoken Structure
+        // rewrote it, the spans are unproven and the digit re-match is skipped.
+        let literal = match self.correction_trace.lock_or_recover().take() {
+            None => Some(Vec::new()),
+            Some(trace) if trace.text == text => Some(trace.explicit),
+            Some(_) => None,
+        };
+        let rendering = crate::spoken_numbers::render_spoken_numbers(
+            text,
+            context.stages.number_policy(),
+            literal.as_deref().unwrap_or_default(),
+        );
         Ok(match &self.correction_matcher {
-            Some(matcher) if context.stages.smart_correction_enabled => {
-                matcher.apply_numeric_aliases(&rendered, context.stages.correction_context())
+            Some(matcher) if context.stages.smart_correction_enabled && literal.is_some() => {
+                matcher.apply_numeric_aliases(
+                    &rendering.text,
+                    &rendering.rendered,
+                    &rendering.literal,
+                )
             }
-            _ => rendered,
+            _ => rendering.text,
         })
     }
 }
@@ -691,7 +727,13 @@ impl TranscriptTransform for SmartCorrectionStage {
         }
         match &self.matcher {
             Some(matcher) if !matcher.is_empty() => {
-                Ok(matcher.apply_in(text, context.stages.correction_context()))
+                let (text, explicit) =
+                    matcher.apply_traced(text, context.stages.correction_context());
+                *self.trace.lock_or_recover() = Some(CorrectionTrace {
+                    text: text.clone(),
+                    explicit,
+                });
+                Ok(text)
             }
             _ => Ok(text.to_string()),
         }
@@ -1467,6 +1509,102 @@ mod tests {
         );
         // Disabled Smart Correction keeps every learned rule off.
         assert_eq!(run(technical, false, "GPT five is out"), "GPT 5 is out");
+    }
+
+    fn run_with_matcher(
+        matcher: CorrectionMatcher,
+        stages: TranscriptStageConfig,
+        raw: &str,
+    ) -> String {
+        transform_transcript(
+            raw.to_string(),
+            &live_context(stages),
+            TranscriptTransformResources {
+                correction_matcher: Some(Arc::new(matcher)),
+                ..TranscriptTransformResources::empty()
+            },
+        )
+        .unwrap()
+        .text
+    }
+
+    fn correction_and_numbers(register: crate::state::TextRegister) -> TranscriptStageConfig {
+        TranscriptStageConfig {
+            smart_correction_enabled: true,
+            spoken_numbers_enabled: true,
+            text_register: register,
+            ..TranscriptStageConfig::verbatim()
+        }
+    }
+
+    #[test]
+    fn digit_rule_re_match_never_repeats_a_correction() {
+        // Review B1: `read 5` became `read five pages pages`.
+        let learned = [("5".to_string(), "five pages".to_string())];
+        for raw in ["read 5", "read five"] {
+            let matcher = CorrectionMatcher::build_with_learned(&[], &[], &learned, false, false);
+            assert_eq!(
+                run_with_matcher(
+                    matcher,
+                    correction_and_numbers(crate::state::TextRegister::Technical),
+                    raw
+                ),
+                "read five pages",
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_alias_output_outranks_learned_digit_rules_and_stays_literal() {
+        // Review B1: a learned `20 pages` rule overrode the explicit alias.
+        let pairs = [("page count".to_string(), "twenty pages".to_string())];
+        let learned = [
+            ("20 pages".to_string(), "twenty sheets".to_string()),
+            ("20 books".to_string(), "twenty volumes".to_string()),
+        ];
+        let run = |register, raw: &str| {
+            let matcher =
+                CorrectionMatcher::build_with_learned(&[], &pairs, &learned, false, false);
+            run_with_matcher(matcher, correction_and_numbers(register), raw)
+        };
+        for register in [
+            crate::state::TextRegister::Everyday,
+            crate::state::TextRegister::Technical,
+        ] {
+            assert_eq!(run(register, "page count"), "twenty pages", "{register:?}");
+            // The explicit canonical form is protected wherever it is heard.
+            assert_eq!(
+                run(register, "page count, then twenty pages"),
+                "twenty pages, then twenty pages",
+                "{register:?}"
+            );
+            // Number words outside explicit output still render and still
+            // meet a learned digit rule.
+            assert_eq!(
+                run(register, "page count, then twenty books"),
+                "twenty pages, then twenty volumes",
+                "{register:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn digit_rule_re_match_fails_closed_after_an_intermediate_rewrite() {
+        // If Spoken Structure rewrites the text after Smart Correction, the
+        // explicit spans are unproven: numbers render as before and no learned
+        // digit rule can override explicit output.
+        let pairs = [("page count".to_string(), "twenty pages".to_string())];
+        let learned = [("20 pages".to_string(), "twenty sheets".to_string())];
+        let matcher = CorrectionMatcher::build_with_learned(&[], &pairs, &learned, false, false);
+        let stages = TranscriptStageConfig {
+            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
+            ..correction_and_numbers(crate::state::TextRegister::Everyday)
+        };
+        assert_eq!(
+            run_with_matcher(matcher, stages, "page count comma done"),
+            "20 pages, done"
+        );
     }
 
     #[test]

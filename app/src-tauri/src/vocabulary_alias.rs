@@ -1,18 +1,14 @@
 //! Structured vocabulary entries and deterministic explicit spoken aliases.
 
-use crate::correction::{normalize_alias, ContextRequirement, CorrectionMatcher, CueWindow};
+use crate::correction::{normalize_alias, CorrectionMatcher};
 use crate::knowledge_store::{KnowledgeEntry, KnowledgePayload, KnowledgeScope};
-use crate::state::{AppProfile, VocabularyContext, VocabularyEntry, VocabularyScope, VoiceCommand};
+use crate::state::{AppProfile, VocabularyEntry, VocabularyScope, VoiceCommand};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const MAX_ENTRIES: usize = 500;
 const MAX_ALIASES_PER_ENTRY: usize = 16;
 const MAX_VALUE_CHARS: usize = 256;
-const MAX_CONTEXT_WORDS: usize = 16;
-const MAX_CONTEXT_WORD_CHARS: usize = 32;
-const MAX_CONTEXT_WINDOW: u8 = 16;
-const DEFAULT_CONTEXT_WINDOW: u8 = 8;
 
 pub(crate) struct CorrectionMatcherSet {
     global: Arc<CorrectionMatcher>,
@@ -164,97 +160,13 @@ fn build_matcher(
 ) -> CorrectionMatcher {
     let mut terms = base_terms.to_vec();
     let mut pairs = Vec::new();
-    let mut contextual_pairs = Vec::new();
     for entry in entries {
-        let written = entry.written.trim().to_string();
-        let Some(context) = &entry.context else {
-            terms.push(written.clone());
-            for alias in &entry.aliases {
-                pairs.push((alias.trim().to_string(), written.clone()));
-            }
-            continue;
-        };
-        // A contextual entry rewrites only through its gated aliases; its
-        // written form does not seed unconditional derived or fuzzy matching.
-        let requirement = Arc::new(context_requirement(context));
+        terms.push(entry.written.trim().to_string());
         for alias in &entry.aliases {
-            contextual_pairs.push((
-                alias.trim().to_string(),
-                written.clone(),
-                requirement.clone(),
-            ));
+            pairs.push((alias.trim().to_string(), entry.written.trim().to_string()));
         }
     }
-    CorrectionMatcher::build_with_context(
-        &terms,
-        &pairs,
-        &contextual_pairs,
-        learned_pairs,
-        fuzzy,
-        include_builtins,
-    )
-}
-
-fn context_requirement(context: &VocabularyContext) -> ContextRequirement {
-    let window = usize::from(context.window.unwrap_or(DEFAULT_CONTEXT_WINDOW));
-    let cue = |values: &[String]| {
-        let words = values
-            .iter()
-            .map(|word| word.trim().to_ascii_lowercase())
-            .filter(|word| !word.is_empty())
-            .collect::<Vec<_>>();
-        (!words.is_empty()).then_some(CueWindow {
-            words,
-            before: window,
-            after: window,
-        })
-    };
-    ContextRequirement {
-        registers: context.modes.clone(),
-        project_context: context.project_context,
-        clauses: cue(&context.cue_words)
-            .map(|cue| vec![cue])
-            .into_iter()
-            .collect(),
-        blockers: cue(&context.blocking_words).into_iter().collect(),
-    }
-}
-
-fn validate_context(written: &str, context: &VocabularyContext) -> Result<(), String> {
-    if context.modes.is_empty() && !context.project_context && context.cue_words.is_empty() {
-        return Err(format!(
-            "The context for '{written}' needs a mode, project context, or cue word."
-        ));
-    }
-    if context
-        .window
-        .is_some_and(|window| window == 0 || window > MAX_CONTEXT_WINDOW)
-    {
-        return Err(format!(
-            "The context window for '{written}' must be 1 to {MAX_CONTEXT_WINDOW} words."
-        ));
-    }
-    for words in [&context.cue_words, &context.blocking_words] {
-        if words.len() > MAX_CONTEXT_WORDS {
-            return Err(format!(
-                "The context for '{written}' supports at most {MAX_CONTEXT_WORDS} words per list."
-            ));
-        }
-        // Cue windows compare single ASCII word tokens.
-        if words.iter().any(|word| {
-            let word = word.trim();
-            word.is_empty()
-                || word.chars().count() > MAX_CONTEXT_WORD_CHARS
-                || !word
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
-        }) {
-            return Err(format!(
-                "Context words for '{written}' must be single words of letters or digits."
-            ));
-        }
-    }
-    Ok(())
+    CorrectionMatcher::build_with_learned(&terms, &pairs, learned_pairs, fuzzy, include_builtins)
 }
 
 fn unambiguous_project_root<'a>(
@@ -421,9 +333,6 @@ pub(crate) fn validate_entries(
             if alias.chars().count() > MAX_VALUE_CHARS {
                 return Err(format!("The spoken alias for '{written}' is too long."));
             }
-        }
-        if let Some(context) = &entry.context {
-            validate_context(written, context)?;
         }
     }
 
@@ -593,119 +502,25 @@ mod tests {
             written: written.to_string(),
             aliases: aliases.iter().map(|value| value.to_string()).collect(),
             enabled: true,
-            context: None,
             scope: VocabularyScope::Global,
         }
     }
 
-    fn contextual_entry() -> VocabularyEntry {
-        VocabularyEntry {
-            context: Some(VocabularyContext {
-                modes: vec![crate::state::TextRegister::Technical],
-                cue_words: vec!["Xcode".to_string()],
-                blocking_words: vec!["taylor".to_string()],
-                ..VocabularyContext::default()
-            }),
-            ..entry("SwiftUI", &["swift you eye"])
-        }
-    }
-
     #[test]
-    fn contextual_entries_apply_only_in_their_declared_context() {
-        use crate::correction::CorrectionContext;
-        use crate::state::TextRegister;
-
-        let set = CorrectionMatcherSet::build(&[], &[contextual_entry()], &[], false, false);
-        let matcher = set.select(None);
-        let everyday = CorrectionContext::default();
-        let technical = CorrectionContext {
-            register: TextRegister::Technical,
-            project_context: false,
-        };
-        assert_eq!(
-            matcher.apply_in("use swift you eye", everyday),
-            "use swift you eye"
-        );
-        assert_eq!(
-            matcher.apply_in("use swift you eye", technical),
-            "use SwiftUI"
-        );
-        assert_eq!(
-            matcher.apply_in("in Xcode use swift you eye", everyday),
-            "in Xcode use SwiftUI"
-        );
-        assert_eq!(
-            matcher.apply_in("Taylor Swift you eye", technical),
-            "Taylor Swift you eye"
-        );
-        // The written form of a contextual entry does not seed unconditional
-        // derived matching ("swift ui" would otherwise become SwiftUI).
-        assert_eq!(matcher.apply_in("swift ui", everyday), "swift ui");
-        let unconditional = CorrectionMatcherSet::build(
-            &[],
-            &[entry("SwiftUI", &["swift you eye"])],
-            &[],
-            false,
-            false,
-        );
-        assert_eq!(
-            unconditional.select(None).apply_in("swift ui", everyday),
-            "SwiftUI"
-        );
-    }
-
-    #[test]
-    fn contextual_entries_are_bounded_and_persist_compatibly() {
-        assert!(validate_entries(&[contextual_entry()], &[]).is_ok());
-        let invalid = |context: VocabularyContext| {
-            validate_entries(
-                &[VocabularyEntry {
-                    context: Some(context),
-                    ..entry("SwiftUI", &["swift you eye"])
-                }],
-                &[],
-            )
-        };
-        assert!(invalid(VocabularyContext::default())
-            .unwrap_err()
-            .contains("needs a mode"));
-        assert!(invalid(VocabularyContext {
-            cue_words: vec!["two words".to_string()],
-            ..VocabularyContext::default()
-        })
-        .is_err());
-        assert!(invalid(VocabularyContext {
-            cue_words: vec!["xcode".to_string()],
-            window: Some(0),
-            ..VocabularyContext::default()
-        })
-        .is_err());
-        assert!(invalid(VocabularyContext {
-            cue_words: vec!["cue".to_string(); MAX_CONTEXT_WORDS + 1],
-            ..VocabularyContext::default()
-        })
-        .is_err());
-
-        let plain = serde_json::to_value(entry("Tauri", &["Tori"])).unwrap();
-        assert!(plain.get("context").is_none());
-        let parsed: VocabularyEntry = serde_json::from_value(serde_json::json!({
-            "id": "swift",
-            "written": "SwiftUI",
-            "aliases": ["swift you eye"],
-            "context": {"modes": ["technical", "terminal"], "projectContext": true, "window": 4}
-        }))
-        .unwrap();
-        let context = parsed.context.unwrap();
-        assert_eq!(context.modes.len(), 2);
-        assert!(context.project_context);
-        assert!(
-            serde_json::from_value::<VocabularyEntry>(serde_json::json!({
-                "id": "swift",
-                "written": "SwiftUI",
-                "context": {"modes": ["technical"], "unknown": true}
-            }))
-            .is_err()
-        );
+    fn vocabulary_entries_carry_no_user_context_restrictions() {
+        // Review B3: a context field the frontend drops, or an older build
+        // ignores, would let a restricted alias fire everywhere. Context
+        // requirements stay internal to the built-in pack until Settings can
+        // author and preserve them.
+        let value = serde_json::to_value(entry("Tauri", &["Tori"])).unwrap();
+        let mut keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["aliases", "enabled", "id", "scope", "written"]);
     }
 
     #[test]
@@ -940,7 +755,6 @@ mod tests {
             written: "Murmur".to_string(),
             aliases: vec!["mer mer".to_string()],
             enabled: true,
-            context: None,
             scope: VocabularyScope::App {
                 bundle_id: "com.example.Editor".to_string(),
             },
@@ -1074,7 +888,6 @@ mod tests {
             written: "Tauri".to_string(),
             aliases: vec!["Tori".to_string()],
             enabled: true,
-            context: None,
             scope: VocabularyScope::Project {
                 bundle_id: "com.example.Editor".to_string(),
                 root: "/project/one".to_string(),
