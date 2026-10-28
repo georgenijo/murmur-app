@@ -10,7 +10,11 @@ acknowledged and discarded. No user setup, UI, or permissions prompt is added.
 
 - Only the **structured event stream** leaves the device — the same
   privacy-stripped events shown in Settings → Performance. Transcription text
-  never enters that stream (`telemetry.rs` strips it at the source).
+  never enters that stream (`telemetry.rs` strips it at the source), and
+  neither does the identity of any key the user types: keyboard events record
+  only a bounded key class for keys other than the configured hotkey. Queued
+  lines are re-sanitized before upload, so a backlog written by an older build
+  cannot ship key identity either.
 - Installs are identified by a **random UUID** generated on first run and
   stored in `shipper_state.json`. Each batch also carries the **device name**
   (`scutil --get ComputerName`), **macOS version**, and **hardware model** so

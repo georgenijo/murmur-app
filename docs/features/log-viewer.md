@@ -59,6 +59,30 @@ The `performance.store_operation_failed` system event is treated as its own
 all-build schema: only its code, bounded operation/error class, attempt count,
 and recording ID survive. SQLite text, SQL, paths, and unknown fields are
 dropped.
+
+Key identity is content: a key pressed while a hotkey is held is usually the
+next character the user is typing. Keyboard telemetry therefore never records
+the identity of any key other than the configured hotkey, in any build. Detector
+and rejection events carry `event_kind` (`key_press`, `key_release`, ...),
+`is_target_key`, `target_key` (the configured hotkey's settings id such as
+`shift_l` or `f8`, never a raw key), and a bounded `key_class`: `modifier`,
+`function`, `navigation`, `editing`, `character`, `other`, or `none`. The raw
+rdev `EventType`, `Key`, and typed `name` are never formatted into a field.
+`telemetry.rs` enforces this independently of call sites, in every sink:
+structured events, the pretty `app.log`, and JSONL written by an older build.
+The `keyboard` stream keeps only an exact key-and-value string allowlist, and
+its messages may not name any non-hotkey key (Escape cancellation logs
+`keyboard.escape_cancel`, not the key). In every other stream, string fields
+and summaries keep their text but any key identity is replaced with `[key]`:
+a distinct rdev name such as `KeyI`, `Num4`, or `SemiColon`, a raw
+`Unknown(<code>)`, or, inside parentheses such as `Some(End)` or
+`KeyPress(Return)`, an ordinary-word key name. A name counts only as a whole
+token delimited by whitespace, quotes, `(`, `)`, `,`, `=`, or `:`, so paths and
+model names such as `/models/KeyA/model.bin` are untouched. `app.log` string
+fields are quoted and escaped, as with the default formatter.
+Persisted lines are re-sanitized before history restore and before upload, so
+a backlog queued before an upgrade cannot ship key identity.
+
 Frontend-originated codes are validated by Rust before entering the structured
 event. This gives local and fleet presentation layers stable semantic keys
 without permitting user content or arbitrary labels.
@@ -75,7 +99,7 @@ Tracing targets map to stream names used for filtering:
 |--------|--------|----------------|
 | `pipeline` | pipeline | Transcription timing, VAD results, model loading |
 | `audio` | audio | Device selection, sample rates, audio levels |
-| `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, mode changes, listener lifecycle |
+| `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, key class (never typed-key identity), mode changes, listener lifecycle |
 | `transform` | transform | Correlated transform key, state, capture, audio, effects, and terminal outcomes |
 | `system` | system | Startup, permissions, updates, resource usage |
 

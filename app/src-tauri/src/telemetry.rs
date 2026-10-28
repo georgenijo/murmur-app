@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
+mod key_identity;
+pub(crate) use key_identity::sanitize_persisted_line;
+
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
 const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
@@ -156,14 +159,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         }
         .to_string();
 
-        // Collect fields
-        let mut visitor = JsonVisitor::new();
-        event.record(&mut visitor);
-
-        let mut data = serde_json::Value::Object(visitor.fields);
-
-        sanitize_event_data(&stream, &mut data, cfg!(debug_assertions));
-        let summary = sanitized_summary(&stream, visitor.message, &data, cfg!(debug_assertions));
+        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
 
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
@@ -204,6 +200,21 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
     }
 }
 
+/// Collect an event's fields and apply the structured-event privacy boundary.
+/// Returns the summary and data persisted to JSONL and emitted to windows.
+fn sanitized_event_payload(
+    stream: &str,
+    event: &tracing::Event<'_>,
+    debug_build: bool,
+) -> (String, serde_json::Value) {
+    let mut visitor = JsonVisitor::new();
+    event.record(&mut visitor);
+    let mut data = serde_json::Value::Object(visitor.fields);
+    sanitize_event_data(stream, &mut data, debug_build);
+    let summary = sanitized_summary(stream, visitor.message, &data, debug_build);
+    (summary, data)
+}
+
 /// Enforce the structured-event privacy boundary independently of call-site
 /// discipline. Transform traces may retain only stable enum/bucket fields;
 /// arbitrary strings (and therefore transform content, paths, app/device
@@ -213,6 +224,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_started" => Some("keyboard.listener_started"),
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
+        "keyboard.escape_cancel" => Some("keyboard.escape_cancel"),
         "keyboard.hotkey_arming_cancelled" => Some("keyboard.hotkey_arming_cancelled"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
         "audio.system_audio_graph_observed" => Some("audio.system_audio_graph_observed"),
@@ -1429,7 +1441,7 @@ fn sanitized_summary(
             .unwrap_or("Structured event")
             .to_string()
     } else {
-        summary.unwrap_or_default()
+        key_identity::bounded_summary(stream, summary.unwrap_or_default())
     }
 }
 
@@ -1724,6 +1736,9 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if key_identity::sanitize_fields(stream, obj) {
+        return;
+    }
     if is_model_install_event(obj) {
         // Model installation failures may originate in native libraries and
         // contain local paths or raw error text. Keep only the exact stable
@@ -2240,7 +2255,8 @@ fn read_recent_events(paths: &[PathBuf], n: usize) -> Vec<AppEvent> {
             continue;
         };
         for line in content.lines().rev() {
-            if let Ok(event) = serde_json::from_str::<AppEvent>(line) {
+            // Lines written before an upgrade predate the key-identity boundary.
+            if let Ok(event) = serde_json::from_str::<AppEvent>(&sanitize_persisted_line(line)) {
                 newest_first.push(event);
                 if newest_first.len() >= n {
                     break;
@@ -2313,9 +2329,8 @@ pub fn init(app_handle: tauri::AppHandle) {
     register_writer(&pretty_file);
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
     let pretty_layer = tracing_subscriber::fmt::layer()
+        .event_format(key_identity::PrettyFormat)
         .with_writer(pretty_writer)
-        .with_target(true)
-        .with_level(true)
         .with_ansi(false);
 
     // Layer 2: Tauri event emitter (also writes JSONL)
@@ -2731,6 +2746,36 @@ mod tests {
             ["event 5", "event 6", "event 7", "event 8", "event 9"]
         );
         assert_eq!(read_recent_events(&paths, 100).len(), 9);
+    }
+
+    #[test]
+    fn restore_sanitizes_key_identity_from_every_generation() {
+        let dir = rotation_dir("restore_key_identity");
+        let path = dir.join("events.jsonl");
+        let paths = vec![
+            generation_path(&path, 2),
+            generation_path(&path, 1),
+            path.clone(),
+        ];
+        // Lines as v0.51.6–v0.52.2 wrote them, one per generation.
+        let legacy = |n: usize, key: &str| {
+            format!(
+                "{{\"timestamp\":\"t{n}\",\"stream\":\"keyboard\",\"level\":\"info\",\"summary\":\"Escape pressed\",\"data\":{{\"reason\":\"combo_cancelled\",\"event_type\":\"KeyPress({key})\",\"key\":\"Some({key})\"}}}}\n"
+            )
+        };
+        std::fs::write(&paths[0], legacy(1, "KeyI")).unwrap();
+        std::fs::write(&paths[1], legacy(2, "Num4") + &event_line(3)).unwrap();
+        std::fs::write(&paths[2], legacy(4, "SemiColon")).unwrap();
+
+        let restored = read_recent_events(&paths, 500);
+        let timestamps: Vec<&str> = restored.iter().map(|e| e.timestamp.as_str()).collect();
+        assert_eq!(timestamps, ["t1", "t2", "2026-01-01T00:00:00.003Z", "t4"]);
+        let encoded = serde_json::to_string(&restored).unwrap();
+        for leak in ["KeyI", "Num4", "SemiColon", "KeyPress(", "Escape"] {
+            assert!(!encoded.contains(leak), "{leak} restored: {encoded}");
+        }
+        assert_eq!(restored[0].data["reason"], "combo_cancelled");
+        assert_eq!(restored[2].summary, "event 3");
     }
 
     #[test]

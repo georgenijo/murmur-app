@@ -130,8 +130,10 @@ impl DoubleTapDetector {
             state = ?self.state,
             elapsed_ms = self.elapsed_ms() as u64,
             recording = self.recording,
-            target_key = ?self.target_key,
-            event_type = ?event_type,
+            target_key = target_key_label(self.target_key),
+            event_kind = event_kind(event_type),
+            key_class = event_key_class(event_type),
+            is_target_key = is_target_event(event_type, self.target_key),
             "keyboard detector rejected sequence"
         );
     }
@@ -544,8 +546,10 @@ impl HoldDownDetector {
             detector = "hold_down",
             reason = reason.as_str(),
             state = ?self.state,
-            target_key = ?self.target_key,
-            event_type = ?event_type,
+            target_key = target_key_label(self.target_key),
+            event_kind = event_kind(event_type),
+            key_class = event_key_class(event_type),
+            is_target_key = is_target_event(event_type, self.target_key),
             "keyboard detector rejected sequence"
         );
     }
@@ -848,6 +852,126 @@ fn event_kind(event_type: &EventType) -> &'static str {
     }
 }
 
+/// Inverse of `hotkey_to_rdev_key`: the settings id of a configurable hotkey.
+fn hotkey_id(key: Key) -> Option<&'static str> {
+    DICTATION_KEY_IDS
+        .iter()
+        .chain(["shift_r", "alt_r", "ctrl_l"].iter())
+        .copied()
+        .find(|id| hotkey_to_rdev_key(id) == Some(key))
+}
+
+/// Bounded, content-free class of a key for telemetry.
+///
+/// Telemetry never records the identity of a key other than the configured
+/// hotkey: a key pressed during a hotkey hold is usually the next character
+/// the user is typing (Shift+I), so its name would leak typed content.
+fn key_class(key: Key) -> &'static str {
+    match key {
+        k if is_modifier(k) => "modifier",
+        Key::CapsLock | Key::Function => "modifier",
+        k if is_function_key(k) => "function",
+        Key::F21 | Key::F22 | Key::F23 | Key::F24 => "function",
+        Key::UpArrow
+        | Key::DownArrow
+        | Key::LeftArrow
+        | Key::RightArrow
+        | Key::Home
+        | Key::End
+        | Key::PageUp
+        | Key::PageDown => "navigation",
+        Key::Return
+        | Key::KpReturn
+        | Key::Tab
+        | Key::Backspace
+        | Key::Delete
+        | Key::KpDelete
+        | Key::Insert
+        | Key::Escape => "editing",
+        Key::Space
+        | Key::KeyA
+        | Key::KeyB
+        | Key::KeyC
+        | Key::KeyD
+        | Key::KeyE
+        | Key::KeyF
+        | Key::KeyG
+        | Key::KeyH
+        | Key::KeyI
+        | Key::KeyJ
+        | Key::KeyK
+        | Key::KeyL
+        | Key::KeyM
+        | Key::KeyN
+        | Key::KeyO
+        | Key::KeyP
+        | Key::KeyQ
+        | Key::KeyR
+        | Key::KeyS
+        | Key::KeyT
+        | Key::KeyU
+        | Key::KeyV
+        | Key::KeyW
+        | Key::KeyX
+        | Key::KeyY
+        | Key::KeyZ
+        | Key::Num0
+        | Key::Num1
+        | Key::Num2
+        | Key::Num3
+        | Key::Num4
+        | Key::Num5
+        | Key::Num6
+        | Key::Num7
+        | Key::Num8
+        | Key::Num9
+        | Key::Kp0
+        | Key::Kp1
+        | Key::Kp2
+        | Key::Kp3
+        | Key::Kp4
+        | Key::Kp5
+        | Key::Kp6
+        | Key::Kp7
+        | Key::Kp8
+        | Key::Kp9
+        | Key::KpMinus
+        | Key::KpPlus
+        | Key::KpMultiply
+        | Key::KpDivide
+        | Key::BackQuote
+        | Key::Minus
+        | Key::Equal
+        | Key::LeftBracket
+        | Key::RightBracket
+        | Key::SemiColon
+        | Key::Quote
+        | Key::BackSlash
+        | Key::IntlBackslash
+        | Key::Comma
+        | Key::Dot
+        | Key::Slash => "character",
+        _ => "other",
+    }
+}
+
+fn event_key_class(event_type: &EventType) -> &'static str {
+    event_key(event_type).map_or("none", key_class)
+}
+
+/// Whether the event is a press or release of the configured target key.
+fn is_target_event(event_type: &EventType, target: Option<Key>) -> bool {
+    matches!((event_key(event_type), target), (Some(key), Some(target)) if is_target_key(key, target))
+}
+
+/// The configured hotkey's settings id. Never the raw identity of another key.
+fn target_key_label(target: Option<Key>) -> &'static str {
+    match target {
+        None => "none",
+        Some(key) => hotkey_id(key).unwrap_or("other"),
+    }
+}
+
 fn modifier_edge(event_type: &EventType) -> &'static str {
     match event_type {
         EventType::KeyPress(key) if is_modifier(*key) => "press",
@@ -868,14 +992,28 @@ fn detector_state_snapshot() -> (Option<DetectorState>, Option<HoldState>) {
     (double_tap_state, hold_state)
 }
 
+/// The configured dictation hotkey, from whichever detector is installed.
+fn dictation_target_key() -> Option<Key> {
+    let hold_target = {
+        let det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
+        det.as_ref().and_then(|d| d.target_key)
+    };
+    hold_target.or_else(|| {
+        let det = DOUBLE_TAP_DETECTOR.lock_or_recover();
+        det.as_ref().and_then(|d| d.target_key)
+    })
+}
+
 fn trace_raw_callback(event: &Event, mode: DetectorMode) {
     let (double_tap_state, hold_state) = detector_state_snapshot();
+    let target = dictation_target_key();
+    // Never record `event.name` or the raw key: they are what the user typed.
     tracing::trace!(
         target: "keyboard",
-        event_type = ?event.event_type,
         event_kind = event_kind(&event.event_type),
-        key = ?event_key(&event.event_type),
-        event_name = ?event.name,
+        key_class = event_key_class(&event.event_type),
+        is_target_key = is_target_event(&event.event_type, target),
+        target_key = target_key_label(target),
         mode = ?mode,
         double_tap_state = ?double_tap_state,
         hold_state = ?hold_state,
@@ -888,12 +1026,15 @@ fn trace_raw_callback(event: &Event, mode: DetectorMode) {
 
 fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &EventType) {
     let (double_tap_state, hold_state) = detector_state_snapshot();
+    let target = dictation_target_key();
     tracing::info!(
         target: "keyboard",
         reason = reason.as_str(),
         mode = ?mode,
-        event_type = ?event_type,
-        key = ?event_key(event_type),
+        event_kind = event_kind(event_type),
+        key_class = event_key_class(event_type),
+        is_target_key = is_target_event(event_type, target),
+        target_key = target_key_label(target),
         double_tap_state = ?double_tap_state,
         hold_state = ?hold_state,
         "keyboard event rejected"
@@ -1547,7 +1688,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTION.invalidate();
 
-                    tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
+                    tracing::info!(
+                        target: "keyboard",
+                        event_code = "keyboard.escape_cancel",
+                        "escape-cancel emitted"
+                    );
                     let _ = handle.emit(
                         "escape-cancel",
                         serde_json::json!({
@@ -4248,5 +4393,237 @@ mod tests {
             assert_eq!(result, HoldDownEvent::None);
         }
         reset_transform_state();
+    }
+
+    /// Collect every tracing field emitted by `f` as `name=value` lines.
+    fn capture_keyboard_fields(f: impl FnOnce()) -> Vec<String> {
+        use std::sync::Arc;
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::{Layer, Registry};
+
+        #[derive(Clone, Default)]
+        struct CaptureLayer(Arc<Mutex<Vec<String>>>);
+
+        impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                struct Visitor(Vec<String>);
+                impl tracing::field::Visit for Visitor {
+                    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                        self.0.push(format!("{}={value}", field.name()));
+                    }
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        self.0.push(format!("{}={value:?}", field.name()));
+                    }
+                }
+                let mut visitor = Visitor(Vec::new());
+                event.record(&mut visitor);
+                self.0.lock_or_recover().extend(visitor.0);
+            }
+        }
+
+        let layer = CaptureLayer::default();
+        let captured = Arc::clone(&layer.0);
+        tracing::subscriber::with_default(Registry::default().with(layer), f);
+        let fields = captured.lock_or_recover().clone();
+        fields
+    }
+
+    /// Typed keys whose identity must never reach telemetry.
+    const TYPED_KEYS: &[(Key, &str)] = &[
+        (Key::KeyI, "KeyI"),
+        (Key::KeyA, "KeyA"),
+        (Key::Num4, "Num4"),
+        (Key::Slash, "Slash"),
+        (Key::SemiColon, "SemiColon"),
+    ];
+
+    fn assert_no_typed_key_identity(fields: &[String]) {
+        let joined = fields.join("\n");
+        for (_, name) in TYPED_KEYS {
+            assert!(!joined.contains(name), "{name} leaked: {joined}");
+        }
+        for marker in [
+            "KeyPress(",
+            "KeyRelease(",
+            "event_type=",
+            "event_name=",
+            "key=Some(",
+        ] {
+            assert!(!joined.contains(marker), "{marker} leaked: {joined}");
+        }
+    }
+
+    #[test]
+    fn key_class_is_bounded_and_content_free() {
+        for (key, _) in TYPED_KEYS {
+            assert_eq!(key_class(*key), "character");
+        }
+        assert_eq!(key_class(Key::Space), "character");
+        assert_eq!(key_class(Key::Kp7), "character");
+        assert_eq!(key_class(Key::ShiftLeft), "modifier");
+        assert_eq!(key_class(Key::MetaRight), "modifier");
+        assert_eq!(key_class(Key::F8), "function");
+        assert_eq!(key_class(Key::LeftArrow), "navigation");
+        assert_eq!(key_class(Key::Return), "editing");
+        assert_eq!(key_class(Key::VolumeUp), "other");
+        assert_eq!(key_class(Key::Unknown(63)), "other");
+        assert_eq!(
+            event_key_class(&EventType::Wheel {
+                delta_x: 0,
+                delta_y: 1
+            }),
+            "none"
+        );
+
+        assert_eq!(target_key_label(Some(Key::ShiftLeft)), "shift_l");
+        assert_eq!(target_key_label(Some(Key::F8)), "f8");
+        assert_eq!(target_key_label(Some(Key::ShiftRight)), "shift_r");
+        assert_eq!(target_key_label(Some(Key::KeyI)), "other");
+        assert_eq!(target_key_label(None), "none");
+    }
+
+    #[test]
+    fn hold_combo_cancel_telemetry_records_only_the_key_class() {
+        for (key, _) in TYPED_KEYS {
+            let fields = capture_keyboard_fields(|| {
+                let mut det = HoldDownDetector::new();
+                det.set_target(Some(Key::ShiftLeft));
+                assert_eq!(
+                    det.handle_event(&press(Key::ShiftLeft)),
+                    HoldDownEvent::Start
+                );
+                assert_eq!(det.handle_event(&press(*key)), HoldDownEvent::Stop);
+            });
+            assert_no_typed_key_identity(&fields);
+            assert!(
+                fields.contains(&"reason=combo_cancelled".to_string()),
+                "{fields:?}"
+            );
+            assert!(
+                fields.contains(&"key_class=character".to_string()),
+                "{fields:?}"
+            );
+            assert!(
+                fields.contains(&"event_kind=key_press".to_string()),
+                "{fields:?}"
+            );
+            assert!(
+                fields.contains(&"is_target_key=false".to_string()),
+                "{fields:?}"
+            );
+            assert!(
+                fields.contains(&"target_key=shift_l".to_string()),
+                "{fields:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_tap_combo_cancel_telemetry_records_only_the_key_class() {
+        for (key, _) in TYPED_KEYS {
+            // Combo during the first tap.
+            let first = capture_keyboard_fields(|| {
+                let mut det = make_detector(Key::ShiftLeft);
+                det.handle_event(&press(Key::ShiftLeft));
+                assert!(!det.handle_event(&press(*key)));
+            });
+            // Another key while waiting for the second tap.
+            let second = capture_keyboard_fields(|| {
+                let mut det = make_detector(Key::ShiftLeft);
+                det.handle_event(&press(Key::ShiftLeft));
+                det.handle_event(&release(Key::ShiftLeft));
+                assert!(!det.handle_event(&press(*key)));
+            });
+            for fields in [first, second] {
+                assert_no_typed_key_identity(&fields);
+                assert!(
+                    fields.contains(&"reason=combo_cancelled".to_string()),
+                    "{fields:?}"
+                );
+                assert!(
+                    fields.contains(&"detector=double_tap".to_string()),
+                    "{fields:?}"
+                );
+                assert!(
+                    fields.contains(&"key_class=character".to_string()),
+                    "{fields:?}"
+                );
+                assert!(
+                    fields.contains(&"is_target_key=false".to_string()),
+                    "{fields:?}"
+                );
+                assert!(
+                    fields.contains(&"target_key=shift_l".to_string()),
+                    "{fields:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn single_tap_and_raw_callback_telemetry_records_only_the_key_class() {
+        let previous = HOLD_DOWN_DETECTOR.lock_or_recover().replace({
+            let mut det = HoldDownDetector::new();
+            det.set_target(Some(Key::ShiftLeft));
+            det
+        });
+        let fields = capture_keyboard_fields(|| {
+            log_rejection(
+                RejectionReason::SingleShortTapNoop,
+                DetectorMode::Both,
+                &release(Key::ShiftLeft),
+            );
+            log_rejection(
+                RejectionReason::ProcessingSkipped,
+                DetectorMode::Both,
+                &press(Key::Slash),
+            );
+            for (key, name) in TYPED_KEYS {
+                trace_raw_callback(
+                    &Event {
+                        time: std::time::SystemTime::now(),
+                        name: Some(name.to_lowercase()),
+                        event_type: press(*key),
+                    },
+                    DetectorMode::Both,
+                );
+            }
+        });
+        *HOLD_DOWN_DETECTOR.lock_or_recover() = previous;
+
+        assert_no_typed_key_identity(&fields);
+        assert!(!fields.iter().any(|f| f.contains("\"keyi\"")), "{fields:?}");
+        assert!(
+            fields.contains(&"reason=single_short_tap_noop".to_string()),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&"reason=processing_skipped".to_string()),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&"key_class=modifier".to_string()),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&"key_class=character".to_string()),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&"event_kind=key_release".to_string()),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&"is_target_key=true".to_string()),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&"target_key=shift_l".to_string()),
+            "{fields:?}"
+        );
     }
 }
