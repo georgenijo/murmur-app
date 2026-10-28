@@ -9,13 +9,16 @@ const NOTCHPILL_BUNDLE_ID: &str = "com.local.notchpill";
 pub(crate) fn notchpill_installed() -> bool {
     #[cfg(target_os = "macos")]
     {
+        use objc2::rc::autoreleasepool;
         use objc2_app_kit::NSWorkspace;
         use objc2_foundation::NSString;
 
-        let bundle_id = NSString::from_str(NOTCHPILL_BUNDLE_ID);
-        NSWorkspace::sharedWorkspace()
-            .URLForApplicationWithBundleIdentifier(&bundle_id)
-            .is_some()
+        autoreleasepool(|_| {
+            let bundle_id = NSString::from_str(NOTCHPILL_BUNDLE_ID);
+            NSWorkspace::sharedWorkspace()
+                .URLForApplicationWithBundleIdentifier(&bundle_id)
+                .is_some()
+        })
     }
 
     #[cfg(not(target_os = "macos"))]

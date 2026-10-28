@@ -9,6 +9,7 @@ use super::{
     PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
+use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSRunningApplication;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -1723,47 +1724,51 @@ fn same_process(left: &DeliveryTargetSnapshot, right: &DeliveryTargetSnapshot) -
 }
 
 fn running_process_launch_bits(expected: &DeliveryTargetSnapshot) -> Option<u64> {
-    let expected = complete_identity(expected)?;
-    let application =
-        NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)?;
-    if application.processIdentifier() != expected.process_id
-        || application
-            .bundleIdentifier()
-            .map(|bundle| bundle.to_string())
-            .as_deref()
-            != Some(expected.bundle_id.as_str())
-    {
-        return None;
-    }
-    let launch_date = application.launchDate()?;
-    let interval = launch_date.timeIntervalSinceReferenceDate();
-    if !interval.is_finite() || interval <= 0.0 {
-        return None;
-    }
-    Some(interval.to_bits())
+    autoreleasepool(|_| {
+        let expected = complete_identity(expected)?;
+        let application =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)?;
+        if application.processIdentifier() != expected.process_id
+            || application
+                .bundleIdentifier()
+                .map(|bundle| bundle.to_string())
+                .as_deref()
+                != Some(expected.bundle_id.as_str())
+        {
+            return None;
+        }
+        let launch_date = application.launchDate()?;
+        let interval = launch_date.timeIntervalSinceReferenceDate();
+        if !interval.is_finite() || interval <= 0.0 {
+            return None;
+        }
+        Some(interval.to_bits())
+    })
 }
 
 fn running_application(
     expected: &DeliveryTargetSnapshot,
     launch_token_bits: u64,
 ) -> Option<objc2::rc::Retained<NSRunningApplication>> {
-    let expected = complete_identity(expected)?;
-    let application =
-        NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)?;
-    if application.processIdentifier() != expected.process_id
-        || application
-            .bundleIdentifier()
-            .map(|bundle| bundle.to_string())
-            .as_deref()
-            != Some(expected.bundle_id.as_str())
-        || application
-            .launchDate()
-            .map(|date| date.timeIntervalSinceReferenceDate().to_bits())
-            != Some(launch_token_bits)
-    {
-        return None;
-    }
-    Some(application)
+    autoreleasepool(|_| {
+        let expected = complete_identity(expected)?;
+        let application =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)?;
+        if application.processIdentifier() != expected.process_id
+            || application
+                .bundleIdentifier()
+                .map(|bundle| bundle.to_string())
+                .as_deref()
+                != Some(expected.bundle_id.as_str())
+            || application
+                .launchDate()
+                .map(|date| date.timeIntervalSinceReferenceDate().to_bits())
+                != Some(launch_token_bits)
+        {
+            return None;
+        }
+        Some(application)
+    })
 }
 
 fn process_is_running(expected: &DeliveryTargetSnapshot, launch_token_bits: u64) -> bool {
