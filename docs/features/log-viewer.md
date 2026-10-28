@@ -57,6 +57,7 @@ The `performance.store_operation_failed` system event is treated as its own
 all-build schema: only its code, bounded operation/error class, attempt count,
 and recording ID survive. SQLite text, SQL, paths, and unknown fields are
 dropped.
+
 Key identity is content: a key pressed while a hotkey is held is usually the
 next character the user is typing. Keyboard telemetry therefore never records
 the identity of any key other than the configured hotkey, in any build. Detector
@@ -65,11 +66,16 @@ and rejection events carry `event_kind` (`key_press`, `key_release`, ...),
 `shift_l` or `f8`, never a raw key), and a bounded `key_class`: `modifier`,
 `function`, `navigation`, `editing`, `character`, `other`, or `none`. The raw
 rdev `EventType`, `Key`, and typed `name` are never formatted into a field.
-`telemetry.rs` enforces this independently of call sites: the `keyboard`
-stream keeps only an exact key-and-value string allowlist, and every stream
-drops any string field that carries a Debug-formatted key or event such as
-`KeyPress(KeyI)`, `Some(SemiColon)`, or `Num4`. A summary containing one is
-replaced with `Keyboard event`.
+`telemetry.rs` enforces this independently of call sites, in every sink:
+structured events, the pretty `app.log`, and JSONL written by an older build.
+The `keyboard` stream keeps only an exact key-and-value string allowlist, and
+its messages may not name any non-hotkey key (Escape cancellation logs
+`keyboard.escape_cancel`, not the key). Every stream drops string fields and
+replaces summaries that carry a Debug-formatted key or event, such as
+`KeyPress(KeyI)`, `Some(SemiColon)`, or `Num4`; ordinary words such as `End`
+are treated as key names only in the keyboard stream or as `Some(End)`.
+Persisted lines are re-sanitized before history restore and before upload, so
+a backlog queued before an upgrade cannot ship key identity.
 
 Frontend-originated codes are validated by Rust before entering the structured
 event. This gives local and fleet presentation layers stable semantic keys

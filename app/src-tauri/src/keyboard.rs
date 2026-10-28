@@ -1481,7 +1481,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTION.invalidate();
 
-                    tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
+                    tracing::info!(
+                        target: "keyboard",
+                        event_code = "keyboard.escape_cancel",
+                        "escape-cancel emitted"
+                    );
                     let _ = handle.emit(
                         "escape-cancel",
                         serde_json::json!({

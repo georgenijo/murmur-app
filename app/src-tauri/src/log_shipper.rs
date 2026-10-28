@@ -123,7 +123,13 @@ fn shippable_payload(data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len());
     for line in data.split_inclusive(|byte| *byte == b'\n') {
         let body = line.strip_suffix(b"\n").unwrap_or(line);
-        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        let Ok(body) = std::str::from_utf8(body) else {
+            continue;
+        };
+        // A backlog written before an upgrade predates the current privacy
+        // boundary; only lines that change are re-serialised.
+        let body = crate::telemetry::sanitize_persisted_line(body);
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&body) else {
             continue;
         };
         if value.get("stream").and_then(|stream| stream.as_str()) == Some("meeting") {
@@ -135,7 +141,7 @@ fn shippable_payload(data: &[u8]) -> Vec<u8> {
             };
             output.extend_from_slice(&sanitized);
         } else {
-            output.extend_from_slice(body);
+            output.extend_from_slice(body.as_bytes());
         }
         output.push(b'\n');
     }
@@ -534,6 +540,71 @@ mod tests {
         // Next call reads the new file from the top.
         let batch = next_batch(&log, &rotated, 0).unwrap();
         assert_eq!(batch.data, b"{\"new\":1}\n");
+    }
+
+    #[test]
+    fn upgraded_backlog_ships_without_typed_key_identity() {
+        // An offline install upgrades with keyboard events from an older build
+        // queued in both the rotated tail and the current file.
+        let dir = tmp_dir("legacy_key_identity");
+        let log = dir.join("events.jsonl");
+        let rotated = dir.join("events.jsonl.1");
+        let legacy = |n: u32, key: &str| {
+            format!(
+                "{{\"timestamp\":\"t{n}\",\"stream\":\"keyboard\",\"level\":\"info\",\"summary\":\"Structured event\",\"data\":{{\"reason\":\"combo_cancelled\",\"event_type\":\"KeyPress({key})\",\"key\":\"Some({key})\"}}}}\n"
+            )
+        };
+        let clean = |n: u32| {
+            format!(
+                "{{\"timestamp\":\"t{n}\",\"stream\":\"system\",\"level\":\"info\",\"summary\":\"ok\",\"data\":{{\"elapsed_ms\":{n}}}}}\n"
+            )
+        };
+        let shipped_prefix = clean(0);
+        let rotated_body = [shipped_prefix.clone(), legacy(1, "KeyI"), clean(2)].concat();
+        let current_body = [legacy(3, "Num4"), clean(4), legacy(5, "SemiColon")].concat();
+        std::fs::write(&rotated, &rotated_body).unwrap();
+        // Rotation just happened: the acknowledged offset points past the
+        // shipped prefix of the renamed file, beyond the fresh file's length.
+        std::fs::write(&log, b"").unwrap();
+        let tail = next_batch(&log, &rotated, shipped_prefix.len() as u64).unwrap();
+        assert_eq!(tail.data, &rotated_body.as_bytes()[shipped_prefix.len()..]);
+        assert_eq!(tail.next_offset, 0);
+        std::fs::write(&log, &current_body).unwrap();
+        let head = next_batch(&log, &rotated, 0).unwrap();
+        assert_eq!(head.next_offset, current_body.len() as u64);
+
+        let mut shipped = Vec::new();
+        for batch in [&tail, &head] {
+            let payload = String::from_utf8(shippable_payload(&batch.data)).unwrap();
+            assert_eq!(
+                payload.lines().count(),
+                String::from_utf8_lossy(&batch.data).lines().count()
+            );
+            assert!(payload.ends_with('\n'));
+            shipped.extend(payload.lines().map(str::to_string));
+        }
+        let shipped_text = shipped.join("\n");
+        for leak in ["KeyI", "Num4", "SemiColon", "KeyPress("] {
+            assert!(
+                !shipped_text.contains(leak),
+                "{leak} shipped: {shipped_text}"
+            );
+        }
+        // Order is intact, sanitized events keep their safe fields, and clean
+        // lines are forwarded byte-for-byte.
+        let timestamps: Vec<String> = shipped
+            .iter()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["timestamp"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(timestamps, ["t1", "t2", "t3", "t4", "t5"]);
+        assert!(shipped[0].contains("\"reason\":\"combo_cancelled\""));
+        assert_eq!(format!("{}\n", shipped[1]), clean(2));
+        assert_eq!(format!("{}\n", shipped[3]), clean(4));
     }
 
     #[test]
