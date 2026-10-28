@@ -2024,7 +2024,6 @@ struct RotatingState {
     /// Earliest time the next create attempt may run after a failed one.
     retry_after: Option<std::time::Instant>,
     create_retry: std::time::Duration,
-    failure_reported: bool,
     /// Formats the one line written after recovery, given the dropped count.
     drop_note: Option<fn(u64) -> String>,
 }
@@ -2055,8 +2054,8 @@ impl RotatingState {
 
     /// Create the current file after a rotation (or a failed create). At most
     /// one attempt per `create_retry`; writes in between are dropped and
-    /// counted rather than buffered. Failure and recovery are reported once
-    /// each on stderr, which cannot recurse into tracing.
+    /// counted rather than buffered. After recovery one note line records how
+    /// many were dropped; nothing is written to stderr under the lock.
     fn recover_file(&mut self) -> std::io::Result<()> {
         if self
             .retry_after
@@ -2071,11 +2070,6 @@ impl RotatingState {
                 self.rotate_at = self.max_bytes;
                 self.retry_after = None;
                 if self.dropped > 0 {
-                    eprintln!(
-                        "murmur: log file {} writable again; {} events were dropped",
-                        self.path.display(),
-                        self.dropped
-                    );
                     if let Some(note) = self.drop_note {
                         let line = note(self.dropped);
                         if file.write_all(line.as_bytes()).is_ok() {
@@ -2084,20 +2078,12 @@ impl RotatingState {
                     }
                 }
                 self.dropped = 0;
-                self.failure_reported = false;
                 self.file = Some(file);
                 Ok(())
             }
             Err(error) => {
                 self.dropped += 1;
                 self.retry_after = Some(std::time::Instant::now() + self.create_retry);
-                if !self.failure_reported {
-                    self.failure_reported = true;
-                    eprintln!(
-                        "murmur: cannot create log file {}: {error}; dropping events until it can",
-                        self.path.display()
-                    );
-                }
                 Err(error)
             }
         }
@@ -2155,7 +2141,6 @@ impl SizeRotatingFile {
                 dropped: 0,
                 retry_after: None,
                 create_retry: CREATE_RETRY_INTERVAL,
-                failure_reported: false,
                 drop_note: None,
             })),
         })
@@ -2228,7 +2213,7 @@ fn event_drop_note(dropped: u64) -> String {
 fn reset_writers(writers: &[SizeRotatingFile]) -> Vec<PathBuf> {
     writers
         .iter()
-        .map(|writer| {
+        .flat_map(|writer| {
             let mut state = writer.lock();
             for path in std::iter::once(state.path.clone())
                 .chain(rotated_paths(&state.path, state.generations))
@@ -2236,7 +2221,9 @@ fn reset_writers(writers: &[SizeRotatingFile]) -> Vec<PathBuf> {
                 let _ = std::fs::remove_file(path);
             }
             state.reopen();
-            state.path.clone()
+            std::iter::once(state.path.clone())
+                .chain(rotated_paths(&state.path, state.generations))
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -2417,6 +2404,9 @@ pub fn clear_all_logs() -> Result<(), String> {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
+    // Every file a live writer manages (current and rotated generations) is
+    // excluded below: logging resumes once the locks drop, and a rotation in
+    // the meantime must not be deleted by the unlocked passes.
     let live = reset_writers(&writers);
     for file in files {
         let path = dir.join(file);
@@ -2429,7 +2419,8 @@ pub fn clear_all_logs() -> Result<(), String> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.contains(".log.") || name.contains(".jsonl.") {
+            if (name.contains(".log.") || name.contains(".jsonl.")) && !live.contains(&entry.path())
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -2585,7 +2576,17 @@ mod tests {
 
         std::fs::write(dir.join("events.jsonl.1"), "old\n").unwrap();
         let live = reset_writers(&[events, app]);
-        assert_eq!(live, [dir.join("events.jsonl"), dir.join("app.log")]);
+        // Every managed path is protected from the unlocked cleanup passes.
+        assert_eq!(
+            live,
+            [
+                dir.join("events.jsonl"),
+                dir.join("events.jsonl.1"),
+                dir.join("events.jsonl.2"),
+                dir.join("app.log"),
+                dir.join("app.log.1"),
+            ]
+        );
         // Rotated generations go with the live files.
         assert!(!dir.join("events.jsonl.1").exists());
 
