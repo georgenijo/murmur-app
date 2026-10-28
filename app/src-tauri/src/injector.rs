@@ -1,6 +1,8 @@
 pub(crate) mod authority;
 use arboard::Clipboard;
 use authority::{AttemptStop, PasteAttempt, PostDecision};
+#[cfg(target_os = "macos")]
+use objc2::rc::autoreleasepool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -283,9 +285,11 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn pasteboard_change_count() -> Option<i64> {
-    use objc2_app_kit::NSPasteboard;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSPasteboard;
 
-    Some(NSPasteboard::generalPasteboard().changeCount() as i64)
+        Some(NSPasteboard::generalPasteboard().changeCount() as i64)
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1073,169 +1077,177 @@ fn should_bypass_osascript_for_no_value(error: &str, frontmost_is_finder: Option
 
 #[cfg(target_os = "macos")]
 fn frontmost_application_is_finder() -> Option<bool> {
-    use objc2_app_kit::NSWorkspace;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
 
-    let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-    Some(
-        application
-            .bundleIdentifier()
-            .is_some_and(|bundle_id| bundle_id.to_string() == FINDER_BUNDLE_ID),
-    )
+        let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        Some(
+            application
+                .bundleIdentifier()
+                .is_some_and(|bundle_id| bundle_id.to_string() == FINDER_BUNDLE_ID),
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
 fn focused_role_native() -> Result<String, String> {
-    use objc2_app_kit::NSWorkspace;
-    use std::ffi::{c_char, c_void, CStr};
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
+        use std::ffi::{c_char, c_void, CStr};
 
-    type AXUIElementRef = *const c_void;
-    type CFTypeRef = *const c_void;
+        type AXUIElementRef = *const c_void;
+        type CFTypeRef = *const c_void;
 
-    #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
-        fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
-        fn AXUIElementCopyAttributeValue(
-            element: AXUIElementRef,
-            attribute: CFTypeRef,
-            value: *mut CFTypeRef,
-        ) -> i32;
-        fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
-        fn CFStringCreateWithCString(
-            allocator: CFTypeRef,
-            string: *const c_char,
-            encoding: u32,
-        ) -> CFTypeRef;
-        fn CFStringGetCString(
-            string: CFTypeRef,
-            buffer: *mut c_char,
-            buffer_size: isize,
-            encoding: u32,
-        ) -> bool;
-        fn CFRelease(value: CFTypeRef);
-    }
-
-    const AX_SUCCESS: i32 = 0;
-    const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.025;
-    const UTF8_ENCODING: u32 = 0x0800_0100;
-
-    let frontmost = NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .ok_or_else(|| "no frontmost application".to_string())?;
-    let app = unsafe { AXUIElementCreateApplication(frontmost.processIdentifier()) };
-    if app.is_null() {
-        return Err("could not create frontmost AX application".to_string());
-    }
-    let timeout_status = unsafe { AXUIElementSetMessagingTimeout(app, AX_QUERY_TIMEOUT_SECONDS) };
-    if timeout_status != AX_SUCCESS {
-        unsafe { CFRelease(app) };
-        return Err(format!(
-            "AX timeout configuration returned {timeout_status}"
-        ));
-    }
-
-    let focused_attribute = unsafe {
-        CFStringCreateWithCString(
-            std::ptr::null(),
-            c"AXFocusedUIElement".as_ptr(),
-            UTF8_ENCODING,
-        )
-    };
-    if focused_attribute.is_null() {
-        unsafe { CFRelease(app) };
-        return Err("could not create AX focused-element attribute".to_string());
-    }
-    let mut focused: CFTypeRef = std::ptr::null();
-    let focused_status =
-        unsafe { AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused) };
-    unsafe { CFRelease(focused_attribute) };
-    unsafe { CFRelease(app) };
-    if focused_status != AX_SUCCESS || focused.is_null() {
-        if !focused.is_null() {
-            unsafe { CFRelease(focused) };
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+            fn AXUIElementCopyAttributeValue(
+                element: AXUIElementRef,
+                attribute: CFTypeRef,
+                value: *mut CFTypeRef,
+            ) -> i32;
+            fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f32) -> i32;
+            fn CFStringCreateWithCString(
+                allocator: CFTypeRef,
+                string: *const c_char,
+                encoding: u32,
+            ) -> CFTypeRef;
+            fn CFStringGetCString(
+                string: CFTypeRef,
+                buffer: *mut c_char,
+                buffer_size: isize,
+                encoding: u32,
+            ) -> bool;
+            fn CFRelease(value: CFTypeRef);
         }
-        return Err(format!(
-            "AX focused-element query returned {}",
-            focused_status
-        ));
-    }
-    let timeout_status =
-        unsafe { AXUIElementSetMessagingTimeout(focused, AX_QUERY_TIMEOUT_SECONDS) };
-    if timeout_status != AX_SUCCESS {
-        unsafe { CFRelease(focused) };
-        return Err(format!(
-            "AX timeout configuration returned {timeout_status}"
-        ));
-    }
 
-    let role_attribute =
-        unsafe { CFStringCreateWithCString(std::ptr::null(), c"AXRole".as_ptr(), UTF8_ENCODING) };
-    if role_attribute.is_null() {
-        unsafe { CFRelease(focused) };
-        return Err("could not create AX role attribute".to_string());
-    }
-    let mut role: CFTypeRef = std::ptr::null();
-    let role_status = unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
-    unsafe { CFRelease(role_attribute) };
-    // Browser password inputs report AXTextField with an AXSecureTextField
-    // subrole. Surface that as the secure role so the Smart destination
-    // fallback can veto it; a failed subrole query leaves the role in charge.
-    let mut secure_subrole = false;
-    if role_status == AX_SUCCESS && !role.is_null() {
-        let subrole_attribute = unsafe {
-            CFStringCreateWithCString(std::ptr::null(), c"AXSubrole".as_ptr(), UTF8_ENCODING)
+        const AX_SUCCESS: i32 = 0;
+        const AX_QUERY_TIMEOUT_SECONDS: f32 = 0.025;
+        const UTF8_ENCODING: u32 = 0x0800_0100;
+
+        let frontmost = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .ok_or_else(|| "no frontmost application".to_string())?;
+        let app = unsafe { AXUIElementCreateApplication(frontmost.processIdentifier()) };
+        if app.is_null() {
+            return Err("could not create frontmost AX application".to_string());
+        }
+        let timeout_status =
+            unsafe { AXUIElementSetMessagingTimeout(app, AX_QUERY_TIMEOUT_SECONDS) };
+        if timeout_status != AX_SUCCESS {
+            unsafe { CFRelease(app) };
+            return Err(format!(
+                "AX timeout configuration returned {timeout_status}"
+            ));
+        }
+
+        let focused_attribute = unsafe {
+            CFStringCreateWithCString(
+                std::ptr::null(),
+                c"AXFocusedUIElement".as_ptr(),
+                UTF8_ENCODING,
+            )
         };
-        if !subrole_attribute.is_null() {
-            let mut subrole: CFTypeRef = std::ptr::null();
-            let subrole_status =
-                unsafe { AXUIElementCopyAttributeValue(focused, subrole_attribute, &mut subrole) };
-            unsafe { CFRelease(subrole_attribute) };
-            if !subrole.is_null() {
-                if subrole_status == AX_SUCCESS {
-                    let mut buffer = [0 as c_char; 128];
-                    let converted = unsafe {
-                        CFStringGetCString(
-                            subrole,
-                            buffer.as_mut_ptr(),
-                            buffer.len() as isize,
-                            UTF8_ENCODING,
-                        )
-                    };
-                    secure_subrole = converted
-                        && unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_bytes()
-                            == b"AXSecureTextField";
+        if focused_attribute.is_null() {
+            unsafe { CFRelease(app) };
+            return Err("could not create AX focused-element attribute".to_string());
+        }
+        let mut focused: CFTypeRef = std::ptr::null();
+        let focused_status =
+            unsafe { AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused) };
+        unsafe { CFRelease(focused_attribute) };
+        unsafe { CFRelease(app) };
+        if focused_status != AX_SUCCESS || focused.is_null() {
+            if !focused.is_null() {
+                unsafe { CFRelease(focused) };
+            }
+            return Err(format!(
+                "AX focused-element query returned {}",
+                focused_status
+            ));
+        }
+        let timeout_status =
+            unsafe { AXUIElementSetMessagingTimeout(focused, AX_QUERY_TIMEOUT_SECONDS) };
+        if timeout_status != AX_SUCCESS {
+            unsafe { CFRelease(focused) };
+            return Err(format!(
+                "AX timeout configuration returned {timeout_status}"
+            ));
+        }
+
+        let role_attribute = unsafe {
+            CFStringCreateWithCString(std::ptr::null(), c"AXRole".as_ptr(), UTF8_ENCODING)
+        };
+        if role_attribute.is_null() {
+            unsafe { CFRelease(focused) };
+            return Err("could not create AX role attribute".to_string());
+        }
+        let mut role: CFTypeRef = std::ptr::null();
+        let role_status =
+            unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
+        unsafe { CFRelease(role_attribute) };
+        // Browser password inputs report AXTextField with an AXSecureTextField
+        // subrole. Surface that as the secure role so the Smart destination
+        // fallback can veto it; a failed subrole query leaves the role in charge.
+        let mut secure_subrole = false;
+        if role_status == AX_SUCCESS && !role.is_null() {
+            let subrole_attribute = unsafe {
+                CFStringCreateWithCString(std::ptr::null(), c"AXSubrole".as_ptr(), UTF8_ENCODING)
+            };
+            if !subrole_attribute.is_null() {
+                let mut subrole: CFTypeRef = std::ptr::null();
+                let subrole_status = unsafe {
+                    AXUIElementCopyAttributeValue(focused, subrole_attribute, &mut subrole)
+                };
+                unsafe { CFRelease(subrole_attribute) };
+                if !subrole.is_null() {
+                    if subrole_status == AX_SUCCESS {
+                        let mut buffer = [0 as c_char; 128];
+                        let converted = unsafe {
+                            CFStringGetCString(
+                                subrole,
+                                buffer.as_mut_ptr(),
+                                buffer.len() as isize,
+                                UTF8_ENCODING,
+                            )
+                        };
+                        secure_subrole = converted
+                            && unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_bytes()
+                                == b"AXSecureTextField";
+                    }
+                    unsafe { CFRelease(subrole) };
                 }
-                unsafe { CFRelease(subrole) };
             }
         }
-    }
-    unsafe { CFRelease(focused) };
-    if role_status != AX_SUCCESS || role.is_null() {
-        if !role.is_null() {
-            unsafe { CFRelease(role) };
+        unsafe { CFRelease(focused) };
+        if role_status != AX_SUCCESS || role.is_null() {
+            if !role.is_null() {
+                unsafe { CFRelease(role) };
+            }
+            return Err(format!("AX role query returned {}", role_status));
         }
-        return Err(format!("AX role query returned {}", role_status));
-    }
 
-    let mut buffer = [0 as c_char; 128];
-    let converted = unsafe {
-        CFStringGetCString(
-            role,
-            buffer.as_mut_ptr(),
-            buffer.len() as isize,
-            UTF8_ENCODING,
-        )
-    };
-    unsafe { CFRelease(role) };
-    if !converted {
-        return Err("could not convert AX role to UTF-8".to_string());
-    }
-    if secure_subrole {
-        return Ok("AXSecureTextField".to_string());
-    }
+        let mut buffer = [0 as c_char; 128];
+        let converted = unsafe {
+            CFStringGetCString(
+                role,
+                buffer.as_mut_ptr(),
+                buffer.len() as isize,
+                UTF8_ENCODING,
+            )
+        };
+        unsafe { CFRelease(role) };
+        if !converted {
+            return Err("could not convert AX role to UTF-8".to_string());
+        }
+        if secure_subrole {
+            return Ok("AXSecureTextField".to_string());
+        }
 
-    Ok(unsafe { CStr::from_ptr(buffer.as_ptr()) }
-        .to_string_lossy()
-        .into_owned())
+        Ok(unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
+    })
 }
 
 #[cfg(target_os = "macos")]
