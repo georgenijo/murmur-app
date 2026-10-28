@@ -58,6 +58,9 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const smartAutoRef = useRef(smartAuto);
   const recordingStartTimeRef = useRef(recordingStartTime);
   const latestRecordingGenerationRef = useRef(0);
+  // Highest generation whose lifecycle already left Starting/Recording. A
+  // start response for it arriving later is stale and must not restore it.
+  const endedRecordingGenerationRef = useRef(0);
   const cancelledDestinationGenerationRef = useRef(0);
   const completedRecordingIds = useRef(new Set<number>());
   const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
@@ -71,6 +74,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);
+  // A stop (hold release) that arrived while the start IPC was still pending
+  // and no lifecycle event had claimed ownership yet. The start operation
+  // consumes it and cancels exactly the generation it created.
+  const stopRequestedDuringStartRef = useRef(false);
 
   const presentError = useCallback((message: string, options: PresentErrorOptions = {}) => {
     if (!message) return null;
@@ -159,6 +166,16 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         // commits the state update, and transition decisions read this ref.
         statusRef.current = event.payload;
         setStatus(event.payload);
+        if (
+          event.payload === 'recovering'
+          || event.payload === 'idle'
+          || event.payload === 'processing'
+        ) {
+          endedRecordingGenerationRef.current = Math.max(
+            endedRecordingGenerationRef.current,
+            latestRecordingGenerationRef.current,
+          );
+        }
         // When recording starts from the overlay, handleStart doesn't run in this window.
         // Seed recordingStartTime so the duration timer ticks.
         if (event.payload === 'recording' && !recordingStartTimeRef.current) {
@@ -433,22 +450,29 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       return;
     }
     isStartingRef.current = true;
+    stopRequestedDuringStartRef.current = false;
     const operation = (async () => {
       const producerEpoch = beginErrorProducer();
       try {
         const res = await startRecording(microphoneRef.current, origin, smartAutoRef.current);
+        const stopRequested = stopRequestedDuringStartRef.current;
+        stopRequestedDuringStartRef.current = false;
         // These two responses may describe a transform-owned supervisor
         // attempt while dictation itself is Idle. Lifecycle events remain the
         // authority; never let a later invoke response overwrite them.
         const responseOwnsDictationState = res.type !== 'audio_recovering'
           && res.type !== 'already_starting';
+        // Lifecycle events for this generation may already have ended it
+        // (starting → recovering → idle) before this response arrived.
+        const generationEnded = typeof res.recordingId === 'number'
+          && res.recordingId <= endedRecordingGenerationRef.current;
         if (responseOwnsDictationState && isDictationStatus(res.state)) {
           // A fast device can emit Recording before the invoke promise resolves.
           // Never let the older `recording_starting` response move that newer
           // lifecycle event backwards.
           const staleStartingResponse = res.state === 'starting'
-            && statusRef.current !== 'idle'
-            && statusRef.current !== 'starting';
+            && (generationEnded
+              || (statusRef.current !== 'idle' && statusRef.current !== 'starting'));
           if (!staleStartingResponse) {
             statusRef.current = res.state;
             setStatus(res.state);
@@ -471,7 +495,20 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
             });
           }
         }
+        if (stopRequested && res.type === 'recording_starting' && !generationEnded) {
+          // The hold was released before this start was accepted. Cancel the
+          // generation it created; a newer recording is never touched.
+          flog.info('recording', 'cancelling start released before acceptance', {
+            recordingId: res.recordingId,
+          });
+          try {
+            await cancelRecording(res.recordingId);
+          } catch (err) {
+            flog.error('recording', 'deferred release cancel failed', { error: String(err) });
+          }
+        }
       } catch (err) {
+        stopRequestedDuringStartRef.current = false;
         statusRef.current = 'idle';
         setStatus('idle');
         presentError(String(err), { producerEpoch });
@@ -500,6 +537,14 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       recordingStartTime: recordingStartTimeRef.current,
     });
     if (isStoppingRef.current) return;
+    if (startOperationRef.current && statusRef.current === 'idle') {
+      // The start IPC has not claimed ownership yet, so there is nothing to
+      // stop now. Dropping this would let the start begin capture after the
+      // key was already released.
+      flog.info('recording', 'handleStop deferred until start is accepted');
+      stopRequestedDuringStartRef.current = true;
+      return;
+    }
     isStoppingRef.current = true;
     const producerEpoch = errorProducerEpochRef.current;
     try {
