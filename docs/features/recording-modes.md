@@ -36,15 +36,72 @@ To start:
 Idle → KeyPress(target) → Held  (emit hold-down-start)
 ```
 
+For a modifier-only trigger (Shift, Option, Control), `Held` begins with a
+150ms arming window (`MODIFIER_HOLD_ARMING_MS`) before the listener commits the
+start:
+
+```text
+Idle → KeyPress(target) → Held (arming; nothing emitted)
+Held (arming) → any other KeyPress  → Idle (silent; no start)
+Held (arming) → KeyRelease(target)  → Idle (silent; no start)
+Held (arming) → 150ms elapse, still held → emit hold-down-start
+```
+
+Function-key triggers keep starting on press.
+
 To stop:
 
 ```text
 Held → KeyRelease(target) → Idle (emit hold-down-stop)
 ```
 
+### Modifier arming window
+
+Shift is pressed for every capital letter, and Option, Control, and Command
+start ordinary shortcuts. Before the arming window existed, each of those
+presses started a recording: the frontend requested a dictation, the capture
+helper and AUHAL unit spawned, and the overlay flashed. The next key then
+cancelled the start before capture was ready. In production telemetry those
+`cancelled_starting` outcomes came a p50 of 81–98ms after
+`pipeline.dictation_requested`, while capture-ready p50 is ~220ms.
+
+The window removes them. It runs in Rust before anything reaches the frontend,
+so a cancelled press never emits `hold-down-start`, never calls
+`start_native_recording`, and never shows the overlay. During the window **any**
+other key press ends the hold, including a second modifier (Shift+Command+Z).
+Releasing the trigger within the window is treated as a stray tap. After the
+window, today's rules apply: another modifier is ignored, and a non-modifier
+key stops the recording.
+
+Each cancelled window logs one content-free `keyboard.hotkey_arming_cancelled`
+event. It carries only `mode`, `reason` (`other_key` or `released`), and
+`held_ms`, never the key that ended the hold.
+
+**Timing trade-off.** The arming window adds 150ms to a modifier hold's start.
+It is longer than the measured p50 gap between the trigger and the next key
+(~81–98ms), but shorter than Both mode's 200ms promotion
+(`MAX_HOLD_DURATION_MS`), so Hold-Down remains the faster-starting mode. Capture
+startup (~220–300ms to first PCM) still makes up most of the time to a live
+microphone. Speech before first PCM was never captured, so the window adds
+150ms to an existing gap rather than opening a new one. Warm model preparation
+also waits for the committed start. Shift is pressed constantly while typing,
+so starting a model load on every press would defeat idle unloading and cost
+memory and CPU for presses that are almost always typing.
+
+The window is deterministic and has no user setting. The promotion uses the same
+`HoldPromotion` arbitration as Both mode. A release before the timer fires
+invalidates it, a release after publishes its stop after the start, and Escape,
+listener changes, entering processing, and disabling the app invalidate a
+pending window.
+
+**Residual cases.** A modifier held alone for longer than the window before the
+next key, for example a slow Shift+arrow selection, still starts and then
+cancels. So does Shift+click, because the listener sees only key events.
+
 ### Rejection Rules
 
 - **Key repeat** while held: Ignored (stays in Held state)
+- **Any other key during a modifier trigger's arming window**: Ends the hold silently; no start is emitted
 - **Trigger key + another non-modifier** (for example Shift+A or F8+A): Cancels hold, emits stop
 - **Shortcut modifier held before a function key** (for example Command, then F8): Ignored while idle; Fn remains allowed for Apple function-key rows
 - **Shortcut modifier pressed during a function-key hold**: Cancels the hold and emits stop if recording already started
@@ -55,7 +112,7 @@ Held → KeyRelease(target) → Idle (emit hold-down-stop)
 - `useHoldDownToggle` hook manages lifecycle (start/stop listener, listen for events)
 - Listens for two distinct events: `hold-down-start` and `hold-down-stop`
 - Rust `keyboard::start_listener(app_handle, hotkey, "hold_down")` spawns rdev thread
-- On key press: emits `"hold-down-start"` event → frontend calls `handleStart()`
+- On key press: emits `"hold-down-start"` event → frontend calls `handleStart()` (modifier triggers: after the arming window)
 - On key release: emits `"hold-down-stop"` event → frontend calls `handleStop()`
 
 ## Double-Tap Mode
@@ -130,14 +187,22 @@ when startup is accepted so model loading still overlaps microphone latency.
 
 ### Both-mode promotion ordering
 
+The 200ms hold promotion doubles as Both mode's arming window: a press that
+ends before promotion never emits `hold-down-start`. For a modifier trigger,
+any other key press during those 200ms, including a second modifier, ends the
+hold without a start and logs `keyboard.hotkey_arming_cancelled` with
+`mode: "both"`. Double-tap detection is unchanged: the double-tap detector is
+fed independently, so short taps still advance it and a single tap still stops
+a toggle-started recording.
+
 The 200ms hold promotion and key release share one arbitration lock through
 start/stop event publication. A release before promotion invalidates the timer;
 a release after promotion publishes its stop after the start. Listener changes,
 Escape, processing transitions, and disabling the app invalidate pending presses.
 A timer also checks the listener generation and current held state. Reading
 backend recording status happens outside this lock to avoid reversing the
-backend-to-keyboard lock order. Hold timing and shortcut-combination behavior
-are unchanged.
+backend-to-keyboard lock order. Hold timing is
+unchanged.
 
 ### Threading
 

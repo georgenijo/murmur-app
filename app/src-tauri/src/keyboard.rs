@@ -9,6 +9,8 @@
 //! **Hold-down mode** (to start/stop recording):
 //!   Start: Idle → KeyPress(target) → Held (emit start)
 //!   Stop:  Held → KeyRelease(target) → Idle (emit stop)
+//!   Modifier triggers emit start only after an arming window in which no
+//!   other key was pressed (`MODIFIER_HOLD_ARMING_MS`).
 //!
 //! Both modes reject trigger-key combos (for example Shift+A or F8+A).
 
@@ -32,6 +34,14 @@ const COOLDOWN_MS: u128 = 50;
 
 /// Cooldown after hold-down stop to prevent accidental re-trigger
 const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
+
+/// Hold-down mode defers a modifier-only trigger's start by this long. Shift
+/// is pressed for every capital letter: production false starts typed the
+/// next key a p50 of ~81–98ms after the start was requested, so 150ms rejects
+/// ordinary capitalization while staying below Both mode's 200ms promotion.
+/// Capture startup (~220ms p50 to first PCM) still dominates start latency.
+const MODIFIER_HOLD_ARMING_MS: u128 = 150;
+const _: () = assert!(MODIFIER_HOLD_ARMING_MS < MAX_HOLD_DURATION_MS);
 
 /// Report callback inactivity after this duration; it is not a health check.
 const TAP_SILENCE_WARNING_MS: u64 = 5 * 60 * 1000;
@@ -304,6 +314,25 @@ impl DoubleTapDetector {
     }
 }
 
+/// Whether a dictation trigger is a bare modifier that ordinary typing also
+/// presses (Shift for capitals, Option/Control/Command for shortcuts).
+fn is_modifier_only_hotkey(key: Key) -> bool {
+    is_modifier(key) || key == Key::Function
+}
+
+/// Arming window for a dictation hold detector: modifier-only triggers wait
+/// before committing a start; other triggers start immediately (0). Both mode
+/// already waits `MAX_HOLD_DURATION_MS` before promoting a hold.
+fn hold_arming_ms(mode: DetectorMode, target: Option<Key>) -> u128 {
+    match (mode, target) {
+        (_, None) => 0,
+        (_, Some(key)) if !is_modifier_only_hotkey(key) => 0,
+        (DetectorMode::HoldDown, Some(_)) => MODIFIER_HOLD_ARMING_MS,
+        (DetectorMode::Both, Some(_)) => MAX_HOLD_DURATION_MS,
+        (DetectorMode::DoubleTap, Some(_)) => 0,
+    }
+}
+
 /// Check if a key is any modifier key
 fn is_modifier(key: Key) -> bool {
     matches!(
@@ -462,6 +491,10 @@ struct HoldDownDetector {
     state: HoldState,
     target_key: Option<Key>,
     last_stopped_at: Option<Instant>,
+    /// While a hold is younger than this, any other key press ends it. The
+    /// listener commits the recording start only after the window (0 = off).
+    arming_ms: u128,
+    held_at: Instant,
 }
 
 impl HoldDownDetector {
@@ -470,7 +503,17 @@ impl HoldDownDetector {
             state: HoldState::Idle,
             target_key: None,
             last_stopped_at: None,
+            arming_ms: 0,
+            held_at: Instant::now(),
         }
+    }
+
+    fn is_arming(&self) -> bool {
+        self.state == HoldState::Held && self.held_at.elapsed().as_millis() < self.arming_ms
+    }
+
+    fn held_ms(&self) -> u64 {
+        self.held_at.elapsed().as_millis() as u64
     }
 
     /// Set the target key. Returns `true` if the detector was in `Held` state
@@ -557,6 +600,7 @@ impl HoldDownDetector {
                 if let EventType::KeyPress(key) = event_type {
                     if is_target_key(*key, target) && !self.in_cooldown() {
                         self.state = HoldState::Held;
+                        self.held_at = Instant::now();
                         return HoldDownEvent::Start;
                     }
                 }
@@ -573,6 +617,14 @@ impl HoldDownDetector {
                     EventType::KeyPress(key) if is_target_key(*key, target) => {
                         // Key repeat — ignore, stay held
                         HoldDownEvent::None
+                    }
+                    EventType::KeyPress(_) if self.is_arming() => {
+                        // Shift+letter or Shift+Command: ordinary typing, not
+                        // dictation. Ends the hold before the listener commits
+                        // a start; the caller logs it without the key.
+                        self.state = HoldState::Idle;
+                        self.last_stopped_at = Some(Instant::now());
+                        HoldDownEvent::Stop
                     }
                     EventType::KeyPress(key) if !is_modifier(*key) => {
                         // User is typing a combo like Shift+A — cancel hold
@@ -848,6 +900,100 @@ fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &Event
     );
 }
 
+/// Arming facts read under the hold-detector lock alongside its result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HoldArming {
+    window_ms: u128,
+    held_ms: u64,
+}
+
+impl HoldArming {
+    const OFF: Self = Self {
+        window_ms: 0,
+        held_ms: 0,
+    };
+
+    fn of(detector: &HoldDownDetector) -> Self {
+        Self {
+            window_ms: detector.arming_ms,
+            held_ms: detector.held_ms(),
+        }
+    }
+
+    /// The hold's duration when `event_type` (which ended an unpromoted hold)
+    /// was another key press rather than the trigger's own release.
+    fn cancelled_by(self, event_type: &EventType) -> Option<u64> {
+        (self.window_ms > 0 && matches!(event_type, EventType::KeyPress(_))).then_some(self.held_ms)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HoldDownSignal {
+    Start,
+    Stop,
+    /// Begin the arming timer for this press.
+    Arm {
+        press_id: u64,
+        window_ms: u128,
+    },
+    ArmingCancelled {
+        reason: &'static str,
+        held_ms: u64,
+    },
+}
+
+/// Hold-Down mode's response to a detector result. With an arming window the
+/// start is deferred to a timer and an unpromoted hold ends silently, so a
+/// Shift+letter or short Shift tap never reaches `hold-down-start`.
+fn dispatch_hold_down(
+    promotion: &HoldPromotion,
+    result: HoldDownEvent,
+    arming: HoldArming,
+    event_type: &EventType,
+    mut signal: impl FnMut(HoldDownSignal),
+) {
+    match result {
+        HoldDownEvent::Start if arming.window_ms > 0 => signal(HoldDownSignal::Arm {
+            press_id: promotion.begin(),
+            window_ms: arming.window_ms,
+        }),
+        HoldDownEvent::Start => signal(HoldDownSignal::Start),
+        HoldDownEvent::Stop if arming.window_ms > 0 => {
+            let started = promotion.finish(|promoted| {
+                if promoted.is_some() {
+                    signal(HoldDownSignal::Stop);
+                }
+                promoted.is_some()
+            });
+            if !started {
+                let reason = match event_type {
+                    EventType::KeyRelease(_) => "released",
+                    _ => "other_key",
+                };
+                signal(HoldDownSignal::ArmingCancelled {
+                    reason,
+                    held_ms: arming.held_ms,
+                });
+            }
+        }
+        HoldDownEvent::Stop => signal(HoldDownSignal::Stop),
+        HoldDownEvent::None => {}
+    }
+}
+
+/// One content-free record per modifier hold that ended before its recording
+/// start was committed. Never includes which key ended it.
+fn log_hotkey_arming_cancelled(mode: DetectorMode, reason: &'static str, held_ms: u64) {
+    tracing::info!(
+        target: "keyboard",
+        event_code = "keyboard.hotkey_arming_cancelled",
+        mode = mode.as_str(),
+        reason,
+        held_ms,
+        "modifier hotkey hold ended before recording start"
+    );
+}
+
 // -- Both-mode arbitration state --
 
 mod hold_promotion;
@@ -875,6 +1021,50 @@ fn dictation_in_flight(handle: &tauri::AppHandle) -> bool {
         )
     })
 }
+/// Commit deferred hold `press_id` after `delay_ms` unless the press ended or the
+/// listener context changed. Both mode promotes over a running recording as a
+/// physical-hold mark; Hold-Down mode always publishes `hold-down-start`.
+fn schedule_hold_promotion(
+    app_handle: tauri::AppHandle,
+    mode: DetectorMode,
+    listener_generation: u64,
+    press_id: u64,
+    delay_ms: u128,
+) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
+        // Never hold the promotion lock while acquiring the backend dictation
+        // lock: backend transitions invalidate pending timers too.
+        let over_recording = mode == DetectorMode::Both && dictation_in_flight(&app_handle);
+        HOLD_PROMOTION.promote(
+            press_id,
+            over_recording,
+            || {
+                listener_context_matches(mode, listener_generation)
+                    && !(mode == DetectorMode::Both && IS_PROCESSING.load(Ordering::SeqCst))
+                    && !APP_DISABLED.load(Ordering::SeqCst)
+                    && HOLD_DOWN_DETECTOR
+                        .lock_or_recover()
+                        .as_ref()
+                        .is_some_and(|d| d.state == HoldState::Held)
+            },
+            || {
+                if over_recording {
+                    tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-start");
+                    let _ = app_handle.emit("hold-over-recording-start", ());
+                } else {
+                    tracing::info!(
+                        target: "keyboard",
+                        mode = mode.as_str(),
+                        "hold timer promoted to hold-down-start"
+                    );
+                    let _ = app_handle.emit("hold-down-start", ());
+                }
+            },
+        );
+    });
+}
+
 /// When true, the Both-mode callback ignores all key events.
 /// Set by lib.rs when the transcription pipeline is running.
 static IS_PROCESSING: AtomicBool = AtomicBool::new(false);
@@ -1150,10 +1340,12 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
             match det.as_mut() {
                 Some(d) => {
                     let _ = d.set_target(target);
+                    d.arming_ms = hold_arming_ms(detector_mode, target);
                 }
                 None => {
                     let mut d = HoldDownDetector::new();
                     let _ = d.set_target(target);
+                    d.arming_ms = hold_arming_ms(detector_mode, target);
                     *det = Some(d);
                 }
             }
@@ -1165,10 +1357,12 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
                 match det.as_mut() {
                     Some(d) => {
                         let _ = d.set_target(target);
+                        d.arming_ms = hold_arming_ms(detector_mode, target);
                     }
                     None => {
                         let mut d = HoldDownDetector::new();
                         let _ = d.set_target(target);
+                        d.arming_ms = hold_arming_ms(detector_mode, target);
                         *det = Some(d);
                     }
                 }
@@ -1546,28 +1740,49 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         }
                     }
                     DetectorMode::HoldDown => {
-                        let result = {
+                        let (result, arming) = {
                             let mut det =
                                 HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                             if let Some(d) = det.as_mut() {
-                                d.handle_event_with_context(
+                                let result = d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
                                     repeated_function_press,
-                                )
+                                );
+                                (result, HoldArming::of(d))
                             } else {
-                                HoldDownEvent::None
+                                (HoldDownEvent::None, HoldArming::OFF)
                             }
                         };
-                        match result {
-                            HoldDownEvent::Start => {
-                                let _ = handle.emit("hold-down-start", ());
-                            }
-                            HoldDownEvent::Stop => {
-                                let _ = handle.emit("hold-down-stop", ());
-                            }
-                            HoldDownEvent::None => {}
-                        }
+                        dispatch_hold_down(
+                            &HOLD_PROMOTION,
+                            result,
+                            arming,
+                            &event.event_type,
+                            |signal| match signal {
+                                HoldDownSignal::Start => {
+                                    let _ = handle.emit("hold-down-start", ());
+                                }
+                                HoldDownSignal::Stop => {
+                                    let _ = handle.emit("hold-down-stop", ());
+                                }
+                                HoldDownSignal::Arm {
+                                    press_id,
+                                    window_ms,
+                                } => {
+                                    schedule_hold_promotion(
+                                        handle.clone(),
+                                        mode,
+                                        listener_generation,
+                                        press_id,
+                                        window_ms,
+                                    );
+                                }
+                                HoldDownSignal::ArmingCancelled { reason, held_ms } => {
+                                    log_hotkey_arming_cancelled(mode, reason, held_ms);
+                                }
+                            },
+                        );
                     }
                     DetectorMode::Both => {
                         // Skip all events while the app is processing a transcription.
@@ -1602,20 +1817,21 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         };
 
                         // Only feed hold-down when NOT in second phase
-                        let hold_result = if !dtap_second_phase {
+                        let (hold_result, arming) = if !dtap_second_phase {
                             let mut det =
                                 HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                             if let Some(d) = det.as_mut() {
-                                d.handle_event_with_context(
+                                let result = d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
                                     repeated_function_press,
-                                )
+                                );
+                                (result, HoldArming::of(d))
                             } else {
-                                HoldDownEvent::None
+                                (HoldDownEvent::None, HoldArming::OFF)
                             }
                         } else {
-                            HoldDownEvent::None
+                            (HoldDownEvent::None, HoldArming::OFF)
                         };
 
                         // Always feed double-tap
@@ -1650,41 +1866,18 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
 
                         match hold_result {
                             HoldDownEvent::Start => {
-                                // Don't emit hold-down-start yet — start a timer.
-                                // The timer will promote after MAX_HOLD_DURATION_MS.
-                                let press_id = HOLD_PROMOTION.begin();
-                                let timer_handle = handle.clone();
-                                std::thread::spawn(move || {
-                                    std::thread::sleep(std::time::Duration::from_millis(
-                                        MAX_HOLD_DURATION_MS as u64,
-                                    ));
-                                    // Never hold the promotion lock while acquiring the
-                                    // backend dictation lock: backend transitions invalidate
-                                    // pending timers too.
-                                    let over_recording = dictation_in_flight(&timer_handle);
-                                    HOLD_PROMOTION.promote(
-                                        press_id,
-                                        over_recording,
-                                        || {
-                                            listener_context_matches(DetectorMode::Both, listener_generation)
-                                                && !IS_PROCESSING.load(Ordering::SeqCst)
-                                                && !APP_DISABLED.load(Ordering::SeqCst)
-                                                && HOLD_DOWN_DETECTOR.lock_or_recover()
-                                                    .as_ref().is_some_and(|d| d.state == HoldState::Held)
-                                        },
-                                        || {
-                                            if over_recording {
-                                                tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-start");
-                                                let _ = timer_handle.emit("hold-over-recording-start", ());
-                                            } else {
-                                                tracing::info!(target: "keyboard", "BOTH -> timer promoted to hold-down-start");
-                                                let _ = timer_handle.emit("hold-down-start", ());
-                                            }
-                                        },
-                                    );
-                                });
+                                // Don't emit hold-down-start yet — the timer
+                                // promotes after MAX_HOLD_DURATION_MS.
+                                schedule_hold_promotion(
+                                    handle.clone(),
+                                    mode,
+                                    listener_generation,
+                                    HOLD_PROMOTION.begin(),
+                                    MAX_HOLD_DURATION_MS,
+                                );
                             }
                             HoldDownEvent::Stop => {
+                                let arming_cancelled = arming.cancelled_by(&event.event_type);
                                 let handled = HOLD_PROMOTION.finish(|promoted| {
                                     if let Some(over_recording) = promoted {
                                         if !promoted_hold_stops_recording(over_recording, &event.event_type) {
@@ -1703,7 +1896,9 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                         false
                                     }
                                 });
-                                if !handled {
+                                if let (false, Some(held_ms)) = (handled, arming_cancelled) {
+                                    log_hotkey_arming_cancelled(mode, "other_key", held_ms);
+                                } else if !handled {
                                     log_rejection(
                                         RejectionReason::SingleShortTapNoop,
                                         mode,
@@ -1916,6 +2111,7 @@ pub fn set_target_key(hotkey: &str) -> bool {
         DetectorMode::HoldDown => {
             let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(d) = det.as_mut() {
+                d.arming_ms = hold_arming_ms(mode, target);
                 d.set_target(target)
             } else {
                 false
@@ -1925,6 +2121,7 @@ pub fn set_target_key(hotkey: &str) -> bool {
             let was_held = {
                 let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(d) = det.as_mut() {
+                    d.arming_ms = hold_arming_ms(mode, target);
                     d.set_target(target)
                 } else {
                     false
@@ -3337,6 +3534,297 @@ mod tests {
         // A later release remains a normal stop.
         let e = both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), true);
         assert_eq!(e, vec![BothEmit::HoldStop]);
+    }
+
+    // -- Modifier arming window --
+
+    fn make_armed_hold_detector(mode: DetectorMode, key: Key) -> HoldDownDetector {
+        let mut d = make_hold_detector(key);
+        d.arming_ms = hold_arming_ms(mode, Some(key));
+        d
+    }
+
+    /// Feed one event through the Hold-Down detector and the production
+    /// dispatch, recording every signal the listener would act on.
+    fn hold_down_step(
+        hold: &mut HoldDownDetector,
+        promotion: &HoldPromotion,
+        event_type: &EventType,
+        signals: &mut Vec<HoldDownSignal>,
+    ) {
+        let result = hold.handle_event(event_type);
+        let arming = HoldArming::of(hold);
+        dispatch_hold_down(promotion, result, arming, event_type, |s| signals.push(s));
+    }
+
+    /// Run the arming timer exactly as `schedule_hold_promotion` would once
+    /// its window closes. Returns whether it published `hold-down-start`.
+    fn fire_arming_timer(
+        hold: &HoldDownDetector,
+        promotion: &HoldPromotion,
+        signals: &mut Vec<HoldDownSignal>,
+    ) -> bool {
+        let press_id = signals.iter().rev().find_map(|s| match s {
+            HoldDownSignal::Arm { press_id, .. } => Some(*press_id),
+            _ => None,
+        });
+        let Some(press_id) = press_id else {
+            return false;
+        };
+        promotion.promote(
+            press_id,
+            false,
+            || hold.state == HoldState::Held,
+            || signals.push(HoldDownSignal::Start),
+        )
+    }
+
+    #[test]
+    fn arming_window_applies_only_to_modifier_hold_triggers() {
+        for key in [Key::ShiftLeft, Key::Alt, Key::ControlRight, Key::Function] {
+            assert_eq!(
+                hold_arming_ms(DetectorMode::HoldDown, Some(key)),
+                MODIFIER_HOLD_ARMING_MS
+            );
+            assert_eq!(
+                hold_arming_ms(DetectorMode::Both, Some(key)),
+                MAX_HOLD_DURATION_MS
+            );
+            assert_eq!(hold_arming_ms(DetectorMode::DoubleTap, Some(key)), 0);
+        }
+        for mode in [DetectorMode::HoldDown, DetectorMode::Both] {
+            assert_eq!(hold_arming_ms(mode, Some(Key::F8)), 0);
+            assert_eq!(hold_arming_ms(mode, None), 0);
+        }
+    }
+
+    #[test]
+    fn hold_down_shift_letter_never_starts_recording() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+        let mut signals = Vec::new();
+
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+        assert!(matches!(
+            signals.as_slice(),
+            [HoldDownSignal::Arm {
+                window_ms: MODIFIER_HOLD_ARMING_MS,
+                ..
+            }]
+        ));
+        hold_down_step(&mut hold, &promotion, &press(Key::KeyA), &mut signals);
+        hold_down_step(&mut hold, &promotion, &release(Key::KeyA), &mut signals);
+        hold_down_step(
+            &mut hold,
+            &promotion,
+            &release(Key::ShiftLeft),
+            &mut signals,
+        );
+        assert_eq!(hold.state, HoldState::Idle);
+
+        // The timer that would have spawned capture finds nothing to start.
+        assert!(!fire_arming_timer(&hold, &promotion, &mut signals));
+        // One content-free cancellation; no start, no stop.
+        assert!(matches!(
+            &signals[1..],
+            [HoldDownSignal::ArmingCancelled {
+                reason: "other_key",
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn hold_down_shift_with_another_modifier_never_starts_recording() {
+        // Shift, then Command within the window (Shift+Command+Z): a shortcut.
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+        hold_down_step(&mut hold, &promotion, &press(Key::MetaLeft), &mut signals);
+        assert_eq!(hold.state, HoldState::Idle);
+        assert!(!fire_arming_timer(&hold, &promotion, &mut signals));
+        assert!(matches!(
+            signals.last(),
+            Some(HoldDownSignal::ArmingCancelled {
+                reason: "other_key",
+                ..
+            })
+        ));
+        assert!(!signals.contains(&HoldDownSignal::Start));
+    }
+
+    #[test]
+    fn hold_down_short_shift_tap_never_starts_recording() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+        hold_down_step(
+            &mut hold,
+            &promotion,
+            &release(Key::ShiftLeft),
+            &mut signals,
+        );
+        assert!(!fire_arming_timer(&hold, &promotion, &mut signals));
+        assert!(matches!(
+            signals.last(),
+            Some(HoldDownSignal::ArmingCancelled {
+                reason: "released",
+                ..
+            })
+        ));
+        assert!(!signals.contains(&HoldDownSignal::Start));
+        assert!(!signals.contains(&HoldDownSignal::Stop));
+    }
+
+    #[test]
+    fn hold_down_shift_held_alone_past_window_starts_and_stops() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+        assert!(hold.is_arming());
+        sleep(Duration::from_millis(MODIFIER_HOLD_ARMING_MS as u64 + 10));
+        assert!(!hold.is_arming());
+        assert!(fire_arming_timer(&hold, &promotion, &mut signals));
+
+        // After the window, modifiers keep today's rule (ignored while held).
+        hold_down_step(&mut hold, &promotion, &press(Key::MetaLeft), &mut signals);
+        assert_eq!(hold.state, HoldState::Held);
+        hold_down_step(&mut hold, &promotion, &release(Key::MetaLeft), &mut signals);
+        hold_down_step(
+            &mut hold,
+            &promotion,
+            &release(Key::ShiftLeft),
+            &mut signals,
+        );
+        assert!(matches!(
+            signals.as_slice(),
+            [
+                HoldDownSignal::Arm { .. },
+                HoldDownSignal::Start,
+                HoldDownSignal::Stop
+            ]
+        ));
+    }
+
+    #[test]
+    fn hold_down_combo_after_window_still_stops_the_started_recording() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+        sleep(Duration::from_millis(MODIFIER_HOLD_ARMING_MS as u64 + 10));
+        assert!(fire_arming_timer(&hold, &promotion, &mut signals));
+        hold_down_step(&mut hold, &promotion, &press(Key::KeyA), &mut signals);
+        assert_eq!(hold.state, HoldState::Idle);
+        assert_eq!(signals[1..], [HoldDownSignal::Start, HoldDownSignal::Stop]);
+    }
+
+    #[test]
+    fn hold_down_function_key_trigger_starts_immediately() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::F8);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::F8), &mut signals);
+        assert_eq!(signals, [HoldDownSignal::Start]);
+        hold_down_step(&mut hold, &promotion, &press(Key::KeyA), &mut signals);
+        assert_eq!(signals, [HoldDownSignal::Start, HoldDownSignal::Stop]);
+
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::F8);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::F8), &mut signals);
+        hold_down_step(&mut hold, &promotion, &release(Key::F8), &mut signals);
+        assert_eq!(signals, [HoldDownSignal::Start, HoldDownSignal::Stop]);
+    }
+
+    #[test]
+    fn hold_down_new_press_after_cancel_arms_a_fresh_window() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+        hold_down_step(&mut hold, &promotion, &press(Key::KeyA), &mut signals);
+        hold_down_step(
+            &mut hold,
+            &promotion,
+            &release(Key::ShiftLeft),
+            &mut signals,
+        );
+        let stale = match signals[0] {
+            HoldDownSignal::Arm { press_id, .. } => press_id,
+            other => panic!("expected arm, got {other:?}"),
+        };
+        sleep(Duration::from_millis(HOLD_DOWN_COOLDOWN_MS as u64 + 10));
+
+        let mut fresh = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut fresh);
+        // The earlier press's timer cannot start the new hold.
+        assert!(!promotion.promote(stale, false, || true, || panic!("stale start")));
+        assert!(fire_arming_timer(&hold, &promotion, &mut fresh));
+    }
+
+    #[test]
+    fn both_shift_letter_before_promotion_emits_nothing() {
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false).is_empty());
+        let arming = HoldArming::of(&hold);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::KeyA), false).is_empty());
+        assert_eq!(hold.state, HoldState::Idle);
+        assert!(arming.cancelled_by(&press(Key::KeyA)).is_some());
+        assert!(arming.cancelled_by(&release(Key::ShiftLeft)).is_none());
+        assert!(
+            both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false).is_empty()
+        );
+
+        // Shift then Command inside the promotion window also ends the hold.
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::MetaLeft), false).is_empty());
+        assert_eq!(hold.state, HoldState::Idle);
+    }
+
+    #[test]
+    fn both_double_tap_shift_still_toggles_with_arming() {
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false).is_empty());
+        assert_eq!(
+            both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false),
+            vec![BothEmit::DoubleTapToggle]
+        );
+
+        // Single tap still stops a toggle-started recording.
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        dtap.recording = true;
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert_eq!(
+            both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false),
+            vec![BothEmit::DoubleTapToggle]
+        );
+    }
+
+    #[test]
+    fn double_tap_mode_shift_is_unaffected_by_arming() {
+        let mut d = make_detector(Key::ShiftLeft);
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(!d.handle_event(&release(Key::ShiftLeft)));
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+    }
+
+    #[test]
+    fn arming_cancel_event_code_is_allowlisted() {
+        assert_eq!(
+            crate::telemetry::canonical_event_code("keyboard.hotkey_arming_cancelled"),
+            Some("keyboard.hotkey_arming_cancelled")
+        );
     }
 
     #[test]
