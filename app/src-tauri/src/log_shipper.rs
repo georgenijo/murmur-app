@@ -28,6 +28,12 @@ static SHIPPER_STATE_LOCK: Mutex<()> = Mutex::new(());
 struct ShipperState {
     install_id: String,
     offset: u64,
+    /// Inode of the file `offset` points into. Rotation renames a file without
+    /// changing its inode, so this identifies the file wherever it now lives
+    /// (`events.jsonl`, `.1`, or `.2`). Absent in state written by older
+    /// builds, which fall back to comparing `offset` with the file length.
+    #[serde(default)]
+    inode: Option<u64>,
 }
 
 fn logs_dir() -> Option<PathBuf> {
@@ -63,6 +69,7 @@ fn load_state(path: &Path) -> ShipperState {
         .unwrap_or_else(|| ShipperState {
             install_id: uuid::Uuid::new_v4().to_string(),
             offset: 0,
+            inode: None,
         })
 }
 
@@ -83,6 +90,7 @@ fn load_or_create_state(path: &Path) -> Result<ShipperState, String> {
     let state = ShipperState {
         install_id: uuid::Uuid::new_v4().to_string(),
         offset: 0,
+        inode: None,
     };
     let parent = path
         .parent()
@@ -109,11 +117,20 @@ fn save_state(path: &Path, state: &ShipperState) {
     }
 }
 
-/// One batch of log bytes to ship, cut at a line boundary.
+/// Where the shipper is in the log: a byte offset into the file identified by
+/// `inode`. `None` is a position saved before inodes were tracked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Position {
+    offset: u64,
+    inode: Option<u64>,
+}
+
+/// One batch of log bytes to ship, cut at a line boundary. `data` may be empty
+/// when the batch only moves the position (rotation bookkeeping).
 struct Batch {
     data: Vec<u8>,
-    /// Offset into the *current* file after this batch is acknowledged.
-    next_offset: u64,
+    /// Position to persist once this batch is acknowledged.
+    next: Position,
 }
 
 /// Meeting sessions stay local even though their content-free lifecycle events
@@ -142,52 +159,162 @@ fn shippable_payload(data: &[u8]) -> Vec<u8> {
     output
 }
 
-/// Read the next batch from `log` at `offset`, falling back to the rotated
-/// file when the current file is shorter than the offset (telemetry.rs renames
-/// `events.jsonl` → `events.jsonl.1` at 5 MB and starts fresh).
-fn next_batch(log: &Path, rotated: &Path, offset: u64) -> Option<Batch> {
-    let log_len = std::fs::metadata(log).map(|m| m.len()).unwrap_or(0);
-
-    if offset > log_len {
-        // Rotation happened since our last ack: our offset points into the
-        // renamed file. Drain its tail in one go, then restart at 0.
-        let tail = read_range(rotated, offset, u64::MAX).unwrap_or_default();
-        if tail.is_empty() {
-            // Rotated file gone or shorter than the offset (e.g. double
-            // rotation); nothing recoverable — restart at the new file.
-            return Some(Batch {
-                data: Vec::new(),
-                next_offset: 0,
-            });
-        }
-        return Some(Batch {
-            data: tail,
-            next_offset: 0,
-        });
-    }
-
-    let chunk = read_range(log, offset, MAX_BATCH_BYTES as u64)?;
-    if chunk.is_empty() {
-        return None;
-    }
-    match chunk.iter().rposition(|&b| b == b'\n') {
-        Some(pos) => Some(Batch {
-            next_offset: offset + pos as u64 + 1,
-            data: chunk[..=pos].to_vec(),
-        }),
-        // No newline in a full-size chunk means a pathological >1 MB line:
-        // skip it rather than stall forever. A partial short chunk is just a
-        // line still being written — wait for the next tick.
-        None if chunk.len() >= MAX_BATCH_BYTES => Some(Batch {
-            next_offset: offset + chunk.len() as u64,
-            data: Vec::new(),
-        }),
-        None => None,
-    }
+fn file_inode(file: &std::fs::File) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().ok().map(|metadata| metadata.ino())
 }
 
-fn read_range(path: &Path, offset: u64, max: u64) -> Option<Vec<u8>> {
-    let mut file = std::fs::File::open(path).ok()?;
+/// Read the next batch, following the log across runtime rotations.
+///
+/// `files` is the current log followed by its rotated generations, newest
+/// first (`events.jsonl`, `.1`, `.2`). `telemetry.rs` renames files on
+/// rotation, which keeps their inode, so the saved inode finds the file the
+/// offset belongs to wherever it now lives. The shipper then drains that file
+/// and walks forward through each newer generation to the current file, so a
+/// second rotation before the first was drained loses and repeats nothing.
+/// If the saved file is gone (more rotations than generations kept, or the logs
+/// were cleared) the oldest surviving file is shipped from the top.
+///
+/// Files are opened once and read through the handle, so a rotation between
+/// the lookup and the read cannot make the offset apply to the wrong file.
+fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
+    let mut opened: Vec<Option<(std::fs::File, u64)>> = files
+        .iter()
+        .map(|path| {
+            let file = std::fs::File::open(path).ok()?;
+            let inode = file_inode(&file)?;
+            Some((file, inode))
+        })
+        .collect();
+    let inode_of = |opened: &[Option<(std::fs::File, u64)>], index: usize| {
+        opened
+            .get(index)
+            .and_then(|slot| slot.as_ref())
+            .map(|(_, inode)| *inode)
+    };
+    let current_inode = inode_of(&opened, 0);
+    let jump = |inode: Option<u64>| Batch {
+        data: Vec::new(),
+        next: Position { offset: 0, inode },
+    };
+
+    let index = match position.inode {
+        Some(saved) => {
+            match (0..opened.len()).find(|&index| inode_of(&opened, index) == Some(saved)) {
+                Some(index) => index,
+                None => {
+                    let oldest = (0..opened.len())
+                        .rev()
+                        .find(|&index| opened[index].is_some());
+                    return Some(jump(oldest.and_then(|index| inode_of(&opened, index))));
+                }
+            }
+        }
+        // Saved by a build that did not track inodes: an offset past the end
+        // of the current file means it was renamed to `.1`.
+        None => {
+            let current_len = opened[0]
+                .as_ref()
+                .and_then(|(file, _)| file.metadata().ok())
+                .map_or(0, |metadata| metadata.len());
+            if position.offset <= current_len {
+                0
+            } else if opened.get(1).is_some_and(|slot| slot.is_some()) {
+                1
+            } else {
+                return Some(jump(current_inode));
+            }
+        }
+    };
+
+    let (file, inode) = opened[index].as_mut()?;
+    let inode = *inode;
+    let len = file.metadata().ok()?.len();
+    let offset = position.offset;
+    let here = Position {
+        offset,
+        inode: Some(inode),
+    };
+
+    if index == 0 {
+        if offset > len {
+            // Truncated in place: start over.
+            return Some(jump(Some(inode)));
+        }
+        let chunk = read_range(file, offset, MAX_BATCH_BYTES as u64)?;
+        if chunk.is_empty() {
+            // Caught up. Adopt the inode of a legacy position so the next
+            // rotation can be followed exactly.
+            return position.inode.is_none().then_some(Batch {
+                data: Vec::new(),
+                next: here,
+            });
+        }
+        return match chunk.iter().rposition(|&b| b == b'\n') {
+            Some(pos) => Some(Batch {
+                next: Position {
+                    offset: offset + pos as u64 + 1,
+                    inode: Some(inode),
+                },
+                data: chunk[..=pos].to_vec(),
+            }),
+            // No newline in a full-size chunk means a pathological >1 MB line:
+            // skip it rather than stall forever. A partial short chunk is just
+            // a line still being written — wait for the next tick.
+            None if chunk.len() >= MAX_BATCH_BYTES => Some(Batch {
+                next: Position {
+                    offset: offset + chunk.len() as u64,
+                    inode: Some(inode),
+                },
+                data: Vec::new(),
+            }),
+            None => None,
+        };
+    }
+
+    // A rotated generation is complete, so it is drained in full and the
+    // position then moves to the next-newer file that still exists.
+    let next_file = (0..index)
+        .rev()
+        .find(|&newer| opened[newer].is_some())
+        .and_then(|newer| inode_of(&opened, newer));
+    let (file, _) = opened[index].as_mut()?;
+    let chunk = if offset < len {
+        read_range(file, offset, MAX_BATCH_BYTES as u64)?
+    } else {
+        Vec::new()
+    };
+    if chunk.is_empty() {
+        return Some(jump(next_file));
+    }
+    if (chunk.len() as u64) < MAX_BATCH_BYTES as u64 {
+        // Reached the end of the file: ship the remainder and move on.
+        return Some(Batch {
+            data: chunk,
+            next: Position {
+                offset: 0,
+                inode: next_file,
+            },
+        });
+    }
+    let consumed = chunk
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(chunk.len(), |pos| pos + 1);
+    Some(Batch {
+        data: if consumed == chunk.len() && !chunk.ends_with(b"\n") {
+            Vec::new() // pathological >1 MB line: skip rather than stall
+        } else {
+            chunk[..consumed].to_vec()
+        },
+        next: Position {
+            offset: offset + consumed as u64,
+            inode: Some(inode),
+        },
+    })
+}
+
+fn read_range(file: &mut std::fs::File, offset: u64, max: u64) -> Option<Vec<u8>> {
     file.seek(SeekFrom::Start(offset)).ok()?;
     let mut buf = Vec::new();
     file.take(max).read_to_end(&mut buf).ok()?;
@@ -380,7 +507,11 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
     let (Some(state_file), Some(log)) = (state_path(), jsonl_path()) else {
         return;
     };
-    let rotated = log.with_extension("jsonl.1");
+    let mut files = vec![log.clone()];
+    files.extend(crate::telemetry::rotated_paths(
+        &log,
+        crate::telemetry::EVENT_LOG_GENERATIONS,
+    ));
     let Ok(mut state) = load_or_create_state(&state_file) else {
         return;
     };
@@ -388,7 +519,11 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
     // Bounded loop: drain at most a handful of batches per tick so a huge
     // backlog trickles out instead of hammering the endpoint.
     for _ in 0..8 {
-        let Some(batch) = next_batch(&log, &rotated, state.offset) else {
+        let position = Position {
+            offset: state.offset,
+            inode: state.inode,
+        };
+        let Some(batch) = next_batch(&files, position) else {
             break;
         };
         let outbound = shippable_payload(&batch.data);
@@ -397,7 +532,8 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
         {
             break; // endpoint unreachable — offset stays put, retry next tick
         }
-        state.offset = batch.next_offset;
+        state.offset = batch.next.offset;
+        state.inode = batch.next.inode;
         save_state(&state_file, &state);
     }
 }
@@ -479,26 +615,82 @@ mod tests {
         dir
     }
 
+    /// The current log followed by its rotated generations, as `tick` builds it.
+    fn log_files(dir: &Path) -> Vec<PathBuf> {
+        let log = dir.join("events.jsonl");
+        let mut files = vec![log.clone()];
+        files.extend(crate::telemetry::rotated_paths(
+            &log,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        ));
+        files
+    }
+
+    fn legacy(offset: u64) -> Position {
+        Position {
+            offset,
+            inode: None,
+        }
+    }
+
+    fn line(n: u32) -> String {
+        format!("{{\"n\":{n}}}\n")
+    }
+
+    /// Ship everything currently available, as repeated ticks would, and
+    /// return the shipped lines in order.
+    fn drain(files: &[PathBuf], position: &mut Position) -> Vec<String> {
+        let mut shipped = Vec::new();
+        for _ in 0..200 {
+            let Some(batch) = next_batch(files, *position) else {
+                break;
+            };
+            shipped.extend(
+                String::from_utf8(batch.data)
+                    .unwrap()
+                    .lines()
+                    .map(str::to_string),
+            );
+            *position = batch.next;
+        }
+        shipped
+    }
+
+    fn numbered(range: std::ops::RangeInclusive<u32>) -> Vec<String> {
+        range.map(|n| line(n).trim_end().to_string()).collect()
+    }
+
+    fn rotating_writer(dir: &Path, max_bytes: u64) -> crate::telemetry::SizeRotatingFile {
+        crate::telemetry::SizeRotatingFile::open(
+            dir.join("events.jsonl"),
+            max_bytes,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn batch_cuts_at_line_boundary() {
         let dir = tmp_dir("cut");
-        let log = dir.join("events.jsonl");
-        std::fs::write(&log, b"{\"a\":1}\n{\"b\":2}\n{\"partial").unwrap();
-        let batch = next_batch(&log, &dir.join("events.jsonl.1"), 0).unwrap();
+        let files = log_files(&dir);
+        std::fs::write(&files[0], b"{\"a\":1}\n{\"b\":2}\n{\"partial").unwrap();
+        let batch = next_batch(&files, legacy(0)).unwrap();
         assert_eq!(batch.data, b"{\"a\":1}\n{\"b\":2}\n");
-        assert_eq!(batch.next_offset, 16);
+        assert_eq!(batch.next.offset, 16);
         // The partial trailing line is not shippable yet.
-        assert!(next_batch(&log, &dir.join("events.jsonl.1"), 16).is_none());
+        assert!(next_batch(&files, batch.next).is_none());
     }
 
     #[test]
     fn batch_resumes_from_offset() {
         let dir = tmp_dir("resume");
-        let log = dir.join("events.jsonl");
-        std::fs::write(&log, b"{\"a\":1}\n{\"b\":2}\n").unwrap();
-        let batch = next_batch(&log, &dir.join("events.jsonl.1"), 8).unwrap();
+        let files = log_files(&dir);
+        std::fs::write(&files[0], b"{\"a\":1}\n{\"b\":2}\n").unwrap();
+        let batch = next_batch(&files, legacy(8)).unwrap();
         assert_eq!(batch.data, b"{\"b\":2}\n");
-        assert_eq!(batch.next_offset, 16);
+        assert_eq!(batch.next.offset, 16);
+        // A position saved without an inode adopts the file's inode.
+        assert!(batch.next.inode.is_some());
     }
 
     #[test]
@@ -520,30 +712,156 @@ mod tests {
     }
 
     #[test]
-    fn rotation_drains_old_file_then_restarts() {
+    fn legacy_position_drains_rotated_file_then_restarts() {
         let dir = tmp_dir("rotate");
-        let log = dir.join("events.jsonl");
-        let rotated = dir.join("events.jsonl.1");
+        let files = log_files(&dir);
         // Rotated file holds the full old contents; new file is shorter than
         // our offset (12) into the old one.
-        std::fs::write(&rotated, b"{\"old\":1}\n{\"old\":2}\n").unwrap();
-        std::fs::write(&log, b"{\"new\":1}\n").unwrap();
-        let batch = next_batch(&log, &rotated, 12).unwrap();
+        std::fs::write(&files[1], b"{\"old\":1}\n{\"old\":2}\n").unwrap();
+        std::fs::write(&files[0], b"{\"new\":1}\n").unwrap();
+        let batch = next_batch(&files, legacy(12)).unwrap();
         assert_eq!(batch.data, b"old\":2}\n".to_vec());
-        assert_eq!(batch.next_offset, 0);
+        assert_eq!(batch.next.offset, 0);
         // Next call reads the new file from the top.
-        let batch = next_batch(&log, &rotated, 0).unwrap();
+        let batch = next_batch(&files, batch.next).unwrap();
         assert_eq!(batch.data, b"{\"new\":1}\n");
     }
 
     #[test]
-    fn rotation_with_missing_rotated_file_restarts_cleanly() {
+    fn legacy_position_with_missing_rotated_file_restarts_cleanly() {
         let dir = tmp_dir("rotate_missing");
-        let log = dir.join("events.jsonl");
-        std::fs::write(&log, b"{\"new\":1}\n").unwrap();
-        let batch = next_batch(&log, &dir.join("events.jsonl.1"), 999).unwrap();
+        let files = log_files(&dir);
+        std::fs::write(&files[0], b"{\"new\":1}\n").unwrap();
+        let batch = next_batch(&files, legacy(999)).unwrap();
         assert!(batch.data.is_empty());
-        assert_eq!(batch.next_offset, 0);
+        assert_eq!(batch.next.offset, 0);
+    }
+
+    #[test]
+    fn rotation_mid_stream_ships_each_line_exactly_once() {
+        let dir = tmp_dir("mid_stream");
+        let files = log_files(&dir);
+        // 8-byte lines; the file rotates once it holds five of them.
+        let mut writer = rotating_writer(&dir, 40);
+        let mut position = legacy(0);
+        let mut shipped = Vec::new();
+
+        for n in 1..=4 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=4));
+
+        // Line 5 is written but not shipped, then line 6 rotates the file.
+        writer.write_all(line(5).as_bytes()).unwrap();
+        writer.write_all(line(6).as_bytes()).unwrap();
+        assert!(files[1].exists());
+        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), line(6));
+
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=6));
+
+        // Nothing is repeated on later ticks, and new lines keep flowing.
+        assert!(drain(&files, &mut position).is_empty());
+        writer.write_all(line(7).as_bytes()).unwrap();
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=7));
+    }
+
+    #[test]
+    fn second_rotation_before_the_first_is_drained_loses_nothing() {
+        let dir = tmp_dir("double_rotation");
+        let files = log_files(&dir);
+        // Two lines per file.
+        let mut writer = rotating_writer(&dir, 16);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        let mut shipped = drain(&files, &mut position);
+        assert_eq!(shipped, numbered(1..=1));
+
+        // Lines 2..5 rotate twice before the shipper ticks again: the file
+        // the shipper was reading is now .2, and .1 is entirely unshipped.
+        for n in 2..=5 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&files[2]).unwrap(),
+            numbered(1..=2).join("\n") + "\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files[1]).unwrap(),
+            numbered(3..=4).join("\n") + "\n"
+        );
+
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=5));
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn rotations_beyond_the_kept_generations_ship_what_survives_without_repeats() {
+        let dir = tmp_dir("triple_rotation");
+        let files = log_files(&dir);
+        let mut writer = rotating_writer(&dir, 16);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        let mut shipped = drain(&files, &mut position);
+
+        // Lines 2..7 rotate three times; the file holding line 1 is deleted
+        // and line 2 is unrecoverable. Everything that survives still ships.
+        for n in 2..=7 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        shipped.extend(drain(&files, &mut position));
+        let mut expected = numbered(1..=1);
+        expected.extend(numbered(3..=7));
+        assert_eq!(shipped, expected);
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn cleared_logs_restart_from_the_new_file() {
+        let dir = tmp_dir("cleared");
+        let files = log_files(&dir);
+        let mut writer = rotating_writer(&dir, 1024);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(1..=1));
+
+        // Holding the old file open keeps its inode from being reused.
+        let _held = std::fs::File::open(&files[0]).unwrap();
+        std::fs::remove_file(&files[0]).unwrap();
+        std::fs::write(&files[0], line(2)).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(2..=2));
+    }
+
+    #[test]
+    fn large_rotated_generation_drains_in_bounded_batches() {
+        let dir = tmp_dir("large_rotated");
+        let files = log_files(&dir);
+        let entry = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(90));
+        let total = 25_000;
+        std::fs::write(&files[1], entry.repeat(total)).unwrap();
+        std::fs::write(&files[0], line(1)).unwrap();
+        let rotated_inode = file_inode(&std::fs::File::open(&files[1]).unwrap());
+
+        let mut position = Position {
+            offset: 0,
+            inode: rotated_inode,
+        };
+        let mut count = 0;
+        for _ in 0..50 {
+            let Some(batch) = next_batch(&files, position) else {
+                break;
+            };
+            assert!(batch.data.len() <= MAX_BATCH_BYTES);
+            count += batch.data.iter().filter(|&&b| b == b'\n').count();
+            position = batch.next;
+        }
+        assert_eq!(count, total + 1);
     }
 
     #[test]

@@ -43,7 +43,9 @@ type AppEvent = {
 
 ### JSONL Rotation
 
-When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and a fresh file is started. On startup, the ring buffer is pre-populated with up to 500 events from the existing JSONL file.
+The JSONL file is rotated while the app runs, not only at launch. `SizeRotatingFile` (`telemetry.rs`) tracks the file size and, before the first event written after the file reaches 5MB, shifts `events.jsonl.1` → `.2`, renames `events.jsonl` → `.1`, and starts a fresh file. Rotation happens between events, so rotated files always end on a line boundary. Two rotated generations are kept (`.1` newest, `.2` oldest; the oldest is overwritten by the next rotation). A file that is already over the cap at launch is rotated the same way. If a rename fails, the writer keeps appending to the current file (events are never dropped) and retries after another 1MB. If the file is deleted underneath the writer (Clear logs), the next rotation recreates it.
+
+The log shipper depends on this layout; see [log-shipping.md](log-shipping.md). On startup, the ring buffer is pre-populated with up to 500 events from the current JSONL file.
 
 ### Privacy Stripping
 
@@ -63,7 +65,7 @@ without permitting user content or arbitrary labels.
 
 ### Pretty-Printed Log File
 
-A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender`. This is the file returned by `get_log_contents`.
+A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file.
 
 ### Tracing Streams
 
@@ -257,9 +259,11 @@ All files stored in `~/Library/Application Support/local-dictation/logs/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`) |
-| `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB |
-| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Previous rotated JSONL file |
+| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`), rotated at 10MB at runtime |
+| `app.log.1` / `app.dev.log.1` | Pretty-printed text | Previous rotated app log |
+| `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB at runtime |
+| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Most recent rotated JSONL file |
+| `events.jsonl.2` / `events.dev.jsonl.2` | JSONL | Older rotated JSONL file (kept so the shipper survives a second rotation) |
 
 `clear_logs` removes all known log file variants, including legacy files (`frontend.log`, `transcription.log`, dated rolling files).
 

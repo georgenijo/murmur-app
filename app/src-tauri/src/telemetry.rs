@@ -132,7 +132,7 @@ impl tracing::field::Visit for JsonVisitor {
 pub struct TauriEmitterLayer {
     app_handle: tauri::AppHandle,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
-    jsonl_writer: Mutex<std::io::BufWriter<std::fs::File>>,
+    jsonl_writer: Mutex<SizeRotatingFile>,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer {
@@ -191,9 +191,11 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
 
         // Write AppEvent JSON line to JSONL file
         if let Ok(mut writer) = self.jsonl_writer.lock() {
-            if let Ok(json) = serde_json::to_string(&app_event) {
-                let _ = writeln!(writer, "{}", json);
-                let _ = writer.flush();
+            if let Ok(mut line) = serde_json::to_string(&app_event) {
+                line.push('\n');
+                // One write per event: the rotation check runs between
+                // events, so a rotated file always ends on a line boundary.
+                let _ = writer.write_all(line.as_bytes());
             }
         }
 
@@ -1896,11 +1898,132 @@ fn jsonl_path() -> Option<std::path::PathBuf> {
     Some(logs_dir()?.join(name))
 }
 
+/// `events.jsonl` rotates at runtime once it reaches this size.
+pub(crate) const EVENT_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// Rotated generations kept for `events.jsonl` (`.1` newest, `.2` oldest). Two
+/// generations let the shipper recover from a second rotation that lands
+/// before it has drained the first.
+pub(crate) const EVENT_LOG_GENERATIONS: u8 = 2;
+/// The human-readable `app.log` is capped separately; it is never shipped.
+const APP_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const APP_LOG_GENERATIONS: u8 = 1;
+/// After a failed rotation, wait for this much more data before retrying so a
+/// persistent rename failure does not cost two renames per event.
+const ROTATION_RETRY_BYTES: u64 = 1024 * 1024;
+
+/// `path` with `.N` appended (`events.jsonl` → `events.jsonl.1`).
+pub(crate) fn generation_path(path: &Path, generation: u8) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{generation}"));
+    PathBuf::from(name)
+}
+
+/// Rotated generations of `path`, newest first.
+pub(crate) fn rotated_paths(path: &Path, generations: u8) -> Vec<PathBuf> {
+    (1..=generations)
+        .map(|generation| generation_path(path, generation))
+        .collect()
+}
+
 pub(crate) fn event_jsonl_paths() -> Vec<PathBuf> {
     let Some(current) = jsonl_path() else {
         return Vec::new();
     };
-    vec![current.with_extension("jsonl.1"), current]
+    // Oldest first, so replay sees events in the order they were written.
+    let mut paths: Vec<PathBuf> = rotated_paths(&current, EVENT_LOG_GENERATIONS)
+        .into_iter()
+        .rev()
+        .collect();
+    paths.push(current);
+    paths
+}
+
+/// Shift `path` into `.1`, `.1` into `.2`, … keeping `generations` rotated
+/// files. The oldest generation is overwritten.
+fn rotate_generations(path: &Path, generations: u8) -> std::io::Result<()> {
+    for generation in (1..generations).rev() {
+        let from = generation_path(path, generation);
+        if from.exists() {
+            std::fs::rename(&from, generation_path(path, generation + 1))?;
+        }
+    }
+    match std::fs::rename(path, generation_path(path, 1)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Append-only file that rotates itself at a size cap. Rotation happens
+/// between writes, so callers that write whole lines get rotated files that
+/// end on a line boundary. The handle is re-created after every rotation, so a
+/// file deleted underneath the writer (Clear logs) is replaced too.
+pub(crate) struct SizeRotatingFile {
+    path: PathBuf,
+    max_bytes: u64,
+    generations: u8,
+    file: std::fs::File,
+    size: u64,
+    rotate_at: u64,
+}
+
+impl SizeRotatingFile {
+    pub(crate) fn open(path: PathBuf, max_bytes: u64, generations: u8) -> std::io::Result<Self> {
+        let existing = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if existing >= max_bytes {
+            let _ = rotate_generations(&path, generations);
+        }
+        let file = Self::create(&path)?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Self {
+            path,
+            max_bytes,
+            generations,
+            file,
+            size,
+            rotate_at: max_bytes,
+        })
+    }
+
+    fn create(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    }
+
+    fn rotate(&mut self) {
+        let result = rotate_generations(&self.path, self.generations)
+            .and_then(|()| Self::create(&self.path));
+        match result {
+            Ok(file) => {
+                self.file = file;
+                self.size = 0;
+                self.rotate_at = self.max_bytes;
+            }
+            // Keep writing to the current file rather than dropping events.
+            Err(_) => self.rotate_at = self.size.saturating_add(ROTATION_RETRY_BYTES),
+        }
+    }
+}
+
+impl Write for SizeRotatingFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        if self.size >= self.rotate_at {
+            self.rotate();
+        }
+        self.file.write_all(buf)?;
+        self.size += buf.len() as u64;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
 }
 
 /// Read the last `n` AppEvent entries from the JSONL file to seed the ring buffer.
@@ -1926,19 +2049,6 @@ fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
     }
 }
 
-/// Rotate the JSONL file if it exceeds 5 MB.
-fn rotate_jsonl_if_needed() {
-    let path = match jsonl_path() {
-        Some(p) => p,
-        None => return,
-    };
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if size >= 5 * 1024 * 1024 {
-        let rotated = path.with_extension("jsonl.1");
-        let _ = std::fs::rename(&path, &rotated);
-    }
-}
-
 pub fn init(app_handle: tauri::AppHandle) {
     use tracing_subscriber::prelude::*;
 
@@ -1959,20 +2069,24 @@ pub fn init(app_handle: tauri::AppHandle) {
     let buffer = get_event_buffer();
     seed_buffer_from_jsonl(&buffer, 500);
 
-    // Rotate JSONL if too large
-    rotate_jsonl_if_needed();
+    // Open JSONL file for appending (AppEvent format). It rotates at startup
+    // and again at runtime whenever it reaches EVENT_LOG_MAX_BYTES.
+    let jsonl_writer = SizeRotatingFile::open(
+        jsonl_path().expect("Could not determine JSONL path"),
+        EVENT_LOG_MAX_BYTES,
+        EVENT_LOG_GENERATIONS,
+    )
+    .expect("Could not open JSONL file");
 
-    // Open JSONL file for appending (AppEvent format)
-    let jsonl_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(jsonl_path().expect("Could not determine JSONL path"))
-        .expect("Could not open JSONL file");
-    let jsonl_writer = std::io::BufWriter::new(jsonl_file);
-
-    // Layer 1: Pretty file
-    let (pretty_writer, pretty_guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::never(&log_dir, log_file_name));
+    // Layer 1: Pretty file. Size-capped; the non-blocking worker thread does
+    // the rotation, so logging call sites never wait on it.
+    let pretty_file = SizeRotatingFile::open(
+        log_dir.join(log_file_name),
+        APP_LOG_MAX_BYTES,
+        APP_LOG_GENERATIONS,
+    )
+    .expect("Could not open app log file");
+    let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
     let pretty_layer = tracing_subscriber::fmt::layer()
         .with_writer(pretty_writer)
         .with_target(true)
@@ -2054,8 +2168,10 @@ pub fn clear_all_logs() -> Result<(), String> {
         "transcriptions.dev.jsonl.1",
         "events.jsonl",
         "events.jsonl.1",
+        "events.jsonl.2",
         "events.dev.jsonl",
         "events.dev.jsonl.1",
+        "events.dev.jsonl.2",
     ];
     for file in files {
         let _ = std::fs::remove_file(dir.join(file));
@@ -2094,6 +2210,121 @@ pub fn clear_event_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rotation_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("murmur_telemetry_rotation_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[test]
+    fn generation_paths_append_a_numeric_suffix() {
+        let log = Path::new("/logs/events.dev.jsonl");
+        assert_eq!(
+            generation_path(log, 1),
+            Path::new("/logs/events.dev.jsonl.1")
+        );
+        assert_eq!(
+            rotated_paths(Path::new("/logs/app.log"), 2),
+            vec![
+                PathBuf::from("/logs/app.log.1"),
+                PathBuf::from("/logs/app.log.2")
+            ]
+        );
+    }
+
+    #[test]
+    fn size_rotating_file_stays_below_threshold_without_rotating() {
+        let dir = rotation_dir("below");
+        let path = dir.join("events.jsonl");
+        let mut writer = SizeRotatingFile::open(path.clone(), 20, 2).unwrap();
+        writer.write_all(b"aaaaaaaaa\n").unwrap(); // 10 bytes
+        writer.write_all(b"bbbbbbbb\n").unwrap(); // 19 bytes, still under 20
+        assert_eq!(read(&path), "aaaaaaaaa\nbbbbbbbb\n");
+        assert!(!generation_path(&path, 1).exists());
+    }
+
+    #[test]
+    fn size_rotating_file_rotates_at_runtime_on_the_next_event_after_the_cap() {
+        let dir = rotation_dir("runtime");
+        let path = dir.join("events.jsonl");
+        let mut writer = SizeRotatingFile::open(path.clone(), 20, 2).unwrap();
+        writer.write_all(b"aaaaaaaaa\n").unwrap();
+        writer.write_all(b"bbbbbbbbb\n").unwrap(); // reaches 20 bytes
+        assert!(!generation_path(&path, 1).exists());
+        writer.write_all(b"ccc\n").unwrap(); // triggers rotation first
+        assert_eq!(read(&generation_path(&path, 1)), "aaaaaaaaa\nbbbbbbbbb\n");
+        assert_eq!(read(&path), "ccc\n");
+    }
+
+    #[test]
+    fn size_rotating_file_keeps_only_the_configured_generations() {
+        let dir = rotation_dir("generations");
+        let path = dir.join("events.jsonl");
+        let mut writer = SizeRotatingFile::open(path.clone(), 4, 2).unwrap();
+        for line in ["one\n", "two\n", "three\n", "four\n"] {
+            writer.write_all(line.as_bytes()).unwrap();
+        }
+        // The third rotation pushes "two" into .2, overwriting "one".
+        assert_eq!(read(&path), "four\n");
+        assert_eq!(read(&generation_path(&path, 1)), "three\n");
+        assert_eq!(read(&generation_path(&path, 2)), "two\n");
+        assert!(!generation_path(&path, 3).exists());
+    }
+
+    #[test]
+    fn size_rotating_file_rotates_an_oversized_file_at_startup() {
+        let dir = rotation_dir("startup");
+        let path = dir.join("app.log");
+        std::fs::write(&path, "x".repeat(64)).unwrap();
+        let mut writer = SizeRotatingFile::open(path.clone(), 32, 1).unwrap();
+        writer.write_all(b"fresh\n").unwrap();
+        assert_eq!(read(&path), "fresh\n");
+        assert_eq!(read(&generation_path(&path, 1)).len(), 64);
+    }
+
+    #[test]
+    fn size_rotating_file_resumes_the_size_of_an_existing_file() {
+        let dir = rotation_dir("resume");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "0123456789\n").unwrap(); // 11 bytes, under the cap
+        let mut writer = SizeRotatingFile::open(path.clone(), 16, 1).unwrap();
+        writer.write_all(b"abcde\n").unwrap(); // 17 bytes
+        writer.write_all(b"next\n").unwrap();
+        assert_eq!(read(&generation_path(&path, 1)), "0123456789\nabcde\n");
+        assert_eq!(read(&path), "next\n");
+    }
+
+    #[test]
+    fn size_rotating_file_recreates_a_file_deleted_underneath_it() {
+        let dir = rotation_dir("deleted");
+        let path = dir.join("events.jsonl");
+        let mut writer = SizeRotatingFile::open(path.clone(), 8, 2).unwrap();
+        writer.write_all(b"aaaaaaaa\n").unwrap();
+        std::fs::remove_file(&path).unwrap(); // Clear logs
+        writer.write_all(b"after\n").unwrap();
+        assert_eq!(read(&path), "after\n");
+    }
+
+    #[test]
+    fn event_jsonl_paths_list_oldest_generation_first() {
+        let paths = event_jsonl_paths();
+        if let Some(current) = jsonl_path() {
+            assert_eq!(
+                paths,
+                vec![
+                    generation_path(&current, 2),
+                    generation_path(&current, 1),
+                    current
+                ]
+            );
+        }
+    }
 
     #[test]
     fn refactor_test_logs_are_isolated_from_production() {

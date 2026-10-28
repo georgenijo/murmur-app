@@ -150,9 +150,22 @@ The private one-shot path runs beside this diagram, never through it:
 - Persists a byte offset in `shipper_state[.dev].json` next to the log. The
   offset only advances after a 2xx response, so **the JSONL file is the retry
   queue** — offline or endpoint-down means the batch is retried next tick.
-- Handles the 5 MB rotation in `telemetry.rs`: when the current file is
-  shorter than the saved offset, it drains the tail of `events.jsonl.1` from
-  that offset, then restarts at 0 on the fresh file.
+- Follows the runtime rotation in `telemetry.rs`. `events.jsonl` rotates while
+  the app is running once it reaches 5 MB, keeping `events.jsonl.1` and
+  `events.jsonl.2`. A rename preserves the inode, so the state file stores the
+  **inode** of the file the offset points into next to the offset. Each tick
+  finds that file among the current log, `.1`, and `.2`, drains its tail, then
+  walks forward through every newer generation to the current file. A second
+  rotation before the first was drained therefore loses and repeats nothing:
+  the file being read is now `.2`, `.1` is shipped whole, then the current
+  file. Files are opened once and read through the handle, so a rotation during
+  a read cannot apply an offset to the wrong file. Rotated generations are
+  shipped in batches of at most 1 MB like the live file.
+- If the saved file no longer exists (three or more rotations, or Clear logs),
+  the oldest surviving file ships from the top. Only lines in the deleted file
+  are lost. State saved by older builds has no inode; it falls back to comparing
+  the offset with the current file length (offset past the end means the file was
+  rotated to `.1`) and adopts the inode on the next caught-up tick.
 - Batches are cut at line boundaries, max 1 MB per POST, max 8 POSTs per tick.
 - Audio `/state` delivery reads a privacy-safe cached aggregate. The cache is
   updated when another app flow explicitly enumerates inputs (for example,
@@ -500,7 +513,7 @@ tailscale ssh george@opti \
 
 | Failure | Behavior |
 |---|---|
-| opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~10 MB rotation window (current + `.jsonl.1`) is lost if the outage outlives it. |
+| opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~15 MB rotation window (current + `.jsonl.1` + `.jsonl.2`) is lost if the outage outlives it. |
 | Endpoint URL changes | Old binaries go dark until auto-update delivers the new constant. |
 | Install exceeds 200 MB on server | Receiver returns 507; shipper keeps retrying but nothing is appended (effectively paused for that install). |
 | SQLite busy, quota, disk full, corruption, archive fsync, or commit failure | Receiver returns non-2xx and never acknowledges a partial batch. JSONL is truncated back after a failed pre-commit append; the client retries from the same offset. |
