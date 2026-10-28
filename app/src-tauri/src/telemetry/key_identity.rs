@@ -7,6 +7,7 @@
 //! pretty `app.log`, and JSONL lines persisted by an older build.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
@@ -91,7 +92,7 @@ const DISTINCT_KEY_NAMES: &[&str] = &[
 ];
 
 /// rdev `Key` names that are also ordinary words. They count as key identity
-/// in the keyboard stream, or anywhere as `Some(Name)`.
+/// in the keyboard stream, or anywhere in parentheses such as `Some(Name)`.
 const WORD_KEY_NAMES: &[&str] = &[
     "Backspace",
     "Delete",
@@ -112,24 +113,65 @@ const WORD_KEY_NAMES: &[&str] = &[
     "Function",
 ];
 
-/// Whether `text` carries a Debug-formatted keyboard event or the identity of
-/// a non-hotkey key anywhere inside it.
-fn contains_key_identity(text: &str, keyboard_stream: bool) -> bool {
-    if text.contains("KeyPress(") || text.contains("KeyRelease(") {
-        return true;
+/// Replaces a key identity inside otherwise-retained text.
+const REDACTED_KEY: &str = "[key]";
+
+/// Characters that delimit a key-name token. Paths and model names such as
+/// `/models/KeyA/model.bin` or `vendor/KeyA-7B` are one token, not a key.
+fn is_token_delimiter(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '(' | ')' | ',' | '=' | ':' | '"' | '\'')
+}
+
+/// Byte ranges in `text` that name a non-hotkey key: a distinct rdev key name,
+/// a raw `Unknown(<code>)`, or a word-like key name in the keyboard stream or
+/// in parentheses such as `Some(End)` or `KeyPress(Return)`.
+fn key_identity_spans(text: &str, keyboard_stream: bool) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for (end, c) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        if !is_token_delimiter(c) {
+            continue;
+        }
+        let token = &text[start..end];
+        let rest = &text[end..];
+        if token == "Unknown" {
+            let code = rest
+                .strip_prefix('(')
+                .and_then(|rest| rest.split_once(')'))
+                .map(|(code, _)| code);
+            if code.is_some_and(|code| !code.is_empty() && code.bytes().all(|b| b.is_ascii_digit()))
+            {
+                spans.push(start..end + code.map_or(0, str::len) + 2);
+            }
+        } else if DISTINCT_KEY_NAMES.contains(&token)
+            || (WORD_KEY_NAMES.contains(&token)
+                && (keyboard_stream || (text[..start].ends_with('(') && rest.starts_with(')'))))
+        {
+            spans.push(start..end);
+        }
+        start = end + c.len_utf8();
     }
-    if keyboard_stream && text.contains("Unknown(") {
-        return true;
+    spans
+}
+
+/// `text` with every non-hotkey key identity replaced by `[key]`.
+fn redact_key_identity(text: &str, keyboard_stream: bool) -> Cow<'_, str> {
+    let spans = key_identity_spans(text, keyboard_stream);
+    if spans.is_empty() {
+        return Cow::Borrowed(text);
     }
-    let words = |names: &[&str]| {
-        text.split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|token| names.contains(&token))
-    };
-    words(DISTINCT_KEY_NAMES)
-        || (keyboard_stream && words(WORD_KEY_NAMES))
-        || WORD_KEY_NAMES
-            .iter()
-            .any(|name| text.contains(&format!("Some({name})")))
+    let mut redacted = String::with_capacity(text.len());
+    let mut last = 0;
+    for span in spans {
+        redacted.push_str(&text[last..span.start]);
+        redacted.push_str(REDACTED_KEY);
+        last = span.end;
+    }
+    redacted.push_str(&text[last..]);
+    Cow::Owned(redacted)
 }
 
 /// Exact keyboard-stream string schema. Key identity is limited to the
@@ -187,9 +229,9 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
     }
 }
 
-/// Drop every string field that carries key identity. The keyboard stream
-/// keeps only its exact schema; returns true when that schema was applied
-/// and no other stream rule should run.
+/// Redact key identity from every string field. The keyboard stream keeps
+/// only its exact schema; returns true when that schema was applied and no
+/// other stream rule should run.
 pub(super) fn sanitize_fields(
     stream: &str,
     obj: &mut serde_json::Map<String, serde_json::Value>,
@@ -201,20 +243,21 @@ pub(super) fn sanitize_fields(
         });
         return true;
     }
-    obj.retain(|_, value| {
-        !value
-            .as_str()
-            .is_some_and(|value| contains_key_identity(value, false))
-    });
+    for value in obj.values_mut() {
+        if let serde_json::Value::String(text) = value {
+            if let Cow::Owned(redacted) = redact_key_identity(text, false) {
+                *text = redacted;
+            }
+        }
+    }
     false
 }
 
-/// The summary unless it carries key identity.
+/// The summary with any key identity redacted.
 pub(super) fn bounded_summary(stream: &str, summary: String) -> String {
-    if contains_key_identity(&summary, stream == "keyboard") {
-        "Keyboard event".to_string()
-    } else {
-        summary
+    match redact_key_identity(&summary, stream == "keyboard") {
+        Cow::Owned(redacted) => redacted,
+        Cow::Borrowed(_) => summary,
     }
 }
 
@@ -235,9 +278,9 @@ pub(crate) fn sanitize_persisted_line(line: &str) -> Cow<'_, str> {
         .get_mut("data")
         .and_then(serde_json::Value::as_object_mut)
     {
-        let before = data.len();
+        let before = data.clone();
         sanitize_fields(&stream, data);
-        changed |= data.len() != before;
+        changed |= *data != before;
     }
     if let Some(summary) = event.get_mut("summary") {
         if let Some(text) = summary.as_str() {
@@ -284,7 +327,9 @@ where
         )?;
         for (key, value) in &visitor.fields {
             match value {
-                serde_json::Value::String(value) => write!(writer, " {key}={value}")?,
+                // Quoted and escaped, like the default formatter, so a value
+                // cannot forge a log line or blur field boundaries.
+                serde_json::Value::String(value) => write!(writer, " {key}={value:?}")?,
                 value => write!(writer, " {key}={value}")?,
             }
         }
@@ -307,7 +352,7 @@ mod tests {
         "SemiColon",
         "Slash",
         "Escape",
-        "KeyPress(",
+        "Unknown(",
     ];
 
     fn assert_no_leak(output: &str) {
@@ -331,6 +376,18 @@ mod tests {
         tracing::info!(target: "keyboard", "Escape pressed — emitting escape-cancel");
         tracing::info!(target: "keyboard", "saw {:?}", EventType::KeyRelease(Key::Num4));
         tracing::info!(target: "system", key = ?Some(Key::Slash), "typed KeyA then Num4");
+        tracing::info!(
+            target: "system",
+            key = ?Some(Key::Unknown(63)),
+            event_type = ?EventType::KeyPress(Key::Unknown(63)),
+            "raw code Unknown(63)"
+        );
+        // Paths and model names that merely contain a key name survive.
+        tracing::info!(
+            target: "system",
+            model = "/models/KeyA/model.bin",
+            "loaded vendor/KeyA-7B"
+        );
         // Ordinary words are not key identity outside the keyboard stream.
         tracing::info!(target: "system", phase = "End", "Return to idle");
     }
@@ -359,15 +416,35 @@ mod tests {
         tracing::subscriber::with_default(Registry::default().with(layer), emit_leaky_events);
 
         let output = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-        assert_no_leak(&output);
-        assert_eq!(output.lines().count(), 5, "{output}");
+        assert_eq!(output.lines().count(), 7, "{output}");
+        for line in output
+            .lines()
+            .filter(|line| !line.contains("loaded vendor/"))
+        {
+            assert_no_leak(line);
+        }
         assert!(output.contains("INFO keyboard: keyboard detector rejected sequence"));
-        assert!(output.contains("reason=combo_cancelled"), "{output}");
-        assert!(output.contains("key_class=character"), "{output}");
+        assert!(output.contains(r#"reason="combo_cancelled""#), "{output}");
+        assert!(output.contains(r#"key_class="character""#), "{output}");
         assert!(output.contains("is_target_key=false"), "{output}");
-        assert!(output.contains("target_key=shift_l"), "{output}");
+        assert!(output.contains(r#"target_key="shift_l""#), "{output}");
+        assert!(output.contains("keyboard: [key] pressed"), "{output}");
         assert!(
-            output.contains("system: Return to idle phase=End"),
+            output.contains("system: typed [key] then [key]"),
+            "{output}"
+        );
+        assert!(
+            output.contains(
+                r#"system: raw code [key] event_type="KeyPress([key])" key="Some([key])""#
+            ),
+            "{output}"
+        );
+        assert!(
+            output.contains(r#"system: loaded vendor/KeyA-7B model="/models/KeyA/model.bin""#),
+            "{output}"
+        );
+        assert!(
+            output.contains(r#"system: Return to idle phase="End""#),
             "{output}"
         );
     }
@@ -393,10 +470,16 @@ mod tests {
             let captured = Arc::clone(&layer.0);
             tracing::subscriber::with_default(Registry::default().with(layer), emit_leaky_events);
             let events = captured.lock().unwrap().clone();
-            assert_eq!(events.len(), 5);
-            for event in &events {
+            assert_eq!(events.len(), 7);
+            for event in &events[..5] {
                 assert_no_leak(event);
             }
+            assert!(!events[0].contains("KeyPress"), "{events:?}");
+            assert!(events[4].contains(r#""key":"Some([key])""#), "{events:?}");
+            assert!(
+                events[5].contains(r#""model":"/models/KeyA/model.bin""#),
+                "{events:?}"
+            );
             assert!(
                 events[0].contains(r#""key_class":"character""#),
                 "{events:?}"
@@ -405,7 +488,7 @@ mod tests {
                 events[0].contains(r#""target_key":"shift_l""#),
                 "{events:?}"
             );
-            assert!(events[4].contains(r#""phase":"End""#), "{events:?}");
+            assert!(events[6].contains(r#""phase":"End""#), "{events:?}");
         }
     }
 
@@ -451,14 +534,16 @@ mod tests {
     }
 
     #[test]
-    fn other_streams_drop_only_key_shaped_strings() {
+    fn other_streams_redact_only_key_shaped_tokens() {
         let data = serde_json::json!({
             "event_type": "KeyPress(Slash)",
             "key": "Some(KeyA)",
             "wrapped_word": "Some(Return)",
+            "unknown": "Some(Unknown(63))",
             "bare": "Num4",
             "phase": "End",
             "label": "Home",
+            "model": "/models/KeyA/model.bin",
             "elapsed_ms": 7,
         });
         for stream in ["system", "audio", "pipeline", "transform", "ui"] {
@@ -466,10 +551,88 @@ mod tests {
             assert!(!sanitize_fields(stream, data.as_object_mut().unwrap()));
             assert_eq!(
                 data,
-                serde_json::json!({ "phase": "End", "label": "Home", "elapsed_ms": 7 }),
+                serde_json::json!({
+                    "event_type": "KeyPress([key])",
+                    "key": "Some([key])",
+                    "wrapped_word": "Some([key])",
+                    "unknown": "Some([key])",
+                    "bare": "[key]",
+                    "phase": "End",
+                    "label": "Home",
+                    "model": "/models/KeyA/model.bin",
+                    "elapsed_ms": 7,
+                }),
                 "{stream}"
             );
         }
+    }
+
+    #[test]
+    fn key_names_count_only_as_delimited_tokens() {
+        for (text, redacted) in [
+            ("KeyA", "[key]"),
+            ("(KeyA)", "([key])"),
+            ("a,KeyA,b", "a,[key],b"),
+            ("key=KeyA", "key=[key]"),
+            ("key:KeyA", "key:[key]"),
+            (r#""KeyA""#, r#""[key]""#),
+            ("'Num4'", "'[key]'"),
+            ("typed SemiColon then Num4", "typed [key] then [key]"),
+            ("Some(Unknown(63))", "Some([key])"),
+            ("code Unknown(7) end", "code [key] end"),
+        ] {
+            assert_eq!(redact_key_identity(text, false), redacted, "{text}");
+        }
+        for text in [
+            "/models/KeyA/model.bin",
+            "vendor/KeyA-7B",
+            "KeyA_x",
+            "KeyA.bin",
+            "xKeyA",
+            "KeyA1",
+            "Num4-bit",
+            "Unknown(device)",
+            "Unknown()",
+            "Return to idle",
+            "End",
+        ] {
+            assert!(
+                matches!(redact_key_identity(text, false), Cow::Borrowed(_)),
+                "{text}"
+            );
+        }
+        // Word-like key names count in the keyboard stream or in parentheses.
+        assert_eq!(redact_key_identity("Escape pressed", true), "[key] pressed");
+        assert_eq!(redact_key_identity("Some(End)", false), "Some([key])");
+        assert_eq!(
+            redact_key_identity("Unknown(device) KeyPress(Return)", false),
+            "Unknown(device) KeyPress([key])"
+        );
+    }
+
+    #[test]
+    fn pretty_log_quotes_and_escapes_string_fields() {
+        let buf = SharedBuf::default();
+        let writer = buf.clone();
+        let layer = tracing_subscriber::fmt::layer()
+            .event_format(PrettyFormat)
+            .with_writer(move || writer.clone())
+            .with_ansi(false);
+        tracing::subscriber::with_default(Registry::default().with(layer), || {
+            tracing::info!(
+                target: "system",
+                detail = "a\nZ  INFO forged: line",
+                label = "has spaces x=1",
+                "event"
+            );
+        });
+
+        let output = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.lines().count(), 1, "{output}");
+        assert!(
+            output.contains(r#"detail="a\nZ  INFO forged: line" label="has spaces x=1""#),
+            "{output}"
+        );
     }
 
     #[test]

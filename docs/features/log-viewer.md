@@ -70,10 +70,14 @@ rdev `EventType`, `Key`, and typed `name` are never formatted into a field.
 structured events, the pretty `app.log`, and JSONL written by an older build.
 The `keyboard` stream keeps only an exact key-and-value string allowlist, and
 its messages may not name any non-hotkey key (Escape cancellation logs
-`keyboard.escape_cancel`, not the key). Every stream drops string fields and
-replaces summaries that carry a Debug-formatted key or event, such as
-`KeyPress(KeyI)`, `Some(SemiColon)`, or `Num4`; ordinary words such as `End`
-are treated as key names only in the keyboard stream or as `Some(End)`.
+`keyboard.escape_cancel`, not the key). In every other stream, string fields
+and summaries keep their text but any key identity is replaced with `[key]`:
+a distinct rdev name such as `KeyI`, `Num4`, or `SemiColon`, a raw
+`Unknown(<code>)`, or, inside parentheses such as `Some(End)` or
+`KeyPress(Return)`, an ordinary-word key name. A name counts only as a whole
+token delimited by whitespace, quotes, `(`, `)`, `,`, `=`, or `:`, so paths and
+model names such as `/models/KeyA/model.bin` are untouched. `app.log` string
+fields are quoted and escaped, as with the default formatter.
 Persisted lines are re-sanitized before history restore and before upload, so
 a backlog queued before an upgrade cannot ship key identity.
 
