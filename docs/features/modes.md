@@ -27,6 +27,28 @@ or a Mode containing an invalid model/language reference fails closed: no
 auto-paste, project context, technical vocabulary, or transforming stages are
 enabled for that binding.
 
+## Text register
+
+At recording start the effective writing style resolves to one content-free
+text register. The register names the built-in Mode family: Everyday
+(Inherit), Messages (Conversational), Email (Polished), Notes, Technical
+(Code / technical), Terminal (Code / technical with forced command
+formatting), or Verbatim. Custom Modes and profile writing styles map through
+the same table, and an invalid Mode fails closed to Verbatim. The register is
+frozen in the snapshot and copied into the transcript stage configuration.
+Stages gate context-sensitive rules on it, never on transcript text.
+
+| Register | Spoken numbers | Context-cued vocabulary |
+|---|---|---|
+| Everyday, Messages, Email, Notes | Prose: `two of them` stays words; values ≥ 10, units, times, dates, years, labels, and versions use digits | Built-in developer variants need project context or, for Tauri, a nearby cue word |
+| Technical, Terminal | Eager digits, plus digit runs (`8080`), dotted versions and addresses, and ordinals ≥ 10 (`21st`) | Built-in developer variants (`Tori` → `Tauri`, `Postgres SQL` → `PostgreSQL`, ...) apply |
+| Verbatim | Off | Smart Correction is off |
+
+Local IDE project context also selects the technical number policy and the
+developer variants in any register. See
+[Spoken Number Formatting](spoken-number-formatting.md) and
+[context-cued variants](vocabulary-aliases.md#context-cued-variants).
+
 ## Privacy
 
 Modes contain policy and stable identifiers, never dictated text, selected

@@ -130,7 +130,7 @@ Turns clear spoken enumerations into lists; applies explicitly cued email/URL gr
 Single owner for spoken punctuation, lines, paragraphs, quotes, parentheses, slashes, symbols, ASR-punctuation arbitration, and sentence-boundary-aware `scratch that`. Basic/Extended/Union policy preserves existing Voice Commands and Smart Formatting enablement without double-processing.
 
 ### Spoken numbers — [features/spoken-number-formatting.md](features/spoken-number-formatting.md)
-Renders English cardinals as digits by default: single values, compound hundreds, descending scales through quadrillions, negatives, and spoken decimals. Invalid scale order fails closed at the last unambiguous group; Verbatim, imported audio, and transform instructions remain literal.
+Renders English cardinals as digits under a Mode-aware policy. Prose Modes keep small counts such as "two of them" as words. Technical and Terminal convert eagerly and join digit runs (`8080`) and dotted versions. Every policy renders times (`4:30 PM`), dates and years (`September 17, 2026`), labels (`step 3`), and versions (`2.17.2`), and leaves hyphenated compounds (`two-factor`) alone. Invalid scale order fails closed at the last unambiguous group. Verbatim, imported audio, and transform instructions remain literal.
 
 ### CLI command formatting — [features/cli-command-formatting.md](features/cli-command-formatting.md)
 Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and similar commands — versions, flags, paths, operators, quotes, canonical aliases. Detection is prefix/trigger/profile bounded; project `package.json` names extend the local lexicon; ordinary prose is untouched.
@@ -139,6 +139,7 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 - **Code-vocabulary scan** — breadth-first walk of a chosen project folder (caps: 1000 files / 32 MB / 512 KB per file), extracting identifiers with live progress, a searchable view-all pop-out, and a cap warning. Top 96 terms feed Whisper's token-bound prompt; top 500 feed Smart Correction.
 - **Smart Correction** — post-model correction applied to *every* backend's output. Tier 1 exact map, Tier 2 phonetic "sounds-like" restricted to structured identifiers (camelCase / snake_case / digit) so ordinary English isn't rewritten.
 - **Explicit spoken aliases** — [features/vocabulary-aliases.md](features/vocabulary-aliases.md). Map exact recognized variants ("Tori", "Tory") to a canonical written term ("Tauri"). Ambiguity, cycles, and command conflicts are rejected atomically.
+- **Context-cued variants** — built-in fixes such as `Tori` → `Tauri`, `Postgres SQL` → `PostgreSQL`, and `Maine` → `main` apply only in a Technical/Terminal register, with project context, or near a cue word. Counter-cues fail closed, so a person named Tori is untouched.
 
 ### Voice Commands 2.0 — [features/voice-commands.md](features/voice-commands.md)
 Typed, persistent local commands: text replacements and multiline snippets, deterministic `{{date}}` / `{{time}}` variables, explicitly permitted `{{clipboard}}` insertion, global and per-app scopes, conflict validation, and a no-paste preview/test UI.

@@ -1,5 +1,52 @@
 # Decisions Log
 
+## 2026-10-28: Mode-aware spoken numbers and context-cued vocabulary
+
+**Decision:** Freeze one content-free `TextRegister` per recording: the
+built-in Mode family that the effective writing style resolves to (Everyday,
+Messages, Email, Notes, Technical, Terminal, Verbatim). Copy it into the
+transcript stage configuration. Spoken numbers use a **prose** policy for
+Everyday, Messages, Email, and Notes, and a **technical** policy for Technical,
+Terminal, or any recording with Local IDE project context. Prose keeps small
+standalone counts from zero through nine as words ("two of them", "two or
+three days"). It still renders digits for values of ten or more, units,
+currency, percent, times, dates, years, labels, and dotted versions. Technical
+converts eagerly and also joins spaced digit runs (`8080`), dotted versions
+and addresses (`192.168.1.1`), and ordinals of ten or more (`21st`). Every
+policy leaves hyphenated compounds such as `two-factor` unchanged and accepts
+a bare `point` as a decimal only in a value context.
+
+Generalize the hard-coded `Maine`/`me` → `main` rule into data. A contextual
+variant applies when the frozen register is allowed, when project context is
+active, or when every window of a cue clause matches. A blocking word within
+its window refuses it, and two simultaneously applicable variants fail closed.
+The built-in pack adds `Tori`/`Tory` → `Tauri`, `Postgres SQL` →
+`PostgreSQL`, `npxtsc` → `npx tsc`, and `CoreML` → `Core ML`, gated to
+Technical/Terminal or project context (Tauri also by nearby framework cues).
+Explicit aliases and learned replacements keep precedence. Vocabulary entries
+gain an optional Rust-schema `context` requirement. Settings does not author it
+yet.
+
+Aliases and learned rules whose heard phrase contains a digit are matched
+again at the end of the spoken-numbers stage.
+
+**Why:** Dictation took numbers too literally ("2 of them", "2-factor",
+"20 26", "at this 0.5 people", "4 30 PM") and could not use a word's other
+meaning: a person named Tori is not the framework. The frozen register already
+decides the writing style, so reusing it keeps the policy deterministic,
+local, inspectable, and identical for a given Mode. It never infers the
+policy from text or adds a model. Correct and Teach learns from final text,
+which already contains digits, but Smart Correction runs before numbers, so
+taught rules containing digits never matched. Matching them after rendering
+fixes that without reordering the pipeline.
+
+**Status:** active
+
+**References:** `docs/features/spoken-number-formatting.md`,
+`docs/features/vocabulary-aliases.md#context-cued-variants`,
+`docs/features/modes.md#text-register`,
+`app/src-tauri/src/spoken_numbers.rs`, `app/src-tauri/src/correction.rs`
+
 ## 2026-10-17: Unknown menu-bar occupancy retains the last proven slot
 
 **Decision:** Read the menu-bar owning application, falling back to the

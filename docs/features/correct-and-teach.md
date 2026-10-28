@@ -40,6 +40,7 @@ Enabled replacement records are compiled outside the transcript hot path. A reco
 Voice Commands
 → explicit vocabulary aliases
 → replacement knowledge (project → app → global; then provenance/update/ID)
+→ built-in context-cued variants
 → derived/exact vocabulary
 → fuzzy vocabulary
 → Smart Formatting
@@ -48,6 +49,8 @@ Voice Commands
 → IDE context
 → CLI formatting
 ```
+
+Correct and Teach learns from the final history text, after spoken numbers have rendered digits. Smart Correction runs before that stage, so a rule whose heard phrase contains a digit (for example `GPT 5` → `GPT-5`, or `20 pages` → `twenty pages`) is matched again at the end of the spoken-numbers stage, against the rendered digits, in the same precedence order. Rules without digits are unaffected.
 
 Within replacement knowledge, the repository's provenance order remains manual → import → learned correction → code scan. Exact same-scope conflicts must be reviewed in Settings → Knowledge rather than silently overwritten.
 
