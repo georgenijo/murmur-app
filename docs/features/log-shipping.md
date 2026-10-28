@@ -152,8 +152,11 @@ The private one-shot path runs beside this diagram, never through it:
   queue** — offline or endpoint-down means the batch is retried next tick.
 - Follows the runtime rotation in `telemetry.rs`. `events.jsonl` rotates while
   the app is running once it reaches 5 MB, keeping `events.jsonl.1` and
-  `events.jsonl.2`. A rename preserves the inode, so the state file stores the
-  **inode** of the file the offset points into next to the offset. Each tick
+  `events.jsonl.2`. A rename preserves a file's identity, so the state file stores
+  the **identity** of the file the offset points into next to the offset: device,
+  inode, and birth time. The inode alone is not enough, because a deleted file's
+  inode can be reused by an unrelated new file; the birth time tells the
+  incarnations apart, so a saved offset is never applied to the wrong file. Each tick
   finds that file among the current log, `.1`, and `.2`, drains its tail, then
   walks forward through every newer generation to the current file. A second
   rotation before the first was drained therefore loses and repeats nothing:
@@ -165,7 +168,7 @@ The private one-shot path runs beside this diagram, never through it:
   the oldest surviving file ships from the top. Only lines in the deleted file
   are lost. State saved by older builds has no inode; it falls back to comparing
   the offset with the current file length (offset past the end means the file was
-  rotated to `.1`) and adopts the inode on the next caught-up tick.
+  rotated to `.1`) and adopts the identity on the next caught-up tick.
 - Batches are cut at line boundaries, max 1 MB per POST, max 8 POSTs per tick.
 - Audio `/state` delivery reads a privacy-safe cached aggregate. The cache is
   updated when another app flow explicitly enumerates inputs (for example,

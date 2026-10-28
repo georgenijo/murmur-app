@@ -28,12 +28,13 @@ static SHIPPER_STATE_LOCK: Mutex<()> = Mutex::new(());
 struct ShipperState {
     install_id: String,
     offset: u64,
-    /// Inode of the file `offset` points into. Rotation renames a file without
-    /// changing its inode, so this identifies the file wherever it now lives
-    /// (`events.jsonl`, `.1`, or `.2`). Absent in state written by older
-    /// builds, which fall back to comparing `offset` with the file length.
+    /// Identity (device, inode, birth time) of the file `offset` points into.
+    /// Rotation renames a file without changing it, so it finds the file
+    /// wherever it now lives (`events.jsonl`, `.1`, or `.2`). Absent in state
+    /// written by older builds, which fall back to comparing `offset` with the
+    /// file length.
     #[serde(default)]
-    inode: Option<u64>,
+    file_id: Option<FileId>,
 }
 
 fn logs_dir() -> Option<PathBuf> {
@@ -69,7 +70,7 @@ fn load_state(path: &Path) -> ShipperState {
         .unwrap_or_else(|| ShipperState {
             install_id: uuid::Uuid::new_v4().to_string(),
             offset: 0,
-            inode: None,
+            file_id: None,
         })
 }
 
@@ -90,7 +91,7 @@ fn load_or_create_state(path: &Path) -> Result<ShipperState, String> {
     let state = ShipperState {
         install_id: uuid::Uuid::new_v4().to_string(),
         offset: 0,
-        inode: None,
+        file_id: None,
     };
     let parent = path
         .parent()
@@ -118,11 +119,11 @@ fn save_state(path: &Path, state: &ShipperState) {
 }
 
 /// Where the shipper is in the log: a byte offset into the file identified by
-/// `inode`. `None` is a position saved before inodes were tracked.
+/// `id`. `None` is a position saved before file identities were tracked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Position {
     offset: u64,
-    inode: Option<u64>,
+    id: Option<FileId>,
 }
 
 /// One batch of log bytes to ship, cut at a line boundary. `data` may be empty
@@ -159,17 +160,41 @@ fn shippable_payload(data: &[u8]) -> Vec<u8> {
     output
 }
 
-fn file_inode(file: &std::fs::File) -> Option<u64> {
+/// Identity of one incarnation of a log file. Rotation renames a file without
+/// changing any of these, so it still identifies the file under its new name.
+/// The inode alone is not enough: after a file is deleted the filesystem may
+/// hand the same inode to an unrelated new file, and the saved offset would
+/// then be applied to it. The birth time tells those incarnations apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct FileId {
+    dev: u64,
+    ino: u64,
+    /// Creation time in nanoseconds since the Unix epoch; `None` where the
+    /// filesystem does not record one (identity then rests on `dev` + `ino`).
+    created_ns: Option<u64>,
+}
+
+fn file_id(file: &std::fs::File) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
-    file.metadata().ok().map(|metadata| metadata.ino())
+    let metadata = file.metadata().ok()?;
+    let created_ns = metadata
+        .created()
+        .ok()
+        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok());
+    Some(FileId {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        created_ns,
+    })
 }
 
 /// Read the next batch, following the log across runtime rotations.
 ///
 /// `files` is the current log followed by its rotated generations, newest
 /// first (`events.jsonl`, `.1`, `.2`). `telemetry.rs` renames files on
-/// rotation, which keeps their inode, so the saved inode finds the file the
-/// offset belongs to wherever it now lives. The shipper then drains that file
+/// rotation, which keeps their identity, so the saved `FileId` finds the file
+/// the offset belongs to wherever it now lives. The shipper then drains that file
 /// and walks forward through each newer generation to the current file, so a
 /// second rotation before the first was drained loses and repeats nothing.
 /// If the saved file is gone (more rotations than generations kept, or the logs
@@ -178,39 +203,39 @@ fn file_inode(file: &std::fs::File) -> Option<u64> {
 /// Files are opened once and read through the handle, so a rotation between
 /// the lookup and the read cannot make the offset apply to the wrong file.
 fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
-    let mut opened: Vec<Option<(std::fs::File, u64)>> = files
+    let mut opened: Vec<Option<(std::fs::File, FileId)>> = files
         .iter()
         .map(|path| {
             let file = std::fs::File::open(path).ok()?;
-            let inode = file_inode(&file)?;
-            Some((file, inode))
+            let id = file_id(&file)?;
+            Some((file, id))
         })
         .collect();
-    let inode_of = |opened: &[Option<(std::fs::File, u64)>], index: usize| {
+    let id_of = |opened: &[Option<(std::fs::File, FileId)>], index: usize| {
         opened
             .get(index)
             .and_then(|slot| slot.as_ref())
-            .map(|(_, inode)| *inode)
+            .map(|(_, id)| *id)
     };
-    let current_inode = inode_of(&opened, 0);
-    let jump = |inode: Option<u64>| Batch {
+    let current_id = id_of(&opened, 0);
+    let jump = |id: Option<FileId>| Batch {
         data: Vec::new(),
-        next: Position { offset: 0, inode },
+        next: Position { offset: 0, id },
     };
 
-    let index = match position.inode {
+    let index = match position.id {
         Some(saved) => {
-            match (0..opened.len()).find(|&index| inode_of(&opened, index) == Some(saved)) {
+            match (0..opened.len()).find(|&index| id_of(&opened, index) == Some(saved)) {
                 Some(index) => index,
                 None => {
                     let oldest = (0..opened.len())
                         .rev()
                         .find(|&index| opened[index].is_some());
-                    return Some(jump(oldest.and_then(|index| inode_of(&opened, index))));
+                    return Some(jump(oldest.and_then(|index| id_of(&opened, index))));
                 }
             }
         }
-        // Saved by a build that did not track inodes: an offset past the end
+        // Saved by a build that did not track file identity: an offset past the end
         // of the current file means it was renamed to `.1`.
         None => {
             let current_len = opened[0]
@@ -222,30 +247,30 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
             } else if opened.get(1).is_some_and(|slot| slot.is_some()) {
                 1
             } else {
-                return Some(jump(current_inode));
+                return Some(jump(current_id));
             }
         }
     };
 
-    let (file, inode) = opened[index].as_mut()?;
-    let inode = *inode;
+    let (file, id) = opened[index].as_mut()?;
+    let id = *id;
     let len = file.metadata().ok()?.len();
     let offset = position.offset;
     let here = Position {
         offset,
-        inode: Some(inode),
+        id: Some(id),
     };
 
     if index == 0 {
         if offset > len {
             // Truncated in place: start over.
-            return Some(jump(Some(inode)));
+            return Some(jump(Some(id)));
         }
         let chunk = read_range(file, offset, MAX_BATCH_BYTES as u64)?;
         if chunk.is_empty() {
-            // Caught up. Adopt the inode of a legacy position so the next
+            // Caught up. Adopt the identity of a legacy position so the next
             // rotation can be followed exactly.
-            return position.inode.is_none().then_some(Batch {
+            return position.id.is_none().then_some(Batch {
                 data: Vec::new(),
                 next: here,
             });
@@ -254,7 +279,7 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
             Some(pos) => Some(Batch {
                 next: Position {
                     offset: offset + pos as u64 + 1,
-                    inode: Some(inode),
+                    id: Some(id),
                 },
                 data: chunk[..=pos].to_vec(),
             }),
@@ -264,7 +289,7 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
             None if chunk.len() >= MAX_BATCH_BYTES => Some(Batch {
                 next: Position {
                     offset: offset + chunk.len() as u64,
-                    inode: Some(inode),
+                    id: Some(id),
                 },
                 data: Vec::new(),
             }),
@@ -277,7 +302,7 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
     let next_file = (0..index)
         .rev()
         .find(|&newer| opened[newer].is_some())
-        .and_then(|newer| inode_of(&opened, newer));
+        .and_then(|newer| id_of(&opened, newer));
     let (file, _) = opened[index].as_mut()?;
     let chunk = if offset < len {
         read_range(file, offset, MAX_BATCH_BYTES as u64)?
@@ -293,7 +318,7 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
             data: chunk,
             next: Position {
                 offset: 0,
-                inode: next_file,
+                id: next_file,
             },
         });
     }
@@ -309,7 +334,7 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
         },
         next: Position {
             offset: offset + consumed as u64,
-            inode: Some(inode),
+            id: Some(id),
         },
     })
 }
@@ -521,7 +546,7 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
     for _ in 0..8 {
         let position = Position {
             offset: state.offset,
-            inode: state.inode,
+            id: state.file_id,
         };
         let Some(batch) = next_batch(&files, position) else {
             break;
@@ -533,7 +558,7 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
             break; // endpoint unreachable — offset stays put, retry next tick
         }
         state.offset = batch.next.offset;
-        state.inode = batch.next.inode;
+        state.file_id = batch.next.id;
         save_state(&state_file, &state);
     }
 }
@@ -627,10 +652,7 @@ mod tests {
     }
 
     fn legacy(offset: u64) -> Position {
-        Position {
-            offset,
-            inode: None,
-        }
+        Position { offset, id: None }
     }
 
     fn line(n: u32) -> String {
@@ -689,8 +711,8 @@ mod tests {
         let batch = next_batch(&files, legacy(8)).unwrap();
         assert_eq!(batch.data, b"{\"b\":2}\n");
         assert_eq!(batch.next.offset, 16);
-        // A position saved without an inode adopts the file's inode.
-        assert!(batch.next.inode.is_some());
+        // A position saved without an identity adopts the file's.
+        assert!(batch.next.id.is_some());
     }
 
     #[test]
@@ -831,11 +853,115 @@ mod tests {
         writer.write_all(line(1).as_bytes()).unwrap();
         assert_eq!(drain(&files, &mut position), numbered(1..=1));
 
-        // Holding the old file open keeps its inode from being reused.
+        // Holding the old file open keeps its inode from being reused here;
+        // reuse itself is covered by `reused_inode_with_a_new_birth_time_is_a_different_file`.
         let _held = std::fs::File::open(&files[0]).unwrap();
         std::fs::remove_file(&files[0]).unwrap();
         std::fs::write(&files[0], line(2)).unwrap();
         assert_eq!(drain(&files, &mut position), numbered(2..=2));
+    }
+
+    #[test]
+    fn reused_inode_with_a_new_birth_time_is_a_different_file() {
+        let dir = tmp_dir("inode_reuse");
+        let files = log_files(&dir);
+        // An older generation holds lines the saved position never reached.
+        std::fs::write(&files[1], line(1) + &line(2)).unwrap();
+        std::fs::write(&files[0], line(3)).unwrap();
+        let current = file_id(&std::fs::File::open(&files[0]).unwrap()).unwrap();
+
+        // The saved file was deleted and the filesystem handed its inode (same
+        // device, same inode number) to the current file, which is a new
+        // incarnation with a different birth time.
+        let stale = FileId {
+            created_ns: Some(current.created_ns.map_or(1, |created| created + 1)),
+            ..current
+        };
+        let mut position = Position {
+            offset: 8,
+            id: Some(stale),
+        };
+        // The offset is not applied to the unrelated file, and the surviving
+        // older generation is not bypassed: everything ships from the oldest.
+        assert_eq!(drain(&files, &mut position), numbered(1..=3));
+    }
+
+    #[test]
+    fn matching_identity_still_resumes_at_the_saved_offset() {
+        let dir = tmp_dir("inode_same");
+        let files = log_files(&dir);
+        std::fs::write(&files[0], line(1) + &line(2)).unwrap();
+        let id = file_id(&std::fs::File::open(&files[0]).unwrap());
+        let mut position = Position { offset: 8, id };
+        assert_eq!(drain(&files, &mut position), numbered(2..=2));
+    }
+
+    #[test]
+    fn state_without_file_identity_loads_with_the_legacy_fallback() {
+        let dir = tmp_dir("legacy_state");
+        let path = dir.join("shipper_state.json");
+        let install_id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(
+            &path,
+            format!("{{\"install_id\":\"{install_id}\",\"offset\":5}}"),
+        )
+        .unwrap();
+        let state = load_state(&path);
+        assert_eq!(state.install_id, install_id);
+        assert_eq!(state.offset, 5);
+        assert!(state.file_id.is_none());
+
+        let id = FileId {
+            dev: 1,
+            ino: 2,
+            created_ns: Some(3),
+        };
+        save_state(
+            &path,
+            &ShipperState {
+                install_id,
+                offset: 9,
+                file_id: Some(id),
+            },
+        );
+        assert_eq!(load_state(&path).file_id, Some(id));
+    }
+
+    #[test]
+    fn failed_recreate_after_rotation_is_not_skipped_or_repeated_by_the_shipper() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tmp_dir("recreate_fails");
+        let files = log_files(&dir);
+        let fs = std::sync::Arc::new(crate::telemetry::FailingFs::default());
+        let mut writer = crate::telemetry::SizeRotatingFile::open_with(
+            fs.clone(),
+            files[0].clone(),
+            16,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        )
+        .unwrap();
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        writer.write_all(line(2).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(1..=2));
+
+        // Line 3 rotates the file, but the fresh file cannot be created. The
+        // shipper sees a complete .1 and no current file.
+        fs.fail_create.store(true, SeqCst);
+        assert!(writer.write_all(line(3).as_bytes()).is_err());
+        assert!(drain(&files, &mut position).is_empty());
+        assert!(writer.write_all(line(3).as_bytes()).is_err());
+        assert!(drain(&files, &mut position).is_empty());
+
+        // Nothing was appended to .1 behind the shipper's back; once the file
+        // can be created, new lines are shipped exactly once.
+        fs.fail_create.store(false, SeqCst);
+        writer.write_all(line(3).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(3..=3));
+        writer.write_all(line(4).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(4..=4));
+        assert!(drain(&files, &mut position).is_empty());
     }
 
     #[test]
@@ -846,11 +972,11 @@ mod tests {
         let total = 25_000;
         std::fs::write(&files[1], entry.repeat(total)).unwrap();
         std::fs::write(&files[0], line(1)).unwrap();
-        let rotated_inode = file_inode(&std::fs::File::open(&files[1]).unwrap());
+        let rotated_id = file_id(&std::fs::File::open(&files[1]).unwrap());
 
         let mut position = Position {
             offset: 0,
-            inode: rotated_inode,
+            id: rotated_id,
         };
         let mut count = 0;
         for _ in 0..50 {
