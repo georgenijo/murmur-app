@@ -621,6 +621,7 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | Ordered transcript pipeline | One entry point, declared stage order and failure policy, per-stage timing — instead of ad-hoc string munging per backend |
 | Rust owns all window geometry | Pure `geometry_for()` / `popover_geometry_for()` with fixtures on both sides; no drifting CSS pixel constants |
 | Main-thread `NSWindow` mutation | macOS 26 hard-traps on off-main mutation (#325) |
+| Autorelease pool around off-main AppKit queries | Tokio/std threads have no run-loop pool, so AppKit's internal autoreleases (`NSWorkspace`, `NSRunningApplication`, Launch Services) never drain: the 500 ms Mode watcher leaked ~2.5 MB/hour idle. Wrap each synchronous query in `objc2::rc::autoreleasepool` inside the helper, return owned Rust data, and never hold the pool across an `.await` |
 | CGEvent paste with osascript fallback | Native path avoids process spawn; osascript remains the compatibility net |
 | Custom malloc zone | Separates Rust heap from whisper.cpp's FFI heap; `GlobalAlloc` wrappers drift when FFI frees Rust allocations |
 | `set_is_main_thread(false)` | Prevents the rdev TIS/TSM segfault on the background listener thread |
