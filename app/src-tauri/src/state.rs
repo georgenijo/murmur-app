@@ -285,6 +285,31 @@ pub struct VocabularyEntry {
     pub enabled: bool,
     #[serde(default)]
     pub scope: VocabularyScope,
+    /// Optional context the spoken aliases require. `None` applies them in
+    /// every context. Settings does not author this field yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<VocabularyContext>,
+}
+
+/// When a vocabulary entry's spoken aliases apply. They apply when the frozen
+/// recording register is listed in `modes`, when `project_context` is set and
+/// local project context is active, or when a cue word occurs within `window`
+/// words of the alias. A blocking word within the window refuses the alias, so
+/// a cue and a counter-cue together leave the recognized text unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VocabularyContext {
+    #[serde(default)]
+    pub modes: Vec<TextRegister>,
+    #[serde(default)]
+    pub project_context: bool,
+    #[serde(default)]
+    pub cue_words: Vec<String>,
+    #[serde(default)]
+    pub blocking_words: Vec<String>,
+    /// Words searched on each side of the alias; defaults to 8.
+    #[serde(default)]
+    pub window: Option<u8>,
 }
 
 fn default_true() -> bool {

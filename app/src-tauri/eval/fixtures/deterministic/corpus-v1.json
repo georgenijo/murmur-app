@@ -227,5 +227,35 @@
     "context": {"mode": "technical", "stages": {"spokenNumbers": true}},
     "expected": {"finalText": "ping 192.168.1.1 then 8080", "deliveredText": "ping 192.168.1.1 then 8080", "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
     "timing": {"rawAsrMs": 21, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "everyday-tori-person-untouched",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Context-cued vocabulary variants", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "Tori is coming over for dinner.", "expectedRawAsr": ["Tori is coming over for dinner."]},
+    "context": {"mode": "everyday", "stages": {"smartCorrection": true}},
+    "expected": {"finalText": "Tori is coming over for dinner.", "deliveredText": "Tori is coming over for dinner.", "noChangePreservation": true, "stages": [{"name": "smart_correction", "outcome": "applied", "changed": false}]},
+    "timing": {"rawAsrMs": 12, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "technical-tauri-and-postgresql-variants",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Context-cued vocabulary variants", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "open the Tori config and migrate to Postgres SQL", "expectedRawAsr": ["open the Tori config and migrate to Postgres SQL"]},
+    "context": {"mode": "technical", "stages": {"smartCorrection": true}},
+    "expected": {"finalText": "open the Tauri config and migrate to PostgreSQL", "deliveredText": "open the Tauri config and migrate to PostgreSQL", "stages": [{"name": "smart_correction", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 16, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "terminal-tori-npm-command",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Context-cued vocabulary variants", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "npm run Tori dev", "expectedRawAsr": ["npm run Tori dev"]},
+    "context": {"mode": "terminal", "cliFormattingMode": "enabled", "stages": {"smartCorrection": true, "cliCommand": true}},
+    "expected": {"finalText": "npm run tauri dev", "deliveredText": "npm run tauri dev", "commandCase": true, "stages": [{"name": "smart_correction", "outcome": "applied", "changed": true}, {"name": "cli_command", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 11, "transformMs": 1, "deliveryMs": 1}
   }
 ]

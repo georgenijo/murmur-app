@@ -22,6 +22,10 @@
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use std::collections::HashMap;
+use std::ops::Range;
+use std::sync::{Arc, LazyLock};
+
+use crate::state::TextRegister;
 
 /// Common dev abbreviations whose written form can't be derived from how they're
 /// spoken (you say "standard error", you write "stderr"). Only loaded when the
@@ -49,6 +53,285 @@ const FUZZY_MAX_DIST: usize = 2;
 /// exactly via Tier 1; Tier 2 only kicks in for longer, lower-collision words.
 const MIN_FUZZY_LEN: usize = 5;
 
+/// Content-free recording context consulted by contextual rules. It comes
+/// from the frozen stage configuration and is never derived from the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CorrectionContext {
+    pub register: TextRegister,
+    pub project_context: bool,
+}
+
+impl Default for CorrectionContext {
+    fn default() -> Self {
+        Self {
+            register: TextRegister::Everyday,
+            project_context: false,
+        }
+    }
+}
+
+/// Lowercase words that must (or must not) occur within a bounded number of
+/// tokens before and after a candidate phrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CueWindow {
+    pub words: Vec<String>,
+    pub before: usize,
+    pub after: usize,
+}
+
+impl CueWindow {
+    fn new(words: &[&str], before: usize, after: usize) -> Self {
+        Self {
+            words: words.iter().map(|word| word.to_string()).collect(),
+            before,
+            after,
+        }
+    }
+
+    /// `before_end` is the first phrase token and `after_start` the first
+    /// token after the phrase.
+    fn matches(&self, tokens: &[ContextToken], before_end: usize, after_start: usize) -> bool {
+        let before = &tokens[before_end.saturating_sub(self.before)..before_end];
+        let after_start = after_start.min(tokens.len());
+        let after = &tokens[after_start..(after_start + self.after).min(tokens.len())];
+        before
+            .iter()
+            .chain(after)
+            .any(|token| self.words.contains(&token.lower))
+    }
+}
+
+/// When a contextual phrase may be rewritten. The frozen register or local
+/// project signal enables it outright; otherwise every window of at least one
+/// clause must match. Any blocker refuses the rewrite: a cue and a counter-cue
+/// together are ambiguous, so the phrase stays as recognized.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ContextRequirement {
+    pub registers: Vec<TextRegister>,
+    pub project_context: bool,
+    pub clauses: Vec<Vec<CueWindow>>,
+    pub blockers: Vec<CueWindow>,
+}
+
+impl ContextRequirement {
+    fn allows(
+        &self,
+        context: CorrectionContext,
+        tokens: &[ContextToken],
+        before_end: usize,
+        after_start: usize,
+    ) -> bool {
+        if self
+            .blockers
+            .iter()
+            .any(|cue| cue.matches(tokens, before_end, after_start))
+        {
+            return false;
+        }
+        self.registers.contains(&context.register)
+            || (self.project_context && context.project_context)
+            || self.clauses.iter().any(|clause| {
+                clause
+                    .iter()
+                    .all(|cue| cue.matches(tokens, before_end, after_start))
+            })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ContextToken {
+    lower: String,
+    start: usize,
+    end: usize,
+}
+
+fn context_tokens(text: &str) -> Vec<ContextToken> {
+    tokenize(text)
+        .into_iter()
+        .map(|(token, start, end)| ContextToken {
+            lower: token.to_ascii_lowercase(),
+            start,
+            end,
+        })
+        .collect()
+}
+
+/// A built-in recognizer variant rewritten only in a proven context.
+struct ContextRule {
+    spoken: Vec<String>,
+    written: &'static str,
+    requirement: ContextRequirement,
+}
+
+const DEVELOPER_REGISTERS: &[TextRegister] = &[TextRegister::Technical, TextRegister::Terminal];
+
+/// Words that make `Maine` a place rather than the git branch `main`.
+const MAIN_GEOGRAPHY_WORDS: &[&str] = &[
+    "augusta",
+    "born",
+    "city",
+    "climate",
+    "coast",
+    "country",
+    "government",
+    "legislature",
+    "live",
+    "lived",
+    "office",
+    "portland",
+    "state",
+    "tourism",
+    "travel",
+    "trip",
+    "vacation",
+    "visit",
+    "visited",
+    "visiting",
+    "weather",
+];
+const MAIN_PREPOSITIONS: &[&str] = &["from", "into", "on", "onto", "to"];
+const MAIN_VERSION_CONTROL_ACTIONS: &[&str] = &[
+    "check", "checkout", "fetch", "latest", "merge", "pull", "rebase", "switch", "sync",
+];
+const MAIN_CHANGES: &[&str] = &["change", "changes"];
+
+/// Words near `Tori` / `Tory` that establish the Tauri framework.
+const TAURI_CUE_WORDS: &[&str] = &[
+    "rust", "cargo", "crate", "crates", "plugin", "plugins", "tauri", "webview", "npm", "pnpm",
+    "yarn", "ipc", "sidecar", "app", "apps", "build", "builds", "bundle", "desktop", "frontend",
+    "backend",
+];
+/// Words near `Tori` / `Tory` that point to a person, so the name is kept.
+const PERSON_CUE_WORDS: &[&str] = &[
+    "she",
+    "her",
+    "hers",
+    "herself",
+    "he",
+    "him",
+    "his",
+    "friend",
+    "sister",
+    "brother",
+    "mom",
+    "dad",
+    "mother",
+    "father",
+    "daughter",
+    "son",
+    "wife",
+    "husband",
+    "girlfriend",
+    "boyfriend",
+    "aunt",
+    "uncle",
+    "cousin",
+    "niece",
+    "nephew",
+    "named",
+    "hey",
+    "hi",
+    "hello",
+    "dear",
+    "thanks",
+    "thank",
+    "met",
+    "birthday",
+    "ms",
+    "mrs",
+    "miss",
+];
+/// Words near `Tory` that point to British politics.
+const POLITICS_CUE_WORDS: &[&str] = &[
+    "party",
+    "government",
+    "mp",
+    "mps",
+    "minister",
+    "conservative",
+    "conservatives",
+    "labour",
+    "election",
+    "vote",
+    "voters",
+    "leader",
+    "leadership",
+    "parliament",
+    "westminster",
+    "britain",
+    "british",
+];
+
+/// Built-in contextual variants, evaluated after explicit aliases and before
+/// derived vocabulary. The developer entries fix recurring recognizer misses
+/// for the default engines and apply only in Technical/Terminal registers or
+/// local project context (Tauri also when a nearby cue names the framework).
+static BUILTIN_CONTEXT_RULES: LazyLock<Vec<ContextRule>> = LazyLock::new(|| {
+    let developer = |spoken: &[&str], written: &'static str| ContextRule {
+        spoken: spoken.iter().map(|word| word.to_string()).collect(),
+        written,
+        requirement: ContextRequirement {
+            registers: DEVELOPER_REGISTERS.to_vec(),
+            project_context: true,
+            ..ContextRequirement::default()
+        },
+    };
+    let main_branch = |spoken: &str, changes_clause: Vec<CueWindow>| ContextRule {
+        spoken: vec![spoken.to_string()],
+        written: "main",
+        requirement: ContextRequirement {
+            clauses: vec![vec![CueWindow::new(&["branch"], 1, 1)], changes_clause],
+            blockers: vec![CueWindow::new(MAIN_GEOGRAPHY_WORDS, 4, 4)],
+            ..ContextRequirement::default()
+        },
+    };
+    let tauri = |spoken: &str, blockers: Vec<CueWindow>| ContextRule {
+        spoken: vec![spoken.to_string()],
+        written: "Tauri",
+        requirement: ContextRequirement {
+            registers: DEVELOPER_REGISTERS.to_vec(),
+            project_context: true,
+            clauses: vec![vec![CueWindow::new(TAURI_CUE_WORDS, 8, 8)]],
+            blockers,
+        },
+    };
+    let mut rules = vec![
+        // The recognizer hears the git branch `main` as `Maine` or `me`. `me`
+        // is far more common in prose, so it needs the exact observed shape
+        // "check [out] ... changes on me".
+        main_branch(
+            "maine",
+            vec![
+                CueWindow::new(MAIN_PREPOSITIONS, 1, 0),
+                CueWindow::new(MAIN_VERSION_CONTROL_ACTIONS, 7, 0),
+                CueWindow::new(MAIN_CHANGES, 7, 0),
+            ],
+        ),
+        main_branch(
+            "me",
+            vec![
+                CueWindow::new(&["on"], 1, 0),
+                CueWindow::new(MAIN_CHANGES, 7, 0),
+                CueWindow::new(&["check"], 7, 0),
+            ],
+        ),
+        tauri("tori", vec![CueWindow::new(PERSON_CUE_WORDS, 4, 4)]),
+        tauri(
+            "tory",
+            vec![
+                CueWindow::new(PERSON_CUE_WORDS, 4, 4),
+                CueWindow::new(POLITICS_CUE_WORDS, 4, 4),
+            ],
+        ),
+        developer(&["postgres", "sql"], "PostgreSQL"),
+        developer(&["postgre", "sql"], "PostgreSQL"),
+        developer(&["npxtsc"], "npx tsc"),
+        developer(&["coreml"], "Core ML"),
+    ];
+    rules.sort_by_key(|rule| std::cmp::Reverse(rule.spoken.len()));
+    rules
+});
+
 /// A single vocab entry: the written form the user wants, and the lowercase
 /// spoken form we expect the ASR to emit for it.
 #[derive(Debug, Clone)]
@@ -65,11 +348,8 @@ struct ExplicitAlias {
     spoken: Vec<char>,
     written: String,
     priority: u8,
-}
-
-enum CorrectionSegment {
-    Mutable(String),
-    Protected(String),
+    /// User-declared context. `None` applies the alias everywhere.
+    requirement: Option<Arc<ContextRequirement>>,
 }
 
 /// Match one normalized lowercase alias at an original UTF-8 byte boundary.
@@ -143,6 +423,21 @@ impl CorrectionMatcher {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
+        Self::build_with_context(terms, pairs, &[], learned_pairs, fuzzy, include_builtins)
+    }
+
+    /// Build the matcher with explicit aliases that apply only when their
+    /// declared [`ContextRequirement`] holds. Contextual aliases share the
+    /// explicit-alias priority; when one does not apply, lower-precedence
+    /// rules for the same phrase still may.
+    pub(crate) fn build_with_context(
+        terms: &[String],
+        pairs: &[(String, String)],
+        contextual_pairs: &[(String, String, Arc<ContextRequirement>)],
+        learned_pairs: &[(String, String)],
+        fuzzy: bool,
+        include_builtins: bool,
+    ) -> Self {
         // spoken(lowercased) -> written for derived/built-in vocabulary.
         let mut map: HashMap<String, String> = HashMap::new();
 
@@ -163,18 +458,39 @@ impl CorrectionMatcher {
                 map.entry(spoken).or_insert_with(|| written.to_string());
             }
         }
-        let mut explicit_aliases = pairs
+        let all_pairs = pairs
             .iter()
-            .map(|pair| (pair, 2_u8))
-            .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
-            .filter_map(|((spoken, written), priority)| {
-                let spoken = normalize_alias(spoken);
-                let written = written.trim();
-                (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
-                    spoken: spoken.chars().collect(),
-                    written: written.to_string(),
-                    priority,
-                })
+            .map(|(spoken, written)| (spoken, written, 2_u8, None))
+            .chain(
+                contextual_pairs
+                    .iter()
+                    .map(|(spoken, written, requirement)| {
+                        (spoken, written, 2_u8, Some(requirement.clone()))
+                    }),
+            )
+            .chain(
+                learned_pairs
+                    .iter()
+                    .map(|(spoken, written)| (spoken, written, 1_u8, None)),
+            )
+            .collect::<Vec<_>>();
+        let alias = |spoken: &str,
+                     written: &str,
+                     priority: u8,
+                     requirement: Option<Arc<ContextRequirement>>| {
+            let spoken = normalize_alias(spoken);
+            let written = written.trim();
+            (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                spoken: spoken.chars().collect(),
+                written: written.to_string(),
+                priority,
+                requirement,
+            })
+        };
+        let mut explicit_aliases = all_pairs
+            .iter()
+            .filter_map(|(spoken, written, priority, requirement)| {
+                alias(spoken, written, *priority, requirement.clone())
             })
             .collect::<Vec<_>>();
         // Canonical written forms share the protected rule set. This makes
@@ -182,19 +498,9 @@ impl CorrectionMatcher {
         // canonical such as "standard error" into the lower-priority builtin
         // that would otherwise rewrite it to "stderr".
         explicit_aliases.extend(
-            pairs
+            all_pairs
                 .iter()
-                .map(|pair| (pair, 2_u8))
-                .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
-                .filter_map(|((_, written), priority)| {
-                    let spoken = normalize_alias(written);
-                    let written = written.trim();
-                    (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
-                        spoken: spoken.chars().collect(),
-                        written: written.to_string(),
-                        priority,
-                    })
-                }),
+                .filter_map(|(_, written, priority, _)| alias(written, written, *priority, None)),
         );
         explicit_aliases.sort_by(|left, right| {
             right
@@ -205,7 +511,16 @@ impl CorrectionMatcher {
                 .then_with(|| right.priority.cmp(&left.priority))
                 .then_with(|| left.written.cmp(&right.written))
         });
-        explicit_aliases.dedup_by(|left, right| left.spoken == right.spoken);
+        // An unconditional alias owns its phrase; later same-phrase aliases are
+        // unreachable. Contextual aliases keep their fallbacks.
+        let mut owned_phrase: Option<Vec<char>> = None;
+        explicit_aliases.retain(|alias| {
+            if owned_phrase.as_ref() == Some(&alias.spoken) {
+                return false;
+            }
+            owned_phrase = alias.requirement.is_none().then(|| alias.spoken.clone());
+            true
+        });
 
         // Tier-1 automaton: patterns are spoken forms that actually rewrite to
         // something different. Identical spoken==written pairs are skipped here
@@ -266,23 +581,31 @@ impl CorrectionMatcher {
         self.explicit_aliases.is_empty() && self.ac.is_none() && self.terms.is_empty()
     }
 
-    /// The built-in contextual homophone rule makes every matcher actionable,
-    /// even when no user vocabulary or fuzzy terms are configured.
+    /// The built-in contextual rules make every matcher actionable, even when
+    /// no user vocabulary or fuzzy terms are configured.
     pub fn is_empty(&self) -> bool {
-        // The matcher always carries the bounded contextual main/Maine/me
-        // disambiguation below, even when the user has no vocabulary entries.
+        // The matcher always carries the bounded built-in contextual rules
+        // below, even when the user has no vocabulary entries.
         false
     }
 
-    /// Apply Tier 1 then (if enabled) Tier 2 to `text`, returning the corrected
-    /// string. Hot path: two linear scans over a short transcript.
+    /// Apply every tier without recording context: only cue-word rules can
+    /// establish a contextual meaning.
     pub fn apply(&self, text: &str) -> String {
+        self.apply_in(text, CorrectionContext::default())
+    }
+
+    /// Apply explicit aliases, contextual rules, Tier 1, then (if enabled)
+    /// Tier 2 to `text`. Hot path: a few linear scans over a short transcript.
+    pub(crate) fn apply_in(&self, text: &str, context: CorrectionContext) -> String {
+        let tokens = context_tokens(text);
         let mut output = String::with_capacity(text.len());
-        for segment in self.apply_explicit_aliases(text) {
-            match segment {
-                CorrectionSegment::Protected(written) => output.push_str(&written),
-                CorrectionSegment::Mutable(text) => {
-                    let contextual = apply_contextual_main_branch_homophones(&text);
+        for (range, protected) in explicit_segments(&self.explicit_aliases, text, &tokens, context)
+        {
+            match protected {
+                Some(written) => output.push_str(&written),
+                None => {
+                    let contextual = apply_context_rules(text, range, &tokens, context);
                     let exact = self.apply_tier1(&contextual);
                     if self.fuzzy {
                         output.push_str(&self.apply_tier2(&exact));
@@ -293,55 +616,6 @@ impl CorrectionMatcher {
             }
         }
         output
-    }
-
-    fn apply_explicit_aliases(&self, text: &str) -> Vec<CorrectionSegment> {
-        if self.explicit_aliases.is_empty() {
-            return vec![CorrectionSegment::Mutable(text.to_string())];
-        }
-
-        let mut segments = Vec::new();
-        let mut mutable_start = 0usize;
-        let mut scan = 0usize;
-        while scan < text.len() {
-            let matched = self.explicit_aliases.iter().find_map(|alias| {
-                let before_ok = text[..scan]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|character| !character.is_alphanumeric());
-                if !before_ok {
-                    return None;
-                }
-                let end = explicit_alias_match_end(text, scan, &alias.spoken)?;
-                let after_ok = text[end..]
-                    .chars()
-                    .next()
-                    .is_none_or(|character| !character.is_alphanumeric());
-                after_ok.then_some((alias, end))
-            });
-            if let Some((alias, end)) = matched {
-                if mutable_start < scan {
-                    segments.push(CorrectionSegment::Mutable(
-                        text[mutable_start..scan].to_string(),
-                    ));
-                }
-                segments.push(CorrectionSegment::Protected(alias.written.clone()));
-                scan = end;
-                mutable_start = end;
-            } else {
-                scan += text[scan..]
-                    .chars()
-                    .next()
-                    .expect("scan always points at a character boundary")
-                    .len_utf8();
-            }
-        }
-        if mutable_start < text.len() {
-            segments.push(CorrectionSegment::Mutable(
-                text[mutable_start..].to_string(),
-            ));
-        }
-        segments
     }
 
     /// Tier 1: single Aho-Corasick pass, replacing only word-boundary matches.
@@ -465,110 +739,164 @@ impl CorrectionMatcher {
     }
 }
 
-/// Correct the recognizer's `Maine`/`me` homophones only when a compact local
-/// window establishes a version-control meaning. Bare "go to Maine", travel,
-/// and geographic uses remain untouched; this is intentionally narrower than
-/// a generic homophone or capitalization rule.
-fn apply_contextual_main_branch_homophones(text: &str) -> String {
-    let tokens = tokenize(text);
-    if tokens.is_empty() {
-        return text.to_string();
+/// Split `text` into explicit-alias spans (`Some(written)`, protected from
+/// lower tiers) and mutable gaps (`None`).
+fn explicit_segments(
+    aliases: &[ExplicitAlias],
+    text: &str,
+    tokens: &[ContextToken],
+    context: CorrectionContext,
+) -> Vec<(Range<usize>, Option<String>)> {
+    if aliases.is_empty() {
+        return vec![(0..text.len(), None)];
     }
-    let normalized = tokens
-        .iter()
-        .map(|(token, _, _)| token.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    let geography_words = [
-        "augusta",
-        "born",
-        "city",
-        "climate",
-        "coast",
-        "country",
-        "government",
-        "legislature",
-        "live",
-        "lived",
-        "office",
-        "portland",
-        "state",
-        "tourism",
-        "travel",
-        "trip",
-        "vacation",
-        "visit",
-        "visited",
-        "visiting",
-        "weather",
-    ];
-    let version_control_actions = [
-        "check", "checkout", "fetch", "latest", "merge", "pull", "rebase", "switch", "sync",
-    ];
 
-    let mut replacements = Vec::new();
-    for (index, candidate) in normalized.iter().enumerate() {
-        if candidate != "maine" && candidate != "me" {
-            continue;
+    let mut segments = Vec::new();
+    let mut mutable_start = 0usize;
+    let mut scan = 0usize;
+    while scan < text.len() {
+        let before_ok = text[..scan]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !character.is_alphanumeric());
+        let matched = before_ok
+            .then(|| explicit_alias_at(aliases, text, scan, tokens, context))
+            .flatten();
+        if let Some((end, written)) = matched {
+            if mutable_start < scan {
+                segments.push((mutable_start..scan, None));
+            }
+            segments.push((scan..end, Some(written)));
+            scan = end;
+            mutable_start = end;
+        } else {
+            scan += text[scan..]
+                .chars()
+                .next()
+                .expect("scan always points at a character boundary")
+                .len_utf8();
         }
+    }
+    if mutable_start < text.len() {
+        segments.push((mutable_start..text.len(), None));
+    }
+    segments
+}
 
-        let nearby_start = index.saturating_sub(4);
-        let nearby_end = (index + 5).min(normalized.len());
-        if normalized[nearby_start..nearby_end]
-            .iter()
-            .any(|word| geography_words.contains(&word.as_str()))
+/// The highest-precedence alias matching at `scan` whose context applies.
+/// Two same-priority aliases for one phrase that both apply are ambiguous: the
+/// recognized text is kept and protected rather than chosen by sort order.
+fn explicit_alias_at(
+    aliases: &[ExplicitAlias],
+    text: &str,
+    scan: usize,
+    tokens: &[ContextToken],
+    context: CorrectionContext,
+) -> Option<(usize, String)> {
+    let mut chosen: Option<(&ExplicitAlias, usize)> = None;
+    for alias in aliases {
+        if chosen.is_some_and(|(chosen, _)| {
+            alias.spoken != chosen.spoken || alias.priority != chosen.priority
+        }) {
+            break;
+        }
+        let Some(end) = explicit_alias_match_end(text, scan, &alias.spoken) else {
+            continue;
+        };
+        if text[end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
         {
             continue;
         }
+        if let Some(requirement) = &alias.requirement {
+            let before_end = tokens.partition_point(|token| token.start < scan);
+            let after_start = tokens.partition_point(|token| token.end <= end);
+            if !requirement.allows(context, tokens, before_end, after_start) {
+                continue;
+            }
+        }
+        match chosen {
+            None => chosen = Some((alias, end)),
+            Some((chosen, _)) if chosen.written != alias.written => {
+                return Some((end, text[scan..end].to_string()));
+            }
+            Some(_) => {}
+        }
+    }
+    chosen.map(|(alias, end)| (end, alias.written.clone()))
+}
 
-        let adjacent_branch = index
-            .checked_sub(1)
-            .and_then(|position| normalized.get(position))
-            .is_some_and(|word| word == "branch")
-            || normalized
-                .get(index + 1)
-                .is_some_and(|word| word == "branch");
-
-        let context_start = index.saturating_sub(7);
-        let preceding = &normalized[context_start..index];
-        let preposition = index
-            .checked_sub(1)
-            .and_then(|position| normalized.get(position))
-            .map(String::as_str)
-            .filter(|word| matches!(*word, "from" | "into" | "on" | "onto" | "to"));
-        let has_action = preceding
-            .iter()
-            .any(|word| version_control_actions.contains(&word.as_str()));
-        let has_changes = preceding
-            .iter()
-            .any(|word| matches!(word.as_str(), "change" | "changes"));
-        let changes_context = preposition.is_some() && has_action && has_changes;
-        // `me` is far more common in ordinary prose than the proper noun
-        // `Maine`, so recover it only for the exact observed technical shape:
-        // "check [out] ... changes on me". Broader cases such as "the latest
-        // changes from me" must remain untouched.
-        let me_context = candidate == "me"
-            && preposition == Some("on")
-            && has_changes
-            && preceding.iter().any(|word| word == "check");
-        let maine_context = candidate == "maine" && changes_context;
-
-        if adjacent_branch || me_context || maine_context {
-            replacements.push((tokens[index].1, tokens[index].2));
+/// Rewrite built-in contextual variants inside `range`. Cue windows read the
+/// whole utterance, including explicitly corrected spans, so a nearby cue is
+/// visible even across an alias.
+fn apply_context_rules(
+    text: &str,
+    range: Range<usize>,
+    tokens: &[ContextToken],
+    context: CorrectionContext,
+) -> String {
+    let first = tokens.partition_point(|token| token.start < range.start);
+    let end = tokens.partition_point(|token| token.end <= range.end);
+    let mut replacements = Vec::new();
+    let mut index = first;
+    while index < end {
+        let mut matched: Option<(usize, &str)> = None;
+        let mut ambiguous = false;
+        for rule in BUILTIN_CONTEXT_RULES.iter() {
+            let length = rule.spoken.len();
+            if matched.is_some_and(|(matched_length, _)| length < matched_length) {
+                break;
+            }
+            if index + length > end
+                || !phrase_at(text, tokens, index, &rule.spoken)
+                || !rule
+                    .requirement
+                    .allows(context, tokens, index, index + length)
+            {
+                continue;
+            }
+            match matched {
+                None => matched = Some((length, rule.written)),
+                Some((_, written)) if written != rule.written => ambiguous = true,
+                Some(_) => {}
+            }
+        }
+        match matched {
+            Some((length, written)) if !ambiguous => {
+                replacements.push((tokens[index].start, tokens[index + length - 1].end, written));
+                index += length;
+            }
+            _ => index += 1,
         }
     }
 
     if replacements.is_empty() {
-        return text.to_string();
+        return text[range].to_string();
     }
-    let mut output = String::with_capacity(text.len());
-    let mut copied = 0usize;
-    for (start, end) in replacements {
+    let mut output = String::with_capacity(range.len());
+    let mut copied = range.start;
+    for (start, end, written) in replacements {
         output.push_str(&text[copied..start]);
-        output.push_str("main");
+        output.push_str(written);
         copied = end;
     }
-    output.push_str(&text[copied..]);
+    output.push_str(&text[copied..range.end]);
     output
+}
+
+/// Whether the space-separated lowercase phrase `spoken` starts at token `index`.
+fn phrase_at(text: &str, tokens: &[ContextToken], index: usize, spoken: &[String]) -> bool {
+    spoken.iter().enumerate().all(|(offset, word)| {
+        tokens.get(index + offset).is_some_and(|token| {
+            token.lower == *word
+                && (offset == 0
+                    || text[tokens[index + offset - 1].end..token.start]
+                        .chars()
+                        .all(|character| matches!(character, ' ' | '\t')))
+        })
+    })
 }
 
 /// Phonetic key for a (possibly multi-word) phrase: per-token keys joined by
@@ -1095,6 +1423,188 @@ mod tests {
             m.apply("Check out the latest changes from Maine."),
             "Check out the latest changes from Maine."
         );
+    }
+
+    fn in_register(register: TextRegister) -> CorrectionContext {
+        CorrectionContext {
+            register,
+            project_context: false,
+        }
+    }
+
+    #[test]
+    fn builtin_tauri_variant_needs_a_technical_register_project_or_cue() {
+        let m = CorrectionMatcher::build(&[], &[], true, false);
+        let everyday = CorrectionContext::default();
+        // A person named Tori is untouched in ordinary prose.
+        for text in [
+            "Tori is coming over for dinner.",
+            "Ask Tori about the weekend.",
+            "My friend Tori is building an app.",
+            "Hey Tori, the build is green.",
+            "The Tory party lost the vote.",
+        ] {
+            assert_eq!(m.apply_in(text, everyday), text);
+        }
+        assert_eq!(
+            m.apply_in("The Tori plugin needs a rust update.", everyday),
+            "The Tauri plugin needs a rust update."
+        );
+        assert_eq!(
+            m.apply_in("Ship the Tory app build", everyday),
+            "Ship the Tauri app build"
+        );
+        for register in [TextRegister::Technical, TextRegister::Terminal] {
+            assert_eq!(m.apply_in("open Tori", in_register(register)), "open Tauri");
+        }
+        for register in [
+            TextRegister::Messages,
+            TextRegister::Email,
+            TextRegister::Notes,
+        ] {
+            assert_eq!(m.apply_in("open Tori", in_register(register)), "open Tori");
+        }
+        let project = CorrectionContext {
+            register: TextRegister::Everyday,
+            project_context: true,
+        };
+        assert_eq!(m.apply_in("open Tori", project), "open Tauri");
+        // A cue and a counter-cue are ambiguous, even in Technical mode.
+        assert_eq!(
+            m.apply_in(
+                "Tori said she will review the rust plugin",
+                in_register(TextRegister::Technical)
+            ),
+            "Tori said she will review the rust plugin"
+        );
+        assert_eq!(
+            m.apply_in(&m.apply_in("open Tori", project), project),
+            "open Tauri"
+        );
+    }
+
+    #[test]
+    fn builtin_developer_pack_is_gated_to_technical_context() {
+        let m = CorrectionMatcher::build(&[], &[], true, false);
+        let technical = in_register(TextRegister::Technical);
+        let project = CorrectionContext {
+            register: TextRegister::Notes,
+            project_context: true,
+        };
+        for (heard, written) in [
+            (
+                "migrate to Postgres SQL today",
+                "migrate to PostgreSQL today",
+            ),
+            ("run npxtsc first", "run npx tsc first"),
+            ("convert it with CoreML", "convert it with Core ML"),
+        ] {
+            assert_eq!(m.apply_in(heard, technical), written);
+            assert_eq!(m.apply_in(heard, project), written);
+            assert_eq!(m.apply_in(heard, CorrectionContext::default()), heard);
+            assert_eq!(m.apply_in(written, technical), written);
+        }
+    }
+
+    #[test]
+    fn explicit_aliases_outrank_builtin_context_rules() {
+        let pairs = vec![("Tori".to_string(), "Tori".to_string())];
+        let m = CorrectionMatcher::build(&[], &pairs, true, false);
+        assert_eq!(
+            m.apply_in("open Tori", in_register(TextRegister::Technical)),
+            "open Tori"
+        );
+    }
+
+    fn requirement(
+        registers: &[TextRegister],
+        cues: &[&str],
+        blockers: &[&str],
+    ) -> Arc<ContextRequirement> {
+        Arc::new(ContextRequirement {
+            registers: registers.to_vec(),
+            project_context: false,
+            clauses: if cues.is_empty() {
+                Vec::new()
+            } else {
+                vec![vec![CueWindow::new(cues, 3, 3)]]
+            },
+            blockers: if blockers.is_empty() {
+                Vec::new()
+            } else {
+                vec![CueWindow::new(blockers, 3, 3)]
+            },
+        })
+    }
+
+    #[test]
+    fn contextual_aliases_apply_only_in_their_declared_context() {
+        let contextual = vec![(
+            "best".to_string(),
+            "Best regards".to_string(),
+            requirement(&[TextRegister::Email], &["signoff"], &["very"]),
+        )];
+        let m = CorrectionMatcher::build_with_context(&[], &[], &contextual, &[], false, false);
+        assert_eq!(
+            m.apply_in("best", in_register(TextRegister::Email)),
+            "Best regards"
+        );
+        assert_eq!(m.apply_in("best", CorrectionContext::default()), "best");
+        assert_eq!(
+            m.apply_in("signoff with best", CorrectionContext::default()),
+            "signoff with Best regards"
+        );
+        // A blocker within the window refuses the alias in any context.
+        assert_eq!(
+            m.apply_in("very best", in_register(TextRegister::Email)),
+            "very best"
+        );
+        // The canonical form stays protected and idempotent.
+        assert_eq!(
+            m.apply_in("Best regards", in_register(TextRegister::Email)),
+            "Best regards"
+        );
+    }
+
+    #[test]
+    fn inapplicable_contextual_alias_falls_through_to_lower_precedence_rules() {
+        let contextual = vec![(
+            "Tori".to_string(),
+            "Tauri".to_string(),
+            requirement(&[TextRegister::Technical], &[], &[]),
+        )];
+        let learned = vec![("Tori".to_string(), "Torii".to_string())];
+        let m =
+            CorrectionMatcher::build_with_context(&[], &[], &contextual, &learned, false, false);
+        assert_eq!(
+            m.apply_in("meet Tori", in_register(TextRegister::Technical)),
+            "meet Tauri"
+        );
+        assert_eq!(
+            m.apply_in("meet Tori", CorrectionContext::default()),
+            "meet Torii"
+        );
+    }
+
+    #[test]
+    fn simultaneously_applicable_contextual_aliases_fail_closed() {
+        let contextual = vec![
+            (
+                "Tori".to_string(),
+                "Tauri".to_string(),
+                requirement(&[], &["rust"], &[]),
+            ),
+            (
+                "Tori".to_string(),
+                "Torii".to_string(),
+                requirement(&[], &["shrine"], &[]),
+            ),
+        ];
+        let m = CorrectionMatcher::build_with_context(&[], &[], &contextual, &[], false, false);
+        let everyday = CorrectionContext::default();
+        assert_eq!(m.apply_in("rust Tori", everyday), "rust Tauri");
+        assert_eq!(m.apply_in("shrine Tori", everyday), "shrine Torii");
+        assert_eq!(m.apply_in("rust Tori shrine", everyday), "rust Tori shrine");
     }
 
     #[test]

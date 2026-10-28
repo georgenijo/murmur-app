@@ -28,5 +28,104 @@
     "input": "Tauri",
     "output": "Tauri",
     "cli": false
+  },
+  {
+    "name": "built-in Tori keeps a person in prose",
+    "input": "Tori is coming over for dinner.",
+    "output": "Tori is coming over for dinner.",
+    "cli": false,
+    "aliases": false
+  },
+  {
+    "name": "built-in Tori with a framework cue in prose",
+    "input": "The Tori plugin needs a rust update.",
+    "output": "The Tauri plugin needs a rust update.",
+    "cli": false,
+    "aliases": false
+  },
+  {
+    "name": "built-in Tori with cue and person counter-cue",
+    "input": "My friend Tori is building an app.",
+    "output": "My friend Tori is building an app.",
+    "cli": false,
+    "aliases": false
+  },
+  {
+    "name": "built-in Tori in Technical mode",
+    "input": "open the Tori config",
+    "output": "open the Tauri config",
+    "cli": false,
+    "aliases": false,
+    "mode": "technical"
+  },
+  {
+    "name": "built-in Tori npm command in Terminal mode",
+    "input": "npm run Tori dev",
+    "output": "npm run tauri dev",
+    "cli": true,
+    "aliases": false,
+    "mode": "terminal"
+  },
+  {
+    "name": "built-in Tori person counter-cue in Technical mode",
+    "input": "ask Tori if she merged it",
+    "output": "ask Tori if she merged it",
+    "cli": false,
+    "aliases": false,
+    "mode": "technical"
+  },
+  {
+    "name": "built-in Tory politics in prose",
+    "input": "The Tory party won the vote.",
+    "output": "The Tory party won the vote.",
+    "cli": false,
+    "aliases": false
+  },
+  {
+    "name": "built-in Tori with project context",
+    "input": "open the Tori config",
+    "output": "open the Tauri config",
+    "cli": false,
+    "aliases": false,
+    "projectContext": true
+  },
+  {
+    "name": "Postgres SQL in Technical mode",
+    "input": "migrate to Postgres SQL",
+    "output": "migrate to PostgreSQL",
+    "cli": false,
+    "aliases": false,
+    "mode": "technical"
+  },
+  {
+    "name": "Postgres SQL in Email mode",
+    "input": "migrate to Postgres SQL",
+    "output": "migrate to Postgres SQL",
+    "cli": false,
+    "aliases": false,
+    "mode": "email"
+  },
+  {
+    "name": "CoreML with project context",
+    "input": "export CoreML weights",
+    "output": "export Core ML weights",
+    "cli": false,
+    "aliases": false,
+    "projectContext": true
+  },
+  {
+    "name": "npxtsc in Technical mode",
+    "input": "then run npxtsc",
+    "output": "then run npx tsc",
+    "cli": false,
+    "aliases": false,
+    "mode": "technical"
+  },
+  {
+    "name": "npxtsc in Everyday mode",
+    "input": "then run npxtsc",
+    "output": "then run npxtsc",
+    "cli": false,
+    "aliases": false
   }
 ]

@@ -3283,6 +3283,7 @@ fn legacy_vocabulary_entries(value: &str) -> Vec<crate::state::VocabularyEntry> 
             written,
             aliases: Vec::new(),
             enabled: true,
+            context: None,
             scope: crate::state::VocabularyScope::Global,
         })
         .collect()
@@ -7150,6 +7151,7 @@ pub(crate) mod tests {
                 written: "Tauri".to_string(),
                 aliases: vec!["Tori".to_string()],
                 enabled: true,
+                context: None,
                 scope: crate::state::VocabularyScope::Global,
             }],
             voice_command_pairs: vec![crate::state::VoiceCommand {
@@ -7890,6 +7892,7 @@ pub(crate) mod tests {
                 written: "ProjectWord".into(),
                 aliases: vec!["project alias".into()],
                 enabled: true,
+                context: None,
                 scope: VocabularyScope::Project {
                     bundle_id: bundle.into(),
                     root: "/project".into(),

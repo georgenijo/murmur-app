@@ -70,6 +70,13 @@ impl TranscriptStageConfig {
         }
     }
 
+    pub(crate) fn correction_context(&self) -> crate::correction::CorrectionContext {
+        crate::correction::CorrectionContext {
+            register: self.text_register,
+            project_context: self.ide_context_enabled,
+        }
+    }
+
     pub(crate) fn verbatim() -> Self {
         Self {
             cleanup_enabled: false,
@@ -670,12 +677,14 @@ impl TranscriptTransform for SmartCorrectionStage {
         context.stages.smart_correction_enabled
     }
 
-    fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
+    fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
         if text.trim().is_empty() {
             return Ok(text.to_string());
         }
         match &self.matcher {
-            Some(matcher) if !matcher.is_empty() => Ok(matcher.apply(text)),
+            Some(matcher) if !matcher.is_empty() => {
+                Ok(matcher.apply_in(text, context.stages.correction_context()))
+            }
             _ => Ok(text.to_string()),
         }
     }
@@ -687,11 +696,25 @@ mod tests {
     use serde::Deserialize;
 
     #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
     struct VocabularyAliasEvalCase {
         name: String,
         input: String,
         output: String,
         cli: bool,
+        /// Frozen register for the case; Everyday when absent.
+        #[serde(default)]
+        mode: Option<crate::state::TextRegister>,
+        /// Whether the explicit Tori/Tory aliases are configured. Context
+        /// cases leave them out to exercise the built-in contextual variant.
+        #[serde(default = "default_true")]
+        aliases: bool,
+        #[serde(default)]
+        project_context: bool,
+    }
+
+    fn default_true() -> bool {
+        true
     }
 
     #[test]
@@ -1223,20 +1246,23 @@ mod tests {
                 spoken_numbers_enabled: false,
                 ide_context_enabled: false,
                 cli_command_enabled: case.cli,
-                text_register: crate::state::TextRegister::Everyday,
+                text_register: case.mode.unwrap_or(crate::state::TextRegister::Everyday),
             };
+            let aliases = [
+                ("Tori".to_string(), "Tauri".to_string()),
+                ("Tory".to_string(), "Tauri".to_string()),
+            ];
             let matcher = Arc::new(CorrectionMatcher::build(
                 &["Tauri".to_string()],
-                &[
-                    ("Tori".to_string(), "Tauri".to_string()),
-                    ("Tory".to_string(), "Tauri".to_string()),
-                ],
+                if case.aliases { &aliases[..] } else { &[] },
                 true,
                 false,
             ));
+            let mut context = live_context(stages);
+            context.stages.ide_context_enabled = case.project_context;
             let output = transform_transcript(
                 case.input.clone(),
-                &live_context(stages),
+                &context,
                 TranscriptTransformResources {
                     correction_matcher: Some(matcher),
                     ..TranscriptTransformResources::empty()
