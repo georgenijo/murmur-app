@@ -1426,7 +1426,10 @@ fn sanitized_summary(
             .unwrap_or("Structured event")
             .to_string()
     } else {
-        summary.unwrap_or_default()
+        match summary {
+            Some(summary) if contains_key_identity(&summary) => "Keyboard event".to_string(),
+            summary => summary.unwrap_or_default(),
+        }
     }
 }
 
@@ -1661,6 +1664,172 @@ fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
     }
 }
 
+/// rdev `Key` names (Debug form) of keys that can carry typed content. The
+/// modifiers and F1–F20 are excluded: they are the configurable hotkeys and
+/// reveal nothing the user typed.
+const TYPED_KEY_NAMES: &[&str] = &[
+    "Backspace",
+    "CapsLock",
+    "Delete",
+    "DownArrow",
+    "End",
+    "Escape",
+    "F21",
+    "F22",
+    "F23",
+    "F24",
+    "Home",
+    "LeftArrow",
+    "PageDown",
+    "PageUp",
+    "Return",
+    "RightArrow",
+    "Space",
+    "Tab",
+    "UpArrow",
+    "PrintScreen",
+    "ScrollLock",
+    "Pause",
+    "NumLock",
+    "BackQuote",
+    "Num1",
+    "Num2",
+    "Num3",
+    "Num4",
+    "Num5",
+    "Num6",
+    "Num7",
+    "Num8",
+    "Num9",
+    "Num0",
+    "Minus",
+    "Equal",
+    "KeyQ",
+    "KeyW",
+    "KeyE",
+    "KeyR",
+    "KeyT",
+    "KeyY",
+    "KeyU",
+    "KeyI",
+    "KeyO",
+    "KeyP",
+    "LeftBracket",
+    "RightBracket",
+    "KeyA",
+    "KeyS",
+    "KeyD",
+    "KeyF",
+    "KeyG",
+    "KeyH",
+    "KeyJ",
+    "KeyK",
+    "KeyL",
+    "SemiColon",
+    "Quote",
+    "BackSlash",
+    "IntlBackslash",
+    "KeyZ",
+    "KeyX",
+    "KeyC",
+    "KeyV",
+    "KeyB",
+    "KeyN",
+    "KeyM",
+    "Comma",
+    "Dot",
+    "Slash",
+    "Insert",
+    "KpReturn",
+    "KpMinus",
+    "KpPlus",
+    "KpMultiply",
+    "KpDivide",
+    "Kp0",
+    "Kp1",
+    "Kp2",
+    "Kp3",
+    "Kp4",
+    "Kp5",
+    "Kp6",
+    "Kp7",
+    "Kp8",
+    "Kp9",
+    "KpDelete",
+    "Function",
+];
+
+/// Whether a string carries a Debug-formatted keyboard event or key identity,
+/// such as `KeyPress(KeyI)`, `Some(Num4)`, or `SemiColon`.
+fn contains_key_identity(value: &str) -> bool {
+    if ["KeyPress(", "KeyRelease(", "Unknown("]
+        .iter()
+        .any(|marker| value.contains(marker))
+    {
+        return true;
+    }
+    let inner = value
+        .strip_prefix("Some(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(value);
+    TYPED_KEY_NAMES.contains(&inner)
+}
+
+/// Exact keyboard-stream schema. Key identity is limited to the configured
+/// hotkey's settings id; every other key is a bounded class.
+fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
+    let inner = value
+        .strip_prefix("Some(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(value);
+    match key {
+        "event_code" => canonical_event_code(value).is_some(),
+        "reason" => matches!(
+            value,
+            "held_too_long"
+                | "second_tap_expired"
+                | "combo_cancelled"
+                | "single_short_tap_noop"
+                | "processing_skipped"
+        ),
+        "detector" => matches!(value, "double_tap" | "hold_down"),
+        "mode" => matches!(
+            value,
+            "DoubleTap" | "HoldDown" | "Both" | "double_tap" | "hold_down" | "both"
+        ),
+        "state" | "double_tap_state" | "hold_state" => matches!(
+            inner,
+            "None" | "Idle" | "WaitingFirstUp" | "WaitingSecondDown" | "WaitingSecondUp" | "Held"
+        ),
+        "event_kind" => matches!(
+            value,
+            "key_press"
+                | "key_release"
+                | "button_press"
+                | "button_release"
+                | "mouse_move"
+                | "wheel"
+        ),
+        "key_class" => matches!(
+            value,
+            "none" | "modifier" | "function" | "navigation" | "editing" | "character" | "other"
+        ),
+        "target_key" => {
+            matches!(value, "none" | "other")
+                || crate::keyboard::is_dictation_key_id(value)
+                || crate::keyboard::is_transform_or_query_key_id(value)
+        }
+        "modifier_edge" => matches!(value, "press" | "release" | "not_modifier"),
+        "caller_file" => {
+            value.ends_with(".rs")
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_/.".contains(&b))
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn strip_private_meeting_metadata(data: &mut serde_json::Value) -> bool {
     match data {
         serde_json::Value::Object(object) => {
@@ -1721,6 +1890,16 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    // Keys the user typed are content. No stream may carry their identity, in
+    // any build, whatever a future call site formats into a field.
+    obj.retain(|_, value| !value.as_str().is_some_and(contains_key_identity));
+    if stream == "keyboard" {
+        obj.retain(|key, value| match value.as_str() {
+            Some(value) => is_safe_keyboard_string(key, value),
+            None => true,
+        });
+        return;
+    }
     if is_model_install_event(obj) {
         // Model installation failures may originate in native libraries and
         // contain local paths or raw error text. Keep only the exact stable
@@ -4162,6 +4341,83 @@ mod tests {
             assert_eq!(data["recovery_max_attempts"], 3);
             assert!(!encoded.contains("SENTINEL"));
             assert!(!encoded.contains("/Users/private"));
+        }
+    }
+
+    #[test]
+    fn keyboard_key_identity_never_survives_sanitizing_in_any_build() {
+        for debug_build in [false, true] {
+            let mut data = serde_json::json!({
+                "reason": "combo_cancelled",
+                "detector": "hold_down",
+                "state": "Held",
+                "double_tap_state": "Some(WaitingFirstUp)",
+                "hold_state": "None",
+                "mode": "Both",
+                "target_key": "shift_l",
+                "event_kind": "key_press",
+                "key_class": "character",
+                "is_target_key": false,
+                "elapsed_ms": 42,
+                // Shapes a past or future call site could format in.
+                "event_type": "KeyPress(KeyI)",
+                "key": "Some(SemiColon)",
+                "event_name": "Some(\"i\")",
+                "raw": "Num4",
+                "unknown": "KeyRelease(Unknown(63))",
+            });
+            sanitize_event_data("keyboard", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({
+                    "reason": "combo_cancelled",
+                    "detector": "hold_down",
+                    "state": "Held",
+                    "double_tap_state": "Some(WaitingFirstUp)",
+                    "hold_state": "None",
+                    "mode": "Both",
+                    "target_key": "shift_l",
+                    "event_kind": "key_press",
+                    "key_class": "character",
+                    "is_target_key": false,
+                    "elapsed_ms": 42,
+                }),
+                "debug_build={debug_build}"
+            );
+
+            // Known fields must not smuggle a key identity either.
+            let mut data = serde_json::json!({
+                "reason": "KeyPress(KeyI)",
+                "target_key": "Some(KeyA)",
+                "key_class": "Slash",
+                "state": "Some(Num4)",
+            });
+            sanitize_event_data("keyboard", &mut data, debug_build);
+            assert_eq!(data, serde_json::json!({}), "debug_build={debug_build}");
+
+            // Any other stream drops Debug-formatted keys too.
+            for stream in ["system", "audio", "pipeline", "transform", "ui"] {
+                let mut data = serde_json::json!({
+                    "event_type": "KeyPress(Slash)",
+                    "key": "Some(KeyA)",
+                    "bare": "Num4",
+                    "elapsed_ms": 7,
+                });
+                sanitize_event_data(stream, &mut data, debug_build);
+                assert_eq!(
+                    data,
+                    serde_json::json!({ "elapsed_ms": 7 }),
+                    "{stream} debug_build={debug_build}"
+                );
+            }
+
+            let summary = sanitized_summary(
+                "keyboard",
+                Some("rejected KeyPress(KeyI)".to_string()),
+                &serde_json::json!({}),
+                debug_build,
+            );
+            assert!(!summary.contains("KeyI"), "debug_build={debug_build}");
         }
     }
 
