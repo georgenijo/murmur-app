@@ -225,6 +225,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "keyboard.escape_cancel" => Some("keyboard.escape_cancel"),
+        "keyboard.hotkey_arming_cancelled" => Some("keyboard.hotkey_arming_cancelled"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
         "audio.system_audio_graph_observed" => Some("audio.system_audio_graph_observed"),
         "audio.device_reresolution_started" => Some("audio.device_reresolution_started"),

@@ -190,6 +190,8 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
                 | "combo_cancelled"
                 | "single_short_tap_noop"
                 | "processing_skipped"
+                | "other_key"
+                | "released"
         ),
         "detector" => matches!(value, "double_tap" | "hold_down"),
         "mode" => matches!(
@@ -489,6 +491,21 @@ mod tests {
                 "{events:?}"
             );
             assert!(events[6].contains(r#""phase":"End""#), "{events:?}");
+        }
+    }
+
+    #[test]
+    fn hotkey_arming_cancel_keeps_its_content_free_schema() {
+        for reason in ["other_key", "released"] {
+            let mut data = serde_json::json!({
+                "event_code": "keyboard.hotkey_arming_cancelled",
+                "mode": "hold_down",
+                "reason": reason,
+                "held_ms": 81,
+            });
+            let expected = data.clone();
+            assert!(sanitize_fields("keyboard", data.as_object_mut().unwrap()));
+            assert_eq!(data, expected);
         }
     }
 
