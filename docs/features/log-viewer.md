@@ -43,7 +43,9 @@ type AppEvent = {
 
 ### JSONL Rotation
 
-When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and a fresh file is started. On startup, the ring buffer is pre-populated with up to 500 events from the existing JSONL file.
+The JSONL file is rotated while the app runs, not only at launch. `SizeRotatingFile` (`telemetry.rs`) tracks the file size and, before the first event written after the file reaches 5MB, shifts `events.jsonl.1` → `.2`, renames `events.jsonl` → `.1`, and starts a fresh file. Rotation happens between events, so rotated files always end on a line boundary. Two rotated generations are kept (`.1` newest, `.2` oldest; the oldest is overwritten by the next rotation). A file that is already over the cap at launch is rotated the same way. Failures are handled per step. If shifting or renaming fails, the current file is intact: the writer keeps appending to it (events are never dropped) and retries after another 1MB. If the rename succeeds but re-creating `events.jsonl` fails, the writer has no file and drops events rather than appending to `.1`, which the shipper treats as complete. It tries to create the file at most once per second, counts the dropped events without writing to stderr under the lock, and writes a single `Log events dropped` system line with the count when the file is writable again. Nothing is buffered. Clear logs unlinks each writer's file and rotated generations and reopens it on a fresh file under that writer's own short lock, so output after a clear is neither lost nor written to an unlinked handle; the slower cleanup of other files and dated rolling files runs afterwards with no lock held and skips every file a live writer manages, so a rotation during cleanup is never deleted.
+
+The log shipper depends on this layout; see [log-shipping.md](log-shipping.md). On startup, the ring buffer is pre-populated with the last 500 valid events across all retained generations (`.2`, `.1`, then current, in chronological order), so a restart right after a rotation — or a crash between the rename and the re-create — still restores history.
 
 ### Privacy Stripping
 
@@ -63,7 +65,7 @@ without permitting user content or arbitrary labels.
 
 ### Pretty-Printed Log File
 
-A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender`. This is the file returned by `get_log_contents`.
+A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file.
 
 ### Tracing Streams
 
@@ -257,9 +259,11 @@ All files stored in `~/Library/Application Support/local-dictation/logs/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`) |
-| `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB |
-| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Previous rotated JSONL file |
+| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`), rotated at 10MB at runtime |
+| `app.log.1` / `app.dev.log.1` | Pretty-printed text | Previous rotated app log |
+| `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB at runtime |
+| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Most recent rotated JSONL file |
+| `events.jsonl.2` / `events.dev.jsonl.2` | JSONL | Older rotated JSONL file (kept so the shipper survives a second rotation) |
 
 `clear_logs` removes all known log file variants, including legacy files (`frontend.log`, `transcription.log`, dated rolling files).
 
