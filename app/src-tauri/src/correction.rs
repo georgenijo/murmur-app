@@ -388,6 +388,10 @@ pub struct CorrectionMatcher {
     terms: Vec<Term>,
     /// Lowercased written forms, so Tier 2 never "corrects" an already-correct token.
     written_lower: std::collections::HashSet<String>,
+    /// Explicit aliases whose spoken form contains a digit. Correct and Teach
+    /// learns from final text, where spoken numbers are already digits, so
+    /// these are matched again after the spoken-numbers stage.
+    numeric_aliases: Vec<ExplicitAlias>,
 }
 
 impl CorrectionMatcher {
@@ -521,6 +525,11 @@ impl CorrectionMatcher {
             owned_phrase = alias.requirement.is_none().then(|| alias.spoken.clone());
             true
         });
+        let numeric_aliases = explicit_aliases
+            .iter()
+            .filter(|alias| alias.spoken.iter().any(char::is_ascii_digit))
+            .cloned()
+            .collect();
 
         // Tier-1 automaton: patterns are spoken forms that actually rewrite to
         // something different. Identical spoken==written pairs are skipped here
@@ -574,6 +583,7 @@ impl CorrectionMatcher {
             fuzzy,
             terms,
             written_lower,
+            numeric_aliases,
         }
     }
 
@@ -616,6 +626,20 @@ impl CorrectionMatcher {
             }
         }
         output
+    }
+
+    /// Re-apply explicit aliases whose spoken form contains a digit. The
+    /// spoken-numbers stage calls this after rendering digits, so a rule
+    /// learned from final text such as `GPT 5` can match `GPT five`.
+    pub(crate) fn apply_numeric_aliases(&self, text: &str, context: CorrectionContext) -> String {
+        if self.numeric_aliases.is_empty() {
+            return text.to_string();
+        }
+        let tokens = context_tokens(text);
+        explicit_segments(&self.numeric_aliases, text, &tokens, context)
+            .into_iter()
+            .map(|(range, protected)| protected.unwrap_or_else(|| text[range].to_string()))
+            .collect()
     }
 
     /// Tier 1: single Aho-Corasick pass, replacing only word-boundary matches.
@@ -1605,6 +1629,25 @@ mod tests {
         assert_eq!(m.apply_in("rust Tori", everyday), "rust Tauri");
         assert_eq!(m.apply_in("shrine Tori", everyday), "shrine Torii");
         assert_eq!(m.apply_in("rust Tori shrine", everyday), "rust Tori shrine");
+    }
+
+    #[test]
+    fn numeric_aliases_match_rendered_digits() {
+        let learned = vec![
+            ("GPT 5".to_string(), "GPT-5".to_string()),
+            ("20 pages".to_string(), "twenty pages".to_string()),
+            ("Tori".to_string(), "Tauri".to_string()),
+        ];
+        let m = CorrectionMatcher::build_with_learned(&[], &[], &learned, false, false);
+        let everyday = CorrectionContext::default();
+        assert_eq!(
+            m.apply_numeric_aliases("GPT 5 wrote 20 pages for Tori", everyday),
+            "GPT-5 wrote twenty pages for Tori"
+        );
+        let once = m.apply_numeric_aliases("GPT 5", everyday);
+        assert_eq!(m.apply_numeric_aliases(&once, everyday), once);
+        let plain = CorrectionMatcher::build_with_learned(&[], &[], &learned[2..], false, false);
+        assert_eq!(plain.apply_numeric_aliases("GPT 5", everyday), "GPT 5");
     }
 
     #[test]

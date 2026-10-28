@@ -298,7 +298,7 @@ impl TranscriptPipeline {
                     .unwrap_or_else(|| Arc::new(crate::voice_commands::SystemVoiceCommandRuntime)),
             }),
             Box::new(SmartCorrectionStage {
-                matcher: correction_matcher,
+                matcher: correction_matcher.clone(),
             }),
             Box::new(SmartFormattingStage {
                 cli_lexicon: cli_lexicon.clone(),
@@ -306,7 +306,7 @@ impl TranscriptPipeline {
             Box::new(SpokenStructureStage {
                 cli_lexicon: cli_lexicon.clone(),
             }),
-            Box::new(SpokenNumbersStage),
+            Box::new(SpokenNumbersStage { correction_matcher }),
             Box::new(IdeContextStage {
                 index: ide_context_index,
             }),
@@ -542,7 +542,11 @@ struct SpokenStructureStage {
     cli_lexicon: CliLexicon,
 }
 
-struct SpokenNumbersStage;
+struct SpokenNumbersStage {
+    /// Supplies explicit aliases whose spoken form contains digits; they are
+    /// matched once numbers have been rendered.
+    correction_matcher: Option<Arc<CorrectionMatcher>>,
+}
 
 struct IdeContextStage {
     index: Option<Arc<IdeContextIndex>>,
@@ -633,10 +637,14 @@ impl TranscriptTransform for SpokenNumbersStage {
     }
 
     fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
-        Ok(crate::spoken_numbers::normalize_spoken_numbers(
-            text,
-            context.stages.number_policy(),
-        ))
+        let rendered =
+            crate::spoken_numbers::normalize_spoken_numbers(text, context.stages.number_policy());
+        Ok(match &self.correction_matcher {
+            Some(matcher) if context.stages.smart_correction_enabled => {
+                matcher.apply_numeric_aliases(&rendered, context.stages.correction_context())
+            }
+            _ => rendered,
+        })
     }
 }
 
@@ -1410,6 +1418,55 @@ mod tests {
             run(TextRegister::Everyday, true, raw),
             "2 of them meet at 4:30 PM on port 8080"
         );
+    }
+
+    #[test]
+    fn learned_rules_with_digits_match_the_rendered_numbers() {
+        // Correct and Teach learns from final history text, where numbers are
+        // already digits, but Smart Correction runs before spoken numbers.
+        let learned = vec![
+            ("GPT 5".to_string(), "GPT-5".to_string()),
+            ("20 pages".to_string(), "twenty pages".to_string()),
+        ];
+        let matcher = Arc::new(CorrectionMatcher::build_with_learned(
+            &[],
+            &[],
+            &learned,
+            false,
+            false,
+        ));
+        let run =
+            |register: crate::state::TextRegister, smart_correction_enabled: bool, raw: &str| {
+                let stages = TranscriptStageConfig {
+                    smart_correction_enabled,
+                    spoken_numbers_enabled: true,
+                    text_register: register,
+                    ..TranscriptStageConfig::verbatim()
+                };
+                transform_transcript(
+                    raw.to_string(),
+                    &live_context(stages),
+                    TranscriptTransformResources {
+                        correction_matcher: Some(matcher.clone()),
+                        ..TranscriptTransformResources::empty()
+                    },
+                )
+                .unwrap()
+                .text
+            };
+        let technical = crate::state::TextRegister::Technical;
+        assert_eq!(run(technical, true, "GPT five is out"), "GPT-5 is out");
+        assert_eq!(run(technical, true, "GPT 5 is out"), "GPT-5 is out");
+        assert_eq!(
+            run(
+                crate::state::TextRegister::Everyday,
+                true,
+                "read twenty pages"
+            ),
+            "read twenty pages"
+        );
+        // Disabled Smart Correction keeps every learned rule off.
+        assert_eq!(run(technical, false, "GPT five is out"), "GPT 5 is out");
     }
 
     #[test]
