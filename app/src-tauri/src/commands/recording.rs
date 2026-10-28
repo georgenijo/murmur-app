@@ -1287,16 +1287,18 @@ fn destination_application_name(
     let crate::frontmost::DeliveryTargetSnapshot::Complete(identity) = target else {
         return None;
     };
-    let app = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
-        identity.process_id,
-    )?;
-    if app.bundleIdentifier()?.to_string() != identity.bundle_id {
-        return None;
-    }
-    let name = app.localizedName()?.to_string();
-    let name = name.trim();
-    (!name.is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control))
-        .then(|| name.to_string())
+    objc2::rc::autoreleasepool(|_| {
+        let app = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
+            identity.process_id,
+        )?;
+        if app.bundleIdentifier()?.to_string() != identity.bundle_id {
+            return None;
+        }
+        let name = app.localizedName()?.to_string();
+        let name = name.trim();
+        (!name.is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control))
+            .then(|| name.to_string())
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
