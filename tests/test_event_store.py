@@ -521,6 +521,66 @@ class EventStoreRawSealTests(EventStoreTestCase):
         self.assertTrue(store_module.reconcile(projection, self.root)["database_ready"])
 
 
+    def test_pinned_open_survives_compaction_between_resolve_and_open(self) -> None:
+        payload = b"".join(
+            (json.dumps(event("bulk-%d" % sequence, sequence=sequence)) + "\n").encode()
+            for sequence in range(200)
+        )
+        self.archive.parent.mkdir(parents=True)
+        self.archive.write_bytes(payload)
+        store_module.seal_live_file(self.archive.parent)
+        original = store_module._current_source
+        calls = []
+
+        def compact_after_first_resolve(source):
+            resolved = original(source)
+            if not calls:
+                calls.append(source)
+                # Compaction finishes after resolution but before the open.
+                store_module.compact_pending_segments(self.archive.parent)
+            return resolved
+
+        with mock.patch.object(store_module, "_current_source", compact_after_first_resolve):
+            snapshot = store_module.open_raw_snapshot(self.archive.parent)
+        try:
+            (source, handle, size), = snapshot
+            self.assertTrue(source.compressed)
+            self.assertEqual(size, len(payload))
+            self.assertEqual(handle.read(), payload)
+        finally:
+            store_module.close_snapshot(snapshot)
+        self.assertEqual(calls and len(calls), 1)
+
+    def test_seal_racing_backfill_open_cannot_skip_or_mislabel_events(self) -> None:
+        self.ingest_capped(self.batch("first", 20), quota=100_000)
+        projection = store_module.EventStore(self.root / "projection.sqlite3")
+        projection.initialize()
+        original = store_module.open_pinned_source
+        raced = []
+
+        def seal_before_live_open(source):
+            if not source.sealed and not raced:
+                raced.append(source)
+                # An ingest seals the live file and appends one new event
+                # after backfill listed the sources but before it opened them.
+                self.ingest_capped(
+                    self.batch("racing", 1, day=9),
+                    quota=self.archive.stat().st_size + 1,
+                )
+            return original(source)
+
+        with mock.patch.object(store_module, "open_pinned_source", seal_before_live_open):
+            first = store_module.backfill(projection, self.root, max_lines=1_000)
+        final = store_module.backfill(projection, self.root, max_lines=1_000)
+        reconciliation = store_module.reconcile(projection, self.root)
+
+        self.assertEqual(len(raced), 1)
+        self.assertEqual(first["inserted_events"] + final["inserted_events"], 21)
+        self.assertTrue(final["complete"])
+        self.assertTrue(reconciliation["database_ready"], reconciliation)
+        self.assertEqual(projection.event_count(self.install_id), 21)
+
+
 class EventStoreKeySanitizationTests(EventStoreTestCase):
     def test_typed_key_identities_become_content_free_classes(self) -> None:
         item = {
@@ -565,6 +625,48 @@ class EventStoreKeySanitizationTests(EventStoreTestCase):
             self.assertEqual(
                 store_module.sanitize_event({"data": {"key": "Some(%s)" % hotkey}})[1], 0
             )
+
+    def test_embedded_forms_summaries_and_typed_characters_are_redacted(self) -> None:
+        cases = [
+            (
+                {"summary": "rejected KeyPress(Num4) in listener"},
+                {"summary": "rejected KeyPress(non_hotkey_key) in listener"},
+            ),
+            (
+                {"summary": "saw Some(KeyQ) then KeyRelease(Unknown(57)), kept KeyPress(ShiftLeft)"},
+                {
+                    "summary": "saw Some(non_hotkey_key) then "
+                    "KeyRelease(non_hotkey_key), kept KeyPress(ShiftLeft)"
+                },
+            ),
+            ({"data": {"event_name": "a"}}, {"data": {"event_name": "redacted_text"}}),
+            ({"data": {"event_name": "None"}}, {"data": {"event_name": "None"}}),
+            (
+                {"stream": "keyboard", "data": {"name": "b", "text": "hunter2", "char": "x"}},
+                {
+                    "stream": "keyboard",
+                    "data": {
+                        "name": "redacted_text",
+                        "text": "redacted_text",
+                        "char": "redacted_text",
+                    },
+                },
+            ),
+        ]
+        for original, expected in cases:
+            with self.subTest(original=original):
+                self.assertEqual(store_module.sanitize_event(original)[0], expected)
+        untouched = [
+            {"summary": "/models/KeyA/ KeyA-7B MyKeyPress(KeyA) KeyPress(KeyAB) Some(Idle)"},
+            {"stream": "system", "data": {"name": "parakeet", "text": "ok"}},
+            {"data": {"target_key": "Some(ShiftLeft)", "hold_state": "Some(Idle)"}},
+            {"data": {"note": "KeyRelease(MetaRight) Some(F13) Some(Function)"}},
+        ]
+        for item in untouched:
+            with self.subTest(item=item):
+                self.assertEqual(store_module.sanitize_event(item), (item, 0))
+        once = store_module.sanitize_event(cases[0][0])[0]
+        self.assertEqual(store_module.sanitize_event(once)[1], 0)
 
     def test_ingest_stores_only_sanitized_form_in_database_and_raw_archive(self) -> None:
         item = event("keyboard event rejected")

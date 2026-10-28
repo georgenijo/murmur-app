@@ -34,7 +34,11 @@ if SCRIPT_DIR not in sys.path:
 
 from event_store import (  # noqa: E402
     INSTALL_ID_RE,
+    KEY_SCRUB_JOURNAL_NAME,
     RAW_COPY_BYTES,
+    RAW_MAINTENANCE_LOCK_NAME,
+    REDACTED_KEY,
+    REDACTED_TEXT,
     EventStore,
     RawSource,
     StoreError,
@@ -49,8 +53,8 @@ from event_store import (  # noqa: E402
 )
 
 REPORT_SCHEMA = "murmur-key-scrub/v1"
-MAINTENANCE_LOCK_NAME = ".raw-maintenance.lock"
-JOURNAL_NAME = ".key-scrub-journal.json"
+MAINTENANCE_LOCK_NAME = RAW_MAINTENANCE_LOCK_NAME
+JOURNAL_NAME = KEY_SCRUB_JOURNAL_NAME
 DATABASE_PAGE_ROWS = 2_000
 # Cheap prefilter before parsing a stored row; anything sanitize_event can
 # change contains one of these substrings.
@@ -63,10 +67,21 @@ ROW_MARKERS = (
     '"event_type":',
     '"event_name":',
     '"reason":',
+    '"name":',
+    '"char":',
+    '"character":',
+    '"chars":',
+    '"text":',
+    '"unicode":',
+    'key_name":',
+    'key_text":',
 )
 
 
 LINE_MARKERS = tuple(marker.encode("ascii") for marker in ROW_MARKERS)
+# Lines already in sanitized form: candidates for duplicate removal when an
+# older line scrubs to the same event.
+SANITIZED_MARKERS = (REDACTED_KEY.encode("ascii"), REDACTED_TEXT.encode("ascii"))
 
 
 class ScrubError(RuntimeError):
@@ -85,20 +100,33 @@ def _canonical(event: dict) -> bytes:
     ).encode("utf-8")
 
 
-def scrub_line(body: bytes) -> tuple[bytes, int]:
-    """Return the scrubbed line body and the number of replaced values."""
-    if not body.strip() or not any(marker in body for marker in LINE_MARKERS):
-        return body, 0
+def _line_outcome(body: bytes, install_id: str | None) -> tuple[bytes, int, str | None]:
+    """Scrubbed body, replaced-value count, and a dedupe hash when relevant.
+
+    The hash is the event's install-scoped canonical hash, computed only for
+    lines that changed or are already sanitized, and only when `install_id`
+    is given (the production stream; the legacy dev lane is never deduped).
+    """
+    if not body.strip():
+        return body, 0, None
+    sanitized_marker = install_id is not None and any(
+        marker in body for marker in SANITIZED_MARKERS
+    )
+    if not sanitized_marker and not any(marker in body for marker in LINE_MARKERS):
+        return body, 0, None
     try:
         event = json.loads(body)
     except (UnicodeDecodeError, ValueError, RecursionError):
-        return body, 0
+        return body, 0, None
     if not isinstance(event, dict):
-        return body, 0
+        return body, 0, None
     sanitized, changed = sanitize_event(event)
-    if not changed:
-        return body, 0
-    return _canonical(sanitized), changed
+    if not changed and not sanitized_marker:
+        return body, 0, None
+    canonical = _canonical(sanitized)
+    replacement = canonical if changed else body
+    digest = event_hash(install_id, canonical) if install_id is not None else None
+    return replacement, changed, digest
 
 
 class SourceScan:
@@ -107,30 +135,52 @@ class SourceScan:
         self.offsets = {0: 0}
         self.changed_lines = 0
         self.redacted_values = 0
+        self.dropped_lines = 0
+        self.hashes: list[tuple[str, bool]] = []
         self.old_size = 0
         self.new_size = 0
         self.digest = hashlib.sha256()
 
 
-def _scrubbed_chunks(source: RawSource, scan: SourceScan):
-    """Yield scrubbed bytes for one source while recording offsets/counts."""
+def _scrubbed_chunks(
+    source: RawSource,
+    scan: SourceScan,
+    install_id: str | None,
+    duplicates: set[str],
+    emitted: set[str],
+):
+    """Yield scrubbed bytes for one source while recording offsets/counts.
+
+    A line whose hash is in `duplicates` is kept only on its first occurrence
+    across the install's stream (`emitted` carries that state between
+    sources); later copies are dropped.
+    """
     pending = []
     pending_bytes = 0
     with open_raw_source(source) as handle:
         for line in iter(handle.readline, b""):
             scan.old_size += len(line)
             body = line.rstrip(b"\r\n")
-            replacement, count = scrub_line(body)
+            replacement, count, digest = _line_outcome(body, install_id)
             if count:
                 scan.changed_lines += 1
                 scan.redacted_values += count
                 line = replacement + line[len(body):]
-            scan.new_size += len(line)
-            scan.digest.update(line)
+            keep = True
+            if digest is not None:
+                scan.hashes.append((digest, bool(count)))
+                if digest in duplicates:
+                    keep = digest not in emitted
+                    emitted.add(digest)
+            if keep:
+                scan.new_size += len(line)
+                scan.digest.update(line)
+                pending.append(line)
+                pending_bytes += len(line)
+            else:
+                scan.dropped_lines += 1
             if scan.old_size in scan.wanted:
                 scan.offsets[scan.old_size] = scan.new_size
-            pending.append(line)
-            pending_bytes += len(line)
             if pending_bytes >= RAW_COPY_BYTES:
                 yield b"".join(pending)
                 pending = []
@@ -231,6 +281,9 @@ def _rewrite_source(
     store: EventStore,
     source: RawSource,
     checkpoint,
+    install_id: str | None,
+    duplicates: set[str],
+    emitted: set[str],
 ) -> SourceScan:
     """Stage a scrubbed copy, journal it, then atomically replace the source."""
     wanted = set()
@@ -242,7 +295,9 @@ def _rewrite_source(
     try:
         if source.compressed:
             temporary, _ = stage_gzip_segment(
-                _scrubbed_chunks(source, scan), directory, source.sequence
+                _scrubbed_chunks(source, scan, install_id, duplicates, emitted),
+                directory,
+                source.sequence,
             )
         else:
             temporary = os.path.join(
@@ -251,7 +306,9 @@ def _rewrite_source(
                 % (os.path.basename(source.path), secrets.token_hex(4)),
             )
             with open(temporary, "xb") as handle:
-                for chunk in _scrubbed_chunks(source, scan):
+                for chunk in _scrubbed_chunks(
+                    source, scan, install_id, duplicates, emitted
+                ):
                     handle.write(chunk)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -296,13 +353,6 @@ def _rewrite_source(
     return scan
 
 
-def _count_source(source: RawSource) -> SourceScan:
-    scan = SourceScan(set())
-    for _ in _scrubbed_chunks(source, scan):
-        pass
-    return scan
-
-
 def _install_sources(directory: Path) -> list[RawSource]:
     sources = raw_sources(directory)
     dev = directory / "events.dev.jsonl"
@@ -314,6 +364,17 @@ def _install_sources(directory: Path) -> list[RawSource]:
 
 def _may_contain_key(text: str) -> bool:
     return any(marker in text for marker in ROW_MARKERS)
+
+
+def _empty_raw_counts(install_id: str) -> dict:
+    return {
+        "install_id": install_id,
+        "raw_sources": 0,
+        "raw_sources_rewritten": 0,
+        "raw_lines_changed": 0,
+        "raw_lines_deduplicated": 0,
+        "raw_values_redacted": 0,
+    }
 
 
 def _empty_database_counts() -> dict:
@@ -386,11 +447,24 @@ def scrub_database(store: EventStore, *, apply: bool) -> dict[str, dict]:
                         (new_hash, canonical.decode("utf-8"), summary, last_id),
                     )
                 except sqlite3.IntegrityError:
-                    # Two old rows differed only by the typed key; they are
-                    # now the same content-free event. Keep the earlier row.
-                    connection.execute(
-                        "DELETE FROM events WHERE event_id = ?", (last_id,)
-                    )
+                    # Rows that differed only by the typed key (or an old row
+                    # and its sanitized retry) are now the same content-free
+                    # event. Keep whichever row was stored first.
+                    other = connection.execute(
+                        "SELECT event_id FROM events WHERE install_id = ? AND event_hash = ?",
+                        (install_id, new_hash),
+                    ).fetchone()[0]
+                    if other > last_id:
+                        connection.execute("DELETE FROM events WHERE event_id = ?", (other,))
+                        connection.execute(
+                            "UPDATE events SET event_hash = ?, event_json = ?, summary = ? "
+                            "WHERE event_id = ?",
+                            (new_hash, canonical.decode("utf-8"), summary, last_id),
+                        )
+                    else:
+                        connection.execute(
+                            "DELETE FROM events WHERE event_id = ?", (last_id,)
+                        )
                     install["database_rows_merged"] += 1
         if apply:
             if summaries:
@@ -422,28 +496,64 @@ def scrub(root: Path, store: EventStore, *, apply: bool) -> dict:
             for stale in directory.glob(".*.scrub-*.tmp"):
                 stale.unlink()
             compact_pending_segments(directory)
-        report = {
-            "install_id": install_id,
-            "raw_sources": 0,
-            "raw_sources_rewritten": 0,
-            "raw_lines_changed": 0,
-            "raw_values_redacted": 0,
-        }
+        report = _empty_raw_counts(install_id)
+        sources = _install_sources(directory)
+        # Pass 1: count changes and collect hashes of changed or already
+        # sanitized lines. A hash seen more than once with at least one
+        # changed occurrence would leave duplicate raw lines after scrubbing.
+        scans = []
+        occurrences: dict[str, int] = {}
+        changed_hashes: set[str] = set()
+        for source in sources:
+            scan = SourceScan(set())
+            for _ in _scrubbed_chunks(
+                source, scan, install_id if source.sequence else None, set(), set()
+            ):
+                pass
+            for digest, changed in scan.hashes:
+                occurrences[digest] = occurrences.get(digest, 0) + 1
+                if changed:
+                    changed_hashes.add(digest)
+            scans.append(scan)
+        duplicates = {digest for digest in changed_hashes if occurrences[digest] > 1}
+        # Plan first occurrences in stream order, then rewrite affected sources.
+        emitted: set[str] = set()
+        plan = []
+        for source, scan in zip(sources, scans):
+            before = set(emitted)
+            drops = 0
+            if source.sequence:
+                for digest, _ in scan.hashes:
+                    if digest in duplicates:
+                        drops += digest in emitted
+                        emitted.add(digest)
+            plan.append((source, scan, before, drops))
         connection = store._connect(write=False)
         try:
-            for source in _install_sources(directory):
+            for source, scan, before, drops in plan:
                 report["raw_sources"] += 1
-                scan = _count_source(source)
-                if not scan.changed_lines:
+                if not scan.changed_lines and not drops:
                     continue
                 report["raw_lines_changed"] += scan.changed_lines
                 report["raw_values_redacted"] += scan.redacted_values
+                report["raw_lines_deduplicated"] += drops
                 if apply:
                     checkpoint = (
                         _checkpoint(connection, source.key) if source.sequence else None
                     )
-                    rewritten = _rewrite_source(root, store, source, checkpoint)
-                    if rewritten.changed_lines != scan.changed_lines:
+                    rewritten = _rewrite_source(
+                        root,
+                        store,
+                        source,
+                        checkpoint,
+                        install_id if source.sequence else None,
+                        duplicates if source.sequence else set(),
+                        before,
+                    )
+                    if (
+                        rewritten.changed_lines != scan.changed_lines
+                        or rewritten.dropped_lines != drops
+                    ):
                         raise ScrubError("raw source changed during scrub")
                     report["raw_sources_rewritten"] += 1
         finally:
@@ -452,15 +562,7 @@ def scrub(root: Path, store: EventStore, *, apply: bool) -> dict:
     database = scrub_database(store, apply=apply)
     known = {report["install_id"] for report in installs}
     for install_id in sorted(set(database) - known):
-        installs.append(
-            {
-                "install_id": install_id,
-                "raw_sources": 0,
-                "raw_sources_rewritten": 0,
-                "raw_lines_changed": 0,
-                "raw_values_redacted": 0,
-            }
-        )
+        installs.append(_empty_raw_counts(install_id))
     for report in installs:
         report.update(database.get(report["install_id"], _empty_database_counts()))
     if apply:

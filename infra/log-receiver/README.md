@@ -84,7 +84,13 @@ MERGED_SHA=<merge-sha>
 git fetch origin
 git cat-file -e "$MERGED_SHA^{commit}"
 
+# Stop ingest first. The key scrub below must run before any old-client retry
+# is stored, and the receiver stays stopped until it succeeds.
+fleet exec opti 'sudo systemctl stop murmur-logs'
+
 # Back up source, raw recovery archives, metadata, and any existing database.
+# These backups hold unscrubbed key identities; delete them once the scrub is
+# verified unless they are still needed for rollback.
 fleet exec opti 'set -eu; stamp=$(date -u +%Y%m%dT%H%M%SZ); backup=/home/george/murmur-logs-backups/$stamp; mkdir -p "$backup"; cp -a /home/george/murmur-logs-receiver.py "$backup"/; test ! -e /home/george/event_store.py || cp -a /home/george/event_store.py "$backup"/; tar -C /home/george -czf "$backup/murmur-logs-raw.tgz" --exclude="murmur-logs/events.sqlite3*" murmur-logs; if test -e /home/george/murmur-logs/events.sqlite3; then python3 /home/george/event_store.py --root /home/george/murmur-logs backup "$backup/events.sqlite3"; fi; echo "$backup"'
 
 # Stage, compile, and install every receiver-side Python file together. The
@@ -95,7 +101,9 @@ LOCAL_STAGE=$(mktemp -d)
 git archive "$MERGED_SHA" $(for f in $FILES; do echo infra/log-receiver/$f; done) | tar -x -C "$LOCAL_STAGE"
 for f in $FILES; do fleet cp "$LOCAL_STAGE/infra/log-receiver/$f" "opti:/tmp/$f.$MERGED_SHA"; done
 fleet exec opti "set -eu; cd /tmp; for f in $FILES; do python3 -m py_compile \$f.$MERGED_SHA; done; for f in $FILES; do install -m 0755 \$f.$MERGED_SHA /home/george/\$f; done"
-fleet exec opti 'sudo systemctl restart murmur-logs && systemctl is-active murmur-logs'
+# Review the content-free dry run, then scrub and start only if it succeeds.
+fleet exec --timeout 3600 opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs'
+fleet exec --timeout 3600 opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs --apply && sudo systemctl start murmur-logs && systemctl is-active murmur-logs'
 curl -fsS https://georgenijo.com/murmur/healthz
 ```
 
@@ -290,21 +298,33 @@ History stored before that change needs the one-shot scrub tool:
 
 ```bash
 # Dry run (the default): content-free per-install counts, changes nothing.
-fleet exec opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs'
+fleet exec --timeout 3600 opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs'
 
-# Apply with the receiver stopped; the tool refuses while it holds its lock.
-fleet exec opti 'sudo systemctl stop murmur-logs; python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs --apply; rc=$?; sudo systemctl start murmur-logs; exit $rc'
+# Apply with the receiver stopped (the tool refuses while it holds its lock).
+# `&&` keeps the receiver stopped if the scrub fails; rerun the scrub, never
+# start the receiver around a failure.
+fleet exec --timeout 3600 opti 'sudo systemctl stop murmur-logs && python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs --apply && sudo systemctl start murmur-logs'
 ```
 
+Sanitization matches rdev forms embedded anywhere in a string, including
+summaries, on token boundaries (`MyKeyPress(KeyA)`, `/models/KeyA/`, or
+`KeyA-7B` are untouched). It also redacts character-bearing name fields:
+`event_name` everywhere, and `name`/`char`/`text`-style fields of
+`stream: "keyboard"` events.
+
 `--apply` rewrites the live file, every sealed gzip segment, and any legacy
-`events.dev.jsonl` through a fsynced temporary and an atomic rename. It then
+`events.dev.jsonl` through a fsynced temporary and an atomic rename. Raw lines
+that become identical to another line once sanitized keep only their first
+occurrence in the install's stream. It then
 updates matching SQLite rows (canonical JSON, event hash, and summary/FTS) in
 one rowid-ordered pass and a single transaction with `secure_delete` on,
 optimizes FTS when a summary changed, and truncates the WAL. Rows that
 differed only by the typed key become identical and are merged into the
-earliest row. A small `.key-scrub-journal.json` records each file rewrite so
-an interrupted run finishes the matching backfill-checkpoint update when
-rerun. Reconciliation continues to prove the projection afterwards.
+earliest stored row. A small `.key-scrub-journal.json` records each file
+rewrite so an interrupted run finishes the matching backfill-checkpoint update
+when rerun. While that journal exists the receiver refuses to start, so no
+ingest can change a half-scrubbed file. Reconciliation continues to prove the
+projection afterwards.
 
 The tool deliberately keeps no unscrubbed copy, because a retained backup
 would retain the key identities being removed. It does not touch existing

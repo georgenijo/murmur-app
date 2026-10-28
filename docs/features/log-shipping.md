@@ -25,8 +25,10 @@ acknowledged and discarded. No user setup, UI, or permissions prompt is added.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
 - App versions up to 0.52.2 shipped keyboard events whose fields named the
   typed key (`KeyPress(KeyI)`, `Some(Num4)`). The receiver replaces those rdev
-  forms with a content-free `non_hotkey_key` class before storing anything, and
-  only configured hotkey names (modifiers, `Function`, F1-F20) are kept. A
+  forms, wherever they appear in a value or summary, with a content-free
+  `non_hotkey_key` class before storing anything, redacts typed-character name
+  fields, and keeps only configured hotkey names (modifiers, `Function`,
+  F1-F20). A
   one-shot scrub tool applies the same rule to history stored earlier (see
   [infra/log-receiver/README.md](../../infra/log-receiver/README.md#typed-key-identity-sanitization-and-scrub)).
 

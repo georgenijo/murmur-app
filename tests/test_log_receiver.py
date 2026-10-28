@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import http.client
+import io
 import json
+import sys
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2134,6 +2136,41 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertGreaterEqual(
             usage["bytes"], sealed[0].stat().st_size + live.stat().st_size
         )
+
+    def test_latest_window_stays_exact_when_a_seal_races_the_export(self) -> None:
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = live.read_bytes()
+        store_module = sys.modules["event_store"]
+        original = store_module.open_pinned_source
+        raced = []
+
+        def seal_before_live_open(source):
+            if not source.sealed and not raced:
+                raced.append(source)
+                store_module.seal_live_file(live.parent)
+                live.write_text(
+                    json.dumps(event("new generation", timestamp="2026-08-06T00:00:00Z"))
+                    + "\n"
+                )
+            return original(source)
+
+        with mock.patch.object(store_module, "open_pinned_source", seal_before_live_open):
+            status, _, body = self.get(f"/install/{self.install_id}/raw?kind=prod&limit=200")
+
+        stream = before + live.read_bytes()
+        self.assertEqual(len(raced), 1)
+        self.assertEqual(status, 200)
+        self.assertEqual(body.splitlines(), stream.splitlines()[-200:])
+
+    def test_receiver_refuses_to_start_over_an_unfinished_scrub(self) -> None:
+        journal = Path(receiver.ROOT) / receiver.KEY_SCRUB_JOURNAL_NAME
+        receiver.refuse_unfinished_scrub()
+        journal.write_text("{}", encoding="utf-8")
+
+        with mock.patch.object(receiver.sys, "stderr", new=io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit):
+                receiver.refuse_unfinished_scrub()
+        self.assertIn("unfinished key scrub", stderr.getvalue())
 
     def test_startup_recovery_seals_installs_already_over_cap(self) -> None:
         live = Path(receiver.ROOT) / self.install_id / "events.jsonl"

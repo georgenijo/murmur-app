@@ -181,6 +181,7 @@ class KeyScrubTests(unittest.TestCase):
         self.assertEqual(affected["raw_lines_changed"], 8)
         self.assertEqual(affected["raw_values_redacted"], 17)
         self.assertEqual(affected["raw_sources_rewritten"], 0)
+        self.assertEqual(affected["raw_lines_deduplicated"], 1)
         self.assertEqual(affected["database_rows_changed"], 7)
         self.assertEqual(affected["database_rows_merged"], 1)
         self.assertEqual(by_install[CLEAN_ID]["raw_lines_changed"], 0)
@@ -245,6 +246,77 @@ class KeyScrubTests(unittest.TestCase):
 
         self.assertEqual((retry.inserted, retry.duplicates), (0, 2))
         self.assertEqual(self.store.event_count(INSTALL_ID), count)
+
+    def test_embedded_summaries_and_typed_names_are_scrubbed_from_history_and_fts(self) -> None:
+        legacy = heartbeat(30)
+        legacy["summary"] = "rejected KeyPress(Num4) in listener"
+        named = keyboard(31, "ShiftLeft")
+        named["data"]["event_name"] = "a"
+        with mock.patch.object(store_module, "sanitize_event", lambda event: (event, 0)):
+            self.ingest([legacy, named])
+
+        code, report = self.run_tool("--apply")
+
+        self.assertEqual(code, 0)
+        affected = next(item for item in report["installs"] if item["install_id"] == INSTALL_ID)
+        self.assertEqual(affected["database_summaries_changed"], 1)
+        text = raw_text(self.install)
+        database = self.database_text()
+        self.assertNotIn("Num4", text + database)
+        self.assertNotIn('"event_name":"a"', text + database)
+        self.assertIn("rejected KeyPress(non_hotkey_key) in listener", text)
+        self.assertEqual(
+            self.store.query_events(
+                store_module.EventQuery(install_id=INSTALL_ID, search="Num4")
+            ).events,
+            (),
+        )
+        self.assertEqual(
+            len(
+                self.store.query_events(
+                    store_module.EventQuery(install_id=INSTALL_ID, search="non_hotkey_key")
+                ).events
+            ),
+            1,
+        )
+        store_module.backfill(self.store, self.root, max_lines=1_000)
+        self.assertTrue(store_module.reconcile(self.store, self.root)["database_ready"])
+
+    def test_post_deploy_retry_merges_into_the_earliest_row_and_first_raw_line(self) -> None:
+        old = keyboard(40, "KeyQ", timestamp="2026-10-25T00:00:00Z")
+        with mock.patch.object(store_module, "sanitize_event", lambda event: (event, 0)):
+            self.ingest([old])
+        connection = self.store._connect(write=False)
+        try:
+            original_id = connection.execute(
+                "SELECT event_id FROM events WHERE event_json LIKE '%KeyQ%'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        # The deployed receiver sanitizes the client's retry, so it hashes
+        # differently from the stored unsanitized row and is inserted again.
+        retry = self.ingest([old])
+        self.assertEqual(retry.inserted, 1)
+
+        code, report = self.run_tool("--apply")
+
+        self.assertEqual(code, 0)
+        affected = next(item for item in report["installs"] if item["install_id"] == INSTALL_ID)
+        # The fixture's KeyI/KeyJ pair plus this old row's retry.
+        self.assertEqual(affected["raw_lines_deduplicated"], 2)
+        connection = self.store._connect(write=False)
+        try:
+            rows = connection.execute(
+                "SELECT event_id FROM events WHERE event_json LIKE '%\"sequence\":40%'"
+            ).fetchall()
+        finally:
+            connection.close()
+        self.assertEqual([row[0] for row in rows], [original_id])
+        lines = [line for line in raw_text(self.install).splitlines() if '"sequence":40' in line]
+        self.assertEqual(len(lines), 1)
+        store_module.backfill(self.store, self.root, max_lines=1_000)
+        self.assertTrue(store_module.reconcile(self.store, self.root)["database_ready"])
+        self.assertTrue(store_module.backfill(self.store, self.root, max_lines=1_000)["complete"])
 
     def test_apply_refuses_while_the_receiver_holds_the_maintenance_lock(self) -> None:
         before = self.snapshot()

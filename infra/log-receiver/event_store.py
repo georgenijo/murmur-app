@@ -62,6 +62,11 @@ SEALED_SEGMENT_RE = re.compile(
 SEALED_TEMPORARY_RE = re.compile(r"^\.events-\d{6}\..*\.tmp$")
 SEAL_GZIP_LEVEL = 6
 RAW_COPY_BYTES = 1024 * 1024
+# Held shared by the running receiver and exclusively by the scrub tool.
+RAW_MAINTENANCE_LOCK_NAME = ".raw-maintenance.lock"
+# Present only while a scrub rewrite is unfinished; the receiver refuses to
+# start until a rerun of the scrub completes it.
+KEY_SCRUB_JOURNAL_NAME = ".key-scrub-journal.json"
 
 # rdev `Key` variants. Old clients (<= 0.52.2) shipped their Debug form, which
 # names the physical key the user typed. Only configured hotkeys may remain.
@@ -96,10 +101,29 @@ HOTKEY_KEYS = frozenset(
 )
 REDACTED_KEY = "non_hotkey_key"
 REDACTED_TEXT = "redacted_text"
-_KEY_EVENT_RE = re.compile(r"^(KeyPress|KeyRelease)\((.+)\)$")
-_SOME_RE = re.compile(r"^Some\((.+)\)$")
-_UNKNOWN_KEY_RE = re.compile(r"^Unknown\(\d+\)$")
-_QUOTED_DEBUG_RE = re.compile(r'^"(?:[^"\\]|\\.)*"$')
+_KEY_NAME_PATTERN = "(?:%s|Unknown\\(\\d+\\))" % "|".join(
+    sorted(RDEV_KEYS, key=len, reverse=True)
+)
+# Token boundaries keep paths and identifiers such as `/models/KeyA/`,
+# `KeyA-7B`, or `MyKeyPress(KeyA)` untouched.
+_EMBEDDED_KEY_EVENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(KeyPress|KeyRelease)\((%s)\)(?![A-Za-z0-9_])" % _KEY_NAME_PATTERN
+)
+_EMBEDDED_SOME_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_])Some\((%s)\)(?![A-Za-z0-9_])" % _KEY_NAME_PATTERN
+)
+_BARE_KEY_RE = re.compile(r"^%s$" % _KEY_NAME_PATTERN)
+_SOME_QUOTED_RE = re.compile(r'^Some\("(?:[^"\\]|\\.)*"\)$')
+_SOME_ANY_RE = re.compile(r"^Some\(.*\)$", re.DOTALL)
+# Fields that carry the character a key produced. `event_name` is rdev's
+# `Event::name` everywhere; the others only inside keyboard-stream events.
+_TEXT_FIELDS_ANYWHERE = frozenset(("event_name",))
+_TEXT_FIELDS_IN_KEYBOARD = frozenset(
+    ("name", "char", "character", "chars", "text", "unicode", "key_name", "key_text")
+)
+_ALREADY_REDACTED = frozenset(
+    ("", "None", REDACTED_TEXT, "Some(%s)" % REDACTED_TEXT, REDACTED_KEY)
+)
 MAX_SANITIZE_DEPTH = 64
 
 
@@ -242,50 +266,58 @@ def _is_key_field(name: str) -> bool:
     return name in ("key", "event_type", "event_name", "reason") or name.endswith("_key")
 
 
-def _is_key_identity(token: str) -> bool:
-    return token in RDEV_KEYS or bool(_UNKNOWN_KEY_RE.fullmatch(token))
+def _redact_key_event(match: re.Match) -> str:
+    if match.group(2) in HOTKEY_KEYS:
+        return match.group(0)
+    return "%s(%s)" % (match.group(1), REDACTED_KEY)
 
 
-def _sanitize_key_text(value: str, key_field: bool) -> str:
-    match = _KEY_EVENT_RE.fullmatch(value)
-    if match:
-        inner = match.group(2)
-        if _is_key_identity(inner) and inner not in HOTKEY_KEYS:
-            return "%s(%s)" % (match.group(1), REDACTED_KEY)
-        return value
-    if not key_field:
-        return value
-    match = _SOME_RE.fullmatch(value)
-    if match:
-        inner = match.group(1)
-        if _QUOTED_DEBUG_RE.fullmatch(inner):
-            return "Some(%s)" % REDACTED_TEXT
-        sanitized = _sanitize_key_text(inner, True)
-        return value if sanitized == inner else "Some(%s)" % sanitized
-    if _is_key_identity(value) and value not in HOTKEY_KEYS:
-        return REDACTED_KEY
-    return value
+def _redact_some_key(match: re.Match) -> str:
+    if match.group(1) in HOTKEY_KEYS:
+        return match.group(0)
+    return "Some(%s)" % REDACTED_KEY
 
 
-def _sanitize_value(value: object, key_field: bool, depth: int) -> tuple[object, int]:
+def _sanitize_key_text(value: str, field: str, keyboard_event: bool) -> tuple[str, int]:
+    if field in _TEXT_FIELDS_ANYWHERE or (
+        keyboard_event and field in _TEXT_FIELDS_IN_KEYBOARD
+    ):
+        if value in _ALREADY_REDACTED:
+            return value, 0
+        if _SOME_ANY_RE.fullmatch(value):
+            return "Some(%s)" % REDACTED_TEXT, 1
+        return REDACTED_TEXT, 1
+    sanitized = _EMBEDDED_KEY_EVENT_RE.sub(_redact_key_event, value)
+    sanitized = _EMBEDDED_SOME_KEY_RE.sub(_redact_some_key, sanitized)
+    changed = sanitized != value
+    if _is_key_field(field):
+        if _SOME_QUOTED_RE.fullmatch(sanitized):
+            return "Some(%s)" % REDACTED_TEXT, 1
+        if _BARE_KEY_RE.fullmatch(sanitized) and sanitized not in HOTKEY_KEYS:
+            return REDACTED_KEY, 1
+    return sanitized, int(changed)
+
+
+def _sanitize_value(
+    value: object, field: str, keyboard_event: bool, depth: int
+) -> tuple[object, int]:
     if depth > MAX_SANITIZE_DEPTH:
         # Producers emit at most a few levels; never reclassify stored history.
         return value, 0
     if isinstance(value, str):
-        sanitized = _sanitize_key_text(value, key_field)
-        return sanitized, int(sanitized != value)
+        return _sanitize_key_text(value, field, keyboard_event)
     if isinstance(value, dict):
         changed = 0
         result = {}
         for name, item in value.items():
-            result[name], count = _sanitize_value(item, _is_key_field(name), depth + 1)
+            result[name], count = _sanitize_value(item, name, keyboard_event, depth + 1)
             changed += count
         return (result if changed else value), changed
     if isinstance(value, list):
         changed = 0
         result = []
         for item in value:
-            sanitized, count = _sanitize_value(item, key_field, depth + 1)
+            sanitized, count = _sanitize_value(item, field, keyboard_event, depth + 1)
             result.append(sanitized)
             changed += count
         return (result if changed else value), changed
@@ -295,15 +327,20 @@ def _sanitize_value(value: object, key_field: bool, depth: int) -> tuple[object,
 def sanitize_event(event: dict) -> tuple[dict, int]:
     """Replace typed-key identities from old clients with a content-free class.
 
-    rdev Debug forms (`KeyPress(KeyI)`, `Some(Num4)`, bare `SemiColon`, and
-    `Some("a")` key names) become `non_hotkey_key`/`redacted_text`. Configured
-    hotkeys (modifiers, Function, F1-F20) and unrelated values such as
-    `Some(Idle)` detector states are preserved. Returns the event and the
-    number of replaced values; an unchanged event is returned as-is.
+    rdev Debug forms embedded anywhere in any string (`KeyPress(KeyI)`,
+    `KeyRelease(Num4)`, `Some(Slash)`, including summaries) become
+    `non_hotkey_key`. In key fields a bare key name or `Some("a")` is
+    replaced too, and character-bearing name fields (`event_name`, plus
+    `name`/`char`/`text`-style fields of keyboard events) become
+    `redacted_text`. Configured hotkeys (modifiers, Function, F1-F20) and
+    unrelated values such as `Some(Idle)` detector states are kept. Returns
+    the event and the number of changed values; an unchanged event is
+    returned as-is.
     """
     if not isinstance(event, dict):
         raise InvalidEvent("event must be an object")
-    sanitized, changed = _sanitize_value(event, False, 0)
+    keyboard_event = event.get("stream") == "keyboard" or event.get("target") == "keyboard"
+    sanitized, changed = _sanitize_value(event, "", keyboard_event, 0)
     return sanitized, changed
 
 
@@ -469,31 +506,68 @@ def _current_source(source: RawSource) -> RawSource:
     raise FileNotFoundError(source.path)
 
 
+def _gzip_length(raw_handle) -> int:
+    """gzip ISIZE of an opened file (segments are far below 4 GiB)."""
+    descriptor = raw_handle.fileno()
+    size = os.fstat(descriptor).st_size
+    if size < 18:
+        raise StoreCorrupt("sealed raw segment is truncated")
+    return int.from_bytes(os.pread(descriptor, 4, size - 4), "little")
+
+
+def open_pinned_source(source: RawSource) -> tuple[RawSource, object, int]:
+    """Open a source, returning the resolved source, handle, and length.
+
+    The kind (gzip or plain) and the uncompressed length both come from the
+    inode actually opened, so a compaction or rename racing this call cannot
+    pair a gzip stream with a plain length. A pending segment that finished
+    compaction before it could be opened is re-resolved to its gzip.
+    """
+    for _ in range(3):
+        source = _current_source(source)
+        try:
+            if source.compressed:
+                handle = gzip.open(source.path, "rb")
+                try:
+                    return source, handle, _gzip_length(handle.fileobj)
+                except BaseException:
+                    handle.close()
+                    raise
+            handle = open(source.path, "rb")
+            return source, handle, os.fstat(handle.fileno()).st_size
+        except FileNotFoundError:
+            if not source.sealed or source.compressed:
+                raise
+    raise FileNotFoundError(source.path)
+
+
 def open_raw_source(source: RawSource):
-    source = _current_source(source)
-    if source.compressed:
-        return gzip.open(source.path, "rb")
-    return open(source.path, "rb")
+    return open_pinned_source(source)[1]
 
 
 def raw_source_size(source: RawSource) -> int:
-    """Uncompressed byte length (gzip ISIZE; segments are far below 4 GiB)."""
-    source = _current_source(source)
-    if not source.compressed:
-        return os.path.getsize(source.path)
-    with open(source.path, "rb") as handle:
-        handle.seek(-4, os.SEEK_END)
-        return int.from_bytes(handle.read(4), "little")
+    """Uncompressed byte length of a source, measured on one opened inode."""
+    _, handle, size = open_pinned_source(source)
+    handle.close()
+    return size
+
+
+def _handle_identity(handle) -> tuple[int, int, int]:
+    raw = handle.fileobj if isinstance(handle, gzip.GzipFile) else handle
+    status = os.fstat(raw.fileno())
+    return status.st_dev, status.st_ino, status.st_mtime_ns
 
 
 def open_raw_snapshot(
-    install_directory: str | os.PathLike[str], *, attempts: int = 3
+    install_directory: str | os.PathLike[str], *, attempts: int = 5
 ) -> list[tuple[RawSource, object, int]]:
-    """Open every raw source with a size fixed at open time.
+    """Open every raw source with lengths fixed at open time.
 
-    Open descriptors pin inodes, so a later seal (rename) or compaction cannot
-    change what is read. A seal between listing and opening the live file is
-    detected by re-listing and retried. Callers must close every handle.
+    Open descriptors pin inodes, so later appends, seals, or compaction cannot
+    change what is read. The snapshot is accepted only if, after opening, the
+    sealed count is unchanged and the live path still names the opened inode;
+    otherwise a seal raced the open and it is retried. Callers must close
+    every handle.
     """
     directory = os.fspath(install_directory)
     for _ in range(attempts):
@@ -501,18 +575,19 @@ def open_raw_snapshot(
         opened: list[tuple[RawSource, object, int]] = []
         try:
             for source in sources:
-                source = _current_source(source)
-                handle = open_raw_source(source)
-                opened.append((source, handle, 0))
-                size = (
-                    raw_source_size(source)
-                    if source.compressed
-                    else os.fstat(handle.fileno()).st_size
-                )
-                opened[-1] = (source, handle, size)
-            sealed_before = sum(1 for source in sources if source.sealed)
-            sealed_after = sum(1 for source in raw_sources(directory) if source.sealed)
-            if sealed_before == sealed_after:
+                opened.append(open_pinned_source(source))
+            stable = sum(1 for source in sources if source.sealed) == sum(
+                1 for source in raw_sources(directory) if source.sealed
+            )
+            live = [item for item in opened if not item[0].sealed]
+            if stable and live:
+                try:
+                    current = os.stat(live[0][0].path)
+                    identity = _handle_identity(live[0][1])
+                    stable = (current.st_dev, current.st_ino) == identity[:2]
+                except FileNotFoundError:
+                    stable = False
+            if stable:
                 return opened
         except FileNotFoundError:
             pass
@@ -523,6 +598,11 @@ def open_raw_snapshot(
         for _, handle, _ in opened:
             handle.close()
     raise StoreBusy("raw sources changed while opening")
+
+
+def close_snapshot(snapshot: Sequence[tuple[RawSource, object, int]]) -> None:
+    for _, handle, _ in snapshot:
+        handle.close()
 
 
 def iter_snapshot_lines(snapshot: Sequence[tuple[RawSource, object, int]]):
@@ -1747,15 +1827,11 @@ def _bounded_line(handle, remaining: int) -> tuple[bytes, int, bool]:
 
 def iter_source_lines(source: RawSource):
     """Yield `(raw_line, oversized)` across one source's uncompressed bytes."""
-    source, size, _ = _source_snapshot(source)
-    offset = 0
-    with open_raw_source(source) as handle:
-        while offset < size:
-            raw, consumed, oversized = _bounded_line(handle, size - offset)
-            if consumed <= 0:
-                return
-            offset += consumed
-            yield raw, oversized
+    pinned = open_pinned_source(source)
+    try:
+        yield from iter_snapshot_lines([pinned])
+    finally:
+        pinned[1].close()
 
 
 def _load_metadata(root: Path, install_id: str) -> dict:
@@ -1800,9 +1876,14 @@ def discover_sources(root: Path) -> list[RawSource]:
     return sources
 
 
-def _source_snapshot(source: RawSource) -> tuple[RawSource, int, int]:
-    source = _current_source(source)
-    return source, raw_source_size(source), os.stat(source.path).st_mtime_ns
+def discover_install_directories(root: Path) -> list[tuple[str, Path]]:
+    if not root.is_dir():
+        return []
+    return [
+        (directory.name.lower(), directory)
+        for directory in sorted(root.iterdir())
+        if directory.is_dir() and INSTALL_ID_RE.fullmatch(directory.name)
+    ]
 
 
 def backfill(
@@ -1817,87 +1898,95 @@ def backfill(
     if not 1 <= batch_size <= MAX_BACKFILL_BATCH:
         raise StoreError("batch-size is out of bounds")
     processed = inserted = duplicates = malformed = 0
-    sources = discover_sources(root)
-    for source in sources:
+    for install_id, directory in discover_install_directories(root):
         if processed >= max_lines:
             break
-        install_id = source.install_id
-        relative = source.key
-        source, snapshot_size, mtime_ns = _source_snapshot(source)
-        offset = store.checkpoint_offset(relative)
-        if offset > snapshot_size:
-            raise StoreError("backfill source shrank; operator reset is required")
-        metadata = _load_metadata(root, install_id)
-        state = _load_state(root, install_id)
-        if state is not None:
-            store.update_state(install_id, state, metadata=metadata)
-        if offset == snapshot_size:
-            # Already imported; seeking a gzip segment would decompress it.
-            continue
-        with open_raw_source(source) as handle:
-            handle.seek(offset)
-            carried = None
-            while offset < snapshot_size and processed < max_lines:
-                batch_start = offset
-                events: list[dict] = []
-                raw_count = malformed_count = 0
-                retained_bytes = 0
-                batch_end = offset
-                while (
-                    batch_end < snapshot_size
-                    and raw_count < batch_size
-                    and processed + raw_count < max_lines
-                ):
-                    if carried is not None:
-                        raw, consumed, oversized = carried
-                        carried = None
-                    else:
-                        raw, consumed, oversized = _bounded_line(
-                            handle, snapshot_size - batch_end
-                        )
-                    if consumed <= 0:
-                        break
-                    batch_end += consumed
-                    raw_count += 1
-                    if (
-                        not oversized
-                        and events
-                        and retained_bytes + len(raw) > MAX_BACKFILL_BATCH_BYTES
-                    ):
-                        # Carry the line instead of seeking back: gzip
-                        # sources cannot rewind without re-decompressing.
-                        carried = (raw, consumed, oversized)
-                        batch_end -= consumed
-                        raw_count -= 1
-                        break
-                    if oversized:
-                        malformed_count += 1
-                        continue
-                    try:
-                        events.append(parse_event_line(raw.strip()))
-                        retained_bytes += len(raw)
-                    except InvalidEvent:
-                        malformed_count += 1
-                if raw_count == 0:
+        # One pinned snapshot per install: a concurrent seal can never make a
+        # checkpoint key read another generation's bytes.
+        snapshot = open_raw_snapshot(directory)
+        try:
+            if not snapshot:
+                continue
+            metadata = _load_metadata(root, install_id)
+            state = _load_state(root, install_id)
+            if state is not None:
+                store.update_state(install_id, state, metadata=metadata)
+            for source, handle, snapshot_size in snapshot:
+                if processed >= max_lines:
                     break
-                result = store.import_backfill_chunk(
-                    install_id,
-                    relative,
-                    events=events,
-                    raw_lines=raw_count,
-                    malformed_lines=malformed_count,
-                    start_offset=batch_start,
-                    end_offset=batch_end,
-                    source_size=snapshot_size,
-                    source_mtime_ns=mtime_ns,
-                    complete=batch_end >= snapshot_size,
-                    metadata=metadata,
-                )
-                offset = batch_end
-                processed += raw_count
-                inserted += result.inserted
-                duplicates += result.duplicates
-                malformed += malformed_count
+                relative = source.key
+                mtime_ns = _handle_identity(handle)[2]
+                offset = store.checkpoint_offset(relative)
+                if offset > snapshot_size:
+                    raise StoreError("backfill source shrank; operator reset is required")
+                if offset == snapshot_size:
+                    # Already imported; seeking a gzip segment would decompress it.
+                    continue
+                handle.seek(offset)
+                carried = None
+                while offset < snapshot_size and processed < max_lines:
+                    batch_start = offset
+                    events: list[dict] = []
+                    raw_count = malformed_count = 0
+                    retained_bytes = 0
+                    batch_end = offset
+                    while (
+                        batch_end < snapshot_size
+                        and raw_count < batch_size
+                        and processed + raw_count < max_lines
+                    ):
+                        if carried is not None:
+                            raw, consumed, oversized = carried
+                            carried = None
+                        else:
+                            raw, consumed, oversized = _bounded_line(
+                                handle, snapshot_size - batch_end
+                            )
+                        if consumed <= 0:
+                            break
+                        batch_end += consumed
+                        raw_count += 1
+                        if (
+                            not oversized
+                            and events
+                            and retained_bytes + len(raw) > MAX_BACKFILL_BATCH_BYTES
+                        ):
+                            # Carry the line instead of seeking back: gzip
+                            # sources cannot rewind without re-decompressing.
+                            carried = (raw, consumed, oversized)
+                            batch_end -= consumed
+                            raw_count -= 1
+                            break
+                        if oversized:
+                            malformed_count += 1
+                            continue
+                        try:
+                            events.append(parse_event_line(raw.strip()))
+                            retained_bytes += len(raw)
+                        except InvalidEvent:
+                            malformed_count += 1
+                    if raw_count == 0:
+                        break
+                    result = store.import_backfill_chunk(
+                        install_id,
+                        relative,
+                        events=events,
+                        raw_lines=raw_count,
+                        malformed_lines=malformed_count,
+                        start_offset=batch_start,
+                        end_offset=batch_end,
+                        source_size=snapshot_size,
+                        source_mtime_ns=mtime_ns,
+                        complete=batch_end >= snapshot_size,
+                        metadata=metadata,
+                    )
+                    offset = batch_end
+                    processed += raw_count
+                    inserted += result.inserted
+                    duplicates += result.duplicates
+                    malformed += malformed_count
+        finally:
+            close_snapshot(snapshot)
     reports = store.checkpoint_reports()
     finished = {
         report["source_path"]
@@ -1905,6 +1994,7 @@ def backfill(
         if report["complete"] == 1
         and report["byte_offset"] == report["source_size"]
     }
+    sources = discover_sources(root)
     complete = bool(sources) and all(source.key in finished for source in sources)
     return {
         "schema": "murmur-event-backfill/v1",
@@ -1917,7 +2007,9 @@ def backfill(
 
 
 def _scan_reconciliation_sources(
-    install_id: str, sources: Sequence[RawSource], temporary_directory: str
+    install_id: str,
+    snapshot: Sequence[tuple[RawSource, object, int]],
+    temporary_directory: str,
 ) -> dict:
     raw_lines = valid_objects = malformed_lines = duplicates = untimed_events = 0
     earliest = latest = None
@@ -1927,41 +2019,39 @@ def _scan_reconciliation_sources(
     dedupe.execute("PRAGMA synchronous = OFF")
     dedupe.execute("CREATE TABLE hashes(value TEXT PRIMARY KEY) WITHOUT ROWID")
     source_sizes = {}
-    for source in sources:
-        source, snapshot_size, _ = _source_snapshot(source)
+    for source, handle, snapshot_size in snapshot:
         source_sizes[source.key] = snapshot_size
         offset = 0
-        with open_raw_source(source) as handle:
-            while offset < snapshot_size:
-                raw, consumed, oversized = _bounded_line(handle, snapshot_size - offset)
-                if consumed <= 0:
-                    break
-                offset += consumed
-                raw_lines += 1
-                if oversized:
-                    malformed_lines += 1
-                    continue
-                try:
-                    event = parse_event_line(raw.strip())
-                    prepared = prepare_event(install_id, event)
-                except InvalidEvent:
-                    malformed_lines += 1
-                    continue
-                valid_objects += 1
-                if prepared.timestamp_us is None:
-                    untimed_events += 1
-                cursor = dedupe.execute(
-                    "INSERT OR IGNORE INTO hashes(value) VALUES (?)", (prepared.event_hash,)
+        while offset < snapshot_size:
+            raw, consumed, oversized = _bounded_line(handle, snapshot_size - offset)
+            if consumed <= 0:
+                break
+            offset += consumed
+            raw_lines += 1
+            if oversized:
+                malformed_lines += 1
+                continue
+            try:
+                event = parse_event_line(raw.strip())
+                prepared = prepare_event(install_id, event)
+            except InvalidEvent:
+                malformed_lines += 1
+                continue
+            valid_objects += 1
+            if prepared.timestamp_us is None:
+                untimed_events += 1
+            cursor = dedupe.execute(
+                "INSERT OR IGNORE INTO hashes(value) VALUES (?)", (prepared.event_hash,)
+            )
+            if cursor.rowcount != 1:
+                duplicates += 1
+            if prepared.timestamp_us is not None:
+                earliest = (
+                    prepared.timestamp_us if earliest is None else min(earliest, prepared.timestamp_us)
                 )
-                if cursor.rowcount != 1:
-                    duplicates += 1
-                if prepared.timestamp_us is not None:
-                    earliest = (
-                        prepared.timestamp_us if earliest is None else min(earliest, prepared.timestamp_us)
-                    )
-                    latest = (
-                        prepared.timestamp_us if latest is None else max(latest, prepared.timestamp_us)
-                    )
+                latest = (
+                    prepared.timestamp_us if latest is None else max(latest, prepared.timestamp_us)
+                )
     digest = hashlib.sha256()
     for row in dedupe.execute("SELECT value FROM hashes ORDER BY value"):
         digest.update(row[0].encode("ascii"))
@@ -1983,14 +2073,18 @@ def _scan_reconciliation_sources(
 def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dict:
     reports = []
     all_ready = True
-    by_install: dict[str, list[RawSource]] = {}
-    for raw_source in discover_sources(root):
-        by_install.setdefault(raw_source.install_id, []).append(raw_source)
     connection = store._connect(write=False)
     try:
-        for install_id, sources in by_install.items():
-            with tempfile.TemporaryDirectory(prefix="murmur-reconcile-") as directory:
-                source = _scan_reconciliation_sources(install_id, sources, directory)
+        for install_id, install_directory in discover_install_directories(root):
+            snapshot = open_raw_snapshot(install_directory)
+            try:
+                if not snapshot:
+                    continue
+                with tempfile.TemporaryDirectory(prefix="murmur-reconcile-") as directory:
+                    source = _scan_reconciliation_sources(install_id, snapshot, directory)
+            finally:
+                close_snapshot(snapshot)
+            sources = [item[0] for item in snapshot]
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS count,

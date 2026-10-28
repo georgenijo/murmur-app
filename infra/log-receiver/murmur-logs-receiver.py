@@ -55,6 +55,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode
@@ -65,7 +66,9 @@ if RECEIVER_DIRECTORY not in sys.path:
     sys.path.insert(0, RECEIVER_DIRECTORY)
 
 from event_store import (  # noqa: E402
+    KEY_SCRUB_JOURNAL_NAME,
     RAW_LIVE_NAME,
+    RAW_MAINTENANCE_LOCK_NAME,
     ArchiveError,
     EventQuery,
     EventStore,
@@ -80,6 +83,8 @@ from event_store import (  # noqa: E402
     compact_pending_segments,
     decode_cursor,
     encode_cursor,
+    close_snapshot,
+    iter_snapshot_lines,
     iter_source_lines,
     normalize_state_snapshot,
     open_raw_snapshot,
@@ -230,7 +235,7 @@ _store_init_lock = threading.Lock()
 _initialized_store_paths = set()
 # Held shared for the receiver's lifetime; the one-shot scrub tool takes it
 # exclusively so it can never rewrite raw files under a running receiver.
-MAINTENANCE_LOCK_NAME = ".raw-maintenance.lock"
+MAINTENANCE_LOCK_NAME = RAW_MAINTENANCE_LOCK_NAME
 _compaction_lock = threading.Lock()
 _segment_cache_lock = threading.Lock()
 _segment_cache = {}
@@ -1613,43 +1618,43 @@ class ExportWindowTooLarge(Exception):
     pass
 
 
+def _tail_seekable(handle, size, n, max_bytes):
+    """Exact newest lines of a plain handle within its first `size` bytes."""
+    remaining = size
+    blocks = []
+    newline_count = 0
+    read_bytes = 0
+    while remaining > 0 and newline_count <= n and read_bytes < max_bytes:
+        block_size = min(64 * 1024, remaining, max_bytes - read_bytes)
+        remaining -= block_size
+        handle.seek(remaining)
+        block = handle.read(block_size)
+        blocks.append(block)
+        read_bytes += len(block)
+        newline_count += block.count(b"\n")
+    if remaining > 0 and newline_count <= n:
+        raise ExportWindowTooLarge
+    lines = b"".join(reversed(blocks)).splitlines()
+    return [line for line in lines if line.strip()][-n:]
+
+
 def tail_raw_lines(path, n, max_bytes=MAX_SCOPED_EXPORT_BYTES):
     """Return exact newest lines, or fail before returning a partial window."""
     if n <= 0:
         return []
     try:
-        size = os.path.getsize(path)
-        remaining = size
-        blocks = []
-        newline_count = 0
-        read_bytes = 0
         with open(path, "rb") as f:
-            while (
-                remaining > 0
-                and newline_count <= n
-                and read_bytes < max_bytes
-            ):
-                block_size = min(64 * 1024, remaining, max_bytes - read_bytes)
-                remaining -= block_size
-                f.seek(remaining)
-                block = f.read(block_size)
-                blocks.append(block)
-                read_bytes += len(block)
-                newline_count += block.count(b"\n")
-        if remaining > 0 and newline_count <= n:
-            raise ExportWindowTooLarge
-        lines = b"".join(reversed(blocks)).splitlines()
-        return [line for line in lines if line.strip()][-n:]
+            return _tail_seekable(f, os.fstat(f.fileno()).st_size, n, max_bytes)
     except OSError:
         return []
 
 
-def _tail_sealed_lines(source, n, max_bytes):
-    """Exact newest lines of a sealed segment by bounded forward scan."""
+def _tail_forward(entry, n, max_bytes):
+    """Exact newest lines of a gzip segment by bounded forward scan."""
     window = deque()
     window_bytes = 0
     trimmed = False
-    for raw, oversized in iter_source_lines(source):
+    for raw, oversized in iter_snapshot_lines([entry]):
         if not oversized and not raw.strip():
             continue
         size = MAX_EXPORT_LINE_SENTINEL if oversized else len(raw)
@@ -1666,22 +1671,23 @@ def _tail_sealed_lines(source, n, max_bytes):
     return [raw for raw, _ in window]
 
 
-def tail_install_lines(sources, n, max_bytes=MAX_SCOPED_EXPORT_BYTES):
-    """Exact newest n lines across sealed segments and the live file."""
+def tail_install_lines(snapshot, n, max_bytes=MAX_SCOPED_EXPORT_BYTES):
+    """Exact newest n lines across a pinned snapshot of every raw source."""
     if n <= 0:
         return []
     collected = []
     budget = max_bytes
-    for source in reversed(sources):
+    for entry in reversed(snapshot):
+        source, handle, size = entry
         need = n - len(collected)
         if need <= 0:
             break
         if budget <= 0:
             raise ExportWindowTooLarge
-        if source.sealed:
-            lines = _tail_sealed_lines(source, need, budget)
+        if source.compressed:
+            lines = _tail_forward(entry, need, budget)
         else:
-            lines = tail_raw_lines(source.path, need, max_bytes=budget)
+            lines = _tail_seekable(handle, size, need, budget)
         collected = lines + collected
         budget -= sum(len(line) + 1 for line in lines)
     return collected[-n:]
@@ -1695,21 +1701,38 @@ def count_lines(path):
         return 0
 
 
-def count_source_lines(source):
-    def compute():
-        with open_raw_source(source) as handle:
-            return sum(
-                buf.count(b"\n") for buf in iter(lambda: handle.read(1 << 20), b"")
-            )
+def _count_entry_lines(entry):
+    _, handle, size = entry
+    handle.seek(0)
+    total = remaining = 0
+    remaining = size
+    while remaining > 0:
+        chunk = handle.read(min(1 << 20, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        total += chunk.count(b"\n")
+    return total
 
+
+def count_install_lines(snapshot):
+    total = 0
+    for entry in snapshot:
+        total += _sealed_cached(entry[0], "lines", lambda entry=entry: _count_entry_lines(entry))
+    return total
+
+
+@contextmanager
+def install_snapshot(install_id, kind="prod"):
+    """Pinned raw sources for one stream; empty when the stream has none."""
     try:
-        return _sealed_cached(source, "lines", compute)
-    except (OSError, EOFError):
-        return 0
-
-
-def count_install_lines(sources):
-    return sum(count_source_lines(source) for source in sources)
+        snapshot = open_install_snapshot(install_id, kind)
+    except FileNotFoundError:
+        snapshot = []
+    try:
+        yield snapshot
+    finally:
+        close_snapshot(snapshot)
 
 
 def collect_installs():
@@ -1755,19 +1778,33 @@ def collect_installs():
             path = os.path.join(d, fname)
             kind = "dev" if ".dev." in fname else "prod"
             try:
-                sources = install_raw_sources(entry, kind)
+                snapshot = open_install_snapshot(entry, kind)
             except (OSError, StoreError):
-                sources = []
-            if not sources and os.path.exists(path):
-                sources = [RawSource(entry, 1, path, False, False)]
-            if not sources:
-                continue
-            last = tail_lines(path, 1)
-            if not last:
+                snapshot = []
+            if not snapshot and os.path.isfile(path):
+                # Not a recognized install ID: show the single legacy file.
                 try:
-                    last = tail_install_lines(sources, 1)
+                    handle = open(path, "rb")
+                except OSError:
+                    continue
+                snapshot = [
+                    (
+                        RawSource(entry, 1, path, False, False),
+                        handle,
+                        os.fstat(handle.fileno()).st_size,
+                    )
+                ]
+            if not snapshot:
+                continue
+            try:
+                try:
+                    last = tail_install_lines(snapshot, 1)
                 except (ExportWindowTooLarge, OSError, EOFError, StoreError):
                     last = []
+                line_count = count_install_lines(snapshot)
+            finally:
+                close_snapshot(snapshot)
+            sources = [source for source, _, _ in snapshot]
             last_event, last_ts = {}, ""
             if last:
                 try:
@@ -1788,7 +1825,7 @@ def collect_installs():
                 "specs": meta.get("specs", ""),
                 "mic": microphone_label(state),
                 "version": meta.get("last_version", "?"),
-                "events": count_install_lines(sources),
+                "events": line_count,
                 "bytes": raw_source_disk_bytes(sources),
                 "mtime": mtime,
                 "first_seen": os.path.getctime(d),
@@ -3104,9 +3141,9 @@ def load_json_file(path):
         return {}
 
 
-def load_recent_events(sources, limit, max_bytes=MAX_SCOPED_EXPORT_BYTES):
+def load_recent_events(snapshot, limit, max_bytes=MAX_SCOPED_EXPORT_BYTES):
     events = []
-    for raw in tail_install_lines(sources, limit, max_bytes=max_bytes):
+    for raw in tail_install_lines(snapshot, limit, max_bytes=max_bytes):
         try:
             event = json.loads(raw)
         except ValueError:
@@ -3699,18 +3736,21 @@ def render_install(install_id, kind, n=200):
                 meta = json.load(f)
         except (OSError, ValueError):
             pass
-        total = count_install_lines(sources)
         events = []
         window_bytes = max(512 * 1024, n * 600)
         lines = tail_lines(path, n, max_bytes=window_bytes)
-        if len(lines) < n and any(source.sealed for source in sources):
-            try:
-                lines = [
-                    line.decode("utf-8", "replace")
-                    for line in tail_install_lines(sources, n, max_bytes=window_bytes)
-                ]
-            except ExportWindowTooLarge:
-                pass
+        with install_snapshot(install_id, kind) as snapshot:
+            total = count_install_lines(snapshot)
+            if len(lines) < n and any(source.sealed for source, _, _ in snapshot):
+                try:
+                    lines = [
+                        line.decode("utf-8", "replace")
+                        for line in tail_install_lines(
+                            snapshot, n, max_bytes=window_bytes
+                        )
+                    ]
+                except ExportWindowTooLarge:
+                    pass
         for line in lines:
             try:
                 event = json.loads(line)
@@ -4385,6 +4425,93 @@ class Handler(BaseHTTPRequestHandler):
             or self.headers.get("Cf-Access-Authenticated-User-Email")
         )
 
+    def _raw_export(self, install_id, kind, params, snapshot):
+        try:
+            limit = export_limit(params)
+        except ValueError:
+            return self._reply(400, b"limit must be 200 or 500")
+        if limit is not None:
+            try:
+                lines = tail_install_lines(
+                    snapshot,
+                    limit,
+                    max_bytes=MAX_SCOPED_EXPORT_BYTES,
+                )
+            except ExportWindowTooLarge:
+                return self._reply(
+                    413,
+                    b"recent event window is too large; download entire log",
+                )
+            except (OSError, EOFError, StoreError):
+                return self._reply(503, b"raw history unavailable")
+            payload = b"\n".join(lines) + (b"\n" if lines else b"")
+            return self._attachment(
+                payload,
+                "application/x-ndjson",
+                "murmur-%s-%s-latest-%d.jsonl" % (install_id[:8], kind, limit),
+            )
+        # The complete stream is every sealed segment, decompressed in order,
+        # followed by the live file, with lengths fixed when the snapshot was
+        # opened so a concurrent append cannot overrun the declared length.
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Content-Length", str(sum(size for _, _, size in snapshot)))
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="murmur-%s-%s.jsonl"' % (install_id[:8], kind),
+            )
+            self.send_header("Cache-Control", "private, no-store")
+            self.end_headers()
+            for _, handle, size in snapshot:
+                handle.seek(0)
+                remaining = size
+                while remaining > 0:
+                    chunk = handle.read(min(1 << 20, remaining))
+                    if not chunk:
+                        raise EOFError("raw source shorter than declared")
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (OSError, EOFError, StoreError):
+            # Headers are already sent; dropping the connection makes the
+            # short body detectable instead of silently complete.
+            self.close_connection = True
+
+    def _llm_export(self, install_id, kind, params, snapshot):
+        try:
+            limit = export_limit(params, default=200)
+        except ValueError:
+            return self._reply(400, b"limit must be 200 or 500")
+        try:
+            events = load_recent_events(
+                snapshot,
+                limit,
+                max_bytes=MAX_SCOPED_EXPORT_BYTES,
+            )
+            total = count_install_lines(snapshot)
+        except ExportWindowTooLarge:
+            return self._reply(
+                413,
+                b"recent event window is too large; use raw entire log",
+            )
+        except (OSError, EOFError, StoreError):
+            return self._reply(503, b"raw history unavailable")
+        meta = load_json_file(os.path.join(ROOT, install_id, "meta.json"))
+        state = load_json_file(os.path.join(ROOT, install_id, "state.json"))
+        report = render_llm_report(
+            install_id,
+            kind,
+            events,
+            total,
+            meta,
+            state,
+        ).encode("utf-8")
+        return self._attachment(
+            report,
+            "text/markdown; charset=utf-8",
+            "murmur-%s-%s-llm-latest-%d.md" % (install_id[:8], kind, limit),
+        )
+
     def do_GET(self):
         if self.path == "/healthz":
             return self._reply(200, b"ok")
@@ -4453,110 +4580,22 @@ class Handler(BaseHTTPRequestHandler):
                     "text/html; charset=utf-8",
                 )
             if sub in ("raw", "llm"):
-                try:
-                    sources = install_raw_sources(install_id, kind)
-                except (OSError, StoreError):
-                    return self._reply(503, b"raw history unavailable")
-                if not sources:
-                    return self._reply(404, b"no such install")
-            if sub == "raw":
-                try:
-                    limit = export_limit(params)
-                except ValueError:
-                    return self._reply(400, b"limit must be 200 or 500")
-                if limit is not None:
-                    try:
-                        lines = tail_install_lines(
-                            sources,
-                            limit,
-                            max_bytes=MAX_SCOPED_EXPORT_BYTES,
-                        )
-                    except ExportWindowTooLarge:
-                        return self._reply(
-                            413,
-                            b"recent event window is too large; download entire log",
-                        )
-                    except (OSError, EOFError, StoreError):
-                        return self._reply(503, b"raw history unavailable")
-                    payload = b"\n".join(lines) + (b"\n" if lines else b"")
-                    return self._attachment(
-                        payload,
-                        "application/x-ndjson",
-                        "murmur-%s-%s-latest-%d.jsonl"
-                        % (install_id[:8], kind, limit),
-                    )
-                # The complete stream is every sealed segment, decompressed in
-                # order, followed by the live file. Handles and sizes are
-                # fixed before headers, so a concurrent append or seal cannot
-                # change the bytes or overrun the declared length.
+                # One pinned snapshot serves the whole response, so a seal or
+                # compaction mid-request cannot change which bytes are read.
                 try:
                     snapshot = open_install_snapshot(install_id, kind)
+                except FileNotFoundError:
+                    snapshot = []
                 except (OSError, StoreError):
                     return self._reply(503, b"raw history unavailable")
                 try:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/x-ndjson")
-                    self.send_header(
-                        "Content-Length", str(sum(size for _, _, size in snapshot))
-                    )
-                    self.send_header(
-                        "Content-Disposition",
-                        'attachment; filename="murmur-%s-%s.jsonl"'
-                        % (install_id[:8], kind),
-                    )
-                    self.send_header("Cache-Control", "private, no-store")
-                    self.end_headers()
-                    for _, handle, size in snapshot:
-                        remaining = size
-                        while remaining > 0:
-                            chunk = handle.read(min(1 << 20, remaining))
-                            if not chunk:
-                                raise EOFError("raw source shorter than declared")
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
-                except (OSError, EOFError, StoreError):
-                    # Headers are already sent; dropping the connection makes
-                    # the short body detectable instead of silently complete.
-                    self.close_connection = True
+                    if not snapshot:
+                        return self._reply(404, b"no such install")
+                    if sub == "raw":
+                        return self._raw_export(install_id, kind, params, snapshot)
+                    return self._llm_export(install_id, kind, params, snapshot)
                 finally:
-                    for _, handle, _ in snapshot:
-                        handle.close()
-                return
-            if sub == "llm":
-                try:
-                    limit = export_limit(params, default=200)
-                except ValueError:
-                    return self._reply(400, b"limit must be 200 or 500")
-                try:
-                    events = load_recent_events(
-                        sources,
-                        limit,
-                        max_bytes=MAX_SCOPED_EXPORT_BYTES,
-                    )
-                    total = count_install_lines(sources)
-                except ExportWindowTooLarge:
-                    return self._reply(
-                        413,
-                        b"recent event window is too large; use raw entire log",
-                    )
-                except (OSError, EOFError, StoreError):
-                    return self._reply(503, b"raw history unavailable")
-                meta = load_json_file(os.path.join(ROOT, install_id, "meta.json"))
-                state = load_json_file(os.path.join(ROOT, install_id, "state.json"))
-                report = render_llm_report(
-                    install_id,
-                    kind,
-                    events,
-                    total,
-                    meta,
-                    state,
-                ).encode("utf-8")
-                return self._attachment(
-                    report,
-                    "text/markdown; charset=utf-8",
-                    "murmur-%s-%s-llm-latest-%d.md"
-                    % (install_id[:8], kind, limit),
-                )
+                    close_snapshot(snapshot)
             if sub:
                 return self._reply(404)
             n = 200
@@ -4580,6 +4619,17 @@ def hold_maintenance_lock():
     return handle
 
 
+def refuse_unfinished_scrub():
+    """Fail loudly instead of ingesting into a half-scrubbed raw source."""
+    if os.path.exists(os.path.join(ROOT, KEY_SCRUB_JOURNAL_NAME)):
+        sys.stderr.write(
+            "murmur-logs: unfinished key scrub (%s); rerun "
+            "scrub_key_identities.py --apply before starting the receiver\n"
+            % KEY_SCRUB_JOURNAL_NAME
+        )
+        raise SystemExit(1)
+
+
 def _compact_installs(install_ids):
     for install_id in install_ids:
         compact_install(install_id)
@@ -4588,6 +4638,7 @@ def _compact_installs(install_ids):
 def main():
     os.makedirs(ROOT, exist_ok=True)
     maintenance_lock = hold_maintenance_lock()  # noqa: F841 - held until exit
+    refuse_unfinished_scrub()
     store = event_store()
     readiness = "sqlite" if store.is_dashboard_ready() else "raw-awaiting-reconciliation"
     pending = recover_raw_storage()
