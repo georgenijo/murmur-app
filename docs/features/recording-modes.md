@@ -104,7 +104,10 @@ timer publishes `hold-down-start` (a ~160ms press) arrives while the frontend's
 response returns `recording_starting` with its `recordingId`, the hook calls
 `cancel_native_recording({ expectedRecordingId })`. That cancels exactly the
 generation the start created and is a no-op for any other generation. A refused
-start drops the pending stop.
+start drops the pending stop. A start response for a generation whose lifecycle
+events already ended it (`recovering`, `idle`, or `processing`) is stale. Its
+state is not applied, so a late response cannot restore an externally
+cancelled start.
 
 **Residual cases.** A modifier held alone for longer than the window before the
 next key, for example a slow Shift+arrow selection, still starts and then
@@ -203,9 +206,11 @@ The 200ms hold promotion doubles as Both mode's arming window: a press that
 ends before promotion never emits `hold-down-start`. For a modifier trigger,
 any other key press during those 200ms, including a second modifier, ends the
 hold without a start and logs `keyboard.hotkey_arming_cancelled` with
-`mode: "both"`. A typed (non-modifier) key that ends the window resets the
-double-tap sequence directly instead of being fed to it. This is the same
-state `ComboCancelled` would reach, without logging the key. Double-tap detection is otherwise unchanged: the double-tap detector is
+`mode: "both"`. Any key press that ends the window, typed key or second
+modifier, resets the double-tap sequence directly instead of being fed to it,
+so no key reaches the double-tap rejection log. For a typed key this is the
+same state `ComboCancelled` would reach. A Shift+Command press therefore no
+longer counts as a first tap. Double-tap detection is otherwise unchanged: the double-tap detector is
 fed independently, so short taps still advance it and a single tap still stops
 a toggle-started recording.
 

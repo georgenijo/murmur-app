@@ -149,6 +149,41 @@ describe('useRecordingState transition ordering', () => {
     expect(mocks.cancelRecording).toHaveBeenCalledExactlyOnceWith(4);
   });
 
+  it('does not let a late start response restore a generation already cancelled elsewhere', async () => {
+    const start = deferred<{ type: string; state: string; recordingId: number }>();
+    mocks.startRecording.mockReturnValueOnce(start.promise);
+
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = current.handleHoldStart();
+    });
+    await act(async () => current.handleStop());
+    // An external cancellation (Escape, overlay) ends generation 9 before
+    // the start response arrives.
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 9 } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'starting' });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+    });
+    await act(async () => {
+      start.resolve({ type: 'recording_starting', state: 'starting', recordingId: 9 });
+      await starting;
+    });
+
+    expect(current.status).toBe('idle');
+    expect(mocks.cancelRecording).not.toHaveBeenCalled();
+
+    // The next generation's response is still applied.
+    mocks.startRecording.mockResolvedValueOnce({
+      type: 'recording_starting',
+      state: 'starting',
+      recordingId: 10,
+    });
+    await act(async () => current.handleHoldStart());
+    expect(current.status).toBe('starting');
+  });
+
   it('drops a pending-start release when the start is refused and does not leak it into the next start', async () => {
     const refused = deferred<{ type: string; state: string }>();
     mocks.startRecording.mockReturnValueOnce(refused.promise);

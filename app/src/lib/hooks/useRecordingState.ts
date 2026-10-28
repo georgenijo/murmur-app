@@ -58,6 +58,9 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const smartAutoRef = useRef(smartAuto);
   const recordingStartTimeRef = useRef(recordingStartTime);
   const latestRecordingGenerationRef = useRef(0);
+  // Highest generation whose lifecycle already left Starting/Recording. A
+  // start response for it arriving later is stale and must not restore it.
+  const endedRecordingGenerationRef = useRef(0);
   const cancelledDestinationGenerationRef = useRef(0);
   const completedRecordingIds = useRef(new Set<number>());
   const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
@@ -163,6 +166,16 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         // commits the state update, and transition decisions read this ref.
         statusRef.current = event.payload;
         setStatus(event.payload);
+        if (
+          event.payload === 'recovering'
+          || event.payload === 'idle'
+          || event.payload === 'processing'
+        ) {
+          endedRecordingGenerationRef.current = Math.max(
+            endedRecordingGenerationRef.current,
+            latestRecordingGenerationRef.current,
+          );
+        }
         // When recording starts from the overlay, handleStart doesn't run in this window.
         // Seed recordingStartTime so the duration timer ticks.
         if (event.payload === 'recording' && !recordingStartTimeRef.current) {
@@ -449,13 +462,17 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         // authority; never let a later invoke response overwrite them.
         const responseOwnsDictationState = res.type !== 'audio_recovering'
           && res.type !== 'already_starting';
+        // Lifecycle events for this generation may already have ended it
+        // (starting → recovering → idle) before this response arrived.
+        const generationEnded = typeof res.recordingId === 'number'
+          && res.recordingId <= endedRecordingGenerationRef.current;
         if (responseOwnsDictationState && isDictationStatus(res.state)) {
           // A fast device can emit Recording before the invoke promise resolves.
           // Never let the older `recording_starting` response move that newer
           // lifecycle event backwards.
           const staleStartingResponse = res.state === 'starting'
-            && statusRef.current !== 'idle'
-            && statusRef.current !== 'starting';
+            && (generationEnded
+              || (statusRef.current !== 'idle' && statusRef.current !== 'starting'));
           if (!staleStartingResponse) {
             statusRef.current = res.state;
             setStatus(res.state);
@@ -478,7 +495,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
             });
           }
         }
-        if (stopRequested && res.type === 'recording_starting') {
+        if (stopRequested && res.type === 'recording_starting' && !generationEnded) {
           // The hold was released before this start was accepted. Cancel the
           // generation it created; a newer recording is never touched.
           flog.info('recording', 'cancelling start released before acceptance', {

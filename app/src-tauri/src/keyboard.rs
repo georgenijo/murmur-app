@@ -981,18 +981,17 @@ fn dispatch_hold_down(
     }
 }
 
-/// Both mode: a typed key that ended a modifier hold's arming window resets
-/// the double-tap sequence directly instead of being fed to it. Feeding it
-/// reaches the same Idle state through `ComboCancelled`, but that path logs
-/// the typed key.
+/// Both mode: any key press that ended a modifier hold's arming window resets
+/// the double-tap sequence directly instead of being fed to it. A typed key
+/// would reach the same Idle state through `ComboCancelled`, which logs the
+/// key. A second modifier would leave the sequence in `WaitingFirstUp`, so the
+/// next typed key would be logged there instead.
 fn arming_combo_resets_double_tap(
     was_arming: bool,
     hold_result: HoldDownEvent,
     event_type: &EventType,
 ) -> bool {
-    was_arming
-        && hold_result == HoldDownEvent::Stop
-        && matches!(event_type, EventType::KeyPress(key) if !is_modifier(*key))
+    was_arming && hold_result == HoldDownEvent::Stop && matches!(event_type, EventType::KeyPress(_))
 }
 
 /// One content-free record per modifier hold that ended before its recording
@@ -3825,9 +3824,9 @@ mod tests {
             HoldDownEvent::Stop,
             &press(Key::KeyA)
         ));
-        // A second modifier is still fed (it never reaches a key-logging path
-        // inside the window), and so are releases and post-window combos.
-        assert!(!arming_combo_resets_double_tap(
+        // A second modifier also cancels arming and resets the sequence.
+        // Releases and post-window combos are still fed.
+        assert!(arming_combo_resets_double_tap(
             true,
             HoldDownEvent::Stop,
             &press(Key::MetaLeft)
@@ -3858,6 +3857,17 @@ mod tests {
         assert_eq!(dtap.last_rejection, None);
         both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
         assert_eq!(dtap.state, DetectorState::Idle);
+
+        // Shift, then Command inside the window, then a typed key: the
+        // sequence is already Idle, so the typed key reaches no rejection.
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::MetaLeft), false).is_empty());
+        assert_eq!(dtap.state, DetectorState::Idle);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::KeyA), false).is_empty());
+        assert_eq!(dtap.state, DetectorState::Idle);
+        assert_eq!(dtap.last_rejection, None);
     }
 
     #[test]
