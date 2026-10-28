@@ -166,7 +166,7 @@ The private one-shot path runs beside this diagram, never through it:
   shipped in batches of at most 1 MB like the live file.
 - If the saved file no longer exists (three or more rotations, or Clear logs),
   the oldest surviving file ships from the top. Only lines in the deleted file
-  are lost. State saved by older builds has no inode; it falls back to comparing
+  are lost. State saved by older builds has no file identity; it falls back to comparing
   the offset with the current file length (offset past the end means the file was
   rotated to `.1`) and adopts the identity on the next caught-up tick.
 - Batches are cut at line boundaries, max 1 MB per POST, max 8 POSTs per tick.
