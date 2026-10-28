@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Bounded SQLite query store for the Murmur diagnostic-log receiver.
 
-The raw per-install JSONL files remain the recovery and export source. This
+The raw per-install JSONL stream remains the recovery and export source. It is
+the ordered concatenation of immutable sealed segments under
+``<install>/sealed/`` followed by the live ``<install>/events.jsonl``. This
 module maintains an idempotent indexed projection, resumable backfill
 checkpoints, and a persisted readiness gate for historical dashboard reads.
 It intentionally uses only the Python standard library.
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import hashlib
 import hmac
 import json
@@ -49,6 +52,55 @@ STREAM_RE = re.compile(r"^[0-9A-Za-z_.:-]{1,40}$")
 LEVELS = frozenset(("trace", "debug", "info", "warn", "error"))
 EASTERN = ZoneInfo("America/New_York")
 MAX_TIME_US = 4_102_444_800_000_000  # 2100-01-01T00:00:00Z
+RAW_LIVE_NAME = "events.jsonl"
+# Deliberately not "archive": older installs already keep hang bundles there.
+SEALED_DIRECTORY = "sealed"
+SEALED_PENDING_RE = re.compile(r"^events-(\d{6})\.pending\.jsonl$")
+SEALED_SEGMENT_RE = re.compile(
+    r"^events-(\d{6})-(\d{8}T\d{6}Z|untimed)-(\d{8}T\d{6}Z|untimed)\.jsonl\.gz$"
+)
+SEALED_TEMPORARY_RE = re.compile(r"^\.events-\d{6}\..*\.tmp$")
+SEAL_GZIP_LEVEL = 6
+RAW_COPY_BYTES = 1024 * 1024
+
+# rdev `Key` variants. Old clients (<= 0.52.2) shipped their Debug form, which
+# names the physical key the user typed. Only configured hotkeys may remain.
+RDEV_KEYS = frozenset(
+    """
+    Alt AltGr Backspace CapsLock ControlLeft ControlRight Delete DownArrow End
+    Escape F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19
+    F20 F21 F22 F23 F24 Home LeftArrow MetaLeft MetaRight PageDown PageUp Return
+    RightArrow ShiftLeft ShiftRight Space Tab UpArrow PrintScreen ScrollLock
+    Pause NumLock BackQuote Num1 Num2 Num3 Num4 Num5 Num6 Num7 Num8 Num9 Num0
+    Minus Equal KeyQ KeyW KeyE KeyR KeyT KeyY KeyU KeyI KeyO KeyP LeftBracket
+    RightBracket KeyA KeyS KeyD KeyF KeyG KeyH KeyJ KeyK KeyL SemiColon Quote
+    BackSlash IntlBackslash KeyZ KeyX KeyC KeyV KeyB KeyN KeyM Comma Dot Slash
+    Insert KpReturn KpMinus KpPlus KpMultiply KpDivide Kp0 Kp1 Kp2 Kp3 Kp4 Kp5
+    Kp6 Kp7 Kp8 Kp9 KpDelete Function VolumeUp VolumeDown VolumeMute
+    BrightnessUp BrightnessDown PreviousTrack PlayPause PlayCd NextTrack
+    """.split()
+)
+HOTKEY_KEYS = frozenset(
+    (
+        "Alt",
+        "AltGr",
+        "ControlLeft",
+        "ControlRight",
+        "MetaLeft",
+        "MetaRight",
+        "ShiftLeft",
+        "ShiftRight",
+        "Function",
+        *("F%d" % number for number in range(1, 21)),
+    )
+)
+REDACTED_KEY = "non_hotkey_key"
+REDACTED_TEXT = "redacted_text"
+_KEY_EVENT_RE = re.compile(r"^(KeyPress|KeyRelease)\((.+)\)$")
+_SOME_RE = re.compile(r"^Some\((.+)\)$")
+_UNKNOWN_KEY_RE = re.compile(r"^Unknown\(\d+\)$")
+_QUOTED_DEBUG_RE = re.compile(r'^"(?:[^"\\]|\\.)*"$')
+MAX_SANITIZE_DEPTH = 64
 
 
 class StoreError(RuntimeError):
@@ -101,6 +153,7 @@ class IngestResult:
     received: int
     inserted: int
     duplicates: int
+    sealed: bool = False
 
 
 @dataclass(frozen=True)
@@ -185,7 +238,77 @@ def _bounded_text(value: object, maximum: int) -> str:
     return value[:maximum] if isinstance(value, str) else ""
 
 
+def _is_key_field(name: str) -> bool:
+    return name in ("key", "event_type", "event_name", "reason") or name.endswith("_key")
+
+
+def _is_key_identity(token: str) -> bool:
+    return token in RDEV_KEYS or bool(_UNKNOWN_KEY_RE.fullmatch(token))
+
+
+def _sanitize_key_text(value: str, key_field: bool) -> str:
+    match = _KEY_EVENT_RE.fullmatch(value)
+    if match:
+        inner = match.group(2)
+        if _is_key_identity(inner) and inner not in HOTKEY_KEYS:
+            return "%s(%s)" % (match.group(1), REDACTED_KEY)
+        return value
+    if not key_field:
+        return value
+    match = _SOME_RE.fullmatch(value)
+    if match:
+        inner = match.group(1)
+        if _QUOTED_DEBUG_RE.fullmatch(inner):
+            return "Some(%s)" % REDACTED_TEXT
+        sanitized = _sanitize_key_text(inner, True)
+        return value if sanitized == inner else "Some(%s)" % sanitized
+    if _is_key_identity(value) and value not in HOTKEY_KEYS:
+        return REDACTED_KEY
+    return value
+
+
+def _sanitize_value(value: object, key_field: bool, depth: int) -> tuple[object, int]:
+    if depth > MAX_SANITIZE_DEPTH:
+        # Producers emit at most a few levels; never reclassify stored history.
+        return value, 0
+    if isinstance(value, str):
+        sanitized = _sanitize_key_text(value, key_field)
+        return sanitized, int(sanitized != value)
+    if isinstance(value, dict):
+        changed = 0
+        result = {}
+        for name, item in value.items():
+            result[name], count = _sanitize_value(item, _is_key_field(name), depth + 1)
+            changed += count
+        return (result if changed else value), changed
+    if isinstance(value, list):
+        changed = 0
+        result = []
+        for item in value:
+            sanitized, count = _sanitize_value(item, key_field, depth + 1)
+            result.append(sanitized)
+            changed += count
+        return (result if changed else value), changed
+    return value, 0
+
+
+def sanitize_event(event: dict) -> tuple[dict, int]:
+    """Replace typed-key identities from old clients with a content-free class.
+
+    rdev Debug forms (`KeyPress(KeyI)`, `Some(Num4)`, bare `SemiColon`, and
+    `Some("a")` key names) become `non_hotkey_key`/`redacted_text`. Configured
+    hotkeys (modifiers, Function, F1-F20) and unrelated values such as
+    `Some(Idle)` detector states are preserved. Returns the event and the
+    number of replaced values; an unchanged event is returned as-is.
+    """
+    if not isinstance(event, dict):
+        raise InvalidEvent("event must be an object")
+    sanitized, changed = _sanitize_value(event, False, 0)
+    return sanitized, changed
+
+
 def prepare_event(install_id: str, event: dict) -> PreparedEvent:
+    event, _ = sanitize_event(event)
     canonical = canonical_event(event)
     timestamp_text = _bounded_text(event.get("timestamp"), 80)
     return PreparedEvent(
@@ -266,6 +389,354 @@ def _fsync_directory(path: str) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+@dataclass(frozen=True)
+class RawSource:
+    """One ordered part of an install's raw stream.
+
+    `sequence` is 1-based. A live file becomes the sealed segment with the same
+    sequence, so its backfill checkpoint key never changes when it is sealed.
+    """
+
+    install_id: str
+    sequence: int
+    path: str
+    compressed: bool
+    sealed: bool
+
+    @property
+    def key(self) -> str:
+        return raw_source_key(self.install_id, self.sequence)
+
+
+def raw_source_key(install_id: str, sequence: int) -> str:
+    base = "%s/%s" % (install_id, RAW_LIVE_NAME)
+    return base if sequence == 1 else "%s#%d" % (base, sequence)
+
+
+def raw_sources(install_directory: str | os.PathLike[str]) -> list[RawSource]:
+    """Return sealed segments in order followed by the live file, if any.
+
+    A published gzip segment wins over a pending (renamed but not yet
+    compressed) file with the same sequence; both hold identical bytes.
+    Temporary files are never sources. Gaps fail closed.
+    """
+    directory = os.fspath(install_directory)
+    install_id = normalize_install_id(os.path.basename(os.path.normpath(directory)))
+    sealed_directory = os.path.join(directory, SEALED_DIRECTORY)
+    segments: dict[int, RawSource] = {}
+    try:
+        names = os.listdir(sealed_directory)
+    except FileNotFoundError:
+        names = []
+    for name in names:
+        match = SEALED_SEGMENT_RE.fullmatch(name)
+        compressed = match is not None
+        if match is None:
+            match = SEALED_PENDING_RE.fullmatch(name)
+        if match is None:
+            continue
+        sequence = int(match.group(1))
+        existing = segments.get(sequence)
+        if compressed and existing is not None and existing.compressed:
+            raise StoreCorrupt("duplicate sealed raw segment")
+        if compressed or existing is None:
+            segments[sequence] = RawSource(
+                install_id,
+                sequence,
+                os.path.join(sealed_directory, name),
+                compressed,
+                True,
+            )
+    if sorted(segments) != list(range(1, len(segments) + 1)):
+        raise StoreCorrupt("sealed raw segments are not contiguous")
+    sources = [segments[sequence] for sequence in sorted(segments)]
+    live = os.path.join(directory, RAW_LIVE_NAME)
+    if os.path.isfile(live):
+        sources.append(RawSource(install_id, len(segments) + 1, live, False, False))
+    return sources
+
+
+def _current_source(source: RawSource) -> RawSource:
+    """Re-resolve a pending segment that finished compaction after listing."""
+    if not source.sealed or source.compressed or os.path.exists(source.path):
+        return source
+    directory = os.path.dirname(os.path.dirname(source.path))
+    for candidate in raw_sources(directory):
+        if candidate.sequence == source.sequence and candidate.sealed:
+            return candidate
+    raise FileNotFoundError(source.path)
+
+
+def open_raw_source(source: RawSource):
+    source = _current_source(source)
+    if source.compressed:
+        return gzip.open(source.path, "rb")
+    return open(source.path, "rb")
+
+
+def raw_source_size(source: RawSource) -> int:
+    """Uncompressed byte length (gzip ISIZE; segments are far below 4 GiB)."""
+    source = _current_source(source)
+    if not source.compressed:
+        return os.path.getsize(source.path)
+    with open(source.path, "rb") as handle:
+        handle.seek(-4, os.SEEK_END)
+        return int.from_bytes(handle.read(4), "little")
+
+
+def open_raw_snapshot(
+    install_directory: str | os.PathLike[str], *, attempts: int = 3
+) -> list[tuple[RawSource, object, int]]:
+    """Open every raw source with a size fixed at open time.
+
+    Open descriptors pin inodes, so a later seal (rename) or compaction cannot
+    change what is read. A seal between listing and opening the live file is
+    detected by re-listing and retried. Callers must close every handle.
+    """
+    directory = os.fspath(install_directory)
+    for _ in range(attempts):
+        sources = raw_sources(directory)
+        opened: list[tuple[RawSource, object, int]] = []
+        try:
+            for source in sources:
+                source = _current_source(source)
+                handle = open_raw_source(source)
+                opened.append((source, handle, 0))
+                size = (
+                    raw_source_size(source)
+                    if source.compressed
+                    else os.fstat(handle.fileno()).st_size
+                )
+                opened[-1] = (source, handle, size)
+            sealed_before = sum(1 for source in sources if source.sealed)
+            sealed_after = sum(1 for source in raw_sources(directory) if source.sealed)
+            if sealed_before == sealed_after:
+                return opened
+        except FileNotFoundError:
+            pass
+        except BaseException:
+            for _, handle, _ in opened:
+                handle.close()
+            raise
+        for _, handle, _ in opened:
+            handle.close()
+    raise StoreBusy("raw sources changed while opening")
+
+
+def iter_snapshot_lines(snapshot: Sequence[tuple[RawSource, object, int]]):
+    """Yield `(raw_line, oversized)` across an opened snapshot, in order."""
+    for _, handle, size in snapshot:
+        offset = 0
+        while offset < size:
+            raw, consumed, oversized = _bounded_line(handle, size - offset)
+            if consumed <= 0:
+                break
+            offset += consumed
+            yield raw, oversized
+
+
+def raw_source_disk_bytes(sources: Sequence[RawSource]) -> int:
+    total = 0
+    for source in sources:
+        try:
+            total += os.path.getsize(_current_source(source).path)
+        except OSError:
+            pass
+    return total
+
+
+def seal_live_file(install_directory: str | os.PathLike[str]) -> RawSource | None:
+    """Atomically move a non-empty live file into the sealed sequence.
+
+    Callers must exclude concurrent appends (ingest does this inside its
+    SQLite write transaction). The rename is the commit point: before it the
+    bytes are live, after it they are sealed segment N, and the next live file
+    is N + 1. Compression happens later in `compact_pending_segments`.
+    """
+    directory = os.fspath(install_directory)
+    install_id = normalize_install_id(os.path.basename(os.path.normpath(directory)))
+    live = os.path.join(directory, RAW_LIVE_NAME)
+    try:
+        if os.path.getsize(live) == 0:
+            return None
+    except FileNotFoundError:
+        return None
+    sources = raw_sources(directory)
+    sequence = sum(1 for source in sources if source.sealed) + 1
+    sealed_directory = os.path.join(directory, SEALED_DIRECTORY)
+    pending = os.path.join(sealed_directory, "events-%06d.pending.jsonl" % sequence)
+    try:
+        if not os.path.isdir(sealed_directory):
+            os.mkdir(sealed_directory)
+            _fsync_directory(directory)
+        if os.path.lexists(pending):
+            raise StoreCorrupt("sealed raw segment already exists")
+        os.rename(live, pending)
+        _fsync_directory(sealed_directory)
+        _fsync_directory(directory)
+    except OSError as error:
+        raise ArchiveError("raw segment seal failed") from error
+    return RawSource(install_id, sequence, pending, False, True)
+
+
+def _segment_time(raw: bytes) -> str:
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return "untimed"
+    value_us = timestamp_us(value.get("timestamp")) if isinstance(value, dict) else None
+    if value_us is None:
+        return "untimed"
+    return datetime.fromtimestamp(value_us / 1_000_000, timezone.utc).strftime(
+        "%Y%m%dT%H%M%SZ"
+    )
+
+
+def _segment_bounds(path: str) -> tuple[str, str]:
+    """Timestamps of the first and last lines, used only in the segment name."""
+    with open(path, "rb") as handle:
+        first, _, _ = _bounded_line(handle, os.path.getsize(path))
+        size = handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, size - MAX_EVENT_BYTES - 2))
+        tail = handle.read().rstrip(b"\r\n")
+    last = tail.rsplit(b"\n", 1)[-1]
+    return _segment_time(first.strip()), _segment_time(last.strip())
+
+
+def _write_gzip(chunks, temporary: str) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    with open(temporary, "xb") as raw_handle:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            fileobj=raw_handle,
+            compresslevel=SEAL_GZIP_LEVEL,
+            mtime=0,
+        ) as compressed:
+            for chunk in chunks:
+                compressed.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+        raw_handle.flush()
+        os.fsync(raw_handle.fileno())
+    return size, digest.hexdigest()
+
+
+def _file_chunks(handle):
+    while True:
+        chunk = handle.read(RAW_COPY_BYTES)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _digest_stream(handle) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    for chunk in _file_chunks(handle):
+        digest.update(chunk)
+        size += len(chunk)
+    return size, digest.hexdigest()
+
+
+def _digest_gzip(path: str) -> tuple[int, str]:
+    try:
+        with gzip.open(path, "rb") as handle:
+            return _digest_stream(handle)
+    except (OSError, EOFError, gzip.BadGzipFile) as error:
+        raise StoreCorrupt("sealed raw segment is unreadable") from error
+
+
+def stage_gzip_segment(
+    chunks, directory: str, sequence: int
+) -> tuple[str, tuple[int, str]]:
+    """Write and verify a fsynced gzip temporary; the caller publishes it.
+
+    Returns the temporary path and the uncompressed (size, sha256). The name
+    matches SEALED_TEMPORARY_RE, so compaction removes it after a crash.
+    """
+    temporary = os.path.join(
+        directory, ".events-%06d.%s.tmp" % (sequence, secrets.token_hex(4))
+    )
+    try:
+        written = _write_gzip(chunks, temporary)
+        if _digest_gzip(temporary) != written:
+            raise ArchiveError("sealed raw segment verification failed")
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return temporary, written
+
+
+def write_sealed_segment(chunks, final_path: str) -> tuple[int, str]:
+    """Write, fsync, verify, and atomically publish one gzip segment."""
+    directory = os.path.dirname(final_path)
+    match = SEALED_SEGMENT_RE.fullmatch(os.path.basename(final_path))
+    if match is None:
+        raise StoreError("invalid sealed segment name")
+    temporary, written = stage_gzip_segment(chunks, directory, int(match.group(1)))
+    try:
+        os.replace(temporary, final_path)
+        _fsync_directory(directory)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return written
+
+
+def compact_pending_segments(install_directory: str | os.PathLike[str]) -> int:
+    """Compress pending sealed segments; safe to rerun after any crash.
+
+    Each step leaves a valid source set: the pending file stays authoritative
+    until a verified gzip with identical bytes is published, and only then is
+    the pending file removed. Callers serialize compaction per process.
+    """
+    directory = os.fspath(install_directory)
+    sealed_directory = os.path.join(directory, SEALED_DIRECTORY)
+    if not os.path.isdir(sealed_directory):
+        return 0
+    names = os.listdir(sealed_directory)
+    for name in names:
+        if SEALED_TEMPORARY_RE.fullmatch(name):
+            os.unlink(os.path.join(sealed_directory, name))
+    published = {}
+    for name in names:
+        match = SEALED_SEGMENT_RE.fullmatch(name)
+        if match:
+            published[int(match.group(1))] = os.path.join(sealed_directory, name)
+    compacted = 0
+    for name in sorted(names):
+        match = SEALED_PENDING_RE.fullmatch(name)
+        if match is None:
+            continue
+        sequence = int(match.group(1))
+        pending = os.path.join(sealed_directory, name)
+        if sequence in published:
+            with open(pending, "rb") as handle:
+                expected = _digest_stream(handle)
+            if _digest_gzip(published[sequence]) != expected:
+                raise StoreCorrupt("sealed raw segment differs from its pending source")
+        else:
+            first, last = _segment_bounds(pending)
+            final = os.path.join(
+                sealed_directory,
+                "events-%06d-%s-%s.jsonl.gz" % (sequence, first, last),
+            )
+            with open(pending, "rb") as handle:
+                write_sealed_segment(_file_chunks(handle), final)
+        os.unlink(pending)
+        _fsync_directory(sealed_directory)
+        compacted += 1
+    return compacted
 
 
 class EventStore:
@@ -679,6 +1150,25 @@ class EventStore:
         except OSError as error:
             raise ArchiveError("raw archive rollback failed") from error
 
+    @staticmethod
+    def _seal_if_full(
+        path: str, lines: Sequence[bytes], max_bytes: int | None
+    ) -> bool:
+        if not lines or max_bytes is None:
+            return False
+        try:
+            original_size = os.path.getsize(path)
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise ArchiveError("raw archive size is unavailable") from error
+        append_bytes = sum(len(line) + 1 for line in lines)
+        if original_size == 0 or original_size + append_bytes <= max_bytes:
+            return False
+        if append_bytes > max_bytes:
+            return False
+        return seal_live_file(os.path.dirname(path)) is not None
+
     def ingest_batch(
         self,
         install_id: str,
@@ -687,8 +1177,16 @@ class EventStore:
         metadata: dict | None,
         archive_path: str,
         archive_quota_bytes: int | None = None,
+        seal_full_archive: bool = False,
         received_at: float | None = None,
     ) -> IngestResult:
+        """Insert new events and append their canonical lines in one unit.
+
+        With `seal_full_archive`, a live file that would exceed
+        `archive_quota_bytes` is sealed first and the batch starts a fresh live
+        file. The seal is kept even if this batch later rolls back: it moves
+        bytes without changing the raw stream.
+        """
         install_id = normalize_install_id(install_id)
         if not events:
             raise InvalidEvent("empty batch")
@@ -698,6 +1196,7 @@ class EventStore:
         )
         connection = self._connect()
         archive_checkpoint = None
+        sealed = False
         inserted_lines: list[bytes] = []
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -707,6 +1206,12 @@ class EventStore:
                     inserted_lines.append(item.canonical)
             if self._logical_database_bytes(connection) > self.quota_bytes:
                 raise StoreQuota("database quota exceeded")
+            if seal_full_archive:
+                # The open write transaction serializes this with every other
+                # append, so no line can land in the file while it is renamed.
+                sealed = self._seal_if_full(
+                    archive_path, inserted_lines, archive_quota_bytes
+                )
             archive_checkpoint = self._append_archive(
                 archive_path, inserted_lines, archive_quota_bytes
             )
@@ -728,7 +1233,7 @@ class EventStore:
         finally:
             connection.close()
         inserted = len(inserted_lines)
-        return IngestResult(len(events), inserted, len(events) - inserted)
+        return IngestResult(len(events), inserted, len(events) - inserted, sealed)
 
     def update_state(
         self,
@@ -1240,6 +1745,19 @@ def _bounded_line(handle, remaining: int) -> tuple[bytes, int, bool]:
     return b"", consumed, oversized
 
 
+def iter_source_lines(source: RawSource):
+    """Yield `(raw_line, oversized)` across one source's uncompressed bytes."""
+    source, size, _ = _source_snapshot(source)
+    offset = 0
+    with open_raw_source(source) as handle:
+        while offset < size:
+            raw, consumed, oversized = _bounded_line(handle, size - offset)
+            if consumed <= 0:
+                return
+            offset += consumed
+            yield raw, oversized
+
+
 def _load_metadata(root: Path, install_id: str) -> dict:
     path = root / install_id / "meta.json"
     try:
@@ -1270,17 +1788,21 @@ def _load_state(root: Path, install_id: str) -> dict | None:
         return None
 
 
-def discover_sources(root: Path) -> list[tuple[str, Path, str]]:
-    sources = []
+def discover_sources(root: Path) -> list[RawSource]:
+    """Every raw source of every install, ordered by install then sequence."""
+    sources: list[RawSource] = []
     if not root.is_dir():
         return sources
     for directory in sorted(root.iterdir()):
         if not directory.is_dir() or not INSTALL_ID_RE.fullmatch(directory.name):
             continue
-        path = directory / "events.jsonl"
-        if path.is_file():
-            sources.append((directory.name.lower(), path, str(path.relative_to(root))))
+        sources.extend(raw_sources(directory))
     return sources
+
+
+def _source_snapshot(source: RawSource) -> tuple[RawSource, int, int]:
+    source = _current_source(source)
+    return source, raw_source_size(source), os.stat(source.path).st_mtime_ns
 
 
 def backfill(
@@ -1296,11 +1818,12 @@ def backfill(
         raise StoreError("batch-size is out of bounds")
     processed = inserted = duplicates = malformed = 0
     sources = discover_sources(root)
-    for install_id, path, relative in sources:
+    for source in sources:
         if processed >= max_lines:
             break
-        stat = path.stat()
-        snapshot_size = stat.st_size
+        install_id = source.install_id
+        relative = source.key
+        source, snapshot_size, mtime_ns = _source_snapshot(source)
         offset = store.checkpoint_offset(relative)
         if offset > snapshot_size:
             raise StoreError("backfill source shrank; operator reset is required")
@@ -1308,8 +1831,12 @@ def backfill(
         state = _load_state(root, install_id)
         if state is not None:
             store.update_state(install_id, state, metadata=metadata)
-        with path.open("rb") as handle:
+        if offset == snapshot_size:
+            # Already imported; seeking a gzip segment would decompress it.
+            continue
+        with open_raw_source(source) as handle:
             handle.seek(offset)
+            carried = None
             while offset < snapshot_size and processed < max_lines:
                 batch_start = offset
                 events: list[dict] = []
@@ -1321,9 +1848,13 @@ def backfill(
                     and raw_count < batch_size
                     and processed + raw_count < max_lines
                 ):
-                    raw, consumed, oversized = _bounded_line(
-                        handle, snapshot_size - batch_end
-                    )
+                    if carried is not None:
+                        raw, consumed, oversized = carried
+                        carried = None
+                    else:
+                        raw, consumed, oversized = _bounded_line(
+                            handle, snapshot_size - batch_end
+                        )
                     if consumed <= 0:
                         break
                     batch_end += consumed
@@ -1333,7 +1864,9 @@ def backfill(
                         and events
                         and retained_bytes + len(raw) > MAX_BACKFILL_BATCH_BYTES
                     ):
-                        handle.seek(-consumed, os.SEEK_CUR)
+                        # Carry the line instead of seeking back: gzip
+                        # sources cannot rewind without re-decompressing.
+                        carried = (raw, consumed, oversized)
                         batch_end -= consumed
                         raw_count -= 1
                         break
@@ -1356,7 +1889,7 @@ def backfill(
                     start_offset=batch_start,
                     end_offset=batch_end,
                     source_size=snapshot_size,
-                    source_mtime_ns=stat.st_mtime_ns,
+                    source_mtime_ns=mtime_ns,
                     complete=batch_end >= snapshot_size,
                     metadata=metadata,
                 )
@@ -1372,9 +1905,7 @@ def backfill(
         if report["complete"] == 1
         and report["byte_offset"] == report["source_size"]
     }
-    complete = bool(sources) and all(
-        relative in finished for _, _, relative in sources
-    )
+    complete = bool(sources) and all(source.key in finished for source in sources)
     return {
         "schema": "murmur-event-backfill/v1",
         "processed_lines": processed,
@@ -1385,8 +1916,8 @@ def backfill(
     }
 
 
-def _scan_reconciliation_source(
-    install_id: str, path: Path, temporary_directory: str
+def _scan_reconciliation_sources(
+    install_id: str, sources: Sequence[RawSource], temporary_directory: str
 ) -> dict:
     raw_lines = valid_objects = malformed_lines = duplicates = untimed_events = 0
     earliest = latest = None
@@ -1395,39 +1926,42 @@ def _scan_reconciliation_source(
     dedupe.execute("PRAGMA journal_mode = OFF")
     dedupe.execute("PRAGMA synchronous = OFF")
     dedupe.execute("CREATE TABLE hashes(value TEXT PRIMARY KEY) WITHOUT ROWID")
-    snapshot_size = path.stat().st_size
-    offset = 0
-    with path.open("rb") as handle:
-        while offset < snapshot_size:
-            raw, consumed, oversized = _bounded_line(handle, snapshot_size - offset)
-            if consumed <= 0:
-                break
-            offset += consumed
-            raw_lines += 1
-            if oversized:
-                malformed_lines += 1
-                continue
-            try:
-                event = parse_event_line(raw.strip())
-                prepared = prepare_event(install_id, event)
-            except InvalidEvent:
-                malformed_lines += 1
-                continue
-            valid_objects += 1
-            if prepared.timestamp_us is None:
-                untimed_events += 1
-            cursor = dedupe.execute(
-                "INSERT OR IGNORE INTO hashes(value) VALUES (?)", (prepared.event_hash,)
-            )
-            if cursor.rowcount != 1:
-                duplicates += 1
-            if prepared.timestamp_us is not None:
-                earliest = (
-                    prepared.timestamp_us if earliest is None else min(earliest, prepared.timestamp_us)
+    source_sizes = {}
+    for source in sources:
+        source, snapshot_size, _ = _source_snapshot(source)
+        source_sizes[source.key] = snapshot_size
+        offset = 0
+        with open_raw_source(source) as handle:
+            while offset < snapshot_size:
+                raw, consumed, oversized = _bounded_line(handle, snapshot_size - offset)
+                if consumed <= 0:
+                    break
+                offset += consumed
+                raw_lines += 1
+                if oversized:
+                    malformed_lines += 1
+                    continue
+                try:
+                    event = parse_event_line(raw.strip())
+                    prepared = prepare_event(install_id, event)
+                except InvalidEvent:
+                    malformed_lines += 1
+                    continue
+                valid_objects += 1
+                if prepared.timestamp_us is None:
+                    untimed_events += 1
+                cursor = dedupe.execute(
+                    "INSERT OR IGNORE INTO hashes(value) VALUES (?)", (prepared.event_hash,)
                 )
-                latest = (
-                    prepared.timestamp_us if latest is None else max(latest, prepared.timestamp_us)
-                )
+                if cursor.rowcount != 1:
+                    duplicates += 1
+                if prepared.timestamp_us is not None:
+                    earliest = (
+                        prepared.timestamp_us if earliest is None else min(earliest, prepared.timestamp_us)
+                    )
+                    latest = (
+                        prepared.timestamp_us if latest is None else max(latest, prepared.timestamp_us)
+                    )
     digest = hashlib.sha256()
     for row in dedupe.execute("SELECT value FROM hashes ORDER BY value"):
         digest.update(row[0].encode("ascii"))
@@ -1441,7 +1975,7 @@ def _scan_reconciliation_source(
         "untimed_events": untimed_events,
         "earliest_time_us": earliest,
         "latest_time_us": latest,
-        "source_size": snapshot_size,
+        "source_sizes": source_sizes,
         "hash_set_digest": digest.digest(),
     }
 
@@ -1449,11 +1983,14 @@ def _scan_reconciliation_source(
 def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dict:
     reports = []
     all_ready = True
+    by_install: dict[str, list[RawSource]] = {}
+    for raw_source in discover_sources(root):
+        by_install.setdefault(raw_source.install_id, []).append(raw_source)
     connection = store._connect(write=False)
     try:
-        for install_id, path, relative in discover_sources(root):
+        for install_id, sources in by_install.items():
             with tempfile.TemporaryDirectory(prefix="murmur-reconcile-") as directory:
-                source = _scan_reconciliation_source(install_id, path, directory)
+                source = _scan_reconciliation_sources(install_id, sources, directory)
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS count,
@@ -1471,13 +2008,25 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
             ):
                 database_digest.update(hash_row[0].encode("ascii"))
                 database_digest.update(b"\n")
-            checkpoint = connection.execute(
-                """
-                SELECT inserted_events, byte_offset, source_size, complete
-                FROM backfill_checkpoints WHERE source_path = ?
-                """,
-                (relative,),
-            ).fetchone()
+            inserted_events = 0
+            checkpoints_complete = True
+            for key, size in source["source_sizes"].items():
+                checkpoint = connection.execute(
+                    """
+                    SELECT inserted_events, byte_offset, source_size, complete
+                    FROM backfill_checkpoints WHERE source_path = ?
+                    """,
+                    (key,),
+                ).fetchone()
+                if checkpoint is None:
+                    checkpoints_complete = False
+                    continue
+                inserted_events += int(checkpoint["inserted_events"])
+                checkpoints_complete = checkpoints_complete and (
+                    checkpoint["complete"] == 1
+                    and checkpoint["byte_offset"] == size
+                    and checkpoint["source_size"] == size
+                )
             database_count = int(row["count"])
             expected_count = source["valid_objects"] - source["duplicates"]
             ready = (
@@ -1485,10 +2034,7 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
                 and int(row["untimed"] or 0) == source["untimed_events"]
                 and row["earliest"] == source["earliest_time_us"]
                 and row["latest"] == source["latest_time_us"]
-                and checkpoint is not None
-                and checkpoint["complete"] == 1
-                and checkpoint["byte_offset"] == source["source_size"]
-                and checkpoint["source_size"] == source["source_size"]
+                and checkpoints_complete
                 and hmac.compare_digest(
                     database_digest.digest(), source["hash_set_digest"]
                 )
@@ -1502,7 +2048,8 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
                     "malformed_lines": source["malformed_lines"],
                     "duplicates": source["duplicates"],
                     "untimed_events": source["untimed_events"],
-                    "inserted_events": int(checkpoint[0]) if checkpoint else 0,
+                    "raw_sources": len(sources),
+                    "inserted_events": inserted_events,
                     "database_count": database_count,
                     "earliest_timestamp": _format_timestamp(source["earliest_time_us"]),
                     "latest_timestamp": _format_timestamp(source["latest_time_us"]),
