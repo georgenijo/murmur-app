@@ -2485,6 +2485,7 @@ async fn run_transcription_pipeline(
             spoken_numbers_enabled: transformations.spoken_numbers_enabled,
             ide_context_enabled: transformations.ide_context_enabled,
             cli_command_enabled: transformations.cli_formatting_enabled,
+            text_register: transformations.text_register,
         },
     };
     let cli_lexicon = crate::cli_command::CliLexicon::from_context(

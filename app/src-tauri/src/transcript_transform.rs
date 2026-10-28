@@ -54,9 +54,22 @@ pub(crate) struct TranscriptStageConfig {
     pub spoken_numbers_enabled: bool,
     pub ide_context_enabled: bool,
     pub cli_command_enabled: bool,
+    /// Frozen Mode/writing-style register. Content-free, so it may gate
+    /// stage rules without widening what stage telemetry can observe.
+    pub text_register: crate::state::TextRegister,
 }
 
 impl TranscriptStageConfig {
+    /// Number rendering for this pass. Local project context is an explicit
+    /// code signal, so it selects the technical policy in any register.
+    pub(crate) fn number_policy(&self) -> crate::spoken_numbers::NumberPolicy {
+        if self.text_register.is_technical() || self.ide_context_enabled {
+            crate::spoken_numbers::NumberPolicy::Technical
+        } else {
+            crate::spoken_numbers::NumberPolicy::Prose
+        }
+    }
+
     pub(crate) fn verbatim() -> Self {
         Self {
             cleanup_enabled: false,
@@ -69,6 +82,7 @@ impl TranscriptStageConfig {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
+            text_register: crate::state::TextRegister::Verbatim,
         }
     }
 
@@ -91,6 +105,7 @@ impl TranscriptStageConfig {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
+            text_register: crate::state::TextRegister::Everyday,
         }
     }
 }
@@ -610,8 +625,11 @@ impl TranscriptTransform for SpokenNumbersStage {
         context.source == TranscriptSource::Live && context.stages.spoken_numbers_enabled
     }
 
-    fn transform(&self, text: &str, _context: &TranscriptContext) -> Result<String, StageError> {
-        Ok(crate::spoken_numbers::normalize_spoken_numbers(text))
+    fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
+        Ok(crate::spoken_numbers::normalize_spoken_numbers(
+            text,
+            context.stages.number_policy(),
+        ))
     }
 }
 
@@ -735,6 +753,7 @@ mod tests {
             spoken_numbers_enabled: true,
             ide_context_enabled: false,
             cli_command_enabled: true,
+            text_register: crate::state::TextRegister::Everyday,
         }
     }
 
@@ -891,6 +910,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: true,
             cli_command_enabled: true,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let output = transform_transcript(
             "use effect mention recording dot rs and local project symbol".to_string(),
@@ -929,6 +949,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let output = transform_transcript(
             "um the the cat , world .".to_string(),
@@ -952,6 +973,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let output = transform_transcript(
             "hello new line my email".to_string(),
@@ -1094,6 +1116,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: false,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let output = transform_transcript(
             "use effect".to_string(),
@@ -1137,6 +1160,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let raw = "NPM run Tauri dev";
         let output = transform_transcript(
@@ -1168,6 +1192,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let raw = "I'm missing skills like slash command chat and slash command vault dash out.";
         let output = transform_transcript(
@@ -1198,6 +1223,7 @@ mod tests {
                 spoken_numbers_enabled: false,
                 ide_context_enabled: false,
                 cli_command_enabled: case.cli,
+                text_register: crate::state::TextRegister::Everyday,
             };
             let matcher = Arc::new(CorrectionMatcher::build(
                 &["Tauri".to_string()],
@@ -1234,6 +1260,7 @@ mod tests {
             spoken_numbers_enabled: false,
             ide_context_enabled: false,
             cli_command_enabled: true,
+            text_register: crate::state::TextRegister::Everyday,
         };
         let prose = transform_transcript(
             "The tasks are first review second ship".to_string(),
@@ -1312,6 +1339,51 @@ mod tests {
         .unwrap();
         assert_eq!(instruction.text, "Make this three paragraphs");
         assert_eq!(instruction.stages[5].outcome, StageOutcome::Skipped);
+    }
+
+    #[test]
+    fn spoken_numbers_follow_the_frozen_register() {
+        use crate::state::TextRegister;
+
+        let run = |register: TextRegister, ide_context_enabled: bool, raw: &str| {
+            let stages = TranscriptStageConfig {
+                spoken_numbers_enabled: true,
+                ide_context_enabled,
+                text_register: register,
+                ..TranscriptStageConfig::verbatim()
+            };
+            transform_transcript(
+                raw.to_string(),
+                &live_context(stages),
+                TranscriptTransformResources::empty(),
+            )
+            .unwrap()
+            .text
+        };
+        let raw = "two of them meet at four thirty PM on port eight zero eight zero";
+        for register in [
+            TextRegister::Everyday,
+            TextRegister::Messages,
+            TextRegister::Email,
+            TextRegister::Notes,
+        ] {
+            assert_eq!(
+                run(register, false, raw),
+                "two of them meet at 4:30 PM on port 8080"
+            );
+        }
+        for register in [TextRegister::Technical, TextRegister::Terminal] {
+            assert_eq!(
+                run(register, false, raw),
+                "2 of them meet at 4:30 PM on port 8080"
+            );
+            assert_eq!(run(register, false, "eight zero eight zero"), "8080");
+        }
+        // Local project context is an explicit code signal in any register.
+        assert_eq!(
+            run(TextRegister::Everyday, true, raw),
+            "2 of them meet at 4:30 PM on port 8080"
+        );
     }
 
     #[test]

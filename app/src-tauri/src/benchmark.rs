@@ -922,6 +922,7 @@ fn default_delivery_context() -> TranscriptContext {
             spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
             ide_context_enabled: snapshot.transformations.ide_context_enabled,
             cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
+            text_register: snapshot.transformations.text_register,
         },
     }
 }

@@ -177,5 +177,55 @@
     "input": {"rawAsr": "This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback.", "expectedRawAsr": ["This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback."]},
     "expected": {"finalText": "This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback.", "deliveredText": "This long fixture represents one authoritative transcript produced only after recording stops, with no provisional chunks, overlap reconciliation, or incremental fallback.", "noChangePreservation": true, "delivery": {"attempts": 1, "partialCount": 0, "firstPartialMs": null, "finalOnly": true}},
     "timing": {"rawAsrMs": 4200, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "everyday-small-counts-stay-words",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Mode-aware spoken number policy", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "two of them arrived at four thirty PM with twelve bags", "expectedRawAsr": ["two of them arrived at four thirty PM with twelve bags"]},
+    "context": {"mode": "everyday", "stages": {"spokenNumbers": true}},
+    "expected": {"finalText": "two of them arrived at 4:30 PM with 12 bags", "deliveredText": "two of them arrived at 4:30 PM with 12 bags", "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 17, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "email-dates-years-and-labels",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Mode-aware spoken number policy", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "the launch is September seventeenth twenty twenty six, see step three", "expectedRawAsr": ["the launch is September seventeenth twenty twenty six, see step three"]},
+    "context": {"mode": "email", "stages": {"spokenNumbers": true}},
+    "expected": {"finalText": "the launch is September 17, 2026, see step 3", "deliveredText": "the launch is September 17, 2026, see step 3", "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 19, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "everyday-number-idioms-unchanged",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Mode-aware spoken number policy", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "at this point five people use two-factor in the twenty-first century", "expectedRawAsr": ["at this point five people use two-factor in the twenty-first century"]},
+    "context": {"mode": "everyday", "stages": {"spokenNumbers": true}},
+    "expected": {"finalText": "at this point five people use two-factor in the twenty-first century", "deliveredText": "at this point five people use two-factor in the twenty-first century", "noChangePreservation": true, "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": false}]},
+    "timing": {"rawAsrMs": 18, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "technical-eager-numbers-versions-and-ports",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Mode-aware spoken number policy", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "two of them run version two point seventeen point two on port eight zero eight zero", "expectedRawAsr": ["two of them run version two point seventeen point two on port eight zero eight zero"]},
+    "context": {"mode": "technical", "stages": {"spokenNumbers": true}},
+    "expected": {"finalText": "2 of them run version 2.17.2 on port 8080", "deliveredText": "2 of them run version 2.17.2 on port 8080", "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 20, "transformMs": 1, "deliveryMs": 1}
+  },
+  {
+    "fixtureVersion": 1,
+    "id": "technical-digit-runs-and-addresses",
+    "tier": "deterministic",
+    "provenance": {"kind": "curatedSynthetic", "source": "Mode-aware spoken number policy", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
+    "input": {"rawAsr": "ping one ninety two point one sixty eight point one point one then eight zero eight zero", "expectedRawAsr": ["ping one ninety two point one sixty eight point one point one then eight zero eight zero"]},
+    "context": {"mode": "technical", "stages": {"spokenNumbers": true}},
+    "expected": {"finalText": "ping 192.168.1.1 then 8080", "deliveredText": "ping 192.168.1.1 then 8080", "stages": [{"name": "spoken_numbers", "outcome": "applied", "changed": true}]},
+    "timing": {"rawAsrMs": 21, "transformMs": 1, "deliveryMs": 1}
   }
 ]
