@@ -22,6 +22,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from dictation_lifecycle import DictationLifecycleCorrelator, STAGE_CODES
+from event_store import iter_snapshot_lines, open_raw_snapshot
 from reliability_slo import ReliabilitySloEvaluator
 
 
@@ -239,142 +240,154 @@ def finish_session(session, cohorts, install_id, finished_at):
         cohort["last_attempted_session_at"] = finished_at
 
 
-def scan_install(path, install_id, cohorts, reliability_slo):
+def install_lines(install_directory):
+    """Text lines of sealed segments then the live file; None if oversized."""
+    snapshot = open_raw_snapshot(install_directory)
+    try:
+        for raw, oversized in iter_snapshot_lines(snapshot):
+            yield None if oversized else raw.decode("utf-8", "replace")
+    finally:
+        for _, handle, _ in snapshot:
+            handle.close()
+
+
+def scan_install(lines, install_id, cohorts, reliability_slo):
     malformed = 0
     session = None
     session_id = 0
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError, RecursionError):
-                malformed += 1
-                reliability_slo.observe_malformed_source_line()
-                continue
-            if not isinstance(event, dict):
-                malformed += 1
-                reliability_slo.observe_malformed_source_line()
-                continue
+    for line in lines:
+        try:
+            if line is None:
+                raise ValueError("oversized raw line")
+            event = json.loads(line)
+        except (ValueError, TypeError, RecursionError):
+            malformed += 1
+            reliability_slo.observe_malformed_source_line()
+            continue
+        if not isinstance(event, dict):
+            malformed += 1
+            reliability_slo.observe_malformed_source_line()
+            continue
 
-            code = event_code(event)
-            data = event_data(event)
-            owner_kind = data.get("owner_kind")
-            # Shared microphone owners remain visible in retained raw logs,
-            # but must not create, touch, or mutate dictation-health cohorts.
-            # Keep owner-less pipeline/store events for their existing typed
-            # dictation correlation while rejecting every explicitly scoped
-            # non-dictation event before any watch state exists.
+        code = event_code(event)
+        data = event_data(event)
+        owner_kind = data.get("owner_kind")
+        # Shared microphone owners remain visible in retained raw logs,
+        # but must not create, touch, or mutate dictation-health cohorts.
+        # Keep owner-less pipeline/store events for their existing typed
+        # dictation correlation while rejecting every explicitly scoped
+        # non-dictation event before any watch state exists.
+        if (
+            owner_kind is not None
+            and owner_kind != CAPTURE_HEALTH_OWNER_KIND
+        ):
+            continue
+
+        # Feed the exact same dictation-or-unscoped record into the
+        # aggregate SLO evaluator during this full scan. Install identity
+        # is an internal correlation key only;
+        # ReliabilitySloEvaluator.report() exposes no per-install rows or
+        # identifiers. Explicitly non-dictation owners are rejected before
+        # they can create even provisional request/state correlation.
+        reliability_slo.observe(install_id, event)
+
+        version = event_version(event)
+        timestamp = event_timestamp(event)
+        cohort = cohort_for(cohorts, install_id, version)
+        touch_cohort(cohort, timestamp)
+
+        if code == "system.startup_baseline" or event.get("summary") == "startup_baseline":
+            for (cohort_install, _), existing in cohorts.items():
+                if cohort_install == install_id:
+                    existing["dictation_lifecycle"].close_session(session_id)
+            finish_session(session, cohorts, install_id, timestamp)
+            session_id += 1
+            session = {
+                "version": version,
+                "attempted": False,
+                "ready_count": 0,
+            }
+            continue
+
+        if code in STAGE_CODES:
+            # The receiver stamps versions per upload, so a delayed batch
+            # can disagree with the version captured at startup. Never
+            # split one recording across version cohorts.
+            if session is not None and session["version"] == version:
+                cohort["dictation_lifecycle"].observe(event, session_id)
+        if code == "pipeline.dictation_completed":
+            # Same trusted install/app-session/version cohort boundaries as
+            # the lifecycle report: a completion with no open session is
+            # pre-baseline, and a version mismatch means the batch arrived
+            # late for a session that has already closed. Both are
+            # indistinguishable from a cross-session value and are
+            # dropped rather than guessed.
             if (
-                owner_kind is not None
-                and owner_kind != CAPTURE_HEALTH_OWNER_KIND
+                session is not None
+                and session["version"] == version
+                and valid_recording_id(data.get("recording_id"))
+                and valid_recording_id(data.get("char_count"))
             ):
+                latency_ms = numeric_post_stop_latency(event)
+                if latency_ms is not None:
+                    cohort["post_stop_latency_samples"].append(latency_ms)
+                    cohort["post_stop_latency_sample_total"] += 1
+                    audio_seconds = numeric_audio_seconds(event)
+                    if (
+                        audio_seconds is not None
+                        and POST_STOP_TARGET_MIN_AUDIO_SECONDS
+                        <= audio_seconds
+                        <= POST_STOP_TARGET_MAX_AUDIO_SECONDS
+                    ):
+                        cohort["post_stop_target_samples"].append(latency_ms)
+                        cohort["post_stop_target_sample_total"] += 1
+            continue
+        if code == "audio.capture_started":
+            if (
+                data.get("owner_kind") == CAPTURE_HEALTH_OWNER_KIND
+                and session is not None
+                and session["version"] == version
+            ):
+                session["attempted"] = True
+            continue
+        if code == "audio.capture_ready":
+            if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
                 continue
-
-            # Feed the exact same dictation-or-unscoped record into the
-            # aggregate SLO evaluator during this full scan. Install identity
-            # is an internal correlation key only;
-            # ReliabilitySloEvaluator.report() exposes no per-install rows or
-            # identifiers. Explicitly non-dictation owners are rejected before
-            # they can create even provisional request/state correlation.
-            reliability_slo.observe(install_id, event)
-
-            version = event_version(event)
-            timestamp = event_timestamp(event)
-            cohort = cohort_for(cohorts, install_id, version)
-            touch_cohort(cohort, timestamp)
-
-            if code == "system.startup_baseline" or event.get("summary") == "startup_baseline":
-                for (cohort_install, _), existing in cohorts.items():
-                    if cohort_install == install_id:
-                        existing["dictation_lifecycle"].close_session(session_id)
-                finish_session(session, cohorts, install_id, timestamp)
-                session_id += 1
-                session = {
-                    "version": version,
-                    "attempted": False,
-                    "ready_count": 0,
-                }
-                continue
-
-            if code in STAGE_CODES:
-                # The receiver stamps versions per upload, so a delayed batch
-                # can disagree with the version captured at startup. Never
-                # split one recording across version cohorts.
-                if session is not None and session["version"] == version:
-                    cohort["dictation_lifecycle"].observe(event, session_id)
-            if code == "pipeline.dictation_completed":
-                # Same trusted install/app-session/version cohort boundaries as
-                # the lifecycle report: a completion with no open session is
-                # pre-baseline, and a version mismatch means the batch arrived
-                # late for a session that has already closed. Both are
-                # indistinguishable from a cross-session value and are
-                # dropped rather than guessed.
-                if (
-                    session is not None
-                    and session["version"] == version
-                    and valid_recording_id(data.get("recording_id"))
-                    and valid_recording_id(data.get("char_count"))
-                ):
-                    latency_ms = numeric_post_stop_latency(event)
-                    if latency_ms is not None:
-                        cohort["post_stop_latency_samples"].append(latency_ms)
-                        cohort["post_stop_latency_sample_total"] += 1
-                        audio_seconds = numeric_audio_seconds(event)
-                        if (
-                            audio_seconds is not None
-                            and POST_STOP_TARGET_MIN_AUDIO_SECONDS
-                            <= audio_seconds
-                            <= POST_STOP_TARGET_MAX_AUDIO_SECONDS
-                        ):
-                            cohort["post_stop_target_samples"].append(latency_ms)
-                            cohort["post_stop_target_sample_total"] += 1
-                continue
-            if code == "audio.capture_started":
-                if (
-                    data.get("owner_kind") == CAPTURE_HEALTH_OWNER_KIND
-                    and session is not None
-                    and session["version"] == version
-                ):
-                    session["attempted"] = True
-                continue
-            if code == "audio.capture_ready":
-                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
-                    continue
-                startup_ms = numeric_startup(event)
-                if startup_ms is not None:
-                    cohort["startup_samples"].append(startup_ms)
-                    cohort["startup_sample_total"] += 1
-                if session is not None and session["version"] == version:
-                    session["ready_count"] = min(
-                        session["ready_count"] + 1,
-                        MAX_READY_RECORDINGS_PER_SESSION,
-                    )
-                continue
-            if code == "audio.capture_backend_timeout":
-                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
-                    continue
-                key = (
-                    bounded_backend(data.get("backend")),
-                    bounded_setup_step(data.get("last_setup_step")),
+            startup_ms = numeric_startup(event)
+            if startup_ms is not None:
+                cohort["startup_samples"].append(startup_ms)
+                cohort["startup_sample_total"] += 1
+            if session is not None and session["version"] == version:
+                session["ready_count"] = min(
+                    session["ready_count"] + 1,
+                    MAX_READY_RECORDINGS_PER_SESSION,
                 )
-                cohort["timeouts"][key] += 1
+            continue
+        if code == "audio.capture_backend_timeout":
+            if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
                 continue
-            if code == "audio.fallback_started":
-                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
-                    continue
-                cohort["fallback_count"] += 1
+            key = (
+                bounded_backend(data.get("backend")),
+                bounded_setup_step(data.get("last_setup_step")),
+            )
+            cohort["timeouts"][key] += 1
+            continue
+        if code == "audio.fallback_started":
+            if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
                 continue
-            if code == "audio.capture_failed":
-                if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
-                    continue
-                cohort["both_backends_failed_count"] += 1
+            cohort["fallback_count"] += 1
+            continue
+        if code == "audio.capture_failed":
+            if data.get("owner_kind") != CAPTURE_HEALTH_OWNER_KIND:
                 continue
-            if code == "performance.store_operation_failed":
-                key = (
-                    bounded_performance_store_operation(data.get("operation")),
-                    bounded_performance_store_error_class(data.get("error_class")),
-                )
-                cohort["performance_store_failures"][key] += 1
+            cohort["both_backends_failed_count"] += 1
+            continue
+        if code == "performance.store_operation_failed":
+            key = (
+                bounded_performance_store_operation(data.get("operation")),
+                bounded_performance_store_error_class(data.get("error_class")),
+            )
+            cohort["performance_store_failures"][key] += 1
 
     # An open app session is deliberately not classified as zero-ready. A later
     # startup boundary proves that the preceding session ended and makes the
@@ -638,12 +651,14 @@ def build_report(root, now=None):
         for install_id in sorted(os.listdir(root)):
             if not INSTALL_RE.fullmatch(install_id):
                 continue
-            path = os.path.join(root, install_id, "events.jsonl")
-            if not os.path.isfile(path):
+            directory = os.path.join(root, install_id)
+            if not os.path.isfile(
+                os.path.join(directory, "events.jsonl")
+            ) and not os.path.isdir(os.path.join(directory, "sealed")):
                 continue
             scanned_installs += 1
             malformed_lines += scan_install(
-                path,
+                install_lines(directory),
                 install_id,
                 cohorts,
                 reliability_evaluator,

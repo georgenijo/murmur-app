@@ -27,6 +27,14 @@ acknowledged and discarded. No user setup, UI, or permissions prompt is added.
   lifecycle returns to idle; it never reads or sends microphone display labels
   or backend UIDs.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
+- App versions up to 0.52.2 shipped keyboard events whose fields named the
+  typed key (`KeyPress(KeyI)`, `Some(Num4)`). The receiver replaces those rdev
+  forms, wherever they appear in a value or summary, with a content-free
+  `non_hotkey_key` class before storing anything, redacts typed-character name
+  fields, and keeps only configured hotkey names (modifiers, `Function`,
+  F1-F20). A
+  one-shot scrub tool applies the same rule to history stored earlier (see
+  [infra/log-receiver/README.md](../../infra/log-receiver/README.md#typed-key-identity-sanitization-and-scrub)).
 
 ### Explicit one-shot dictation capture
 
@@ -134,6 +142,7 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
                                                    │
                                                    ▼
                          ┌──────────▶ ~/murmur-logs/<install-uuid>/events.jsonl
+                         │             (sealed at 200 MiB into sealed/*.jsonl.gz)
                          │                         │
                          │            recovery/export + hourly watch
                          │                         ▼
@@ -208,12 +217,16 @@ The private one-shot path runs beside this diagram, never through it:
   are appended and fsynced, and the database commits before a 2xx response.
   Exact retries are no-ops in both stores. Busy, quota, disk-full, corruption,
   archive, or commit failure returns non-2xx so the shipper offset stays put.
-  The caps are 8 MiB/request, 200 MiB raw JSONL/install, 10 GiB raw total, 150
-  installs, and 10 GiB SQLite; history is never auto-deleted.
+  The caps are 8 MiB/request, a 200 MiB live JSONL file per install, 10 GiB raw
+  total (counting compressed sealed segments), 150 installs, and 10 GiB SQLite;
+  history is never auto-deleted. A batch that would push the live file past
+  200 MiB first seals it into an immutable, verified gzip segment and continues
+  on a fresh live file, so a busy install keeps ingesting instead of stalling
+  at the cap.
 - SQLite uses migrations, request-scoped connections, foreign keys, WAL,
   bounded busy wait/cache/WAL size, startup integrity checking, indexed event
-  fields, and FTS5 over summary text. Raw JSONL remains the exact
-  recovery/export source.
+  fields, and FTS5 over summary text. Raw JSONL (sealed segments followed by
+  the live file) remains the exact recovery/export source.
 - Adds a bounded `ingest_app_version` annotation from the app-version request
   header to each accepted production event. This is receiver-side attribution
   from an existing header, not a new client-collected field. Historical lines
@@ -526,6 +539,6 @@ tailscale ssh george@opti \
 |---|---|
 | opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~15 MB rotation window (current + `.jsonl.1` + `.jsonl.2`) is lost if the outage outlives it. |
 | Endpoint URL changes | Old binaries go dark until auto-update delivers the new constant. |
-| Install exceeds 200 MB on server | Receiver returns 507; shipper keeps retrying but nothing is appended (effectively paused for that install). |
+| Install's live file reaches 200 MiB on server | Receiver seals it into a compressed `sealed/` segment and appends to a fresh file; nothing is deleted. `507` remains only for the 10 GiB raw total, install count, or SQLite quota. |
 | SQLite busy, quota, disk full, corruption, archive fsync, or commit failure | Receiver returns non-2xx and never acknowledges a partial batch. JSONL is truncated back after a failed pre-commit append; the client retries from the same offset. |
 | Query-store reconciliation fails | Indexed dashboard reads stay disabled; ingest continues dual-writing and the protected dashboard stays on raw JSONL until the mismatch is investigated. |

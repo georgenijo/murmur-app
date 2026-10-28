@@ -21,9 +21,10 @@ of truth and redeploy from it.
 | File | Deploys to | Purpose |
 |---|---|---|
 | `murmur-logs-receiver.py` | `/home/george/murmur-logs-receiver.py` | stdlib HTTP server on `127.0.0.1:8600`: ingest, state, bundle, explicit private capture, dashboard |
-| `event_store.py` | `/home/george/event_store.py` | stdlib-only SQLite migrations, transactional query projection, backfill/reconciliation, integrity, backup, and restore commands |
+| `event_store.py` | `/home/george/event_store.py` | stdlib-only SQLite migrations, transactional query projection, raw segment sealing, ingest key sanitization, backfill/reconciliation, integrity, backup, and restore commands |
+| `scrub_key_identities.py` | `/home/george/scrub_key_identities.py` | explicit one-shot scrub of typed-key identities from stored raw and SQLite history (dry-run by default) |
 | `murmur-logs.service` | `/etc/systemd/system/` | runs the receiver as `george`, restart-always |
-| `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics |
+| `murmur-capture-watch.py` | `/home/george/murmur-capture-watch.py` | bounded stdlib aggregation of shipped capture-startup metrics; imports `event_store.py`, `dictation_lifecycle.py`, and `reliability_slo.py` from its own directory |
 | `dictation_lifecycle.py` | `/home/george/dictation_lifecycle.py` | deterministic per-session dictation funnel and terminal correlator |
 | `reliability_slo.py` | `/home/george/reliability_slo.py` | aggregate-only complete-week evaluator for the versioned dictation SLO contract |
 | `murmur-capture-watch.service` | `/etc/systemd/system/` | one-shot capture regression analysis |
@@ -83,18 +84,32 @@ MERGED_SHA=<merge-sha>
 git fetch origin
 git cat-file -e "$MERGED_SHA^{commit}"
 
+# Stop ingest first. The key scrub below must run before any old-client retry
+# is stored, and the receiver stays stopped until it succeeds.
+fleet exec opti 'sudo systemctl stop murmur-logs'
+
 # Back up source, raw recovery archives, metadata, and any existing database.
+# These backups hold unscrubbed key identities; delete them once the scrub is
+# verified unless they are still needed for rollback.
 fleet exec opti 'set -eu; stamp=$(date -u +%Y%m%dT%H%M%SZ); backup=/home/george/murmur-logs-backups/$stamp; mkdir -p "$backup"; cp -a /home/george/murmur-logs-receiver.py "$backup"/; test ! -e /home/george/event_store.py || cp -a /home/george/event_store.py "$backup"/; tar -C /home/george -czf "$backup/murmur-logs-raw.tgz" --exclude="murmur-logs/events.sqlite3*" murmur-logs; if test -e /home/george/murmur-logs/events.sqlite3; then python3 /home/george/event_store.py --root /home/george/murmur-logs backup "$backup/events.sqlite3"; fi; echo "$backup"'
 
-# Stage, compile, and install both exact source files together.
+# Stage, compile, and install every receiver-side Python file together. The
+# watch imports event_store.py, dictation_lifecycle.py, and reliability_slo.py
+# from its own directory, so a partial install breaks the hourly timer.
+FILES="murmur-logs-receiver.py event_store.py murmur-capture-watch.py dictation_lifecycle.py reliability_slo.py scrub_key_identities.py"
 LOCAL_STAGE=$(mktemp -d)
-git archive "$MERGED_SHA" infra/log-receiver/murmur-logs-receiver.py infra/log-receiver/event_store.py | tar -x -C "$LOCAL_STAGE"
-fleet cp "$LOCAL_STAGE/infra/log-receiver/event_store.py" opti:/tmp/event_store.py.$MERGED_SHA
-fleet cp "$LOCAL_STAGE/infra/log-receiver/murmur-logs-receiver.py" opti:/tmp/murmur-logs-receiver.py.$MERGED_SHA
-fleet exec opti "set -eu; python3 -m py_compile /tmp/event_store.py.$MERGED_SHA /tmp/murmur-logs-receiver.py.$MERGED_SHA; install -m 0755 /tmp/event_store.py.$MERGED_SHA /home/george/event_store.py; install -m 0755 /tmp/murmur-logs-receiver.py.$MERGED_SHA /home/george/murmur-logs-receiver.py"
-fleet exec opti 'sudo systemctl restart murmur-logs && systemctl is-active murmur-logs'
+git archive "$MERGED_SHA" $(for f in $FILES; do echo infra/log-receiver/$f; done) | tar -x -C "$LOCAL_STAGE"
+for f in $FILES; do fleet cp "$LOCAL_STAGE/infra/log-receiver/$f" "opti:/tmp/$f.$MERGED_SHA"; done
+fleet exec opti "set -eu; cd /tmp; for f in $FILES; do python3 -m py_compile \$f.$MERGED_SHA; done; for f in $FILES; do install -m 0755 \$f.$MERGED_SHA /home/george/\$f; done"
+# Review the content-free dry run, then scrub and start only if it succeeds.
+fleet exec --timeout 3600 opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs'
+fleet exec --timeout 3600 opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs --apply && sudo systemctl start murmur-logs && systemctl is-active murmur-logs'
 curl -fsS https://georgenijo.com/murmur/healthz
 ```
+
+On restart the receiver first seals any live `events.jsonl` already at the
+200 MiB cap (an instant rename), then compresses pending segments in the
+background. Check the journal for `raw compaction failed` lines.
 
 The first restart migrates SQLite but leaves `dashboard_ready=0`. New
 production ingests transactionally update SQLite and raw JSONL while dashboard
@@ -145,7 +160,11 @@ Use a named tmux session for a longer staging run, check the port first, and
 remove the temporary root only after recording the content-free results.
 
 Redeploying the nginx or cloudflared config after editing it in this
-directory:
+directory. Compare first: as of 2026-10-27 the live
+`/etc/nginx/sites-available/murmur-ingest` also serves the static
+`/var/www/georgenijo.com` site and `www.georgenijo.com`, and has no
+`/murmur/private-capture` route. Overwriting it with this file removes the
+static site; merge the two deliberately rather than piping blindly:
 
 ```bash
 cat infra/log-receiver/nginx-murmur-ingest-opti.conf | tailscale ssh george@opti "sudo tee /etc/nginx/sites-available/murmur-ingest >/dev/null && sudo nginx -t && sudo systemctl reload nginx"
@@ -161,10 +180,13 @@ failed state and replaces the report.
 ## Retention, failure handling, backup, restore, and rollback
 
 - History is retained indefinitely. Nothing automatically deletes database or
-  raw history. Limits are admission controls: 8 MiB/request, 200 MiB raw
-  per-install storage (JSONL plus any hang-diagnostics bundles), 10 GiB total
-  raw install directories, 150 installs, and 10 GiB for SQLite. Raising a
-  limit is an explicit reviewed operator change.
+  raw history. Limits are admission controls: 8 MiB/request, a 200 MiB live
+  `events.jsonl` per install (hang-diagnostics bundles are admitted against
+  the same figure), 10 GiB total raw install directories (every file,
+  including compressed sealed segments), 150 installs, and 10 GiB for SQLite.
+  Raising a limit is an explicit reviewed operator change.
+- A batch that would push the live file past 200 MiB seals it instead of
+  returning `507`. See [Raw segment sealing](#raw-segment-sealing).
 - The receiver parses a complete batch before mutation. New event hashes enter
   one `BEGIN IMMEDIATE` transaction, their raw lines are appended and fsynced,
   and SQLite commits last. An exact retry inserts and appends nothing. Archive
@@ -177,8 +199,8 @@ failed state and replaces the report.
 - Create an online database backup with
   `event_store.py --root /home/george/murmur-logs backup <destination>`. The
   command uses SQLite's backup API, integrity-checks and fsyncs the result, and
-  publishes it atomically. Back up JSONL and metadata with it because JSONL is
-  still the recovery/export source.
+  publishes it atomically. Back up JSONL, `sealed/` segments, and metadata
+  with it because the raw stream is still the recovery/export source.
 - Run a full check with
   `event_store.py --root /home/george/murmur-logs integrity`. Startup also runs
   `quick_check`; corruption prevents receiver startup and ingest
@@ -216,12 +238,99 @@ good. This is a manual, one-time step — not automated by anything here.
 
 ## Data layout
 
-`/home/george/murmur-logs/<install-uuid>/` contains production
-`events.jsonl` (append-only), bounded `meta.json`, and `state.json` with only
-the current privacy-safe aggregate microphone contract. The root contains
-`events.sqlite3`, its transient WAL/SHM files, and the content-free
-`reconciliation.json`. Dev-tagged batches are acknowledged and discarded;
-historical `events.dev.jsonl` files are not backfilled.
+`/home/george/murmur-logs/<install-uuid>/` contains the production live
+`events.jsonl` (append-only), immutable sealed segments under `sealed/`,
+bounded `meta.json`, and `state.json` with only the current privacy-safe
+aggregate microphone contract. An install's raw stream is its sealed segments
+in sequence order followed by the live file. The older `archive/` directory
+some installs have holds hang bundles only and is unrelated. The root
+contains `events.sqlite3`, its transient WAL/SHM files, the content-free
+`reconciliation.json`, and `.raw-maintenance.lock`. Dev-tagged batches are
+acknowledged and discarded; historical `events.dev.jsonl` files are not
+backfilled.
+
+### Raw segment sealing
+
+When an accepted batch would push `events.jsonl` past 200 MiB, ingest renames
+it to `sealed/events-NNNNNN.pending.jsonl` inside the same SQLite write
+transaction that serializes every append, then writes the batch to a fresh
+live file. The rename is the commit point, so a crash leaves either the old
+live file or a pending segment, never a partial copy. A failed commit after a
+seal removes only the new batch's lines; the seal stays because it moves bytes
+without changing the stream.
+
+A background pass then streams the pending file into a fsynced gzip
+temporary, decompresses it again to verify the size and SHA-256, atomically
+publishes `sealed/events-NNNNNN-<first>-<last>.jsonl.gz`, and only then
+removes the pending file. `<first>`/`<last>` are the UTC timestamps of the
+segment's first and last lines (`untimed` if absent). Every intermediate state
+is a valid stream: temporaries are never read, a published gzip wins over a
+same-sequence pending file, and the next pass verifies and removes that
+duplicate. A gap in the sequence or a gzip that differs from its pending file
+fails closed. Startup seals any install already at the cap before serving and
+resumes interrupted compaction.
+
+Exact-retry deduplication is unaffected because it is enforced by SQLite's
+`UNIQUE(install_id, event_hash)`, not by the raw file. Backfill checkpoint keys
+follow the byte stream: sequence 1 keeps the historical
+`<uuid>/events.jsonl` key and later sequences use `<uuid>/events.jsonl#N`, so a
+live file keeps its key when it is sealed and no checkpoint is rewritten.
+Backfill and reconciliation read every segment, and reconciliation compares
+one hash set per install across all of them. The complete JSONL download
+streams the decompressed segments followed by the live file, with handles and
+lengths fixed before headers are sent. Latest-200/500, LLM-ready reports, the
+activity metrics, and the hourly watch also span segments.
+
+### Typed-key identity sanitization and scrub
+
+App versions up to 0.52.2 shipped keyboard telemetry carrying rdev Debug
+forms such as `KeyPress(KeyI)`, `KeyRelease(Num4)`, `Some(Slash)`, or a bare
+`SemiColon` in key fields, and `Some("a")` key names. The shared
+`event_store.prepare_event` normalization replaces these with
+`KeyPress(non_hotkey_key)`, `Some(non_hotkey_key)`, `non_hotkey_key`, or
+`Some(redacted_text)` before hashing, so ingest writes only the sanitized form
+to both JSONL and SQLite and a retry from an old client deduplicates against
+it. Configured hotkeys (`ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`,
+`Alt`, `AltGr`, `MetaLeft`/`MetaRight`, `Function`, F1-F20) and unrelated
+values such as `Some(Idle)` detector states are kept.
+
+History stored before that change needs the one-shot scrub tool:
+
+```bash
+# Dry run (the default): content-free per-install counts, changes nothing.
+fleet exec --timeout 3600 opti 'python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs'
+
+# Apply with the receiver stopped (the tool refuses while it holds its lock).
+# `&&` keeps the receiver stopped if the scrub fails; rerun the scrub, never
+# start the receiver around a failure.
+fleet exec --timeout 3600 opti 'sudo systemctl stop murmur-logs && python3 /home/george/scrub_key_identities.py --root /home/george/murmur-logs --apply && sudo systemctl start murmur-logs'
+```
+
+Sanitization matches rdev forms embedded anywhere in a string, including
+summaries, on token boundaries (`MyKeyPress(KeyA)`, `/models/KeyA/`, or
+`KeyA-7B` are untouched). It also redacts character-bearing name fields:
+`event_name` everywhere, and `name`/`char`/`text`-style fields of
+`stream: "keyboard"` events.
+
+`--apply` rewrites the live file, every sealed gzip segment, and any legacy
+`events.dev.jsonl` through a fsynced temporary and an atomic rename. Every
+run, including one resuming after an interruption, keeps only the first
+occurrence (in stream order across all of an install's sources) of sanitized
+lines that are exact canonical duplicates. It then
+updates matching SQLite rows (canonical JSON, event hash, and summary/FTS) in
+one rowid-ordered pass and a single transaction with `secure_delete` on,
+optimizes FTS when a summary changed, and truncates the WAL. Rows that
+differed only by the typed key become identical and are merged into the
+earliest stored row. A small `.key-scrub-journal.json` records each file
+rewrite so an interrupted run finishes the matching backfill-checkpoint update
+when rerun. While that journal exists the receiver refuses to start, so no
+ingest can change a half-scrubbed file. Reconciliation continues to prove the
+projection afterwards.
+
+The tool deliberately keeps no unscrubbed copy, because a retained backup
+would retain the key identities being removed. It does not touch existing
+operator backups (for example `/home/george/murmur-logs-backups/`), which still
+hold the unscrubbed data until someone deletes them.
 
 ### Server-armed hang diagnostics control files
 
@@ -355,6 +464,7 @@ bounds, HTML escaping, and dictation lifecycle correlation are covered by:
 python3 -m unittest tests/test_event_store.py
 python3 -m unittest tests/test_log_receiver.py
 python3 -m unittest tests/test_receiver_hang_diagnostics.py
+python3 -m unittest tests/test_receiver_key_scrub.py
 python3 -m unittest tests/test_capture_regression_watch.py
 python3 -m unittest tests/test_dictation_lifecycle.py
 python3 -m unittest tests/test_reliability_slo.py

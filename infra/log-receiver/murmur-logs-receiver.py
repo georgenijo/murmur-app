@@ -39,6 +39,7 @@ Stdlib only.
 Responses: 204 ok, 401 bad token, 400 bad payload, 413 too large.
 """
 
+import fcntl
 import html
 import hashlib
 import hmac
@@ -53,6 +54,8 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode
@@ -63,21 +66,34 @@ if RECEIVER_DIRECTORY not in sys.path:
     sys.path.insert(0, RECEIVER_DIRECTORY)
 
 from event_store import (  # noqa: E402
+    KEY_SCRUB_JOURNAL_NAME,
+    RAW_LIVE_NAME,
+    RAW_MAINTENANCE_LOCK_NAME,
     ArchiveError,
     EventQuery,
     EventStore,
     InvalidEvent,
     InvalidQuery,
+    RawSource,
     StoreBusy,
     StoreCommitError,
     StoreCorrupt,
     StoreError,
     StoreQuota,
+    compact_pending_segments,
     decode_cursor,
     encode_cursor,
+    close_snapshot,
+    iter_snapshot_lines,
+    iter_source_lines,
     normalize_state_snapshot,
+    open_raw_snapshot,
+    open_raw_source,
     parse_event_line,
     parse_local_datetime,
+    raw_source_disk_bytes,
+    raw_sources,
+    seal_live_file,
 )
 
 TOKEN = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0"
@@ -92,7 +108,10 @@ if not 1024 <= LISTEN_PORT <= 65535:
     raise RuntimeError("MURMUR_LOG_PORT must be between 1024 and 65535")
 MAX_BODY = 8 * 1024 * 1024  # 8 MB
 MAX_BATCH_EVENTS = 10_000
-MAX_FILE = 200 * 1024 * 1024  # per-install cap: stop appending past 200 MB
+# Per-install live JSONL cap. A batch that would cross it seals the live file
+# into a compressed immutable segment and starts a fresh one; nothing is
+# deleted. Hang bundles in the install directory are still admitted against it.
+MAX_FILE = 200 * 1024 * 1024
 INSTALL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 MAX_INSTALLS = 150
 MAX_TOTAL = 10 * 1024 * 1024 * 1024  # 10 GB across all installs
@@ -116,6 +135,7 @@ _PRIVATE_CAPTURE_WRITE_LOCK = threading.Lock()
 _DASHBOARD_CSRF_SECRET = secrets.token_bytes(32)
 EXPORT_LIMITS = (200, 500)
 MAX_SCOPED_EXPORT_BYTES = 32 * 1024 * 1024
+MAX_EXPORT_LINE_SENTINEL = 1024 * 1024 + 1
 MAX_ACTIVITY_EVENT_BYTES = 512 * 1024
 LLM_REPORT_FORMAT = "murmur-fleet-llm/v1"
 CAPTURE_WATCH_REPORT = "capture-watch.json"
@@ -213,10 +233,33 @@ DICTATION_ERROR_CODES = {
 _usage_cache = {"t": 0.0, "bytes": 0, "dirs": 0}
 _store_init_lock = threading.Lock()
 _initialized_store_paths = set()
+# Held shared for the receiver's lifetime; the one-shot scrub tool takes it
+# exclusively so it can never rewrite raw files under a running receiver.
+MAINTENANCE_LOCK_NAME = RAW_MAINTENANCE_LOCK_NAME
+_compaction_lock = threading.Lock()
+_segment_cache_lock = threading.Lock()
+_segment_cache = {}
+MAX_SEGMENT_CACHE_ENTRIES = 512
+
+
+def _tree_bytes(path):
+    """Bytes of every regular file below path, without following symlinks."""
+    total = 0
+    for current, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(current, name)).st_size
+            except OSError:
+                pass
+    return total
 
 
 def root_usage():
-    """Total bytes and dir count under ROOT, cached for 60s."""
+    """Total bytes and dir count under ROOT, cached for 60s.
+
+    Counts every file inside each install directory, including compressed
+    sealed segments, so the global cap bounds on-disk raw history.
+    """
     if time.time() - _usage_cache["t"] > 60:
         total = dirs = 0
         for entry in os.listdir(ROOT) if os.path.isdir(ROOT) else []:
@@ -224,13 +267,95 @@ def root_usage():
             if not os.path.isdir(d):
                 continue
             dirs += 1
-            for f in os.listdir(d):
-                try:
-                    total += os.path.getsize(os.path.join(d, f))
-                except OSError:
-                    pass
+            if not os.path.islink(d):
+                total += _tree_bytes(d)
         _usage_cache.update(t=time.time(), bytes=total, dirs=dirs)
     return _usage_cache
+
+
+def install_raw_sources(install_id, kind="prod"):
+    """Ordered raw sources for one install stream; empty when none exist."""
+    directory = os.path.join(ROOT, install_id)
+    if kind == "dev":
+        path = os.path.join(directory, "events.dev.jsonl")
+        return [RawSource(install_id, 1, path, False, False)] if os.path.isfile(path) else []
+    if not os.path.isdir(directory):
+        return []
+    return raw_sources(directory)
+
+
+def open_install_snapshot(install_id, kind="prod"):
+    if kind == "dev":
+        path = os.path.join(ROOT, install_id, "events.dev.jsonl")
+        handle = open(path, "rb")
+        source = RawSource(install_id, 1, path, False, False)
+        return [(source, handle, os.fstat(handle.fileno()).st_size)]
+    return open_raw_snapshot(os.path.join(ROOT, install_id))
+
+
+def compact_install(install_id):
+    """Compress pending sealed segments for one install (serialized)."""
+    with _compaction_lock:
+        try:
+            compact_pending_segments(os.path.join(ROOT, install_id))
+        except (OSError, StoreError) as error:
+            sys.stderr.write(
+                "murmur-logs raw compaction failed for %s: %s\n"
+                % (install_id[:8], type(error).__name__)
+            )
+        _usage_cache["t"] = 0.0
+
+
+def _schedule_compaction(install_id):
+    threading.Thread(target=compact_install, args=(install_id,), daemon=True).start()
+
+
+def recover_raw_storage():
+    """Seal live files already at the cap and finish interrupted seals.
+
+    Runs before the server accepts requests, so no append can race the
+    rename. Compression of pending segments is returned as install IDs for a
+    background pass so startup does not wait on it.
+    """
+    pending = []
+    if not os.path.isdir(ROOT):
+        return pending
+    for entry in sorted(os.listdir(ROOT)):
+        directory = os.path.join(ROOT, entry)
+        if not INSTALL_ID_RE.fullmatch(entry) or not os.path.isdir(directory):
+            continue
+        live = os.path.join(directory, RAW_LIVE_NAME)
+        try:
+            if os.path.isfile(live) and os.path.getsize(live) >= MAX_FILE:
+                seal_live_file(directory)
+            if os.path.isdir(os.path.join(directory, "sealed")):
+                pending.append(entry)
+        except (OSError, StoreError) as error:
+            sys.stderr.write(
+                "murmur-logs raw recovery failed for %s: %s\n"
+                % (entry[:8], type(error).__name__)
+            )
+    return pending
+
+
+def _sealed_cached(source, kind, compute):
+    """Memoize a derived value for an immutable sealed segment."""
+    if not source.sealed or not source.compressed:
+        return compute()
+    try:
+        status = os.stat(source.path)
+    except OSError:
+        return compute()
+    key = (source.path, status.st_size, status.st_mtime_ns, kind)
+    with _segment_cache_lock:
+        if key in _segment_cache:
+            return _segment_cache[key]
+    value = compute()
+    with _segment_cache_lock:
+        if len(_segment_cache) >= MAX_SEGMENT_CACHE_ENTRIES:
+            _segment_cache.clear()
+        _segment_cache[key] = value
+    return value
 
 
 def _install_dir_bytes(dirpath):
@@ -1493,35 +1618,79 @@ class ExportWindowTooLarge(Exception):
     pass
 
 
+def _tail_seekable(handle, size, n, max_bytes):
+    """Exact newest lines of a plain handle within its first `size` bytes."""
+    remaining = size
+    blocks = []
+    newline_count = 0
+    read_bytes = 0
+    while remaining > 0 and newline_count <= n and read_bytes < max_bytes:
+        block_size = min(64 * 1024, remaining, max_bytes - read_bytes)
+        remaining -= block_size
+        handle.seek(remaining)
+        block = handle.read(block_size)
+        blocks.append(block)
+        read_bytes += len(block)
+        newline_count += block.count(b"\n")
+    if remaining > 0 and newline_count <= n:
+        raise ExportWindowTooLarge
+    lines = b"".join(reversed(blocks)).splitlines()
+    return [line for line in lines if line.strip()][-n:]
+
+
 def tail_raw_lines(path, n, max_bytes=MAX_SCOPED_EXPORT_BYTES):
     """Return exact newest lines, or fail before returning a partial window."""
     if n <= 0:
         return []
     try:
-        size = os.path.getsize(path)
-        remaining = size
-        blocks = []
-        newline_count = 0
-        read_bytes = 0
         with open(path, "rb") as f:
-            while (
-                remaining > 0
-                and newline_count <= n
-                and read_bytes < max_bytes
-            ):
-                block_size = min(64 * 1024, remaining, max_bytes - read_bytes)
-                remaining -= block_size
-                f.seek(remaining)
-                block = f.read(block_size)
-                blocks.append(block)
-                read_bytes += len(block)
-                newline_count += block.count(b"\n")
-        if remaining > 0 and newline_count <= n:
-            raise ExportWindowTooLarge
-        lines = b"".join(reversed(blocks)).splitlines()
-        return [line for line in lines if line.strip()][-n:]
+            return _tail_seekable(f, os.fstat(f.fileno()).st_size, n, max_bytes)
     except OSError:
         return []
+
+
+def _tail_forward(entry, n, max_bytes):
+    """Exact newest lines of a gzip segment by bounded forward scan."""
+    window = deque()
+    window_bytes = 0
+    trimmed = False
+    for raw, oversized in iter_snapshot_lines([entry]):
+        if not oversized and not raw.strip():
+            continue
+        size = MAX_EXPORT_LINE_SENTINEL if oversized else len(raw)
+        window.append((None if oversized else raw, size))
+        window_bytes += size
+        if len(window) > n:
+            window_bytes -= window.popleft()[1]
+        while window and window_bytes > max_bytes:
+            window_bytes -= window.popleft()[1]
+            trimmed = True
+    # Budget trimming only lost data if the final window is short of n.
+    if (trimmed and len(window) < n) or any(raw is None for raw, _ in window):
+        raise ExportWindowTooLarge
+    return [raw for raw, _ in window]
+
+
+def tail_install_lines(snapshot, n, max_bytes=MAX_SCOPED_EXPORT_BYTES):
+    """Exact newest n lines across a pinned snapshot of every raw source."""
+    if n <= 0:
+        return []
+    collected = []
+    budget = max_bytes
+    for entry in reversed(snapshot):
+        source, handle, size = entry
+        need = n - len(collected)
+        if need <= 0:
+            break
+        if budget <= 0:
+            raise ExportWindowTooLarge
+        if source.compressed:
+            lines = _tail_forward(entry, need, budget)
+        else:
+            lines = _tail_seekable(handle, size, need, budget)
+        collected = lines + collected
+        budget -= sum(len(line) + 1 for line in lines)
+    return collected[-n:]
 
 
 def count_lines(path):
@@ -1532,18 +1701,55 @@ def count_lines(path):
         return 0
 
 
+def _count_entry_lines(entry):
+    _, handle, size = entry
+    handle.seek(0)
+    total = remaining = 0
+    remaining = size
+    while remaining > 0:
+        chunk = handle.read(min(1 << 20, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        total += chunk.count(b"\n")
+    return total
+
+
+def count_install_lines(snapshot):
+    total = 0
+    for entry in snapshot:
+        total += _sealed_cached(entry[0], "lines", lambda entry=entry: _count_entry_lines(entry))
+    return total
+
+
+@contextmanager
+def install_snapshot(install_id, kind="prod"):
+    """Pinned raw sources for one stream; empty when the stream has none."""
+    try:
+        snapshot = open_install_snapshot(install_id, kind)
+    except FileNotFoundError:
+        snapshot = []
+    try:
+        yield snapshot
+    finally:
+        close_snapshot(snapshot)
+
+
 def collect_installs():
     store = dashboard_store()
     if store is not None:
         installs = []
         for item in store.list_installs():
-            path = os.path.join(ROOT, item["id"], "events.jsonl")
+            try:
+                raw_bytes = raw_source_disk_bytes(install_raw_sources(item["id"]))
+            except (OSError, StoreError):
+                raw_bytes = 0
             installs.append(
                 {
                     **item,
                     "kind": "prod",
                     "mic": microphone_label(item.get("state")),
-                    "bytes": os.path.getsize(path) if os.path.exists(path) else 0,
+                    "bytes": raw_bytes,
                     "last_ts": "",
                     "last_summary": "",
                 }
@@ -1570,9 +1776,35 @@ def collect_installs():
             pass
         for fname in ("events.jsonl", "events.dev.jsonl"):
             path = os.path.join(d, fname)
-            if not os.path.exists(path):
+            kind = "dev" if ".dev." in fname else "prod"
+            try:
+                snapshot = open_install_snapshot(entry, kind)
+            except (OSError, StoreError):
+                snapshot = []
+            if not snapshot and os.path.isfile(path):
+                # Not a recognized install ID: show the single legacy file.
+                try:
+                    handle = open(path, "rb")
+                except OSError:
+                    continue
+                snapshot = [
+                    (
+                        RawSource(entry, 1, path, False, False),
+                        handle,
+                        os.fstat(handle.fileno()).st_size,
+                    )
+                ]
+            if not snapshot:
                 continue
-            last = tail_lines(path, 1)
+            try:
+                try:
+                    last = tail_install_lines(snapshot, 1)
+                except (ExportWindowTooLarge, OSError, EOFError, StoreError):
+                    last = []
+                line_count = count_install_lines(snapshot)
+            finally:
+                close_snapshot(snapshot)
+            sources = [source for source, _, _ in snapshot]
             last_event, last_ts = {}, ""
             if last:
                 try:
@@ -1580,18 +1812,22 @@ def collect_installs():
                     last_ts = last_event.get("timestamp", "")
                 except ValueError:
                     pass
+            try:
+                mtime = max(os.path.getmtime(source.path) for source in sources)
+            except OSError:
+                mtime = 0.0
             installs.append({
                 "id": entry,
-                "kind": "dev" if ".dev." in fname else "prod",
+                "kind": kind,
                 "device": meta.get("device_name", ""),
                 "os": meta.get("os", ""),
                 "hw": meta.get("hw", ""),
                 "specs": meta.get("specs", ""),
                 "mic": microphone_label(state),
                 "version": meta.get("last_version", "?"),
-                "events": count_lines(path),
-                "bytes": os.path.getsize(path),
-                "mtime": os.path.getmtime(path),
+                "events": line_count,
+                "bytes": raw_source_disk_bytes(sources),
+                "mtime": mtime,
                 "first_seen": os.path.getctime(d),
                 "last_ts": last_ts,
                 "last_summary": str(last_event.get("summary", ""))[:110],
@@ -2178,8 +2414,34 @@ def bounded_jsonl_events_reverse(
                     yield event
 
 
+ACTIVITY_CODES = (
+    "audio.capture_ready",
+    "recording.native_audio_ready",
+    "pipeline.dictation_terminal",
+    "pipeline.dictation_completed",
+)
+_ACTIVITY_LINE_TOKENS = tuple(
+    sorted(
+        {code.encode("ascii") for code in ACTIVITY_CODES}
+        | {
+            encoded
+            for prefix, code in EVENT_CODE_COMPATIBILITY
+            if code in ACTIVITY_CODES
+            for encoded in (
+                prefix.encode("utf-8"),
+                json.dumps(prefix)[1:-1].encode("ascii"),
+            )
+        }
+    )
+)
+
+
 def find_activity_metrics(path, max_line_bytes=MAX_ACTIVITY_EVENT_BYTES):
-    """Find the newest proven activation and non-empty live transcription."""
+    """Find the newest proven activation and non-empty live transcription.
+
+    Scans the live file newest-first, then any sealed segments beside it
+    newest-first, so the result covers the complete retained stream.
+    """
     metrics = {
         "last_activated": None,
         "last_successful_transcription": None,
@@ -2188,46 +2450,91 @@ def find_activity_metrics(path, max_line_bytes=MAX_ACTIVITY_EVENT_BYTES):
         path,
         max_line_bytes=max_line_bytes,
     ):
-        epoch = event_epoch(event)
-        if epoch <= 0:
-            continue
-        code = event_code(event)
-        metric = None
-        if code == "audio.capture_ready" and event_value(event, "owner_kind") in (
-            None,
-            "dictation",
-        ):
-            # Missing owner_kind is legacy dictation telemetry. New shared
-            # audio producers always stamp their owner and remain fail-closed
-            # for any explicit non-dictation value.
-            metric = "last_activated"
-        elif code == "recording.native_audio_ready":
-            metric = "last_activated"
-        elif code == "pipeline.dictation_terminal" and event_value(event, "outcome") == "success":
-            data = event.get("data")
-            data = data if isinstance(data, dict) else {}
-            char_count = data.get("char_count")
-            if (
-                isinstance(char_count, int)
-                and not isinstance(char_count, bool)
-                and char_count > 0
-            ):
-                metric = "last_successful_transcription"
-        elif code == "pipeline.dictation_completed":
-            data = event.get("data")
-            data = data if isinstance(data, dict) else {}
-            char_count = data.get("char_count")
-            if (
-                isinstance(char_count, int)
-                and not isinstance(char_count, bool)
-                and char_count > 0
-            ):
-                metric = "last_successful_transcription"
+        metric = activity_metric(event)
         if metric is not None and metrics[metric] is None:
             metrics[metric] = {"timestamp": str(event.get("timestamp", ""))[:80]}
         if all(value is not None for value in metrics.values()):
+            return metrics
+    directory = os.path.dirname(os.path.abspath(path))
+    if os.path.basename(path) != RAW_LIVE_NAME or not os.path.isdir(
+        os.path.join(directory, "sealed")
+    ):
+        return metrics
+    sealed = [source for source in raw_sources(directory) if source.sealed]
+    for source in reversed(sealed):
+        latest = _sealed_cached(
+            source,
+            ("activity", max_line_bytes),
+            lambda source=source: _segment_activity(source, max_line_bytes),
+        )
+        for metric, value in latest.items():
+            if metrics[metric] is None and value is not None:
+                metrics[metric] = value
+        if all(value is not None for value in metrics.values()):
             break
     return metrics
+
+
+def _segment_activity(source, max_line_bytes):
+    """Last matching activity per metric in one segment, in file order."""
+    latest = {
+        "last_activated": None,
+        "last_successful_transcription": None,
+    }
+    for raw, oversized in iter_source_lines(source):
+        if oversized or len(raw) > max_line_bytes:
+            continue
+        if not any(token in raw for token in _ACTIVITY_LINE_TOKENS):
+            continue
+        try:
+            event = json.loads(raw)
+        except (TypeError, ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        metric = activity_metric(event)
+        if metric is not None:
+            latest[metric] = {"timestamp": str(event.get("timestamp", ""))[:80]}
+    return latest
+
+
+def activity_metric(event):
+    """Which retained-log activity metric one event proves, if any."""
+    if event_epoch(event) <= 0:
+        return None
+    code = event_code(event)
+    metric = None
+    if code == "audio.capture_ready" and event_value(event, "owner_kind") in (
+        None,
+        "dictation",
+    ):
+        # Missing owner_kind is legacy dictation telemetry. New shared
+        # audio producers always stamp their owner and remain fail-closed
+        # for any explicit non-dictation value.
+        metric = "last_activated"
+    elif code == "recording.native_audio_ready":
+        metric = "last_activated"
+    elif code == "pipeline.dictation_terminal" and event_value(event, "outcome") == "success":
+        data = event.get("data")
+        data = data if isinstance(data, dict) else {}
+        char_count = data.get("char_count")
+        if (
+            isinstance(char_count, int)
+            and not isinstance(char_count, bool)
+            and char_count > 0
+        ):
+            metric = "last_successful_transcription"
+    elif code == "pipeline.dictation_completed":
+        data = event.get("data")
+        data = data if isinstance(data, dict) else {}
+        char_count = data.get("char_count")
+        if (
+            isinstance(char_count, int)
+            and not isinstance(char_count, bool)
+            and char_count > 0
+        ):
+            metric = "last_successful_transcription"
+    return metric
 
 
 def render_activity_time(event):
@@ -2834,9 +3141,9 @@ def load_json_file(path):
         return {}
 
 
-def load_recent_events(path, limit, max_bytes=MAX_SCOPED_EXPORT_BYTES):
+def load_recent_events(snapshot, limit, max_bytes=MAX_SCOPED_EXPORT_BYTES):
     events = []
-    for raw in tail_raw_lines(path, limit, max_bytes=max_bytes):
+    for raw in tail_install_lines(snapshot, limit, max_bytes=max_bytes):
         try:
             event = json.loads(raw)
         except ValueError:
@@ -3402,7 +3709,8 @@ def render_install(install_id, kind, n=200):
     n = max(50, min(n, 5000))
     fname = "events.dev.jsonl" if kind == "dev" else "events.jsonl"
     path = os.path.join(ROOT, install_id, fname)
-    if not os.path.exists(path):
+    sources = install_raw_sources(install_id, kind)
+    if not sources:
         return None
     store = dashboard_store() if kind == "prod" else None
     stored_install = store.get_install(install_id) if store is not None else None
@@ -3428,16 +3736,29 @@ def render_install(install_id, kind, n=200):
                 meta = json.load(f)
         except (OSError, ValueError):
             pass
-        total = count_lines(path)
         events = []
-        for line in tail_lines(path, n, max_bytes=max(512 * 1024, n * 600)):
+        window_bytes = max(512 * 1024, n * 600)
+        lines = tail_lines(path, n, max_bytes=window_bytes)
+        with install_snapshot(install_id, kind) as snapshot:
+            total = count_install_lines(snapshot)
+            if len(lines) < n and any(source.sealed for source, _, _ in snapshot):
+                try:
+                    lines = [
+                        line.decode("utf-8", "replace")
+                        for line in tail_install_lines(
+                            snapshot, n, max_bytes=window_bytes
+                        )
+                    ]
+                except ExportWindowTooLarge:
+                    pass
+        for line in lines:
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
             if isinstance(event, dict):
                 events.append(event)
-    size_mb = os.path.getsize(path) / 1048576
+    size_mb = raw_source_disk_bytes(sources) / 1048576
 
     title = meta.get("device_name") or install_id[:8]
     sub = " · ".join(
@@ -3798,6 +4119,8 @@ class Handler(BaseHTTPRequestHandler):
                 and PRIVATE_CAPTURE_ID_RE.fullmatch(parts[3])
             ):
                 self.close_connection = True
+                if not self._behind_access():
+                    return self._reply(403, b"forbidden")
                 if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != (
                     "application/x-www-form-urlencoded"
                 ):
@@ -3907,13 +4230,16 @@ class Handler(BaseHTTPRequestHandler):
                     v = re.sub(r"(\w)\?(s\b)", r"\1'\2", v)
                 meta[k] = v[:120]
         try:
-            event_store().ingest_batch(
+            result = event_store().ingest_batch(
                 install_id,
                 events,
                 metadata=meta,
                 archive_path=path,
                 archive_quota_bytes=MAX_FILE,
+                seal_full_archive=True,
             )
+            if result.sealed:
+                _schedule_compaction(install_id.lower())
             atomic_write_json(meta_path, meta)
         except (StoreQuota, ArchiveError):
             return self._reply(507, b"storage unavailable")
@@ -4092,9 +4418,109 @@ class Handler(BaseHTTPRequestHandler):
         _usage_cache["t"] = 0.0
         self._reply(204)
 
+    def _behind_access(self):
+        """True when Cloudflare Access fronted this dashboard request."""
+        return bool(
+            self.headers.get("Cf-Access-Jwt-Assertion")
+            or self.headers.get("Cf-Access-Authenticated-User-Email")
+        )
+
+    def _raw_export(self, install_id, kind, params, snapshot):
+        try:
+            limit = export_limit(params)
+        except ValueError:
+            return self._reply(400, b"limit must be 200 or 500")
+        if limit is not None:
+            try:
+                lines = tail_install_lines(
+                    snapshot,
+                    limit,
+                    max_bytes=MAX_SCOPED_EXPORT_BYTES,
+                )
+            except ExportWindowTooLarge:
+                return self._reply(
+                    413,
+                    b"recent event window is too large; download entire log",
+                )
+            except (OSError, EOFError, StoreError):
+                return self._reply(503, b"raw history unavailable")
+            payload = b"\n".join(lines) + (b"\n" if lines else b"")
+            return self._attachment(
+                payload,
+                "application/x-ndjson",
+                "murmur-%s-%s-latest-%d.jsonl" % (install_id[:8], kind, limit),
+            )
+        # The complete stream is every sealed segment, decompressed in order,
+        # followed by the live file, with lengths fixed when the snapshot was
+        # opened so a concurrent append cannot overrun the declared length.
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Content-Length", str(sum(size for _, _, size in snapshot)))
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="murmur-%s-%s.jsonl"' % (install_id[:8], kind),
+            )
+            self.send_header("Cache-Control", "private, no-store")
+            self.end_headers()
+            for _, handle, size in snapshot:
+                handle.seek(0)
+                remaining = size
+                while remaining > 0:
+                    chunk = handle.read(min(1 << 20, remaining))
+                    if not chunk:
+                        raise EOFError("raw source shorter than declared")
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (OSError, EOFError, StoreError):
+            # Headers are already sent; dropping the connection makes the
+            # short body detectable instead of silently complete.
+            self.close_connection = True
+
+    def _llm_export(self, install_id, kind, params, snapshot):
+        try:
+            limit = export_limit(params, default=200)
+        except ValueError:
+            return self._reply(400, b"limit must be 200 or 500")
+        try:
+            events = load_recent_events(
+                snapshot,
+                limit,
+                max_bytes=MAX_SCOPED_EXPORT_BYTES,
+            )
+            total = count_install_lines(snapshot)
+        except ExportWindowTooLarge:
+            return self._reply(
+                413,
+                b"recent event window is too large; use raw entire log",
+            )
+        except (OSError, EOFError, StoreError):
+            return self._reply(503, b"raw history unavailable")
+        meta = load_json_file(os.path.join(ROOT, install_id, "meta.json"))
+        state = load_json_file(os.path.join(ROOT, install_id, "state.json"))
+        report = render_llm_report(
+            install_id,
+            kind,
+            events,
+            total,
+            meta,
+            state,
+        ).encode("utf-8")
+        return self._attachment(
+            report,
+            "text/markdown; charset=utf-8",
+            "murmur-%s-%s-llm-latest-%d.md" % (install_id[:8], kind, limit),
+        )
+
     def do_GET(self):
         if self.path == "/healthz":
             return self._reply(200, b"ok")
+        # Defense-in-depth: data routes are reachable only via Cloudflare
+        # Access, which injects Cf-Access-* headers. If neither is present the
+        # request bypassed Access -> refuse rather than trust the edge policy
+        # alone. /healthz above stays exempt (served un-gated through nginx).
+        if not self._behind_access():
+            return self._reply(403, b"forbidden")
         if self.path in ("/", "/dashboard"):
             try:
                 page = render_dashboard().encode("utf-8")
@@ -4153,87 +4579,23 @@ class Handler(BaseHTTPRequestHandler):
                     page.encode("utf-8"),
                     "text/html; charset=utf-8",
                 )
-            if sub == "raw":
-                fname = "events.dev.jsonl" if kind == "dev" else "events.jsonl"
-                path = os.path.join(ROOT, install_id, fname)
-                if not os.path.exists(path):
-                    return self._reply(404, b"no such install")
+            if sub in ("raw", "llm"):
+                # One pinned snapshot serves the whole response, so a seal or
+                # compaction mid-request cannot change which bytes are read.
                 try:
-                    limit = export_limit(params)
-                except ValueError:
-                    return self._reply(400, b"limit must be 200 or 500")
-                if limit is not None:
-                    try:
-                        lines = tail_raw_lines(
-                            path,
-                            limit,
-                            max_bytes=MAX_SCOPED_EXPORT_BYTES,
-                        )
-                    except ExportWindowTooLarge:
-                        return self._reply(
-                            413,
-                            b"recent event window is too large; download entire log",
-                        )
-                    payload = b"\n".join(lines) + (b"\n" if lines else b"")
-                    return self._attachment(
-                        payload,
-                        "application/x-ndjson",
-                        "murmur-%s-%s-latest-%d.jsonl"
-                        % (install_id[:8], kind, limit),
-                    )
-                size = os.path.getsize(path)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/x-ndjson")
-                self.send_header("Content-Length", str(size))
-                self.send_header(
-                    "Content-Disposition",
-                    'attachment; filename="murmur-%s-%s.jsonl"' % (install_id[:8], kind),
-                )
-                self.send_header("Cache-Control", "private, no-store")
-                self.end_headers()
-                with open(path, "rb") as f:
-                    while True:
-                        chunk = f.read(1 << 20)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                return
-            if sub == "llm":
-                fname = "events.dev.jsonl" if kind == "dev" else "events.jsonl"
-                path = os.path.join(ROOT, install_id, fname)
-                if not os.path.exists(path):
-                    return self._reply(404, b"no such install")
+                    snapshot = open_install_snapshot(install_id, kind)
+                except FileNotFoundError:
+                    snapshot = []
+                except (OSError, StoreError):
+                    return self._reply(503, b"raw history unavailable")
                 try:
-                    limit = export_limit(params, default=200)
-                except ValueError:
-                    return self._reply(400, b"limit must be 200 or 500")
-                try:
-                    events = load_recent_events(
-                        path,
-                        limit,
-                        max_bytes=MAX_SCOPED_EXPORT_BYTES,
-                    )
-                except ExportWindowTooLarge:
-                    return self._reply(
-                        413,
-                        b"recent event window is too large; use raw entire log",
-                    )
-                meta = load_json_file(os.path.join(ROOT, install_id, "meta.json"))
-                state = load_json_file(os.path.join(ROOT, install_id, "state.json"))
-                report = render_llm_report(
-                    install_id,
-                    kind,
-                    events,
-                    count_lines(path),
-                    meta,
-                    state,
-                ).encode("utf-8")
-                return self._attachment(
-                    report,
-                    "text/markdown; charset=utf-8",
-                    "murmur-%s-%s-llm-latest-%d.md"
-                    % (install_id[:8], kind, limit),
-                )
+                    if not snapshot:
+                        return self._reply(404, b"no such install")
+                    if sub == "raw":
+                        return self._raw_export(install_id, kind, params, snapshot)
+                    return self._llm_export(install_id, kind, params, snapshot)
+                finally:
+                    close_snapshot(snapshot)
             if sub:
                 return self._reply(404)
             n = 200
@@ -4250,10 +4612,37 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(404)
 
 
+def hold_maintenance_lock():
+    """Hold a shared lock for the process lifetime (blocks while scrubbing)."""
+    handle = open(os.path.join(ROOT, MAINTENANCE_LOCK_NAME), "a+b")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+    return handle
+
+
+def refuse_unfinished_scrub():
+    """Fail loudly instead of ingesting into a half-scrubbed raw source."""
+    if os.path.exists(os.path.join(ROOT, KEY_SCRUB_JOURNAL_NAME)):
+        sys.stderr.write(
+            "murmur-logs: unfinished key scrub (%s); rerun "
+            "scrub_key_identities.py --apply before starting the receiver\n"
+            % KEY_SCRUB_JOURNAL_NAME
+        )
+        raise SystemExit(1)
+
+
+def _compact_installs(install_ids):
+    for install_id in install_ids:
+        compact_install(install_id)
+
+
 def main():
     os.makedirs(ROOT, exist_ok=True)
+    maintenance_lock = hold_maintenance_lock()  # noqa: F841 - held until exit
+    refuse_unfinished_scrub()
     store = event_store()
     readiness = "sqlite" if store.is_dashboard_ready() else "raw-awaiting-reconciliation"
+    pending = recover_raw_storage()
+    threading.Thread(target=_compact_installs, args=(pending,), daemon=True).start()
     threading.Thread(target=_maintain_private_captures, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", LISTEN_PORT), Handler)
     sys.stderr.write(
