@@ -1910,6 +1910,8 @@ const APP_LOG_GENERATIONS: u8 = 1;
 /// After a failed rotation, wait for this much more data before retrying so a
 /// persistent rename failure does not cost two renames per event.
 const ROTATION_RETRY_BYTES: u64 = 1024 * 1024;
+/// While the current file cannot be created, try at most this often.
+const CREATE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// `path` with `.N` appended (`events.jsonl` → `events.jsonl.1`).
 pub(crate) fn generation_path(path: &Path, generation: u8) -> PathBuf {
@@ -1967,6 +1969,7 @@ impl RotationFs for RealFs {
 pub(crate) struct FailingFs {
     pub(crate) fail_rename: std::sync::atomic::AtomicBool,
     pub(crate) fail_create: std::sync::atomic::AtomicBool,
+    pub(crate) create_calls: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(test)]
@@ -1979,6 +1982,8 @@ impl RotationFs for FailingFs {
     }
 
     fn create(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.create_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_create.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(std::io::Error::other("injected create failure"));
         }
@@ -2014,27 +2019,22 @@ struct RotatingState {
     file: Option<std::fs::File>,
     size: u64,
     rotate_at: u64,
+    /// Events dropped since the file was last writable.
+    dropped: u64,
+    /// Earliest time the next create attempt may run after a failed one.
+    retry_after: Option<std::time::Instant>,
+    create_retry: std::time::Duration,
+    failure_reported: bool,
+    /// Formats the one line written after recovery, given the dropped count.
+    drop_note: Option<fn(u64) -> String>,
 }
 
 impl RotatingState {
-    fn ensure_file(&mut self) -> std::io::Result<&mut std::fs::File> {
-        if self.file.is_none() {
-            self.file = Some(self.fs.create(&self.path)?);
-            self.size = 0;
-            self.rotate_at = self.max_bytes;
-        }
-        Ok(self.file.as_mut().expect("file was just created"))
-    }
-
     fn rotate(&mut self) {
         match rotate_generations(self.fs.as_ref(), &self.path, self.generations) {
-            Ok(()) => {
-                // The old handle now points at `.1` (or an unlinked file).
-                // Drop it before creating the replacement; if creating fails,
-                // the next write retries.
-                self.file = None;
-                let _ = self.ensure_file();
-            }
+            // The old handle now points at `.1` (or an unlinked file). Drop it;
+            // the write that follows creates the replacement.
+            Ok(()) => self.file = None,
             // The current file is intact: keep appending to it rather than
             // dropping events, and retry after more data has accumulated.
             Err(_) => {
@@ -2049,14 +2049,68 @@ impl RotatingState {
         self.file = None;
         self.size = 0;
         self.rotate_at = self.max_bytes;
-        let _ = self.ensure_file();
+        self.retry_after = None;
+        self.file = self.fs.create(&self.path).ok();
+    }
+
+    /// Create the current file after a rotation (or a failed create). At most
+    /// one attempt per `create_retry`; writes in between are dropped and
+    /// counted rather than buffered. Failure and recovery are reported once
+    /// each on stderr, which cannot recurse into tracing.
+    fn recover_file(&mut self) -> std::io::Result<()> {
+        if self
+            .retry_after
+            .is_some_and(|until| std::time::Instant::now() < until)
+        {
+            self.dropped += 1;
+            return Err(std::io::Error::other("log file unavailable"));
+        }
+        match self.fs.create(&self.path) {
+            Ok(mut file) => {
+                self.size = 0;
+                self.rotate_at = self.max_bytes;
+                self.retry_after = None;
+                if self.dropped > 0 {
+                    eprintln!(
+                        "murmur: log file {} writable again; {} events were dropped",
+                        self.path.display(),
+                        self.dropped
+                    );
+                    if let Some(note) = self.drop_note {
+                        let line = note(self.dropped);
+                        if file.write_all(line.as_bytes()).is_ok() {
+                            self.size += line.len() as u64;
+                        }
+                    }
+                }
+                self.dropped = 0;
+                self.failure_reported = false;
+                self.file = Some(file);
+                Ok(())
+            }
+            Err(error) => {
+                self.dropped += 1;
+                self.retry_after = Some(std::time::Instant::now() + self.create_retry);
+                if !self.failure_reported {
+                    self.failure_reported = true;
+                    eprintln!(
+                        "murmur: cannot create log file {}: {error}; dropping events until it can",
+                        self.path.display()
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
         if self.file.is_some() && self.size >= self.rotate_at {
             self.rotate();
         }
-        let file = self.ensure_file()?;
+        if self.file.is_none() {
+            self.recover_file()?;
+        }
+        let file = self.file.as_mut().expect("file was just created");
         file.write_all(buf)?;
         self.size += buf.len() as u64;
         Ok(())
@@ -2098,8 +2152,26 @@ impl SizeRotatingFile {
                 file: Some(file),
                 size,
                 rotate_at: max_bytes,
+                dropped: 0,
+                retry_after: None,
+                create_retry: CREATE_RETRY_INTERVAL,
+                failure_reported: false,
+                drop_note: None,
             })),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_create_retry(self, interval: std::time::Duration) -> Self {
+        self.lock().create_retry = interval;
+        self
+    }
+
+    /// Write `note(dropped)` once after the file becomes writable again, when
+    /// events were dropped while it was not.
+    pub(crate) fn with_drop_note(self, note: fn(u64) -> String) -> Self {
+        self.lock().drop_note = Some(note);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RotatingState> {
@@ -2135,16 +2207,38 @@ fn register_writer(writer: &SizeRotatingFile) {
         .push(writer.clone());
 }
 
-/// Run `remove_files` while every writer is paused, then reopen each writer on
-/// a fresh file. Without this, a writer keeps appending to an unlinked file
-/// until its next size rotation, so output after Clear logs is unreadable and
-/// never shipped. `remove_files` must not log.
-fn with_writers_reset(writers: &[SizeRotatingFile], remove_files: impl FnOnce()) {
-    let mut guards: Vec<_> = writers.iter().map(SizeRotatingFile::lock).collect();
-    remove_files();
-    for guard in &mut guards {
-        guard.reopen();
-    }
+/// The line written to `events.jsonl` after it became writable again.
+fn event_drop_note(dropped: u64) -> String {
+    let event = AppEvent {
+        timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        stream: "system".to_string(),
+        level: "warn".to_string(),
+        summary: "Log events dropped".to_string(),
+        data: serde_json::json!({ "dropped_events": dropped }),
+    };
+    serde_json::to_string(&event).unwrap_or_default() + "\n"
+}
+
+/// Delete each writer's live file and rotated generations and reopen it on a
+/// fresh file. Without this, a writer keeps appending to an unlinked file until
+/// its next size rotation, so output after Clear logs is unreadable and never
+/// shipped. Each writer is locked only for a few unlinks and one create, so
+/// tracing callers are not stalled behind directory scans. Returns the live
+/// paths so the caller does not delete the fresh files.
+fn reset_writers(writers: &[SizeRotatingFile]) -> Vec<PathBuf> {
+    writers
+        .iter()
+        .map(|writer| {
+            let mut state = writer.lock();
+            for path in std::iter::once(state.path.clone())
+                .chain(rotated_paths(&state.path, state.generations))
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            state.reopen();
+            state.path.clone()
+        })
+        .collect()
 }
 
 /// The last `n` valid events across `paths` (oldest generation first), in
@@ -2213,7 +2307,8 @@ pub fn init(app_handle: tauri::AppHandle) {
         EVENT_LOG_MAX_BYTES,
         EVENT_LOG_GENERATIONS,
     )
-    .expect("Could not open JSONL file");
+    .expect("Could not open JSONL file")
+    .with_drop_note(event_drop_note);
     register_writer(&jsonl_writer);
 
     // Layer 1: Pretty file. Size-capped; the non-blocking worker thread does
@@ -2223,7 +2318,10 @@ pub fn init(app_handle: tauri::AppHandle) {
         APP_LOG_MAX_BYTES,
         APP_LOG_GENERATIONS,
     )
-    .expect("Could not open app log file");
+    .expect("Could not open app log file")
+    .with_drop_note(|dropped| {
+        format!("WARN log file was unavailable; {dropped} log lines were dropped\n")
+    });
     register_writer(&pretty_file);
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
     let pretty_layer = tracing_subscriber::fmt::layer()
@@ -2312,28 +2410,30 @@ pub fn clear_all_logs() -> Result<(), String> {
         "events.dev.jsonl.1",
         "events.dev.jsonl.2",
     ];
-    // The live writers are paused while the files go away and then reopened on
-    // fresh files, so output after a clear is neither lost nor written to an
-    // unlinked handle. Nothing in this section may log.
+    // Live writers first: their files are unlinked and reopened under their own
+    // locks, so output after a clear is neither lost nor written to an unlinked
+    // handle. The slower cleanup below runs with no lock held.
     let writers = ACTIVE_WRITERS
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
-    with_writers_reset(&writers, || {
-        for file in files {
-            let _ = std::fs::remove_file(dir.join(file));
+    let live = reset_writers(&writers);
+    for file in files {
+        let path = dir.join(file);
+        if !live.contains(&path) {
+            let _ = std::fs::remove_file(path);
         }
-        // Clean up dated rolling files (e.g. app.dev.log.2026-03-02, events.dev.jsonl.2026-03-02)
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.contains(".log.") || name.contains(".jsonl.") {
-                    let _ = std::fs::remove_file(entry.path());
-                }
+    }
+    // Clean up dated rolling files (e.g. app.dev.log.2026-03-02, events.dev.jsonl.2026-03-02)
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains(".log.") || name.contains(".jsonl.") {
+                let _ = std::fs::remove_file(entry.path());
             }
         }
-    });
+    }
     Ok(())
 }
 
@@ -2466,11 +2566,9 @@ mod tests {
         let mut writer = SizeRotatingFile::open(path.clone(), 1024, 2).unwrap();
         writer.write_all(b"before\n").unwrap();
 
-        with_writers_reset(std::slice::from_ref(&writer), || {
-            std::fs::remove_file(&path).unwrap();
-        });
-        // The file exists immediately, before any further event.
-        assert!(path.exists());
+        reset_writers(std::slice::from_ref(&writer));
+        // The file exists, empty, immediately, before any further event.
+        assert_eq!(read(&path), "");
 
         writer.write_all(b"after\n").unwrap();
         assert_eq!(read(&path), "after\n");
@@ -2485,11 +2583,11 @@ mod tests {
         events_writer.write_all(b"aaaaaaa\n").unwrap();
         app_writer.write_all(b"bbbbbbb\n").unwrap();
 
-        with_writers_reset(&[events, app], || {
-            for name in ["events.jsonl", "app.log"] {
-                std::fs::remove_file(dir.join(name)).unwrap();
-            }
-        });
+        std::fs::write(dir.join("events.jsonl.1"), "old\n").unwrap();
+        let live = reset_writers(&[events, app]);
+        assert_eq!(live, [dir.join("events.jsonl"), dir.join("app.log")]);
+        // Rotated generations go with the live files.
+        assert!(!dir.join("events.jsonl.1").exists());
 
         // The cleared bytes must not count toward the next rotation.
         events_writer.write_all(b"ccccccc\n").unwrap();
@@ -2506,7 +2604,9 @@ mod tests {
         let dir = rotation_dir("recreate_fails");
         let path = dir.join("events.jsonl");
         let fs = Arc::new(FailingFs::default());
-        let mut writer = SizeRotatingFile::open_with(fs.clone(), path.clone(), 16, 2).unwrap();
+        let mut writer = SizeRotatingFile::open_with(fs.clone(), path.clone(), 16, 2)
+            .unwrap()
+            .with_create_retry(std::time::Duration::ZERO);
         writer.write_all(b"aaaaaaa\n").unwrap();
         writer.write_all(b"bbbbbbb\n").unwrap();
 
@@ -2547,6 +2647,48 @@ mod tests {
         writer.write_all(b"after\n").unwrap();
         assert_eq!(read(&path), "after\n");
         assert!(read(&generation_path(&path, 1)).starts_with("aaaaaaa\nbbbbbbb\nccccccc\n"));
+    }
+
+    #[test]
+    fn create_failures_back_off_count_drops_and_leave_one_note_on_recovery() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = rotation_dir("backoff");
+        let path = dir.join("events.jsonl");
+        let fs = Arc::new(FailingFs::default());
+        let mut writer = SizeRotatingFile::open_with(fs.clone(), path.clone(), 16, 2)
+            .unwrap()
+            .with_create_retry(std::time::Duration::from_secs(3600))
+            .with_drop_note(|dropped| format!("dropped {dropped}\n"));
+        writer.write_all(b"aaaaaaa\n").unwrap();
+        writer.write_all(b"bbbbbbb\n").unwrap();
+        let opened = fs.create_calls.load(SeqCst);
+
+        // The first write after the rotation tries to create the file; the
+        // rest fall inside the backoff window and do no file work at all.
+        fs.fail_create.store(true, SeqCst);
+        for _ in 0..5 {
+            assert!(writer.write_all(b"lost\n").is_err());
+        }
+        assert_eq!(fs.create_calls.load(SeqCst), opened + 1);
+        assert!(!path.exists());
+
+        // After the window passes and creation works, the file starts with one
+        // note carrying the count, then the new event. Nothing is replayed.
+        fs.fail_create.store(false, SeqCst);
+        writer.lock().retry_after = Some(std::time::Instant::now());
+        writer.write_all(b"back\n").unwrap();
+        writer.write_all(b"again\n").unwrap();
+        assert_eq!(read(&path), "dropped 5\nback\nagain\n");
+    }
+
+    #[test]
+    fn event_drop_note_is_a_valid_content_free_event() {
+        let line = event_drop_note(7);
+        assert!(line.ends_with('\n'));
+        let event: AppEvent = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(event.stream, "system");
+        assert_eq!(event.level, "warn");
+        assert_eq!(event.data["dropped_events"], 7);
     }
 
     fn event_line(n: usize) -> String {

@@ -309,16 +309,33 @@ fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
     } else {
         Vec::new()
     };
+    // With no newer file yet (the writer could not create one), stay at this
+    // file's end rather than forgetting it: if a newer generation appears
+    // later, this identity is what lets the shipper walk forward to it.
+    let exhausted = Position {
+        offset: len,
+        id: Some(id),
+    };
     if chunk.is_empty() {
-        return Some(jump(next_file));
+        return match next_file {
+            Some(_) => Some(jump(next_file)),
+            None if offset == len => None,
+            None => Some(Batch {
+                data: Vec::new(),
+                next: exhausted,
+            }),
+        };
     }
     if (chunk.len() as u64) < MAX_BATCH_BYTES as u64 {
         // Reached the end of the file: ship the remainder and move on.
         return Some(Batch {
             data: chunk,
-            next: Position {
-                offset: 0,
-                id: next_file,
+            next: match next_file {
+                Some(_) => Position {
+                    offset: 0,
+                    id: next_file,
+                },
+                None => exhausted,
             },
         });
     }
@@ -939,7 +956,8 @@ mod tests {
             16,
             crate::telemetry::EVENT_LOG_GENERATIONS,
         )
-        .unwrap();
+        .unwrap()
+        .with_create_retry(std::time::Duration::ZERO);
         let mut position = legacy(0);
 
         writer.write_all(line(1).as_bytes()).unwrap();
@@ -961,6 +979,43 @@ mod tests {
         assert_eq!(drain(&files, &mut position), numbered(3..=3));
         writer.write_all(line(4).as_bytes()).unwrap();
         assert_eq!(drain(&files, &mut position), numbered(4..=4));
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn rotating_again_before_shipping_resumes_after_a_failed_recreate_loses_nothing() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tmp_dir("recreate_then_rotate");
+        let files = log_files(&dir);
+        let fs = std::sync::Arc::new(crate::telemetry::FailingFs::default());
+        let mut writer = crate::telemetry::SizeRotatingFile::open_with(
+            fs.clone(),
+            files[0].clone(),
+            16,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        )
+        .unwrap()
+        .with_create_retry(std::time::Duration::ZERO);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        writer.write_all(line(2).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(1..=2));
+
+        // Rotation succeeds but the fresh file cannot be created. The shipper
+        // drains .1 to its end and has no newer file to move to.
+        fs.fail_create.store(true, SeqCst);
+        assert!(writer.write_all(line(3).as_bytes()).is_err());
+        assert!(drain(&files, &mut position).is_empty());
+        assert!(position.id.is_some(), "the exhausted file stays tracked");
+
+        // Creation recovers and the file rotates again before the shipper
+        // runs: the file it was on is now .2 and .1 is entirely new.
+        fs.fail_create.store(false, SeqCst);
+        for n in 4..=7 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        assert_eq!(drain(&files, &mut position), numbered(4..=7));
         assert!(drain(&files, &mut position).is_empty());
     }
 

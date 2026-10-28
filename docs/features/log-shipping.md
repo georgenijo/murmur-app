@@ -164,6 +164,10 @@ The private one-shot path runs beside this diagram, never through it:
   file. Files are opened once and read through the handle, so a rotation during
   a read cannot apply an offset to the wrong file. Rotated generations are
   shipped in batches of at most 1 MB like the live file.
+- If the newest rotated file is drained but no newer file exists yet (the app
+  could not create the fresh `events.jsonl`), the shipper keeps that file's
+  identity and end-of-file offset instead of resetting, so a later generation is
+  still reached even if it rotates again before shipping resumes.
 - If the saved file no longer exists (three or more rotations, or Clear logs),
   the oldest surviving file ships from the top. Only lines in the deleted file
   are lost. State saved by older builds has no file identity; it falls back to comparing
