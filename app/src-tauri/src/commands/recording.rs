@@ -5285,7 +5285,8 @@ pub async fn start_native_recording(
 
     Ok(serde_json::json!({
         "type": "recording_starting",
-        "state": "starting"
+        "state": "starting",
+        "recordingId": rid
     }))
 }
 
@@ -5736,16 +5737,25 @@ async fn stop_native_recording_for(
 ///   pipeline discards its result at the next checkpoint; immediately
 ///   emits idle status so the UI resets without waiting for whisper.
 /// - **Idle**: no-op.
+///
+/// With `expected_recording_id`, cancels only that recording; a newer or
+/// older generation is a no-op.
 #[tauri::command]
 pub async fn cancel_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
+    expected_recording_id: Option<u64>,
 ) -> Result<(), String> {
     let transition = state.app_state.recording_transition.lock().await;
     let (prev_status, rid) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let prev = dictation.status;
         let rid = state.app_state.recording_id.load(Ordering::SeqCst);
+        // A deferred hold release cancels only the recording its own start
+        // created, never a newer one.
+        if !stop_owner_matches(rid, expected_recording_id) {
+            return Ok(());
+        }
         match prev {
             DictationStatus::Idle => return Ok(()),
             DictationStatus::Starting | DictationStatus::Recording => {}

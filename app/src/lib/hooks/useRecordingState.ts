@@ -71,6 +71,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);
+  // A stop (hold release) that arrived while the start IPC was still pending
+  // and no lifecycle event had claimed ownership yet. The start operation
+  // consumes it and cancels exactly the generation it created.
+  const stopRequestedDuringStartRef = useRef(false);
 
   const presentError = useCallback((message: string, options: PresentErrorOptions = {}) => {
     if (!message) return null;
@@ -433,10 +437,13 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       return;
     }
     isStartingRef.current = true;
+    stopRequestedDuringStartRef.current = false;
     const operation = (async () => {
       const producerEpoch = beginErrorProducer();
       try {
         const res = await startRecording(microphoneRef.current, origin, smartAutoRef.current);
+        const stopRequested = stopRequestedDuringStartRef.current;
+        stopRequestedDuringStartRef.current = false;
         // These two responses may describe a transform-owned supervisor
         // attempt while dictation itself is Idle. Lifecycle events remain the
         // authority; never let a later invoke response overwrite them.
@@ -471,7 +478,20 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
             });
           }
         }
+        if (stopRequested && res.type === 'recording_starting') {
+          // The hold was released before this start was accepted. Cancel the
+          // generation it created; a newer recording is never touched.
+          flog.info('recording', 'cancelling start released before acceptance', {
+            recordingId: res.recordingId,
+          });
+          try {
+            await cancelRecording(res.recordingId);
+          } catch (err) {
+            flog.error('recording', 'deferred release cancel failed', { error: String(err) });
+          }
+        }
       } catch (err) {
+        stopRequestedDuringStartRef.current = false;
         statusRef.current = 'idle';
         setStatus('idle');
         presentError(String(err), { producerEpoch });
@@ -500,6 +520,14 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       recordingStartTime: recordingStartTimeRef.current,
     });
     if (isStoppingRef.current) return;
+    if (startOperationRef.current && statusRef.current === 'idle') {
+      // The start IPC has not claimed ownership yet, so there is nothing to
+      // stop now. Dropping this would let the start begin capture after the
+      // key was already released.
+      flog.info('recording', 'handleStop deferred until start is accepted');
+      stopRequestedDuringStartRef.current = true;
+      return;
+    }
     isStoppingRef.current = true;
     const producerEpoch = errorProducerEpochRef.current;
     try {

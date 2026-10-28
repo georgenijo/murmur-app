@@ -83,7 +83,10 @@ It is longer than the measured p50 gap between the trigger and the next key
 (`MAX_HOLD_DURATION_MS`), so Hold-Down remains the faster-starting mode. Capture
 startup (~220–300ms to first PCM) still makes up most of the time to a live
 microphone. Speech before first PCM was never captured, so the window adds
-150ms to an existing gap rather than opening a new one. Warm model preparation
+150ms to an existing gap rather than opening a new one. There is no pre-roll
+buffer, so for a modifier hold the uncaptured interval at the start of speech
+grows by ~150–160ms (timer overshoot measured at p50 7.9ms, p95 10.1ms). This
+is an accepted trade-off for eliminating typing false starts. Warm model preparation
 also waits for the committed start. Shift is pressed constantly while typing,
 so starting a model load on every press would defeat idle unloading and cost
 memory and CPU for presses that are almost always typing.
@@ -93,6 +96,15 @@ The window is deterministic and has no user setting. The promotion uses the same
 invalidates it, a release after publishes its stop after the start, and Escape,
 listener changes, entering processing, and disabling the app invalidate a
 pending window.
+
+**Release right after the window.** A release that lands just after the
+timer publishes `hold-down-start` (a ~160ms press) arrives while the frontend's
+`start_native_recording` call is still pending and status is still `idle`.
+`useRecordingState` keeps that stop instead of ignoring it. When the start
+response returns `recording_starting` with its `recordingId`, the hook calls
+`cancel_native_recording({ expectedRecordingId })`. That cancels exactly the
+generation the start created and is a no-op for any other generation. A refused
+start drops the pending stop.
 
 **Residual cases.** A modifier held alone for longer than the window before the
 next key, for example a slow Shift+arrow selection, still starts and then
@@ -191,7 +203,9 @@ The 200ms hold promotion doubles as Both mode's arming window: a press that
 ends before promotion never emits `hold-down-start`. For a modifier trigger,
 any other key press during those 200ms, including a second modifier, ends the
 hold without a start and logs `keyboard.hotkey_arming_cancelled` with
-`mode: "both"`. Double-tap detection is unchanged: the double-tap detector is
+`mode: "both"`. A typed (non-modifier) key that ends the window resets the
+double-tap sequence directly instead of being fed to it. This is the same
+state `ComboCancelled` would reach, without logging the key. Double-tap detection is otherwise unchanged: the double-tap detector is
 fed independently, so short taps still advance it and a single tap still stops
 a toggle-started recording.
 

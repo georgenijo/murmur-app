@@ -981,6 +981,20 @@ fn dispatch_hold_down(
     }
 }
 
+/// Both mode: a typed key that ended a modifier hold's arming window resets
+/// the double-tap sequence directly instead of being fed to it. Feeding it
+/// reaches the same Idle state through `ComboCancelled`, but that path logs
+/// the typed key.
+fn arming_combo_resets_double_tap(
+    was_arming: bool,
+    hold_result: HoldDownEvent,
+    event_type: &EventType,
+) -> bool {
+    was_arming
+        && hold_result == HoldDownEvent::Stop
+        && matches!(event_type, EventType::KeyPress(key) if !is_modifier(*key))
+}
+
 /// One content-free record per modifier hold that ended before its recording
 /// start was committed. Never includes which key ended it.
 fn log_hotkey_arming_cancelled(mode: DetectorMode, reason: &'static str, held_ms: u64) {
@@ -1817,37 +1831,47 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         };
 
                         // Only feed hold-down when NOT in second phase
-                        let (hold_result, arming) = if !dtap_second_phase {
+                        let (hold_result, arming, was_arming) = if !dtap_second_phase {
                             let mut det =
                                 HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                             if let Some(d) = det.as_mut() {
+                                let was_arming = d.is_arming();
                                 let result = d.handle_event_with_context(
                                     &event.event_type,
                                     shortcut_modifiers.any(),
                                     repeated_function_press,
                                 );
-                                (result, HoldArming::of(d))
+                                (result, HoldArming::of(d), was_arming)
                             } else {
-                                (HoldDownEvent::None, HoldArming::OFF)
+                                (HoldDownEvent::None, HoldArming::OFF, false)
                             }
                         } else {
-                            (HoldDownEvent::None, HoldArming::OFF)
+                            (HoldDownEvent::None, HoldArming::OFF, false)
                         };
 
                         // Always feed double-tap
                         let (dtap_fired, rejection, wait_started_at) = {
                             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
-                                let previous_wait = d.second_tap_wait_started_at();
-                                let fired = d.handle_event_with_context(
+                                if arming_combo_resets_double_tap(
+                                    was_arming,
+                                    hold_result,
                                     &event.event_type,
-                                    shortcut_modifiers.any(),
-                                    repeated_function_press,
-                                );
-                                let wait_started_at = d
-                                    .second_tap_wait_started_at()
-                                    .filter(|started_at| Some(*started_at) != previous_wait);
-                                (fired, d.take_rejection(), wait_started_at)
+                                ) {
+                                    d.reset();
+                                    (false, None, None)
+                                } else {
+                                    let previous_wait = d.second_tap_wait_started_at();
+                                    let fired = d.handle_event_with_context(
+                                        &event.event_type,
+                                        shortcut_modifiers.any(),
+                                        repeated_function_press,
+                                    );
+                                    let wait_started_at = d
+                                        .second_tap_wait_started_at()
+                                        .filter(|started_at| Some(*started_at) != previous_wait);
+                                    (fired, d.take_rejection(), wait_started_at)
+                                }
                             } else {
                                 (false, None, None)
                             }
@@ -3326,14 +3350,21 @@ mod tests {
         ) && dtap.elapsed_ms() <= DOUBLE_TAP_WINDOW_MS;
 
         // Only feed hold-down when NOT in second phase
-        let hold_result = if !dtap_second_phase {
-            hold.handle_event(event_type)
+        let (hold_result, was_arming) = if !dtap_second_phase {
+            let was_arming = hold.is_arming();
+            (hold.handle_event(event_type), was_arming)
         } else {
-            HoldDownEvent::None
+            (HoldDownEvent::None, false)
         };
 
-        // Always feed double-tap
-        let dtap_fired = dtap.handle_event(event_type);
+        // Always feed double-tap, except the typed key that ended an arming
+        // window (production resets it directly).
+        let dtap_fired = if arming_combo_resets_double_tap(was_arming, hold_result, event_type) {
+            dtap.reset();
+            false
+        } else {
+            dtap.handle_event(event_type)
+        };
         let mut emitted = Vec::new();
 
         match hold_result {
@@ -3785,6 +3816,48 @@ mod tests {
         both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
         assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::MetaLeft), false).is_empty());
         assert_eq!(hold.state, HoldState::Idle);
+    }
+
+    #[test]
+    fn both_arming_combo_resets_double_tap_without_feeding_the_typed_key() {
+        assert!(arming_combo_resets_double_tap(
+            true,
+            HoldDownEvent::Stop,
+            &press(Key::KeyA)
+        ));
+        // A second modifier is still fed (it never reaches a key-logging path
+        // inside the window), and so are releases and post-window combos.
+        assert!(!arming_combo_resets_double_tap(
+            true,
+            HoldDownEvent::Stop,
+            &press(Key::MetaLeft)
+        ));
+        assert!(!arming_combo_resets_double_tap(
+            true,
+            HoldDownEvent::Stop,
+            &release(Key::ShiftLeft)
+        ));
+        assert!(!arming_combo_resets_double_tap(
+            false,
+            HoldDownEvent::Stop,
+            &press(Key::KeyA)
+        ));
+        assert!(!arming_combo_resets_double_tap(
+            true,
+            HoldDownEvent::None,
+            &press(Key::KeyA)
+        ));
+
+        // The reset reaches the state ComboCancelled would have: Shift+A then
+        // a quick Shift release is not a first tap.
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event(&mut hold, &mut dtap, &press(Key::ShiftLeft), false);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::KeyA), false).is_empty());
+        assert_eq!(dtap.state, DetectorState::Idle);
+        assert_eq!(dtap.last_rejection, None);
+        both_handle_event(&mut hold, &mut dtap, &release(Key::ShiftLeft), false);
+        assert_eq!(dtap.state, DetectorState::Idle);
     }
 
     #[test]
