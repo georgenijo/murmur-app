@@ -318,6 +318,42 @@ class KeyScrubTests(unittest.TestCase):
         self.assertTrue(store_module.reconcile(self.store, self.root)["database_ready"])
         self.assertTrue(store_module.backfill(self.store, self.root, max_lines=1_000)["complete"])
 
+    def test_interrupted_scrub_still_removes_a_cross_segment_retry(self) -> None:
+        old = keyboard(50, "KeyW", timestamp="2026-10-26T00:00:00Z")
+        with mock.patch.object(store_module, "sanitize_event", lambda event: (event, 0)):
+            self.ingest([old])
+        # Seal the old event into segment 2; its sanitized retry lands live.
+        store_module.seal_live_file(self.install)
+        store_module.compact_pending_segments(self.install)
+        self.assertEqual(self.ingest([old]).inserted, 1)
+        original = scrub._apply_checkpoint
+
+        def crash_after_sealed_rewrite(store, entry):
+            if entry["key"].endswith("#2"):
+                raise OSError("synthetic crash after rename")
+            return original(store, entry)
+
+        with mock.patch.object(scrub, "_apply_checkpoint", crash_after_sealed_rewrite):
+            with self.assertRaises(OSError):
+                self.run_tool("--apply")
+        code, report = self.run_tool("--apply")
+
+        self.assertEqual(code, 0)
+        affected = next(item for item in report["installs"] if item["install_id"] == INSTALL_ID)
+        self.assertEqual(affected["raw_lines_deduplicated"], 1)
+        lines = [line for line in raw_text(self.install).splitlines() if '"sequence":50' in line]
+        self.assertEqual(len(lines), 1)
+        connection = self.store._connect(write=False)
+        try:
+            rows = connection.execute(
+                "SELECT COUNT(*) FROM events WHERE event_json LIKE '%\"sequence\":50%'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(rows, 1)
+        store_module.backfill(self.store, self.root, max_lines=1_000)
+        self.assertTrue(store_module.reconcile(self.store, self.root)["database_ready"])
+
     def test_apply_refuses_while_the_receiver_holds_the_maintenance_lock(self) -> None:
         before = self.snapshot()
         with open(self.root / scrub.MAINTENANCE_LOCK_NAME, "a+b") as lock:

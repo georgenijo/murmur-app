@@ -2162,6 +2162,25 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body.splitlines(), stream.splitlines()[-200:])
 
+    def test_cold_cache_raw_dashboard_includes_compressed_history(self) -> None:
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        with live.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(event("SEALED_ONLY_MARKER", timestamp="2026-08-05T00:00:01Z"))
+                + "\n"
+            )
+        sys.modules["event_store"].seal_live_file(live.parent)
+        receiver.compact_install(self.install_id)
+        live.write_text(
+            json.dumps(event("fresh live event", timestamp="2026-08-06T00:00:00Z")) + "\n"
+        )
+        receiver._segment_cache.clear()
+
+        page = receiver.render_install(self.install_id, "prod", 200)
+
+        self.assertIn("SEALED_ONLY_MARKER", page)
+        self.assertIn("fresh live event", page)
+
     def test_receiver_refuses_to_start_over_an_unfinished_scrub(self) -> None:
         journal = Path(receiver.ROOT) / receiver.KEY_SCRUB_JOURNAL_NAME
         receiver.refuse_unfinished_scrub()

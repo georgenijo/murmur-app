@@ -608,6 +608,8 @@ def close_snapshot(snapshot: Sequence[tuple[RawSource, object, int]]) -> None:
 def iter_snapshot_lines(snapshot: Sequence[tuple[RawSource, object, int]]):
     """Yield `(raw_line, oversized)` across an opened snapshot, in order."""
     for _, handle, size in snapshot:
+        # Handles are shared by every pass over a snapshot; always start at 0.
+        handle.seek(0)
         offset = 0
         while offset < size:
             raw, consumed, oversized = _bounded_line(handle, size - offset)
@@ -1995,7 +1997,9 @@ def backfill(
         and report["byte_offset"] == report["source_size"]
     }
     sources = discover_sources(root)
-    complete = bool(sources) and all(source.key in finished for source in sources)
+    complete = bool(sources) and all(
+        source.key in finished or raw_source_size(source) == 0 for source in sources
+    )
     return {
         "schema": "murmur-event-backfill/v1",
         "processed_lines": processed,
@@ -2113,7 +2117,9 @@ def reconcile(store: EventStore, root: Path, *, mark_ready: bool = False) -> dic
                     (key,),
                 ).fetchone()
                 if checkpoint is None:
-                    checkpoints_complete = False
+                    # An empty source (e.g. a live file whose only line the
+                    # scrub removed) has nothing to backfill.
+                    checkpoints_complete = checkpoints_complete and size == 0
                     continue
                 inserted_events += int(checkpoint["inserted_events"])
                 checkpoints_complete = checkpoints_complete and (

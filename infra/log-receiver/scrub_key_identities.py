@@ -499,23 +499,21 @@ def scrub(root: Path, store: EventStore, *, apply: bool) -> dict:
         report = _empty_raw_counts(install_id)
         sources = _install_sources(directory)
         # Pass 1: count changes and collect hashes of changed or already
-        # sanitized lines. A hash seen more than once with at least one
-        # changed occurrence would leave duplicate raw lines after scrubbing.
+        # sanitized lines. Any such hash seen more than once is an exact
+        # duplicate once sanitized, whether or not this run changes it, so a
+        # rerun after an interruption still removes it.
         scans = []
         occurrences: dict[str, int] = {}
-        changed_hashes: set[str] = set()
         for source in sources:
             scan = SourceScan(set())
             for _ in _scrubbed_chunks(
                 source, scan, install_id if source.sequence else None, set(), set()
             ):
                 pass
-            for digest, changed in scan.hashes:
+            for digest, _ in scan.hashes:
                 occurrences[digest] = occurrences.get(digest, 0) + 1
-                if changed:
-                    changed_hashes.add(digest)
             scans.append(scan)
-        duplicates = {digest for digest in changed_hashes if occurrences[digest] > 1}
+        duplicates = {digest for digest, count in occurrences.items() if count > 1}
         # Plan first occurrences in stream order, then rewrite affected sources.
         emitted: set[str] = set()
         plan = []

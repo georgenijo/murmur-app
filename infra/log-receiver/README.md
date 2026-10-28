@@ -313,9 +313,10 @@ summaries, on token boundaries (`MyKeyPress(KeyA)`, `/models/KeyA/`, or
 `stream: "keyboard"` events.
 
 `--apply` rewrites the live file, every sealed gzip segment, and any legacy
-`events.dev.jsonl` through a fsynced temporary and an atomic rename. Raw lines
-that become identical to another line once sanitized keep only their first
-occurrence in the install's stream. It then
+`events.dev.jsonl` through a fsynced temporary and an atomic rename. Every
+run, including one resuming after an interruption, keeps only the first
+occurrence (in stream order across all of an install's sources) of sanitized
+lines that are exact canonical duplicates. It then
 updates matching SQLite rows (canonical JSON, event hash, and summary/FTS) in
 one rowid-ordered pass and a single transaction with `secure_delete` on,
 optimizes FTS when a summary changed, and truncates the WAL. Rows that
