@@ -12,7 +12,7 @@ The live transformation order remains:
 cleanup -> Voice Commands -> explicit aliases -> built-in contextual variants -> derived/exact vocabulary -> fuzzy correction -> Smart Formatting -> Spoken Structure -> spoken numbers -> IDE context -> CLI formatting
 ```
 
-Aliases whose spoken form contains a digit are matched again at the end of the spoken-numbers stage, so a variant such as `GPT 5` still matches when the recognizer said `GPT five`.
+Explicit alias output is literal to spoken-number rendering. Aliases whose spoken form contains a digit are matched again at the end of the spoken-numbers stage, but only against digits that stage just rendered and never against text an alias already wrote. A variant such as `GPT 5` therefore still matches when the recognizer said `GPT five`, and no rule applies twice.
 
 Voice Commands intentionally trigger insertions/actions and remain separate. Settings reject an alias that collides with a built-in or custom Voice Command phrase. Already-canonical terms are protected. Explicit user aliases outrank future learned rules, built-in vocabulary, derived exact forms, and generic fuzzy matching. IDE symbols remain context-specific after generic correction, and CLI formatting remains final and authoritative. Thus `npm run Tori dev` becomes `npm run Tauri dev` in correction and then `npm run tauri dev` in the CLI stage.
 
@@ -26,9 +26,11 @@ A requirement can enable a variant in three ways:
 
 - **Register.** The frozen Mode register (Everyday, Messages, Email, Notes, Technical, Terminal, or Verbatim) is in its allowed list.
 - **Project context.** The recording has Local IDE project context.
-- **Cue words.** A cue word occurs within a small window of words on either side.
+- **Cue words.** A cue word occurs within a small window of words on either side, inside the same clause.
 
-**Blocking words** within the window refuse the rewrite. A cue and a counter-cue together are ambiguous, so the phrase stays as recognized. Two context-cued aliases for the same phrase that both apply are also ambiguous and fail closed.
+**Blocking words** within the window refuse the rewrite. A cue and a counter-cue together are ambiguous, so the phrase stays as recognized. Two built-in variants for the same phrase that both apply are also ambiguous and fail closed.
+
+Cue and blocker windows stop at `.`, `!`, `?`, `;`, and line breaks. A `.` counts only when followed by whitespace, so `app.json` stays one clause. `Ship the app. Tori is coming over for dinner.` keeps `Tori`. Variants match Unicode-aware whole words, so `Torié` and mixed-script names such as `Toriд` are never rewritten.
 
 Murmur ships these built-in variants. They apply whenever Smart Correction runs and are separate from the Developer Terms pool:
 
@@ -50,26 +52,7 @@ Terminal:  npm run Tori dev                     → npm run tauri dev
 
 Explicit user aliases and learned replacements outrank built-in variants. For example, an explicit `Tori` → `Tori` entry keeps the name in every register.
 
-A vocabulary entry can declare the same kind of requirement through an optional `context` object:
-
-```json
-{
-  "id": "swiftui",
-  "written": "SwiftUI",
-  "aliases": ["swift you eye"],
-  "context": {
-    "modes": ["technical", "terminal"],
-    "projectContext": true,
-    "cueWords": ["xcode"],
-    "blockingWords": ["taylor"],
-    "window": 8
-  }
-}
-```
-
-A contextual entry needs at least one mode, project context, or cue word. Cue and blocking lists each hold at most 16 single words of up to 32 letters, digits, or underscores, and the window is 1–16 words (default 8). Its aliases keep explicit-alias precedence when they apply. When they do not apply, lower-precedence rules for the same phrase may still run. Its written form does not seed unconditional derived or fuzzy matching. The field is optional and omitted when absent, so existing settings round-trip unchanged.
-
-The Rust schema and matcher support the `context` field today. The Settings editor does not author it yet, and the frontend settings sanitizer drops it, so user-authored context requirements are not yet persisted from the UI. The built-in variants above need no configuration.
+Context requirements are internal data on the built-in pack. Vocabulary entries have no user-authored `context` field. User-authored context rules are a follow-up: they need Settings support and a storage shape that an older build cannot read as an unrestricted alias.
 
 ## Scope and migration
 

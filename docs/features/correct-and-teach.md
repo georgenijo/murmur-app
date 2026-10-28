@@ -50,7 +50,7 @@ Voice Commands
 → CLI formatting
 ```
 
-Correct and Teach learns from the final history text, after spoken numbers have rendered digits. Smart Correction runs before that stage, so a rule whose heard phrase contains a digit (for example `GPT 5` → `GPT-5`, or `20 pages` → `twenty pages`) is matched again at the end of the spoken-numbers stage, against the rendered digits, in the same precedence order. Rules without digits are unaffected.
+Correct and Teach learns from the final history text, after spoken numbers have rendered digits. Smart Correction runs before that stage, so a rule whose heard phrase contains a digit (for example `GPT 5` → `GPT-5`, or `20 pages` → `twenty pages`) is matched again at the end of the spoken-numbers stage. A re-match must overlap digits that stage just rendered and must not touch text an explicit alias or learned rule already wrote. Explicit and learned output is also literal to number rendering. So a rule never applies twice (`5` → `five pages` gives `read five pages`), and a learned digit rule cannot override an explicit alias's output. If Smart Formatting or Spoken Structure rewrote the text in between, the re-match is skipped for that recording. Rules without digits are unaffected.
 
 Within replacement knowledge, the repository's provenance order remains manual → import → learned correction → code scan. Exact same-scope conflicts must be reviewed in Settings → Knowledge rather than silently overwritten.
 

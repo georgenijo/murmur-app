@@ -23,12 +23,17 @@ its window refuses it, and two simultaneously applicable variants fail closed.
 The built-in pack adds `Tori`/`Tory` → `Tauri`, `Postgres SQL` →
 `PostgreSQL`, `npxtsc` → `npx tsc`, and `CoreML` → `Core ML`, gated to
 Technical/Terminal or project context (Tauri also by nearby framework cues).
-Explicit aliases and learned replacements keep precedence. Vocabulary entries
-gain an optional Rust-schema `context` requirement. Settings does not author it
-yet.
+Cue and blocker windows stay within the candidate's clause, and variants
+match Unicode-aware whole words. Explicit aliases and learned replacements
+keep precedence. Context requirements stay internal to the built-in pack.
+User-authored ones need Settings support and a storage shape an older build
+cannot read as an unrestricted alias, so they are deferred.
 
-Aliases and learned rules whose heard phrase contains a digit are matched
-again at the end of the spoken-numbers stage.
+Explicit alias and learned-rule output is literal to number rendering. Rules
+whose heard phrase contains a digit are matched again at the end of the
+spoken-numbers stage, only over digits that stage rendered and never over
+explicit output. When an intermediate stage rewrote the text, the re-match is
+skipped.
 
 **Why:** Dictation took numbers too literally ("2 of them", "2-factor",
 "20 26", "at this 0.5 people", "4 30 PM") and could not use a word's other
