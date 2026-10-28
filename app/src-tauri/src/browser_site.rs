@@ -145,25 +145,31 @@ fn ax_document_url(process_id: i32) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 pub fn query_for_identity(expected: &FrontmostAppIdentity) -> Option<BrowserSiteIdentity> {
+    use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSWorkspace;
-    let expected_bundle = expected.bundle_id.as_deref()?;
-    if !allowed_browser(expected_bundle) || expected.process_id.is_none() {
-        return None;
-    }
-    let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-    let actual = FrontmostAppIdentity {
-        bundle_id: application
-            .bundleIdentifier()
-            .map(|value| value.to_string()),
-        process_id: Some(application.processIdentifier()),
-    };
-    if !crate::frontmost::query_identity_matches(expected, &actual) {
-        return None;
-    }
-    let host = host_from_document_url(&ax_document_url(application.processIdentifier())?)?;
-    Some(BrowserSiteIdentity {
-        browser_bundle_id: expected_bundle.to_string(),
-        host,
+
+    // Called from the Mode watcher's Tokio thread, which has no AppKit
+    // run-loop pool: drain AppKit's autoreleased objects before returning.
+    autoreleasepool(|_| {
+        let expected_bundle = expected.bundle_id.as_deref()?;
+        if !allowed_browser(expected_bundle) || expected.process_id.is_none() {
+            return None;
+        }
+        let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        let actual = FrontmostAppIdentity {
+            bundle_id: application
+                .bundleIdentifier()
+                .map(|value| value.to_string()),
+            process_id: Some(application.processIdentifier()),
+        };
+        if !crate::frontmost::query_identity_matches(expected, &actual) {
+            return None;
+        }
+        let host = host_from_document_url(&ax_document_url(application.processIdentifier())?)?;
+        Some(BrowserSiteIdentity {
+            browser_bundle_id: expected_bundle.to_string(),
+            host,
+        })
     })
 }
 

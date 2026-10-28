@@ -8,6 +8,8 @@
 
 #![cfg_attr(feature = "internal-benchmark", allow(dead_code))]
 
+#[cfg(target_os = "macos")]
+use objc2::rc::autoreleasepool;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -244,22 +246,24 @@ fn bounded_running_applications(
 #[tauri::command]
 #[cfg(target_os = "macos")]
 pub fn list_running_applications() -> Vec<RunningApplication> {
-    use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
+    autoreleasepool(|_| {
+        use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 
-    let current_pid = std::process::id() as i32;
-    let candidates = NSWorkspace::sharedWorkspace()
-        .runningApplications()
-        .iter()
-        .map(|application| RunningApplicationCandidate {
-            bundle_id: application
-                .bundleIdentifier()
-                .map(|value| value.to_string()),
-            name: application.localizedName().map(|value| value.to_string()),
-            regular: application.activationPolicy() == NSApplicationActivationPolicy::Regular,
-            current_process: application.processIdentifier() == current_pid,
-        })
-        .collect::<Vec<_>>();
-    bounded_running_applications(candidates)
+        let current_pid = std::process::id() as i32;
+        let candidates = NSWorkspace::sharedWorkspace()
+            .runningApplications()
+            .iter()
+            .map(|application| RunningApplicationCandidate {
+                bundle_id: application
+                    .bundleIdentifier()
+                    .map(|value| value.to_string()),
+                name: application.localizedName().map(|value| value.to_string()),
+                regular: application.activationPolicy() == NSApplicationActivationPolicy::Regular,
+                current_process: application.processIdentifier() == current_pid,
+            })
+            .collect::<Vec<_>>();
+        bounded_running_applications(candidates)
+    })
 }
 
 /// Unsupported test targets retain the command surface without probing
@@ -467,28 +471,32 @@ impl FocusProof {
 
 #[cfg(target_os = "macos")]
 fn running_process_instance_matches(expected: &DeliveryTargetIdentity) -> bool {
-    use objc2_app_kit::NSRunningApplication;
-    let Some(app) =
-        NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)
-    else {
-        return false;
-    };
-    app.bundleIdentifier()
-        .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
-        && app.launchDate().is_some_and(|date| {
-            let interval = date.timeIntervalSinceReferenceDate();
-            interval.is_finite()
-                && interval > 0.0
-                && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
-        })
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSRunningApplication;
+        let Some(app) =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(expected.process_id)
+        else {
+            return false;
+        };
+        app.bundleIdentifier()
+            .is_some_and(|bundle| bundle.to_string() == expected.bundle_id)
+            && app.launchDate().is_some_and(|date| {
+                let interval = date.timeIntervalSinceReferenceDate();
+                interval.is_finite()
+                    && interval > 0.0
+                    && ProcessInstanceToken(interval.to_bits()) == expected.process_instance
+            })
+    })
 }
 
 #[cfg(target_os = "macos")]
 fn workspace_frontmost_matches(expected: &DeliveryTargetIdentity) -> bool {
-    use objc2_app_kit::NSWorkspace;
-    NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .is_some_and(|app| app.processIdentifier() == expected.process_id)
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .is_some_and(|app| app.processIdentifier() == expected.process_id)
+    })
 }
 
 /// Final key-post focus proof. A cached frontmost application is not final
@@ -700,49 +708,51 @@ pub(crate) fn delivery_target_is_active(_expected: &DeliveryTargetSnapshot) -> b
 /// object. If activation or Space changes during that sample, fail closed.
 #[cfg(target_os = "macos")]
 pub(crate) fn capture_delivery_target_snapshot() -> DeliveryTargetSnapshot {
-    use objc2_app_kit::NSWorkspace;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
 
-    let before = app_transition_snapshot();
-    let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let process_id = application.processIdentifier();
-    if process_id == std::process::id() as i32 {
-        return DeliveryTargetSnapshot::SelfTarget;
-    }
-    if process_id <= 0 {
-        return DeliveryTargetSnapshot::Incomplete;
-    }
-    let Some(bundle_id) = application
-        .bundleIdentifier()
-        .map(|value| value.to_string())
-    else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let bundle_id = bundle_id.trim();
-    if bundle_id.is_empty() || bundle_id.eq_ignore_ascii_case("missing value") {
-        return DeliveryTargetSnapshot::Incomplete;
-    }
-    let Some(launch_date) = application.launchDate() else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let launch_interval = launch_date.timeIntervalSinceReferenceDate();
-    if !launch_interval.is_finite() || launch_interval <= 0.0 {
-        return DeliveryTargetSnapshot::Incomplete;
-    }
-    let process_instance = ProcessInstanceToken(launch_interval.to_bits());
-    let window_token = ax_window_token(process_id);
-    let after = app_transition_snapshot();
-    if before != after {
-        return DeliveryTargetSnapshot::Incomplete;
-    }
+        let before = app_transition_snapshot();
+        let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let process_id = application.processIdentifier();
+        if process_id == std::process::id() as i32 {
+            return DeliveryTargetSnapshot::SelfTarget;
+        }
+        if process_id <= 0 {
+            return DeliveryTargetSnapshot::Incomplete;
+        }
+        let Some(bundle_id) = application
+            .bundleIdentifier()
+            .map(|value| value.to_string())
+        else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let bundle_id = bundle_id.trim();
+        if bundle_id.is_empty() || bundle_id.eq_ignore_ascii_case("missing value") {
+            return DeliveryTargetSnapshot::Incomplete;
+        }
+        let Some(launch_date) = application.launchDate() else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let launch_interval = launch_date.timeIntervalSinceReferenceDate();
+        if !launch_interval.is_finite() || launch_interval <= 0.0 {
+            return DeliveryTargetSnapshot::Incomplete;
+        }
+        let process_instance = ProcessInstanceToken(launch_interval.to_bits());
+        let window_token = ax_window_token(process_id);
+        let after = app_transition_snapshot();
+        if before != after {
+            return DeliveryTargetSnapshot::Incomplete;
+        }
 
-    DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
-        bundle_id: bundle_id.to_string(),
-        process_id,
-        process_instance,
-        window_token,
-        transitions: after,
+        DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+            bundle_id: bundle_id.to_string(),
+            process_id,
+            process_instance,
+            window_token,
+            transitions: after,
+        })
     })
 }
 
@@ -795,47 +805,50 @@ fn delivery_mismatch_from_partial_identity(
 fn capture_delivery_verification_first_snapshot(
     expected: &DeliveryTargetIdentity,
 ) -> DeliveryTargetSnapshot {
-    use objc2_app_kit::NSWorkspace;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
 
-    let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let process_id = application.processIdentifier();
-    if process_id == std::process::id() as i32 {
-        return DeliveryTargetSnapshot::SelfTarget;
-    }
-    if process_id <= 0 {
-        return DeliveryTargetSnapshot::Incomplete;
-    }
-    let bundle_id = normalized_native_bundle_id(
-        application
-            .bundleIdentifier()
-            .map(|value| value.to_string()),
-    );
-    let process_instance = application.launchDate().and_then(|launch_date| {
-        let interval = launch_date.timeIntervalSinceReferenceDate();
-        (interval.is_finite() && interval > 0.0).then(|| ProcessInstanceToken(interval.to_bits()))
-    });
-    if let Some(mismatch) = delivery_mismatch_from_partial_identity(
-        expected,
-        process_id,
-        bundle_id.as_deref(),
-        process_instance,
-    ) {
-        return mismatch;
-    }
-    let Some(bundle_id) = bundle_id else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let Some(process_instance) = process_instance else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
-        bundle_id,
-        process_id,
-        process_instance,
-        window_token: ax_window_token(process_id),
-        transitions: app_transition_snapshot(),
+        let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let process_id = application.processIdentifier();
+        if process_id == std::process::id() as i32 {
+            return DeliveryTargetSnapshot::SelfTarget;
+        }
+        if process_id <= 0 {
+            return DeliveryTargetSnapshot::Incomplete;
+        }
+        let bundle_id = normalized_native_bundle_id(
+            application
+                .bundleIdentifier()
+                .map(|value| value.to_string()),
+        );
+        let process_instance = application.launchDate().and_then(|launch_date| {
+            let interval = launch_date.timeIntervalSinceReferenceDate();
+            (interval.is_finite() && interval > 0.0)
+                .then(|| ProcessInstanceToken(interval.to_bits()))
+        });
+        if let Some(mismatch) = delivery_mismatch_from_partial_identity(
+            expected,
+            process_id,
+            bundle_id.as_deref(),
+            process_instance,
+        ) {
+            return mismatch;
+        }
+        let Some(bundle_id) = bundle_id else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let Some(process_instance) = process_instance else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+            bundle_id,
+            process_id,
+            process_instance,
+            window_token: ax_window_token(process_id),
+            transitions: app_transition_snapshot(),
+        })
     })
 }
 
@@ -851,47 +864,50 @@ fn capture_delivery_verification_first_snapshot(
 /// sample's optional AX query cannot be hidden by delayed workspace observers.
 #[cfg(target_os = "macos")]
 fn capture_delivery_process_snapshot(expected: &DeliveryTargetIdentity) -> DeliveryTargetSnapshot {
-    use objc2_app_kit::NSWorkspace;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
 
-    let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let process_id = application.processIdentifier();
-    if process_id == std::process::id() as i32 {
-        return DeliveryTargetSnapshot::SelfTarget;
-    }
-    if process_id <= 0 {
-        return DeliveryTargetSnapshot::Incomplete;
-    }
-    let bundle_id = normalized_native_bundle_id(
-        application
-            .bundleIdentifier()
-            .map(|value| value.to_string()),
-    );
-    let process_instance = application.launchDate().and_then(|launch_date| {
-        let interval = launch_date.timeIntervalSinceReferenceDate();
-        (interval.is_finite() && interval > 0.0).then(|| ProcessInstanceToken(interval.to_bits()))
-    });
-    if let Some(mismatch) = delivery_mismatch_from_partial_identity(
-        expected,
-        process_id,
-        bundle_id.as_deref(),
-        process_instance,
-    ) {
-        return mismatch;
-    }
-    let Some(bundle_id) = bundle_id else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    let Some(process_instance) = process_instance else {
-        return DeliveryTargetSnapshot::Incomplete;
-    };
-    DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
-        bundle_id,
-        process_id,
-        process_instance,
-        window_token: None,
-        transitions: app_transition_snapshot(),
+        let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let process_id = application.processIdentifier();
+        if process_id == std::process::id() as i32 {
+            return DeliveryTargetSnapshot::SelfTarget;
+        }
+        if process_id <= 0 {
+            return DeliveryTargetSnapshot::Incomplete;
+        }
+        let bundle_id = normalized_native_bundle_id(
+            application
+                .bundleIdentifier()
+                .map(|value| value.to_string()),
+        );
+        let process_instance = application.launchDate().and_then(|launch_date| {
+            let interval = launch_date.timeIntervalSinceReferenceDate();
+            (interval.is_finite() && interval > 0.0)
+                .then(|| ProcessInstanceToken(interval.to_bits()))
+        });
+        if let Some(mismatch) = delivery_mismatch_from_partial_identity(
+            expected,
+            process_id,
+            bundle_id.as_deref(),
+            process_instance,
+        ) {
+            return mismatch;
+        }
+        let Some(bundle_id) = bundle_id else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        let Some(process_instance) = process_instance else {
+            return DeliveryTargetSnapshot::Incomplete;
+        };
+        DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
+            bundle_id,
+            process_id,
+            process_instance,
+            window_token: None,
+            transitions: app_transition_snapshot(),
+        })
     })
 }
 
@@ -1249,20 +1265,22 @@ pub(crate) fn verify_delivery_target(
 /// yields an empty identity and therefore no query context.
 #[cfg(target_os = "macos")]
 pub fn query_frontmost_app_identity() -> FrontmostAppIdentity {
-    use objc2_app_kit::NSWorkspace;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
 
-    let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
-        return FrontmostAppIdentity {
-            bundle_id: None,
-            process_id: None,
+        let Some(application) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+            return FrontmostAppIdentity {
+                bundle_id: None,
+                process_id: None,
+            };
         };
-    };
-    query_identity(
-        application.processIdentifier(),
-        application
-            .bundleIdentifier()
-            .map(|value| value.to_string()),
-    )
+        query_identity(
+            application.processIdentifier(),
+            application
+                .bundleIdentifier()
+                .map(|value| value.to_string()),
+        )
+    })
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1349,25 +1367,27 @@ pub async fn query_app_metadata(
 
 #[cfg(target_os = "macos")]
 fn native_query_metadata(expected: &FrontmostAppIdentity) -> Option<QueryAppMetadata> {
-    use objc2_app_kit::NSWorkspace;
+    autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
 
-    let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-    let process_id = application.processIdentifier();
-    let bundle_id = application
-        .bundleIdentifier()
-        .map(|value| value.to_string());
-    let actual = query_identity(process_id, bundle_id.clone());
-    if !query_identity_matches(expected, &actual) {
-        return None;
-    }
-    let application_name = application
-        .localizedName()
-        .map(|value| value.to_string())
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| bundle_id.filter(|value| !value.trim().is_empty()));
-    Some(QueryAppMetadata {
-        application_name,
-        window_title: ax_window_title(process_id),
+        let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        let process_id = application.processIdentifier();
+        let bundle_id = application
+            .bundleIdentifier()
+            .map(|value| value.to_string());
+        let actual = query_identity(process_id, bundle_id.clone());
+        if !query_identity_matches(expected, &actual) {
+            return None;
+        }
+        let application_name = application
+            .localizedName()
+            .map(|value| value.to_string())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| bundle_id.filter(|value| !value.trim().is_empty()));
+        Some(QueryAppMetadata {
+            application_name,
+            window_title: ax_window_title(process_id),
+        })
     })
 }
 
@@ -1567,6 +1587,9 @@ pub async fn query_app_metadata(
 ) -> Option<QueryAppMetadata> {
     None
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod soak_tests;
 
 #[cfg(test)]
 mod tests {
