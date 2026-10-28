@@ -9,6 +9,8 @@ export interface DictationResponse {
   error?: string;
   /** Decoded audio length in seconds (file transcription only). */
   duration?: number;
+  /** Generation this start created (`recording_starting` only). */
+  recordingId?: number;
 }
 
 export async function initDictation(): Promise<DictationResponse> {
@@ -56,8 +58,13 @@ export async function stopRecording(): Promise<DictationResponse> {
   }
 }
 
-export async function cancelRecording(): Promise<void> {
-  await invoke('cancel_native_recording');
+/** With `expectedRecordingId`, cancels only that generation (no-op otherwise). */
+export async function cancelRecording(expectedRecordingId?: number): Promise<void> {
+  if (expectedRecordingId === undefined) {
+    await invoke('cancel_native_recording');
+  } else {
+    await invoke('cancel_native_recording', { expectedRecordingId });
+  }
 }
 
 export async function getStatus(): Promise<DictationResponse> {

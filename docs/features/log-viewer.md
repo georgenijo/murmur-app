@@ -43,7 +43,9 @@ type AppEvent = {
 
 ### JSONL Rotation
 
-When the JSONL file exceeds 5MB, it is rotated — renamed to `.jsonl.1` — and a fresh file is started. On startup, the ring buffer is pre-populated with up to 500 events from the existing JSONL file.
+The JSONL file is rotated while the app runs, not only at launch. `SizeRotatingFile` (`telemetry.rs`) tracks the file size and, before the first event written after the file reaches 5MB, shifts `events.jsonl.1` → `.2`, renames `events.jsonl` → `.1`, and starts a fresh file. Rotation happens between events, so rotated files always end on a line boundary. Two rotated generations are kept (`.1` newest, `.2` oldest; the oldest is overwritten by the next rotation). A file that is already over the cap at launch is rotated the same way. Failures are handled per step. If shifting or renaming fails, the current file is intact: the writer keeps appending to it (events are never dropped) and retries after another 1MB. If the rename succeeds but re-creating `events.jsonl` fails, the writer has no file and drops events rather than appending to `.1`, which the shipper treats as complete. It tries to create the file at most once per second, counts the dropped events without writing to stderr under the lock, and writes a single `Log events dropped` system line with the count when the file is writable again. Nothing is buffered. Clear logs unlinks each writer's file and rotated generations and reopens it on a fresh file under that writer's own short lock, so output after a clear is neither lost nor written to an unlinked handle; the slower cleanup of other files and dated rolling files runs afterwards with no lock held and skips every file a live writer manages, so a rotation during cleanup is never deleted.
+
+The log shipper depends on this layout; see [log-shipping.md](log-shipping.md). On startup, the ring buffer is pre-populated with the last 500 valid events across all retained generations (`.2`, `.1`, then current, in chronological order), so a restart right after a rotation — or a crash between the rename and the re-create — still restores history.
 
 ### Privacy Stripping
 
@@ -57,13 +59,37 @@ The `performance.store_operation_failed` system event is treated as its own
 all-build schema: only its code, bounded operation/error class, attempt count,
 and recording ID survive. SQLite text, SQL, paths, and unknown fields are
 dropped.
+
+Key identity is content: a key pressed while a hotkey is held is usually the
+next character the user is typing. Keyboard telemetry therefore never records
+the identity of any key other than the configured hotkey, in any build. Detector
+and rejection events carry `event_kind` (`key_press`, `key_release`, ...),
+`is_target_key`, `target_key` (the configured hotkey's settings id such as
+`shift_l` or `f8`, never a raw key), and a bounded `key_class`: `modifier`,
+`function`, `navigation`, `editing`, `character`, `other`, or `none`. The raw
+rdev `EventType`, `Key`, and typed `name` are never formatted into a field.
+`telemetry.rs` enforces this independently of call sites, in every sink:
+structured events, the pretty `app.log`, and JSONL written by an older build.
+The `keyboard` stream keeps only an exact key-and-value string allowlist, and
+its messages may not name any non-hotkey key (Escape cancellation logs
+`keyboard.escape_cancel`, not the key). In every other stream, string fields
+and summaries keep their text but any key identity is replaced with `[key]`:
+a distinct rdev name such as `KeyI`, `Num4`, or `SemiColon`, a raw
+`Unknown(<code>)`, or, inside parentheses such as `Some(End)` or
+`KeyPress(Return)`, an ordinary-word key name. A name counts only as a whole
+token delimited by whitespace, quotes, `(`, `)`, `,`, `=`, or `:`, so paths and
+model names such as `/models/KeyA/model.bin` are untouched. `app.log` string
+fields are quoted and escaped, as with the default formatter.
+Persisted lines are re-sanitized before history restore and before upload, so
+a backlog queued before an upgrade cannot ship key identity.
+
 Frontend-originated codes are validated by Rust before entering the structured
 event. This gives local and fleet presentation layers stable semantic keys
 without permitting user content or arbitrary labels.
 
 ### Pretty-Printed Log File
 
-A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender`. This is the file returned by `get_log_contents`.
+A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file.
 
 ### Tracing Streams
 
@@ -73,7 +99,7 @@ Tracing targets map to stream names used for filtering:
 |--------|--------|----------------|
 | `pipeline` | pipeline | Transcription timing, VAD results, model loading |
 | `audio` | audio | Device selection, sample rates, audio levels |
-| `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, mode changes, listener lifecycle |
+| `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, key class (never typed-key identity), mode changes, listener lifecycle |
 | `transform` | transform | Correlated transform key, state, capture, audio, effects, and terminal outcomes |
 | `system` | system | Startup, permissions, updates, resource usage |
 
@@ -257,9 +283,11 @@ All files stored in `~/Library/Application Support/local-dictation/logs/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`) |
-| `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB |
-| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Previous rotated JSONL file |
+| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`), rotated at 10MB at runtime |
+| `app.log.1` / `app.dev.log.1` | Pretty-printed text | Previous rotated app log |
+| `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB at runtime |
+| `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Most recent rotated JSONL file |
+| `events.jsonl.2` / `events.dev.jsonl.2` | JSONL | Older rotated JSONL file (kept so the shipper survives a second rotation) |
 
 `clear_logs` removes all known log file variants, including legacy files (`frontend.log`, `transcription.log`, dated rolling files).
 
