@@ -103,6 +103,42 @@ impl WritingStyle {
     }
 }
 
+/// Content-free text register for one recording. It names the built-in Mode
+/// family that the frozen writing style resolves to (custom Modes map by their
+/// style), so pipeline stages can gate context-sensitive rules without
+/// receiving Mode names, settings values, or transcript text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextRegister {
+    Everyday,
+    Messages,
+    Email,
+    Notes,
+    Technical,
+    Terminal,
+    Verbatim,
+}
+
+impl TextRegister {
+    /// Resolve the register from the effective writing style. Forced command
+    /// formatting distinguishes Terminal from Technical.
+    pub fn resolve(style: WritingStyle, forced_commands: bool) -> Self {
+        match style {
+            WritingStyle::Inherit => Self::Everyday,
+            WritingStyle::Conversational => Self::Messages,
+            WritingStyle::Polished => Self::Email,
+            WritingStyle::Notes => Self::Notes,
+            WritingStyle::CodeTechnical if forced_commands => Self::Terminal,
+            WritingStyle::CodeTechnical => Self::Technical,
+            WritingStyle::Verbatim => Self::Verbatim,
+        }
+    }
+
+    pub fn is_technical(self) -> bool {
+        matches!(self, Self::Technical | Self::Terminal)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppProfile {
     pub bundle_id: String,

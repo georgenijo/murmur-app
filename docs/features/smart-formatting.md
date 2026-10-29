@@ -47,14 +47,17 @@ Backtracking never reaches an earlier utterance, history entry, clipboard delive
 
 No email or URL structure is inferred from ordinary prose without its cue.
 Punctuation, quotes, parentheses, paragraphs, and symbols are owned by the
-following [Spoken Structure](spoken-structure.md) stage.
+following [Spoken Structure](spoken-structure.md) stage. Number words are
+owned by the later [Spoken Number Formatting](spoken-number-formatting.md)
+stage, whose Mode-aware policy keeps small prose counts such as `two of them`
+as words.
 
 ## Pipeline, delivery, and privacy
 
 The live order is:
 
 ```text
-cleanup → voice commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → CLI formatting → final text
+cleanup → voice commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
 ```
 
 Only the final transformed text reaches optional file output, the clipboard, auto-paste, history, and stats. Clipboard and paste therefore still happen once, after all stages complete. Imported audio keeps the existing raw-ASR behavior with every transformation stage skipped.

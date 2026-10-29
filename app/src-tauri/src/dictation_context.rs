@@ -100,6 +100,9 @@ pub struct TransformationSettings {
     pub spoken_numbers_enabled: bool,
     pub ide_context_enabled: bool,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
+    /// Content-free register frozen with the writing style; stages gate
+    /// number rendering and contextual vocabulary on it.
+    pub text_register: crate::state::TextRegister,
 }
 
 #[derive(Debug, Clone)]
@@ -607,6 +610,10 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             } else {
                 None
             },
+            text_register: crate::state::TextRegister::resolve(
+                writing_style,
+                cli_formatting_mode == CliFormattingMode::Enabled,
+            ),
         },
         delivery: DeliverySettings {
             auto_paste,
@@ -762,6 +769,7 @@ mod tests {
                 spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
                 ide_context_enabled: snapshot.transformations.ide_context_enabled,
                 cli_command_enabled: snapshot.transformations.cli_formatting_enabled,
+                text_register: snapshot.transformations.text_register,
             },
         };
         crate::transcript_transform::transform_transcript(
@@ -1605,6 +1613,91 @@ mod tests {
             assert_eq!(snapshot.transformations.correction_enabled, correction);
             assert_eq!(snapshot.transformations.cli_formatting_enabled, cli_stage);
         }
+    }
+
+    #[test]
+    fn built_in_modes_freeze_a_content_free_text_register() {
+        use crate::state::TextRegister;
+
+        let mut global = DictationState::default();
+        let resolve_mode = |global: &mut DictationState, mode_id: &str| {
+            let mut app = profile("com.example.App", None, None);
+            app.mode_id = Some(mode_id.to_string());
+            global.app_profiles = vec![app];
+            resolve_test(global, Some("com.example.App"), SessionOverrides::default())
+        };
+        for (mode_id, register, numbers, two_of_them) in [
+            (
+                "builtin.everyday",
+                TextRegister::Everyday,
+                true,
+                "two of them",
+            ),
+            (
+                "builtin.messages",
+                TextRegister::Messages,
+                true,
+                "Two of them",
+            ),
+            ("builtin.email", TextRegister::Email, true, "Two of them"),
+            ("builtin.notes", TextRegister::Notes, true, "two of them"),
+            (
+                "builtin.technical",
+                TextRegister::Technical,
+                true,
+                "2 of them",
+            ),
+            (
+                "builtin.terminal",
+                TextRegister::Terminal,
+                true,
+                "2 of them",
+            ),
+            (
+                "builtin.verbatim",
+                TextRegister::Verbatim,
+                false,
+                "two of them",
+            ),
+        ] {
+            let snapshot = resolve_mode(&mut global, mode_id);
+            assert_eq!(
+                snapshot.transformations.text_register, register,
+                "{mode_id}"
+            );
+            assert_eq!(
+                snapshot.transformations.spoken_numbers_enabled, numbers,
+                "{mode_id}"
+            );
+            assert_eq!(
+                transform_with_snapshot("two of them", &snapshot),
+                two_of_them,
+                "{mode_id}"
+            );
+        }
+
+        // An unknown Mode fails closed to Verbatim, and a one-recording Mode
+        // override replaces the bound register.
+        let snapshot = resolve_mode(&mut global, "custom.missing");
+        assert_eq!(
+            snapshot.transformations.text_register,
+            TextRegister::Verbatim
+        );
+        let mut app = profile("com.example.App", None, None);
+        app.mode_id = Some("builtin.everyday".to_string());
+        global.app_profiles = vec![app];
+        let snapshot = resolve_test(
+            &global,
+            Some("com.example.App"),
+            SessionOverrides {
+                mode: builtin_mode("builtin.terminal"),
+                ..SessionOverrides::default()
+            },
+        );
+        assert_eq!(
+            snapshot.transformations.text_register,
+            TextRegister::Terminal
+        );
     }
 
     #[test]

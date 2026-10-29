@@ -71,10 +71,10 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 
 1. `cleanup` — filler removal, capitalization
 2. `voice_commands` — typed replacements/snippets from the knowledge store
-3. `smart_correction` — vocabulary matcher (exact tier + optional fuzzy tier)
+3. `smart_correction` — vocabulary matcher (explicit aliases, register/cue-gated contextual variants, exact tier + optional fuzzy tier)
 4. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
 5. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
-6. `spoken_numbers` — default English cardinal, scale, negative, and decimal rendering (live dictation)
+6. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen Mode register's prose or technical policy (live dictation)
 7. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
 8. `cli_command` — spoken CLI command formatting
 

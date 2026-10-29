@@ -129,6 +129,10 @@ struct FixtureContext {
     matched_profile: Option<String>,
     #[serde(default)]
     cli_formatting_mode: FixtureCliMode,
+    /// Frozen Mode register (`everyday`, `technical`, ...). Absent means the
+    /// production default, Everyday.
+    #[serde(default)]
+    mode: Option<crate::state::TextRegister>,
     #[serde(default)]
     stages: FixtureStageConfig,
     #[serde(default)]
@@ -146,6 +150,7 @@ impl Default for FixtureContext {
             bundle_id: None,
             matched_profile: None,
             cli_formatting_mode: FixtureCliMode::Auto,
+            mode: None,
             stages: FixtureStageConfig::default(),
             resources: FixtureResources::default(),
             fixed_now: default_fixed_now(),
@@ -1166,6 +1171,10 @@ fn run_transform(
             spoken_numbers_enabled: fixture.context.stages.spoken_numbers,
             ide_context_enabled: fixture.context.stages.ide_context,
             cli_command_enabled: fixture.context.stages.cli_command,
+            text_register: fixture
+                .context
+                .mode
+                .unwrap_or(crate::state::TextRegister::Everyday),
         },
     };
     let mut observer = InMemoryStageObserver::default();
@@ -1461,6 +1470,8 @@ mod tests {
           "unexpected": true
         }"#;
         assert!(serde_json::from_str::<EvaluationFixture>(fixture).is_err());
+        assert!(serde_json::from_str::<FixtureContext>(r#"{"mode": "technical"}"#).is_ok());
+        assert!(serde_json::from_str::<FixtureContext>(r#"{"mode": "code"}"#).is_err());
 
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("eval/fixtures/deterministic");
         let (path, fixture) = load_fixtures(&root, EvaluationTier::Deterministic)

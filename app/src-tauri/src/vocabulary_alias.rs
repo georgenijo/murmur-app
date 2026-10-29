@@ -507,6 +507,23 @@ mod tests {
     }
 
     #[test]
+    fn vocabulary_entries_carry_no_user_context_restrictions() {
+        // Review B3: a context field the frontend drops, or an older build
+        // ignores, would let a restricted alias fire everywhere. Context
+        // requirements stay internal to the built-in pack until Settings can
+        // author and preserve them.
+        let value = serde_json::to_value(entry("Tauri", &["Tori"])).unwrap();
+        let mut keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["aliases", "enabled", "id", "scope", "written"]);
+    }
+
+    #[test]
     fn explicit_aliases_outrank_learned_replacements() {
         let explicit = entry("Tauri", &["Tori"]);
         let learned = learned(
