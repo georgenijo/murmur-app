@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-28
+
+### Added
+
+- Format spoken numbers according to the current Mode: keep small prose counts as words and handle technical identifiers, times, dates, versions, ports, and ordinals more accurately.
+- Correct common developer vocabulary using Mode and nearby-word context, while preserving names and unrelated words.
+
+### Fixed
+
+- Apply taught corrections containing digits after number formatting, without repeating corrections or overriding explicit vocabulary.
+- Prevent ordinary typing with Shift, Option, or Control from starting dictation by briefly arming modifier-only hold shortcuts before capture begins.
+- Stop idle memory growth from background macOS application checks.
+- Rotate logs during long-running sessions and preserve log history and upload positions across rotation.
+- Remove typed-key identities from diagnostic logs and queued uploads.
+- Restore fleet log uploads when retained logs reach their size limit, and keep dashboard and history searches responsive as history grows.
+
 ## [0.52.2] - 2026-10-23
 
 ### Fixed
