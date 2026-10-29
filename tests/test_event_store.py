@@ -69,6 +69,76 @@ class EventStoreTestCase(unittest.TestCase):
 
 
 class EventStoreMigrationTests(EventStoreTestCase):
+    def test_existing_database_gets_indexed_fleet_history_pages(self) -> None:
+        self.ingest([
+            event("first", timestamp="2026-08-10T12:00:00Z"),
+            event("second", timestamp="2026-08-10T12:00:01Z", sequence=2),
+        ])
+        connection = self.store._connect()
+        connection.execute("DROP INDEX events_global_time")
+        connection.close()
+        self.store.initialize()
+        queries = []
+        connect = self.store._connect
+
+        def traced_connection(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.set_trace_callback(queries.append)
+            return connection
+
+        with mock.patch.object(self.store, "_connect", side_effect=traced_connection):
+            first = self.store.query_events(store_module.EventQuery(limit=1))
+            second = self.store.query_events(
+                store_module.EventQuery(limit=1), before=first.next_position
+            )
+            self.store.query_events(store_module.EventQuery(start_us=1, limit=1))
+        self.assertEqual(first.events[0]["summary"], "second")
+        self.assertEqual(second.events[0]["summary"], "first")
+        pages = [query for query in queries if "FROM events e WHERE" in query]
+        self.assertEqual(len(pages), 3)
+        connection = connect()
+        try:
+            for query in pages:
+                plan = " ".join(row[3] for row in connection.execute("EXPLAIN QUERY PLAN " + query))
+                self.assertIn("events_global_time", plan)
+                self.assertNotIn("TEMP B-TREE", plan)
+        finally:
+            connection.close()
+
+    def test_existing_database_gets_covering_overview_queries(self) -> None:
+        self.ingest([event("first"), event("second", sequence=2)])
+        connection = self.store._connect()
+        connection.execute("DROP INDEX events_install_overview")
+        connection.close()
+        # Reopening an already-migrated database installs the index safely.
+        self.store.initialize()
+        self.store.initialize()
+
+        queries = []
+        connect = self.store._connect
+
+        def traced_connection(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.set_trace_callback(queries.append)
+            return connection
+
+        with mock.patch.object(self.store, "_connect", side_effect=traced_connection):
+            installs = self.store.list_installs()
+            install = self.store.get_install(self.install_id)
+        self.assertEqual(installs[0]["events"], 2)
+        self.assertEqual(install["events"], 2)
+        aggregates = [query for query in queries if "LEFT JOIN events" in query]
+        self.assertEqual(len(aggregates), 2)
+        connection = connect()
+        try:
+            for query in aggregates:
+                plan = connection.execute("EXPLAIN QUERY PLAN " + query).fetchall()
+                event_steps = [row[3] for row in plan if "SEARCH e " in row[3]]
+                self.assertEqual(len(event_steps), 1)
+                self.assertIn("COVERING INDEX events_install_overview", event_steps[0])
+        finally:
+            connection.close()
+
     def test_migrations_reopen_with_wal_foreign_keys_and_integrity(self) -> None:
         cursor_secret = self.store.cursor_secret()
         reopened = store_module.EventStore(self.database)
