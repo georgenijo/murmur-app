@@ -898,6 +898,11 @@ class EventStore:
                 "CREATE INDEX IF NOT EXISTS events_install_overview "
                 "ON events(install_id, event_time_us, received_at_us)"
             )
+            # Fleet-wide history has no install/level/stream/version prefix.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS events_global_time "
+                "ON events(COALESCE(event_time_us, received_at_us) DESC, event_id DESC)"
+            )
             if check_integrity:
                 result = connection.execute("PRAGMA quick_check").fetchone()[0]
                 if result != "ok":
