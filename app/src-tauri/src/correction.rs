@@ -157,34 +157,25 @@ struct ContextToken {
 }
 
 fn context_tokens(text: &str) -> Vec<ContextToken> {
+    // Marks are part of the word even when the recognizer emits decomposed
+    // Unicode: `Tori\u{301}` must not match the builtin phrase `Tori`.
+    static WORDS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"[\p{Alphabetic}\p{N}\p{M}_]+").expect("valid contextual word pattern")
+    });
     let mut tokens = Vec::new();
     let mut clause = 0;
-    let mut word_start = None;
     let mut gap_start = 0;
-    let is_word = |character: char| character.is_alphanumeric() || character == '_';
-    for (index, character) in text
-        .char_indices()
-        .chain(std::iter::once((text.len(), ' ')))
-    {
-        match (word_start, is_word(character) && index < text.len()) {
-            (None, true) => {
-                if is_clause_break(&text[gap_start..index]) {
-                    clause += 1;
-                }
-                word_start = Some(index);
-            }
-            (Some(start), false) => {
-                tokens.push(ContextToken {
-                    lower: text[start..index].to_lowercase(),
-                    start,
-                    end: index,
-                    clause,
-                });
-                word_start = None;
-                gap_start = index;
-            }
-            _ => {}
+    for word in WORDS.find_iter(text) {
+        if is_clause_break(&text[gap_start..word.start()]) {
+            clause += 1;
         }
+        tokens.push(ContextToken {
+            lower: word.as_str().to_lowercase(),
+            start: word.start(),
+            end: word.end(),
+            clause,
+        });
+        gap_start = word.end();
     }
     tokens
 }
@@ -1552,6 +1543,14 @@ mod tests {
                 "Tori日本 app",
                 "Maineé branch",
                 "ÉTori app",
+                "Torí app",
+                "Tori\u{301} app",
+                "Torí",
+                "Tori\u{301}",
+                "\u{301}Tori app",
+                "Tori\u{93e} app",
+                "Tori\u{20dd} app",
+                "Tori² app",
             ] {
                 assert_eq!(m.apply_in(text, context), text);
             }
