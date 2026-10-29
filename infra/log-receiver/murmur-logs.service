@@ -9,6 +9,8 @@ Restart=always
 RestartSec=5
 MemoryMax=128M
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

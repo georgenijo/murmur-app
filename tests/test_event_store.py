@@ -328,6 +328,363 @@ class EventStoreBackfillTests(EventStoreTestCase):
         self.assertFalse(self.store.is_dashboard_ready())
 
 
+def raw_stream(directory: Path) -> bytes:
+    """Concatenate every raw source the way recovery/export reads it."""
+    payload = b""
+    for source in store_module.raw_sources(directory):
+        with store_module.open_raw_source(source) as handle:
+            payload += handle.read()
+    return payload
+
+
+class EventStoreRawSealTests(EventStoreTestCase):
+    def ingest_capped(self, events: list[dict], quota: int) -> object:
+        return self.store.ingest_batch(
+            self.install_id,
+            events,
+            metadata={"device_name": "Test Mac"},
+            archive_path=str(self.archive),
+            archive_quota_bytes=quota,
+            seal_full_archive=True,
+            received_at=1_786_000_000,
+        )
+
+    def batch(self, prefix: str, count: int, *, day: int = 1) -> list[dict]:
+        return [
+            event(
+                "%s-%d" % (prefix, sequence),
+                timestamp="2026-08-%02dT00:00:%02dZ" % (day, sequence),
+                sequence=sequence,
+            )
+            for sequence in range(count)
+        ]
+
+    def test_cap_seals_live_file_into_verified_gzip_without_losing_history(self) -> None:
+        first = self.batch("first", 4, day=1)
+        self.ingest_capped(first, quota=10_000)
+        before = self.archive.read_bytes()
+        quota = len(before) + 50
+
+        result = self.ingest_capped(self.batch("second", 3, day=2), quota=quota)
+        pending = self.archive.parent / "sealed" / "events-000001.pending.jsonl"
+
+        self.assertTrue(result.sealed)
+        self.assertEqual(result.inserted, 3)
+        self.assertEqual(pending.read_bytes(), before)
+        self.assertEqual(
+            [json.loads(line)["summary"] for line in self.archive.read_text().splitlines()],
+            ["second-0", "second-1", "second-2"],
+        )
+        live_bytes = self.archive.read_bytes()
+
+        self.assertEqual(store_module.compact_pending_segments(self.archive.parent), 1)
+        sealed = sorted((self.archive.parent / "sealed").iterdir())
+        self.assertEqual(
+            [path.name for path in sealed],
+            ["events-000001-20260801T000000Z-20260801T000003Z.jsonl.gz"],
+        )
+        sources = store_module.raw_sources(self.archive.parent)
+        self.assertEqual(
+            [(source.key, source.compressed, source.sealed) for source in sources],
+            [
+                (f"{self.install_id}/events.jsonl", True, True),
+                (f"{self.install_id}/events.jsonl#2", False, False),
+            ],
+        )
+        self.assertEqual(store_module.raw_source_size(sources[0]), len(before))
+        self.assertEqual(raw_stream(self.archive.parent), before + live_bytes)
+        self.assertEqual(self.store.event_count(self.install_id), 7)
+
+    def test_exact_retry_after_seal_is_deduplicated_by_the_database(self) -> None:
+        first = self.batch("first", 4)
+        self.ingest_capped(first, quota=10_000)
+        quota = self.archive.stat().st_size + 50
+        second = self.batch("second", 3, day=2)
+        self.ingest_capped(second, quota=quota)
+        store_module.compact_pending_segments(self.archive.parent)
+        stream = raw_stream(self.archive.parent)
+
+        old_retry = self.ingest_capped(first, quota=quota)
+        new_retry = self.ingest_capped(second, quota=quota)
+
+        self.assertEqual((old_retry.inserted, old_retry.sealed), (0, False))
+        self.assertEqual((new_retry.inserted, new_retry.sealed), (0, False))
+        self.assertEqual(raw_stream(self.archive.parent), stream)
+        self.assertEqual(self.store.event_count(self.install_id), 7)
+
+    def test_failed_commit_after_seal_keeps_seal_and_removes_only_new_lines(self) -> None:
+        self.ingest_capped(self.batch("first", 4), quota=10_000)
+        before = self.archive.read_bytes()
+        with mock.patch.object(
+            self.store,
+            "_commit",
+            side_effect=store_module.StoreCommitError("synthetic commit failure"),
+        ), self.assertRaises(store_module.StoreCommitError):
+            self.ingest_capped(self.batch("second", 3, day=2), quota=len(before) + 50)
+
+        self.assertFalse(self.archive.exists())
+        self.assertEqual(raw_stream(self.archive.parent), before)
+        self.assertEqual(self.store.event_count(self.install_id), 4)
+        retry = self.ingest_capped(self.batch("second", 3, day=2), quota=len(before) + 50)
+        self.assertEqual((retry.inserted, retry.sealed), (3, False))
+        self.assertEqual(
+            [source.key for source in store_module.raw_sources(self.archive.parent)],
+            [f"{self.install_id}/events.jsonl", f"{self.install_id}/events.jsonl#2"],
+        )
+
+    def test_every_interrupted_compaction_state_recovers_to_one_segment(self) -> None:
+        self.ingest_capped(self.batch("first", 4), quota=10_000)
+        before = self.archive.read_bytes()
+        sealed = self.archive.parent / "sealed"
+        store_module.seal_live_file(self.archive.parent)
+        pending = sealed / "events-000001.pending.jsonl"
+
+        # Crash after the rename: the pending file alone is the segment.
+        self.assertEqual(raw_stream(self.archive.parent), before)
+
+        # Crash while writing the gzip temporary: it is never a source.
+        (sealed / ".events-000001.dead.tmp").write_bytes(b"partial gzip")
+        self.assertEqual(raw_stream(self.archive.parent), before)
+
+        # Crash after publishing, before removing the pending file.
+        store_module.compact_pending_segments(self.archive.parent)
+        pending.write_bytes(before)
+        self.assertEqual(raw_stream(self.archive.parent), before)
+        self.assertEqual(store_module.compact_pending_segments(self.archive.parent), 1)
+        self.assertEqual(len(list(sealed.iterdir())), 1)
+        self.assertEqual(raw_stream(self.archive.parent), before)
+
+        # A pending file that disagrees with its published gzip fails closed.
+        pending.write_bytes(before + b"{}\n")
+        with self.assertRaises(store_module.StoreCorrupt):
+            store_module.compact_pending_segments(self.archive.parent)
+        self.assertTrue(pending.exists())
+
+    def test_sequence_gap_fails_closed(self) -> None:
+        sealed = self.archive.parent / "sealed"
+        sealed.mkdir(parents=True)
+        (sealed / "events-000002.pending.jsonl").write_bytes(b"{}\n")
+
+        with self.assertRaises(store_module.StoreCorrupt):
+            store_module.raw_sources(self.archive.parent)
+
+    def test_backfill_checkpoint_follows_the_stream_across_a_seal(self) -> None:
+        self.ingest_capped(self.batch("first", 4), quota=10_000)
+        # Backfill the live file into a second projection, then seal it.
+        projection = store_module.EventStore(self.root / "projection.sqlite3")
+        projection.initialize()
+        store_module.backfill(projection, self.root, max_lines=100)
+        self.ingest_capped(self.batch("second", 3, day=2), quota=self.archive.stat().st_size + 50)
+        store_module.compact_pending_segments(self.archive.parent)
+        self.ingest_capped(self.batch("third", 2, day=3), quota=10_000)
+
+        report = store_module.backfill(projection, self.root, max_lines=100)
+        reconciliation = store_module.reconcile(projection, self.root, mark_ready=True)
+
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["inserted_events"], 5)
+        install = reconciliation["installs"][0]
+        self.assertTrue(install["ready"])
+        self.assertEqual(install["raw_sources"], 2)
+        self.assertEqual(install["database_count"], 9)
+        self.assertTrue(store_module.reconcile(self.store, self.root)["installs"][0]["raw_lines"] == 9)
+
+    def test_large_gzip_backfill_uses_bounded_batches_without_rewinding(self) -> None:
+        events = []
+        for sequence in range(12):
+            item = event("large-%d" % sequence, sequence=sequence)
+            item["data"]["padding"] = "x" * 600_000
+            events.append(item)
+        self.ingest_capped(events[:6], quota=100 * 1024 * 1024)
+        self.ingest_capped(events[6:], quota=self.archive.stat().st_size + 1_000_000)
+        store_module.compact_pending_segments(self.archive.parent)
+        projection = store_module.EventStore(self.root / "projection.sqlite3")
+        projection.initialize()
+        original_seek = store_module.gzip.GzipFile.seek
+        rewinds = []
+
+        def forward_only(handle, offset, whence=0):
+            # tell() is seek(0, SEEK_CUR); any move backwards rewinds.
+            if (whence == 1 and offset < 0) or (
+                whence == 0 and offset < original_seek(handle, 0, 1)
+            ):
+                rewinds.append(offset)
+            return original_seek(handle, offset, whence)
+
+        with mock.patch.object(
+            store_module.gzip.GzipFile, "seek", forward_only
+        ), mock.patch.object(store_module, "MAX_BACKFILL_BATCH_BYTES", 1_300_000):
+            report = store_module.backfill(projection, self.root, max_lines=100)
+
+        self.assertEqual(rewinds, [])
+        self.assertTrue(report["complete"])
+        self.assertTrue(store_module.reconcile(projection, self.root)["database_ready"])
+
+
+    def test_pinned_open_survives_compaction_between_resolve_and_open(self) -> None:
+        payload = b"".join(
+            (json.dumps(event("bulk-%d" % sequence, sequence=sequence)) + "\n").encode()
+            for sequence in range(200)
+        )
+        self.archive.parent.mkdir(parents=True)
+        self.archive.write_bytes(payload)
+        store_module.seal_live_file(self.archive.parent)
+        original = store_module._current_source
+        calls = []
+
+        def compact_after_first_resolve(source):
+            resolved = original(source)
+            if not calls:
+                calls.append(source)
+                # Compaction finishes after resolution but before the open.
+                store_module.compact_pending_segments(self.archive.parent)
+            return resolved
+
+        with mock.patch.object(store_module, "_current_source", compact_after_first_resolve):
+            snapshot = store_module.open_raw_snapshot(self.archive.parent)
+        try:
+            (source, handle, size), = snapshot
+            self.assertTrue(source.compressed)
+            self.assertEqual(size, len(payload))
+            self.assertEqual(handle.read(), payload)
+        finally:
+            store_module.close_snapshot(snapshot)
+        self.assertEqual(calls and len(calls), 1)
+
+    def test_seal_racing_backfill_open_cannot_skip_or_mislabel_events(self) -> None:
+        self.ingest_capped(self.batch("first", 20), quota=100_000)
+        projection = store_module.EventStore(self.root / "projection.sqlite3")
+        projection.initialize()
+        original = store_module.open_pinned_source
+        raced = []
+
+        def seal_before_live_open(source):
+            if not source.sealed and not raced:
+                raced.append(source)
+                # An ingest seals the live file and appends one new event
+                # after backfill listed the sources but before it opened them.
+                self.ingest_capped(
+                    self.batch("racing", 1, day=9),
+                    quota=self.archive.stat().st_size + 1,
+                )
+            return original(source)
+
+        with mock.patch.object(store_module, "open_pinned_source", seal_before_live_open):
+            first = store_module.backfill(projection, self.root, max_lines=1_000)
+        final = store_module.backfill(projection, self.root, max_lines=1_000)
+        reconciliation = store_module.reconcile(projection, self.root)
+
+        self.assertEqual(len(raced), 1)
+        self.assertEqual(first["inserted_events"] + final["inserted_events"], 21)
+        self.assertTrue(final["complete"])
+        self.assertTrue(reconciliation["database_ready"], reconciliation)
+        self.assertEqual(projection.event_count(self.install_id), 21)
+
+
+class EventStoreKeySanitizationTests(EventStoreTestCase):
+    def test_typed_key_identities_become_content_free_classes(self) -> None:
+        item = {
+            "summary": "keyboard event rejected",
+            "reason": "KeyPress(KeyI)",
+            "data": {
+                "event_type": "KeyPress(Slash)",
+                "release": "KeyRelease(Num4)",
+                "key": "Some(Num4)",
+                "target_key": "Some(ShiftLeft)",
+                "hotkey_event": "KeyRelease(MetaRight)",
+                "last_key": "SemiColon",
+                "unknown_key": "Some(Unknown(57))",
+                "event_name": 'Some("a")',
+                "hold_state": "Some(Idle)",
+                "error_code": "Some(Timeout)",
+                "mode": "KeyA",
+                "list": [{"key": "KeyB"}],
+                "count": 3,
+            },
+        }
+
+        sanitized, changed = store_module.sanitize_event(item)
+
+        self.assertEqual(changed, 8)
+        self.assertEqual(sanitized["reason"], "KeyPress(non_hotkey_key)")
+        data = sanitized["data"]
+        self.assertEqual(data["event_type"], "KeyPress(non_hotkey_key)")
+        self.assertEqual(data["release"], "KeyRelease(non_hotkey_key)")
+        self.assertEqual(data["key"], "Some(non_hotkey_key)")
+        self.assertEqual(data["target_key"], "Some(ShiftLeft)")
+        self.assertEqual(data["hotkey_event"], "KeyRelease(MetaRight)")
+        self.assertEqual(data["last_key"], "non_hotkey_key")
+        self.assertEqual(data["unknown_key"], "Some(non_hotkey_key)")
+        self.assertEqual(data["event_name"], "Some(redacted_text)")
+        self.assertEqual(data["hold_state"], "Some(Idle)")
+        self.assertEqual(data["error_code"], "Some(Timeout)")
+        self.assertEqual(data["mode"], "KeyA")
+        self.assertEqual(data["list"], [{"key": "non_hotkey_key"}])
+        self.assertEqual(item["data"]["key"], "Some(Num4)")
+        for hotkey in ("Function", "F13", "ControlRight", "Alt", "AltGr"):
+            self.assertEqual(
+                store_module.sanitize_event({"data": {"key": "Some(%s)" % hotkey}})[1], 0
+            )
+
+    def test_embedded_forms_summaries_and_typed_characters_are_redacted(self) -> None:
+        cases = [
+            (
+                {"summary": "rejected KeyPress(Num4) in listener"},
+                {"summary": "rejected KeyPress(non_hotkey_key) in listener"},
+            ),
+            (
+                {"summary": "saw Some(KeyQ) then KeyRelease(Unknown(57)), kept KeyPress(ShiftLeft)"},
+                {
+                    "summary": "saw Some(non_hotkey_key) then "
+                    "KeyRelease(non_hotkey_key), kept KeyPress(ShiftLeft)"
+                },
+            ),
+            ({"data": {"event_name": "a"}}, {"data": {"event_name": "redacted_text"}}),
+            ({"data": {"event_name": "None"}}, {"data": {"event_name": "None"}}),
+            (
+                {"stream": "keyboard", "data": {"name": "b", "text": "hunter2", "char": "x"}},
+                {
+                    "stream": "keyboard",
+                    "data": {
+                        "name": "redacted_text",
+                        "text": "redacted_text",
+                        "char": "redacted_text",
+                    },
+                },
+            ),
+        ]
+        for original, expected in cases:
+            with self.subTest(original=original):
+                self.assertEqual(store_module.sanitize_event(original)[0], expected)
+        untouched = [
+            {"summary": "/models/KeyA/ KeyA-7B MyKeyPress(KeyA) KeyPress(KeyAB) Some(Idle)"},
+            {"stream": "system", "data": {"name": "parakeet", "text": "ok"}},
+            {"data": {"target_key": "Some(ShiftLeft)", "hold_state": "Some(Idle)"}},
+            {"data": {"note": "KeyRelease(MetaRight) Some(F13) Some(Function)"}},
+        ]
+        for item in untouched:
+            with self.subTest(item=item):
+                self.assertEqual(store_module.sanitize_event(item), (item, 0))
+        once = store_module.sanitize_event(cases[0][0])[0]
+        self.assertEqual(store_module.sanitize_event(once)[1], 0)
+
+    def test_ingest_stores_only_sanitized_form_in_database_and_raw_archive(self) -> None:
+        item = event("keyboard event rejected")
+        item["data"] = {"event_type": "KeyPress(KeyI)", "key": "Some(KeyI)"}
+        twin = event("keyboard event rejected")
+        twin["data"] = {"event_type": "KeyPress(KeyJ)", "key": "Some(KeyJ)"}
+
+        result = self.ingest([item, twin])
+
+        self.assertEqual((result.inserted, result.duplicates), (1, 1))
+        raw = self.archive.read_text()
+        self.assertNotIn("KeyI", raw)
+        self.assertNotIn("KeyJ", raw)
+        self.assertIn("KeyPress(non_hotkey_key)", raw)
+        page = self.store.query_events(store_module.EventQuery(install_id=self.install_id))
+        self.assertEqual(page.events[0]["data"]["key"], "Some(non_hotkey_key)")
+
+
 class EventStoreQueryTests(EventStoreTestCase):
     def setUp(self) -> None:
         super().setUp()

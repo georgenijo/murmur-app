@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import http.client
+import io
 import json
+import sys
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +39,9 @@ SLO_SPEC = importlib.util.spec_from_file_location("reliability_slo_for_dashboard
 assert SLO_SPEC and SLO_SPEC.loader
 reliability_slo = importlib.util.module_from_spec(SLO_SPEC)
 SLO_SPEC.loader.exec_module(reliability_slo)
+
+
+ACCESS_HEADERS = {"Cf-Access-Authenticated-User-Email": "operator@example.com"}
 
 
 def event(
@@ -1475,11 +1480,15 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.addCleanup(self.thread.join, 2)
         self.addCleanup(self.server.shutdown)
 
-    def get(self, path: str) -> tuple[int, dict[str, str], bytes]:
+    def get(
+        self, path: str, *, through_access: bool = True
+    ) -> tuple[int, dict[str, str], bytes]:
         connection = http.client.HTTPConnection(
             "127.0.0.1", self.server.server_address[1], timeout=5
         )
-        connection.request("GET", path)
+        connection.request(
+            "GET", path, headers=ACCESS_HEADERS if through_access else {}
+        )
         response = connection.getresponse()
         body = response.read()
         headers = dict(response.getheaders())
@@ -1613,7 +1622,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             f"/install/{self.install_id}/private-captures/"
             "d2719b62-23db-4ea5-8845-f1f55db37d4f/delete",
             b"csrf=wrong",
-            {"Content-Type": "application/x-www-form-urlencoded"},
+            {"Content-Type": "application/x-www-form-urlencoded", **ACCESS_HEADERS},
         )
         self.assertEqual(denied_status, 403)
         self.assertTrue(capture_path.exists())
@@ -1626,6 +1635,7 @@ class LogReceiverExportRouteTests(unittest.TestCase):
             {
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Content-Length": str(len(delete_body)),
+                **ACCESS_HEADERS,
             },
         )
         self.assertEqual(delete_status, 303)
@@ -2052,6 +2062,217 @@ class LogReceiverExportRouteTests(unittest.TestCase):
         self.assertNotIn("PRIVATE MIC", page)
         self.assertNotIn('"app_version"', page)
         self.assertNotIn("Legacy state snapshot", page)
+
+    def ingest_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": "Bearer " + receiver.TOKEN,
+            "X-Install-Id": self.install_id,
+            "X-App-Version": "0.52.2",
+            "Content-Type": "application/x-ndjson",
+        }
+
+    def test_ingest_at_cap_seals_and_every_export_covers_sealed_history(self) -> None:
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = live.read_bytes()
+        activity_before = receiver.find_activity_metrics(str(live))
+        payload = (
+            "\n".join(
+                json.dumps(
+                    event(
+                        "after seal",
+                        timestamp="2026-08-06T00:00:0%dZ" % sequence,
+                        data={"sequence": 600 + sequence},
+                    )
+                )
+                for sequence in range(3)
+            )
+            + "\n"
+        ).encode("utf-8")
+
+        with mock.patch.object(receiver, "MAX_FILE", len(before) + 10), mock.patch.object(
+            receiver, "_schedule_compaction"
+        ) as schedule:
+            status, _ = self.post("/ingest", payload, self.ingest_headers())
+            retry_status, _ = self.post("/ingest", payload, self.ingest_headers())
+        receiver.compact_install(self.install_id)
+        sealed = list((live.parent / "sealed").iterdir())
+        stream = before + live.read_bytes()
+
+        self.assertEqual((status, retry_status), (204, 204))
+        schedule.assert_called_once_with(self.install_id)
+        self.assertEqual(
+            [path.name for path in sealed],
+            ["events-000001-20260805T000000Z-20260805T000000Z.jsonl.gz"],
+        )
+        self.assertEqual(len(live.read_text().splitlines()), 3)
+        self.assertEqual(receiver.event_store().event_count(self.install_id), 3)
+
+        full_status, full_headers, full_body = self.get(
+            f"/install/{self.install_id}/raw?kind=prod"
+        )
+        self.assertEqual(full_status, 200)
+        self.assertEqual(full_body, stream)
+        self.assertEqual(int(full_headers["Content-Length"]), len(stream))
+
+        for limit in (200, 500):
+            with self.subTest(limit=limit):
+                status, _, body = self.get(
+                    f"/install/{self.install_id}/raw?kind=prod&limit={limit}"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(body.splitlines(), stream.splitlines()[-limit:])
+
+        llm_status, _, llm_body = self.get(
+            f"/install/{self.install_id}/llm?kind=prod&limit=200"
+        )
+        self.assertEqual(llm_status, 200)
+        self.assertIn(b"newest 200 available events out of 603 on the server", llm_body)
+        self.assertEqual(receiver.find_activity_metrics(str(live)), activity_before)
+        page_status, _, _ = self.get(f"/install/{self.install_id}")
+        self.assertEqual(page_status, 200)
+
+        receiver._usage_cache["t"] = 0.0
+        usage = receiver.root_usage()
+        self.assertGreaterEqual(
+            usage["bytes"], sealed[0].stat().st_size + live.stat().st_size
+        )
+
+    def test_latest_window_stays_exact_when_a_seal_races_the_export(self) -> None:
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = live.read_bytes()
+        store_module = sys.modules["event_store"]
+        original = store_module.open_pinned_source
+        raced = []
+
+        def seal_before_live_open(source):
+            if not source.sealed and not raced:
+                raced.append(source)
+                store_module.seal_live_file(live.parent)
+                live.write_text(
+                    json.dumps(event("new generation", timestamp="2026-08-06T00:00:00Z"))
+                    + "\n"
+                )
+            return original(source)
+
+        with mock.patch.object(store_module, "open_pinned_source", seal_before_live_open):
+            status, _, body = self.get(f"/install/{self.install_id}/raw?kind=prod&limit=200")
+
+        stream = before + live.read_bytes()
+        self.assertEqual(len(raced), 1)
+        self.assertEqual(status, 200)
+        self.assertEqual(body.splitlines(), stream.splitlines()[-200:])
+
+    def test_cold_cache_raw_dashboard_includes_compressed_history(self) -> None:
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        with live.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(event("SEALED_ONLY_MARKER", timestamp="2026-08-05T00:00:01Z"))
+                + "\n"
+            )
+        sys.modules["event_store"].seal_live_file(live.parent)
+        receiver.compact_install(self.install_id)
+        live.write_text(
+            json.dumps(event("fresh live event", timestamp="2026-08-06T00:00:00Z")) + "\n"
+        )
+        receiver._segment_cache.clear()
+
+        page = receiver.render_install(self.install_id, "prod", 200)
+
+        self.assertIn("SEALED_ONLY_MARKER", page)
+        self.assertIn("fresh live event", page)
+
+    def test_receiver_refuses_to_start_over_an_unfinished_scrub(self) -> None:
+        journal = Path(receiver.ROOT) / receiver.KEY_SCRUB_JOURNAL_NAME
+        receiver.refuse_unfinished_scrub()
+        journal.write_text("{}", encoding="utf-8")
+
+        with mock.patch.object(receiver.sys, "stderr", new=io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit):
+                receiver.refuse_unfinished_scrub()
+        self.assertIn("unfinished key scrub", stderr.getvalue())
+
+    def test_startup_recovery_seals_installs_already_over_cap(self) -> None:
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        before = live.read_bytes()
+
+        with mock.patch.object(receiver, "MAX_FILE", len(before)):
+            pending = receiver.recover_raw_storage()
+            status, _ = self.post(
+                "/ingest",
+                (json.dumps(event("fresh", timestamp="2026-08-07T00:00:00Z")) + "\n").encode(),
+                self.ingest_headers(),
+            )
+
+        self.assertEqual(pending, [self.install_id])
+        self.assertEqual(status, 204)
+        self.assertEqual(
+            (live.parent / "sealed" / "events-000001.pending.jsonl").read_bytes(), before
+        )
+        self.assertEqual(json.loads(live.read_text())["summary"], "fresh")
+        receiver.compact_install(self.install_id)
+        _, _, body = self.get(f"/install/{self.install_id}/raw?kind=prod")
+        self.assertEqual(body, before + live.read_bytes())
+
+    def test_old_client_key_identities_are_sanitized_before_storage(self) -> None:
+        rejected = event(
+            "keyboard event rejected",
+            timestamp="2026-08-06T00:00:00Z",
+            stream="keyboard",
+            data={
+                "reason": "KeyPress(KeyI)",
+                "event_type": "KeyPress(Slash)",
+                "key": "Some(Num4)",
+                "target_key": "Some(ShiftLeft)",
+                "hold_state": "Some(Idle)",
+            },
+        )
+
+        status, _ = self.post(
+            "/ingest", (json.dumps(rejected) + "\n").encode(), self.ingest_headers()
+        )
+        live = Path(receiver.ROOT) / self.install_id / "events.jsonl"
+        saved = json.loads(live.read_text().splitlines()[-1])
+        stored = receiver.event_store()._connect(write=False)
+        try:
+            row = stored.execute("SELECT event_json FROM events").fetchone()[0]
+        finally:
+            stored.close()
+
+        self.assertEqual(status, 204)
+        self.assertEqual(
+            saved["data"],
+            {
+                "reason": "KeyPress(non_hotkey_key)",
+                "event_type": "KeyPress(non_hotkey_key)",
+                "key": "Some(non_hotkey_key)",
+                "target_key": "Some(ShiftLeft)",
+                "hold_state": "Some(Idle)",
+            },
+        )
+        self.assertEqual(json.loads(row)["data"], saved["data"])
+        for identity in ("KeyI", "Slash", "Num4"):
+            self.assertNotIn(identity, live.read_text().splitlines()[-1])
+            self.assertNotIn(identity, row)
+
+    def test_dashboard_routes_require_cloudflare_access_headers(self) -> None:
+        for path in (
+            "/",
+            "/search",
+            f"/install/{self.install_id}",
+            f"/install/{self.install_id}/raw",
+        ):
+            with self.subTest(path=path):
+                status, _, body = self.get(path, through_access=False)
+                self.assertEqual((status, body), (403, b"forbidden"))
+        status, _, body = self.get("/healthz", through_access=False)
+        self.assertEqual((status, body), (200, b"ok"))
+        status, _ = self.post(
+            f"/install/{self.install_id}/private-captures/"
+            "d2719b62-23db-4ea5-8845-f1f55db37d4f/delete",
+            b"csrf=x",
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        self.assertEqual(status, 403)
 
     def test_recent_raw_routes_return_exact_windows_and_safe_filenames(self) -> None:
         for limit, first_sequence in ((200, 400), (500, 100)):

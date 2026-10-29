@@ -144,7 +144,7 @@ Question and context content never appears in events. Only the dedicated review 
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform` and `meeting` strings are restricted by key **and** value to explicit stable vocabularies in all builds. |
+| `app-event` | `AppEvent` | `telemetry.rs` (`TauriEmitterLayer`) | For **every** `tracing` event in the Rust backend. | Log viewer (`useEventStore`). Release `pipeline` strings are stripped; `transform`, `meeting`, and `keyboard` strings are restricted by key **and** value to explicit stable vocabularies in all builds. Keyboard events never carry the identity of a non-hotkey key, only a bounded `key_class`, and every stream redacts any other key name to `[key]` (see [log-viewer.md](../features/log-viewer.md#privacy-stripping)). |
 
 Transcript stage telemetry uses the versioned stage vocabulary from
 `PerformanceStageV1`, including `spokenStructure`. It carries only stage

@@ -10,7 +10,11 @@ acknowledged and discarded. No user setup, UI, or permissions prompt is added.
 
 - Only the **structured event stream** leaves the device — the same
   privacy-stripped events shown in Settings → Performance. Transcription text
-  never enters that stream (`telemetry.rs` strips it at the source).
+  never enters that stream (`telemetry.rs` strips it at the source), and
+  neither does the identity of any key the user types: keyboard events record
+  only a bounded key class for keys other than the configured hotkey. Queued
+  lines are re-sanitized before upload, so a backlog written by an older build
+  cannot ship key identity either.
 - Installs are identified by a **random UUID** generated on first run and
   stored in `shipper_state.json`. Each batch also carries the **device name**
   (`scutil --get ComputerName`), **macOS version**, and **hardware model** so
@@ -23,6 +27,14 @@ acknowledged and discarded. No user setup, UI, or permissions prompt is added.
   lifecycle returns to idle; it never reads or sends microphone display labels
   or backend UIDs.
 - Kill switch: launch with `MURMUR_LOG_SHIPPER=off` in the environment.
+- App versions up to 0.52.2 shipped keyboard events whose fields named the
+  typed key (`KeyPress(KeyI)`, `Some(Num4)`). The receiver replaces those rdev
+  forms, wherever they appear in a value or summary, with a content-free
+  `non_hotkey_key` class before storing anything, redacts typed-character name
+  fields, and keeps only configured hotkey names (modifiers, `Function`,
+  F1-F20). A
+  one-shot scrub tool applies the same rule to history stored earlier (see
+  [infra/log-receiver/README.md](../../infra/log-receiver/README.md#typed-key-identity-sanitization-and-scrub)).
 
 ### Explicit one-shot dictation capture
 
@@ -130,6 +142,7 @@ events.jsonl  ──(log_shipper.rs, every 60s)──▶  POST https://georgenij
                                                    │
                                                    ▼
                          ┌──────────▶ ~/murmur-logs/<install-uuid>/events.jsonl
+                         │             (sealed at 200 MiB into sealed/*.jsonl.gz)
                          │                         │
                          │            recovery/export + hourly watch
                          │                         ▼
@@ -150,9 +163,29 @@ The private one-shot path runs beside this diagram, never through it:
 - Persists a byte offset in `shipper_state[.dev].json` next to the log. The
   offset only advances after a 2xx response, so **the JSONL file is the retry
   queue** — offline or endpoint-down means the batch is retried next tick.
-- Handles the 5 MB rotation in `telemetry.rs`: when the current file is
-  shorter than the saved offset, it drains the tail of `events.jsonl.1` from
-  that offset, then restarts at 0 on the fresh file.
+- Follows the runtime rotation in `telemetry.rs`. `events.jsonl` rotates while
+  the app is running once it reaches 5 MB, keeping `events.jsonl.1` and
+  `events.jsonl.2`. A rename preserves a file's identity, so the state file stores
+  the **identity** of the file the offset points into next to the offset: device,
+  inode, and birth time. The inode alone is not enough, because a deleted file's
+  inode can be reused by an unrelated new file; the birth time tells the
+  incarnations apart, so a saved offset is never applied to the wrong file. Each tick
+  finds that file among the current log, `.1`, and `.2`, drains its tail, then
+  walks forward through every newer generation to the current file. A second
+  rotation before the first was drained therefore loses and repeats nothing:
+  the file being read is now `.2`, `.1` is shipped whole, then the current
+  file. Files are opened once and read through the handle, so a rotation during
+  a read cannot apply an offset to the wrong file. Rotated generations are
+  shipped in batches of at most 1 MB like the live file.
+- If the newest rotated file is drained but no newer file exists yet (the app
+  could not create the fresh `events.jsonl`), the shipper keeps that file's
+  identity and end-of-file offset instead of resetting, so a later generation is
+  still reached even if it rotates again before shipping resumes.
+- If the saved file no longer exists (three or more rotations, or Clear logs),
+  the oldest surviving file ships from the top. Only lines in the deleted file
+  are lost. State saved by older builds has no file identity; it falls back to comparing
+  the offset with the current file length (offset past the end means the file was
+  rotated to `.1`) and adopts the identity on the next caught-up tick.
 - Batches are cut at line boundaries, max 1 MB per POST, max 8 POSTs per tick.
 - Audio `/state` delivery reads a privacy-safe cached aggregate. The cache is
   updated when another app flow explicitly enumerates inputs (for example,
@@ -184,12 +217,16 @@ The private one-shot path runs beside this diagram, never through it:
   are appended and fsynced, and the database commits before a 2xx response.
   Exact retries are no-ops in both stores. Busy, quota, disk-full, corruption,
   archive, or commit failure returns non-2xx so the shipper offset stays put.
-  The caps are 8 MiB/request, 200 MiB raw JSONL/install, 10 GiB raw total, 150
-  installs, and 10 GiB SQLite; history is never auto-deleted.
+  The caps are 8 MiB/request, a 200 MiB live JSONL file per install, 10 GiB raw
+  total (counting compressed sealed segments), 150 installs, and 10 GiB SQLite;
+  history is never auto-deleted. A batch that would push the live file past
+  200 MiB first seals it into an immutable, verified gzip segment and continues
+  on a fresh live file, so a busy install keeps ingesting instead of stalling
+  at the cap.
 - SQLite uses migrations, request-scoped connections, foreign keys, WAL,
   bounded busy wait/cache/WAL size, startup integrity checking, indexed event
-  fields, and FTS5 over summary text. Raw JSONL remains the exact
-  recovery/export source.
+  fields, and FTS5 over summary text. Raw JSONL (sealed segments followed by
+  the live file) remains the exact recovery/export source.
 - Adds a bounded `ingest_app_version` annotation from the app-version request
   header to each accepted production event. This is receiver-side attribution
   from an existing header, not a new client-collected field. Historical lines
@@ -500,8 +537,8 @@ tailscale ssh george@opti \
 
 | Failure | Behavior |
 |---|---|
-| opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~10 MB rotation window (current + `.jsonl.1`) is lost if the outage outlives it. |
+| opti / tunnel down / offline | POSTs fail silently; offset holds; retry every 60s. Data older than the ~15 MB rotation window (current + `.jsonl.1` + `.jsonl.2`) is lost if the outage outlives it. |
 | Endpoint URL changes | Old binaries go dark until auto-update delivers the new constant. |
-| Install exceeds 200 MB on server | Receiver returns 507; shipper keeps retrying but nothing is appended (effectively paused for that install). |
+| Install's live file reaches 200 MiB on server | Receiver seals it into a compressed `sealed/` segment and appends to a fresh file; nothing is deleted. `507` remains only for the 10 GiB raw total, install count, or SQLite quota. |
 | SQLite busy, quota, disk full, corruption, archive fsync, or commit failure | Receiver returns non-2xx and never acknowledges a partial batch. JSONL is truncated back after a failed pre-commit append; the client retries from the same offset. |
 | Query-store reconciliation fails | Indexed dashboard reads stay disabled; ingest continues dual-writing and the protected dashboard stays on raw JSONL until the mismatch is investigated. |
