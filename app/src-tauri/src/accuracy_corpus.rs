@@ -233,11 +233,19 @@ mod tests {
             dir.path(),
             "synthetic-say",
             false,
-            json!([entry("syn-b", "b.wav", &first), skipped, entry("syn-a", "a.wav", &second)]),
+            json!([
+                entry("syn-b", "b.wav", &first),
+                skipped,
+                entry("syn-a", "a.wav", &second)
+            ]),
         );
         let corpus = load_from(dir.path()).expect("valid corpus loads");
         assert!(!corpus.contains_real_user_data);
-        let ids = corpus.fixtures.iter().map(|f| f.id.as_str()).collect::<Vec<_>>();
+        let ids = corpus
+            .fixtures
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(ids, ["syn-b", "syn-a"]);
         assert_eq!(corpus.fixtures[0].wav, b"bbbb");
     }
@@ -246,7 +254,12 @@ mod tests {
     fn rejects_provenance_that_does_not_match_the_real_data_flag() {
         let dir = tempfile::tempdir().unwrap();
         let sha = write_clip(dir.path(), "a.wav", b"aaaa");
-        write_manifest(dir.path(), "synthetic-say", true, json!([entry("a", "a.wav", &sha)]));
+        write_manifest(
+            dir.path(),
+            "synthetic-say",
+            true,
+            json!([entry("a", "a.wav", &sha)]),
+        );
         assert!(load_from(dir.path()).is_err());
         write_manifest(
             dir.path(),
@@ -255,7 +268,12 @@ mod tests {
             json!([entry("a", "a.wav", &sha)]),
         );
         assert!(load_from(dir.path()).is_err());
-        write_manifest(dir.path(), "guided-local-recording", true, json!([entry("a", "a.wav", &sha)]));
+        write_manifest(
+            dir.path(),
+            "guided-local-recording",
+            true,
+            json!([entry("a", "a.wav", &sha)]),
+        );
         assert!(load_from(dir.path()).is_err());
     }
 
