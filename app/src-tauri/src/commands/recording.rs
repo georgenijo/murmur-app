@@ -177,6 +177,14 @@ struct DictationPartialLease<R: tauri::Runtime> {
 impl<R: tauri::Runtime> Drop for DictationPartialLease<R> {
     fn drop(&mut self) {
         let state = self.app.state::<State>();
+        #[cfg(feature = "preview-decode-reuse")]
+        if std::thread::panicking() {
+            state
+                .app_state
+                .preview_reuse
+                .lock_or_recover()
+                .fail(self.recording_id);
+        }
         if finish_dictation_partial(&state.app_state, self.recording_id) {
             state.meeting_suggestions.wake(false);
         }
@@ -211,6 +219,14 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
     if !whisper && !transcriber::is_coreml_model(model) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
         return;
+    }
+    #[cfg(feature = "preview-decode-reuse")]
+    if !whisper {
+        app.state::<State>()
+            .app_state
+            .preview_reuse
+            .lock_or_recover()
+            .begin(recording_id);
     }
     let interval = if whisper {
         WHISPER_PARTIAL_INTERVAL
@@ -267,6 +283,12 @@ async fn decode_one_dictation_partial(
     } else {
         PARTIAL_WINDOW_SAMPLES
     };
+    #[cfg(feature = "preview-decode-reuse")]
+    let window_limit = if !whisper {
+        crate::preview_reuse::SNAPSHOT_LIMIT
+    } else {
+        window_limit
+    };
     let samples =
         audio_lifecycle::peek_dictation_samples(recording_id, window_limit).unwrap_or_default();
     let sample_count = samples.len();
@@ -275,6 +297,8 @@ async fn decode_one_dictation_partial(
         return true;
     }
     let window = dictation_partial_window(&samples).to_vec();
+    #[cfg(feature = "preview-decode-reuse")]
+    let reuse_samples = samples;
     let worker_app = app.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Option<String>, &'static str> {
         // The blocking worker outlives cancellation of its awaiting task. Its
@@ -321,6 +345,43 @@ async fn decode_one_dictation_partial(
                     &transcription.model_name,
                     || dictation_partial_is_current_if_uncontended(&state.app_state, recording_id),
                     |backend| {
+                        #[cfg(feature = "preview-decode-reuse")]
+                        let reuse_range = state
+                            .app_state
+                            .preview_reuse
+                            .lock_or_recover()
+                            .plan(recording_id, &reuse_samples);
+                        #[cfg(feature = "preview-decode-reuse")]
+                        if let Some(range) = reuse_range {
+                            // Never hold reuse state across inference. Stop/cancel may
+                            // clear it while this non-cancellable decode is running.
+                            let committed = backend.transcribe_preview(
+                                &reuse_samples[range.clone()],
+                                &transcription.language,
+                                transcription.prompt.as_deref(),
+                                transcription.smart_punctuation,
+                                transcriber::PreviewPass::Dictation(recording_id),
+                            );
+                            if dictation_partial_is_current_if_uncontended(
+                                &state.app_state,
+                                recording_id,
+                            ) {
+                                let mut reuse = state.app_state.preview_reuse.lock_or_recover();
+                                match committed {
+                                    Ok(text) => {
+                                        reuse.commit(recording_id, range, &reuse_samples, &text)
+                                    }
+                                    Err(_) => reuse.fail(recording_id),
+                                }
+                            }
+                        }
+                        #[cfg(feature = "preview-decode-reuse")]
+                        if !dictation_partial_is_current_if_uncontended(
+                            &state.app_state,
+                            recording_id,
+                        ) {
+                            return Err("Preview stopped".into());
+                        }
                         backend.transcribe_preview(
                             &window,
                             &transcription.language,
@@ -330,7 +391,15 @@ async fn decode_one_dictation_partial(
                         )
                     },
                 )
-                .map_err(|_| "decode_error")?
+                .map_err(|_| {
+                    #[cfg(feature = "preview-decode-reuse")]
+                    state
+                        .app_state
+                        .preview_reuse
+                        .lock_or_recover()
+                        .fail(recording_id);
+                    "decode_error"
+                })?
                 .ok_or("backend_unavailable")?;
             raw
         };
@@ -347,6 +416,14 @@ async fn decode_one_dictation_partial(
         Err(outcome) => (None, outcome),
     };
     let state = app.state::<State>();
+    #[cfg(feature = "preview-decode-reuse")]
+    if no_text_outcome == "decode_error" || no_text_outcome == "worker_failed" {
+        state
+            .app_state
+            .preview_reuse
+            .lock_or_recover()
+            .fail(recording_id);
+    }
     if let Some(text) = text {
         if dictation_partial_is_current(&state.app_state, recording_id) {
             let outcome = match app.emit_to(
@@ -2317,6 +2394,46 @@ fn transcribe_with_coreml_vad_retry_report(
     Ok(BackendTranscriptionAttempt { text, empty_error })
 }
 
+// With the feature absent this calls the pre-existing whole-clip decoder
+// with precisely the same PCM, settings, retry policy, and returned bytes.
+fn decode_final_transcript(
+    backend: &mut dyn transcriber::TranscriptionBackend,
+    transcription: &dictation_context::TranscriptionSettings,
+    filtered: &[f32],
+    original: &[f32],
+    vad_trimmed: bool,
+    #[cfg(feature = "preview-decode-reuse")] plan: Option<&crate::preview_reuse::FinalPlan>,
+) -> Result<BackendTranscriptionAttempt, String> {
+    #[cfg(feature = "preview-decode-reuse")]
+    if transcriber::is_coreml_model(&transcription.model_name) {
+        if let Some(plan) = plan {
+            if let Ok(tail) = backend.transcribe(
+                &original[plan.start..],
+                &transcription.language,
+                transcription.prompt.as_deref(),
+                transcription.smart_punctuation,
+            ) {
+                if let Some(text) = plan.stitch(&tail) {
+                    return Ok(BackendTranscriptionAttempt {
+                        text,
+                        empty_error: None,
+                    });
+                }
+            }
+        }
+    }
+    transcribe_with_coreml_vad_retry_report(
+        backend,
+        &transcription.model_name,
+        filtered,
+        original,
+        vad_trimmed,
+        &transcription.language,
+        transcription.prompt.as_deref(),
+        transcription.smart_punctuation,
+    )
+}
+
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
 /// `recording_id` is checked against `app_state.cancelled_id` at checkpoints;
 /// if cancelled, returns empty text without clipboard write or paste.
@@ -2452,15 +2569,31 @@ async fn run_transcription_pipeline(
         PreparationReason::Pipeline,
         |backend| {
             let decode_started = std::time::Instant::now();
-            let result = transcribe_with_coreml_vad_retry_report(
+            // Take only after acquiring the backend, so a preview already in
+            // flight has either finished or still owns its lease. In the latter
+            // case discard reuse rather than racing a late decode failure.
+            #[cfg(feature = "preview-decode-reuse")]
+            let reuse_plan = app_state
+                .preview_reuse
+                .lock_or_recover()
+                .take_final(recording_id, samples)
+                .filter(|_| {
+                    app_state
+                        .dictation_partial_in_flight_id
+                        .load(Ordering::SeqCst)
+                        == 0
+                });
+            let result = decode_final_transcript(
                 backend,
-                &transcription.model_name,
+                transcription,
                 &samples_for_transcription,
                 samples,
                 vad_trimmed,
-                &transcription.language,
-                transcription.prompt.as_deref(),
-                transcription.smart_punctuation,
+                #[cfg(feature = "preview-decode-reuse")]
+                reuse_plan.as_ref().filter(|_| {
+                    app_state.recording_id.load(Ordering::SeqCst) == recording_id
+                        && !app_state.is_cancelled(recording_id)
+                }),
             );
             decode_ms = decode_started.elapsed().as_millis() as u64;
             result
@@ -7159,6 +7292,13 @@ pub(crate) mod tests {
             self.responses
                 .pop_front()
                 .ok_or_else(|| "unexpected extra transcription attempt".to_string())
+                .and_then(|response| {
+                    if response == "__test_decode_failure__" {
+                        Err("synthetic decode failure".into())
+                    } else {
+                        Ok(response)
+                    }
+                })
         }
         fn token_count(&self, _text: &str) -> Option<usize> {
             None
@@ -7294,6 +7434,64 @@ pub(crate) mod tests {
             assert_eq!(parse_writing_style(Some(&value)), expected);
         }
         assert_eq!(parse_writing_style(None), None);
+    }
+
+    #[test]
+    #[cfg(feature = "preview-decode-reuse")]
+    fn final_reuse_is_authoritative_or_falls_back_to_the_identical_whole_clip() {
+        let samples = crate::preview_pause::tests::utterance(
+            &[(4_000, 2_000), (4_000, 2_000), (2_000, 0)],
+            -70.0,
+        );
+        let settings = dictation_context::TranscriptionSettings {
+            model_name: transcriber::COREML_MODEL_NAME.into(),
+            language: "auto".into(),
+            vad_sensitivity: 0,
+            prompt: None,
+            smart_punctuation: true,
+        };
+        for tail in [
+            "Next stable segment. Tail retained exactly.",
+            "Next stable segment, Tail retained exactly.",
+            "",
+            "__test_decode_failure__",
+        ] {
+            let mut reuse = crate::preview_reuse::PreviewReuse::default();
+            reuse.begin(1);
+            let range = reuse.plan(1, &samples[..6 * 16_000]).unwrap();
+            reuse.commit(1, range, &samples, "First stable segment.");
+            let range = reuse.plan(1, &samples[..12 * 16_000]).unwrap();
+            reuse.commit(
+                1,
+                range,
+                &samples,
+                "First stable segment. Next stable segment.",
+            );
+            let plan = reuse.take_final(1, &samples).unwrap();
+            let mut backend = RetryTestBackend::new(&[tail, "Whole clip authoritative result."]);
+            let result = decode_final_transcript(
+                &mut backend,
+                &settings,
+                &samples,
+                &samples,
+                false,
+                Some(&plan),
+            )
+            .unwrap();
+            if tail == "Next stable segment. Tail retained exactly." {
+                assert_eq!(
+                    result.text,
+                    "First stable segment. Next stable segment. Tail retained exactly."
+                );
+                assert_eq!(backend.sample_counts, [samples.len() - 68_800]);
+            } else {
+                assert_eq!(result.text, "Whole clip authoritative result.");
+                assert_eq!(
+                    backend.sample_counts,
+                    [samples.len() - 68_800, samples.len()]
+                );
+            }
+        }
     }
 
     #[test]

@@ -733,3 +733,48 @@ The ignored `first_word_standby_sweep` test renders synthetic `say -o` WAVs to
 disk, models a 204 ms cold start, and compares first-word recovery at speech
 onsets 0, 25, 50, and 100 ms after press. It does not measure live microphone
 startup or play through a virtual audio device.
+
+### Experimental final decode reuse (#830)
+
+Ordinary builds still run the whole-clip final decoder. The Cargo feature
+`preview-decode-reuse` is **off by default** and enables a Core ML-only
+experiment; it changes no persisted setting and does not affect imported files,
+Voice Query, Transform, Whisper, or CPU Parakeet. Enable only in a test build:
+`npx tauri build --debug --features preview-decode-reuse`.
+
+The pinned `fluidaudio-rs` revision exposes Parakeet's stateful
+`init_streaming_asr` / `streaming_asr_start` / `streaming_asr_feed` /
+`streaming_asr_finish` API. It is unsuitable for authoritative reuse today:
+FluidAudio 0.14.1 catches chunk-processing errors and resets its decoder, while
+the Rust bridge returns neither those errors nor per-chunk confidence. Murmur
+cannot prove complete coverage or trigger the required fallback through that
+API. See upstream `SlidingWindowAsrManager.processWindow` and
+`attemptErrorRecovery`, and the bridge's `streamingAsrFinish`.
+
+Instead, the experimental ticker snapshots retained 16 kHz PCM from offset zero
+and uses Hex's adaptive 20 ms pause detector (MIT notice in
+`THIRD_PARTY_NOTICES.md`). It decodes pause-delimited pieces only after one
+additional second of audio. Each piece includes the previous piece as overlap;
+case, punctuation, and the word boundary must agree exactly before the earlier
+text is retained. The display-only trailing-window decode continues separately;
+this deliberately adds work during recording rather than inferring token times
+from the preview string. At release the final pipeline re-decodes the last
+committed piece plus remaining audio and validates the same exact overlap.
+Only that result enters normal transforms and exactly-once delivery.
+
+Missing pauses, overlaps shorter than three words, changed PCM, failed decodes,
+changed overlap text, more than 20 seconds in an inference piece, or recordings
+over ten minutes prevent reuse and fall back to the existing whole-clip decoder
+(including its VAD-empty retry). Final VAD still runs first. Reuse state belongs
+to one recording generation, is consumed at most once, and is cleared with that
+recording's context. Late workers cannot commit into a newer session. Audio and
+text remain in process memory; reuse adds no transcript logs or persistence.
+
+A local ignored test, `synthetic_preview_reuse_probe`, replays file-rendered
+`say` WAVs through the actual Core ML backend and final selector. It accepts a
+JSON manifest of `{id, wav, reference}` rows via
+`MURMUR_REUSE_SYNTHETIC_MANIFEST`, writes private raw results only to
+`MURMUR_REUSE_SYNTHETIC_OUTPUT`, and measures three alternating-order final-ASR
+trials per clip. Score the private text with `scripts/murmur_accuracy.py`.
+These are final-decode timings after replay, not native release-to-paste timing;
+full native capture and the personal accuracy corpus remain separate evidence.

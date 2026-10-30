@@ -28,6 +28,8 @@ llm-test-support = []
 # Private corpus capture/replay tools. Off by default: production builds do not
 # compile the corpus command module or register its IPC surface.
 internal-benchmark = []
+# Experimental Core ML decode reuse; ordinary builds retain whole-clip final ASR.
+preview-decode-reuse = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

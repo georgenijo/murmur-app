@@ -65,6 +65,10 @@ mod model_hardware_guidance;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
+#[cfg(feature = "preview-decode-reuse")]
+mod preview_pause;
+#[cfg(feature = "preview-decode-reuse")]
+mod preview_reuse;
 mod query_adapter;
 mod query_capabilities;
 mod query_flow;
