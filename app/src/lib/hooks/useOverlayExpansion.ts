@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { flog } from '../log';
-import type { OverlayContent } from '../overlayGeometry';
+import type { OverlayActivity, OverlayContent, OverlayPlacement } from '../overlayGeometry';
 import {
   COLLAPSE_DELAY_MS,
   HOVER_OPEN_DWELL_MS,
@@ -85,9 +85,13 @@ const SUPERSEDED = Symbol('overlay-surface-superseded');
 export function useOverlayExpansion({
   forcedOpen = false,
   content = 'controls',
+  activity,
+  placement,
 }: {
   forcedOpen?: boolean;
   content?: OverlayContent;
+  activity?: OverlayActivity;
+  placement?: OverlayPlacement;
 } = {}): OverlayExpansion {
   const [phase, setPhase] = useState<OverlayPhase>('collapsed');
 
@@ -110,6 +114,8 @@ export function useOverlayExpansion({
   const wasForcedOpenRef = useRef(false);
   contentRef.current = content;
   forcedOpenRef.current = forcedOpen;
+  const layoutRef = useRef({ activity, placement });
+  layoutRef.current = { activity, placement };
 
   // Inputs mirrored into refs for the always-on poller / async callbacks.
   const visibleRef = useRef(true); // default visible on mount, matches show_overlay ordering
@@ -152,6 +158,7 @@ export function useOverlayExpansion({
   const applyIfLatest = useCallback(async (
     gen: number,
     collapseAttempt = 0,
+    deferShrink = false,
   ): Promise<AppliedSurface | typeof SUPERSEDED> => {
     if (!mountedRef.current) return SUPERSEDED; // no post-unmount IPC
     if (gen !== genRef.current) return SUPERSEDED; // superseded while queued — skip resize
@@ -161,6 +168,9 @@ export function useOverlayExpansion({
         invoke<AppliedSurface>('set_overlay_expanded', {
           expanded: desiredExpanded,
           content: contentRef.current,
+          ...(layoutRef.current.activity ? { activity: layoutRef.current.activity } : {}),
+          ...(layoutRef.current.placement ? { placement: layoutRef.current.placement } : {}),
+          ...(deferShrink ? { deferShrink: true } : {}),
         }),
       );
       if (gen !== genRef.current) return SUPERSEDED; // a newer request will reconcile
@@ -176,7 +186,7 @@ export function useOverlayExpansion({
           error: String(err),
         });
         await new Promise<void>((resolve) => { setTimeout(resolve, delay); });
-        return applyIfLatest(gen, collapseAttempt + 1);
+        return applyIfLatest(gen, collapseAttempt + 1, deferShrink);
       }
       flog.warn('overlay', 'set_overlay_expanded failed', {
         expanded: desiredExpanded,
@@ -190,14 +200,40 @@ export function useOverlayExpansion({
 
   // Enqueue a resize to the latest desired surface. A newer request supersedes any
   // queued or in-flight older one; stale acks are dropped by the generation guard.
-  const pushSurface = useCallback((expanded: boolean) => {
+  const pushSurface = useCallback((expanded: boolean, deferShrink = false) => {
     desiredRef.current = expanded;
     const gen = ++genRef.current;
-    chainRef.current = chainRef.current.then(
-      () => applyIfLatest(gen),
-      () => applyIfLatest(gen),
+    const pending = chainRef.current.then(
+      () => applyIfLatest(gen, 0, deferShrink),
+      () => applyIfLatest(gen, 0, deferShrink),
     );
+    chainRef.current = pending;
+    return pending;
   }, [applyIfLatest]);
+
+  // Activity/placement use the SAME acknowledged writer as hover, never a
+  // second effect issuing competing native resizes. Hidden changes are replayed
+  // on show; they do not wake a hidden webview or grow an invisible hit target.
+  useEffect(() => {
+    if (activity === undefined && placement === undefined || !visibleRef.current) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deferShrink = !reducedMotionRef.current;
+    const pending = pushSurface(desiredRef.current, deferShrink);
+    const generation = genRef.current;
+    void pending.then((applied) => {
+      if (!deferShrink || applied === SUPERSEDED || cancelled) return;
+      // The first ack publishes the target geometry but retains larger native
+      // bounds while CSS contracts. One settled request removes that temporary
+      // hit area. It is serialized and generation-guarded like every hover RPC.
+      timer = setTimeout(() => {
+        if (!cancelled && mountedRef.current && visibleRef.current && generation === genRef.current) {
+          void pushSurface(desiredRef.current);
+        }
+      }, SHRINK_DELAY_MS);
+    });
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [activity, placement, pushSurface]);
 
   // --- Timer helpers --------------------------------------------------------
 
@@ -327,6 +363,8 @@ export function useOverlayExpansion({
         pushSurface(false);
       } else if (forcedOpenRef.current) {
         open();
+      } else if (layoutRef.current.activity || layoutRef.current.placement) {
+        pushSurface(false);
       }
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }

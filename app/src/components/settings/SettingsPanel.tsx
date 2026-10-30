@@ -341,6 +341,9 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'ai-transform', target: 'transform-practice', title: 'Transform practice', detail: 'Try the transform shortcut locally', keywords: 'rewrite test' },
   { page: 'meetings', target: 'meeting-calendar', title: 'Calendar suggestion access', detail: 'Manage permission for meeting suggestions', keywords: 'calendar settings permission' },
   { page: 'meetings', target: 'meeting-echo-cancellation', title: 'Reduce speaker echo', detail: 'Experimental meeting echo removal', keywords: 'audio processing' },
+  { page: 'general', target: 'overlay-placement', title: 'Recording overlay', detail: 'Notch island or below-menu-bar pill', keywords: 'placement external display pretend notch' },
+  { page: 'general', target: 'overlay-live-words', title: 'Live words', detail: 'Ephemeral provisional words while recording', keywords: 'preview transcript island' },
+  { page: 'general', target: 'overlay-processing-style', title: 'Processing animation', detail: 'Sweep, Flow, or Pulse in the dot field', keywords: 'overlay animation' },
   { page: 'general', target: 'reset-statistics', title: 'Reset statistics', detail: 'Reset local usage counters', keywords: 'stats clear' },
   { page: 'recording', target: 'microphone', title: 'Microphone', detail: 'Choose an input and check its live level', keywords: 'audio input device test level gain' },
   { page: 'recording', target: 'voice-detection', title: 'Voice detection', detail: 'Adjust silence filtering sensitivity', keywords: 'vad sensitivity noise silence' },
@@ -1613,7 +1616,18 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <p className="text-xs text-on-surface-variant">Return to Home and revisit Get more from Murmur.</p>
               </div>
             )}
+            <SettingsRow targetId="overlay-placement" title="Recording overlay" description="External displays use a pretend notch for the island"
+              onReset={settings.overlayPlacement !== DEFAULT_SETTINGS.overlayPlacement ? () => onUpdateSettings({ overlayPlacement: DEFAULT_SETTINGS.overlayPlacement }) : undefined}
+              control={<Select aria-label="Recording overlay placement" value={settings.overlayPlacement}
+                onChange={(overlayPlacement) => onUpdateSettings({ overlayPlacement })}
+                items={[{ value: 'notch', label: 'Notch island' }, { value: 'below_menu_bar', label: 'Below-menu-bar pill' }]} />} />
+            <SettingToggle targetId="overlay-live-words" title="Live words" description="Show provisional words below the island only while recording; never copied, saved, or logged" checked={settings.overlayLiveWords} defaultChecked={DEFAULT_SETTINGS.overlayLiveWords} onChange={() => onUpdateSettings({ overlayLiveWords: !settings.overlayLiveWords })} />
             <SettingsDisclosure title="Advanced" layout="stack">
+              <SettingsRow targetId="overlay-processing-style" title="Processing animation"
+                onReset={settings.overlayProcessingStyle !== DEFAULT_SETTINGS.overlayProcessingStyle ? () => onUpdateSettings({ overlayProcessingStyle: DEFAULT_SETTINGS.overlayProcessingStyle }) : undefined}
+                control={<Select aria-label="Processing animation" value={settings.overlayProcessingStyle}
+                  onChange={(overlayProcessingStyle) => onUpdateSettings({ overlayProcessingStyle })}
+                  items={[{ value: 'sweep', label: 'Sweep' }, { value: 'flow', label: 'Flow' }, { value: 'pulse', label: 'Pulse' }]} />} />
               <OverlayCalibrationControl
                 targetId="overlay-calibration"
                 offset={settings.overlayVerticalOffset}

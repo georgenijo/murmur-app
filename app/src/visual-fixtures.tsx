@@ -47,8 +47,7 @@ import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } fro
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, OPENCODE_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
-import { OverlayMeetingSuggestion } from './components/overlay/OverlayMeetingSuggestion';
-import overlayGeometryFixture from './components/overlay/overlay-geometry.fixture.json';
+import { VoiceIslandFixture } from './visual-fixtures/VoiceIslandFixture';
 import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
@@ -867,14 +866,13 @@ function UpdateFlowFixture() {
   );
 }
 
-/** Live dictation preview card over a stand-in desktop, at the real window
- *  width (460pt) so the wrapping matches what ships. */
+/** Synthetic live words at the native 560pt window width, not dictation proof. */
 function DictationPreviewFixture() {
   const text = query.get('text')
     ?? 'Okay, um, one thing I want to clear up is why is it showing me a snippet of my prompt';
   return (
     <div className="flex min-h-screen items-start justify-center bg-[#6b6fae] pt-6">
-      <div style={{ width: 460 }}>
+      <div style={{ width: 560 }}>
         <DictationPreviewCard text={text} />
       </div>
     </div>
@@ -882,45 +880,7 @@ function DictationPreviewFixture() {
 }
 
 function MeetingSuggestionOverlayFixture() {
-  const geometry = overlayGeometryFixture.meetingSuggestionNotched;
-  return (
-    <div
-      data-visual-ready="true"
-      data-fixture-synthetic="meeting-suggestion"
-      className="flex min-h-screen items-start justify-center bg-[radial-gradient(circle_at_top,#526274,#20252c_70%)] pt-8"
-    >
-      <div
-        className="overlay-island overflow-hidden text-on-surface shadow-2xl"
-        style={{
-          width: geometry.windowW,
-          height: geometry.expandedH,
-          borderRadius: '0 0 12px 12px',
-          background: 'rgba(20, 20, 20, 0.92)',
-          backdropFilter: 'blur(40px)',
-        }}
-      >
-        <div className="flex items-center justify-between px-3" style={{ height: geometry.collapsedH }}>
-          <span className="h-2 w-2 rounded-full bg-on-surface/40" aria-hidden="true" />
-          <span className="text-[9px] font-medium uppercase tracking-wider text-on-surface/35">Murmur</span>
-          <span className="h-2 w-2" aria-hidden="true" />
-        </div>
-        <OverlayMeetingSuggestion
-          geometry={geometry}
-          expanded
-          suggestion={{
-            token: '88888888-8888-4888-8888-888888888888',
-            title: 'Synthetic calendar: Product review',
-            startMs: 1,
-            endMs: 2,
-          }}
-          busy={false}
-          error={null}
-          onAccept={() => {}}
-          onDismiss={() => {}}
-        />
-      </div>
-    </div>
-  );
+  return <VoiceIslandFixture meetingOnly />;
 }
 
 /** Render production primitives for browser-computed measurements, never
@@ -1006,6 +966,8 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       </div>
     ) : requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
+    ) : requestedState === 'voice-island' ? (
+      <VoiceIslandFixture />
     ) : requestedState === 'dictation-preview' ? (
       <DictationPreviewFixture />
     ) : requestedState === 'overlay-meeting-suggestion' ? (

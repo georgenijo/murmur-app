@@ -214,6 +214,7 @@ pub(crate) struct State {
     /// Last native overlay frame accepted by WindowServer-facing setters. The
     /// click-through dictation preview follows this actual frame.
     pub(crate) overlay_frame: Mutex<Option<commands::overlay::OverlayFrame>>,
+    pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
     /// The selection-bounds anchor from the most recent `show_transform_popover`
     /// call, so `set_transform_popover_expanded` can resize/reposition for a
     /// new size class without the caller re-supplying the anchor.
@@ -321,6 +322,7 @@ pub fn run() {
             display_snapshot: Mutex::new(None),
             overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
             overlay_frame: Mutex::new(None),
+            overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
             transform_popover_anchor: Mutex::new(None),
             transform_main_was_visible: Mutex::new(None),
             transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),

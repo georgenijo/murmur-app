@@ -379,6 +379,13 @@ commercial use, without a fee. Refer to the package when you modify the code.
 
 ## Hex
 
+The voice island adapts Hex's `dot_scope.rs` auto-level/constants, closed-form
+spring behavior and HUD geometry/placement from `rune_hud.rs` and
+`hud_placement.rs` at `a07f994`. Murmur's bounded Canvas2D simulation and batched
+painter are its own implementation, not Hex's GPU/nearest-segment renderer.
+The full MIT notice below applies to these adaptations, including
+`app/src/components/overlay/{spring,dotScope}.ts` and native overlay geometry.
+
 Settings folding and Advanced disclosure behavior adapts `src/rune_ui/controls.rs` (`folds`, `CardRow::Folding`) and `general.rs`, `labs.rs`, `sound_sets.rs` at `a07f994`. Visual measurements remain the T3 Code contracts.
 
 Murmur’s UI copy and interaction rules follow Hex’s `docs/design-system.md:24–131` at `a07f994`.

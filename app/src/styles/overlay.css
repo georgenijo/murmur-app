@@ -1,0 +1,62 @@
+/* The island is deliberately black, independent of the active theme. */
+.overlay-field-slot {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.overlay-dot-field { display: block; flex-shrink: 0; }
+.overlay-status-row[data-field-active] > * { visibility: hidden; }
+.overlay-island[data-floating] .overlay-status-row:not([data-field-active]) {
+  justify-content: center;
+}
+.overlay-island[data-floating] .overlay-status-row:not([data-field-active]) > .flex-1 {
+  flex: 0;
+}
+.live-words-window {
+  width: 100%;
+  height: 44px;
+  user-select: none;
+  pointer-events: none;
+}
+.live-words-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  width: 100%;
+  padding: 0 14px;
+  border: 0.5px solid color-mix(in srgb, var(--murmur-on-surface) 14%, transparent);
+  border-radius: 16px;
+  background: var(--murmur-surface-container-lowest);
+  color: var(--murmur-on-surface);
+  font-family: var(--ui-font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: 0;
+  overflow: hidden;
+}
+.live-words-stable {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  justify-content: flex-end;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.live-words-stable > span { flex-shrink: 0; }
+.live-words-tentative {
+  min-width: 0;
+  flex: 0 1 auto;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.live-words-stable + .live-words-tentative { max-width: 45%; }
+@media (prefers-reduced-motion: reduce) {
+  .overlay-island { transition: opacity 160ms ease-out !important; }
+}

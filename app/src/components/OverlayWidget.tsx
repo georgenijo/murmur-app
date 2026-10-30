@@ -5,14 +5,14 @@ import { flog } from '../lib/log';
 import { useOverlayRecordingStatus } from '../lib/hooks/useOverlayRecordingStatus';
 import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
 import { useOverlayExpansion } from '../lib/hooks/useOverlayExpansion';
+import { useOverlayDone } from '../lib/hooks/useOverlayDone';
 import { useOverlayRuntime } from '../lib/hooks/useOverlayRuntime';
 import { useOverlaySettingsMirror } from '../lib/hooks/useOverlaySettingsMirror';
 import { useRecordingControls } from '../lib/hooks/useRecordingControls';
-import { useWaveform } from '../lib/hooks/useWaveform';
+import { OverlayIsland } from './overlay/OverlayIsland';
 import { useModeRuntime } from '../lib/hooks/useModeRuntime';
 import { useAudioInputInventory } from '../lib/hooks/useAudioInputInventory';
 import { useSmartAutoMicrophoneStatus } from '../lib/hooks/useSmartAutoMicrophoneStatus';
-import { OVERLAY_ISLAND_TRANSITION } from '../lib/overlayMotion';
 import { deriveVisual } from './overlay/deriveVisual';
 import { OverlayPill } from './overlay/OverlayPill';
 import { OverlayDropdown } from './overlay/OverlayDropdown';
@@ -100,10 +100,15 @@ export function OverlayWidget() {
   // The expansion controller owns the entire expand/collapse + surface lifecycle:
   // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
   // the single cursor poller. It is the only writer to the native resize path.
+  const showDone = useOverlayDone(status);
+  const cueActive = calibrating || transforming || meetingBusy || runtime.deliveryCue !== null
+    || runtime.showCancelled || runtime.showHotkeyMiss || runtime.showSecureField
+    || runtime.showTransformBusy || runtime.showMicrophoneFailure !== null;
+  const activity = status === 'recording' ? 'recording'
+    : status !== 'idle' || showDone || cueActive ? 'processing' : 'idle';
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
-    useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent });
-
-  const waveform = useWaveform(status);
+    useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent,
+      activity, placement: settingsMirror.overlayPlacement });
   const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({
@@ -215,18 +220,6 @@ export function OverlayWidget() {
   // null before geometry arrives (~1 IPC round-trip after mount) paints nothing
   // rather than TS fallback pixels — no mis-sized flash, no fallback constants.
   if (!geometry) return null;
-  const topH = geometry.collapsedH;
-  // Only the genuinely off/idle surface tucks the empty right wing beneath the
-  // notch. Recording and processing keep the full top bar even without hover so
-  // their right-side indicators never disappear.
-  const compactIdle = status === 'idle'
-    && !meetingBusy
-    && !expanded
-    && !calibrating
-    && !showMeetingSuggestion
-    && runtime.deliveryCue === null;
-  const pillW = compactIdle ? geometry.pillIdleW : geometry.pillActiveW;
-  const pillMargin = compactIdle ? geometry.pillMarginIdle : geometry.pillMarginActive;
 
   return (
     <div
@@ -236,39 +229,25 @@ export function OverlayWidget() {
       {/* Dynamic Island: top bar matches notch height; hover expands it downward
           to reveal the quick-settings dropdown. Idle/recording only changes the
           top bar — the dropdown row is identical. */}
-      <div
+      <OverlayIsland
         ref={islandRef}
-        className="overlay-island cursor-pointer select-none overflow-hidden"
+        geometry={geometry}
+        expanded={expanded}
+        active={activity !== 'idle'}
+        tapMissed={visual.showTapMissedLabel}
         onMouseDown={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleMouseDown}
         onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
         onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
         onMouseEnter={calibrating ? undefined : onHoverStart}
         onMouseMove={calibrating ? undefined : onHoverStart}
         onMouseLeave={calibrating ? undefined : onHoverEnd}
-        style={{
-          position: 'relative',
-          borderRadius: geometry.floating ? 14 : '0 0 12px 12px',
-          // Left anchored: idle tucks only the empty right wing beneath the
-          // notch; hover grows that edge back to the full active rectangle.
-          width: pillW,
-          height: topH + (expanded ? geometry.dropdownH : 0),
-          marginLeft: pillMargin,
-          background: 'rgba(20, 20, 20, 0.92)',
-          // Inset only: the native window is exactly the island's size, so an
-          // outer shadow is clipped to a hard rectangle at its rounded corners.
-          boxShadow: visual.showTapMissedLabel
-            ? 'inset 0 -2px 0 rgba(245,158,11,0.9)'
-            : 'none',
-          backdropFilter: 'blur(40px)',
-          WebkitBackdropFilter: 'blur(40px)',
-          transition: OVERLAY_ISLAND_TRANSITION,
-        }}
       >
         <OverlayPill
           geometry={geometry}
           visual={visual}
           status={status}
-          barRefs={waveform.barRefs}
+          scopeStage={showDone ? 'done' : undefined}
+          processingStyle={settingsMirror.overlayProcessingStyle}
           smartAutoSummary={smartAutoSummary}
           deliveryCue={runtime.deliveryCue}
           onRetryDelivery={runtime.retryDelivery}
@@ -307,7 +286,7 @@ export function OverlayWidget() {
             onOpenSettings={settingsMirror.handleOpenSettings}
           />
         )}
-      </div>
+      </OverlayIsland>
     </div>
   );
 }

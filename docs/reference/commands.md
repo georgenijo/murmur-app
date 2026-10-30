@@ -422,10 +422,10 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `get_overlay_geometry` | — | `OverlayGeometry` | The geometry contract (window/pill/dropdown boxes) derived from the cached notch by `geometry_for()`. Never null — a synthetic fallback notch substitutes when none is detected. |
+| `get_overlay_geometry` | `content?: OverlayContent` | `OverlayGeometry` | Current native activity/placement/content contract from `geometry_for_layout()`, including mandatory island metrics. Never null; a 185pt pretend notch substitutes on flat/unmeasured displays. |
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
-| `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes between collapsed and expanded frames (top-anchored) and returns the applied frame, so CSS never animates into a window that hasn't grown yet. |
+| `set_overlay_expanded` | `expanded: bool`, `content?: OverlayContent`, `activity?: OverlayActivity`, `placement?: OverlayPlacement`, `defer_shrink?: bool` | `Result<AppliedSurface, String>` | Single acknowledged native surface writer. Applies layout on the main thread, publishes target `overlay-surface-changed` after successful setters, and returns actual bounds. `defer_shrink` retains larger old bounds during contraction; a later exact request releases the temporary hit area. Activity is idle/recording/processing; placement is notch/below_menu_bar. |
 | `set_overlay_vertical_offset` | `offset: f64` | `Result<AppliedOverlayPosition, String>` | Clamps calibration to the current display/window's effective range within ±12 logical points, moves the native overlay, retains the session offset across native placement refreshes, and returns requested/applied offsets plus effective bounds. Durable persistence still occurs only on Save and inactive Reset. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
 
