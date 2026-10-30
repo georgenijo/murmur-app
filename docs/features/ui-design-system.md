@@ -29,6 +29,11 @@ failure.
 
 ## Shared primitives
 
+`components/ui/AppSurface.tsx` owns the sans stack at the main, onboarding,
+and Diagnostics roots. It resolves `--ui-font-sans` directly so an old font
+utility cannot override the application stack. Nested code still uses the
+explicit mono token. Home controls retain the shared 8px radius.
+
 `components/ui/WindowHeader.tsx` owns the native-overlay title bar. It reserves
 the macOS traffic-light inset and fixes the height and typography used by the
 main window, onboarding, and Settings editors. Production never renders fake
