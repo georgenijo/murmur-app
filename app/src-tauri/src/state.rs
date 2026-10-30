@@ -845,13 +845,19 @@ mod tests {
         use std::time::Duration;
         let five = Some(Duration::from_secs(5 * 60));
         assert_eq!(ModelIdlePolicy::default().release_after(|| true), five);
-        assert_eq!(ModelIdlePolicy::from_setting(0).release_after(|| false), None);
+        assert_eq!(
+            ModelIdlePolicy::from_setting(0).release_after(|| false),
+            None
+        );
         assert_eq!(
             ModelIdlePolicy::from_setting(15).release_after(|| true),
             Some(Duration::from_secs(15 * 60))
         );
         for unknown in [-2, 1, 7, 60, i64::MAX] {
-            assert_eq!(ModelIdlePolicy::from_setting(unknown), ModelIdlePolicy::default());
+            assert_eq!(
+                ModelIdlePolicy::from_setting(unknown),
+                ModelIdlePolicy::default()
+            );
         }
         let on_power = ModelIdlePolicy::from_setting(-1);
         assert_eq!(on_power, ModelIdlePolicy::NeverOnExternalPower);

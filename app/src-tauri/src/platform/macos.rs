@@ -67,11 +67,11 @@ pub(super) fn on_external_power() -> bool {
     if snapshot.is_null() {
         return false;
     }
-    // The providing type follows the Get rule; copy it before releasing the
-    // snapshot that owns it.
+    // The providing type follows the Get rule; retain it only while comparing,
+    // before releasing the snapshot that owns it.
     let source = unsafe { IOPSGetProvidingPowerSourceType(snapshot) };
-    let external = !source.is_null()
-        && unsafe { CFString::wrap_under_get_rule(source) }.to_string() == AC_POWER_SOURCE;
+    let external =
+        !source.is_null() && unsafe { CFString::wrap_under_get_rule(source) } == AC_POWER_SOURCE;
     unsafe { CFRelease(snapshot) };
     external
 }
