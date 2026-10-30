@@ -381,6 +381,26 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Editor');
   });
 
+  it.each([false, true])('resets changed Auto-paste and respects file output=%s', async (saveTranscript) => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: false }, { page: 'delivery', token: 1 }));
+    expect(container.querySelector('[data-setting-target="auto-paste"] [aria-label="Reset to default"]')).toBeNull();
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true, saveTranscript }, { page: 'delivery', token: 1 }));
+    const row = container.querySelector('[data-setting-target="auto-paste"]')!;
+    const reset = row.querySelector<HTMLButtonElement>('[aria-label="Reset to default"]');
+    if (saveTranscript) {
+      const toggle = row.querySelector<HTMLElement>('[role="switch"]')!;
+      expect(toggle.getAttribute('aria-disabled')).toBe('true');
+      await act(async () => toggle.click());
+      expect(!reset || reset.disabled).toBe(true);
+      expect(onUpdateSettings).not.toHaveBeenCalled();
+    } else {
+      expect(reset).not.toBeNull();
+      expect(reset!.disabled).toBe(false);
+      await act(async () => reset!.click());
+      expect(onUpdateSettings).toHaveBeenCalledExactlyOnceWith({ autoPaste: false });
+    }
+  });
+
   it.each(['keyboard', 'assistive'])('persists and labels Paste Delay changes from %s input', async (input) => {
     let persistedSettings = { ...DEFAULT_SETTINGS, autoPaste: true };
     onUpdateSettings.mockImplementation((patch: Partial<Settings>) => {

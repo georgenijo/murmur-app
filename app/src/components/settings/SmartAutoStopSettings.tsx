@@ -1,3 +1,4 @@
+import { DEFAULT_SETTINGS } from '../../lib/settings';
 import { SettingsRow } from './SettingsRow';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useState } from 'react';
@@ -69,7 +70,7 @@ export function SmartAutoStopSettings({
 
   return (
     <div data-setting-target="smart-auto-stop" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <SettingsRow title="Smart Auto-Stop (experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." disabled={isRecording || (!enabled && !silenceAutoStopOn)} control={<AnimatedSwitch
+      <SettingsRow title="Smart Auto-Stop (experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." onReset={enabled !== DEFAULT_SETTINGS.smartAutoStopEnabled ? () => onEnabledChange(DEFAULT_SETTINGS.smartAutoStopEnabled) : undefined} disabled={isRecording || (!enabled && !silenceAutoStopOn)} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={isRecording || (!enabled && !silenceAutoStopOn)}

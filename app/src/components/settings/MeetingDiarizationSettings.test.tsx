@@ -67,6 +67,19 @@ describe('MeetingDiarizationSettings', () => {
     expect(onEnabledChange).toHaveBeenCalledWith(true);
   });
 
+  it.each([true, false])('resets remote-speaker labeling through its owner and respects supported=%s', async (supported) => {
+    meetingMocks.getStatus.mockResolvedValue({ supported, installed: false, installing: false, bytes: 21_599_417 });
+    const onEnabledChange = vi.fn();
+    await act(async () => root.render(<MeetingDiarizationSettings enabled={false} onEnabledChange={onEnabledChange} />));
+    expect(container.querySelector('[aria-label="Reset to default"]')).toBeNull();
+    await act(async () => root.render(<MeetingDiarizationSettings enabled onEnabledChange={onEnabledChange} />));
+    const reset = container.querySelector<HTMLButtonElement>('[aria-label="Reset to default"]')!;
+    expect(reset.disabled).toBe(!supported);
+    await act(async () => reset.click());
+    if (supported) expect(onEnabledChange).toHaveBeenCalledExactlyOnceWith(false);
+    else expect(onEnabledChange).not.toHaveBeenCalled();
+  });
+
   it('downloads with correlated progress and can remove the installed model', async () => {
     meetingMocks.getStatus
       .mockResolvedValueOnce({ supported: true, installed: false, installing: false, bytes: 21_599_417 })

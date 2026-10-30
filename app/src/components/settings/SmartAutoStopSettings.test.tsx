@@ -52,3 +52,16 @@ it.each(['ready', 'notDownloaded'] as const)('refreshes a remounted in-flight do
   await act(async () => root.render(null));
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([false, true])('resets changed Smart Auto-Stop through its owner and respects recording=%s', async (isRecording) => {
+  mocks.status.mockResolvedValue({ state: 'notDownloaded', sizeBytes: 8679182 });
+  const onEnabledChange = vi.fn();
+  await act(async () => root.render(<SmartAutoStopSettings enabled={false} silenceAutoStopOn isRecording={isRecording} onEnabledChange={onEnabledChange} />));
+  expect(container.querySelector('[aria-label="Reset to default"]')).toBeNull();
+  await act(async () => root.render(<SmartAutoStopSettings enabled silenceAutoStopOn isRecording={isRecording} onEnabledChange={onEnabledChange} />));
+  const reset = container.querySelector<HTMLButtonElement>('[aria-label="Reset to default"]')!;
+  expect(reset.disabled).toBe(isRecording);
+  await act(async () => reset.click());
+  if (isRecording) expect(onEnabledChange).not.toHaveBeenCalled();
+  else expect(onEnabledChange).toHaveBeenCalledExactlyOnceWith(false);
+});
