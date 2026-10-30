@@ -58,7 +58,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
 
     command = ["cargo", "test", "--release"]
-    if args.corpus == "personal":
+    if args.corpus in ("personal", "accuracy"):
         command.extend(["--features", "internal-benchmark"])
     command.extend(
         [
@@ -82,7 +82,12 @@ def run_benchmark(args: argparse.Namespace) -> int:
         corpus_dir = args.corpus_dir.expanduser().resolve()
         if not corpus_dir.is_absolute():
             raise ValueError("--corpus-dir must resolve to an absolute path")
-        environment["MURMUR_BENCH_CORPUS_DIR"] = str(corpus_dir)
+        corpus_variable = (
+            "MURMUR_ACCURACY_CORPUS_DIR"
+            if args.corpus == "accuracy"
+            else "MURMUR_BENCH_CORPUS_DIR"
+        )
+        environment[corpus_variable] = str(corpus_dir)
 
     started_at = dt.datetime.now(dt.timezone.utc)
     print(f"Running {args.corpus} {args.preset} benchmark -> {output}", flush=True)
@@ -476,7 +481,7 @@ def parser() -> argparse.ArgumentParser:
     run = subcommands.add_parser("run", help="run one release-mode benchmark")
     run.add_argument("--repo", type=Path, default=REPO_ROOT)
     run.add_argument("--output", type=Path)
-    run.add_argument("--corpus", choices=("personal", "bundled"), default="personal")
+    run.add_argument("--corpus", choices=("personal", "bundled", "accuracy"), default="personal")
     run.add_argument("--corpus-dir", type=Path)
     run.add_argument("--preset", choices=("quick", "standard", "thorough"), default="standard")
     run.add_argument("--models", help="comma-separated model IDs; default: all installed")

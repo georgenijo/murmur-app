@@ -26,9 +26,12 @@
 //!   as installed on this machine.
 //! - `MURMUR_BENCH_PRESET` (optional): `quick` | `standard` | `thorough`.
 //!   Defaults to `standard`.
-//! - `MURMUR_BENCH_CORPUS` (optional): `bundled` | `personal`. Personal
-//!   requires `--features internal-benchmark`. Defaults to `bundled`.
+//! - `MURMUR_BENCH_CORPUS` (optional): `bundled` | `personal` | `accuracy`.
+//!   Personal and accuracy require `--features internal-benchmark`. Defaults
+//!   to `bundled`.
 //! - `MURMUR_BENCH_CORPUS_DIR` (optional): absolute personal corpus v1 path.
+//! - `MURMUR_ACCURACY_CORPUS_DIR` (optional): absolute accuracy corpus path
+//!   (see `scripts/murmur_accuracy.py`).
 
 use std::path::PathBuf;
 use ui_lib::benchmark::{
@@ -40,12 +43,14 @@ fn parse_corpus(value: Option<&str>) -> Result<BenchmarkCorpusSource, String> {
         None | Some("bundled") => Ok(BenchmarkCorpusSource::Bundled),
         #[cfg(feature = "internal-benchmark")]
         Some("personal") => Ok(BenchmarkCorpusSource::Personal),
+        #[cfg(feature = "internal-benchmark")]
+        Some("accuracy") => Ok(BenchmarkCorpusSource::Accuracy),
         #[cfg(not(feature = "internal-benchmark"))]
-        Some("personal") => {
-            Err("MURMUR_BENCH_CORPUS=personal requires --features internal-benchmark".to_string())
-        }
+        Some(source @ ("personal" | "accuracy")) => Err(format!(
+            "MURMUR_BENCH_CORPUS={source} requires --features internal-benchmark"
+        )),
         Some(other) => Err(format!(
-            "Unknown MURMUR_BENCH_CORPUS '{other}' (expected bundled|personal)"
+            "Unknown MURMUR_BENCH_CORPUS '{other}' (expected bundled|personal|accuracy)"
         )),
     }
 }
@@ -160,8 +165,15 @@ fn corpus_env_var_defaults_to_bundled() {
         parse_corpus(Some("personal")),
         Ok(BenchmarkCorpusSource::Personal)
     );
+    #[cfg(feature = "internal-benchmark")]
+    assert_eq!(
+        parse_corpus(Some("accuracy")),
+        Ok(BenchmarkCorpusSource::Accuracy)
+    );
     #[cfg(not(feature = "internal-benchmark"))]
     assert!(parse_corpus(Some("personal")).is_err());
+    #[cfg(not(feature = "internal-benchmark"))]
+    assert!(parse_corpus(Some("accuracy")).is_err());
     assert!(parse_corpus(Some("bogus")).is_err());
 }
 
