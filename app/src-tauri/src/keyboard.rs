@@ -1164,10 +1164,19 @@ fn promoted_hold_stops_recording(over_recording: bool, event_type: &EventType) -
     !(over_recording && matches!(event_type, EventType::KeyPress(_)))
 }
 
+/// Only a key release is a release; a chord press that ends the hold also
+/// publishes `hold-down-stop` but must not enter the release metric.
+fn is_hold_release(event_type: &EventType) -> bool {
+    matches!(event_type, EventType::KeyRelease(_))
+}
+
 /// Stamp the native release behind a `hold-down-stop` for the live recording
 /// generation, so the stop can time the hotkey-to-invoke hop (#826).
-fn stamp_hold_release(handle: &tauri::AppHandle) {
+fn stamp_hold_release(handle: &tauri::AppHandle, event_type: &EventType) {
     let released_at = Instant::now();
+    if !is_hold_release(event_type) {
+        return;
+    }
     if let Some(state) = handle.try_state::<crate::State>() {
         crate::hotkey_release::record(
             state.app_state.recording_id.load(Ordering::SeqCst),
@@ -1934,7 +1943,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     let _ = handle.emit("hold-down-start", ());
                                 }
                                 HoldDownSignal::Stop => {
-                                    stamp_hold_release(&handle);
+                                    stamp_hold_release(&handle, &event.event_type);
                                     let _ = handle.emit("hold-down-stop", ());
                                 }
                                 HoldDownSignal::Arm {
@@ -2066,7 +2075,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                             let _ = handle.emit("hold-over-recording-end", ());
                                         } else {
                                             tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
-                                            stamp_hold_release(&handle);
+                                            stamp_hold_release(&handle, &event.event_type);
                                             let _ = handle.emit("hold-down-stop", ());
                                         }
                                         true
@@ -3106,6 +3115,25 @@ mod tests {
             d.handle_event(&release(Key::ShiftLeft)),
             HoldDownEvent::Stop
         );
+    }
+
+    #[test]
+    fn only_a_key_release_stop_is_stamped_as_a_hotkey_release() {
+        // Hold-Down mode and Both mode's promoted hold stamp through the same
+        // predicate: a chord press that ends the hold is a stop, not a release.
+        let mut d = make_hold_detector(Key::ShiftLeft);
+        assert_eq!(d.handle_event(&press(Key::ShiftLeft)), HoldDownEvent::Start);
+        let chord = press(Key::KeyA);
+        assert_eq!(d.handle_event(&chord), HoldDownEvent::Stop);
+        assert!(!is_hold_release(&chord));
+        assert!(promoted_hold_stops_recording(false, &chord));
+
+        let mut d = make_hold_detector(Key::ShiftLeft);
+        assert_eq!(d.handle_event(&press(Key::ShiftLeft)), HoldDownEvent::Start);
+        let released = release(Key::ShiftLeft);
+        assert_eq!(d.handle_event(&released), HoldDownEvent::Stop);
+        assert!(is_hold_release(&released));
+        assert!(promoted_hold_stops_recording(true, &released));
     }
 
     #[test]

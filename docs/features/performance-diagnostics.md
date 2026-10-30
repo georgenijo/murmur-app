@@ -105,12 +105,16 @@ The contract never uses numeric zero as a missing-data sentinel.
   the rdev → `hold-down-stop` → webview → IPC hop that `totalProcessing` never
   saw;
 - `releaseToPaste`: native hotkey release → end of delivery, measured at the
-  same instant `totalProcessing` ends, recorded only for successful runs.
+  same instant `totalProcessing` ends, recorded only for successful runs whose
+  delivery was confirmed (clipboard-only or posted auto-paste; a failed
+  clipboard write, timeout, or stopped delivery has none).
 
-The rdev listener stamps a monotonic instant when it publishes
-`hold-down-stop`, keyed by the live recording ID. The stop consumes the stamp
-only for its own recording and only within 10 seconds, so a release that did
-not drive the stop is never attributed to a run. Toggle, overlay, and auto-stop
+The rdev listener stamps a monotonic instant when a trigger-key release (not a
+chord press that ends the hold) publishes `hold-down-stop`, keyed by the live
+recording ID. The first release of a recording wins. The stop claims the stamp
+when it accepts the transition, only for its own recording and only within 10
+seconds, so a release that did not drive the stop is never attributed to a
+run. Toggle, overlay, and auto-stop
 stops, and historical records, have no release stages; they are omitted, never
 shown as zero. The stamp is one instant and one generation ID, with no content.
 The Runs workspace shows nearest-rank p50/p90 of `totalProcessing` and

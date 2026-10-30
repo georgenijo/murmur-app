@@ -33,6 +33,14 @@ pub struct HotkeyRelease {
 }
 
 impl HotkeyRelease {
+    #[cfg(test)]
+    pub fn for_test(released_at: Instant, stop_entered_at: Instant) -> Self {
+        Self {
+            released_at,
+            stop_entered_at,
+        }
+    }
+
     /// Release → `stop_native_recording_for` entry.
     pub fn release_to_stop(&self) -> StageTimingV1 {
         StageTimingV1::measured(
@@ -59,10 +67,22 @@ fn millis(duration: Duration) -> u64 {
 
 /// Stamp the native release that publishes `hold-down-stop`.
 pub fn record(recording_id: u64, released_at: Instant) {
-    *LAST_RELEASE.lock_or_recover() = Some(ReleaseStamp {
-        recording_id,
-        released_at,
-    });
+    record_into(
+        &mut LAST_RELEASE.lock_or_recover(),
+        ReleaseStamp {
+            recording_id,
+            released_at,
+        },
+    );
+}
+
+/// The first release of a recording is the one that stops it; a later
+/// release while that stop is still queued must not overwrite it.
+fn record_into(slot: &mut Option<ReleaseStamp>, stamp: ReleaseStamp) {
+    if slot.is_some_and(|pending| pending.recording_id == stamp.recording_id) {
+        return;
+    }
+    *slot = Some(stamp);
 }
 
 /// Consume the stamp for the stop of `recording_id` entered at
@@ -141,6 +161,44 @@ mod tests {
         let later = released_at + Duration::from_millis(50);
         let mut slot = stamp(7, later);
         assert_eq!(take_matching(&mut slot, 7, released_at), None);
+    }
+
+    #[test]
+    fn first_release_of_a_recording_survives_a_later_queued_release() {
+        let first = Instant::now();
+        let second = first + Duration::from_millis(40);
+        let mut slot = None;
+        record_into(
+            &mut slot,
+            ReleaseStamp {
+                recording_id: 7,
+                released_at: first,
+            },
+        );
+        record_into(
+            &mut slot,
+            ReleaseStamp {
+                recording_id: 7,
+                released_at: second,
+            },
+        );
+        assert_eq!(slot, stamp(7, first));
+        let release = take_matching(&mut slot, 7, first + Duration::from_millis(60)).unwrap();
+        assert_eq!(
+            release.release_to_stop().duration_ms,
+            MeasurementV1::measured(60)
+        );
+
+        // A newer recording's release replaces an unclaimed older stamp.
+        let mut slot = stamp(6, first);
+        record_into(
+            &mut slot,
+            ReleaseStamp {
+                recording_id: 7,
+                released_at: second,
+            },
+        );
+        assert_eq!(slot, stamp(7, second));
     }
 
     #[test]
