@@ -1,5 +1,5 @@
 import { AppSurface } from './components/ui/AppSurface';
-import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
 import {
@@ -122,6 +122,7 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [homeSidebarWidth, setHomeSidebarWidth] = useState(256);
 
   const { settings, getCurrentSettings, getConfirmedSettings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
@@ -864,7 +865,7 @@ function App() {
   }
 
   return (
-    <AppSurface surface="main" className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface">
+    <AppSurface surface="main" style={{ '--home-sidebar-width': `${homeSidebarWidth}px` } as CSSProperties} className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface">
       {import.meta.env.DEV && (
         <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-warning select-none">
           Dev
@@ -911,6 +912,8 @@ function App() {
         >
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <HomeSidebar
+              onWidthChange={setHomeSidebarWidth}
+              suspended={isSettingsOpen}
               active={mainDestination}
               homeButtonRef={homeNavigationRef}
               onNavigate={(destination) => navigateMain(destination, 'pointer')}

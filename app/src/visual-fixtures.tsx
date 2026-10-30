@@ -569,6 +569,7 @@ function VisualFixture() {
     || requestedState === 'settings-transform-practice'
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
+  const [homeSidebarWidth, setHomeSidebarWidth] = React.useState(256);
   const meetings = useMeetings(fixtureSettings);
   const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
@@ -603,6 +604,7 @@ function VisualFixture() {
 
   return (
     <div
+      style={{ '--home-sidebar-width': `${homeSidebarWidth}px` } as React.CSSProperties}
       data-appearance={appearance}
       data-theme-fixture={importedThemeFixture ?? 'sonic'}
       data-visual-ready="true"
@@ -667,6 +669,8 @@ function VisualFixture() {
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <HomeSidebar
+            onWidthChange={setHomeSidebarWidth}
+            initialCollapsed={requestedState === 'home-sidebar-collapsed'}
             active={destination}
             homeButtonRef={homeNavigationRef}
             onNavigate={setDestination}

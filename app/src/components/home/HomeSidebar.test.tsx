@@ -17,6 +17,8 @@ describe('HomeSidebar labeled navigation', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('keeps one labeled native button per destination and navigates once', async () => {
@@ -70,7 +72,83 @@ describe('HomeSidebar labeled navigation', () => {
     expect(document.activeElement).toBe(insightsButton);
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
     expect(container.querySelector('[data-base-ui-tooltip-trigger]')).toBeNull();
+    expect(insightsButton.disabled).toBe(false);
     expect(insightsButton.querySelectorAll('.home-nav-label')).toHaveLength(1);
     expect(insightsButton.getAttribute('aria-describedby')).toBeNull();
   });
+
+  function pointer(target: Element, type: string, pointerId: number, clientX: number, options = {}) {
+    const event = new MouseEvent(type, { bubbles: true, clientX, cancelable: true, ...options });
+    Object.defineProperties(event, { pointerId: { value: pointerId }, isPrimary: { value: !('isPrimary' in options) || options.isPrimary } });
+    target.dispatchEvent(event);
+  }
+
+  it('ignores foreign pointers and secondary buttons, then cancels only the owning drag', async () => {
+    await act(async () => root.render(<HomeSidebar active="home" onNavigate={() => {}} />));
+    const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
+    const sidebar = container.querySelector<HTMLElement>('aside')!;
+    const capture = vi.spyOn(separator, 'setPointerCapture');
+    await act(async () => pointer(separator, 'pointerdown', 9, 256, { button: 2 }));
+    expect(capture).not.toHaveBeenCalled();
+    await act(async () => pointer(separator, 'pointerdown', 10, 256, { isPrimary: false }));
+    expect(capture).not.toHaveBeenCalled();
+    await act(async () => pointer(separator, 'pointerdown', 9, 256));
+    expect(capture).toHaveBeenCalledExactlyOnceWith(9);
+    await act(async () => pointer(separator, 'pointermove', 9, 300));
+    expect(sidebar.style.width).toBe('300px');
+    await act(async () => {
+      pointer(separator, 'pointerdown', 10, 300);
+      pointer(separator, 'pointermove', 10, 380);
+      pointer(separator, 'pointercancel', 10, 380);
+      pointer(separator, 'pointerup', 10, 380);
+    });
+    expect(sidebar.style.width).toBe('300px');
+    expect(sidebar.dataset.resizing).toBe('true');
+    await act(async () => pointer(separator, 'pointercancel', 9, 300));
+    expect(sidebar.style.width).toBe('256px');
+    expect(sidebar.dataset.resizing).toBe('false');
+  });
+
+  it('releases capture and rolls back a draft when Settings suspends Home', async () => {
+    const render = (suspended = false) => root.render(<HomeSidebar active="insights" suspended={suspended} onNavigate={() => {}} />);
+    await act(async () => render());
+    const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
+    vi.spyOn(separator, 'hasPointerCapture').mockReturnValue(true);
+    const release = vi.spyOn(separator, 'releasePointerCapture');
+    await act(async () => {
+      pointer(separator, 'pointerdown', 4, 256);
+      pointer(separator, 'pointermove', 4, 330);
+    });
+    await act(async () => render(true));
+    expect(container.querySelector<HTMLElement>('aside')!.style.width).toBe('256px');
+    expect(release).toHaveBeenCalledExactlyOnceWith(4);
+    expect(container.querySelector('[aria-current="page"]')?.getAttribute('aria-label')).toBe('Insights');
+  });
+
+  it('cleans up pointer capture on unmount without committing a draft', async () => {
+    await act(async () => root.render(<HomeSidebar active="home" onNavigate={() => {}} />));
+    const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
+    vi.spyOn(separator, 'hasPointerCapture').mockReturnValue(true);
+    const release = vi.spyOn(separator, 'releasePointerCapture');
+    await act(async () => pointer(separator, 'pointerdown', 7, 256));
+    await act(async () => root.render(null));
+    expect(release).toHaveBeenCalledExactlyOnceWith(7);
+  });
+
+
+  it('cancels pointerup when the viewport crosses the breakpoint before its media event arrives', async () => {
+    const media = { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    vi.stubGlobal('matchMedia', vi.fn(() => media));
+    await act(async () => root.render(<HomeSidebar active="home" onNavigate={() => {}} />));
+    const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
+    await act(async () => {
+      pointer(separator, 'pointerdown', 7, 256);
+      pointer(separator, 'pointermove', 7, 340);
+    });
+    media.matches = true;
+    await act(async () => pointer(separator, 'pointerup', 7, 340));
+    expect(container.querySelector<HTMLElement>('aside')!.style.width).toBe('256px');
+    expect(container.querySelector('aside')!.dataset.resizing).toBe('false');
+  });
+
 });

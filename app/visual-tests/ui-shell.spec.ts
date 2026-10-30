@@ -3,14 +3,12 @@ import { expect, test } from '@playwright/test';
 for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }, { width: 720, height: 560 }]) {
   test(`window chrome and navigation stay fixed at ${size.width}x${size.height}`, async ({ page }) => {
     await page.setViewportSize(size);
-    let sidebarWidth: number | undefined;
     for (const state of ['idle', 'settings', 'assistant-long']) {
       await page.goto(`/visual-fixtures.html?state=${state}&appearance=dark`);
       const sidebar = page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar');
       const before = await sidebar.boundingBox();
       expect(before).not.toBeNull();
-      if (state === 'settings') expect(before!.width).toBe(size.width < 768 ? 56 : 240);
-      else { sidebarWidth ??= before!.width; expect(before!.width).toBe(sidebarWidth); }
+      expect(before!.width).toBe(state === 'settings' ? (size.width < 768 ? 56 : 240) : (size.width < 768 ? 48 : 256));
       expect(before!.y + before!.height).toBe(size.height);
       if (state !== 'settings') for (const label of ['Home', 'Notetaker', 'Assistant', 'Insights']) {
         const button = await sidebar.getByRole('button', { name: label, exact: true }).boundingBox();
@@ -42,12 +40,12 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }, {
   });
 }
 
-test('resizing across the old compact breakpoint preserves the shared sidebar', async ({ page }) => {
+test('resizing preserves independent Home and Settings sidebar geometry', async ({ page }) => {
   for (const state of ['idle', 'settings']) {
     await page.goto(`/visual-fixtures.html?state=${state}&checklist=hidden`);
     for (const width of [1120, 760, 761, 720, 1120]) {
       await page.setViewportSize({ width, height: 560 });
-      await expect(page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar')).toHaveCSS('width', state === 'settings' ? (width < 768 ? '56px' : '240px') : (width <= 760 ? '184px' : '200px'));
+      await expect(page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar')).toHaveCSS('width', state === 'settings' ? (width < 768 ? '56px' : '240px') : (width < 768 ? '48px' : '256px'));
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
       expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(560);
     }

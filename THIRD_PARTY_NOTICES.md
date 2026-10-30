@@ -455,6 +455,9 @@ The settings geometry in `app/src/styles/settings.css`, `SettingsRow.tsx`,
 UI primitives at that pinned revision (`settingsLayout.tsx`, `SettingsGroup.tsx`,
 `SettingsSidebarNav.tsx`, and `ui/{switch,select,input,button}.tsx`).
 
+Display containment and traffic-light positioning also follow
+`apps/desktop/src/window/DesktopWindow.ts` at the same pinned revision.
+
 Source: https://github.com/pingdotgg/t3code
 
 MIT License
