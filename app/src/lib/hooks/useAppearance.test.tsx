@@ -165,7 +165,7 @@ describe('appearance runtime hooks', () => {
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => { root.render(<Provider><Consumer /></Provider>); });
-    expect(controller!.document.selection.dark).toBe(renamed.id);
+    expect(controller!.document.selection?.dark).toBe(renamed.id);
     expect(controller!.document.cache.dark).toEqual(initial.cache.dark);
   });
 
