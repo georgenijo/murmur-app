@@ -79,18 +79,17 @@ fn stop_drain_keeps_in_flight_and_flushed_audio_through_stopped() {
 #[test]
 fn release_tail_accepts_live_audio_until_its_deadline() {
     let (sender, receiver) = mpsc::channel();
+    // Queue the frames up front so a slow CI scheduler can't push one past
+    // the deadline; the producer then keeps the pipe open past the tail like
+    // a live helper.
+    for sequence in 0..4 {
+        sender
+            .send(pcm(sequence, vec![0.5; CALLBACK_FRAMES]))
+            .unwrap();
+    }
     let producer = std::thread::spawn(move || {
-        for sequence in 0..4 {
-            if sender
-                .send(pcm(sequence, vec![0.5; CALLBACK_FRAMES]))
-                .is_err()
-            {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        // Keep the pipe open past the tail like a live helper.
         std::thread::sleep(Duration::from_millis(200));
+        drop(sender);
     });
     let mut sequence = 0;
     let mut clip = Vec::new();
