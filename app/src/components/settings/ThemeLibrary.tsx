@@ -2,6 +2,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   availableThemeId,
+  BUILTIN_THEME_LIBRARY_ENTRIES,
   effectiveAppearanceSelection,
   makeLocalThemeEntry,
   previewThemeLibraryPairSelection,
@@ -542,6 +543,20 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
           customizeAsCopy
           resolvedAppearance={appearance.resolvedAppearance}
         />
+        {BUILTIN_THEME_LIBRARY_ENTRIES.map((entry) => (
+          <CollectionCard
+            key={`builtin:${entry.id}`}
+            label={entry.label}
+            entries={[entry]}
+            selection={selection}
+            onApplyPair={applyPair}
+            onApplyMode={applyMode}
+            onExport={(target) => void exportEntry(target)}
+            onDuplicate={(target) => void duplicateEntry(target)}
+            duplicateDisabled={appearance.busy}
+            resolvedAppearance={appearance.resolvedAppearance}
+          />
+        ))}
         {(selection.light === 'custom' || selection.dark === 'custom') && (
           <CollectionCard
             label="Custom"

@@ -130,7 +130,7 @@ export function MainHeader({
       {buildBadge && (
         <span
           data-testid="performance-build-badge"
-          className="pointer-events-none shrink-0 select-none rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-success"
+          className="pointer-events-none shrink-0 select-none rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-normal text-success"
         >
           ✓ {buildBadge}
         </span>

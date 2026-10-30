@@ -43,7 +43,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
             </svg>
           </div>
 
-          <h2 className="text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface mb-1">
+          <h2 className="text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface mb-1">
             Murmur
           </h2>
           <p className="text-sm text-on-surface-variant mb-4">

@@ -1,3 +1,4 @@
+import { AppSurface } from './components/ui/AppSurface';
 import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
@@ -863,9 +864,9 @@ function App() {
   }
 
   return (
-    <div className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <AppSurface surface="main" className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface">
       {import.meta.env.DEV && (
-        <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning select-none">
+        <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-warning select-none">
           Dev
         </div>
       )}
@@ -1081,7 +1082,7 @@ function App() {
         update={completedUpdate}
         onDismiss={dismissCompletedUpdate}
       />
-    </div>
+    </AppSurface>
   );
 }
 

@@ -20,6 +20,7 @@ import {
   emptyThemeLibrary,
   exportAppearanceText,
   exportThemeLibraryEntryText,
+  findThemeLibraryEntry,
   installThemeLibraryEntries,
   loadAppearanceDocument,
   loadThemeLibrary,
@@ -259,12 +260,18 @@ function useMainAppearanceController(): AppearanceController {
     if (selectionReconciledRef.current) return;
     selectionReconciledRef.current = true;
     const current = documentRef.current;
-    const selection = appearanceSelection(current);
+    const previousSelection = appearanceSelection(current);
+    const initialLibrary = initialLibraryRef.current;
+    const renamedIds = initialLibrary?.status === 'ready' ? initialLibrary.renamedIds : undefined;
+    const selection: AppearanceSelectionV1 = {
+      light: renamedIds?.[previousSelection.light] ?? previousSelection.light,
+      dark: renamedIds?.[previousSelection.dark] ?? previousSelection.dark,
+    };
     const library = libraryDocumentRef.current;
     const available = (owner: string, appearance: ResolvedAppearance) =>
       owner === 'sonic'
       || owner === 'custom'
-      || library.themes.some((entry) => entry.id === owner && entry.modes.includes(appearance));
+      || Boolean(findThemeLibraryEntry(library, owner)?.modes.includes(appearance));
     const nextSelection: AppearanceSelectionV1 = {
       light: available(selection.light, 'light') ? selection.light : 'sonic',
       dark: available(selection.dark, 'dark') ? selection.dark : 'sonic',

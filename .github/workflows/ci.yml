@@ -36,6 +36,9 @@ jobs:
               - 'app/vite.config.ts'
               - 'app/vitest.config.ts'
               - 'app/vitest.setup.ts'
+              - 'app/visual-fixtures.html'
+              - 'app/visual-tests/**'
+              - 'app/playwright*.ts'
             rust:
               - 'app/src-tauri/**'
               - 'app/src-tauri/Cargo.toml'
@@ -112,6 +115,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
     runs-on: ubuntu-latest
+    # Match the Linux golden environment, including its installed fonts.
+    container: mcr.microsoft.com/playwright:v1.62.1-noble
     steps:
       - uses: actions/checkout@v4
 
@@ -129,6 +134,9 @@ jobs:
 
       - name: Unit tests
         run: cd app && npm test
+
+      - name: Linux visual golden tests
+        run: cd app && npm run test:visual
 
   visual-regression:
     needs: changes

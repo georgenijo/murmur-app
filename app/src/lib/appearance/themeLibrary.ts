@@ -1,6 +1,6 @@
 import { mirrorDurableBlob, THEME_LIBRARY_STORE } from '../durableUserData';
 import { isRecord } from '../typeGuards';
-import { DEFAULT_THEME } from './palettes';
+import { DEFAULT_THEME, OPENCODE_THEME } from './palettes';
 import { resolveTheme } from './resolve';
 import { sanitizeRevision, sanitizeTheme } from './sanitize';
 import {
@@ -21,6 +21,42 @@ export const THEME_LIBRARY_STORAGE_KEY = 'murmur-theme-library';
 export const THEME_LIBRARY_VERSION = 1 as const;
 export const MAX_THEME_LIBRARY_BYTES = 1024 * 1024;
 export const MAX_THEME_LIBRARY_ENTRIES = 128;
+export const OPENCODE_THEME_ID = 'opencode';
+
+/**
+ * Read-only themes that ship with Murmur. They are never stored in the
+ * library document, so they cannot be removed; duplicating one installs an
+ * ordinary local copy. Sonic stays a preset rather than an entry.
+ */
+export const BUILTIN_THEME_LIBRARY_ENTRIES: readonly ThemeLibraryEntryV1[] = [
+  {
+    version: 1,
+    id: OPENCODE_THEME_ID,
+    label: 'OpenCode',
+    modes: ['light', 'dark'],
+    theme: OPENCODE_THEME,
+    source: { kind: 'local' },
+  },
+];
+
+const RESERVED_THEME_IDS: ReadonlySet<string> = new Set([
+  'sonic',
+  'custom',
+  ...BUILTIN_THEME_LIBRARY_ENTRIES.map((entry) => entry.id),
+]);
+
+export function isBuiltinThemeId(id: string): boolean {
+  return BUILTIN_THEME_LIBRARY_ENTRIES.some((entry) => entry.id === id);
+}
+
+/** Looks up a selectable library owner: built-ins first, then installed themes. */
+export function findThemeLibraryEntry(
+  library: ThemeLibraryDocumentV1,
+  id: string,
+): ThemeLibraryEntryV1 | undefined {
+  return BUILTIN_THEME_LIBRARY_ENTRIES.find((entry) => entry.id === id)
+    ?? library.themes.find((entry) => entry.id === id);
+}
 
 export interface ThemeLibraryStorageLike {
   getItem(key: string): string | null;
@@ -28,7 +64,7 @@ export interface ThemeLibraryStorageLike {
 }
 
 export type ThemeLibraryLoadResult =
-  | { status: 'ready'; document: ThemeLibraryDocumentV1; needsRepair: boolean }
+  | { status: 'ready'; document: ThemeLibraryDocumentV1; needsRepair: boolean; renamedIds?: Record<string, string> }
   | { status: 'unavailable'; document: ThemeLibraryDocumentV1; error: string };
 
 function byteLength(value: string): number {
@@ -165,9 +201,22 @@ export function loadThemeLibrary(
 
   const themes: ThemeLibraryEntryV1[] = [];
   const ids = new Set<string>();
+  // A theme saved before a built-in claimed its ID keeps its content under a
+  // fresh ID that no other stored entry uses.
+  const storedIds = new Set(
+    value.themes.flatMap((candidate) =>
+      isRecord(candidate) && typeof candidate.id === 'string' ? [candidate.id] : []),
+  );
   let needsRepair = false;
+  const renamedIds: Record<string, string> = {};
   for (const candidate of value.themes) {
-    const theme = parseThemeLibraryEntry(candidate);
+    let theme = parseThemeLibraryEntry(candidate);
+    if (theme && RESERVED_THEME_IDS.has(theme.id)) {
+      const id = availableThemeId(theme.label, new Set([...storedIds, ...ids]));
+      renamedIds[theme.id] ??= id;
+      theme = { ...theme, id };
+      storedIds.add(id);
+    }
     if (!theme || ids.has(theme.id)) {
       needsRepair = true;
       continue;
@@ -181,7 +230,9 @@ export function loadThemeLibrary(
     themes,
   };
   if (JSON.stringify(document) !== JSON.stringify(value)) needsRepair = true;
-  return { status: 'ready', document, needsRepair };
+  return { status: 'ready', document, needsRepair,
+    ...(Object.keys(renamedIds).length ? { renamedIds } : {}),
+  };
 }
 
 function nextLibraryRevision(revision: number): number {
@@ -254,7 +305,9 @@ export function installThemeLibraryEntries(
   const occupied = new Set(current.themes.map((theme) => theme.id));
   for (const entry of entries) {
     if (!parseThemeLibraryEntry(entry)) throw new Error(`The theme "${entry.label}" is invalid.`);
-    if (occupied.has(entry.id)) throw new Error(`A theme named "${entry.label}" is already installed.`);
+    if (occupied.has(entry.id) || RESERVED_THEME_IDS.has(entry.id)) {
+      throw new Error(`A theme named "${entry.label}" is already installed.`);
+    }
     occupied.add(entry.id);
   }
   return publishMutation(current, [...current.themes, ...entries], storage);
@@ -281,7 +334,7 @@ export function replaceThemeLibraryCollection(
       .map((theme) => theme.id),
   );
   for (const entry of entries) {
-    if (!parseThemeLibraryEntry(entry) || occupied.has(entry.id)) {
+    if (!parseThemeLibraryEntry(entry) || occupied.has(entry.id) || RESERVED_THEME_IDS.has(entry.id)) {
       throw new Error(`The replacement theme "${entry.label}" conflicts with an installed theme.`);
     }
     occupied.add(entry.id);
@@ -318,11 +371,11 @@ function themeIdFromLabel(label: string): string {
 
 export function availableThemeId(label: string, occupiedIds: ReadonlySet<string>): string {
   const base = themeIdFromLabel(label);
-  if (!occupiedIds.has(base) && base !== 'sonic' && base !== 'custom') return base;
+  if (!occupiedIds.has(base) && !RESERVED_THEME_IDS.has(base)) return base;
   for (let suffix = 2; suffix < 1000; suffix += 1) {
     const tail = `-${suffix}`;
     const candidate = `${base.slice(0, 64 - tail.length)}${tail}`;
-    if (!occupiedIds.has(candidate)) return candidate;
+    if (!occupiedIds.has(candidate) && !RESERVED_THEME_IDS.has(candidate)) return candidate;
   }
   throw new Error(`Too many themes are named "${label}".`);
 }
@@ -375,7 +428,7 @@ export function effectiveAppearanceSelection(
 ): AppearanceSelectionV1 {
   const selection = appearanceSelection(document);
   if (selection.light === selection.dark && selection.light !== 'custom') {
-    const entry = library.themes.find((theme) => theme.id === selection.light);
+    const entry = findThemeLibraryEntry(library, selection.light);
     const expected = selection.light === 'sonic' ? DEFAULT_THEME : entry?.theme;
     if (
       !expected
@@ -387,7 +440,7 @@ export function effectiveAppearanceSelection(
   }
   const availableOwner = (owner: string, appearance: ResolvedAppearance) => {
     if (owner === 'sonic' || owner === 'custom') return owner;
-    const entry = library.themes.find((theme) => theme.id === owner);
+    const entry = findThemeLibraryEntry(library, owner);
     return entry?.modes.includes(appearance) ? owner : 'custom';
   };
   return {
@@ -404,7 +457,7 @@ function tokensForOwner(
 ) {
   if (owner === 'sonic') return resolveTheme(DEFAULT_THEME, appearance).tokens;
   if (owner === 'custom') return resolveTheme(current.theme, appearance).tokens;
-  const entry = library.themes.find((theme) => theme.id === owner);
+  const entry = findThemeLibraryEntry(library, owner);
   const tokens = entry ? themeTokensForMode(entry, appearance) : null;
   if (!tokens) throw new Error(`The selected ${appearance} theme is no longer available.`);
   return tokens;
@@ -418,7 +471,7 @@ export function composeThemeSelection(
   if (selection.light === 'sonic' && selection.dark === 'sonic') return { ...DEFAULT_THEME };
   if (selection.light === 'custom' && selection.dark === 'custom') return sanitizeTheme(current.theme);
   if (selection.light === selection.dark) {
-    const entry = library.themes.find((theme) => theme.id === selection.light);
+    const entry = findThemeLibraryEntry(library, selection.light);
     if (entry && entry.modes.includes('light') && entry.modes.includes('dark')) {
       return sanitizeTheme(entry.theme);
     }
@@ -437,7 +490,7 @@ export function previewThemeLibrarySelection(
   themeId: string,
   appearance?: ResolvedAppearance,
 ): ThemeImportPreview {
-  const entry = library.themes.find((theme) => theme.id === themeId);
+  const entry = findThemeLibraryEntry(library, themeId);
   const modes: ResolvedAppearance[] = themeId === 'sonic' ? ['light', 'dark'] : entry?.modes ?? [];
   if (!entry && themeId !== 'sonic') throw new Error('That theme is not installed.');
   const currentSelection = appearanceSelection(current);
@@ -478,7 +531,7 @@ export function previewThemeLibraryPairSelection(
 ): ThemeImportPreview {
   const available = (themeId: string, appearance: ResolvedAppearance) => {
     if (themeId === 'sonic') return;
-    const entry = library.themes.find((theme) => theme.id === themeId);
+    const entry = findThemeLibraryEntry(library, themeId);
     if (!entry) throw new Error('That theme is not installed.');
     if (!entry.modes.includes(appearance)) {
       throw new Error(`That theme has no ${appearance} variant.`);

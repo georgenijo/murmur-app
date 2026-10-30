@@ -172,7 +172,7 @@ export function UpdateModal({
               <HeaderIcon className="h-5 w-5 text-on-surface" aria-hidden="true" />
             </div>
             <div className="min-w-0">
-              <h2 id="update-dialog-title" className="text-lg font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+              <h2 id="update-dialog-title" className="text-lg font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
                 {title}
               </h2>
               {version && (

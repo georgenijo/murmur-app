@@ -6,7 +6,7 @@ import type {
   ThemeImportPreview,
   ThemeLibraryEntryV1,
 } from "../../lib/appearance";
-import { resolveTheme } from "../../lib/appearance";
+import { OPENCODE_THEME, resolveTheme } from "../../lib/appearance";
 import { AppearanceSettings } from "./AppearanceSettings";
 
 const mocks = vi.hoisted(() => ({
@@ -580,6 +580,63 @@ describe("AppearanceSettings", () => {
         selection: { light: light.id, dark: midnight.id },
       }),
     );
+  });
+
+  it("shows OpenCode as a built-in card that exports and duplicates but cannot be removed", async () => {
+    const card = container.querySelector(
+      '[data-theme-collection="OpenCode"]',
+    ) as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(
+      Array.from(card.querySelectorAll("button")).map((button) =>
+        button.getAttribute("aria-label"),
+      ),
+    ).toEqual([
+      "Use OpenCode for light mode",
+      "Use OpenCode for dark mode",
+      "Use OpenCode theme",
+      "Export OpenCode",
+      "Duplicate OpenCode",
+    ]);
+    expect(card.querySelector('[aria-label="Remove OpenCode"]')).toBeNull();
+
+    await act(async () =>
+      (card.querySelector('[aria-label="Use OpenCode theme"]') as HTMLButtonElement).click(),
+    );
+    expect(mocks.controller!.commitImport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        theme: OPENCODE_THEME,
+        selection: { light: "opencode", dark: "opencode" },
+        light: resolveTheme(OPENCODE_THEME, "light").tokens,
+        dark: resolveTheme(OPENCODE_THEME, "dark").tokens,
+      }),
+    );
+
+    mocks.save.mockResolvedValue("/tmp/opencode.json");
+    await act(async () =>
+      (card.querySelector('[aria-label="Export OpenCode"]') as HTMLButtonElement).click(),
+    );
+    expect(mocks.save).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: "opencode.murmur-theme.json" }),
+    );
+    expect(mocks.controller!.library.exportEntryToPath).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "opencode", label: "OpenCode", theme: OPENCODE_THEME }),
+      "/tmp/opencode.json",
+    );
+
+    await act(async () =>
+      (card.querySelector('[aria-label="Duplicate OpenCode"]') as HTMLButtonElement).click(),
+    );
+    expect(mocks.controller!.library.install).toHaveBeenCalledWith([
+      {
+        version: 1,
+        id: "copy-of-opencode",
+        label: "Copy of OpenCode",
+        modes: ["light", "dark"],
+        theme: OPENCODE_THEME,
+        source: { kind: "local" },
+      },
+    ]);
   });
 
   it("reports only adjustments attributable to selected controls", async () => {

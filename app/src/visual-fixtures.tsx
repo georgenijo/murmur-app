@@ -1,3 +1,4 @@
+import { AppSurface } from './components/ui/AppSurface';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Channel } from '@tauri-apps/api/core';
@@ -21,6 +22,11 @@ import './components/assistant/assistant.css';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
+import { Copy, Folder } from 'lucide-react';
+import { MiddleTruncate } from './components/ui/middle-truncate';
+import { DashboardAction } from './components/ui/DashboardPrimitives';
+import { AnimatedDropdown, AnimatedDropdownTrigger, AnimatedDropdownContent, AnimatedDropdownItem, AnimatedDropdownSeparator } from './components/ui/animated-dropdown/animated-dropdown';
+import { FluidTooltip } from './components/ui/fluid-tooltip/fluid-tooltip';
 import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import { DiscoveryHintToast } from './components/DiscoveryHintToast';
 import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
@@ -30,7 +36,7 @@ import type { MainDestination } from './lib/homeDashboard';
 import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
-import { DEFAULT_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { DEFAULT_THEME, OPENCODE_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import { OverlayMeetingSuggestion } from './components/overlay/OverlayMeetingSuggestion';
 import overlayGeometryFixture from './components/overlay/overlay-geometry.fixture.json';
 import './styles.css';
@@ -48,6 +54,7 @@ const status: DictationStatus = requestedState === 'recording'
       : 'idle';
 
 const importedThemeFixtures: Record<string, ThemeConfigV1> = {
+  opencode: OPENCODE_THEME,
   'flat-dark': parseVsCodeThemeFile({
     name: 'Flat dark',
     type: 'dark',
@@ -550,6 +557,7 @@ function VisualFixture() {
     return () => document.documentElement.classList.remove('murmur-main-window');
   }, []);
   const settingsOpen = requestedState === 'settings'
+    || requestedState === 'settings-general'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
     || requestedState === 'settings-transform-practice'
@@ -640,7 +648,11 @@ function VisualFixture() {
           onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
-          pageRequest={requestedState === 'settings-shortcuts'
+          pageRequest={requestedState === 'settings-general'
+            ? { page: 'general', token: 1 }
+            : requestedState === 'settings-appearance'
+              ? { page: 'appearance', token: 1 }
+            : requestedState === 'settings-shortcuts'
             ? { page: 'shortcuts', token: 1 }
             : requestedState === 'settings-transform-practice'
               ? { page: 'ai-transform', target: 'transform-practice', token: 1 }
@@ -836,9 +848,51 @@ function MeetingSuggestionOverlayFixture() {
   );
 }
 
+/** Render production primitives for browser-computed measurements, never
+ * substitutes for native WKWebView evidence. */
+function TypographyFixture() {
+  return (
+    <main data-visual-ready="true" className="space-y-4 p-6">
+      <header className="ui-workspace-page-copy"><h1>Typography</h1><p>Local paths and controls</p></header>
+      <div className="ui-window-wordmark">Murmur</div>
+      <p className="text-sm">Body text</p>
+      <p className="text-xs">Caption text</p>
+      <p className="text-[11px]">Small text</p>
+      <div className="ui-dashboard-stat"><span className="ui-dashboard-stat-value">1,234</span></div>
+      <div className="w-64" data-testid="path-container">
+        <MiddleTruncate className="font-mono text-xs" value={query.get('path') ?? '/Users/example/workspaces/murmur-app/docs/features/transcription.md'} />
+      </div>
+      <DashboardAction variant="primary" onActivate={() => {}}>Primary action</DashboardAction>
+      <button type="button" className="ui-icon-button" aria-label="Copy"><Copy /></button>
+      <AnimatedDropdown>
+        <AnimatedDropdownTrigger aria-label="Fixture menu">Open menu</AnimatedDropdownTrigger>
+        <AnimatedDropdownContent>
+          <AnimatedDropdownItem icon={<Folder />}>Open folder <span className="ui-menu-shortcut">⌘O</span></AnimatedDropdownItem>
+          <AnimatedDropdownSeparator />
+          <AnimatedDropdownItem icon={<Copy />} disabled>Unavailable</AnimatedDropdownItem>
+        </AnimatedDropdownContent>
+      </AnimatedDropdown>
+      <FluidTooltip.Group openDelay={0}>
+        <FluidTooltip.Root id="measurement-tooltip">
+          <FluidTooltip.Trigger><button type="button" className="ui-dashboard-action">Tooltip trigger</button></FluidTooltip.Trigger>
+          <FluidTooltip.Content>Copy the full transcript</FluidTooltip.Content>
+        </FluidTooltip.Root>
+      </FluidTooltip.Group>
+    </main>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'query-review' ? (
+    {requestedState === 'production-font-roots' ? (
+      <main data-visual-ready="true">
+        {(['main', 'onboarding', 'diagnostics'] as const).map(surface => (
+          <AppSurface key={surface} surface={surface} className="font-serif"><p>{surface} production text</p></AppSurface>
+        ))}
+      </main>
+    ) : requestedState === 'typography' ? (
+      <TypographyFixture />
+    ) : requestedState === 'query-review' ? (
       <div className="h-screen w-full">
       <QueryReviewView driver={{
         state: 'ready', errorCode: 'auto_copy_disabled', question: 'Is the living-room light on?',

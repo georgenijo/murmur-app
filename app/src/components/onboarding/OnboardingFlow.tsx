@@ -1,3 +1,4 @@
+import { AppSurface } from '../ui/AppSurface';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   checkAccessibilityPermission,
@@ -358,7 +359,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <AppSurface surface="onboarding" className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">
@@ -390,7 +391,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="mb-3 text-2xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h1 className="mb-3 text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
@@ -665,7 +666,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'model' && (
           <div>
-            <h1 className="mb-1 text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h1 className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Transcription Model
             </h1>
             <p className="text-sm text-on-surface-variant mb-6">
@@ -778,7 +779,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'done' && (
           <div>
-            <h1 className="mb-1 text-center text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h1 className="mb-1 text-center text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               You're all set
             </h1>
             <p className="text-sm text-on-surface-variant mb-6 text-center">
@@ -821,7 +822,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         )}
       </div>
       </div>
-    </div>
+    </AppSurface>
   );
 }
 

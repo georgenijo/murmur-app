@@ -1,3 +1,4 @@
+import { AppSurface } from '../ui/AppSurface';
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { WindowHeader } from '../ui/WindowHeader';
@@ -28,7 +29,7 @@ export function DiagnosticsWindowApp() {
   }, []);
 
   return (
-    <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <AppSurface surface="diagnostics" className="flex h-screen min-h-0 flex-col overflow-hidden bg-background text-on-surface">
       <WindowHeader contextLabel="Diagnostics" />
       <main className="min-h-0 flex-1 overflow-hidden">
         <DiagnosticsWorkspace
@@ -37,6 +38,6 @@ export function DiagnosticsWindowApp() {
           canArmPrivateCapture={false}
         />
       </main>
-    </div>
+    </AppSurface>
   );
 }
