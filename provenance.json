@@ -1,0 +1,24 @@
+{
+  "wave1": "Actual native 2x combined #853/#847 captures; product source0de5ec5a, group merge4deebd23. See wave1-build.json.",
+  "wave2": "Actual native 2x combined #848/#850/#854 captures; product source4f9f7574, identical integration059bae41, group merge95904d41. See wave2-build.json.",
+  "t3": "Pinned cba30591f9 real web UI rendered Chromium2x at matched logical width; not a native T3 screenshot.",
+  "hashes": {
+    "w1-general-before-light.png": "b9a963700eef64246d7a0479c7fe6d592eb5909b9fb7cf7a5618a0b4a3d5e86d",
+    "w1-general-after-light.png": "a74b23fc15fac15129c6f55ce40aaccab3e26ea3e0c4920fe256998f333a2880",
+    "w1-general-before-dark.png": "62c928c7cdfd639c56f593c9b5d61ec770b0582056404e2c440fb519ca7f1482",
+    "w1-general-after-dark.png": "43fdb845c009a36f79b98d83df3a2417224e4cf03cf6c1daaa37a48ad127e402",
+    "w1-appearance-before-dark.png": "f65dcaaed5aa2f098f05355aa54d4fcfbcbff8972f15f06a4fa54968580083e0",
+    "w1-appearance-after-dark.png": "12f000f9009d73e1779ded27ef7fd5c34992b976e081d0054929d124180d1302",
+    "w1-home-before-sidebar.png": "fed9126f2fcfe2eddd83cd4b4445406eb9bfd294f8c8f5e02ef1e50dd4401d41",
+    "w2-general-before-light.png": "ddf5eee24145543b82e74b33d0e5fbd399522d96755b2805548d55d14431f5d5",
+    "w2-general-after-light.png": "ddcf63da6825a2acfed76fa00a25f9db34abf0a28715f8fd1e3a424a6f448ed8",
+    "w2-general-before-dark.png": "20aac06d8139f771aac1bb1b3f5c03cc342efa2b724bf60a3548be0b7a362bc8",
+    "w2-general-after-dark.png": "76ee809997b2f4ea42eaad6ed91ef6f3c2fe51241fcc11fc8186918a1aadb656",
+    "w2-delivery-before-dark.png": "4f614d967284fbc3c383b08b34e4fa3104cdc9620745e4a7585ffc23745a25bf",
+    "w2-delivery-after-dark.png": "fb81fba44ff0fc7921f20fe7608da2ccd505a92c55e08aa55d94ee866fcff63a",
+    "w2-sidebar-expanded.png": "0a4c2ac861c797c471a380b25b1d36d53f47f642e4133d2eb2c565cd37145794",
+    "w2-sidebar-collapsed.png": "64959ef468d17172a2af0a047c5c515e9fd858b475ad71e4dc2c0899e22bd3c1",
+    "w2-sidebar-narrow.png": "84d8db8a7d45b137be0d10dfc81c9ced6493a1c1a1616630ce2be4b3e3e62879",
+    "w2-t3-general-light.png": "dfb809ef8eaf9a8f72d1a602341750ac4b4ce2a76e42b50c932bfb3728416539"
+  }
+}

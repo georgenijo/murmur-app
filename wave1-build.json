@@ -1,0 +1,27 @@
+{
+  "sha": "d06a1a37f04fc646a07975271e206acb8028d8d1",
+  "includes": [
+    "853cb12d417",
+    "847379abfa3"
+  ],
+  "isolatedIdentifier": "com.localdictation.e846-847",
+  "pid": 32694,
+  "signedBinarySha256": "8f02dfabb736b7eacbcc31ebd6c3f8c22c5e404a360162cd4a630bfcfce2d35e",
+  "displayScale": 2,
+  "logicalDisplay": [
+    1920,
+    1080
+  ],
+  "pixelDisplay": [
+    3840,
+    2160
+  ],
+  "finalSourceSha": "0de5ec5a0ee53ec4e2040d4f88fba7d3b9593d89",
+  "fixes": [
+    "S4 production font roots",
+    "S5 Home control radius"
+  ],
+  "finalPid": 61882,
+  "finalSignedBinarySha256": "cac21aa1e3f93292299b5f85d1e76c0e45138c9f3ceeae5c1636f0b7c2573529",
+  "finalScreenshots": "Home, General, Appearance, Filter, history overflow in both modes"
+}

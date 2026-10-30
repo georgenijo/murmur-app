@@ -1,0 +1,16 @@
+{
+  "source": "4f9f75742cd11ae00885c46af8c4cb31f6e4a9bf",
+  "identifier": "com.localdictation.epic846.window854",
+  "product": "Murmur Settings Test",
+  "pid": 14604,
+  "binarySha256": "882854739ee44f8bdaeac38e1faf70f9e372e53bfa56e522c601657d9a8e50a4",
+  "scale": 2,
+  "components": [
+    "848 settings",
+    "850 copy/dialogs",
+    "854 windows/sidebar"
+  ],
+  "status": "native verification underway; not merged",
+  "combinedHead": "059bae41707a123bb6581561ff1fc89f2fd80f61",
+  "sourceMatch": "git diff 4f9f7574 HEAD -- app/src app/src-tauri app/visual-tests empty"
+}
