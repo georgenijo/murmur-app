@@ -661,3 +661,29 @@ text, model paths, or raw backend errors.
 - `lib/dictation.ts` has `startRecording()` and `stopRecording()` wrappers around Tauri `invoke()`
 - `useRecordingState` hook manages status, transcription text, recording duration timer, and error state
 - `toggleRecording()` checks current status via ref and calls start or stop accordingly
+
+## Optional warm microphone standby
+
+Recording settings offer **Warm microphone standby**, off by default. After a
+successful dictation stop (including the 50 ms release tail), the same signed
+capture worker and microphone stream can stay open for 1, 5 (default), or 15
+minutes. The macOS microphone privacy indicator stays on throughout that window.
+Enabling the option does not open the microphone until an intentional dictation.
+The first dictation after launch or expiry still takes the ordinary cold path.
+
+Standby keeps only a bounded 300 or 450 ms (default) rolling buffer in memory.
+Pressing again on the same input prepends that buffer to the new recording.
+Standby audio is never logged or written to disk; selected pre-roll is saved only
+as part of a recording when Save Audio is enabled. Audio from the preceding
+recording is removed before building the standby buffer. Turning standby off,
+changing input, disabling Murmur, sleeping, quitting, or another microphone
+feature taking ownership tears down the exact worker. No replacement starts
+until its exit is confirmed. Other microphone features never receive pre-roll.
+
+Content-free `audio.capture_ready` events mark warm reuse with `warm=true` and
+`startup_ms`; this measures press acceptance to already-retained PCM, not hardware
+callback latency. Cold readiness continues to measure acceptance to first PCM.
+The ignored `first_word_standby_sweep` test renders synthetic `say -o` WAVs to
+disk, models a 204 ms cold start, and compares first-word recovery at speech
+onsets 0, 25, 50, and 100 ms after press. It does not measure live microphone
+startup or play through a virtual audio device.

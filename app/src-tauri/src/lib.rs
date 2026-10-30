@@ -905,6 +905,7 @@ pub fn run() {
         }
 
         if let RunEvent::Exit = &_event {
+            audio_lifecycle::retire_standby();
             smart_destination::set_enabled(false);
             audio_inventory::shutdown();
             // App-exit teardown: stop resident native helpers so none outlive

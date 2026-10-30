@@ -1028,6 +1028,7 @@ pub async fn run_microphone_startup_benchmark(
     request: MicrophoneStartupBenchmarkRequest,
 ) -> Result<MicrophoneStartupBenchmarkReport, String> {
     require_main_window(&window)?;
+    crate::audio_lifecycle::retire_standby();
     let (run_id, device_id, selection, cycles) = normalized_request(request)?;
     let transition =
         super::microphone_preview::transition_after_stopping_preview(&app_handle, state.inner())
