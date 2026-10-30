@@ -18,6 +18,7 @@ use crate::MutexExt;
 pub(crate) const CLEANUP_STAGE: &str = "cleanup";
 pub(crate) const VOICE_COMMANDS_STAGE: &str = "voice_commands";
 pub(crate) const SMART_CORRECTION_STAGE: &str = "smart_correction";
+pub(crate) const HOMOPHONE_CONTEXT_STAGE: &str = "homophone_context";
 pub(crate) const SMART_FORMATTING_STAGE: &str = "smart_formatting";
 pub(crate) const SPOKEN_STRUCTURE_STAGE: &str = "spoken_structure";
 pub(crate) const SPOKEN_NUMBERS_STAGE: &str = "spoken_numbers";
@@ -51,6 +52,8 @@ pub(crate) struct TranscriptStageConfig {
     pub cleanup_capitalize: bool,
     pub voice_commands_enabled: bool,
     pub smart_correction_enabled: bool,
+    /// Optional on-device homophone context tier of Smart Correction.
+    pub homophone_context_enabled: bool,
     pub smart_formatting_enabled: bool,
     pub spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy,
     pub spoken_numbers_enabled: bool,
@@ -86,6 +89,7 @@ impl TranscriptStageConfig {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
@@ -109,6 +113,7 @@ impl TranscriptStageConfig {
             cleanup_capitalize: true,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
@@ -195,7 +200,6 @@ pub(crate) struct StageError {
 }
 
 impl StageError {
-    #[cfg(test)]
     fn new(code: &'static str) -> Self {
         Self { code }
     }
@@ -273,6 +277,7 @@ impl TranscriptPipeline {
             cli_lexicon,
             ide_context_index,
             voice_command_runtime,
+            homophone_engine,
         } = resources;
         let correction_trace = SharedCorrectionTrace::default();
         Self::new(vec![
@@ -303,6 +308,11 @@ impl TranscriptPipeline {
             Box::new(SmartCorrectionStage {
                 matcher: correction_matcher.clone(),
                 trace: correction_trace.clone(),
+            }),
+            Box::new(HomophoneContextStage {
+                matcher: correction_matcher.clone(),
+                trace: correction_trace.clone(),
+                engine: homophone_engine.unwrap_or_else(crate::homophone_context::system_engine),
             }),
             Box::new(SmartFormattingStage {
                 cli_lexicon: cli_lexicon.clone(),
@@ -437,6 +447,8 @@ pub(crate) struct TranscriptTransformResources {
     pub cli_lexicon: CliLexicon,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
     pub voice_command_runtime: Option<Arc<dyn crate::voice_commands::VoiceCommandRuntime>>,
+    /// `None` uses the on-device FoundationModels engine.
+    pub homophone_engine: Option<Arc<dyn crate::homophone_context::HomophoneEngine>>,
 }
 
 impl TranscriptTransformResources {
@@ -448,6 +460,7 @@ impl TranscriptTransformResources {
             cli_lexicon: CliLexicon::from_context(None, &[]),
             ide_context_index: None,
             voice_command_runtime: None,
+            homophone_engine: None,
         }
     }
 }
@@ -740,10 +753,72 @@ impl TranscriptTransform for SmartCorrectionStage {
     }
 }
 
+struct HomophoneContextStage {
+    matcher: Option<Arc<CorrectionMatcher>>,
+    trace: SharedCorrectionTrace,
+    engine: Arc<dyn crate::homophone_context::HomophoneEngine>,
+}
+
+impl TranscriptTransform for HomophoneContextStage {
+    fn name(&self) -> &'static str {
+        HOMOPHONE_CONTEXT_STAGE
+    }
+
+    fn failure_policy(&self) -> StageFailurePolicy {
+        // Like Smart Correction, an enhancement: a timeout, an unavailable
+        // engine, or a rejected answer delivers the deterministic text.
+        StageFailurePolicy::OptionalFallback
+    }
+
+    fn enabled(&self, context: &TranscriptContext) -> bool {
+        context.source == TranscriptSource::Live
+            && context.stages.smart_correction_enabled
+            && context.stages.homophone_context_enabled
+    }
+
+    fn transform(&self, text: &str, context: &TranscriptContext) -> Result<String, StageError> {
+        // Explicit alias and learned-rule spans are authoritative, so they are
+        // never offered to the engine. They are known only while the text is
+        // exactly Smart Correction's output.
+        let mut trace = self.trace.lock_or_recover();
+        let protected = match trace.as_ref() {
+            Some(trace) if trace.text == text => trace.explicit.clone(),
+            Some(_) => return Ok(text.to_string()),
+            None => Vec::new(),
+        };
+        let terms = self
+            .matcher
+            .as_ref()
+            .map(|matcher| matcher.homophone_terms())
+            .unwrap_or_default();
+        let result =
+            crate::homophone_context::run_pass(text, terms, &protected, self.engine.as_ref());
+        tracing::info!(
+            target: "pipeline",
+            session_id = context.session_id,
+            outcome = result.outcome.as_str(),
+            flagged = result.flagged,
+            engine_us = result.engine_us,
+            budget_ms = crate::homophone_context::ENGINE_BUDGET.as_millis() as u64,
+            "homophone_context_pass"
+        );
+        if result.outcome.is_fallback() {
+            return Err(StageError::new(result.outcome.as_str()));
+        }
+        if let Some(trace) = trace.as_mut() {
+            trace.explicit =
+                crate::homophone_context::shift_ranges(&trace.explicit, &result.replacements);
+            trace.text = result.text.clone();
+        }
+        Ok(result.text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::Deserialize;
+    use std::time::Duration;
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -821,6 +896,7 @@ mod tests {
             cleanup_capitalize: true,
             voice_commands_enabled: true,
             smart_correction_enabled: true,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
             spoken_numbers_enabled: true,
@@ -847,6 +923,7 @@ mod tests {
             cli_lexicon: CliLexicon::from_context(None, &[]),
             ide_context_index: None,
             voice_command_runtime: None,
+            homophone_engine: None,
         }
     }
 
@@ -887,6 +964,7 @@ mod tests {
             all_stages(),
             TranscriptStageConfig {
                 smart_correction_enabled: false,
+                homophone_context_enabled: false,
                 ..all_stages()
             },
             TranscriptStageConfig {
@@ -944,6 +1022,7 @@ mod tests {
                 CLEANUP_STAGE,
                 VOICE_COMMANDS_STAGE,
                 SMART_CORRECTION_STAGE,
+                HOMOPHONE_CONTEXT_STAGE,
                 SMART_FORMATTING_STAGE,
                 SPOKEN_STRUCTURE_STAGE,
                 SPOKEN_NUMBERS_STAGE,
@@ -951,6 +1030,98 @@ mod tests {
                 CLI_COMMAND_STAGE,
             ]
         );
+    }
+
+    #[test]
+    fn homophone_tier_is_live_opt_in_and_preserves_authoritative_aliases() {
+        use crate::homophone_context::{EngineError, HomophoneEngine};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Engine(AtomicUsize);
+        impl HomophoneEngine for Engine {
+            fn choose(
+                &self,
+                _: &str,
+                prompt: &str,
+                _: Duration,
+                _: u32,
+            ) -> Result<String, EngineError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                // The explicit alias's output is never offered as an option.
+                assert!(!prompt.contains("cloud|Claude"));
+                Ok("1=queue".into())
+            }
+        }
+        let engine = Arc::new(Engine(AtomicUsize::new(0)));
+        let matcher = CorrectionMatcher::build_with_learned(
+            &[],
+            &[("weather word".into(), "cloud".into())],
+            &[],
+            false,
+            false,
+        );
+        let mut resources = TranscriptTransformResources::empty();
+        resources.homophone_engine = Some(engine.clone());
+        resources.correction_matcher = Some(Arc::new(matcher));
+        let pipeline = TranscriptPipeline::standard(resources);
+        let mut context = live_context(TranscriptStageConfig {
+            smart_correction_enabled: true,
+            ..TranscriptStageConfig::verbatim()
+        });
+        let run =
+            |context: &TranscriptContext| pipeline.run("weather word cue".into(), context, None);
+        let output = run(&context).unwrap();
+        assert_eq!(output.text, "cloud cue");
+        assert_eq!(engine.0.load(Ordering::SeqCst), 0);
+        context.stages.homophone_context_enabled = true;
+        let output = run(&context).unwrap();
+        assert_eq!(output.text, "cloud queue");
+        let report = output
+            .stages
+            .iter()
+            .find(|s| s.stage == HOMOPHONE_CONTEXT_STAGE)
+            .unwrap();
+        assert_eq!(report.failure_policy, StageFailurePolicy::OptionalFallback);
+        assert_eq!(report.outcome, StageOutcome::Applied);
+        assert!(report.changed);
+        assert_eq!(engine.0.load(Ordering::SeqCst), 1);
+        context.stages.smart_correction_enabled = false;
+        run(&context).unwrap();
+        context.stages.smart_correction_enabled = true;
+        context.source = TranscriptSource::File;
+        run(&context).unwrap();
+        assert_eq!(engine.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn homophone_engine_failure_is_reported_as_optional_fallback() {
+        struct Unavailable;
+        impl crate::homophone_context::HomophoneEngine for Unavailable {
+            fn choose(
+                &self,
+                _: &str,
+                _: &str,
+                _: Duration,
+                _: u32,
+            ) -> Result<String, crate::homophone_context::EngineError> {
+                Err(crate::homophone_context::EngineError::Unavailable)
+            }
+        }
+        let context = live_context(TranscriptStageConfig {
+            smart_correction_enabled: true,
+            homophone_context_enabled: true,
+            ..TranscriptStageConfig::verbatim()
+        });
+        let mut resources = TranscriptTransformResources::empty();
+        resources.homophone_engine = Some(Arc::new(Unavailable));
+        let output = transform_transcript("the cue".into(), &context, resources).unwrap();
+        assert_eq!(output.text, "the cue");
+        let report = output
+            .stages
+            .iter()
+            .find(|s| s.stage == HOMOPHONE_CONTEXT_STAGE)
+            .unwrap();
+        assert_eq!(report.outcome, StageOutcome::Fallback);
+        assert!(!report.changed);
     }
 
     #[test]
@@ -978,6 +1149,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: true,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
@@ -1001,11 +1173,11 @@ mod tests {
             "useEffect @src/recording.rs and localProjectSymbol"
         );
         assert!(output.stages[2].changed);
-        assert_eq!(output.stages[3].outcome, StageOutcome::Skipped);
         assert_eq!(output.stages[4].outcome, StageOutcome::Skipped);
         assert_eq!(output.stages[5].outcome, StageOutcome::Skipped);
-        assert!(output.stages[6].changed);
-        assert_eq!(output.stages[7].stage, CLI_COMMAND_STAGE);
+        assert_eq!(output.stages[6].outcome, StageOutcome::Skipped);
+        assert!(output.stages[7].changed);
+        assert_eq!(output.stages[8].stage, CLI_COMMAND_STAGE);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1017,6 +1189,7 @@ mod tests {
             cleanup_capitalize: true,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
@@ -1041,6 +1214,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: true,
             smart_correction_enabled: false,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Basic,
             spoken_numbers_enabled: false,
@@ -1184,6 +1358,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: true,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
@@ -1213,7 +1388,7 @@ mod tests {
         let output = transform_transcript(raw.to_string(), &context, resources(true)).unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
         assert_eq!(output.original_text.as_bytes(), raw.as_bytes());
-        assert_eq!(output.stages.len(), 8);
+        assert_eq!(output.stages.len(), 9);
         assert!(output
             .stages
             .iter()
@@ -1228,6 +1403,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: true,
+            homophone_context_enabled: false,
             smart_formatting_enabled: false,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
             spoken_numbers_enabled: false,
@@ -1245,11 +1421,11 @@ mod tests {
         assert_eq!(output.original_text, raw);
         assert_eq!(output.text, "npm run tauri dev");
         assert_eq!(output.stages[2].stage, SMART_CORRECTION_STAGE);
-        assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert_eq!(output.stages[4].stage, SPOKEN_STRUCTURE_STAGE);
-        assert_eq!(output.stages[5].stage, SPOKEN_NUMBERS_STAGE);
-        assert_eq!(output.stages[6].stage, IDE_CONTEXT_STAGE);
-        assert_eq!(output.stages[7].stage, CLI_COMMAND_STAGE);
+        assert_eq!(output.stages[4].stage, SMART_FORMATTING_STAGE);
+        assert_eq!(output.stages[5].stage, SPOKEN_STRUCTURE_STAGE);
+        assert_eq!(output.stages[6].stage, SPOKEN_NUMBERS_STAGE);
+        assert_eq!(output.stages[7].stage, IDE_CONTEXT_STAGE);
+        assert_eq!(output.stages[8].stage, CLI_COMMAND_STAGE);
     }
 
     #[test]
@@ -1260,6 +1436,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            homophone_context_enabled: false,
             smart_formatting_enabled: true,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Extended,
             spoken_numbers_enabled: false,
@@ -1275,9 +1452,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output.text, "I'm missing skills like /chat and /vault-out.");
-        assert!(!output.stages[3].changed);
         assert!(!output.stages[4].changed);
-        assert!(output.stages[7].changed);
+        assert!(!output.stages[5].changed);
+        assert!(output.stages[8].changed);
     }
 
     #[test]
@@ -1291,6 +1468,7 @@ mod tests {
                 cleanup_capitalize: false,
                 voice_commands_enabled: false,
                 smart_correction_enabled: true,
+                homophone_context_enabled: false,
                 smart_formatting_enabled: false,
                 spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
                 spoken_numbers_enabled: false,
@@ -1331,6 +1509,7 @@ mod tests {
             cleanup_capitalize: false,
             voice_commands_enabled: false,
             smart_correction_enabled: false,
+            homophone_context_enabled: false,
             smart_formatting_enabled: true,
             spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Extended,
             spoken_numbers_enabled: false,
@@ -1345,12 +1524,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prose.text, "The tasks are:\n1. Review\n2. Ship");
-        assert!(prose.stages[3].changed);
-        assert_eq!(prose.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert_eq!(prose.stages[4].stage, SPOKEN_STRUCTURE_STAGE);
-        assert_eq!(prose.stages[5].stage, SPOKEN_NUMBERS_STAGE);
-        assert_eq!(prose.stages[6].stage, IDE_CONTEXT_STAGE);
-        assert_eq!(prose.stages[7].stage, CLI_COMMAND_STAGE);
+        assert!(prose.stages[4].changed);
+        assert_eq!(prose.stages[4].stage, SMART_FORMATTING_STAGE);
+        assert_eq!(prose.stages[5].stage, SPOKEN_STRUCTURE_STAGE);
+        assert_eq!(prose.stages[6].stage, SPOKEN_NUMBERS_STAGE);
+        assert_eq!(prose.stages[7].stage, IDE_CONTEXT_STAGE);
+        assert_eq!(prose.stages[8].stage, CLI_COMMAND_STAGE);
 
         let command = transform_transcript(
             "command echo open quote first second close quote".to_string(),
@@ -1358,7 +1537,7 @@ mod tests {
             TranscriptTransformResources::empty(),
         )
         .unwrap();
-        assert!(!command.stages[3].changed);
+        assert!(!command.stages[4].changed);
         assert_eq!(command.text, "echo \"first second\"");
 
         let mut cli_profile_context = live_context(stages);
@@ -1369,7 +1548,7 @@ mod tests {
             TranscriptTransformResources::empty(),
         )
         .unwrap();
-        assert!(!profile_command.stages[3].changed);
+        assert!(!profile_command.stages[4].changed);
         assert_eq!(
             profile_command.text,
             "The tasks are first review second ship"
@@ -1386,7 +1565,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output.text.as_bytes(), raw.as_bytes());
-        assert_eq!(output.stages[3].outcome, StageOutcome::Skipped);
+        assert_eq!(output.stages[4].outcome, StageOutcome::Skipped);
     }
 
     #[test]
@@ -1404,8 +1583,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.text, "857 and 10,103,445");
-        assert_eq!(output.stages[5].stage, SPOKEN_NUMBERS_STAGE);
-        assert!(output.stages[5].changed);
+        assert_eq!(output.stages[6].stage, SPOKEN_NUMBERS_STAGE);
+        assert!(output.stages[6].changed);
 
         let instruction = transform_transcript(
             "make this three paragraphs".to_string(),
@@ -1414,7 +1593,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(instruction.text, "Make this three paragraphs");
-        assert_eq!(instruction.stages[5].outcome, StageOutcome::Skipped);
+        assert_eq!(instruction.stages[6].outcome, StageOutcome::Skipped);
     }
 
     #[test]
@@ -1531,6 +1710,7 @@ mod tests {
     fn correction_and_numbers(register: crate::state::TextRegister) -> TranscriptStageConfig {
         TranscriptStageConfig {
             smart_correction_enabled: true,
+            homophone_context_enabled: false,
             spoken_numbers_enabled: true,
             text_register: register,
             ..TranscriptStageConfig::verbatim()
@@ -1623,12 +1803,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.text, "/step 1?");
-        assert_eq!(output.stages[3].stage, SMART_FORMATTING_STAGE);
-        assert!(!output.stages[3].changed);
-        assert_eq!(output.stages[4].stage, SPOKEN_STRUCTURE_STAGE);
-        assert!(output.stages[4].changed);
-        assert_eq!(output.stages[5].stage, SPOKEN_NUMBERS_STAGE);
+        assert_eq!(output.stages[4].stage, SMART_FORMATTING_STAGE);
+        assert!(!output.stages[4].changed);
+        assert_eq!(output.stages[5].stage, SPOKEN_STRUCTURE_STAGE);
         assert!(output.stages[5].changed);
+        assert_eq!(output.stages[6].stage, SPOKEN_NUMBERS_STAGE);
+        assert!(output.stages[6].changed);
     }
 
     struct AppendStage {

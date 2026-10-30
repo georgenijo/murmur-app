@@ -458,7 +458,8 @@ fn request_refresh(reason: &'static str) {
 }
 
 #[cfg(target_os = "macos")]
-fn topology_changed() {
+pub(crate) fn topology_changed() {
+    crate::audio_lifecycle::input_topology_changed();
     let Some((snapshot, changed)) = coordinator().invalidate() else {
         return;
     };

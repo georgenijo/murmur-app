@@ -116,6 +116,7 @@ pub async fn start_microphone_preview(
     vad_sensitivity: u32,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
+    crate::audio_lifecycle::retire_standby();
     let device_id = normalized_device_id(device_id)?;
     crate::smart_auto_probe::preempt();
     if let Some(id) = state.app_state.microphone_preview.automatic_id() {

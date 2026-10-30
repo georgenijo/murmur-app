@@ -993,6 +993,15 @@ describe('loadSettings', () => {
     expect(settings.correctionFuzzy).toBe(false);
   });
 
+  it('keeps on-device homophones off for old and malformed settings, preserving explicit opt-in', () => {
+    for (const value of [undefined, 'true', 1, null, false, true]) {
+      localStorage.setItem('dictation-settings', JSON.stringify({
+        ...DEFAULT_SETTINGS, homophoneContextEnabled: value,
+      }));
+      expect(loadSettings().homophoneContextEnabled).toBe(value === true);
+    }
+  });
+
   it('migrates legacy custom vocabulary into enabled global entries', () => {
     const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
     delete legacy.vocabularyEntries;
@@ -1359,5 +1368,18 @@ describe('microphoneDeviceNameArg', () => {
   it('passes an explicitly chosen device identifier through unchanged', () => {
     expect(microphoneDeviceNameArg('AppleUSBAudioEngine:Shure:MV7:1234:1'))
       .toBe('AppleUSBAudioEngine:Shure:MV7:1234:1');
+  });
+});
+
+describe('warm microphone standby consent', () => {
+  it('keeps upgrades and malformed consent off and bounds the visible controls', () => {
+    expect(DEFAULT_SETTINGS.captureStandbyEnabled).toBe(false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ captureStandbyEnabled: 'true', captureStandbySeconds: 999999, capturePreRollMs: -1 }));
+    expect(loadSettings()).toMatchObject({ captureStandbyEnabled: false, captureStandbySeconds: 300, capturePreRollMs: 450 });
+  });
+
+  it('round-trips explicit consent and bounded standby choices', () => {
+    saveSettings({ ...DEFAULT_SETTINGS, captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
+    expect(loadSettings()).toMatchObject({ captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
   });
 });

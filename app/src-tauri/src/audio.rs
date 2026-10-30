@@ -255,6 +255,47 @@ pub(crate) struct EnumeratedAudioInputInventory {
     pub(crate) lid_state: ProductionLidState,
 }
 
+/// Recording PCM or a bounded, memory-only standby ring. Policy and samples
+/// share a lock, so a press/stop cannot race an append across the boundary.
+#[derive(Default)]
+pub(crate) struct CaptureSamples {
+    samples: Vec<f32>,
+    standby_ms: Option<u32>,
+}
+
+impl std::ops::Deref for CaptureSamples {
+    type Target = Vec<f32>;
+    fn deref(&self) -> &Self::Target {
+        &self.samples
+    }
+}
+impl std::ops::DerefMut for CaptureSamples {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.samples
+    }
+}
+impl CaptureSamples {
+    pub(crate) fn append_pcm(&mut self, pcm: &[f32], rate: u32) {
+        self.samples.extend_from_slice(pcm);
+        if let Some(ms) = self.standby_ms {
+            let limit = rate as usize * ms as usize / 1000;
+            let excess = self.samples.len().saturating_sub(limit);
+            self.samples.drain(..excess);
+        }
+    }
+    pub(crate) fn enter_standby(&mut self, ms: u32) -> Vec<f32> {
+        self.standby_ms = Some(ms);
+        // Never include audio from the preceding dictation in the next one.
+        std::mem::take(&mut self.samples)
+    }
+    pub(crate) fn resume(&mut self) {
+        self.standby_ms = None;
+    }
+    pub(crate) fn take(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.samples)
+    }
+}
+
 pub(crate) enum AudioCommand {
     Stop,
 }
@@ -411,7 +452,7 @@ pub(crate) struct AudioWorkerSpec {
     pub probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
     pub owner: crate::audio_lifecycle::AudioOwner,
     pub command_receiver: Receiver<AudioCommand>,
-    pub shared: Arc<Mutex<Vec<f32>>>,
+    pub shared: Arc<Mutex<CaptureSamples>>,
     pub active: Arc<AtomicBool>,
     pub app_handle: Option<tauri::AppHandle>,
     pub device_id: Option<String>,
@@ -2021,7 +2062,7 @@ fn run_backend(
     device_id: Option<&str>,
     ctx: AttemptContext,
     command_receiver: &Receiver<AudioCommand>,
-    shared: &Arc<Mutex<Vec<f32>>>,
+    shared: &Arc<Mutex<CaptureSamples>>,
     active: &Arc<AtomicBool>,
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
@@ -2285,7 +2326,7 @@ fn run_backend(
                         shared
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .extend_from_slice(samples);
+                            .append_pcm(samples, sample_rate.unwrap_or(16_000));
                     }
                 };
                 let tail = if command.is_ok() && owner.dictation_id().is_some() {
@@ -2618,7 +2659,7 @@ fn run_backend(
                     shared
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .extend_from_slice(&pcm.samples);
+                        .append_pcm(&pcm.samples, pcm.sample_rate);
                 }
                 if let Some(preview_id) = owner.preview_id() {
                     if let Some(handle) = app_handle.as_ref() {
@@ -4058,7 +4099,7 @@ mod tests {
         let (_commands, receiver) = mpsc::channel();
         let events =
             AudioWorkerEventSender::new(|_| panic!("revoked probe must not enter another backend"));
-        let shared = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::new(Mutex::new(CaptureSamples::default()));
         let active = Arc::new(AtomicBool::new(false));
         let mut attempted = 0;
         let result = run_capture_backend_pass(
