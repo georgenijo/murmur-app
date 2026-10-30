@@ -1,3 +1,4 @@
+import { SettingsRow } from './SettingsRow';
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -119,21 +120,13 @@ export function MeetingDiarizationSettings({
 
   return (
     <div data-setting-target="meeting-speakers" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <div className="flex items-center justify-between gap-6">
-        <div className="settings-title-description">
-          <p className="text-sm font-medium text-on-surface">Label Remote Speakers</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
-            Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting.
-          </p>
-        </div>
-        <AnimatedSwitch
+      <SettingsRow title="Label Remote Speakers" description="Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting." disabled={!supported} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={!supported}
           aria-label="Label Remote Speakers"
           onCheckedChange={() => onEnabledChange(!enabled)}
-        />
-      </div>
+        />} />
 
       <div className="settings-callout text-xs leading-relaxed text-on-surface-variant">
         <p>

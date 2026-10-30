@@ -21,6 +21,7 @@ export interface SelectProps<T extends string = string> {
   onChange: (value: T) => void;
   items: SelectItems<T>;
   disabled?: boolean;
+  size?: 'default' | 'sm' | 'xs';
   placeholder?: string;
   'aria-label'?: string;
   'aria-describedby'?: string;
@@ -37,6 +38,7 @@ export function Select<T extends string = string>({
   onChange,
   items,
   disabled,
+  size = 'default',
   placeholder,
   'aria-label': ariaLabel,
   'aria-describedby': ariaDescribedBy,
@@ -230,11 +232,12 @@ export function Select<T extends string = string>({
     : [];
 
   return (
-    <div className="relative w-full" onKeyDown={handleKeyDown}>
+    <div className="ui-select relative w-full" onKeyDown={handleKeyDown}>
       <button
         ref={triggerRef}
         type="button"
         role="combobox"
+        data-size={size}
         aria-expanded={isOpen}
         aria-haspopup="listbox"
         aria-controls={`${id}-listbox`}
@@ -247,8 +250,8 @@ export function Select<T extends string = string>({
         aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
-        className={`flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) shadow-(--ui-shadow-1) px-3 text-left text-sm text-on-surface transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-          disabled ? 'opacity-50 cursor-not-allowed' : ''
+        className={`ui-select-trigger flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) shadow-(--ui-shadow-1) px-3 text-left text-sm text-on-surface transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+          disabled ? 'cursor-not-allowed' : ''
         }`}
       >
         <span className="flex min-w-0 flex-1 items-center">

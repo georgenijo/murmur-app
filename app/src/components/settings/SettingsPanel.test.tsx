@@ -450,10 +450,7 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent === 'Recording',
     ) as HTMLButtonElement;
     await act(async () => recording.click());
-    const heading = Array.from(container.querySelectorAll('p')).find(
-      (item) => item.textContent === 'Voice Detection',
-    ) as HTMLParagraphElement;
-    const slider = heading.parentElement?.querySelector('input[type="range"]') as HTMLInputElement;
+    const slider = container.querySelector('[data-setting-target="voice-detection"] input[type="range"]') as HTMLInputElement;
     await act(async () => {
       slider.value = '75';
       slider.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1229,7 +1226,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => delivery.click());
 
     const autoPasteSwitch = container.querySelector('[role="switch"][aria-label="Auto paste"]') as HTMLElement;
-    const autoPasteBranch = autoPasteSwitch.parentElement?.nextElementSibling as HTMLElement;
+    const autoPasteBranch = autoPasteSwitch.closest('.settings-setting-row')?.nextElementSibling as HTMLElement;
     expect(autoPasteBranch.dataset.expanded).toBe('false');
     expect(autoPasteBranch.getAttribute('aria-hidden')).toBe('true');
 
@@ -1278,7 +1275,7 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     await act(async () => text.click());
     const cleanupSwitch = container.querySelector('[role="switch"][aria-label="Transcript Cleanup"]') as HTMLElement;
-    const cleanupBranch = cleanupSwitch.parentElement?.nextElementSibling as HTMLElement;
+    const cleanupBranch = cleanupSwitch.closest('.settings-setting-row')?.nextElementSibling as HTMLElement;
     expect(cleanupBranch.classList.contains('settings-dependent-branch')).toBe(true);
     expect(cleanupBranch.dataset.expanded).toBe('true');
     expect(cleanupBranch.querySelector('[aria-label="Remove filler words"]')).toBeTruthy();

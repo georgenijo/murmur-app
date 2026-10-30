@@ -16,7 +16,7 @@ export type SettingsEditorTab =
   | 'commands'
   | 'scan';
 
-const EDITOR_LABELS: Record<SettingsEditorTab, string> = {
+export const SETTINGS_EDITOR_LABELS: Record<SettingsEditorTab, string> = {
   vocabulary: 'Vocabulary',
   aliases: 'Aliases',
   knowledge: 'Knowledge',
@@ -144,9 +144,9 @@ export function SettingsEditorsWindow({
         </button>
         <div>
           <p className="settings-eyebrow">Text editor</p>
-          <h1 id="settings-editor-title" className="text-base font-semibold text-on-surface">
-            {EDITOR_LABELS[initialTab]}
-          </h1>
+          <h2 id="settings-editor-title" className="text-base font-semibold text-on-surface">
+            {SETTINGS_EDITOR_LABELS[initialTab]}
+          </h2>
         </div>
       </div>
 

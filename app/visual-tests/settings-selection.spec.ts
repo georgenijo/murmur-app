@@ -32,7 +32,7 @@ for (const appearance of appearances) {
 
       const customize = navigation.getByRole('button', { name: 'Customize', exact: true });
       await expect(customize).toHaveAttribute('aria-current', 'page');
-      await expect(page.getByRole('heading', { name: 'Customize Murmur', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customize Murmur', exact: true, level: 1 })).toBeVisible();
 
       const customizeIcon = customize.locator('svg').evaluate((svg) => svg.innerHTML);
       const modesIcon = navigation.getByRole('button', { name: 'Modes', exact: true }).locator('svg').evaluate((svg) => svg.innerHTML);
@@ -46,8 +46,7 @@ for (const appearance of appearances) {
           backgroundColor: style.backgroundColor,
         };
       });
-      expect(selectedNavStyle.borderTopWidth).toBe('1px');
-      expect(selectedNavStyle.borderTopColor).not.toBe('rgba(0, 0, 0, 0)');
+      expect(selectedNavStyle.borderTopWidth).toBe('0px');
       expect(selectedNavStyle.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
 
       await navigation.getByRole('button', { name: 'Modes', exact: true }).click();

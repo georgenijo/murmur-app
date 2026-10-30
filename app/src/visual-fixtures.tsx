@@ -19,6 +19,12 @@ import { useQueryHistory } from './lib/hooks/useQueryHistory';
 import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
 import { QueryReviewView } from './components/query-review/QueryReviewApp';
 import './components/assistant/assistant.css';
+import { Button, Input } from './components/ui/FormControls';
+import { Select } from './components/ui/Select';
+import AnimatedSwitch from './components/ui/animated-switch/animated-switch';
+import { SettingsSection } from './components/settings/SettingsSection';
+import { SettingsRow, SettingsCard, SettingsUnavailableGroup } from './components/settings/SettingsRow';
+import { SettingToggle } from './components/settings/SettingToggle';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
@@ -850,6 +856,28 @@ function MeetingSuggestionOverlayFixture() {
 
 /** Render production primitives for browser-computed measurements, never
  * substitutes for native WKWebView evidence. */
+/** Actual production primitives; only native IPC is mocked by this entry. */
+function SettingsGeometryFixture() {
+  const [changed, setChanged] = React.useState(true);
+  return <main data-visual-ready="true" className="settings-workspace" style={{ padding: 24, display: 'block', overflow: 'auto', height: '100%' }}>
+    <SettingsSection pageId="geometry" title="Delivery geometry">
+      <SettingToggle title="Clipboard delivery" description="Copy the complete transcript locally. A long description remains readable at every width without clamping." checked={changed} defaultChecked={false} onChange={() => setChanged(!changed)} />
+      <SettingsRow title="Language" description="Choose the language for recognition." control={<Select value="auto" onChange={() => {}} items={[{ value: 'auto', label: 'Automatic' }]} />} />
+      <SettingsRow title="Controls" control={<><Button>Default</Button><Button size="sm">Small</Button><Button size="xs">Extra small</Button></>} />
+      <SettingsRow title="Input" control={<Input aria-label="Example input" defaultValue="Local text" />} />
+      <SettingToggle title="Disabled" description="Unavailable while recording." checked disabled onChange={() => {}} />
+      <SettingsUnavailableGroup message="This feature requires a local model."><SettingToggle title="Unavailable" description="Install a model to enable this feature." checked={false} disabled onChange={() => {}} /></SettingsUnavailableGroup>
+    </SettingsSection>
+    <SettingsCard variant="plain"><Button>Plain one</Button><Button>Plain two</Button></SettingsCard>
+    <div className="settings-row-controls" style={{ marginTop: 16 }}>
+      <AnimatedSwitch aria-label="Small switch" size="sm" defaultChecked />
+      <Select aria-label="Small select" size="sm" value="a" onChange={() => {}} items={[{ value: 'a', label: 'Small' }]} />
+      <Select aria-label="Extra small select" size="xs" value="a" onChange={() => {}} items={[{ value: 'a', label: 'Extra small' }]} />
+    </div>
+    <div className="settings-segmented" style={{ marginTop: 16 }}><button className="settings-segmented-btn" data-selected="true">Selected</button><button className="settings-segmented-btn">Other</button></div>
+  </main>;
+}
+
 function TypographyFixture() {
   return (
     <main data-visual-ready="true" className="space-y-4 p-6">
@@ -884,7 +912,9 @@ function TypographyFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'production-font-roots' ? (
+    {requestedState === 'settings-geometry' ? (
+      <SettingsGeometryFixture />
+    ) : requestedState === 'production-font-roots' ? (
       <main data-visual-ready="true">
         {(['main', 'onboarding', 'diagnostics'] as const).map(surface => (
           <AppSurface key={surface} surface={surface} className="font-serif"><p>{surface} production text</p></AppSurface>
