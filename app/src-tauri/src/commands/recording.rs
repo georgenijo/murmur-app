@@ -3916,12 +3916,9 @@ pub async fn configure_dictation(
     state.app_state.bump_settings_revision();
     crate::smart_destination::set_enabled(smart_destination_eligible(&dictation));
 
-    if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_u64()) {
-        let normalized = match idle_timeout {
-            0 | 5 | 15 => idle_timeout as u32,
-            _ => 5, // fall back to default
-        };
-        *state.app_state.idle_timeout_minutes.lock_or_recover() = normalized;
+    if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_i64()) {
+        *state.app_state.model_idle_policy.lock_or_recover() =
+            crate::state::ModelIdlePolicy::from_setting(idle_timeout);
     }
 
     // If model changed, swap/reset the backend so the next transcription loads

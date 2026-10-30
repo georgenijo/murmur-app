@@ -7,6 +7,12 @@ pub(crate) fn cpu_percent() -> Option<f32> {
     current::cpu_percent()
 }
 
+/// Whether the Mac currently draws from an adapter or desktop supply.
+/// Unknown power state reports `false`, so callers keep battery behavior.
+pub(crate) fn on_external_power() -> bool {
+    current::on_external_power()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CpuTicks {
     active: u64,
@@ -43,6 +49,14 @@ pub(super) fn update_cpu_percent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_source_read_survives_repeated_snapshots() {
+        // Smoke test only: the live supply may change mid-run.
+        for _ in 0..64 {
+            let _ = on_external_power();
+        }
+    }
 
     #[test]
     fn cpu_percent_uses_delta_between_samples() {

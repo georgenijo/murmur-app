@@ -394,7 +394,7 @@ One catalog is the single source of truth for all seven shipped models:
 
 Each entry declares its backend, accelerator, capabilities (multilingual, translation, timestamps, confidence, punctuation control), install kind, platform requirement, `warm_on_startup`, and `retry_unfiltered_on_empty`. Unknown model identifiers **fail closed** — Murmur never silently falls back to a different model.
 
-The manager serializes load/warm/readiness/unload, emits generation-ordered `model-runtime-status-changed` events, and reports a `LoadReport` (`lock_wait_ms`, `load_ms`, `cache_hit`) that feeds the performance record. Idle release is user-configurable (`idleTimeoutMinutes`).
+The manager serializes load/warm/readiness/unload, emits generation-ordered `model-runtime-status-changed` events, and reports a `LoadReport` (`lock_wait_ms`, `load_ms`, `cache_hit`) that feeds the performance record. Idle release is user-configurable (`idleTimeoutMinutes`, including a power-adapter-only keep-loaded policy).
 
 **Warm-on-record:** `start_native_recording` kicks off `spawn_model_preparation()` immediately after audio capture starts, so model load overlaps with the user still speaking. By the time the key is released the model is usually resident. (The transform sidecar does **not** do this yet — see issue #340.)
 

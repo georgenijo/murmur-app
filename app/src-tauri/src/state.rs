@@ -424,6 +424,57 @@ struct ActiveDictationContext {
     snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
 }
 
+/// When the heartbeat may release an idle dictation model (issue #831).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelIdlePolicy {
+    /// Release after this many idle minutes.
+    AfterMinutes(u32),
+    /// Stay loaded on external power; on battery, release after the default
+    /// idle window so laptops keep the old memory behavior.
+    NeverOnExternalPower,
+    /// Never release on idle.
+    Never,
+}
+
+impl ModelIdlePolicy {
+    pub const DEFAULT_MINUTES: u32 = 5;
+    /// Settings wire value for `NeverOnExternalPower`; minutes are otherwise
+    /// non-negative and `0` already means `Never`.
+    pub const NEVER_ON_EXTERNAL_POWER_SETTING: i64 = -1;
+
+    /// Map the persisted `idleTimeoutMinutes` value. Unknown values fall back
+    /// to the default window rather than keeping memory resident.
+    pub fn from_setting(value: i64) -> Self {
+        match value {
+            0 => Self::Never,
+            5 | 15 => Self::AfterMinutes(value as u32),
+            Self::NEVER_ON_EXTERNAL_POWER_SETTING => Self::NeverOnExternalPower,
+            _ => Self::default(),
+        }
+    }
+
+    /// Idle window that applies now, or `None` when the model stays loaded.
+    /// `on_external_power` is only consulted for `NeverOnExternalPower`.
+    pub fn release_after(
+        self,
+        on_external_power: impl FnOnce() -> bool,
+    ) -> Option<std::time::Duration> {
+        let minutes = match self {
+            Self::AfterMinutes(0) | Self::Never => return None,
+            Self::AfterMinutes(minutes) => minutes,
+            Self::NeverOnExternalPower if on_external_power() => return None,
+            Self::NeverOnExternalPower => Self::DEFAULT_MINUTES,
+        };
+        Some(std::time::Duration::from_secs(u64::from(minutes) * 60))
+    }
+}
+
+impl Default for ModelIdlePolicy {
+    fn default() -> Self {
+        Self::AfterMinutes(Self::DEFAULT_MINUTES)
+    }
+}
+
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
     /// Serializes recorder start/stop/cancel command transitions. Microphone
@@ -432,7 +483,7 @@ pub struct AppState {
     pub recording_transition: tokio::sync::Mutex<()>,
     pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,
-    pub idle_timeout_minutes: Mutex<u32>,
+    pub model_idle_policy: Mutex<ModelIdlePolicy>,
     /// Monotonically increasing ID assigned to each recording session.
     pub recording_id: AtomicU64,
     /// Exact recording generation currently owning the single live partial decode.
@@ -751,7 +802,7 @@ impl Default for AppState {
             recording_transition: tokio::sync::Mutex::new(()),
             model_runtime: ModelRuntimeManager::default(),
             last_transcription_at: Mutex::new(None),
-            idle_timeout_minutes: Mutex::new(5),
+            model_idle_policy: Mutex::new(ModelIdlePolicy::default()),
             recording_id: AtomicU64::new(0),
             dictation_partial_in_flight_id: AtomicU64::new(0),
             dictation_nonempty_preview_id: AtomicU64::new(0),
@@ -788,6 +839,36 @@ impl Default for AppState {
 mod tests {
     use super::*;
     use crate::dictation_context::{resolve, ResolverInputs, SessionOverrides};
+
+    #[test]
+    fn model_idle_policy_maps_settings_and_power_source() {
+        use std::time::Duration;
+        let five = Some(Duration::from_secs(5 * 60));
+        assert_eq!(ModelIdlePolicy::default().release_after(|| true), five);
+        assert_eq!(
+            ModelIdlePolicy::from_setting(0).release_after(|| false),
+            None
+        );
+        assert_eq!(
+            ModelIdlePolicy::from_setting(15).release_after(|| true),
+            Some(Duration::from_secs(15 * 60))
+        );
+        for unknown in [-2, 1, 7, 60, i64::MAX] {
+            assert_eq!(
+                ModelIdlePolicy::from_setting(unknown),
+                ModelIdlePolicy::default()
+            );
+        }
+        let on_power = ModelIdlePolicy::from_setting(-1);
+        assert_eq!(on_power, ModelIdlePolicy::NeverOnExternalPower);
+        assert_eq!(on_power.release_after(|| true), None);
+        assert_eq!(on_power.release_after(|| false), five);
+        // Fixed windows never probe the power source.
+        assert_eq!(
+            ModelIdlePolicy::AfterMinutes(5).release_after(|| panic!("power source read")),
+            five
+        );
+    }
 
     #[test]
     fn dictation_defaults_to_immediate_paste() {

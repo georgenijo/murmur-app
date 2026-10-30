@@ -258,6 +258,17 @@ device UIDs, transcript content, or free-form errors. Fewer than five successful
 captures is reported as insufficient data rather than healthy or degraded.
 Clearing Performance diagnostics also clears these retained observations.
 
+## Cold model loads
+
+The Performance tab's Live health section also shows how many of the recent
+successful dictations in the bounded run history paid a cold model load, and
+the median measured `modelLoad` stage across those runs. A run counts as cold
+when recording-start preparation loaded the model instead of finding it
+resident (`warmState: coldLoaded`); runs whose warm state is `unknown` are left
+out. The line is derived in the frontend from the same content-free run records
+as the Runs tab and changes no runtime behavior. See
+[models.md](models.md#idle-release) for the setting that controls idle release.
+
 ## UI navigation latency
 
 The Diagnostics **Latency** tab records content-free frontend transitions

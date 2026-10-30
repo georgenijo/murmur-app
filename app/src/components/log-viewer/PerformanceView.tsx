@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { MeasurementV1, ResourceSampleV1 } from '../../lib/performance';
+import type { MeasurementV1, PerformanceRunV1, ResourceSampleV1 } from '../../lib/performance';
 import type { PerformanceHealth } from '../../lib/hooks/usePerformanceHealth';
 import type { PerformanceStoreHealthState } from '../../lib/hooks/usePerformanceStoreHealth';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../../lib/performancePresentation';
 import { PerformanceChart, type ResourceChartSeries } from './PerformanceChart';
 import { PerformanceStoreHealthBanner } from './PerformanceStoreHealthBanner';
+import { ColdModelLoadLine } from './ColdModelLoadLine';
 
 interface PerformanceViewProps {
   samples: ResourceSampleV1[];
@@ -18,6 +19,8 @@ interface PerformanceViewProps {
   health: PerformanceHealth;
   store?: PerformanceStoreHealthState;
   onRetry: () => void;
+  /** Bounded recent runs, used only for the content-free cold-load rate. */
+  runs?: readonly PerformanceRunV1[];
 }
 
 interface MetricCardProps {
@@ -181,6 +184,7 @@ export function PerformanceView({
   health,
   store,
   onRetry,
+  runs,
 }: PerformanceViewProps) {
   const [selectedIndex, setSelectedIndex] = useState(Math.max(samples.length - 1, 0));
 
@@ -268,6 +272,7 @@ export function PerformanceView({
           </div>
         )}
         <CaptureHealthLine health={health} />
+        {runs && <ColdModelLoadLine runs={runs} />}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           {healthCards.map(card => <MetricCard key={card.label} {...card} />)}
         </div>
