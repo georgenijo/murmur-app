@@ -44,10 +44,13 @@ const MAX_WINDOW_MS: u64 = 1_000;
 const MAX_LINE_BYTES: usize = 32;
 const MAX_SAFARI_PIDS: usize = 32;
 
-/// Which browser processes to hear.
+/// When to hear the browsers. Either way the tap covers every browser
+/// process, so a pause tap that stays open as the dictation's watch also
+/// hears another tab or browser start.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Processes {
-    /// Only those with open output; unknown counts as open.
+    /// Only when one has open output (unknown counts as open): a closed
+    /// output is silent, so most dictations open no tap at all.
     Playing,
     All,
 }
@@ -150,6 +153,17 @@ fn browser_process_objects(safari_pids: &[i32]) -> Result<Vec<ProcessObject>, ()
             })
         })
         .collect())
+}
+
+fn tap_objects(mode: Processes, processes: &[ProcessObject]) -> Vec<AudioObjectID> {
+    if processes
+        .iter()
+        .any(|process| mode.includes(process.running_output))
+    {
+        processes.iter().map(|process| process.object).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// A browser is using the microphone (probably a call). Unknown counts as yes.
@@ -338,13 +352,7 @@ pub(crate) fn run(arguments: &[String]) -> i32 {
     };
     let processes = browser_process_objects(&arguments.safari_pids);
     let call = in_call(&processes);
-    let objects: Vec<AudioObjectID> = processes
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|process| arguments.processes.includes(process.running_output))
-        .map(|process| process.object)
-        .collect();
-    // No matching process means nothing to hear: most dictations open no tap.
+    let objects = tap_objects(arguments.processes, &processes.unwrap_or_default());
     let tap = if call || objects.is_empty() || !crate::system_audio::supported() {
         None
     } else {
@@ -576,6 +584,21 @@ mod tests {
         assert!(!Processes::Playing.includes(Some(false)));
         assert!(Processes::Playing.includes(None));
         assert!(Processes::All.includes(Some(false)));
+    }
+
+    #[test]
+    fn one_open_output_taps_every_browser_and_none_taps_nothing() {
+        let process = |object, running_output| ProcessObject {
+            object,
+            running_input: Some(false),
+            running_output,
+        };
+        let closed = [process(1, Some(false)), process(2, Some(false))];
+        assert!(tap_objects(Processes::Playing, &closed).is_empty());
+        assert_eq!(tap_objects(Processes::All, &closed), vec![1, 2]);
+        let one_open = [process(1, Some(false)), process(2, Some(true))];
+        assert_eq!(tap_objects(Processes::Playing, &one_open), vec![1, 2]);
+        assert!(tap_objects(Processes::Playing, &[]).is_empty());
     }
 
     #[test]

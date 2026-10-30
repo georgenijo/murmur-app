@@ -405,16 +405,14 @@ mod native {
                         "browser media pause finished"
                     );
                     if let Ok(proof) = result {
-                        drop(audio);
-                        // Watch every browser, not only the paused one: any
-                        // browser sounding may move Now Playing, after which
-                        // play could start media that was not playing.
-                        let mut watch = WorkerBrowserAudio::new(Listen::All);
-                        watch.start();
+                        // The pause tap covers every browser and keeps
+                        // listening, with no unobserved handoff: any browser
+                        // sounding may move Now Playing, after which play
+                        // could start media that was not playing.
                         paused = Some(Held {
                             recording_id,
                             proof,
-                            watch,
+                            watch: audio,
                         });
                     }
                 }
@@ -452,7 +450,7 @@ mod native {
 
     #[derive(Clone, Copy)]
     enum Listen {
-        /// Only browsers with open output: a closed output is silent.
+        /// Every browser, only when one has open output: a closed output is silent.
         Playing,
         /// Every browser: a paused one closes its output a few seconds later.
         All,
@@ -503,10 +501,6 @@ mod native {
         /// The worker still runs with a tap.
         fn listening(&self) -> bool {
             self.worker.as_ref().is_some_and(|worker| worker.tapped)
-        }
-
-        fn start(&mut self) {
-            let _ = self.worker();
         }
 
         fn worker(&mut self) -> Option<&mut Worker> {

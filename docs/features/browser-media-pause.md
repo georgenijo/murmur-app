@@ -28,13 +28,14 @@ tap that covers only browser processes.
 Dictation Starting → Recording (setting on, System Audio Recording granted)
 ├── A browser uses the microphone, or Murmur cannot tell → leave it alone
 ├── No browser process has its output open → leave it alone (no tap)
+├── Otherwise tap every browser process (kept open for the whole recording)
 ├── Listen 3 × 100 ms; any window at or below -60 dBFS, or no level → leave it alone
 ├── Send the system pause (MediaRemote 1)
 └── Poll 5 × 100 ms
     ├── 2 windows in a row below -90 dBFS → Murmur paused it (proof kept)
     └── Otherwise (another tab, a sound that ended, pause reached another app) → no play later
 
-While the recording lasts, a tap on every browser listens every 500 ms
+While the recording lasts, the same tap listens every 500 ms
 ├── Any browser sounds (you played it, or another tab or browser) → give up the
 │   proof: no play later, even if you pause it again before the dictation ends
 ├── No level and the worker cannot confirm every browser output closed, or the
@@ -66,9 +67,9 @@ signed, sandboxed capture worker in `--browser-level <playing|all>` mode. It
 owns the tap and answers bounded line requests (`peak <ms>`, `closed`) with a
 peak in dBFS or `none`. The IO callback keeps only an atomic peak and callback
 count; no audio sample is copied, stored, or written out. Closing stdin tears
-the tap down in reverse creation order. While Murmur holds a pause, a second
-worker tapping every browser stays open for the whole recording and is closed
-before the resume; the host hard-kills the exact process
+the tap down in reverse creation order. While Murmur holds a pause, the pause
+worker, whose tap covers every browser, stays open for the whole recording with
+no handoff and is closed before the resume; the host hard-kills the exact process
 group if the worker does not exit within 500 ms. The host owns the decision and
 sends the MediaRemote command (the worker's sandbox does not reach it).
 
@@ -99,8 +100,10 @@ shows **Open Settings**. No Automation (Apple Events) permission is used.
   and it sends no play, so the other app may stay paused. Likewise, if Now
   Playing changes to another app while the browser is paused, the play can
   reach that app. Murmur then hears the browser stay silent and sends pause
-  again within 1–2 s. Since macOS 15.4, apps cannot read Now Playing, so Murmur
-  cannot check the target first.
+  again within 1–2 s. Murmur releases its pause if any browser sounds during
+  the dictation, so this needs a native player (Music, Spotify) that you both
+  started and paused while dictating. Since macOS 15.4, apps cannot read Now
+  Playing, so Murmur cannot check the target first.
 - Two tabs sounding at once: one pause silences only one, so the pause is not
   confirmed and nothing is resumed.
 - Quitting Murmur during a recording leaves a paused browser paused.
