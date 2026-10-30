@@ -109,9 +109,8 @@ modification time and the durations agree within max(1 s, 15%). A recording
 with more than one candidate, or an entry claimed by two recordings, is skipped
 rather than guessed. Only pairs whose history text differs from the delivered
 `.txt` are exported. The corrected history text becomes the reference. The
-words the user replaced or inserted become that clip's `terms`, the
-homophone/name targets. A hand-written `murmur-NNNN.reference.txt` next to a
-WAV overrides pairing for that clip.
+words the user replaced or inserted, compared case-sensitively so `github` →
+`GitHub` counts, become that clip's `terms`, the homophone/name targets.
 
 The corpus is written to `~/Library/Application Support/Murmur Accuracy
 Corpus/v1` (mode 0700). The exporter refuses a non-empty destination and any

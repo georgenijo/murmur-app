@@ -303,9 +303,10 @@ def word_errors(reference: str, hypothesis: str) -> tuple[int, int]:
 def correction_terms(original: str, corrected: str) -> list[str]:
     """Words the user inserted or replaced when correcting `original`, grouped
     into contiguous phrases. These are the homophone/name targets."""
-    before = [t.norm for t in tokenize(original)]
+    # Case-sensitive on purpose: `github` -> `GitHub` is a name correction.
+    before = [t.raw for t in tokenize(original)]
     after_tokens = tokenize(corrected)
-    after = [t.norm for t in after_tokens]
+    after = [t.raw for t in after_tokens]
     terms: list[str] = []
     matcher = difflib.SequenceMatcher(a=before, b=after, autojunk=False)
     for tag, _a0, _a1, b0, b1 in matcher.get_opcodes():
@@ -452,13 +453,19 @@ def recommend_default(summary: dict[str, Any], contains_real_user_data: bool) ->
     if not candidates:
         return "none — no successful model results"
 
+    def lower_is_better(value: Any) -> float:
+        return float("inf") if value is None else value
+
+    def higher_is_better(value: Any) -> float:
+        return 0.0 if value is None else -value
+
     def key(model: dict[str, Any]) -> tuple[float, float, float, float]:
         delivered = model["delivered"]
         return (
-            model.get("deliveredNormalizedWordErrorRate") or float("inf"),
-            -(delivered.get("termHitRate") or 0.0),
-            -(delivered.get("punctuationF1") or 0.0),
-            model.get("warmMedianMs") or float("inf"),
+            lower_is_better(model.get("deliveredNormalizedWordErrorRate")),
+            higher_is_better(delivered.get("termHitRate")),
+            higher_is_better(delivered.get("punctuationF1")),
+            lower_is_better(model.get("warmMedianMs")),
         )
 
     best = min(candidates, key=key)
@@ -597,12 +604,11 @@ class SavedRecording:
     mtime: float
     seconds: float
     delivered: str | None
-    manual_reference: str | None
 
 
 def scan_saved_recordings(audio_dir: Path) -> tuple[list[SavedRecording], int]:
-    """Find Save Audio outputs (`murmur-NNNN.wav`, optional `.txt` delivered
-    text, optional `.reference.txt` user-typed reference)."""
+    """Find Save Audio outputs (`murmur-NNNN.wav` plus the optional delivered
+    `murmur-NNNN.txt`)."""
     recordings, invalid = [], 0
     for path in sorted(audio_dir.iterdir()):
         if not _SAVED_WAV.match(path.name) or not path.is_file() or path.is_symlink():
@@ -611,19 +617,13 @@ def scan_saved_recordings(audio_dir: Path) -> tuple[list[SavedRecording], int]:
         if info is None or info[0] != SAMPLE_RATE or info[1] != 1 or info[2] != 2:
             invalid += 1
             continue
-        stem = path.with_suffix("")
-
-        def read(suffix: str) -> str | None:
-            candidate = stem.with_name(stem.name + suffix)
-            return candidate.read_text(encoding="utf-8").strip() if candidate.is_file() else None
-
+        transcript = path.with_suffix(".txt")
         recordings.append(
             SavedRecording(
                 path=path,
                 mtime=path.stat().st_mtime,
                 seconds=info[3],
-                delivered=read(".txt"),
-                manual_reference=read(".reference.txt"),
+                delivered=transcript.read_text(encoding="utf-8").strip() if transcript.is_file() else None,
             )
         )
     return recordings, invalid
@@ -680,11 +680,8 @@ def export_corpus(args: argparse.Namespace) -> int:
     pairs = pair_history(recordings, entries, args.max_skew_seconds)
 
     skipped = {"invalidAudio": invalid, "unpaired": 0, "uncorrected": 0, "noDeliveredText": 0, "invalidReference": 0}
-    selected: list[tuple[SavedRecording, str, str | None]] = []
+    selected: list[tuple[SavedRecording, str, str]] = []
     for index, recording in enumerate(recordings):
-        if recording.manual_reference:
-            selected.append((recording, recording.manual_reference, recording.delivered))
-            continue
         entry = pairs.get(index)
         if entry is None:
             skipped["unpaired"] += 1
@@ -719,7 +716,7 @@ def export_corpus(args: argparse.Namespace) -> int:
         file_name = f"{prompt_id}.wav"
         destination = out / "audio" / file_name
         shutil.copyfile(recording.path, destination)
-        terms = correction_terms(original, reference) if original else []
+        terms = correction_terms(original, reference)
         recorded_at = dt.datetime.fromtimestamp(recording.mtime, dt.timezone.utc).isoformat()
         manifest_entries.append(
             _entry(number, prompt_id, f"Corrected recording {number}", reference,

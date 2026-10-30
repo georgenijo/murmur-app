@@ -117,6 +117,9 @@ class CorrectionTermsTests(unittest.TestCase):
         self.assertEqual(
             accuracy.correction_terms("open codes design", "OpenCode's design"), ["OpenCode's"]
         )
+        self.assertEqual(
+            accuracy.correction_terms("push to github today", "push to GitHub today"), ["GitHub"]
+        )
         self.assertEqual(accuracy.correction_terms("same text", "same text"), [])
 
 
@@ -190,6 +193,19 @@ class ScoreReportTests(unittest.TestCase):
             accuracy.recommend_default(summary, True).startswith("parakeet-tdt-0.6b-v3-coreml")
         )
 
+    def test_a_perfect_wer_wins_the_recommendation(self) -> None:
+        def model(name: str, wer: float, median: float) -> dict:
+            return {
+                "modelName": name,
+                "fixtures": 25,
+                "deliveredNormalizedWordErrorRate": wer,
+                "warmMedianMs": median,
+                "delivered": {"termHitRate": 0.5, "punctuationF1": 0.5},
+            }
+
+        summary = {"fixtureCount": 25, "models": [model("slow-perfect", 0.0, 900.0), model("fast", 0.1, 50.0)]}
+        self.assertTrue(accuracy.recommend_default(summary, True).startswith("slow-perfect"))
+
 
 class ArmTests(unittest.TestCase):
     def test_documented_arms_split_into_runs_and_skips(self) -> None:
@@ -251,8 +267,6 @@ class ExportTests(unittest.TestCase):
         self.saved(3, 2.0, "no history", base + 500)  # unpaired
         self.saved(4, 3.0, "twin one", base + 900)  # ambiguous: two entries
         self.saved(5, 1.5, None, base + 1300)  # no delivered .txt
-        (self.audio / "murmur-0006.reference.txt").write_text("Typed reference.", encoding="utf-8")
-        write_wav(self.audio / "murmur-0006.wav", 1.0)  # manual reference -> exported
         write_wav(self.audio / "murmur-0007.wav", 1.0, rate=44_100)  # wrong rate
         history = self.history(
             [
@@ -271,7 +285,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(manifest["source"], "corrected-history-export")
         self.assertTrue(manifest["containsRealUserData"])
         references = [r["reference"] for r in manifest["recordings"]]
-        self.assertEqual(references, ["Queue an update", "Typed reference."])
+        self.assertEqual(references, ["Queue an update"])
         first = manifest["recordings"][0]
         self.assertEqual(first["promptId"], "corrected-0001")
         self.assertEqual(first["terms"], ["Queue"])
