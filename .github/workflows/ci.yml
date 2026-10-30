@@ -99,6 +99,7 @@ jobs:
             tests/test_event_store.py \
             tests/test_log_receiver.py \
             tests/test_murmur_bench.py \
+            tests/test_murmur_accuracy.py \
             tests/test_murmur_bench_remote.py \
             tests/test_capture_regression_watch.py \
             tests/test_dictation_lifecycle.py \

@@ -76,6 +76,106 @@ delivered WER grows by more than one percentage point, or process RSS delta
 grows by more than 128 MB. Exit code 2 means the gate failed; `--no-fail` keeps
 exploratory runs informational.
 
+## Accuracy corpus and speech-model A/B
+
+Issue #827 adds accuracy metrics for punctuation, capitalization, and named
+terms on top of the latency/WER harness, plus a second private corpus built
+from the user's own corrections. Everything below runs locally. Corpora and raw
+reports contain reference and recognized text and stay in Application Support;
+the printed table and the `.accuracy.json` summary hold only counts, rates, and
+latencies.
+
+### Building a corpus
+
+`scripts/murmur_accuracy.py export` is an explicit opt-in copy. It needs two
+local inputs:
+
+1. **Save audio** and **Save transcript** enabled while dictating, so each
+   recording leaves `murmur-NNNN.wav` plus the delivered `murmur-NNNN.txt` in
+   the output folder (default `~/Documents/Murmur`).
+2. A History JSON export (History → Export → JSON) after correcting entries
+   with Correct and Teach (**Save correction only** is enough).
+
+```bash
+python3 scripts/murmur_accuracy.py export \
+  --history ~/Downloads/murmur-history.json --dry-run   # counts only
+python3 scripts/murmur_accuracy.py export \
+  --history ~/Downloads/murmur-history.json
+```
+
+History keeps no audio, so the exporter pairs a recording with an entry when
+the entry finished within `--max-skew-seconds` (default 20) of the WAV's
+modification time and the durations agree within max(1 s, 15%). A recording
+with more than one candidate, or an entry claimed by two recordings, is skipped
+rather than guessed. Only pairs whose history text differs from the delivered
+`.txt` are exported. The corrected history text becomes the reference. The
+words the user replaced or inserted become that clip's `terms`, the
+homophone/name targets. A hand-written `murmur-NNNN.reference.txt` next to a
+WAV overrides pairing for that clip.
+
+The corpus is written to `~/Library/Application Support/Murmur Accuracy
+Corpus/v1` (mode 0700). The exporter refuses a non-empty destination and any
+path inside the Git checkout. Its `manifest.json` reuses the guided corpus
+fields (`promptId`, `label`, `reference`, `fileName`, `sha256`, `selected`)
+with `corpusId: "accuracy-v1"`, `source: "corrected-history-export"`, and
+`containsRealUserData: true`, plus an optional `terms` list per recording. It
+has no fixed prompt count. The Rust loader (`accuracy_corpus.rs`, compiled only
+with `internal-benchmark`) checks provenance, IDs, single-component WAV names,
+size, and every SHA-256 before it decodes audio.
+
+`synth --out <dir>` builds a five-clip `synthetic-say` corpus with
+`containsRealUserData: false` from fixed prompts. Use it for smoke tests only.
+
+### Metrics
+
+`score` and `ab` compute, per model, over both the raw recognition and the
+delivered (transformed) text:
+
+| Metric | Definition |
+|---|---|
+| WER | The report's raw, normalized, and delivered normalized WER (same normalization as Murmur Bench). |
+| Punctuation F1 | Micro F1 over `.` `,` `?` `-`. The mark after each word is compared across a word-level Levenshtein alignment. Per-mark F1 and TP/FP/FN counts are in the summary. |
+| Sentence-start capitalization | Share of reference sentence starts (first word and words after `.` `?` `!` plus whitespace) whose aligned hypothesis word is capitalized. |
+| Term hit rate | Each reference occurrence of a term is expected once. A hit needs the same word sequence in the hypothesis, case-insensitive, capped at the reference count. The exact-case rate also requires matching spelling and case. |
+
+Terms come from the corpus manifest. `--terms <file>` (one per line) adds
+global terms, for example for the guided personal corpus, which has no
+per-clip terms.
+
+### Running the A/B
+
+```bash
+python3 scripts/murmur_accuracy.py ab --preset standard
+python3 scripts/murmur_accuracy.py ab --corpus personal \
+  --corpus-dir ~/Library/Application\ Support/Murmur\ Benchmark\ Corpus/v1 \
+  --terms ~/terms.txt
+python3 scripts/murmur_accuracy.py score <report.json> --corpus-dir <corpus>
+```
+
+`ab` drives `murmur_bench.py run --corpus accuracy|personal` once with every
+runnable arm. It writes the raw report to `~/Library/Application Support/Murmur
+Bench/accuracy-reports` and then prints the table. The default arms are:
+
+| Arm | Model | Status |
+|---|---|---|
+| `coreml-v3-auto` | `parakeet-tdt-0.6b-v3-coreml` | Runnable (production default) |
+| `coreml-v3-en` | — | Not runnable. The pinned `fluidaudio-rs` `transcribe_samples` API takes no language hint, and the Core ML backend ignores `language`, so this arm would match `auto` byte for byte. |
+| `sherpa-v2-en` | `parakeet-tdt-0.6b-v2-fp16` | Runnable (sherpa-onnx CPU, English) |
+| `unified-en` | — | Not runnable. Hex's `parakeet-unified-en-0.6b` GGUF needs a GGUF Parakeet runtime that Murmur does not have. |
+
+Any other runtime model ID can be passed as an arm (`--arms coreml-v3-auto,base.en`).
+`ab` names a default-model candidate only for a real corpus with at least 20
+clips. It ranks by lowest delivered normalized WER, then higher term hit rate,
+then higher delivered punctuation F1, then lower warm median. Synthetic runs
+print `none`. A candidate is evidence for a decision; it never changes the
+shipped default by itself.
+
+For a requested accuracy comparison (for example vocabulary biasing #832 or
+the homophone pass #833), run `ab` for the baseline and the candidate on the
+same corpus, arms, and trusted Mac. Compare `termHitRate`,
+`termExactCaseHitRate`, delivered `punctuationF1`, and delivered normalized
+WER, and share only the content-free `.accuracy.json` numbers.
+
 ## Fleet Mac runner
 
 The trusted Mac Mini is the stable performance machine because comparisons are

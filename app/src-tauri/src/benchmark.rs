@@ -148,6 +148,10 @@ pub enum BenchmarkCorpusSource {
     Bundled,
     #[cfg(feature = "internal-benchmark")]
     Personal,
+    /// Variable-size local accuracy corpus (issue #827): corrected-history
+    /// exports or synthetic `say` fixtures. Internal builds only.
+    #[cfg(feature = "internal-benchmark")]
+    Accuracy,
 }
 
 impl BenchmarkPreset {
@@ -160,6 +164,10 @@ impl BenchmarkPreset {
             (BenchmarkCorpusSource::Personal, Self::Quick | Self::Standard) => 1,
             #[cfg(feature = "internal-benchmark")]
             (BenchmarkCorpusSource::Personal, Self::Thorough) => 3,
+            #[cfg(feature = "internal-benchmark")]
+            (BenchmarkCorpusSource::Accuracy, Self::Quick | Self::Standard) => 1,
+            #[cfg(feature = "internal-benchmark")]
+            (BenchmarkCorpusSource::Accuracy, Self::Thorough) => 3,
         }
     }
 
@@ -833,6 +841,11 @@ fn benchmark_corpus(
             "Private guided recordings captured locally with Murmur",
             "Results describe this speaker, microphone, room, prompt set, and machine; they are not a universal model ranking.",
         ),
+        #[cfg(feature = "internal-benchmark")]
+        BenchmarkCorpusSource::Accuracy => (
+            "Local accuracy corpus (see manifest source)",
+            "Results describe only the recordings in this corpus on this machine; a small or synthetic corpus cannot justify a default-model change.",
+        ),
     };
     BenchmarkCorpus {
         source,
@@ -1065,6 +1078,59 @@ fn prepare_personal_fixtures(
         .collect()
 }
 
+/// Decode and VAD-filter the local accuracy corpus (issue #827). Quick takes
+/// the first five clips for a smoke run; Standard/Thorough take every selected
+/// clip. Returns the fixtures and a content-free provenance label.
+#[cfg(feature = "internal-benchmark")]
+fn prepare_accuracy_fixtures(
+    preset: BenchmarkPreset,
+    vad_threshold: f32,
+) -> Result<(Vec<PreparedFixture>, &'static str), String> {
+    let vad_path = crate::vad::vad_model_path()
+        .filter(|path| path.exists())
+        .ok_or_else(|| "Silero VAD model is not installed".to_string())?;
+    let vad_path = vad_path.to_string_lossy();
+    let corpus = crate::accuracy_corpus::load()?;
+    let provenance = if corpus.contains_real_user_data {
+        "Private corrected recordings exported locally from Murmur history"
+    } else {
+        "Synthetic macOS say fixtures with known reference text"
+    };
+    let limit = match preset {
+        BenchmarkPreset::Quick => 5,
+        BenchmarkPreset::Standard | BenchmarkPreset::Thorough => usize::MAX,
+    };
+    let fixtures = corpus
+        .fixtures
+        .into_iter()
+        .take(limit)
+        .map(|fixture| {
+            let samples = crate::transcriber::parse_wav_to_samples(&fixture.wav)
+                .map_err(|error| format!("Could not decode an accuracy corpus clip: {error}"))?;
+            let samples = match crate::vad::filter_speech(&vad_path, &samples, vad_threshold)
+                .map_err(|error| format!("VAD failed for an accuracy corpus clip: {error}"))?
+            {
+                crate::vad::VadResult::Speech(samples) => samples,
+                crate::vad::VadResult::NoSpeech => {
+                    return Err(format!(
+                        "VAD detected no speech in accuracy clip {}",
+                        fixture.id
+                    ));
+                }
+            };
+            let audio_seconds = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+            Ok(PreparedFixture {
+                id: fixture.id,
+                label: fixture.label,
+                reference: fixture.reference,
+                samples,
+                audio_seconds,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((fixtures, provenance))
+}
+
 /// Realtime-factor deltas below this fraction are treated as equivalent for
 /// the Balanced recommendation's speed band. Fastest remains the strict
 /// minimum realtime factor. See issue #272.
@@ -1236,10 +1302,18 @@ pub fn run<R: tauri::Runtime>(
         return Err(format!("{} is not installed on this machine", model.label));
     }
 
+    #[cfg(feature = "internal-benchmark")]
+    let mut accuracy_provenance: Option<&'static str> = None;
     let fixtures = match request.corpus {
         BenchmarkCorpusSource::Bundled => prepare_fixtures(request.preset.fixtures(), 0.5)?,
         #[cfg(feature = "internal-benchmark")]
         BenchmarkCorpusSource::Personal => prepare_personal_fixtures(request.preset, 0.5)?,
+        #[cfg(feature = "internal-benchmark")]
+        BenchmarkCorpusSource::Accuracy => {
+            let (fixtures, provenance) = prepare_accuracy_fixtures(request.preset, 0.5)?;
+            accuracy_provenance = Some(provenance);
+            fixtures
+        }
     };
     let iterations = request.preset.iterations(request.corpus);
     let steps_per_model = 1 + fixtures.len() * (1 + iterations);
@@ -1521,6 +1595,12 @@ pub fn run<R: tauri::Runtime>(
         "complete",
     );
     let recommendations = recommendations(&results);
+    #[allow(unused_mut)]
+    let mut corpus = benchmark_corpus(request.corpus, &fixtures);
+    #[cfg(feature = "internal-benchmark")]
+    if let Some(provenance) = accuracy_provenance {
+        corpus.provenance = provenance.to_string();
+    }
     Ok(BenchmarkReport {
         report_version: BENCHMARK_REPORT_VERSION,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -1530,7 +1610,7 @@ pub fn run<R: tauri::Runtime>(
         iterations,
         shared_init_ms,
         environment: benchmark_environment(),
-        corpus: benchmark_corpus(request.corpus, &fixtures),
+        corpus,
         configuration: benchmark_configuration(model_run_order, shared_init_order),
         results,
         recommendations,
@@ -1714,6 +1794,16 @@ mod tests {
         #[cfg(feature = "internal-benchmark")]
         assert_eq!(
             BenchmarkPreset::Thorough.iterations(BenchmarkCorpusSource::Personal),
+            3
+        );
+        #[cfg(feature = "internal-benchmark")]
+        assert_eq!(
+            BenchmarkPreset::Standard.iterations(BenchmarkCorpusSource::Accuracy),
+            1
+        );
+        #[cfg(feature = "internal-benchmark")]
+        assert_eq!(
+            BenchmarkPreset::Thorough.iterations(BenchmarkCorpusSource::Accuracy),
             3
         );
         #[cfg(feature = "internal-benchmark")]

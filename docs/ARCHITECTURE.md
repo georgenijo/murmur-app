@@ -266,6 +266,7 @@ stay local and never reach logs or telemetry. See
 | `audio_graph_snapshot.rs` | Deadline-bounded Core Audio HAL snapshots for armed capture-hang reports, plus content-free graph counts and Murmur audio-owner state |
 | `capture_helper_probe.rs` | Probe-only capture-helper handshake, callback-health observation, cancel, and confirmed termination evidence |
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
+| `accuracy_corpus.rs` | Internal-benchmark-only `accuracy-v1` corpus loader (corrected-history or synthetic clips) for `scripts/murmur_accuracy.py` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
 | `browser_site.rs` | Allowlisted browser-host discovery and exact host-rule matching for site-bound modes |
 | `capture_agent_probe.rs` | Opt-in LaunchAgent service and recovery probe CLI. Production dictation does not use this path |
