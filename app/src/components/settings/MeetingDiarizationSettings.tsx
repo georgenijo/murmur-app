@@ -1,3 +1,4 @@
+import { DEFAULT_SETTINGS } from '../../lib/settings';
 import { SettingsRow } from './SettingsRow';
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
@@ -120,7 +121,7 @@ export function MeetingDiarizationSettings({
 
   return (
     <div data-setting-target="meeting-speakers" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <SettingsRow title="Label Remote Speakers" description="Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting." disabled={!supported} control={<AnimatedSwitch
+      <SettingsRow title="Label Remote Speakers" description="Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting." onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={!supported}
