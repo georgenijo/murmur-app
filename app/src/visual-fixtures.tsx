@@ -35,7 +35,7 @@ import type { MainDestination } from './lib/homeDashboard';
 import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
 import { useMeetings } from './lib/hooks/useMeetings';
-import { DEFAULT_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
+import { DEFAULT_THEME, OPENCODE_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import { OverlayMeetingSuggestion } from './components/overlay/OverlayMeetingSuggestion';
 import overlayGeometryFixture from './components/overlay/overlay-geometry.fixture.json';
 import './styles.css';
@@ -53,6 +53,7 @@ const status: DictationStatus = requestedState === 'recording'
       : 'idle';
 
 const importedThemeFixtures: Record<string, ThemeConfigV1> = {
+  opencode: OPENCODE_THEME,
   'flat-dark': parseVsCodeThemeFile({
     name: 'Flat dark',
     type: 'dark',
