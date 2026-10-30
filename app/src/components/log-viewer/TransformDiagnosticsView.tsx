@@ -91,6 +91,7 @@ export function TransformDiagnosticsView() {
     setDeleting(true);
     try {
       await deleteTransformCapture(capture.captureId);
+      setCaptures(current => current.filter(item => item.captureId !== capture.captureId));
       setDeleteTarget(null);
       if (selected?.captureId === capture.captureId) setSelected(null);
       await refresh();

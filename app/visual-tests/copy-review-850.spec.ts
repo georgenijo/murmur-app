@@ -64,6 +64,21 @@ for (const appearance of ['light', 'dark']) {
     });
   }
 
+  test(`C6: ${appearance} direct deletion retains list focus through a delayed refresh`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=copy-diagnostics&panel=transform&appearance=${appearance}`);
+    await page.getByRole('button', { name: 'Delete…', exact: true }).click();
+    await page.evaluate(() => document.documentElement.setAttribute('data-copy-delay-refresh', 'true'));
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Space');
+    await expect(page.locator('html')).toHaveAttribute('data-copy-refresh-waiting', 'true');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
+    await page.evaluate(() => window.dispatchEvent(new Event('copy-release-refresh')));
+    await expect(page.locator('html')).not.toHaveAttribute('data-copy-refresh-waiting');
+    await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
+    await expect(page.locator('html')).toHaveAttribute('data-copy-deleted-capture', 'capture-one');
+  });
+
   test(`C6: ${appearance} cancelling after a capture row disappears restores the list heading`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=copy-diagnostics&panel=transform&appearance=${appearance}`);
     await page.getByRole('button', { name: 'Delete…', exact: true }).click();

@@ -214,3 +214,9 @@ heading as the confirmation dialog's restore fallback. A surviving opener
 still receives focus; if refresh or deletion removes it, focus returns to the
 resulting list heading. Browser tests cover cancellation after row replacement
 and confirmation from Review, in both color schemes.
+
+For direct list deletion, remove the confirmed capture from local list state
+before closing its dialog. This prevents focus returning to an opener that a
+later asynchronous refresh will detach. The delayed-refresh regression fails
+in both schemes without that ordering and passes with it. Cancellation keeps
+its existing opener-restoration behavior.

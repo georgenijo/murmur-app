@@ -252,6 +252,14 @@ mockIPC((command, payload) => {
     if (command === 'get_transform_diagnostic_capture_status') return { armed: false, expiresAtMs: null };
     if (command === 'list_transform_attempts') return { schemaVersion: 1, attempts: [] };
     if (command === 'list_transform_diagnostic_captures' || command === 'list_dictation_diagnostic_captures') {
+      if (command === 'list_transform_diagnostic_captures' && document.documentElement.hasAttribute('data-copy-delay-refresh')) {
+        document.documentElement.setAttribute('data-copy-refresh-waiting', 'true');
+        return new Promise(resolve => window.addEventListener('copy-release-refresh', () => {
+          document.documentElement.removeAttribute('data-copy-refresh-waiting');
+          document.documentElement.setAttribute('data-copy-listed-capture', capture.captureId);
+          resolve([capture]);
+        }, { once: true }));
+      }
       document.documentElement.setAttribute('data-copy-listed-capture', capture.captureId);
       return [capture];
     }
