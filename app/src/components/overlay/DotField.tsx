@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { DOT_SCOPE, DotScope, loudness, clamp, type DotScopeGeometry, type ScopeStage, type ProcessingStyle } from './dotScope';
+import { DOT_SCOPE, DOT_ALPHAS, DotScope, loudness, clamp, type DotScopeGeometry, type ScopeStage, type ProcessingStyle } from './dotScope';
 
 const COLORS = ['rgb(222, 215, 201)', 'rgb(200, 220, 248)'];
-const ALPHAS = 24;
 const BLUR_FILTERS = Array.from({ length: 31 }, (_, i) => i ? `blur(${i / 10}px)` : 'none');
+const COLUMN_X = Float64Array.from({ length: DOT_SCOPE.columns }, (_, c) => (c - 21) * DOT_SCOPE.pitch);
+const ROW_Y = Float64Array.from({ length: DOT_SCOPE.rows }, (_, r) => (r - 4) * DOT_SCOPE.pitch);
+const ROW_FLOOR = Float64Array.from(ROW_Y, y => 0.07 * (1 - 0.7 * Math.abs(y) / 13));
 
 /** Canvas paths are batched by intensity; no React state or native RPC per frame.
  * The canvas is decorative: the existing priority-resolved status owns meaning. */
@@ -22,32 +24,53 @@ export function paintDots(ctx: CanvasRenderingContext2D, scope: DotScope, dt: nu
   ctx.fillStyle = COLORS[style === 'sweep' ? 1 : 0];
   // Compute nonlinear light/radius once, then batch paths by quantized alpha.
   // All scratch storage belongs to the mounted scope, not the display frame.
-  for (let r = 0; r < DOT_SCOPE.rows; r++) {
-    for (let c = 0; c < DOT_SCOPE.columns; c++) {
+  scope.bucketCounts.fill(0);
+  const opacity = clamp(scope.opacity.x);
+  for (let c = 0; c < DOT_SCOPE.columns; c++) {
+    const distance = Math.abs(COLUMN_X[c]);
+    const mask = clamp((scope.width.x / 2 - distance - 1.4) / 3.2);
+    const visibility = scope.visibilityAt(distance, reduced);
+    // sample() maintains mirrored rows; share their nonlinear conversion too.
+    for (let r = 0; r <= 4; r++) {
       const n = r * DOT_SCOPE.columns + c;
-      const x = (c - 21) * DOT_SCOPE.pitch;
-      const y = (r - 4) * DOT_SCOPE.pitch;
-      const mask = clamp((scope.width.x / 2 - Math.abs(x) - 1.4) / 3.2);
-      const floor = 0.07 * (1 - 0.7 * Math.abs(y) / 13);
+      const opposite = (DOT_SCOPE.rows - 1 - r) * DOT_SCOPE.columns + c;
+      const floor = ROW_FLOOR[r];
       const light = dots[n];
-      const alpha = (floor + (0.96 - floor) * light ** 0.9) * mask * clamp(scope.opacity.x)
-        * scope.visibilityAt(Math.abs(x), reduced);
-      scope.buckets[n] = Math.round(alpha * (ALPHAS - 1));
+      const alpha = (floor + (0.96 - floor) * light ** 0.9) * mask * opacity * visibility;
+      const bucket = Math.round(alpha * (DOT_ALPHAS - 1));
+      scope.buckets[n] = scope.buckets[opposite] = bucket;
+      scope.bucketCounts[bucket] += n === opposite ? 1 : 2;
       scope.radii[n] = (0.25 + 0.17 * light ** 0.6) * DOT_SCOPE.pitch;
+      scope.radii[opposite] = scope.radii[n];
     }
   }
-  for (let bucket = 1; bucket < ALPHAS; bucket++) {
+  // Stable counting sort visits each dot once instead of rescanning the full
+  // grid for every alpha. Keep row order within each path and skip empty fills.
+  let total = 0;
+  for (let bucket = 1; bucket < DOT_ALPHAS; bucket++) {
+    scope.bucketOffsets[bucket] = total;
+    total += scope.bucketCounts[bucket];
+  }
+  for (let n = 0; n < dots.length; n++) {
+    const bucket = scope.buckets[n];
+    if (bucket) scope.paintOrder[scope.bucketOffsets[bucket]++] = n;
+  }
+  let start = 0;
+  for (let bucket = 1; bucket < DOT_ALPHAS; bucket++) {
+    const end = scope.bucketOffsets[bucket];
+    if (start === end) continue;
     ctx.beginPath();
-    for (let n = 0; n < dots.length; n++) {
-      if (scope.buckets[n] !== bucket) continue;
-      const x = (n % DOT_SCOPE.columns - 21) * DOT_SCOPE.pitch;
-      const y = (Math.floor(n / DOT_SCOPE.columns) - 4) * DOT_SCOPE.pitch;
+    for (let i = start; i < end; i++) {
+      const n = scope.paintOrder[i];
+      const x = COLUMN_X[n % DOT_SCOPE.columns];
+      const y = ROW_Y[Math.floor(n / DOT_SCOPE.columns)];
       const radius = scope.radii[n];
       ctx.moveTo(x + radius, y);
       ctx.arc(x, y, radius, 0, Math.PI * 2);
     }
-    ctx.globalAlpha = bucket / (ALPHAS - 1);
+    ctx.globalAlpha = bucket / (DOT_ALPHAS - 1);
     ctx.fill();
+    start = end;
   }
   ctx.restore();
 }

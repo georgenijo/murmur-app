@@ -89,6 +89,25 @@ describe('voice island simulation', () => {
     expect(energy(s.dots)).toBe(0); expect(s.opacity.x).toBeLessThan(0.002);
   });
 
+  it('retains mirrored row intensities through audio, processing, wipe and reduced-motion transitions', () => {
+    const scope = new DotScope();
+    for (const reduced of [false, true, false]) {
+      for (const style of ['sweep', 'flow', 'pulse'] as const) {
+        for (const stage of ['recording', 'processing', 'done', 'idle'] as const) {
+          for (let frame = 0; frame < 45; frame++) {
+            scope.advance(1 / 60, stage, -42 + 25 * Math.sin(frame * 0.73), reduced);
+            const dots = scope.sample(1 / 60, style, reduced);
+            for (let r = 0; r < DOT_SCOPE.rows / 2; r++) {
+              const opposite = DOT_SCOPE.rows - 1 - r;
+              expect(dots.subarray(r * DOT_SCOPE.columns, (r + 1) * DOT_SCOPE.columns))
+                .toEqual(dots.subarray(opposite * DOT_SCOPE.columns, (opposite + 1) * DOT_SCOPE.columns));
+            }
+          }
+        }
+      }
+    }
+  });
+
   it('Reduce Motion has an invariant field and no width, scale, blur, travel or wipe animation', () => {
     const scope = run(new DotScope(), 1, 60, -20, true);
     const before = Array.from(scope.dots);

@@ -14,6 +14,7 @@ export const DOT_SCOPE = Object.freeze({
   phosphor: 0.6, attack: 0.04, roomFall: 0.3, roomRise: 6,
   minSpan: 16, noiseFloor: -60, step: 1 / 240, maxSteps: 12,
 });
+export const DOT_ALPHAS = 24;
 export type ScopeStage = 'idle' | 'recording' | 'processing' | 'done';
 export type ProcessingStyle = 'sweep' | 'flow' | 'pulse';
 const TAU = 2 * Math.PI;
@@ -49,6 +50,9 @@ export class DotScope {
   readonly dots = new Float32Array(DOT_SCOPE.columns * DOT_SCOPE.rows);
   readonly buckets = new Uint8Array(this.dots.length);
   readonly radii = new Float32Array(this.dots.length);
+  readonly paintOrder = new Uint16Array(this.dots.length);
+  readonly bucketCounts = new Uint16Array(DOT_ALPHAS);
+  readonly bucketOffsets = new Uint16Array(DOT_ALPHAS);
   private readonly history = new Float32Array(HISTORY);
   private readonly phosphor = new Float32Array(this.dots.length);
   private head = 0;
@@ -138,14 +142,20 @@ export class DotScope {
         else work = Math.exp(-(((distance - (this.elapsed * 46) % (halfW + 12)) / 7) ** 2));
       }
       const wipe = this.visibilityAt(distance, reduced);
-      for (let r = 0; r < DOT_SCOPE.rows; r++) {
+      // The opposed traces and phosphor are symmetric about the centre row.
+      // Evaluate the nearer trace once per row pair, retaining the exact
+      // Gaussian (and Float32 phosphor rounding) rather than approximating it.
+      for (let r = 0; r <= 4; r++) {
         const n = r * DOT_SCOPE.columns + c;
-        const dy = r - 4;
-        const trace = Math.max(Math.exp(-(((dy - y) / 0.68) ** 2)), Math.exp(-(((dy + y) / 0.68) ** 2)));
+        const opposite = (DOT_SCOPE.rows - 1 - r) * DOT_SCOPE.columns + c;
+        const dy = 4 - r;
+        const trace = Math.exp(-(((dy - Math.abs(y)) / 0.68) ** 2));
         const power = edge * falloff * (this.stage === 'recording'
           ? trace * (0.2 + 0.8 * amplitude) : trace * (0.2 + 0.8 * work));
         this.phosphor[n] = reduced ? power : Math.max(power, this.phosphor[n] * keep) * wipe;
         this.dots[n] = this.phosphor[n];
+        this.phosphor[opposite] = this.phosphor[n];
+        this.dots[opposite] = this.phosphor[n];
       }
     }
     return this.dots;

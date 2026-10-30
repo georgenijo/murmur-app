@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DotField, paintDots } from './DotField';
-import { DotScope } from './dotScope';
+import { DOT_ALPHAS, DOT_SCOPE, DotScope } from './dotScope';
 
 const events = vi.hoisted(() => ({ listeners: new Map<string, (e: { payload: unknown }) => void>(), stops: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, fn) => {
@@ -110,6 +110,40 @@ describe('canvas field lifecycle', () => {
     paintDots(context() as unknown as CanvasRenderingContext2D, scope, 1 / 60, 'flow', false);
     expect(scope.buckets[4 * 43 + 21]).toBe(0);
     expect(scope.buckets[4 * 43 + 32]).toBeGreaterThan(0);
+  });
+
+  it('paints every visible dot once, in stable alpha paths, without empty fills or stale bucket entries', () => {
+    const scope = new DotScope();
+    const ctx = context();
+    const canvas = ctx as unknown as CanvasRenderingContext2D;
+    const paths: { alpha: number; dots: number[][] }[] = [];
+    let dots: number[][] = [];
+    ctx.beginPath.mockImplementation(() => { dots = []; });
+    ctx.arc.mockImplementation((...args: number[]) => { dots.push(args); });
+    ctx.fill.mockImplementation(() => { paths.push({ alpha: canvas.globalAlpha, dots }); });
+    const storage = [scope.paintOrder, scope.bucketCounts, scope.bucketOffsets];
+    for (const stage of ['recording', 'processing', 'done', 'idle'] as const) {
+      for (let frame = 0; frame < 45; frame++) {
+        paths.length = 0;
+        scope.advance(1 / 60, stage, -34, false);
+        paintDots(canvas, scope, 1 / 60, 'flow', false);
+        const expected: typeof paths = [];
+        for (let bucket = 1; bucket < DOT_ALPHAS; bucket++) {
+          const members: number[][] = [];
+          for (let n = 0; n < scope.dots.length; n++) {
+            if (scope.buckets[n] !== bucket) continue;
+            members.push([(n % DOT_SCOPE.columns - 21) * DOT_SCOPE.pitch,
+              (Math.floor(n / DOT_SCOPE.columns) - 4) * DOT_SCOPE.pitch,
+              scope.radii[n], 0, Math.PI * 2]);
+          }
+          if (members.length) expected.push({ alpha: bucket / (DOT_ALPHAS - 1), dots: members });
+        }
+        expect(paths).toEqual(expected);
+      }
+    }
+    expect(scope.paintOrder).toBe(storage[0]);
+    expect(scope.bucketCounts).toBe(storage[1]);
+    expect(scope.bucketOffsets).toBe(storage[2]);
   });
 
   it('does not subscribe or schedule a live loop in deterministic fixtures', async () => {
