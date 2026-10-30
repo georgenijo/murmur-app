@@ -379,6 +379,8 @@ export interface Settings {
   saveAudio: boolean;
   /** Mirror each final transcript to a local file NotchPill can show in the notch. */
   mirrorToNotchPill: boolean;
+  /** Pause audibly playing browser media while dictating; resume only what Murmur paused. */
+  pauseBrowserMedia: boolean;
   outputDir: string;
   /** Destination for saved Performance Lab benchmark reports. Empty = default
    * `Documents/Murmur`. Kept separate from `outputDir` so benchmark JSON doesn't
@@ -661,6 +663,7 @@ export const DEFAULT_SETTINGS: Settings = {
   saveTranscript: false,
   saveAudio: false,
   mirrorToNotchPill: false,
+  pauseBrowserMedia: false,
   outputDir: '',
   benchmarkOutputDir: '',
   benchmarkAutoSave: false,
@@ -1298,6 +1301,7 @@ export function loadSettings(): Settings {
       if (typeof parsed.meetingEchoCancellationEnabled !== 'boolean') {
         parsed.meetingEchoCancellationEnabled = DEFAULT_SETTINGS.meetingEchoCancellationEnabled;
       }
+      parsed.pauseBrowserMedia = parsed.pauseBrowserMedia === true;
       if (typeof parsed.meetingSuggestionsEnabled !== 'boolean') {
         parsed.meetingSuggestionsEnabled = DEFAULT_SETTINGS.meetingSuggestionsEnabled;
       }

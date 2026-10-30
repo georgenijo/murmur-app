@@ -12,6 +12,7 @@ mod audio_lifecycle;
 // stable external API.
 mod assistant;
 pub mod benchmark;
+mod browser_media;
 mod browser_site;
 mod calendar;
 pub mod capture_agent_probe;
@@ -451,6 +452,8 @@ pub fn run() {
             commands::meeting::get_meeting_status,
             commands::meeting::get_system_audio_permission_status,
             commands::meeting::request_system_audio_permission,
+            browser_media::get_browser_media_permission,
+            browser_media::request_browser_media_permission,
             commands::meeting::get_meeting_store_status,
             commands::meeting::list_meetings,
             commands::meeting::get_meeting,

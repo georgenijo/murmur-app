@@ -55,6 +55,11 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off. Stopping manually always still works.
 - Optional, experimental **Smart Auto-Stop**: at each pause a local Smart Turn v3.2 model (~8.7 MB, user-initiated download) judges whether you sounded finished and stops early; the silence duration stays the ceiling and every failure falls back to it. Off by default.
 
+### Pause browser media — [features/browser-media-pause.md](features/browser-media-pause.md)
+
+- Opt-in (off by default): pauses an audibly playing Safari, Chrome-family, Arc, or Brave tab while you dictate and resumes it afterwards.
+- Resumes only media Murmur proved it paused; never media you paused, never media that was not playing. Needs System Audio Recording, requested only when turned on.
+
 ### Meeting Capture — [features/meeting-capture.md](features/meeting-capture.md)
 
 - Explicit long-form sessions capture microphone as **Me** and Mac playback as

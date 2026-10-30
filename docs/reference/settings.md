@@ -132,6 +132,7 @@ interface Settings {
   saveTranscript: boolean;
   saveAudio: boolean;
   mirrorToNotchPill: boolean;
+  pauseBrowserMedia: boolean;
   outputDir: string;
 
   // Text intelligence
@@ -222,6 +223,7 @@ export const DEFAULT_SETTINGS: Settings = {
   saveTranscript: false,
   saveAudio: false,
   mirrorToNotchPill: false,
+  pauseBrowserMedia: false,
   outputDir: '',
   benchmarkOutputDir: '',
   benchmarkAutoSave: false,
@@ -343,6 +345,7 @@ The Settings disclosure explicitly states that the configured CLI may send the q
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
 | `saveAudio` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's audio is written to a matching `.wav` (16kHz mono, 16-bit PCM) in the output folder. |
 | `mirrorToNotchPill` | `boolean` | `false` | `true` / `false` | When enabled, the final transcript of each dictation is mirrored to `~/Library/Application Support/local-dictation/latest-caption.json` as `{text, timestamp}`, so NotchPill can display what was just said. The toggle is shown only when macOS Launch Services finds NotchPill's `com.local.notchpill` bundle. If NotchPill is removed, mirroring becomes dormant and the caption file is deleted without overwriting the saved preference; reinstalling the app restores the prior choice. Off by default. The file is owner-only (`0600`), holds only the most recent caption — each write replaces the last — and is written after the clipboard, best-effort, so it can never delay or affect dictation output. Nothing leaves the device. Switching the setting off deletes the file. |
+| `pauseBrowserMedia` | `boolean` | `false` | `true` / `false` | Pause an audibly playing supported browser while dictating and resume it only when Murmur proved its own pause silenced it. Read once at recording start. Turning it on requests System Audio Recording; without that consent nothing is paused. Off by default. See [browser-media-pause.md](../features/browser-media-pause.md). |
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
 | `benchmarkOutputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved Performance Lab benchmark reports (`benchmark-<version>-<machine>-<createdAt>.json`). Empty means the app default (`Documents/Murmur`, created on first write). Kept separate from `outputDir` so benchmark JSON doesn't mix with dictation transcripts/audio. Set via a folder picker in the Performance Lab. |
 | `benchmarkAutoSave` | `boolean` | `false` | `true` / `false` | When enabled, each completed benchmark run is written to `benchmarkOutputDir` automatically (in addition to the 10-slot in-app history), so reports survive the localStorage cap. Best-effort: a write failure surfaces an error but does not fail the run. |

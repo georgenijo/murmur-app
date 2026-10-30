@@ -268,6 +268,7 @@ stay local and never reach logs or telemetry. See
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
 | `accuracy_corpus.rs` | Internal-benchmark-only `accuracy-v1` corpus loader (corrected-history or synthetic clips) for `scripts/murmur_accuracy.py` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
+| `browser_media.rs` | Optional browser-media pause while dictating: Hex-derived pause/resume proof, MediaRemote commands, System Audio consent gate; the tap runs in the capture worker (`--browser-level`) |
 | `browser_site.rs` | Allowlisted browser-host discovery and exact host-rule matching for site-bound modes |
 | `capture_agent_probe.rs` | Opt-in LaunchAgent service and recovery probe CLI. Production dictation does not use this path |
 | `capture_health.rs` | Bounded capture startup and fallback history derived from telemetry, persisted in `capture-health-v1.json` |

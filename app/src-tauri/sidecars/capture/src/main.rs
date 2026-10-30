@@ -3,6 +3,8 @@ mod aec;
 #[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "aec-spike"))]
 mod aec_spike;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod browser_level;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod production;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod system_audio;
@@ -408,6 +410,9 @@ fn main() {
                 return;
             }
             _ => {}
+        }
+        if arguments.first().map(String::as_str) == Some("--browser-level") {
+            std::process::exit(browser_level::run(&arguments[1..]));
         }
         if arguments.first().map(String::as_str) == Some("--production-v10") {
             if production::run(&arguments[1..]).is_ok() {
