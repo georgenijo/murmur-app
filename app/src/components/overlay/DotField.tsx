@@ -61,6 +61,8 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
   const scopeRef = useRef<DotScope | null>(null);
   if (!scopeRef.current) scopeRef.current = new DotScope(geometry);
   const level = useRef({ rms: 0, at: 0 });
+  const nativeVisibleRef = useRef(true);
+  const restartRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (fixtureAt !== undefined) return;
@@ -73,26 +75,44 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
     return () => { disposed = true; void stop.then((fn) => fn()); };
   }, [fixtureAt]);
 
+  // Visibility belongs to the mounted native window, not to its current
+  // recording stage or processing style. Keep one subscription across them.
+  useEffect(() => {
+    if (fixtureAt !== undefined) return;
+    let disposed = false;
+    const stop = listen<boolean>('overlay-visible-changed', ({ payload }) => {
+      if (disposed) return;
+      nativeVisibleRef.current = payload;
+      restartRef.current?.();
+    }).catch(() => () => {});
+    return () => { disposed = true; void stop.then((fn) => fn()).catch(() => {}); };
+  }, [fixtureAt]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     const scope = scopeRef.current!;
     if (!canvas || !ctx) return;
-    const ratio = window.devicePixelRatio || 1;
-    canvas.width = Math.ceil(scope.geometry.plateRecordingW * ratio);
-    canvas.height = Math.ceil(scope.geometry.plateH * ratio);
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    const syncResolution = () => {
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.ceil(scope.geometry.plateRecordingW * ratio);
+      const height = Math.ceil(scope.geometry.plateH * ratio);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width; canvas.height = height;
+      }
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
+    syncResolution();
     const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     let reduced = media?.matches ?? false;
     let visible = !document.hidden;
-    let nativeVisible = true;
     let disposed = false;
     let raf = 0;
     let last = 0;
     let staticDrawn = false;
     const draw = (now: number) => {
       raf = 0;
-      if (disposed || !visible || !nativeVisible) return;
+      if (disposed || !visible || !nativeVisibleRef.current) return;
       const dt = last ? Math.min((now - last) / 1000, 0.05) : 1 / 60;
       last = now;
       const db = now - level.current.at < 150 ? loudness(level.current.rms) : -120;
@@ -108,10 +128,11 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
     };
     const restart = () => {
       cancelAnimationFrame(raf); raf = 0; last = 0; staticDrawn = false;
-      if (visible && nativeVisible) raf = requestAnimationFrame(draw);
+      if (visible && nativeVisibleRef.current) raf = requestAnimationFrame(draw);
     };
     const onVisibility = () => { visible = !document.hidden; restart(); };
     const onMotion = () => { reduced = media?.matches ?? false; restart(); };
+    const onResize = () => { syncResolution(); restart(); };
     if (fixtureAt !== undefined) {
       const fixed = new DotScope(scope.geometry);
       for (let t = 0; t < fixtureAt; t += 1 / 60) {
@@ -125,19 +146,18 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
       return;
     }
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('resize', onResize);
     media?.addEventListener('change', onMotion);
-    const stop = listen<boolean>('overlay-visible-changed', ({ payload }) => {
-      if (disposed) return;
-      nativeVisible = payload; restart();
-    }).catch(() => () => {});
+    restartRef.current = restart;
     restart();
     return () => {
       disposed = true; cancelAnimationFrame(raf);
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('resize', onResize);
       media?.removeEventListener('change', onMotion);
-      void stop.then((fn) => fn()).catch(() => {});
+      if (restartRef.current === restart) restartRef.current = null;
     };
-  }, [stage, processingStyle, fixtureAt]);
+  }, [stage, processingStyle, fixtureAt, geometry]);
 
   return <canvas ref={canvasRef} className="overlay-dot-field" aria-hidden="true"
     data-columns={DOT_SCOPE.columns} data-rows={DOT_SCOPE.rows} data-pitch={DOT_SCOPE.pitch}

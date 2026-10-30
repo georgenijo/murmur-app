@@ -272,7 +272,21 @@ export function useOverlayExpansion({
     const shrinkDelay = reducedMotionRef.current ? 0 : SHRINK_DELAY_MS;
     shrinkTimerRef.current = setTimeout(() => {
       shrinkTimerRef.current = null;
-      pushSurface(false); // collapse; reconcileOnSuccess settles to `collapsed`
+      // Closing the dropdown can also contract the idle island itself. Publish
+      // that target while retaining the old native bounds, then release them
+      // only after the island's own transition has settled.
+      const deferShrink = !reducedMotionRef.current && layoutRef.current.activity === 'idle';
+      const pending = pushSurface(false, deferShrink);
+      const generation = genRef.current;
+      void pending.then((applied) => {
+        if (!deferShrink || applied === SUPERSEDED || !mountedRef.current
+          || generation !== genRef.current || desiredRef.current) return;
+        shrinkTimerRef.current = setTimeout(() => {
+          shrinkTimerRef.current = null;
+          if (mountedRef.current && visibleRef.current && generation === genRef.current
+            && !desiredRef.current) void pushSurface(false);
+        }, SHRINK_DELAY_MS);
+      });
     }, shrinkDelay);
   }, [setPhaseSync, pushSurface]);
 

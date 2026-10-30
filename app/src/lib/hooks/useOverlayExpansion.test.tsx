@@ -175,6 +175,37 @@ describe('useOverlayExpansion', () => {
     expect(surfaceCalls).toHaveLength(2);
   });
 
+  it.each(['notch', 'below_menu_bar'] as const)('retains native bounds for the idle %s contraction and supersedes release on reversal', async (placement) => {
+    await mount({ activity: 'idle', placement });
+    await act(async () => surfaceCalls[0].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    await act(async () => surfaceCalls[1].resolve(APPLIED));
+    await act(async () => current.onHoverEnd());
+    await act(async () => vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS));
+    expect(surfaceCalls[2].args).toMatchObject({ expanded: false, activity: 'idle', placement, deferShrink: true });
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls).toHaveLength(3);
+    await act(async () => surfaceCalls[2].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS - 1));
+    expect(surfaceCalls).toHaveLength(3);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(surfaceCalls[3].args).toEqual({ expanded: false, content: 'controls', activity: 'idle', placement });
+    await act(async () => surfaceCalls[3].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    await act(async () => surfaceCalls[4].resolve(APPLIED));
+    await act(async () => current.onHoverEnd());
+    await act(async () => vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS));
+    await act(async () => surfaceCalls[5].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    expect(surfaceCalls[6].args.expanded).toBe(true);
+    await act(async () => surfaceCalls[6].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls).toHaveLength(7); expect(current.expanded).toBe(true);
+  });
+
   it('reveals the card only after the grow resize is acknowledged (dwell → opening → ack → open)', async () => {
     await mount();
 

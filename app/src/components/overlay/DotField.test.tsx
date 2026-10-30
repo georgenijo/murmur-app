@@ -63,6 +63,37 @@ describe('canvas field lifecycle', () => {
     expect(events.listeners.size).toBe(0); expect(events.stops).toHaveBeenCalledTimes(2); expect(frames.size).toBe(0);
   });
 
+  it('keeps a native-hidden field asleep across stage and style changes', async () => {
+    await act(async () => root.render(<DotField stage="recording" />));
+    tick(2);
+    events.listeners.get('overlay-visible-changed')?.({ payload: false });
+    for (const style of ['sweep', 'flow', 'pulse'] as const) {
+      await act(async () => root.render(<DotField stage="processing" processingStyle={style} />));
+      tick(3); expect(frames.size).toBe(0);
+    }
+    events.listeners.get('overlay-visible-changed')?.({ payload: true });
+    tick(2); expect(frames.size).toBe(1);
+  });
+
+  it('resizes backing pixels on display scale changes without replacing the simulation', async () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    const step = vi.spyOn(DotScope.prototype, 'advance');
+    await act(async () => root.render(<DotField stage="recording" />));
+    tick(2);
+    const scope = step.mock.contexts[0];
+    const canvas = container.querySelector('canvas')!;
+    expect(canvas.width).toBe(112);
+    vi.stubGlobal('devicePixelRatio', 2);
+    await act(async () => window.dispatchEvent(new Event('resize')));
+    tick(2);
+    expect([canvas.width, canvas.height]).toEqual([224, 52]);
+    expect(step.mock.contexts.every(context => context === scope)).toBe(true);
+    vi.stubGlobal('devicePixelRatio', 1);
+    await act(async () => root.render(<DotField stage="recording" geometry={{ ...(scope as DotScope).geometry }} />));
+    tick(); expect(canvas.width).toBe(112);
+    expect(step.mock.contexts.every(context => context === scope)).toBe(true);
+  });
+
   it('Reduce Motion fades once then sleeps, and a preference change wakes the field', async () => {
     reduced = true;
     await act(async () => root.render(<DotField stage="recording" />)); tick(120);
