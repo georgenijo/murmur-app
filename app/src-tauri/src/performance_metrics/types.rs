@@ -234,6 +234,8 @@ pub enum PerformanceStageV1 {
     ReviewReady,
     Apply,
     Undo,
+    ReleaseToStop,
+    ReleaseToPaste,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

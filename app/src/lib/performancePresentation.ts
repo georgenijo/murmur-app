@@ -1,4 +1,5 @@
 import type { CorrelationFilter } from './eventFilters';
+import { percentile } from './numeric';
 import type {
   MeasurementV1,
   PerformanceRunKindV1,
@@ -46,10 +47,13 @@ const STAGE_LABELS: Record<PerformanceStageV1, string> = {
   reviewReady: 'Review ready',
   apply: 'Apply',
   undo: 'Undo',
+  releaseToStop: 'Release to stop',
+  releaseToPaste: 'Release to paste',
 };
 
 const STAGES_BY_KIND: Record<PerformanceRunKindV1, readonly PerformanceStageV1[]> = {
   dictation: [
+    'releaseToStop',
     'captureFinalization',
     'vad',
     'modelQueue',
@@ -68,6 +72,7 @@ const STAGES_BY_KIND: Record<PerformanceRunKindV1, readonly PerformanceStageV1[]
     'fileOutput',
     'clipboardPaste',
     'totalProcessing',
+    'releaseToPaste',
   ],
   fileTranscription: [
     'fileDecode',
@@ -211,6 +216,34 @@ export function orderedStages(run: PerformanceRunV1): StageTimingV1[] {
     const timing = byName.get(stage);
     return timing ? [timing] : [];
   });
+}
+
+export interface StagePercentiles {
+  p50Ms: number;
+  p90Ms: number;
+  sampleCount: number;
+}
+
+/**
+ * Nearest-rank p50/p90 of one measured stage across successful dictation
+ * runs. Runs without a measurement (historical records, toggle or overlay
+ * stops for the release stages) are excluded rather than counted as zero.
+ */
+export function dictationStagePercentiles(
+  runs: readonly PerformanceRunV1[],
+  stage: PerformanceStageV1,
+): StagePercentiles | null {
+  const values = runs.flatMap(run => {
+    if (run.kind !== 'dictation' || run.outcome.status !== 'success') return [];
+    const duration = run.stages.find(timing => timing.stage === stage)?.durationMs;
+    return duration?.status === 'measured' ? [duration.value] : [];
+  });
+  if (values.length === 0) return null;
+  return {
+    p50Ms: percentile(values, 0.5),
+    p90Ms: percentile(values, 0.9),
+    sampleCount: values.length,
+  };
 }
 
 function totalProcessingMeasurement(run: PerformanceRunV1): MeasurementV1<number> {

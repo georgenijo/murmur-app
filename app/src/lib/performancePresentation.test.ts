@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makeRun, measured, notApplicable, unavailable } from '../components/log-viewer/testFixtures';
 import {
   correlationFilterForRun,
+  dictationStagePercentiles,
   stageLabel,
   formatMeasurement,
   orderedStages,
@@ -47,8 +48,43 @@ describe('performance presentation semantics', () => {
     expect(orderedStages(run).map(timing => timing.stage)).not.toContain('inferenceQueue');
   });
 
+  it('summarizes release-to-paste p50/p90 only from measured successful dictations', () => {
+    const withStage = (index: number, stage: 'releaseToPaste' | 'totalProcessing', value: number | null, overrides = {}) => {
+      const run = makeRun({ runId: index.toString(16).padStart(32, '0'), ...overrides });
+      run.stages = run.stages.map(timing => timing.stage === stage
+        ? { ...timing, durationMs: value === null ? notApplicable() : measured(value) }
+        : timing);
+      return run;
+    };
+    const runs = [
+      ...[120, 150, 170, 180, 200, 210, 230, 250, 300, 900].map((value, index) =>
+        withStage(index + 1, 'releaseToPaste', value)),
+      // A toggle-stopped dictation has no release; a failed run never pasted.
+      withStage(20, 'releaseToPaste', null),
+      withStage(21, 'releaseToPaste', 5, { outcome: { status: 'noSpeech' } }),
+      withStage(22, 'releaseToPaste', 5, {
+        kind: 'fileTranscription',
+        correlation: { kind: 'fileTranscription', fileRunId: 3 },
+      }),
+    ];
+    expect(dictationStagePercentiles(runs, 'releaseToPaste')).toEqual({
+      p50Ms: 200,
+      p90Ms: 300,
+      sampleCount: 10,
+    });
+    expect(dictationStagePercentiles(runs, 'totalProcessing')).toEqual({
+      p50Ms: 1_000,
+      p90Ms: 1_000,
+      sampleCount: 11,
+    });
+    expect(dictationStagePercentiles([makeRun()], 'releaseToPaste')).toBeNull();
+    expect(stageLabel('releaseToStop', 'dictation')).toBe('Release to stop');
+    expect(stageLabel('releaseToPaste', 'dictation')).toBe('Release to paste');
+  });
+
   it('orders each run kind without inventing stage offsets', () => {
     expect(orderedStages(makeRun()).map(stage => stage.stage)).toEqual([
+      'releaseToStop',
       'captureFinalization',
       'vad',
       'modelQueue',
@@ -67,6 +103,7 @@ describe('performance presentation semantics', () => {
       'fileOutput',
       'clipboardPaste',
       'totalProcessing',
+      'releaseToPaste',
     ]);
     const transform = makeRun({
       kind: 'selectedTextTransform',

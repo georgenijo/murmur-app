@@ -1164,6 +1164,18 @@ fn promoted_hold_stops_recording(over_recording: bool, event_type: &EventType) -
     !(over_recording && matches!(event_type, EventType::KeyPress(_)))
 }
 
+/// Stamp the native release behind a `hold-down-stop` for the live recording
+/// generation, so the stop can time the hotkey-to-invoke hop (#826).
+fn stamp_hold_release(handle: &tauri::AppHandle) {
+    let released_at = Instant::now();
+    if let Some(state) = handle.try_state::<crate::State>() {
+        crate::hotkey_release::record(
+            state.app_state.recording_id.load(Ordering::SeqCst),
+            released_at,
+        );
+    }
+}
+
 /// A dictation is in flight that the current hold did not start.
 fn dictation_in_flight(handle: &tauri::AppHandle) -> bool {
     handle.try_state::<crate::State>().is_some_and(|state| {
@@ -1922,6 +1934,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     let _ = handle.emit("hold-down-start", ());
                                 }
                                 HoldDownSignal::Stop => {
+                                    stamp_hold_release(&handle);
                                     let _ = handle.emit("hold-down-stop", ());
                                 }
                                 HoldDownSignal::Arm {
@@ -2053,6 +2066,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                             let _ = handle.emit("hold-over-recording-end", ());
                                         } else {
                                             tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
+                                            stamp_hold_release(&handle);
                                             let _ = handle.emit("hold-down-stop", ());
                                         }
                                         true

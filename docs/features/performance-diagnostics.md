@@ -29,8 +29,9 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 2`; the v2 migration adds
-Voice Query support without changing tables. Run and resource JSON records
+The database currently uses SQLite `user_version = 3`; the v2 migration adds
+Voice Query support and the v3 migration adds the dictation `releaseToStop`
+and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. A database created by a newer Murmur
 build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
@@ -99,7 +100,21 @@ The contract never uses numeric zero as a missing-data sentinel.
   IDE context, and CLI stage outcomes;
 - optional file output;
 - clipboard/paste;
-- total post-stop processing.
+- total post-stop processing;
+- `releaseToStop`: native hotkey release → `stop_native_recording_for` entry,
+  the rdev → `hold-down-stop` → webview → IPC hop that `totalProcessing` never
+  saw;
+- `releaseToPaste`: native hotkey release → end of delivery, measured at the
+  same instant `totalProcessing` ends, recorded only for successful runs.
+
+The rdev listener stamps a monotonic instant when it publishes
+`hold-down-stop`, keyed by the live recording ID. The stop consumes the stamp
+only for its own recording and only within 10 seconds, so a release that did
+not drive the stop is never attributed to a run. Toggle, overlay, and auto-stop
+stops, and historical records, have no release stages; they are omitted, never
+shown as zero. The stamp is one instant and one generation ID, with no content.
+The Runs workspace shows nearest-rank p50/p90 of `totalProcessing` and
+`releaseToPaste` across retained successful dictations.
 
 ### File stages
 

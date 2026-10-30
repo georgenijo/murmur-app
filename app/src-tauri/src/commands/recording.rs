@@ -5313,6 +5313,8 @@ async fn stop_native_recording_for(
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
+    // The `releaseToStop` endpoint: entry, before any lock wait (#826).
+    let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
     let current_recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
@@ -5492,6 +5494,10 @@ async fn stop_native_recording_for(
         rid,
         PerformanceStageV1::CaptureFinalization,
     );
+    let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
+    if let Some(release) = hotkey_release {
+        performance_guard.record(release.release_to_stop());
+    }
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_stop_handoff",
@@ -5617,7 +5623,8 @@ async fn stop_native_recording_for(
     let text = pipeline.text;
     let timings = pipeline.timings;
 
-    let total_ms = t_total.elapsed().as_millis() as u64;
+    let delivered_at = std::time::Instant::now();
+    let total_ms = delivered_at.duration_since(t_total).as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
     let word_count = if text.trim().is_empty() {
         0
@@ -5680,9 +5687,14 @@ async fn stop_native_recording_for(
         PipelineTerminal::Cancelled(stage) => RunOutcomeV1::Cancelled { stage },
     };
     let warm_state = timings.warm_state.unwrap_or(ModelWarmStateV1::Unknown);
+    let mut stages = pipeline_stages(&timings, total_ms);
+    // Only a delivered transcript has a release-to-paste total.
+    if let (RunOutcomeV1::Success, Some(release)) = (&outcome, hotkey_release) {
+        stages.push(release.release_to_paste(delivered_at));
+    }
     performance_guard.finish(
         outcome,
-        pipeline_stages(&timings, total_ms),
+        stages,
         Some(ContentFreeInputSummaryV1::audio_with_output(
             (audio_secs * 1_000.0).round() as u64,
             text.len(),

@@ -94,6 +94,24 @@ describe('RunsView', () => {
     });
   }
 
+  it('shows release-to-paste p50/p90 next to total processing', async () => {
+    const released = makeRun();
+    released.stages = released.stages.map(timing => timing.stage === 'releaseToPaste'
+      ? { ...timing, durationMs: measured(1_180), outcome: 'completed' }
+      : timing);
+    await renderRuns([...runs(), released]);
+    const total = container.querySelector('[aria-label="Total processing"]');
+    const release = container.querySelector('[aria-label="Release to paste"]');
+    expect(total?.textContent).toContain('p50 1.00 s · p90 1.00 s');
+    expect(total?.textContent).toContain('2 successful dictations');
+    expect(release?.textContent).toContain('p50 1.18 s · p90 1.18 s');
+    expect(release?.textContent).toContain('1 successful dictation');
+
+    await renderRuns(runs());
+    expect(container.querySelector('[aria-label="Release to paste"]')?.textContent)
+      .toContain('No hold-to-talk release recorded yet');
+  });
+
   it('filters first-class run kinds and preserves every terminal outcome', async () => {
     await renderRuns();
     expect(container.textContent).toContain('Dictation');

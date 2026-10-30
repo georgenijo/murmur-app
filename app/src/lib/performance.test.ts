@@ -20,6 +20,17 @@ describe('performance contracts', () => {
     expect(isPerformanceRunV1({ ...run, stages: [...run.stages, run.stages[0]] })).toBe(false);
   });
 
+  it('accepts historical v1 runs without release timing stages, but not other gaps', () => {
+    const run = makeRun();
+    const additive = new Set(['inferenceQueue', 'releaseToStop', 'releaseToPaste']);
+    const legacy = { ...run, stages: run.stages.filter(timing => !additive.has(timing.stage)) };
+    expect(isPerformanceRunV1(legacy)).toBe(true);
+    expect(isPerformanceRunV1({
+      ...legacy,
+      stages: legacy.stages.filter(timing => timing.stage !== 'totalProcessing'),
+    })).toBe(false);
+  });
+
   it('accepts only the bounded, content-free diagnostics-health schema', () => {
     const health = {
       schemaVersion: 1,
