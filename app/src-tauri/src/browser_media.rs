@@ -52,14 +52,18 @@ enum Watch {
     /// Murmur cannot tell silence from a tap that stopped delivering:
     /// ownership is uncertain, so give it up.
     Lost,
+    /// A browser process appeared or went away: it could play outside the
+    /// tap, so ownership is uncertain.
+    Changed,
 }
 
 /// `closed`: the worker confirmed every browser closed its output, the only
 /// reason a working tap delivers nothing.
-fn watch(peak: Option<f32>, listening: bool, closed: bool) -> Watch {
+fn watch(peak: Option<f32>, listening: bool, closed: bool, changed: bool) -> Watch {
     match peak {
         Some(peak) if peak > SOUND_DBFS => Watch::Restarted,
         _ if !listening => Watch::Lost,
+        _ if changed => Watch::Changed,
         Some(_) => Watch::Keep,
         None if closed => Watch::Keep,
         None => Watch::Lost,
@@ -346,6 +350,20 @@ mod native {
         watch: WorkerBrowserAudio,
     }
 
+    fn released(recording_id: u64, outcome: Watch) {
+        tracing::info!(
+            target: "audio",
+            event_code = "audio.browser_media_released",
+            recording_id,
+            outcome = match outcome {
+                Watch::Restarted => "restarted",
+                Watch::Changed => "changed",
+                Watch::Lost | Watch::Keep => "lost",
+            },
+            "browser media pause released"
+        );
+    }
+
     fn run_jobs(receiver: Receiver<Job>) {
         let mut paused: Option<Held> = None;
         loop {
@@ -360,18 +378,10 @@ mod native {
                     Err(TryRecvError::Empty) => {
                         let peak = held.watch.peak_dbfs(WATCH_WINDOW);
                         let closed = peak.is_none() && held.watch.output_closed();
-                        let outcome = watch(peak, held.watch.listening(), closed);
+                        let changed = held.watch.membership_changed();
+                        let outcome = watch(peak, held.watch.listening(), closed, changed);
                         if outcome != Watch::Keep {
-                            tracing::info!(
-                                target: "audio",
-                                event_code = "audio.browser_media_released",
-                                recording_id = held.recording_id,
-                                outcome = match outcome {
-                                    Watch::Restarted => "restarted",
-                                    _ => "lost",
-                                },
-                                "browser media pause released"
-                            );
+                            released(held.recording_id, outcome);
                             paused = None;
                         }
                         continue;
@@ -386,7 +396,7 @@ mod native {
                     }
                     let started = Instant::now();
                     let granted = authorization() == BrowserMediaPermission::Granted;
-                    let mut audio = WorkerBrowserAudio::new(Listen::Playing);
+                    let mut audio = WorkerBrowserAudio::new();
                     let result = if granted {
                         pause(&mut audio)
                     } else {
@@ -431,10 +441,17 @@ mod native {
                         });
                         continue;
                     }
-                    let Held { proof, watch, .. } = held;
-                    drop(watch);
+                    // Resume on the watch's own tap: observation never stops
+                    // between the last watch window and the play decision.
+                    let Held {
+                        proof, mut watch, ..
+                    } = held;
+                    if watch.membership_changed() {
+                        released(recording_id, Watch::Changed);
+                        continue;
+                    }
                     let started = Instant::now();
-                    let outcome = resume(&mut WorkerBrowserAudio::new(Listen::All), proof);
+                    let outcome = resume(&mut watch, proof);
                     tracing::info!(
                         target: "audio",
                         event_code = "audio.browser_media_resume",
@@ -446,14 +463,6 @@ mod native {
                 }
             }
         }
-    }
-
-    #[derive(Clone, Copy)]
-    enum Listen {
-        /// Every browser, only when one has open output: a closed output is silent.
-        Playing,
-        /// Every browser: a paused one closes its output a few seconds later.
-        All,
     }
 
     struct Worker {
@@ -481,21 +490,27 @@ mod native {
         }
     }
 
-    /// One worker per pause or resume: the tap covers the browser processes
-    /// running when it first listens.
+    /// One worker from a pause through its resume: the tap covers every
+    /// browser process running when it first listens, and only when one of
+    /// them had its output open.
     struct WorkerBrowserAudio {
-        listen: Listen,
         worker: Option<Worker>,
         started: bool,
     }
 
     impl WorkerBrowserAudio {
-        fn new(listen: Listen) -> Self {
+        fn new() -> Self {
             Self {
-                listen,
                 worker: None,
                 started: false,
             }
+        }
+
+        /// A browser process appeared or went away since the tap started, so
+        /// it may play outside the tap. Unknown counts as changed.
+        fn membership_changed(&mut self) -> bool {
+            self.ask("changed\n", Duration::ZERO)
+                .is_none_or(|reply| reply != "changed 0")
         }
 
         /// The worker still runs with a tap.
@@ -506,7 +521,7 @@ mod native {
         fn worker(&mut self) -> Option<&mut Worker> {
             if !self.started {
                 self.started = true;
-                self.worker = start_worker(self.listen);
+                self.worker = start_worker();
             }
             self.worker.as_mut()
         }
@@ -583,7 +598,7 @@ mod native {
         parts.next().is_none().then_some(ready)
     }
 
-    fn start_worker(listen: Listen) -> Option<Worker> {
+    fn start_worker() -> Option<Worker> {
         let path = bundled_sibling("murmur-capture-worker")
             .or_else(|_| bundled_sibling("murmur-capture-worker-aarch64-apple-darwin"))
             .ok()?;
@@ -598,13 +613,7 @@ mod native {
             .into_iter()
             .map(|pid| pid.to_string())
             .collect();
-        let mut arguments = vec![
-            "--browser-level",
-            match listen {
-                Listen::Playing => "playing",
-                Listen::All => "all",
-            },
-        ];
+        let mut arguments = vec!["--browser-level", "playing"];
         arguments.extend(safari_pids.iter().map(String::as_str));
         let (child, input, output) =
             ManagedChild::spawn_with_arguments(&path, &arguments, &[]).ok()?;
@@ -1034,15 +1043,18 @@ mod tests {
     #[test]
     fn a_pause_the_user_takes_back_during_dictation_is_released() {
         // Silence, or confirmed closed outputs after a long pause, keep the proof.
-        assert_eq!(watch(Some(-200.0), true, false), Watch::Keep);
-        assert_eq!(watch(None, true, true), Watch::Keep);
+        assert_eq!(watch(Some(-200.0), true, false, false), Watch::Keep);
+        assert_eq!(watch(None, true, true, false), Watch::Keep);
         // A browser played again: a later pause is the user's, never Murmur's.
-        assert_eq!(watch(Some(-20.0), true, false), Watch::Restarted);
+        assert_eq!(watch(Some(-20.0), true, false, false), Watch::Restarted);
         // No level without confirmed closed outputs: the tap may have stopped.
-        assert_eq!(watch(None, true, false), Watch::Lost);
+        assert_eq!(watch(None, true, false, false), Watch::Lost);
         // Murmur stopped hearing it: ownership is uncertain.
-        assert_eq!(watch(None, false, true), Watch::Lost);
-        assert_eq!(watch(Some(-200.0), false, false), Watch::Lost);
+        assert_eq!(watch(None, false, true, false), Watch::Lost);
+        assert_eq!(watch(Some(-200.0), false, false, false), Watch::Lost);
+        // A browser launched (or quit) during the dictation is outside the tap.
+        assert_eq!(watch(Some(-200.0), true, false, true), Watch::Changed);
+        assert_eq!(watch(None, true, true, true), Watch::Changed);
     }
 
     #[test]

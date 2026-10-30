@@ -10,6 +10,7 @@
 //! worker → host  ready <in_call 0|1> <tapped 0|1>
 //! host → worker  peak <1..=1000 ms>   →  peak <dBFS>|none
 //! host → worker  closed               →  closed 0|1
+//! host → worker  changed              →  changed 0|1
 //! EOF                                 →  teardown, exit
 //! ```
 //!
@@ -128,6 +129,29 @@ struct ProcessObject {
     running_output: Option<bool>,
 }
 
+/// Every process that is or could be a browser, including every WebKit GPU
+/// process (the worker cannot tell a newly launched Safari from Mail). A
+/// browser launched during a dictation is outside the tap, so any change in
+/// this set means Murmur can no longer prove what it hears.
+fn membership() -> Result<Vec<AudioObjectID>, ()> {
+    let own_pid = std::process::id() as i32;
+    let mut objects: Vec<AudioObjectID> = property_vec::<AudioObjectID>(
+        kAudioObjectSystemObject as AudioObjectID,
+        kAudioHardwarePropertyProcessObjectList,
+    )?
+    .into_iter()
+    .filter(|&object| {
+        property_value::<i32>(object, kAudioProcessPropertyPID).is_ok_and(|pid| pid != own_pid)
+            && property_cf_string(object, kAudioProcessPropertyBundleID).is_some_and(|bundle| {
+                bundle.eq_ignore_ascii_case("com.apple.WebKit.GPU")
+                    || chromium_or_firefox_bundle(&bundle)
+            })
+    })
+    .collect();
+    objects.sort_unstable();
+    Ok(objects)
+}
+
 fn browser_process_objects(safari_pids: &[i32]) -> Result<Vec<ProcessObject>, ()> {
     let own_pid = std::process::id() as i32;
     let objects = property_vec::<AudioObjectID>(
@@ -195,6 +219,7 @@ struct BrowserTap {
     /// floats order the same as their bits, so `fetch_max` keeps the peak.
     peak: Arc<AtomicU32>,
     callbacks: Arc<AtomicU64>,
+    reported_callbacks: std::cell::Cell<u64>,
 }
 
 impl BrowserTap {
@@ -215,6 +240,7 @@ impl BrowserTap {
             io_proc: None,
             peak: Arc::new(AtomicU32::new(0)),
             callbacks: Arc::new(AtomicU64::new(0)),
+            reported_callbacks: std::cell::Cell::new(0),
         };
         check(unsafe { AudioHardwareCreateProcessTap(Some(&description), &mut source.tap) })?;
         let tap_uid = unsafe { description.UUID().UUIDString() };
@@ -260,15 +286,13 @@ impl BrowserTap {
         Ok(source)
     }
 
-    /// None when the tap delivered nothing during `window`.
+    /// The peak since the previous answer, so no sound falls between two
+    /// requests. None when the tap delivered nothing in that time.
     fn peak_dbfs(&self, window: Duration) -> Option<f32> {
-        let callbacks = self.callbacks.load(Ordering::Relaxed);
-        self.peak.store(0, Ordering::Relaxed);
         std::thread::sleep(window);
-        if self.callbacks.load(Ordering::Relaxed) == callbacks {
-            return None;
-        }
-        Some(dbfs(f32::from_bits(self.peak.load(Ordering::Relaxed))))
+        let callbacks = self.callbacks.load(Ordering::Relaxed);
+        let peak = f32::from_bits(self.peak.swap(0, Ordering::Relaxed));
+        (self.reported_callbacks.replace(callbacks) != callbacks).then(|| dbfs(peak))
     }
 }
 
@@ -324,6 +348,7 @@ fn check(status: i32) -> Result<(), ()> {
 enum Request {
     Peak(Duration),
     Closed,
+    Changed,
 }
 
 fn parse_request(line: &str) -> Option<Request> {
@@ -333,7 +358,11 @@ fn parse_request(line: &str) -> Option<Request> {
             .ok()
             .filter(|ms| (1..=MAX_WINDOW_MS).contains(ms))
             .map(|ms| Request::Peak(Duration::from_millis(ms))),
-        None if line.trim_end_matches('\n') == "closed" => Some(Request::Closed),
+        None => match line.trim_end_matches('\n') {
+            "closed" => Some(Request::Closed),
+            "changed" => Some(Request::Changed),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -350,6 +379,7 @@ pub(crate) fn run(arguments: &[String]) -> i32 {
     let Some(arguments) = parse_arguments(arguments) else {
         return 64;
     };
+    let started_with = membership();
     let processes = browser_process_objects(&arguments.safari_pids);
     let call = in_call(&processes);
     let objects = tap_objects(arguments.processes, &processes.unwrap_or_default());
@@ -382,6 +412,13 @@ pub(crate) fn run(arguments: &[String]) -> i32 {
         let reply = match parse_request(&line) {
             Some(Request::Peak(window)) => {
                 format_peak(tap.as_ref().and_then(|tap| tap.peak_dbfs(window)))
+            }
+            Some(Request::Changed) => {
+                let changed = match (&started_with, membership()) {
+                    (Ok(before), Ok(now)) => *before != now,
+                    _ => true,
+                };
+                format!("changed {}\n", u8::from(changed))
             }
             Some(Request::Closed) => {
                 format!(
@@ -538,6 +575,7 @@ mod tests {
             Some(Request::Peak(Duration::from_millis(100)))
         );
         assert_eq!(parse_request("closed\n"), Some(Request::Closed));
+        assert_eq!(parse_request("changed\n"), Some(Request::Changed));
         for bad in [
             "peak 0\n",
             "peak 1001\n",

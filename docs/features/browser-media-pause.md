@@ -40,12 +40,15 @@ While the recording lasts, the same tap listens every 500 ms
 │   proof: no play later, even if you pause it again before the dictation ends
 ├── No level and the worker cannot confirm every browser output closed, or the
 │   worker or tap is lost → give up the proof
+├── A browser process appeared or went away (it could play outside the tap;
+│   any new WebKit GPU process counts, since a new Safari cannot be told from
+│   Mail) → give up the proof
 └── Silent, or every output closed after a long pause → keep the proof
 
 Recording → Processing or Idle, and Murmur holds the proof
 ├── A newer recording already started → it inherits the pause; no play yet
-├── The resume worker could not create its tap → no play
-├── Listen 300 ms to every browser process
+├── A browser process appeared or went away → no play
+├── Listen 300 ms on the same tap
 │   ├── Above -60 dBFS (you started it again) → no play
 │   ├── No level, a browser runs and every one closed its output → still paused: play
 │   └── No level otherwise (browser quit, tap failed) → no play
@@ -62,14 +65,14 @@ nothing is paused.
 
 ## Process boundary
 
-The app process never opens an audio device. Each pause or resume spawns the
-signed, sandboxed capture worker in `--browser-level <playing|all>` mode. It
-owns the tap and answers bounded line requests (`peak <ms>`, `closed`) with a
-peak in dBFS or `none`. The IO callback keeps only an atomic peak and callback
+The app process never opens an audio device. Each pause spawns the signed,
+sandboxed capture worker in `--browser-level playing` mode. It owns the tap and
+answers line requests: `peak <ms>` (the peak in dBFS since its previous answer,
+so no sound falls between requests, or `none`), `closed`, and `changed`. The IO callback keeps only an atomic peak and callback
 count; no audio sample is copied, stored, or written out. Closing stdin tears
-the tap down in reverse creation order. While Murmur holds a pause, the pause
-worker, whose tap covers every browser, stays open for the whole recording with
-no handoff and is closed before the resume; the host hard-kills the exact process
+the tap down in reverse creation order. While Murmur holds a pause, the same
+worker, whose tap covers every browser, stays open through the recording and
+the resume with no handoff, and is closed afterwards; the host hard-kills the exact process
 group if the worker does not exit within 500 ms. The host owns the decision and
 sends the MediaRemote command (the worker's sandbox does not reach it).
 
@@ -117,7 +120,7 @@ Content-free `audio` events: `audio.browser_media_pause` (`outcome`:
 `unconfirmed`; `permission_granted`; `elapsed_ms`; `recording_id`) and
 `audio.browser_media_resume` (`outcome`: `resumed`, `already_playing`,
 `unheard`, `refused`, `lost_after_play`, `repaused`), and
-`audio.browser_media_released` (`outcome`: `restarted`, `lost`) when a pause is
+`audio.browser_media_released` (`outcome`: `restarted`, `lost`, `changed`) when a pause is
 given up during dictation. No process, tab, page,
 title, or audio is logged.
 
