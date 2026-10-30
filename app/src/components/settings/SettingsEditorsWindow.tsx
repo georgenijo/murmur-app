@@ -135,7 +135,7 @@ export function SettingsEditorsWindow({
   const revealedTargetRef = useRef<typeof target>(null);
   const [advancedOpen, setAdvancedOpen] = useSettingsAdvanced(initialTab);
   const titleId = useId();
-  const dialogRef = useDialogFocus(onBack, restoreFocus);
+  const dialogRef = useDialogFocus(onBack, restoreFocus, true);
   useLayoutEffect(() => {
     if (target?.id !== 'app-overrides-manual' || revealedTargetRef.current === target) return;
     if (!advancedOpen) { setAdvancedOpen(true); return; }

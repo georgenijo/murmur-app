@@ -3,6 +3,26 @@ import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { useDialogFocus } from './useDialogFocus';
 
+it.each([false, true])('restores the explicit sheet caller only when requested (%s)', async (preferExplicitRestore) => {
+  const container = document.createElement('div'); document.body.append(container);
+  const previous = document.createElement('input');
+  const caller = document.createElement('button');
+  container.append(previous, caller);
+  previous.focus();
+  const modal = document.createElement('div'); container.append(modal);
+  const modalRoot = createRoot(modal);
+  function Dialog() {
+    const ref = useDialogFocus(vi.fn(), () => caller, preferExplicitRestore);
+    return <div ref={ref} role="dialog" aria-modal="true"><button>Close sheet</button></div>;
+  }
+  try {
+    await act(async () => modalRoot.render(<Dialog />));
+    expect(document.activeElement?.textContent).toBe('Close sheet');
+    await act(async () => modalRoot.unmount());
+    expect(document.activeElement).toBe(preferExplicitRestore ? caller : previous);
+  } finally { container.remove(); }
+});
+
 it('ignores warm hidden Settings sheets and resumes containment when their surface returns', async () => {
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
