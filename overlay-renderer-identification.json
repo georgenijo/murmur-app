@@ -1,0 +1,59 @@
+{
+  "method": "Briefly suspend one owned isolated-app WebContent process at a time, compare actual field pixels while suspended and after resume; every process is resumed in finally. No source edits or injected page scripts.",
+  "processes": [
+    {
+      "pid": 66719,
+      "before": "689fd696622635a9cc343b232648a78475cc93a60380efdf6a4c6293423005a1",
+      "pausedA": "9b226b37909e3b6bd08b0ba131251f09f7216ed8630561ea6beb505982b9c084",
+      "pausedB": "9b226b37909e3b6bd08b0ba131251f09f7216ed8630561ea6beb505982b9c084",
+      "resumed": "1bafe325024d622b90fc18c22f496ba8b994f3ad5d6d85ffcfe7dc0b3315b82a",
+      "frozenField": true,
+      "resumedField": true
+    },
+    {
+      "pid": 66716,
+      "before": "649dd988302e20bcb4102c1cf670fff2d75997160b74fdbcdad453ff0e16deb5",
+      "pausedA": "a48be004b5019f5fb68bf323fec43764525bc35a17d91c47725a7e2a3a342bfe",
+      "pausedB": "4fd5de2df70d98ee1a433f40f8f31bf13ccd1cfd861f7d934c822f66c934d142",
+      "resumed": "a890d82700db3ff7f173f7d3fcc084ef9650b9ad0673aa668d94cf8e578136e4",
+      "frozenField": false,
+      "resumedField": true
+    },
+    {
+      "pid": 66718,
+      "before": "75d8ce2ba75024702d4bd9ad376508918c35a683ea83b4cc508cb8c30dab10b9",
+      "pausedA": "647deb3bd9beb02de03cc6c7b1b0aa1d4047ba7416fa94494ea9b016b28d8aef",
+      "pausedB": "dbcbbf6f82a512dfa8d1797cc5ac8d2b9427c03714a8e5e64488e3177f6ecdaf",
+      "resumed": "a771797683f572cb7d6f601396c58171de5eb02a1f10651d185f5cf240d924a1",
+      "frozenField": false,
+      "resumedField": true
+    },
+    {
+      "pid": 66720,
+      "before": "9577861ae1f07e52e08b7472972923e26e6f5b0a0fceb21039687dc8f73d57b0",
+      "pausedA": "dfc6117b07743c2a91a32c250282f05e0126f28eb4599487f412e7da42949a3b",
+      "pausedB": "8d56188a204405a7b7500a09607f5c26a9a8c5edb4674a50b6829405093fc461",
+      "resumed": "e76c8637d253e511f43656de6586cd2c74ac86523a158c205eeab0d4e07fb257",
+      "frozenField": false,
+      "resumedField": true
+    },
+    {
+      "pid": 66721,
+      "before": "78a542db7209afc34e3e1acd8d814415214768e3d4d875660e0ad38b87839c6b",
+      "pausedA": "6da13201b271f68c00dd2948edfd64a8443969c7d84fe5090463058c14bf2fb9",
+      "pausedB": "5bb7d671ea921a2cc51d63f04b9ecc2ab604dea997a4a39a8ea5f9c8851dfc77",
+      "resumed": "355c29c9fd491878b3a989a9f7a2982459f158ca361ff12815b433b30feb0f3a",
+      "frozenField": false,
+      "resumedField": true
+    },
+    {
+      "pid": 66722,
+      "before": "c9f8ff9dbed47db158f2975691b9a6722e1356a8851074b2a91c23c247561630",
+      "pausedA": "aa79d6c06654884326ab5b665c1db2a717b66e970715f4eb39136b01fbb2e3c1",
+      "pausedB": "f2317f0aadba82ea51ac160e75e97692003bb917677717225c2b8e84cf8c32df",
+      "resumed": "2d9133ae0566c1e6551ac0e46c5def4ea2e9aff2964416fc8ec99b5580c28808",
+      "frozenField": false,
+      "resumedField": true
+    }
+  ]
+}

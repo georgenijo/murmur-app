@@ -1,0 +1,35 @@
+[
+  {
+    "label": "before",
+    "source": "/Users/george-mac-mini/scratch/e846/852-evidence/native/before-controlled.mkv",
+    "windowStartSeconds": 5,
+    "windowSeconds": 8,
+    "crop": "100:60:990:0",
+    "recordedFrames": 480,
+    "distinctConsecutiveUpdates": 452,
+    "visibleUpdatesPerSecond": 56.5,
+    "method": "Consecutive pixel-hash changes in lossless native capture of animation only; output fps metadata is not treated as proof of animation."
+  },
+  {
+    "label": "after-default-off",
+    "source": "/Users/george-mac-mini/scratch/e846/852-evidence/native/after-default-off-controlled.mkv",
+    "windowStartSeconds": 5,
+    "windowSeconds": 8,
+    "crop": "224:52:688:74",
+    "recordedFrames": 480,
+    "distinctConsecutiveUpdates": 479,
+    "visibleUpdatesPerSecond": 59.875,
+    "method": "Consecutive pixel-hash changes in lossless native capture of animation only; output fps metadata is not treated as proof of animation."
+  },
+  {
+    "label": "after-live-words",
+    "source": "/Users/george-mac-mini/scratch/e846/852-evidence/native/after-live-words-controlled.mkv",
+    "windowStartSeconds": 5,
+    "windowSeconds": 8,
+    "crop": "224:52:688:74",
+    "recordedFrames": 480,
+    "distinctConsecutiveUpdates": 479,
+    "visibleUpdatesPerSecond": 59.875,
+    "method": "Consecutive pixel-hash changes in lossless native capture of animation only; output fps metadata is not treated as proof of animation."
+  }
+]

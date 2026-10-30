@@ -1,0 +1,170 @@
+[
+  {
+    "label": "before",
+    "app": "Murmur Island Before",
+    "hostPid": 48783,
+    "intervalSeconds": 8.011254374869168,
+    "metrics": {
+      "host": {
+        "pids": [
+          48783
+        ],
+        "cpuPercentOneCore": 31.955045742032247,
+        "rssMiBStart": 344.03125,
+        "rssMiBEnd": 323.328125
+      },
+      "webcontent": {
+        "pids": [
+          48848,
+          48850,
+          48851,
+          48852,
+          48853,
+          48854
+        ],
+        "cpuPercentOneCore": 21.469796357927933,
+        "rssMiBStart": 400.484375,
+        "rssMiBEnd": 337.359375
+      },
+      "gpu": {
+        "pids": [
+          48847
+        ],
+        "cpuPercentOneCore": 8.238410230367684,
+        "rssMiBStart": 50.328125,
+        "rssMiBEnd": 43.203125
+      },
+      "network": {
+        "pids": [
+          48849
+        ],
+        "cpuPercentOneCore": 0.12482439742981347,
+        "rssMiBStart": 16.578125,
+        "rssMiBEnd": 9.40625
+      }
+    },
+    "scope": "All app-attributed WebContent processes, an upper bound for overlay renderer; host/GPU shown separately. No unproven renderer attribution.",
+    "focus": {
+      "before": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+      "during": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+      "after": "Murmur Focus Probe com.localdictation.epic846.focus-probe"
+    },
+    "syntheticAudioSha256": "9d20c439a3150f711eba68b5b277509dd6c609ad83d9180f3832f3d2bac43313"
+  },
+  {
+    "label": "after-default-off",
+    "app": "Murmur Island After",
+    "hostPid": 66668,
+    "intervalSeconds": 8.018759249942377,
+    "metrics": {
+      "host": {
+        "pids": [
+          66668
+        ],
+        "cpuPercentOneCore": 26.313297783758284,
+        "rssMiBStart": 206.90625,
+        "rssMiBEnd": 214.6875
+      },
+      "webcontent": {
+        "pids": [
+          66716,
+          66718,
+          66719,
+          66720,
+          66721,
+          66722
+        ],
+        "cpuPercentOneCore": 28.30861894271625,
+        "rssMiBStart": 407.640625,
+        "rssMiBEnd": 422.734375
+      },
+      "gpu": {
+        "pids": [
+          66715
+        ],
+        "cpuPercentOneCore": 13.343710250531451,
+        "rssMiBStart": 55.65625,
+        "rssMiBEnd": 57.859375
+      },
+      "network": {
+        "pids": [
+          66717
+        ],
+        "cpuPercentOneCore": 0.0,
+        "rssMiBStart": 15.390625,
+        "rssMiBEnd": 15.40625
+      }
+    },
+    "scope": "All app-attributed WebContent processes, an upper bound for overlay renderer; host/GPU shown separately. No unproven renderer attribution.",
+    "focus": {
+      "before": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+      "during": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+      "after": "Murmur Focus Probe com.localdictation.epic846.focus-probe"
+    },
+    "syntheticAudioSha256": "9d20c439a3150f711eba68b5b277509dd6c609ad83d9180f3832f3d2bac43313",
+    "identifiedOverlayWebContent": {
+      "pid": 66719,
+      "cpuPercentOneCore": 5.861255904439047,
+      "rssMiBStart": 61.8125,
+      "rssMiBEnd": 62.796875
+    }
+  },
+  {
+    "label": "after-live-words",
+    "app": "Murmur Island After",
+    "hostPid": 66668,
+    "intervalSeconds": 8.01935191708617,
+    "metrics": {
+      "host": {
+        "pids": [
+          66668
+        ],
+        "cpuPercentOneCore": 28.05713009309532,
+        "rssMiBStart": 242.359375,
+        "rssMiBEnd": 243.09375
+      },
+      "webcontent": {
+        "pids": [
+          66716,
+          66718,
+          66719,
+          66720,
+          66721,
+          66722
+        ],
+        "cpuPercentOneCore": 25.81255968564769,
+        "rssMiBStart": 441.03125,
+        "rssMiBEnd": 448.6875
+      },
+      "gpu": {
+        "pids": [
+          66715
+        ],
+        "cpuPercentOneCore": 13.218025732747128,
+        "rssMiBStart": 60.15625,
+        "rssMiBEnd": 60.390625
+      },
+      "network": {
+        "pids": [
+          66717
+        ],
+        "cpuPercentOneCore": 0.0,
+        "rssMiBStart": 15.625,
+        "rssMiBEnd": 15.625
+      }
+    },
+    "scope": "All app-attributed WebContent processes, an upper bound for overlay renderer; host/GPU shown separately. No unproven renderer attribution.",
+    "focus": {
+      "before": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+      "during": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+      "after": "Murmur Focus Probe com.localdictation.epic846.focus-probe"
+    },
+    "syntheticAudioSha256": "9d20c439a3150f711eba68b5b277509dd6c609ad83d9180f3832f3d2bac43313",
+    "identifiedOverlayWebContent": {
+      "pid": 66719,
+      "cpuPercentOneCore": 5.860822730557691,
+      "rssMiBStart": 69.171875,
+      "rssMiBEnd": 69.703125
+    }
+  }
+]
