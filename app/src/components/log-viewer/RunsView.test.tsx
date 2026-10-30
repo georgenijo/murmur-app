@@ -189,14 +189,16 @@ describe('RunsView', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     await renderRuns([makeRun()]);
     const clearButton = Array.from(container.querySelectorAll('button'))
-      .find(button => button.textContent === 'Clear performance data')!;
+      .find(button => button.textContent === 'Clear performance data…')!;
     await act(async () => {
       clearButton.click();
       await Promise.resolve();
     });
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining(
-      'This does not remove Events, logs, transcription history, settings, knowledge, or benchmark reports.',
-    ));
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('This does not remove Events, logs, transcription history, settings, knowledge, or benchmark reports.');
+    expect(onClear).not.toHaveBeenCalled();
+    const confirm = dialog.querySelectorAll('button')[1];
+    await act(async () => confirm.click());
     expect(onClear).toHaveBeenCalledOnce();
   });
 

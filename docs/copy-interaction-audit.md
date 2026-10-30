@@ -82,6 +82,82 @@ Local logs and the isolated port-14850 Playwright configuration are retained in
 false`; it never connects to a worker's port 1420. The lead owns grouped CI,
 independent Sol review, Linux proof, and native verification.
 
+## Accepted review corrections C1–C5
+
+- [x] C1: Shift, Command, Control, and Option with Return cannot natively
+  activate a focused destructive button. Ordinary field modifiers, multiline
+  Return, IME composition, and Space retain their editing/activation behavior.
+  The browser regression arms an actual alias deletion, tries each modifier,
+  and then deletes with Space.
+- [x] C2: Transform capture deletion, private dictation capture deletion, and
+  Performance data clearing use the existing Knowledge confirmation markup,
+  extracted into a shared controlled dialog. Irreversible confirmations have
+  no Return default; Cancel/Escape do nothing destructive and Space confirms.
+  Capture ID and displayed pass/recording stay pinned while background lists
+  change. Capture consent and upload consent keep their existing behavior.
+- [x] C3: Appearance validates pending hex-color fields before Done. Invalid
+  Return keeps the editor open with its error, and Done or Return elsewhere
+  focuses the invalid field. A valid field Return still commits and closes.
+- [x] C4: Command editors and Knowledge confirmations follow the established
+  modal focus pattern through a shared hook: initial focus inside, Tab and
+  Shift-Tab wrap, Escape cancels, and closing restores the opener. Knowledge
+  overflow confirmations restore the persistent overflow trigger when their
+  menu item has unmounted. Browser focus assertions need no test focus setup.
+- [x] C5: Disabled setup Continue uses secondary styling; enabled Continue
+  remains the recoverable Return default. Real-component browser assertions
+  check class emphasis and computed backgrounds for microphone, Accessibility,
+  System Audio, and Calendar across unknown, granted, denied, loading,
+  restricted, and unsupported scenarios, in light and dark. Pending permission
+  requests also preserve the single-primary rule.
+
+Verification for this correction: TypeScript passed; all 181 Vitest files /
+1,866 tests passed. All 78 affected browser tests passed, including the 23
+new regressions and the existing copy, theme-contrast, and shell coverage. The
+dedicated port-14850 configuration keeps
+`reuseExistingServer: false`. Browser evidence and logs are under
+`~/scratch/e846/850-evidence/c1-c5-*`; the lead retains final Sol review,
+integration, and native verification. This correction does not change fonts,
+App.tsx, styles.css, SettingsPanel, or #848's shared settings controls.
+
+The prior 54-new / 18-updated golden manifest remains unchanged. This correction
+adds only these 16 Darwin goldens under
+`app/visual-tests/copy-review-850.spec.ts-snapshots/` (each row is both files):
+
+| Light | Dark |
+| --- | --- |
+| `light-850-transform-confirm-darwin.png` | `dark-850-transform-confirm-darwin.png` |
+| `light-850-dictation-confirm-darwin.png` | `dark-850-dictation-confirm-darwin.png` |
+| `light-850-runs-confirm-darwin.png` | `dark-850-runs-confirm-darwin.png` |
+| `light-850-invalid-accent-darwin.png` | `dark-850-invalid-accent-darwin.png` |
+| `light-850-microphone-permission-darwin.png` | `dark-850-microphone-permission-darwin.png` |
+| `light-850-accessibility-permission-darwin.png` | `dark-850-accessibility-permission-darwin.png` |
+| `light-850-system-permission-darwin.png` | `dark-850-system-permission-darwin.png` |
+| `light-850-calendar-permission-darwin.png` | `dark-850-calendar-permission-darwin.png` |
+
+Native delta to verify after integration, using disposable local data:
+
+1. Aliases: arm Delete…, then plain/Shift/Command/Control/Option Return must
+   retain the alias; Space confirms. Multiline command fields still accept
+   Return and Shift-Return as newlines, and IME confirmation remains intact.
+2. Diagnostics → Transforms: delete from both the capture list and Review.
+   Diagnostics → Private dictation capture: Review → Delete local copy….
+   Diagnostics → Runs: Clear performance data…. Each dialog starts inside,
+   wraps Tab, ignores every Return variant, cancels with Escape/Cancel, and
+   confirms only with an explicit click or Space. Let a capture list refresh
+   while open and verify the displayed pass/recording remains the target.
+3. Appearance → Create theme: enter `not-a-color` in Accent; Return and Done
+   must retain the editor and error. Enter a valid hex and Return; reopen to
+   confirm the committed value. An invalid Background must also block Return
+   from another field.
+4. Voice commands → New command… and Knowledge → overflow → Delete all…:
+   verify initial focus, both Tab wrap directions, Escape cancellation, and
+   opener restoration without first clicking inside the dialog. Recoverable
+   Save command / Import still use Return; typed DELETE still needs Space.
+5. General → Run setup assistant…: check all four permission steps before,
+   during, and after a grant or denial. At most one button is primary, disabled
+   Continue is secondary, Return cannot skip an unmet step, and enabled
+   Continue remains its default. Run these native checks in light and dark.
+
 ## Exact native flows for the lead
 
 Use the integrated build with isolated test data, in light and dark:

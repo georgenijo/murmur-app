@@ -912,7 +912,9 @@ function WizardNavigationRow({
           type="button"
           onClick={onNext} data-default-button
           disabled={!nextEnabled}
-          className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-5 py-2 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[background-image] hover:bg-[linear-gradient(140deg,var(--murmur-primary-dim),var(--murmur-primary))] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+          className={`rounded-[var(--ui-radius-pill)] px-5 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${nextEnabled
+            ? 'bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[var(--ui-shadow-accent)] transition-[background-image] hover:bg-[linear-gradient(140deg,var(--murmur-primary-dim),var(--murmur-primary))]'
+            : 'dialog-pill-btn text-on-surface'}`}
         >
           {nextLabel}
         </button>

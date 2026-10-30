@@ -87,7 +87,10 @@ describe('DictationDiagnosticsView consent flow', () => {
     expect(window.confirm).toHaveBeenCalledTimes(2);
 
     await act(async () => button(container, 'Delete local copy').click());
+    expect(diagnostics.delete).not.toHaveBeenCalled();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+    await act(async () => button(dialog, 'Delete local copy').click());
     expect(diagnostics.delete).toHaveBeenCalledWith('capture-one');
-    expect(window.confirm).toHaveBeenCalledTimes(3);
+    expect(window.confirm).toHaveBeenCalledTimes(2);
   });
 });

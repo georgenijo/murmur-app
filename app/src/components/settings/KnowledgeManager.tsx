@@ -2,7 +2,7 @@ import { ActionsOverflow } from '../ui/ActionsOverflow';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { AppProfile } from '../../lib/settings';
-import { defaultButtonKeyDown } from '../../lib/defaultButton';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import {
   deleteAllKnowledge,
   deleteKnowledge,
@@ -71,38 +71,9 @@ function StatusBanner({ availability, message, recoveryAtMs, onRetry }: {
   );
 }
 
-function ConfirmDialog({ title, children, confirmLabel, dangerous = false, disabled = false, onCancel, onConfirm }: {
-  title: string;
-  children: React.ReactNode;
-  confirmLabel: string;
-  dangerous?: boolean;
-  disabled?: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  // A recoverable confirmation makes its confirm the default button; an
-  // irreversible (dangerous) one has none, so Return never deletes.
-  return (
-    <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="knowledge-confirm-title"
-        className="dialog-popover w-full max-w-md p-5"
-        onKeyDown={defaultButtonKeyDown}
-      >
-        <h2 id="knowledge-confirm-title" className="text-base font-semibold text-on-surface">{title}</h2>
-        <div className="mt-2 text-sm text-on-surface-variant">{children}</div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" autoFocus onClick={onCancel} className="settings-quiet-btn px-3 py-2 text-xs text-on-surface">Cancel</button>
-          <button type="button" data-default-button={!dangerous || undefined} disabled={disabled} onClick={onConfirm} className={`rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-40 ${dangerous ? 'border border-error/30 bg-error/10 text-error' : 'bg-primary text-on-primary'}`}>{confirmLabel}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function KnowledgeManager({ active, profiles }: Props) {
+  const managerRef = useRef<HTMLDivElement>(null);
+  const restoreConfirmFocus = () => managerRef.current?.querySelector<HTMLElement>('[aria-label="More knowledge actions"]') ?? null;
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<KnowledgeKind | 'all'>('all');
   const [enabled, setEnabled] = useState<'all' | 'enabled' | 'disabled'>('all');
@@ -235,7 +206,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
   };
 
   return (
-    <div className="space-y-4">
+    <div ref={managerRef} className="space-y-4">
       <StatusBanner
         availability={knowledge.status.availability}
         message={knowledge.status.message}
@@ -336,11 +307,11 @@ export function KnowledgeManager({ active, profiles }: Props) {
         setEditing(undefined);
       }} />}
 
-      {deleteTarget && <ConfirmDialog title="Delete this knowledge?" confirmLabel="Delete…" dangerous onCancel={() => setDeleteTarget(null)} onConfirm={() => void run(() => deleteKnowledge(deleteTarget), 'Knowledge deleted.').then(() => setDeleteTarget(null)).catch(() => {})}>
+      {deleteTarget && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete this knowledge?" confirmLabel="Delete…" dangerous onCancel={() => setDeleteTarget(null)} onConfirm={() => void run(() => deleteKnowledge(deleteTarget), 'Knowledge deleted.').then(() => setDeleteTarget(null)).catch(() => {})}>
         This permanently removes “{payloadTitle(deleteTarget.payload)}” from Murmur’s local store.
       </ConfirmDialog>}
 
-      {importPreview && <ConfirmDialog title="Import personal knowledge?" confirmLabel="Import" onCancel={() => setImportPreview(null)} onConfirm={() => void run(async () => {
+      {importPreview && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Import personal knowledge?" confirmLabel="Import" onCancel={() => setImportPreview(null)} onConfirm={() => void run(async () => {
         const result = await importKnowledgeFromFile(importPreview.path);
         setNotice(`Imported ${result.imported}; skipped ${result.duplicates} duplicate${result.duplicates === 1 ? '' : 's'}.`);
       }, 'Knowledge imported.').then(() => setImportPreview(null)).catch(() => {})}>
@@ -348,7 +319,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         <p className="mt-2">Existing records are never overwritten. Same-ID conflicts reject the import.</p>
       </ConfirmDialog>}
 
-      {bulk.kind === 'confirming' && <ConfirmDialog title="Delete all matching knowledge?" confirmLabel={`Delete ${bulk.entries.length} matching records…`} dangerous disabled={bulkDeletePhrase !== 'DELETE' || bulk.entries.length === 0} onCancel={() => { if (bulkController.current === bulk.controller) cancelBulk(); }} onConfirm={() => {
+      {bulk.kind === 'confirming' && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all matching knowledge?" confirmLabel={`Delete ${bulk.entries.length} matching records…`} dangerous disabled={bulkDeletePhrase !== 'DELETE' || bulk.entries.length === 0} onCancel={() => { if (bulkController.current === bulk.controller) cancelBulk(); }} onConfirm={() => {
         const controller = bulk.controller;
         if (bulkController.current !== controller || controller.signal.aborted || bulkDeletePhrase !== 'DELETE') return;
         bulkController.current = null;
@@ -366,7 +337,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         </label>
       </ConfirmDialog>}
 
-      {deleteAllOpen && <ConfirmDialog title="Delete all personal knowledge?" confirmLabel="Delete everything…" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
+      {deleteAllOpen && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all personal knowledge?" confirmLabel="Delete everything…" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
         <p>This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later.</p>
         <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
           <input aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-(--ui-radius-control) border border-error bg-(--ui-tint-raised) px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />

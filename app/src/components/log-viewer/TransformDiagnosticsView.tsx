@@ -1,3 +1,4 @@
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useCallback, useEffect, useState } from 'react';
 import {
   armNextTransformCapture,
@@ -28,6 +29,8 @@ function textPanel(label: string, value: string | null) {
 }
 
 export function TransformDiagnosticsView() {
+  const [deleteTarget, setDeleteTarget] = useState<DiagnosticCaptureSummaryV1 | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [attempts, setAttempts] = useState<TransformAttemptV1[]>([]);
   const [captures, setCaptures] = useState<DiagnosticCaptureSummaryV1[]>([]);
   const [arm, setArm] = useState<CaptureArmStatusV1>({ armed: false, expiresAtMs: null });
@@ -83,19 +86,29 @@ export function TransformDiagnosticsView() {
   };
 
   const deleteCapture = async (capture: DiagnosticCaptureSummaryV1) => {
-    if (!window.confirm('Delete this local content capture now? This cannot be undone.')) return;
+    if (deleting) return;
+    setDeleting(true);
     try {
       await deleteTransformCapture(capture.captureId);
+      setDeleteTarget(null);
       if (selected?.captureId === capture.captureId) setSelected(null);
       await refresh();
     } catch {
       setError('The local diagnostic capture could not be deleted.');
+    } finally {
+      setDeleting(false);
     }
   };
+
+  const deletionDialog = deleteTarget && <ConfirmDialog title="Delete this local content capture?" confirmLabel="Delete capture…" dangerous disabled={deleting}
+    onCancel={() => setDeleteTarget(null)} onConfirm={() => void deleteCapture(deleteTarget)}>
+    This permanently removes the local content capture for pass {deleteTarget.transformPassId}. This cannot be undone.
+  </ConfirmDialog>;
 
   if (selected) {
     return (
       <div className="space-y-4 p-4">
+        {deletionDialog}
         <div className="flex items-start justify-between gap-3">
           <div>
             <button type="button" onClick={() => setSelected(null)} className="text-xs font-medium text-primary hover:underline">
@@ -106,7 +119,7 @@ export function TransformDiagnosticsView() {
           </div>
           <button
             type="button"
-            onClick={() => void deleteCapture(selected)}
+            onClick={() => setDeleteTarget(selected)}
             className="rounded-lg border border-error/20 px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10"
           >
             Delete capture…
@@ -135,6 +148,7 @@ export function TransformDiagnosticsView() {
 
   return (
     <div className="space-y-5 p-4">
+      {deletionDialog}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold text-on-surface">Transform diagnostics</h2>
@@ -175,7 +189,7 @@ export function TransformDiagnosticsView() {
                 </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => void reviewCapture(capture.captureId)} className="text-xs font-medium text-primary hover:underline">Review</button>
-                  <button type="button" onClick={() => void deleteCapture(capture)} className="text-xs font-medium text-error hover:underline">Delete…</button>
+                  <button type="button" onClick={() => setDeleteTarget(capture)} className="text-xs font-medium text-error hover:underline">Delete…</button>
                 </div>
               </div>
             ))}

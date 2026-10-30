@@ -1,5 +1,6 @@
 import { defaultButtonKeyDown, noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { useMemo, useState } from 'react';
+import { useDialogFocus } from '../../lib/hooks/useDialogFocus';
 import type { AppProfile } from '../../lib/settings';
 import {
   deleteKnowledge,
@@ -47,6 +48,7 @@ function CommandEditor({ entry, duplicate, profiles, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const dialogRef = useDialogFocus(onClose);
   const editing = entry !== null && !duplicate;
   const initialKind = entryKind(entry);
   const [kind, setKind] = useState<VoiceCommandKind>(initialKind);
@@ -124,7 +126,7 @@ function CommandEditor({ entry, duplicate, profiles, onClose, onSaved }: {
   const inputClass = 'w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
   return (
     <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div role="dialog" onKeyDown={defaultButtonKeyDown} aria-modal="true" aria-labelledby="voice-command-editor-title" className="dialog-popover max-h-[88vh] w-full max-w-[620px] overflow-y-auto p-5">
+      <div ref={dialogRef} tabIndex={-1} role="dialog" onKeyDown={defaultButtonKeyDown} aria-modal="true" aria-labelledby="voice-command-editor-title" className="dialog-popover max-h-[88vh] w-full max-w-[620px] overflow-y-auto p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 id="voice-command-editor-title" className="text-base font-semibold text-on-surface">{duplicate ? 'Duplicate voice command' : entry ? 'Edit voice command' : 'Create voice command'}</h2>

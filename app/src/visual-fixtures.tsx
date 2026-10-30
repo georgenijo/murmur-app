@@ -5,6 +5,9 @@ import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
 import { ModelDownloader } from './components/ModelDownloader';
+import { TransformDiagnosticsView } from './components/log-viewer/TransformDiagnosticsView';
+import { DictationDiagnosticsView } from './components/log-viewer/DictationDiagnosticsView';
+import { RunsView } from './components/log-viewer/RunsView';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { CommandPalette } from './components/CommandPalette';
 import { AboutModal } from './components/AboutModal';
@@ -240,6 +243,33 @@ const queryHistoryFixture = {
 };
 
 mockIPC((command, payload) => {
+  // #850 regression states use synthetic captures and record only invoked IDs.
+  if (requestedState === 'copy-diagnostics') {
+    const replacement = document.documentElement.hasAttribute('data-copy-replace-captures');
+    const capture = { captureId: replacement ? 'capture-two' : 'capture-one', recordingId: replacement ? 42 : 41,
+      transformPassId: replacement ? 52 : 51, capturedAtMs: 1_788_552_000_000, expiresAtMs: 1_789_156_800_000, outcome: 'success', hasContent: true };
+    if (command === 'get_dictation_diagnostic_capture_status') return { state: 'unarmed' };
+    if (command === 'get_transform_diagnostic_capture_status') return { armed: false, expiresAtMs: null };
+    if (command === 'list_transform_attempts') return { schemaVersion: 1, attempts: [] };
+    if (command === 'list_transform_diagnostic_captures' || command === 'list_dictation_diagnostic_captures') {
+      document.documentElement.setAttribute('data-copy-listed-capture', capture.captureId);
+      return [capture];
+    }
+    if (command === 'get_transform_diagnostic_capture') return { ...capture, schemaVersion: 1, selection: 'Synthetic selection', instruction: 'Shorten', output: 'Synthetic output', phases: [] };
+    if (command === 'get_dictation_diagnostic_capture') return { ...capture, schemaVersion: 1, result: { kind: 'noContent', outcome: 'cancelled', errorCode: 'cancelled' } };
+    if (command === 'delete_transform_diagnostic_capture' || command === 'delete_dictation_diagnostic_capture') {
+      document.documentElement.setAttribute('data-copy-deleted-capture', String((payload as { captureId: string }).captureId));
+      return;
+    }
+  }
+  if (requestedState === 'copy-onboarding') {
+    const permission = query.get('permission') ?? 'unknown';
+    if (command === 'check_microphone_permission_status') return permission;
+    if (command === 'check_accessibility_permission') return permission === 'loading' ? new Promise(() => {}) : permission === 'granted';
+    if (command === 'get_system_audio_permission_status') return permission === 'granted' || permission === 'denied' ? permission : 'unknown';
+    if (command === 'get_calendar_permission_status') return permission === 'unknown' || permission === 'loading' ? 'notDetermined' : permission;
+    if (command === 'request_system_audio_permission' || command === 'request_calendar_permission') return new Promise(() => {});
+  }
   if (command === 'list_query_history') return queryHistoryFixture;
   if (manyMeetings) {
     if (command === 'get_system_audio_permission_status') return 'unknown';
@@ -592,10 +622,17 @@ function VisualFixture() {
     if (manyMeetings) void meetings.select('meeting-0');
   }, [meetings.select]);
 
+  if (requestedState === 'copy-diagnostics') return <div data-visual-ready="true" className="h-full overflow-auto bg-background text-on-surface">
+    {query.get('panel') === 'transform' ? <TransformDiagnosticsView />
+      : query.get('panel') === 'runs' ? <RunsView runs={[]} loading={false} error={null} cleared={false} clearing={false} clearError={null} onRetry={() => {}}
+        onClear={async () => { document.documentElement.setAttribute('data-copy-cleared-runs', 'true'); }} onShowEvents={() => {}} />
+      : <DictationDiagnosticsView />}
+  </div>;
+
   if (requestedState === 'first-run-model') return <div className="main-first-run main-first-run-model">
     <ModelDownloader initialModel={fixtureSettings.model} onComplete={() => {}} />
   </div>;
-  if (requestedState === 'first-run-onboarding') return <div className="main-first-run main-first-run-onboarding">
+  if (requestedState === 'first-run-onboarding' || requestedState === 'copy-onboarding') return <div className="main-first-run main-first-run-onboarding">
     <OnboardingFlow initialModel={fixtureSettings.model} recordingMode="both" triggerKey="shift_l" onComplete={() => {}} />
   </div>;
 

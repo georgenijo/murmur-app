@@ -57,4 +57,18 @@ describe('Return defaults and destructive confirmations', () => {
     await act(async () => button.click()); expect(remove).not.toHaveBeenCalled();
     await act(async () => button.click()); expect(remove).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['shiftKey', 'metaKey', 'ctrlKey', 'altKey'] as const)('blocks %s Return on an armed button while preserving field modifiers and IME', async (modifier) => {
+    const remove = vi.fn();
+    await act(async () => root.render(<div onKeyDown={defaultButtonKeyDown}>
+      <input /><textarea /><ConfirmActionButton label="Delete" onConfirm={remove} />
+    </div>));
+    const button = container.querySelector('button')!;
+    await act(async () => button.click());
+    expect((await key(button, 'Enter', { [modifier]: true })).defaultPrevented).toBe(true);
+    expect((await key(container.querySelector('input')!, 'Enter', { [modifier]: true })).defaultPrevented).toBe(false);
+    expect((await key(container.querySelector('textarea')!, 'Enter', { [modifier]: true })).defaultPrevented).toBe(false);
+    expect((await key(button, 'Enter', { [modifier]: true, isComposing: true })).defaultPrevented).toBe(false);
+    expect(remove).not.toHaveBeenCalled();
+  });
 });
