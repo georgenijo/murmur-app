@@ -90,6 +90,7 @@ mod vad;
 mod vocab;
 mod vocabulary_alias;
 mod voice_commands;
+mod window_state;
 
 #[cfg(target_os = "macos")]
 #[global_allocator]
@@ -559,9 +560,11 @@ pub fn run() {
             commands::transform_popover::get_transform_review_content,
             telemetry::get_event_history,
             telemetry::clear_event_history,
-            resource_monitor::get_resource_usage
+            resource_monitor::get_resource_usage,
+            window_state::sync_window_chrome
         ])
         .on_window_event(|window, event| {
+            window_state::on_event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide instead of destroy for persistent windows
                 if window.label() == "main" || window.label() == "diagnostics" {
@@ -578,6 +581,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
             audio_inventory::initialize(app.handle().clone());
             smart_auto_probe::initialize(app.handle().clone());
@@ -905,6 +909,7 @@ pub fn run() {
         }
 
         if let RunEvent::Exit = &_event {
+            window_state::flush(_app_handle);
             smart_destination::set_enabled(false);
             audio_inventory::shutdown();
             // App-exit teardown: stop resident native helpers so none outlive

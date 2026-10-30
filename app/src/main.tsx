@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { NativeWindowLifecycle } from "./lib/windowLifecycle";
 import { AppearanceProvider } from "./lib/hooks/useAppearance";
 import { hydrateSettingsFromDisk } from "./lib/settings";
 import {
@@ -25,7 +26,9 @@ Promise.all([
   root.render(
     <React.StrictMode>
       <AppearanceProvider>
-        <App />
+        <NativeWindowLifecycle>
+          <App />
+        </NativeWindowLifecycle>
       </AppearanceProvider>
     </React.StrictMode>,
   );

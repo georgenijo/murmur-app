@@ -8,6 +8,67 @@
 //! owns native main-window chrome adjustments that AppKit renders outside the
 //! web view.
 
+/// Place AppKit's real buttons in window points, independent of webview zoom
+/// and display backing scale. The CSS header height arrives from the renderer.
+#[cfg(target_os = "macos")]
+pub(crate) fn position_traffic_lights(window: &tauri::WebviewWindow, top: f64) {
+    use tauri::Manager;
+    let window = window.clone();
+    let handle = window.app_handle().clone();
+    let _ = handle.run_on_main_thread(move || {
+        use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
+        use objc2_foundation::NSPoint;
+        debug_assert!(objc2_foundation::MainThreadMarker::new().is_some());
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        let native: &NSWindow = unsafe { &*ptr.cast() };
+        if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
+            return;
+        }
+        let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else {
+            return;
+        };
+        // SAFETY: AppKit view hierarchy access stays on the main thread.
+        let Some(parent) = (unsafe { close.superview() }) else {
+            return;
+        };
+        // Enlarge the titlebar's hit area as well as moving its buttons. A
+        // position below AppKit's default 28pt titlebar must remain clickable.
+        if let Some(container) = unsafe { parent.superview() } {
+            let mut frame = container.frame();
+            frame.size.height = (top + 7.0) * 2.0;
+            frame.origin.y = native.frame().size.height - frame.size.height;
+            container.setFrame(frame);
+        }
+        let close_x = close.frame().origin.x;
+        let buttons = [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ];
+        let positions: Vec<_> = buttons
+            .into_iter()
+            .filter_map(|kind| {
+                native.standardWindowButton(kind).map(|button| {
+                    let offset = button.frame().origin.x - close_x;
+                    (button, offset)
+                })
+            })
+            .collect();
+        for (button, offset) in positions {
+            let target = NSPoint::new(
+                crate::window_state::TRAFFIC_LIGHT_X + offset,
+                native.frame().size.height - top - button.frame().size.height,
+            );
+            button.setFrameOrigin(parent.convertPoint_fromView(target, None));
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn position_traffic_lights(_window: &tauri::WebviewWindow, _top: f64) {}
+
 /// Remove AppKit's automatic line between the overlay title bar and web
 /// content. Murmur's header and history toolbar are intentionally one
 /// continuous surface.

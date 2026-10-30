@@ -14,34 +14,29 @@
       {
         "label": "main",
         "title": "Murmur",
-        "width": 1120,
-        "height": 820,
-        "minWidth": 720,
-        "minHeight": 560,
+        "width": 1100,
+        "height": 780,
+        "minWidth": 840,
+        "minHeight": 620,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": {
-          "x": 10,
-          "y": 21
-        },
         "hiddenTitle": true,
-        "center": true
+        "center": true,
+        "visible": false,
+        "backgroundColor": "#f7fafc"
       },
       {
         "label": "diagnostics",
         "title": "Murmur Diagnostics",
         "url": "diagnostics.html",
-        "width": 1040,
-        "height": 760,
-        "minWidth": 760,
-        "minHeight": 520,
+        "width": 1100,
+        "height": 780,
+        "minWidth": 840,
+        "minHeight": 620,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": {
-          "x": 10,
-          "y": 21
-        },
         "hiddenTitle": true,
         "center": true,
-        "visible": false
+        "visible": false,
+        "backgroundColor": "#f7fafc"
       },
       {
         "label": "overlay",
