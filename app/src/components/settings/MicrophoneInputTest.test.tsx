@@ -492,7 +492,7 @@ describe('MicrophoneInputTest', () => {
     const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
 
     await act(async () => picker.click());
-    expect(microphoneDialog()?.className).toContain('data-ending-style:opacity-0');
+    expect(microphoneDialog()?.className).toContain('ui-popover');
     await act(async () => microphoneMode('USB Microphone').click());
 
     expect(selected).toBe('usb');

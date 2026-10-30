@@ -1,3 +1,4 @@
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -346,7 +347,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                       aria-checked={profile.queryContextExcluded}
                       aria-label={`Exclude Voice Query context for ${appLabel}`}
                       onClick={() => updateProfile(profile.bundleId, { queryContextExcluded: !profile.queryContextExcluded })}
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${profile.queryContextExcluded ? 'bg-primary' : 'bg-surface-container-highest'}`}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${profile.queryContextExcluded ? 'bg-primary' : 'bg-surface-container-highest'}`}
                     >
                       <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${profile.queryContextExcluded ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
                     </button>
@@ -365,7 +366,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                       aria-checked={profile.ideContextEnabled}
                       aria-label={`Local IDE project context for ${appLabel}`}
                       onClick={() => updateProfile(profile.bundleId, { ideContextEnabled: !profile.ideContextEnabled })}
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${profile.ideContextEnabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${profile.ideContextEnabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
                     >
                       <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${profile.ideContextEnabled ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
                     </button>
@@ -376,7 +377,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                         <ul className="space-y-1">
                           {profile.ideProjectRoots.map((root) => (
                             <li key={root} className="flex items-center gap-2 rounded-md bg-surface-container-lowest px-2 py-1.5">
-                              <span className="min-w-0 flex-1 break-all font-mono text-xs text-on-surface">{root}</span>
+                              <MiddleTruncate className="flex-1 font-mono text-xs text-on-surface" value={root} />
                               <button type="button" onClick={() => updateProfile(profile.bundleId, { ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) })} className="shrink-0 text-xs text-on-surface-variant underline hover:text-error">Remove root</button>
                             </li>
                           ))}

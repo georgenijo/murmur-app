@@ -61,9 +61,7 @@ const GroupContext = createContext<FluidTooltipGroupContextValue | null>(null);
 const RootContext = createContext<FluidTooltipRootContextValue | null>(null);
 
 const tokenStyle = {
-  "--fluid-tooltip-surface": "var(--murmur-surface-container-highest)",
-  "--fluid-tooltip-label": "var(--murmur-on-surface)",
-  "--fluid-tooltip-shadow": "color-mix(in oklab, var(--murmur-on-surface) 28%, transparent)",
+  "--fluid-tooltip-surface": "var(--murmur-surface-container-lowest)",
 } as CSSProperties;
 
 function useGroupContext(component: string) {
@@ -186,8 +184,9 @@ function FluidTooltipGroup({
               >
                 <Tooltip.Popup
                   className={cn(
-                    "relative origin-[var(--transform-origin)] rounded-lg border border-outline-variant bg-[var(--fluid-tooltip-surface)] text-[12px] font-medium leading-none text-[var(--fluid-tooltip-label)] shadow-[0_8px_24px_-8px_var(--fluid-tooltip-shadow)]",
-                    "h-[var(--popup-height,auto)] w-[var(--popup-width,auto)] max-w-[var(--available-width)] transition-[width,height,transform,opacity] duration-200 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:duration-100 data-starting-style:scale-[0.96] data-starting-style:translate-y-1 data-starting-style:opacity-0 data-instant:transition-none motion-reduce:transition-none",
+                    // text-xs, 6px radius, balanced wrap; scales from 0.98 with a fade (styles/menus.css).
+                    "ui-tooltip relative p-0",
+                    "h-[var(--popup-height,auto)] w-[var(--popup-width,auto)] max-w-[var(--available-width)] transition-[width,height,scale,opacity] duration-200 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)] data-ending-style:duration-100 data-instant:transition-none motion-reduce:transition-none",
                     className,
                     payload.contentClassNameRef.current,
                   )}

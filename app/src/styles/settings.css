@@ -16,10 +16,10 @@
   --settings-tint-sunken: var(--ui-tint-sunken, color-mix(in srgb, var(--murmur-surface-container-low) 70%, var(--murmur-background)));
   --settings-tint-accent-subtle: var(--ui-tint-accent-subtle, color-mix(in srgb, var(--murmur-primary) 7%, var(--murmur-surface-container-lowest)));
   --settings-radius-pill: var(--ui-radius-pill, 999px);
-  --settings-radius-control: var(--ui-radius-control, 0.625rem);
-  --settings-radius-card: var(--ui-radius-card, 0.875rem);
-  --settings-track-tight: var(--ui-track-tight, -0.012em);
-  --settings-track-title: var(--ui-track-title, -0.022em);
+  --settings-radius-control: var(--ui-radius-control, 0.5rem);
+  --settings-radius-card: var(--ui-radius-card, 0.75rem);
+  --settings-track-tight: var(--ui-track-tight, 0);
+  --settings-track-title: var(--ui-track-title, -0.01em);
   --settings-track-caps: var(--ui-track-caps, 0.07em);
   /* Settings rhythm (see the unlayered block at the end of this file). */
   --settings-row-pad: var(--ui-space-6, 0.75rem);
@@ -52,7 +52,7 @@
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.settings-search input:focus {
+.settings-search input:focus-visible {
   border-color: var(--murmur-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
   outline: none;
@@ -62,7 +62,7 @@
   position: relative;
   border: 1px solid transparent;
   border-radius: var(--settings-radius-control);
-  font-weight: 550;
+  font-weight: var(--ui-weight-label, 500);
   letter-spacing: var(--settings-track-tight);
   transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
@@ -71,7 +71,7 @@
   background: color-mix(in srgb, var(--murmur-primary) 11%, var(--settings-tint-raised));
   border: 1px solid color-mix(in srgb, var(--murmur-primary) 46%, var(--settings-hairline));
   box-shadow: var(--settings-shadow-1);
-  font-weight: 650;
+  font-weight: var(--ui-weight-label, 500);
 }
 
 .settings-nav-item[aria-current='page'] svg {
@@ -99,12 +99,12 @@
   background: color-mix(in srgb, var(--murmur-primary) 13%, var(--settings-tint-raised));
   border-color: color-mix(in srgb, var(--murmur-primary) 48%, var(--settings-hairline));
   box-shadow: inset 3px 0 0 var(--murmur-primary);
-  font-weight: 650;
+  font-weight: var(--ui-weight-label, 500);
 }
 
 .settings-tools-eyebrow {
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--ui-weight-title, 600);
   letter-spacing: var(--settings-track-caps);
   text-transform: uppercase;
   color: var(--murmur-on-surface-variant);
@@ -117,16 +117,17 @@
 }
 
 .settings-page-title {
-  font-size: 21px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: var(--ui-weight-title, 600);
   letter-spacing: var(--settings-track-title);
-  line-height: 1.15;
+  line-height: 1.3;
   color: var(--murmur-on-surface);
 }
 
 .settings-page-subtitle {
   margin-top: 5px;
   font-size: 13px;
+  line-height: var(--ui-leading-label);
   letter-spacing: var(--settings-track-tight);
   color: var(--murmur-on-surface-variant);
 }
@@ -165,8 +166,8 @@
 
 .settings-eyebrow {
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font-weight: var(--ui-weight-title, 600);
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--murmur-on-surface-variant);
 }
@@ -178,15 +179,16 @@
   align-items: center;
   gap: 6px;
   height: 30px;
-  padding: 0 12px;
+  padding: 0 calc(12px - 1px);
   border-radius: var(--settings-radius-pill);
   border: 1px solid var(--settings-hairline);
   background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
+  box-shadow: var(--ui-shadow-xs, var(--settings-shadow-1));
   color: var(--murmur-on-surface-variant);
   font-size: 12px;
-  font-weight: 600;
-  transition: background-color 120ms ease, color 120ms ease;
+  line-height: var(--ui-leading-caption);
+  font-weight: var(--ui-weight-label, 500);
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
 .settings-back-btn:hover {
@@ -198,13 +200,18 @@
   border-radius: var(--settings-radius-control);
   border: 1px solid var(--settings-hairline);
   background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-  font-weight: 600;
-  transition: background-color 120ms ease, color 120ms ease;
+  box-shadow: var(--ui-shadow-xs, var(--settings-shadow-1));
+  font-weight: var(--ui-weight-label, 500);
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
 .settings-quiet-btn:hover {
   background: var(--murmur-surface-container-low);
+}
+
+.settings-back-btn:active:not(:disabled),
+.settings-quiet-btn:active:not(:disabled) {
+  transform: scale(var(--ui-button-press-scale, 0.97));
 }
 
 /* ---------- segmented control (Recording Trigger, Stop on Silence, …) ---- */
@@ -225,8 +232,9 @@
   border-radius: var(--settings-radius-pill);
   background: transparent;
   color: var(--murmur-on-surface-variant);
-  font-weight: 550;
+  font-weight: var(--ui-weight-label, 500);
   font-size: var(--ui-font-label, 0.8125rem);
+  line-height: var(--ui-leading-label);
   letter-spacing: var(--settings-track-tight);
   transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
@@ -240,7 +248,7 @@
   outline-offset: -1px;
   background: var(--settings-tint-raised);
   color: var(--murmur-on-surface);
-  font-weight: 650;
+  font-weight: var(--ui-weight-label, 500);
   box-shadow: var(--settings-shadow-1);
 }
 
@@ -304,16 +312,18 @@
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.settings-workspace button[role='combobox']:focus {
+.settings-workspace button[role='combobox']:focus-visible {
   border-color: var(--murmur-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
 }
 
 .settings-workspace ul[role='listbox'] {
-  border-radius: var(--ui-radius-popover, 1rem);
-  border: 1px solid var(--settings-hairline-strong);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--ui-shadow-3, 0 2px 4px color-mix(in srgb, var(--murmur-on-surface) 6%, transparent), 0 16px 40px -16px color-mix(in srgb, var(--murmur-on-surface) 34%, transparent));
+  border-radius: var(--ui-radius-popover, 0.5rem);
+  border: 1px solid var(--ui-popover-border);
+  background: var(--ui-popover-glass);
+  -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
+  backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
+  box-shadow: var(--ui-popover-shadow);
 }
 
 /* `input:not([type])` covers plain text inputs that omit the attribute
@@ -333,13 +343,13 @@
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.settings-workspace input[type='text']:focus,
-.settings-workspace input:not([type]):focus,
-.settings-workspace input[type='number']:focus,
-.settings-workspace input[type='search']:focus,
-.settings-workspace input[type='url']:focus,
-.settings-workspace select:focus,
-.settings-workspace textarea:focus {
+.settings-workspace input[type='text']:focus-visible,
+.settings-workspace input:not([type]):focus-visible,
+.settings-workspace input[type='number']:focus-visible,
+.settings-workspace input[type='search']:focus-visible,
+.settings-workspace input[type='url']:focus-visible,
+.settings-workspace select:focus-visible,
+.settings-workspace textarea:focus-visible {
   border-color: var(--murmur-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
   outline: none;
@@ -475,6 +485,7 @@
   border-radius: 999px;
   color: var(--murmur-primary);
   font-size: 0.6875rem;
+  line-height: var(--ui-leading-micro);
   font-weight: 600;
 }
 

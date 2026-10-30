@@ -120,3 +120,79 @@ Open VSX-like inputs. The 880×720 fixture must retain a 200px Insights rail
 beside the history column. Update those baselines only after comparing the
 rendered fixture with the Open Design source and repeating the bundled native
 smoke test.
+
+## T3 Code typography and floating surfaces (#853)
+
+T3 Code at `cba30591f9` supplies the typography and floating-surface
+measurements. Semantic colors still resolve exclusively through `--murmur-*`;
+no appearance document or palette changes are part of this contract.
+
+| Contract | Rendered value |
+|---|---|
+| Sans stack | `-apple-system, BlinkMacSystemFont, system-ui, sans-serif` |
+| Mono stack | `"SF Mono", "SFMono-Regular", Menlo, monospace` |
+| Small type | 14/20, 13/18, 12/16, 11/16 px; long-form prose may opt into its own leading |
+| Weight | 600 for headings and statistics, 500 for labels and controls |
+| Tracking | 0 below 18px, including small uppercase labels; -0.01em for large titles; shortcut hints alone use 0.1em |
+| Page titles | 20px / 26px / 600; whole-pixel leading avoids fractional scroll-edge clipping |
+| Lucide | 1.75 stroke, 16px default, 14px in compact controls; size utilities can retain larger illustrations |
+| Numeric / prose | Tabular counters and statistics; pretty paragraph wrapping; balanced tooltips |
+| Radius | 8px controls/popovers, 12px cards, 4px menu items, 6px tooltips; explicit pill variants remain pills |
+| Control height | Existing 28px compact / 32px standard |
+| Filled button | White 16% inner top highlight, 5% shadow-xs, scale 0.97 while pressed |
+| Bordered button padding | `calc(N - 1px)` horizontal inset compensates for the 1px border |
+| Menu popup | 4px padding, 8px radius, scrolls within Base UI's `--available-height`, uses `--transform-origin`, no-drag |
+| Menu item | Minimum 28px; 8px horizontal / 4px vertical padding, 8px gap, 14/20 text |
+| Menu decoration | 16px muted icons at 80%; 1px separators with 8px horizontal / 4px vertical margins; disabled opacity 64% |
+| Glass | 80% popover surface, 10% foreground border; light blur 12px / saturation 1.14, dark 16px / 1.08 |
+| Popup shadow | Light `0 16px 40px -18px rgb(0 0 0 / 55%)`; dark `0 18px 44px -18px rgb(0 0 0 / 80%)` |
+| Tooltip motion | Scale 0.98 plus opacity on entry and exit |
+| Scrollbar | 6px, transparent track, 3px thumb radius; light 217 gray / hover 191 gray; dark white 8% / hover 12% |
+
+`styles/menus.css` defines `.ui-menu-popup`, `.ui-menu-item`,
+`.ui-menu-label`, `.ui-menu-separator`, `.ui-menu-shortcut`, `.ui-popover`, and
+`.ui-tooltip`. AnimatedDropdown, SmartOverflow, history filters, the microphone
+popover, and FluidTooltip consume these contracts. Keyboard focus uses
+`:focus-visible`. The body disables overscroll. A universal reduced-motion
+rule collapses CSS animations/transitions while preserving completion events;
+Motion components also read `useReducedMotion`.
+
+`MiddleTruncate` retains the end of a path, clips at whole glyphs, refits on
+resize or changed text, and leaves the full value in the DOM and title. File
+output and IDE-root paths use it. Its T3 MIT attribution is preserved in
+`THIRD_PARTY_NOTICES.md`. Diagnostics stream chips wrap so their labels remain
+reachable in compact Settings, without changing settings-row/control geometry.
+
+`visual-tests/typography.spec.ts` renders production primitives through
+`visual-fixtures.html?state=typography` and asserts computed measurements,
+keyboard/pointer focus, active-button scale, menu states, scrollbar styles,
+and reduced motion. The browser normalizes BlinkMacSystemFont to a quoted
+system-ui alias on macOS; the test checks both the declared stack and the
+browser's resolved value. `typography-overflow.spec.ts` audits small-text
+tracking and horizontal clipping across every settings category/tool and AI /
+Customize drill-in, plus exposed selects and history menus, at 880×720 and
+720×560 in both modes. Intentional ellipsis and horizontally scrollable tab
+strips are distinguished from unreachable clipped text.
+
+Dedicated light/dark goldens cover Home (`state=idle`), General
+(`state=settings-general`), Appearance (`state=settings-appearance`), and an
+open Home filter menu. The existing dashboard, settings, updater and theme
+matrix goldens also change with the shared typography. These are Chromium
+browser fixtures, not native WKWebView evidence. CI currently runs on macOS;
+Linux proof must be generated and identified separately and must never reuse
+Darwin screenshots as Linux results.
+
+Before merge, the lead must verify the exact integrated revision in an
+isolated native Mac mini build, including Home, Settings → General,
+Settings → Appearance, Home → Filter / history overflow, and an Insights chart
+tooltip, in Light and Dark. Exercise pointer and keyboard navigation, Escape,
+menu selection, compact scrolling, and Reduce Motion. Required Retina
+WKWebView and native T3 side-by-side evidence remain gates until captured;
+a 1× capture or browser device-scale emulation does not satisfy Retina proof.
+The MacBook must not be operated for this task.
+
+On Linux, run `npm ci`, `npx playwright install chromium`, then
+`npx playwright test typography.spec.ts typography-overflow.spec.ts` from
+`app/`. The dedicated `*-linux.png` baselines live beside their Darwin
+counterparts. This focused Linux gate complements the existing full macOS
+suite; it does not claim that macOS-only native behavior was tested on Linux.

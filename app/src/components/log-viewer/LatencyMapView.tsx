@@ -155,7 +155,7 @@ export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps
             ['Median frame', frameIntervals.length > 0 ? formatDuration(medianFrameInterval) : '—'],
           ].map(([label, value]) => (
             <div key={label} className="rounded-xl border border-outline-variant/10 bg-surface-container-lowest p-3 shadow-sm">
-              <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">{label}</div>
+              <div className="text-[10px] font-semibold uppercase tracking-normal text-on-surface-variant">{label}</div>
               <div className="mt-1 text-lg font-semibold tabular-nums text-on-surface">{value}</div>
             </div>
           ))}
@@ -175,7 +175,7 @@ export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps
         ) : (
           <div className="overflow-x-auto rounded-xl border border-outline-variant/20 bg-surface-container-lowest">
             <table className="w-full min-w-[860px] border-collapse text-left text-xs">
-              <thead className="bg-surface-container-low text-[10px] font-bold uppercase tracking-[0.1em] text-on-surface-variant">
+              <thead className="bg-surface-container-low text-[10px] font-semibold uppercase tracking-normal text-on-surface-variant">
                 <tr>
                   <th className="px-3 py-2.5">From → To</th>
                   <th className="px-3 py-2.5 text-right">Count</th>

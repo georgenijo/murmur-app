@@ -920,8 +920,8 @@ const ActivityGraph = forwardRef<HTMLDivElement, ActivityGraphProps>(
                 <Tooltip.Popup
                   data-slot="activity-graph-tooltip"
                   className={cn(
-                    "relative max-w-64 origin-[var(--transform-origin)] rounded-lg border border-border/70 bg-[var(--activity-graph-tooltip-surface)] px-2.5 py-2 text-xs text-[var(--activity-graph-tooltip-foreground)] shadow-lg backdrop-blur-md",
-                    "transition-[transform,opacity,filter] duration-150 data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:blur-[2px] data-instant:transition-none data-starting-style:scale-[0.96] data-starting-style:opacity-0 data-starting-style:blur-[2px]",
+                    "relative max-w-64 origin-[var(--transform-origin)] rounded-(--ui-radius-tooltip) border border-(--ui-popover-border) bg-[var(--activity-graph-tooltip-surface)] px-2 py-1 text-xs text-balance text-[var(--activity-graph-tooltip-foreground)] shadow-(--ui-shadow-2) backdrop-blur-md [-webkit-app-region:no-drag]",
+                    "transition-[transform,opacity,filter] duration-150 data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:blur-[2px] data-instant:transition-none data-starting-style:scale-[0.98] data-starting-style:opacity-0 data-starting-style:blur-[2px]",
                     shouldReduceMotion && "transition-none",
                     tooltipClassName,
                   )}

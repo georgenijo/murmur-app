@@ -70,7 +70,7 @@
 
   .dialog-eyebrow {
     font-size: 0.625rem;
-    font-weight: 700;
+    font-weight: var(--ui-weight-title);
     letter-spacing: var(--ui-track-caps);
     text-transform: uppercase;
   }

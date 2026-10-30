@@ -370,13 +370,12 @@ function HistoryPanelComponent({
                 Transcribe audio or video file…
               </AnimatedDropdownItem>
               <AnimatedDropdownSeparator />
-              <p className="history-export-label">
+              <p className="ui-menu-label">
                 Copy {visible.length} shown
               </p>
               {HISTORY_EXPORT_FORMATS.map((format) => (
                 <AnimatedDropdownItem
                   key={`copy-${format.value}`}
-                  className="history-export-item"
                   aria-label={`Copy ${visible.length} shown as ${format.label}`}
                   onClick={() => void handleCopyExport(format.value)}
                 >
@@ -384,11 +383,10 @@ function HistoryPanelComponent({
                 </AnimatedDropdownItem>
               ))}
               <AnimatedDropdownSeparator />
-              <p className="history-export-label">Save to file</p>
+              <p className="ui-menu-label">Save to file</p>
               {HISTORY_EXPORT_FORMATS.map((format) => (
                 <AnimatedDropdownItem
                   key={`save-${format.value}`}
-                  className="history-export-item"
                   aria-label={`Save ${visible.length} shown as ${format.label}`}
                   onClick={() => void handleSaveExport(format.value)}
                 >
@@ -410,7 +408,7 @@ function HistoryPanelComponent({
                       showNotice(`Deleted ${count} ${count === 1 ? 'entry' : 'entries'}.`);
                     }}
                     disabled={visible.length === 0}
-                    className="h-9 w-full min-w-0 justify-start rounded-lg px-2.5 text-[length:var(--ui-font-label)]"
+                    className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 text-sm shadow-none"
                   />
                   <AnimatedDropdownSeparator />
                 </>
@@ -424,7 +422,7 @@ function HistoryPanelComponent({
                   setExportOpen(false);
                 }}
                 disabled={entries.length === 0}
-                className="h-9 w-full min-w-0 justify-start rounded-lg px-2.5 text-[length:var(--ui-font-label)]"
+                className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 text-sm shadow-none"
               />
             </AnimatedDropdownContent>
           </AnimatedDropdown>

@@ -1,0 +1,175 @@
+/* Menus, popovers and tooltips (Base UI). One contract for every floating
+   surface: translucent popover glass, an 8px radius, 28px rows and quiet
+   16px icons. The tokens live in styles.css (`--ui-popover-*`, `--ui-glass-*`,
+   `--ui-menu-*`); dark appearance swaps blur, saturation and shadow there.
+
+   Component layer: Tailwind utilities passed by a caller and unlayered
+   feature rules both still override these defaults. */
+
+@layer components {
+  .ui-menu-popup,
+  .ui-popover {
+    box-sizing: border-box;
+    max-width: calc(100vw - 2rem);
+    max-height: var(--available-height);
+    overflow-y: auto;
+    border: 1px solid var(--ui-popover-border);
+    border-radius: var(--ui-radius-popover);
+    background: var(--ui-popover-glass);
+    -webkit-backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
+    backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
+    box-shadow: var(--ui-popover-shadow);
+    color: var(--murmur-on-surface);
+    outline: none;
+    transform-origin: var(--transform-origin);
+    -webkit-app-region: no-drag;
+    transition:
+      opacity var(--ui-motion-fast) var(--ui-ease-out),
+      scale var(--ui-motion-fast) var(--ui-ease-out);
+  }
+
+  .ui-menu-popup {
+    min-width: min(10rem, calc(100vw - 2rem));
+    padding: 0.25rem;
+  }
+
+  .ui-menu-popup[data-starting-style],
+  .ui-menu-popup[data-ending-style],
+  .ui-popover[data-starting-style],
+  .ui-popover[data-ending-style] {
+    opacity: 0;
+    scale: 0.98;
+  }
+
+  .ui-menu-popup[data-ending-style],
+  .ui-popover[data-ending-style] {
+    pointer-events: none;
+  }
+
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .ui-menu-popup,
+    .ui-popover {
+      background: var(--murmur-surface-container-lowest);
+    }
+  }
+
+  .ui-menu-item {
+    position: relative;
+    display: flex;
+    box-sizing: border-box;
+    min-height: var(--ui-menu-row);
+    cursor: pointer;
+    user-select: none;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: var(--ui-radius-menu-item);
+    padding: 0.25rem 0.5rem;
+    color: var(--murmur-on-surface);
+    font-size: var(--ui-font-body);
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: var(--ui-leading-body);
+    outline: none;
+  }
+
+  .ui-menu-item[data-highlighted] {
+    background: var(--ui-menu-highlight);
+  }
+
+  .ui-menu-item[data-disabled],
+  .ui-menu-item:disabled {
+    pointer-events: none;
+    cursor: not-allowed;
+    opacity: var(--ui-disabled-opacity);
+  }
+
+  .ui-menu-item[data-variant="destructive"] {
+    color: var(--murmur-error);
+  }
+
+  .ui-menu-item[data-variant="destructive"][data-highlighted] {
+    background: color-mix(in srgb, var(--murmur-error) 10%, transparent);
+  }
+
+  /* Leading icons: 16px, muted at 80%. Destructive rows keep their tone. */
+  .ui-menu-item > svg,
+  .ui-menu-item-icon svg {
+    width: var(--ui-icon-size);
+    height: var(--ui-icon-size);
+    flex-shrink: 0;
+    pointer-events: none;
+  }
+
+  .ui-menu-item > svg,
+  .ui-menu-item-icon {
+    color: var(--murmur-on-surface-variant);
+    opacity: var(--ui-menu-icon-opacity);
+  }
+
+  .ui-menu-item-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .ui-menu-item[data-variant="destructive"] > svg,
+  .ui-menu-item[data-variant="destructive"] .ui-menu-item-icon {
+    color: currentColor;
+  }
+
+  .ui-menu-separator {
+    height: 1px;
+    margin: 0.25rem 0.5rem;
+    border: 0;
+    background: var(--ui-hairline);
+  }
+
+  .ui-menu-label {
+    padding: 0.375rem 0.5rem;
+    color: var(--murmur-on-surface-variant);
+    font-size: var(--ui-font-caption);
+    font-weight: var(--ui-weight-label);
+    letter-spacing: 0;
+    line-height: var(--ui-leading-caption);
+  }
+
+  .ui-menu-shortcut {
+    margin-inline-start: auto;
+    color: var(--murmur-on-surface-variant);
+    font-family: var(--ui-font-sans);
+    font-size: var(--ui-font-caption);
+    font-weight: var(--ui-weight-label);
+    letter-spacing: var(--ui-track-shortcut);
+    line-height: var(--ui-leading-caption);
+  }
+
+  .ui-tooltip {
+    box-sizing: border-box;
+    max-width: min(20rem, var(--available-width, 20rem));
+    border: 1px solid var(--ui-popover-border);
+    border-radius: var(--ui-radius-tooltip);
+    background: var(--murmur-surface-container-lowest);
+    box-shadow: var(--ui-shadow-2);
+    padding: 0.25rem 0.5rem;
+    color: var(--murmur-on-surface);
+    font-size: var(--ui-font-caption);
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: var(--ui-leading-caption);
+    text-wrap: balance;
+    transform-origin: var(--transform-origin);
+    -webkit-app-region: no-drag;
+    transition:
+      opacity var(--ui-motion-fast) var(--ui-ease-out),
+      scale var(--ui-motion-fast) var(--ui-ease-out);
+  }
+
+  .ui-tooltip[data-starting-style],
+  .ui-tooltip[data-ending-style] {
+    opacity: 0;
+    scale: 0.98;
+  }
+
+  .ui-tooltip[data-instant] {
+    transition: none;
+  }
+}

@@ -1,3 +1,4 @@
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -910,7 +911,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <section aria-label="Settings search results">
               <h1 className="settings-page-title">Search</h1>
               <p className="settings-page-subtitle mb-4">Jump directly to a setting or tool.</p>
-              <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-normal text-on-surface-variant">
                 {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'}
               </p>
               {searchResults.length === 0 ? (
@@ -940,7 +941,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                         <span className="block text-sm font-semibold text-on-surface">{result.title}</span>
                         <span className="mt-0.5 block text-xs text-on-surface-variant">{result.detail}</span>
                       </span>
-                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">
+                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
                         {searchPageLabel(result.page)}
                       </span>
                       <span aria-hidden="true" className="text-on-surface-variant">›</span>
@@ -1359,7 +1360,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingsBranch open={saveToFile}>
                 <div className="settings-field">
                   <p className="text-xs text-on-surface-variant">Shared Output Folder</p>
-                  <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.outputDir || 'Documents/Murmur (default)'}</p>
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
                   <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
                   <p className="text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
                 </div>

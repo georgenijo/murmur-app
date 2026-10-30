@@ -227,7 +227,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="correct-and-teach-title" className="dialog-popover max-h-[calc(100vh-1.5rem)] w-full max-w-[640px] overflow-y-auto p-4 sm:max-h-[88vh] sm:p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 id="correct-and-teach-title" className="text-base font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">Correct and Teach</h2>
+            <h2 id="correct-and-teach-title" className="text-base font-semibold text-on-surface">Correct and Teach</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Edit this local history entry. Murmur will not remember a rule unless you review it and press Remember correction.</p>
           </div>
           <button type="button" onClick={close} aria-label="Close Correct and Teach" className="rounded-[var(--ui-radius-control)] px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>

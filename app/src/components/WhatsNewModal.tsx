@@ -96,7 +96,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
               </span>
             </div>
 
-            <h2 id="whats-new-title" className="text-2xl font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h2 id="whats-new-title" className="text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               What&apos;s new in Murmur {update.version}
             </h2>
             <p id="whats-new-description" className="mt-1.5 text-sm text-on-surface-variant">

@@ -247,7 +247,7 @@ export function Select<T extends string = string>({
         aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
-        className={`flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) shadow-(--ui-shadow-1) px-3 text-left text-sm text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary ${
+        className={`flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) shadow-(--ui-shadow-1) px-3 text-left text-sm text-on-surface transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
           disabled ? 'opacity-50 cursor-not-allowed' : ''
         }`}
       >

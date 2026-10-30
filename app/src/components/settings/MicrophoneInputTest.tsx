@@ -171,7 +171,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           }
         }}
       >
-        <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
+        <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
           <span className="truncate">{selectedLabel}</span>
           <svg className="ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform group-data-[popup-open]:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
         </Popover.Trigger>
@@ -181,7 +181,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
               ref={popupRef}
               aria-label="Choose microphone mode"
               initialFocus={selectedRadioRef}
-              className="max-h-[min(26rem,var(--available-height))] w-(--anchor-width) origin-(--transform-origin) overflow-auto rounded-(--ui-radius-popover) border border-(--ui-hairline-strong) bg-surface-container-lowest p-2 shadow-(--ui-shadow-3) transition-[opacity,transform] duration-150 data-ending-style:pointer-events-none data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-starting-style:scale-[0.98] data-starting-style:opacity-0 motion-reduce:duration-0"
+              className="ui-popover max-h-[min(26rem,var(--available-height))] w-(--anchor-width) p-2 motion-reduce:duration-0"
             >
               <fieldset>
                 <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>

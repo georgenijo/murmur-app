@@ -8,7 +8,7 @@ interface StreamChipsProps {
 
 export function StreamChips({ active, onToggle }: StreamChipsProps) {
   return (
-    <div className="flex gap-1.5">
+    <div className="flex flex-wrap gap-1.5">
       {STREAMS.map((stream) => {
         const colors = STREAM_COLORS[stream];
         const isActive = active.has(stream);

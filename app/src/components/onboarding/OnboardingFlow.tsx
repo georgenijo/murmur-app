@@ -390,7 +390,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="mb-3 text-2xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h1 className="mb-3 text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
@@ -665,7 +665,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'model' && (
           <div>
-            <h1 className="mb-1 text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h1 className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Transcription Model
             </h1>
             <p className="text-sm text-on-surface-variant mb-6">
@@ -778,7 +778,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'done' && (
           <div>
-            <h1 className="mb-1 text-center text-xl font-bold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
+            <h1 className="mb-1 text-center text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               You're all set
             </h1>
             <p className="text-sm text-on-surface-variant mb-6 text-center">
