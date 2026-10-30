@@ -1,3 +1,4 @@
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useEffect, useMemo, useState } from 'react';
 import type { CorrelationFilter } from '../../lib/eventFilters';
 import type { PerformanceStoreHealthState } from '../../lib/hooks/usePerformanceStoreHealth';
@@ -64,6 +65,7 @@ export function RunsView({
   onShowEvents,
   store,
 }: RunsViewProps) {
+  const [clearOpen, setClearOpen] = useState(false);
   const [kind, setKind] = useState<'all' | PerformanceRunKindV1>('all');
   const [outcome, setOutcome] = useState<OutcomeFilter>('all');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -109,13 +111,9 @@ export function RunsView({
       && (outcome === 'all' || run.outcome.status === outcome)), [kind, outcome, runs]);
 
   const confirmClear = async () => {
-    const confirmed = window.confirm(
-      'Clear local Performance runs and resource samples?\n\n'
-      + 'This does not remove Events, logs, transcription history, settings, knowledge, or benchmark reports.',
-    );
-    if (!confirmed) return;
     try {
       await onClear();
+      setClearOpen(false);
       setSelectedRunId(null);
     } catch {
       // The hook owns the inline error state; keep the current detail selection.
@@ -134,6 +132,10 @@ export function RunsView({
 
   return (
     <div className="flex min-h-full flex-col p-4">
+      {clearOpen && <ConfirmDialog title="Clear local Performance runs and resource samples?" confirmLabel="Clear performance data…" dangerous disabled={clearing}
+        onCancel={() => setClearOpen(false)} onConfirm={() => void confirmClear()}>
+        This does not remove Events, logs, transcription history, settings, knowledge, or benchmark reports.
+      </ConfirmDialog>}
       {store && (
         <div className="mb-4">
           <PerformanceStoreHealthBanner
@@ -195,10 +197,10 @@ export function RunsView({
           <button
             type="button"
             disabled={clearing}
-            onClick={() => void confirmClear()}
+            onClick={() => setClearOpen(true)}
             className="rounded-lg border border-error/20 px-2.5 py-1.5 text-xs font-medium text-error hover:bg-error/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-error disabled:opacity-50"
           >
-            {clearing ? 'Clearing…' : 'Clear Performance Data'}
+            {clearing ? 'Clearing…' : 'Clear performance data…'}
           </button>
         </div>
       </div>

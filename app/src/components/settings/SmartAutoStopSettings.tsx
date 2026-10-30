@@ -1,4 +1,5 @@
 import { SettingsRow } from './SettingsRow';
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useState } from 'react';
 import {
   downloadSmartTurnModel,
@@ -68,7 +69,7 @@ export function SmartAutoStopSettings({
 
   return (
     <div data-setting-target="smart-auto-stop" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <SettingsRow title="Smart Auto-Stop (Experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." disabled={isRecording || (!enabled && !silenceAutoStopOn)} control={<AnimatedSwitch
+      <SettingsRow title="Smart Auto-Stop (experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." disabled={isRecording || (!enabled && !silenceAutoStopOn)} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={isRecording || (!enabled && !silenceAutoStopOn)}
@@ -81,7 +82,7 @@ export function SmartAutoStopSettings({
           <p className="text-xs font-semibold text-on-surface">End-of-turn model</p>
           <p className="mt-0.5 text-[11px] text-on-surface-variant">
             {!status
-              ? 'Checking this Mac...'
+              ? 'Checking this Mac…'
               : ready
                 ? `Installed locally, ${SMART_TURN_MODEL_SIZE_LABEL}`
                 : `Optional download, ${SMART_TURN_MODEL_SIZE_LABEL}`}
@@ -91,12 +92,10 @@ export function SmartAutoStopSettings({
           </p>
         </div>
         {ready ? (
-          <button type="button" disabled={busy || isRecording} onClick={() => void run('removing', removeSmartTurnModel)} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-error disabled:opacity-40">
-            {operation === 'removing' ? 'Removing...' : 'Remove model'}
-          </button>
+          <ConfirmActionButton label="Remove model" confirmLabel="Confirm remove" disabled={busy || isRecording} onConfirm={() => void run('removing', removeSmartTurnModel)} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-error disabled:opacity-40" />
         ) : (
           <button type="button" disabled={busy || !status} onClick={() => void run('downloading', downloadSmartTurnModel)} className="dialog-pill-btn px-3 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">
-            {busy ? 'Downloading...' : 'Download model'}
+            {busy ? 'Downloading…' : 'Download model'}
           </button>
         )}
       </div>

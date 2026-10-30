@@ -1,3 +1,4 @@
+import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelRuntimeSnapshot } from '../../lib/modelRuntime';
@@ -50,11 +51,11 @@ export function TranscriptionModelStorage({ models, selectedModel, busy }: {
             </span>
             {installed && !active && (
               <button type="button" disabled={busy || pending !== null}
-                onClick={() => void run(model.modelName, true)}
+                onKeyDown={noDefaultButtonKeyDown} onClick={() => void run(model.modelName, true)}
                 onBlur={() => setConfirmRemove(null)}
-                aria-label={`${confirmRemove === model.modelName ? 'Confirm remove' : 'Remove'} ${model.label}`}
+                aria-label={`${confirmRemove === model.modelName ? 'Confirm remove' : 'Remove'} ${model.label}…`}
                 className="settings-quiet-btn px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50">
-                {pending === model.modelName ? 'Working…' : confirmRemove === model.modelName ? 'Confirm remove' : 'Remove'}
+                {pending === model.modelName ? 'Working…' : confirmRemove === model.modelName ? 'Confirm remove…' : 'Remove…'}
               </button>
             )}
             {!installed && !installing && model.supported && model.modelName !== selectedModel && (

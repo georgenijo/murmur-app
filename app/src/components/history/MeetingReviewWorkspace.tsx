@@ -361,7 +361,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     </button>
   );
   const cancelSummaryButton = summaryBusy && (
-    <button type="button" aria-label="Cancel draft generation" onClick={() => void meetings.cancelSummary()} className="meeting-header-action" data-tone="danger">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>
+    <button type="button" aria-label="Cancel draft generation" onClick={() => void meetings.cancelSummary()} className="meeting-header-action" data-tone="default">{summaryStatus?.phase === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button>
   );
   const speakerSummary = [labels.me, labels.them, ...remoteSpeakers.map((speaker) => speaker.label)].filter(Boolean).join(', ');
 
@@ -429,7 +429,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
             <h3 id="meeting-review-title" className="text-sm font-semibold">Meeting review</h3>
             <span className="meeting-review-origin">{detail.activeOrigin === 'reviewed' ? 'Reviewed' : 'Generated draft'}</span>
             <div className="meeting-review-actions">
-              {!editing && <button type="button" onClick={beginEdit} className="meeting-header-action">Edit review</button>}
+              {!editing && <button type="button" onClick={beginEdit} className="meeting-header-action">Edit review…</button>}
               {detail.review?.document && detail.generated && (
                 <button type="button" aria-label="Replace review with generated draft" onClick={() => void restore()} className="meeting-header-action" data-confirming={restoreConfirm}>
                   {restoreConfirm ? 'Confirm replace review' : 'Use generated draft'}

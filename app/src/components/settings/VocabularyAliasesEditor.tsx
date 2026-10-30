@@ -1,3 +1,4 @@
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useRef, useState } from 'react';
 import type { VocabularyEntry, VoiceCommand } from '../../lib/settings';
 import { previewVocabularyAliases } from '../../lib/dictation';
@@ -104,7 +105,7 @@ export function VocabularyAliasesEditor({
         </div>
       ) : (
         <div className="settings-card mt-3 overflow-hidden">
-          <div className="grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_76px] items-center gap-2 border-b border-outline-variant/30 bg-surface-container-low px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+          <div className="grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_120px] items-center gap-2 border-b border-outline-variant/30 bg-surface-container-low px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
             <span>Murmur hears <span className="font-normal normal-case tracking-normal">(optional)</span></span>
             <span aria-hidden="true" />
             <span>Murmur types</span>
@@ -118,7 +119,7 @@ export function VocabularyAliasesEditor({
             {draft.map((entry, index) => (
               <div
                 key={entry.id}
-                className={`grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_76px] items-center gap-2 px-3 py-2 ${entry.enabled ? '' : 'bg-surface-container-low opacity-60'}`}
+                className={`grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_120px] items-center gap-2 px-3 py-2 ${entry.enabled ? '' : 'bg-surface-container-low opacity-60'}`}
               >
                 <input
                   aria-label={`Spoken aliases for ${entry.written || `term ${index + 1}`}`}
@@ -166,17 +167,7 @@ export function VocabularyAliasesEditor({
                   >
                     <span className={`inline-block h-3.5 w-3.5 rounded-full shadow transition-transform ${entry.enabled ? 'translate-x-4 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
                   </button>
-                  <button
-                    type="button"
-                    aria-label={`Delete ${entry.written || `term ${index + 1}`}`}
-                    title="Delete"
-                    onClick={() => update(draft.filter((_, entryIndex) => entryIndex !== index))}
-                    className="rounded p-1 text-on-surface-variant hover:bg-error/10 hover:text-error"
-                  >
-                    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path d="M4.5 6h11M8 3.5h4M6.5 6l.6 10h5.8l.6-10M8.5 8.5v5M11.5 8.5v5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
+                  <ConfirmActionButton key={entry.id} label="Delete" confirmLabel="Confirm" aria-label={`Delete ${entry.written || `term ${index + 1}`}`} onConfirm={() => update(draft.filter((_, entryIndex) => entryIndex !== index))} className="rounded p-1 text-xs text-error hover:bg-error/10" />
                 </div>
               </div>
             ))}
@@ -199,7 +190,7 @@ export function VocabularyAliasesEditor({
         >
           <div>
             <p className="text-xs font-medium text-on-surface">Test a phrase</p>
-            <p className="mt-0.5 text-[11px] text-on-surface-variant">See the result without recording anything.</p>
+            <p className="mt-0.5 text-[11px] text-on-surface-variant">See the result without recording anything</p>
           </div>
           <svg aria-hidden="true" viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${previewExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="m5 7.5 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
@@ -225,7 +216,7 @@ export function VocabularyAliasesEditor({
                 type="button"
                 disabled={previewing || !previewInput.trim()}
                 onClick={() => void runPreview()}
-                className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-medium text-on-primary disabled:opacity-50"
+                className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-medium text-on-surface disabled:opacity-50"
               >
                 {previewing ? 'Testing…' : 'Test'}
               </button>

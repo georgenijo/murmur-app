@@ -2,6 +2,7 @@ import { Search } from 'lucide-react';
 import { SettingsRow } from './SettingsRow';
 import { Button } from '../ui/FormControls';
 import { MiddleTruncate } from "../ui/middle-truncate";
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -130,7 +131,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
   return (
     <div className="settings-field">
       <div className="flex items-center justify-between">
-        <label htmlFor={id} className="text-xs text-on-surface-variant">Paste Delay</label>
+        <label htmlFor={id} className="text-xs text-on-surface-variant">Paste delay</label>
         <span className="text-xs font-medium text-on-surface">{draft}ms</span>
       </div>
       <input
@@ -239,8 +240,8 @@ export const SETTINGS_CATEGORIES = [
   { id: 'customize', label: 'Customize', icon: 'customize' },
   { id: 'delivery', label: 'Delivery', icon: 'delivery' },
   { id: 'meetings', label: 'Meetings', icon: 'meetings' },
-  { id: 'text', label: 'Text & Vocabulary', icon: 'text' },
-  { id: 'ai', label: 'AI & Models', icon: 'ai' },
+  { id: 'text', label: 'Text & vocabulary', icon: 'text' },
+  { id: 'ai', label: 'AI & models', icon: 'ai' },
   { id: 'modes', label: 'Modes', icon: 'modes' },
   { id: 'appearance', label: 'Appearance', icon: 'appearance' },
 ] as const;
@@ -316,35 +317,35 @@ export function isMacOSSettingsPlatform(userAgent = typeof navigator === 'undefi
 }
 
 const SETTINGS_SEARCH_ITEMS = [
-  { page: 'recording', target: 'microphone', title: 'Microphone', detail: 'Choose an input and check its live level.', keywords: 'audio input device test level gain' },
-  { page: 'recording', target: 'voice-detection', title: 'Voice Detection', detail: 'Adjust silence filtering sensitivity.', keywords: 'vad sensitivity noise silence' },
-  { page: 'recording', target: 'recording-trigger', title: 'Recording Trigger', detail: 'Hold, double-tap, or use both.', keywords: 'hotkey shortcut key timing feedback' },
-  { page: 'recording', target: 'stop-on-silence', title: 'Stop on Silence', detail: 'Finish hands-free recordings after quiet.', keywords: 'automatic stop vad pause' },
-  { page: 'delivery', target: 'auto-paste', title: 'Auto-Paste', detail: 'Paste clipboard results into the active app.', keywords: 'auto paste autopaste delivery clipboard' },
-  { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls.', keywords: 'destination focus media play pause next previous', macOSOnly: true },
-  { page: 'delivery', target: 'file-output', title: 'Save to File', detail: 'Save transcript or audio files locally.', keywords: 'delivery output folder wav txt' },
-  { page: 'delivery', target: 'history', title: 'Transcription History', detail: 'Keep completed dictations on this Mac.', keywords: 'save retain local transcripts' },
-  { page: 'delivery', target: 'app-overrides', title: 'App Overrides', detail: 'Customize delivery for individual apps.', keywords: 'profile bundle id per app' },
-  { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites.', keywords: 'style profiles browser host site rules' },
-  { page: 'meetings', target: 'meeting-audio', title: 'Meeting Audio', detail: 'Choose whether source audio is retained.', keywords: 'capture wav keep delete' },
-  { page: 'meetings', target: 'meeting-speakers', title: 'Remote Speaker Labels', detail: 'Install and enable local per-speaker meeting labels.', keywords: 'diarization speaker names model local system audio' },
-  { page: 'meetings', target: 'meeting-retention', title: 'Meeting Retention', detail: 'Set age and session limits.', keywords: 'history days sessions sqlite' },
-  { page: 'ai-transcription', target: 'transcription-model', title: 'Speech-to-Text Model', detail: 'Select and manage the local recognition model.', keywords: 'whisper parakeet core ml download speech model' },
-  { page: 'ai-transcription', target: 'language', title: 'Transcription Language', detail: 'Choose a fixed language or automatic detection.', keywords: 'multilingual auto detect' },
-  { page: 'ai-query', target: 'voice-query-provider', title: 'Voice Query Provider', detail: 'Configure the CLI agent used for spoken questions.', keywords: 'agent command executable codex claude cloud answer hotkey provider' },
-  { page: 'ai-query', target: 'voice-query-copy', title: 'Voice Query Clipboard', detail: 'Automatically copy successful answers to the clipboard.', keywords: 'clipboard copy automatic answers response' },
-  { page: 'ai-transform', target: 'rewrite-model', title: 'Selected-Text Rewrite', detail: 'Configure on-device rewriting.', keywords: 'transform llm qwen rewrite shortcut model' },
-  { page: 'text', target: 'punctuation', title: 'Smart Punctuation', detail: 'Add punctuation and sentence capitalization.', keywords: 'automatic punctuation' },
-  { page: 'text', target: 'cleanup', title: 'Transcript Cleanup', detail: 'Remove filler words and tidy transcript spacing.', keywords: 'filler capitalization' },
-  { page: 'text', target: 'text-editors', title: 'Vocabulary & Aliases', detail: 'Manage preferred words and spoken variants.', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
-  { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls.', keywords: 'dark light colors palette community open vsx vscode import' },
-  { page: 'general', target: 'launch-login', title: 'Launch at Login', detail: 'Start Murmur when you sign in.', keywords: 'startup autostart' },
-  { page: 'general', target: 'overlay-calibration', title: 'Calibrate Overlay Position', detail: 'Fine-tune the overlay position around your Mac’s notch.', keywords: 'calibrate calibration overlay position vertical notch dynamic island' },
-  { page: 'shortcuts', target: 'shortcuts', title: 'Keyboard Shortcuts', detail: 'See every global and main-window shortcut.', keywords: 'hotkey key binding command control recording transform query paste correction' },
-  { page: 'general', target: 'setup', title: 'Setup Assistant', detail: 'Re-check permissions and model setup.', keywords: 'onboarding microphone accessibility' },
-  { page: 'general', target: 'updates', title: 'Updates', detail: 'Check for a newer Murmur release.', keywords: 'version upgrade' },
-  { page: 'performance', target: 'performance', title: 'Performance Lab', detail: 'Compare installed models on this Mac.', keywords: 'benchmark speed accuracy' },
-  { page: 'diagnostics', target: 'diagnostics', title: 'Diagnostics', detail: 'Inspect events, runs, reports, and transforms.', keywords: 'logs performance compare debugger' },
+  { page: 'recording', target: 'microphone', title: 'Microphone', detail: 'Choose an input and check its live level', keywords: 'audio input device test level gain' },
+  { page: 'recording', target: 'voice-detection', title: 'Voice detection', detail: 'Adjust silence filtering sensitivity', keywords: 'vad sensitivity noise silence' },
+  { page: 'recording', target: 'recording-trigger', title: 'Recording trigger', detail: 'Hold, double-tap, or use both', keywords: 'hotkey shortcut key timing feedback' },
+  { page: 'recording', target: 'stop-on-silence', title: 'Stop on silence', detail: 'Finish hands-free recordings after quiet', keywords: 'automatic stop vad pause' },
+  { page: 'delivery', target: 'auto-paste', title: 'Auto-paste', detail: 'Paste clipboard results into the active app', keywords: 'auto paste autopaste delivery clipboard' },
+  { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls', keywords: 'destination focus media play pause next previous', macOSOnly: true },
+  { page: 'delivery', target: 'file-output', title: 'Save to file', detail: 'Save transcript or audio files locally', keywords: 'delivery output folder wav txt' },
+  { page: 'delivery', target: 'history', title: 'Transcription history', detail: 'Keep completed dictations on this Mac', keywords: 'save retain local transcripts' },
+  { page: 'delivery', target: 'app-overrides', title: 'App overrides', detail: 'Customize delivery for individual apps', keywords: 'profile bundle id per app' },
+  { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites', keywords: 'style profiles browser host site rules' },
+  { page: 'meetings', target: 'meeting-audio', title: 'Meeting audio', detail: 'Choose whether source audio is retained', keywords: 'capture wav keep delete' },
+  { page: 'meetings', target: 'meeting-speakers', title: 'Remote speaker labels', detail: 'Install and enable local per-speaker meeting labels', keywords: 'diarization speaker names model local system audio' },
+  { page: 'meetings', target: 'meeting-retention', title: 'Meeting retention', detail: 'Set age and session limits', keywords: 'history days sessions sqlite' },
+  { page: 'ai-transcription', target: 'transcription-model', title: 'Speech-to-text model', detail: 'Select and manage the local recognition model', keywords: 'whisper parakeet core ml download speech model' },
+  { page: 'ai-transcription', target: 'language', title: 'Transcription language', detail: 'Choose a fixed language or automatic detection', keywords: 'multilingual auto detect' },
+  { page: 'ai-query', target: 'voice-query-provider', title: 'Voice Query provider', detail: 'Configure the CLI agent used for spoken questions', keywords: 'agent command executable codex claude cloud answer hotkey provider' },
+  { page: 'ai-query', target: 'voice-query-copy', title: 'Voice Query clipboard', detail: 'Automatically copy successful answers to the clipboard', keywords: 'clipboard copy automatic answers response' },
+  { page: 'ai-transform', target: 'rewrite-model', title: 'Selected-text rewrite', detail: 'Configure on-device rewriting', keywords: 'transform llm qwen rewrite shortcut model' },
+  { page: 'text', target: 'punctuation', title: 'Smart punctuation', detail: 'Add punctuation and sentence capitalization', keywords: 'automatic punctuation' },
+  { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
+  { page: 'text', target: 'text-editors', title: 'Vocabulary & aliases', detail: 'Manage preferred words and spoken variants', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
+  { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls', keywords: 'dark light colors palette community open vsx vscode import' },
+  { page: 'general', target: 'launch-login', title: 'Launch at login', detail: 'Start Murmur when you sign in', keywords: 'startup autostart' },
+  { page: 'general', target: 'overlay-calibration', title: 'Calibrate overlay position', detail: 'Fine-tune the overlay position around your Mac’s notch', keywords: 'calibrate calibration overlay position vertical notch dynamic island' },
+  { page: 'shortcuts', target: 'shortcuts', title: 'Keyboard shortcuts', detail: 'See every global and main-window shortcut', keywords: 'hotkey key binding command control recording transform query paste correction' },
+  { page: 'general', target: 'setup', title: 'Setup assistant', detail: 'Re-check permissions and model setup', keywords: 'onboarding microphone accessibility' },
+  { page: 'general', target: 'updates', title: 'Updates', detail: 'Check for a newer Murmur release', keywords: 'version upgrade' },
+  { page: 'performance', target: 'performance', title: 'Performance Lab', detail: 'Compare installed models on this Mac', keywords: 'benchmark speed accuracy' },
+  { page: 'diagnostics', target: 'diagnostics', title: 'Diagnostics', detail: 'Inspect events, runs, reports, and transforms', keywords: 'logs performance compare debugger' },
 ] as const;
 
 function SettingsNavIcon({ icon }: { icon: string }) {
@@ -374,7 +375,7 @@ export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveT
 
 export function autoPasteDeliveryDescription(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): string {
   if (!settings.saveTranscript && !settings.saveAudio) {
-    return 'Paste the clipboard result into the active app (Accessibility permission required).';
+    return 'Paste the clipboard result into the active app (Accessibility permission required)';
   }
   return settings.autoPaste
     ? 'Paused while file output is on. Your saved preference will resume when file output is off.'
@@ -743,7 +744,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const isRecording = status !== 'idle';
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const isBoth = settings.recordingMode === 'both';
-  const keyLabel = isBoth ? 'Trigger Key' : isDoubleTap ? 'Double-Tap Key' : 'Hold Key';
+  const keyLabel = isBoth ? 'Trigger key' : isDoubleTap ? 'Double-tap key' : 'Hold key';
   const keyHelp = isBoth
     ? 'Hold to record, or double-tap to start and single-tap to stop.'
     : isDoubleTap ? 'Double-tap to start and single-tap to stop.' : 'Hold to start and release to stop.';
@@ -844,17 +845,17 @@ export const SettingsPanel = memo(function SettingsPanel({
   );
 
   const searchPageLabel = (page: string) => {
-    if (page.startsWith('ai-')) return 'AI & Models';
+    if (page.startsWith('ai-')) return 'AI & models';
     return SETTINGS_CATEGORIES.find((category) => category.id === page)?.label
       ?? SETTINGS_TOOLS.find((tool) => tool.id === page)?.label
       ?? page;
   };
   const pageTitle = searchQuery ? 'Search' : editorTab ? SETTINGS_EDITOR_LABELS[editorTab]
-    : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-Text', 'ai-query': 'Voice Query',
-      'ai-transform': 'Selected-Text Rewrite', shortcuts: 'Keyboard Shortcuts' } as Record<string, string>)[activeCat]
+    : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text', 'ai-query': 'Voice Query',
+      'ai-transform': 'Selected-Text Rewrite', shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
-    <div className="settings-workspace flex min-h-0 flex-1 overflow-hidden bg-background text-on-surface">
+    <div onKeyDown={defaultButtonKeyDown} className="settings-workspace flex min-h-0 flex-1 overflow-hidden bg-background text-on-surface">
       <aside data-search-open={compactSearchOpen || undefined} className="settings-sidebar flex min-h-0 shrink-0 flex-col overflow-hidden px-3 pb-3 pt-2">
         <button ref={railSearchRef} type="button" className="settings-rail-search" aria-label="Search settings" onClick={() => { setCompactSearchOpen(true); requestAnimationFrame(() => searchRef.current?.focus()); }}><Search aria-hidden="true" /></button>
         <label className="settings-search relative mb-3 block w-full min-w-0 shrink-0">
@@ -871,7 +872,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               setEditorTab(null);
               setSearchQuery(event.target.value);
             }}
-            placeholder="Search Settings"
+            placeholder="Search settings"
             className="h-9 w-full pl-9 pr-8 text-[13px] text-on-surface outline-none placeholder:text-on-surface-variant"
           />
           {searchQuery && (
@@ -948,7 +949,6 @@ export const SettingsPanel = memo(function SettingsPanel({
           ) : searchQuery ? (
             <section aria-label="Settings search results">
               <h2 className="settings-section-title">Search</h2>
-              <p className="settings-page-subtitle mb-4">Jump directly to a setting or tool.</p>
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-normal text-on-surface-variant">
                 {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'}
               </p>
@@ -1015,7 +1015,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onClick={returnToShortcuts}
               className="settings-back-btn mb-4"
             >
-              <span aria-hidden="true">‹</span> Keyboard Shortcuts
+              <span aria-hidden="true">‹</span> Keyboard shortcuts
             </Button>
           )}
           {(AI_DETAIL_PAGES as readonly string[]).includes(activeCat) && !customizationDetail && shortcutReturnFocus === null && (
@@ -1038,7 +1038,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             activePage={activeCat}
             onOpenOwner={openShortcutOwner}
           />
-          <SettingsSection pageId="recording" activePage={activeCat} title="Recording" subtitle="Microphone, voice detection, shortcuts, and automatic stopping">
+          <SettingsSection pageId="recording" activePage={activeCat} title="Recording">
             <div data-setting-target="microphone" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <MicrophoneInputTest
                 microphone={settings.microphone}
@@ -1078,7 +1078,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               </div>
             )}
             <SettingsRow
-              title={<>Voice Detection</>}
+              title={<>Voice detection</>}
               targetId="voice-detection"
               disabled={isRecording}
               onReset={settings.vadSensitivity !== DEFAULT_SETTINGS.vadSensitivity ? () => onUpdateSettings({ vadSensitivity: DEFAULT_SETTINGS.vadSensitivity }) : undefined}
@@ -1089,7 +1089,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               />}
             />
             <SettingsRow
-              title={<>Recording Trigger</>}
+              title={<>Recording trigger</>}
               targetId="recording-trigger"
               disabled={isRecording}
               onReset={settings.recordingMode !== DEFAULT_SETTINGS.recordingMode ? () => onUpdateSettings({ recordingMode: DEFAULT_SETTINGS.recordingMode }) : undefined}
@@ -1121,11 +1121,11 @@ export const SettingsPanel = memo(function SettingsPanel({
                   On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur observes the key without suppressing its normal system or app action.
                 </p>
               )}</SettingsRow>
-            {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey Timing Feedback" description="Flash the overlay when a tap misses the double-tap window." checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
+            {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey timing feedback" description="Flash the overlay when a tap misses the double-tap window" checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
             <div data-setting-target="sound-cues" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <SettingToggle
-                title="Sound Cues"
-                description="Play local feedback when recording starts, stops, succeeds, or fails."
+                title="Sound cues"
+                description="Play local feedback when recording starts, stops, succeeds, or fails"
                 checked={settings.soundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.soundCuesEnabled}
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
@@ -1155,15 +1155,15 @@ export const SettingsPanel = memo(function SettingsPanel({
                   ))}
                 </div>
                 <SettingToggle
-                  title="Meeting Cues"
-                  description="Also play cues during meeting capture. Off by default."
+                  title="Meeting cues"
+                  description="Also play cues during meeting capture"
                   checked={settings.meetingSoundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSoundCuesEnabled}
                   onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
                 />
               </SettingsBranch>
             </div>
             <SettingsRow
-              title={<label className="block text-sm font-medium text-on-surface">Stop on Silence</label>}
+              title={<label className="block text-sm font-medium text-on-surface">Stop on silence</label>}
               targetId="stop-on-silence"
               disabled={isRecording}
               onReset={settings.autoStopSilenceMs !== DEFAULT_SETTINGS.autoStopSilenceMs ? () => onUpdateSettings({ autoStopSilenceMs: DEFAULT_SETTINGS.autoStopSilenceMs }) : undefined}
@@ -1201,7 +1201,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
           </SettingsSection>
 
-          <SettingsSection pageId="ai" activePage={activeCat} title="AI & Models" subtitle="Choose the engine that powers each Murmur feature">
+          <SettingsSection pageId="ai" activePage={activeCat} title="AI & models">
             <button
               type="button"
               onClick={() => openPage('ai-transcription')}
@@ -1209,7 +1209,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             >
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="recording" /></span>
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Speech-to-Text</span>
+                <span className="block text-sm font-semibold text-on-surface">Speech-to-text</span>
                 <span className="mt-0.5 block truncate text-xs text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
               </span>
               <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
@@ -1233,7 +1233,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             >
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="text" /></span>
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Selected-Text Rewrite</span>
+                <span className="block text-sm font-semibold text-on-surface">Selected-text rewrite</span>
                 <span className="mt-0.5 block truncate text-xs text-on-surface-variant">Qwen2.5 1.5B · {transformVm.transformModel?.state === 'ready' ? 'Ready on-device' : 'Model setup required'}</span>
               </span>
               <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
@@ -1260,8 +1260,8 @@ export const SettingsPanel = memo(function SettingsPanel({
             vm={transformVm}
           />
 
-          <SettingsSection pageId="ai-transcription" activePage={activeCat} title="Speech-to-Text" subtitle="Recognition model, language, and memory lifecycle">
-            <SettingsRow title={<>Transcription Model</>} targetId="transcription-model" disabled={isRecording} onReset={settings.model !== DEFAULT_SETTINGS.model ? () => onUpdateSettings({ model: DEFAULT_SETTINGS.model }) : undefined} control={<Select
+          <SettingsSection pageId="ai-transcription" activePage={activeCat} title="Speech-to-text">
+            <SettingsRow title={<>Transcription model</>} targetId="transcription-model" disabled={isRecording} onReset={settings.model !== DEFAULT_SETTINGS.model ? () => onUpdateSettings({ model: DEFAULT_SETTINGS.model }) : undefined} control={<Select
                 value={settings.model}
                 onChange={(model) => onUpdateSettings({ model })}
                 disabled={isRecording}
@@ -1302,23 +1302,23 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
 {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}</SettingsRow>
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
-            <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto Detect lets Whisper identify the language for each recording.'}</p></SettingsRow>
-            <SettingsRow title={<>Release Model After Inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p></SettingsRow>
+            <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto-detect lets Whisper identify the language for each recording'}</p></SettingsRow>
+            <SettingsRow title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p></SettingsRow>
           </SettingsSection>
 
-          <SettingsSection pageId="text" activePage={activeCat} title="Text & Vocabulary" subtitle="Cleanup, preferred terms, structured writing, and knowledge">
-            <SettingToggle targetId="punctuation" title="Automatic Punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions." checked={settings.smartPunctuation} defaultChecked={DEFAULT_SETTINGS.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
-            <SettingToggle targetId="cleanup" title="Transcript Cleanup" description="Remove filler and tidy spacing before delivery." checked={settings.cleanupEnabled} defaultChecked={DEFAULT_SETTINGS.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
+          <SettingsSection pageId="text" activePage={activeCat} title="Text & vocabulary">
+            <SettingToggle targetId="punctuation" title="Automatic punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions" checked={settings.smartPunctuation} defaultChecked={DEFAULT_SETTINGS.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
+            <SettingToggle targetId="cleanup" title="Transcript cleanup" description="Remove filler and tidy spacing before delivery" checked={settings.cleanupEnabled} defaultChecked={DEFAULT_SETTINGS.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
             <SettingsBranch open={settings.cleanupEnabled}>
-              <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh." checked={settings.cleanupRemoveFiller} defaultChecked={DEFAULT_SETTINGS.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
-              <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts." checked={settings.cleanupCapitalize} defaultChecked={DEFAULT_SETTINGS.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
+              <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh" checked={settings.cleanupRemoveFiller} defaultChecked={DEFAULT_SETTINGS.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
+              <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts" checked={settings.cleanupCapitalize} defaultChecked={DEFAULT_SETTINGS.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
             </SettingsBranch>
             <div data-setting-target="text-editors" className="grid gap-2 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               {([
-                ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans.'],
-                ['aliases', 'Aliases', 'Map spoken variants to canonical spellings.'],
-                ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms.'],
-                ['commands', 'Voice Commands', 'Create exact spoken replacements and snippets.'],
+                ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans'],
+                ['aliases', 'Aliases', 'Map spoken variants to canonical spellings'],
+                ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms'],
+                ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
               ] as const).map(([tab, title, detail]) => (
                 <button key={tab} type="button" onClick={() => openEditor(tab)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">
                   <span className="min-w-0 flex-1">
@@ -1330,29 +1330,29 @@ export const SettingsPanel = memo(function SettingsPanel({
               ))}
             </div>
             <SettingsDisclosure title="Advanced" layout="rows">
-              <SettingToggle title="Developer Terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context." checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+              <SettingToggle title="Developer terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div className="settings-field">
                   <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
-                  <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage Project Scan</button>
+                  <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
                   <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
                 </div>
               </SettingsBranch>
-              <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model." checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+              <SettingToggle title="Apply preferred spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
-                <SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
-                <SettingToggle title="Resolve Homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
+                <SettingToggle title="Correct close mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; turn off if you see unwanted swaps" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
+                <SettingToggle title="Resolve homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
-              <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-              <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+              <SettingToggle title="Structured writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
+              <SettingToggle title="Spoken formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery" subtitle="Choose what happens after transcription finishes">
+          <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery">
             <SettingsCallout title="Always copied to clipboard">
               Auto-paste and file output happen afterward, so the finished text remains recoverable.
             </SettingsCallout>
-            <SettingToggle targetId="auto-paste" title="Auto-Paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
+            <SettingToggle targetId="auto-paste" title="Auto-paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             <SettingsBranch open={settings.autoPaste}>
               {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
               {!saveToFile && accessibilityGranted === false && (
@@ -1378,9 +1378,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 />
               )}
             </SettingsBranch>
-            <SettingsRow title={<>Paste Last Shortcut
+            <SettingsRow title={<>Paste last shortcut
               </>} targetId="paste-last-shortcut" disabled={pasteLastShortcutBusy} onReset={settings.pasteLastShortcut !== DEFAULT_SETTINGS.pasteLastShortcut ? () => { void updatePasteLastShortcut(DEFAULT_SETTINGS.pasteLastShortcut); } : undefined} control={<Select
-                aria-label="Paste Last Shortcut"
+                aria-label="Paste last shortcut"
                 value={settings.pasteLastShortcut ?? 'disabled'}
                 disabled={pasteLastShortcutBusy}
                 onChange={(value) => {
@@ -1402,31 +1402,31 @@ export const SettingsPanel = memo(function SettingsPanel({
                 </div>
               )}</SettingsRow>
             <div data-setting-target="file-output" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <SettingToggle title="Save Transcript to File" description="Write each completed transcription to a .txt file." checked={settings.saveTranscript} defaultChecked={DEFAULT_SETTINGS.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
-              <SettingToggle title="Save Audio to File" description="Write each recording to a .wav file." checked={settings.saveAudio} defaultChecked={DEFAULT_SETTINGS.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
+              <SettingToggle title="Save transcript to file" description="Write each completed transcription to a .txt file" checked={settings.saveTranscript} defaultChecked={DEFAULT_SETTINGS.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
+              <SettingToggle title="Save audio to file" description="Write each recording to a .wav file" checked={settings.saveAudio} defaultChecked={DEFAULT_SETTINGS.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
               <SettingsBranch open={saveToFile}>
                 <div className="settings-field">
-                  <p className="text-xs text-on-surface-variant">Shared Output Folder</p>
+                  <p className="text-xs text-on-surface-variant">Shared output folder</p>
                   <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
-                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
+                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
                   <p className="text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
             </div>
             <SettingToggle
               targetId="history"
-              title="Save Transcription History"
+              title="Save transcription history"
               description="Keep completed microphone and file transcripts in Murmur on this Mac. Turning this off affects new transcripts; existing history remains until you clear it."
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
-            {notchPillInstalled && <SettingToggle title="Mirror Captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
-            <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app." layout="stack" targetId="app-overrides">
+            {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
+            <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app" layout="stack" targetId="app-overrides">
               <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection card={false} pageId="modes" activePage={activeCat} title="Modes" subtitle="Reusable behavior for apps and browser sites">
+          <SettingsSection card={false} pageId="modes" activePage={activeCat} title="Modes">
             <div data-setting-target="modes">
               <ModesManager
                 modes={settings.modes}
@@ -1441,15 +1441,15 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection pageId="meetings" activePage={activeCat} title="Meetings" subtitle="Local meeting transcript and audio retention">
+          <SettingsSection pageId="meetings" activePage={activeCat} title="Meetings">
             <SettingsCallout title="Stored separately from dictation">
               Meeting transcripts use the crash-safe local store and never appear in dictation history.
             </SettingsCallout>
             <div className="settings-stack">
               <SettingToggle
                 targetId="meeting-suggestions"
-                title="Suggest Notetaker for Calendar Meetings"
-                description="Off by default. While enabled, Murmur reads upcoming Calendar events and offers to start Notetaker when a supported meeting app is frontmost. Nothing records until you accept."
+                title="Suggest Notetaker for Calendar meetings"
+                description="While on, Murmur reads upcoming Calendar events and offers to start Notetaker when a supported meeting app is frontmost. Nothing records until you accept."
                 checked={settings.meetingSuggestionsEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSuggestionsEnabled}
                 onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
               />
@@ -1466,7 +1466,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   });
                 }}
               >
-                Open Calendar Settings
+                Open Calendar settings…
               </button>
               {calendarSettingsError && (
                 <p role="alert" className="text-xs text-error">{calendarSettingsError}</p>
@@ -1474,15 +1474,15 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
             <SettingToggle
               targetId="meeting-audio"
-              title="Keep Meeting Audio"
-              description="Off by default. When off, each private chunk WAV is deleted after its transcript commits."
+              title="Keep meeting audio"
+              description="When off, each private chunk WAV is deleted after its transcript commits"
               checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
               onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
             />
             <SettingToggle
               targetId="meeting-echo-cancellation"
-              title="Reduce Speaker Echo"
-              description="Experimental and off by default. Removes speaker playback from the Me channel. If processing fails, Murmur keeps the original microphone audio."
+              title="Reduce speaker echo"
+              description="Experimental. Removes speaker playback from the Me channel. If processing fails, Murmur keeps the original microphone audio."
               checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
               onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
             />
@@ -1518,13 +1518,13 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection card={false} pageId="performance" activePage={activeCat} title="Performance Lab" subtitle="Compare installed speech models on this Mac">
+          <SettingsSection card={false} pageId="performance" activePage={activeCat} title="Performance Lab">
             <div data-setting-target="performance">
               <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} audioInventory={audioInventory} />
             </div>
           </SettingsSection>
 
-          <SettingsSection card={false} pageId="diagnostics" activePage={activeCat} title="Diagnostics" subtitle="Events, run history, performance, reports, and transform traces">
+          <SettingsSection card={false} pageId="diagnostics" activePage={activeCat} title="Diagnostics">
             <div data-setting-target="diagnostics" className="settings-card h-[520px] min-h-0 overflow-hidden">
               <DiagnosticsWorkspace
                 active={activeCat === 'diagnostics'}
@@ -1543,8 +1543,8 @@ export const SettingsPanel = memo(function SettingsPanel({
             <div data-setting-target="appearance"><AppearanceSettings /></div>
           </SettingsSection>
 
-          <SettingsSection pageId="general" activePage={activeCat} title="General" subtitle="Startup, support, updates, and app information">
-            {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at Login" description="Start Murmur automatically when you log in." checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
+          <SettingsSection pageId="general" activePage={activeCat} title="General">
+            {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at login" description="Start Murmur automatically when you log in" checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
             <button
               ref={generalShortcutsButtonRef}
               type="button"
@@ -1553,14 +1553,14 @@ export const SettingsPanel = memo(function SettingsPanel({
               className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
               <span className="settings-title-description">
-                <span className="block text-sm font-medium text-on-surface">Keyboard Shortcuts</span>
-                <span className="mt-0.5 block text-xs leading-relaxed text-on-surface-variant">See global and main-window shortcuts in one place.</span>
+                <span className="block text-sm font-medium text-on-surface">Keyboard shortcuts</span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-on-surface-variant">See global and main-window shortcuts in one place</span>
               </span>
               <span aria-hidden="true" className="text-on-surface-variant">›</span>
             </button>
             <div data-setting-target="setup" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run Setup Assistant</button>
-              <p className="text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working.</p>
+              <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run setup assistant…</button>
+              <p className="text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working</p>
             </div>
             {onDiscoveryChecklistReopen && (
               <div data-setting-target="discovery-checklist" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
@@ -1574,7 +1574,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 offset={settings.overlayVerticalOffset}
                 onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
               />
-              <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm Reset' : 'Reset Stats'}</button>
+              <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
             </SettingsDisclosure>
             {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <UpdateIndicator

@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../lib/defaultButton';
 import { useEffect, useRef } from 'react';
 import { Download, RotateCw } from 'lucide-react';
 import { exit } from '@tauri-apps/plugin-process';
@@ -114,20 +115,20 @@ export function UpdateModal({
   const HeaderIcon = status.phase === 'ready' || status.phase === 'restarting' ? RotateCw : Download;
   const title =
     requiresReinstall
-      ? 'Reinstall Murmur to Update'
+      ? 'Reinstall Murmur to update'
       : status.phase === 'available'
         ? isForced
-          ? 'Required Update'
-          : 'Update Available'
+          ? 'Required update'
+          : 'Update available'
         : status.phase === 'preparing'
-          ? 'Preparing Update'
+          ? 'Preparing update'
           : status.phase === 'downloading'
-            ? 'Downloading Update'
+            ? 'Downloading update'
             : status.phase === 'ready'
-              ? 'Ready to Restart'
+              ? 'Ready to restart'
               : status.phase === 'restarting'
                 ? 'Restarting Murmur'
-                : 'Update Failed';
+                : 'Update failed';
 
   return (
     <div
@@ -138,7 +139,7 @@ export function UpdateModal({
     >
       <motion.div
         ref={dialogRef}
-        role="dialog"
+        role="dialog" onKeyDown={defaultButtonKeyDown}
         aria-modal="true"
         aria-labelledby="update-dialog-title"
         aria-busy={isBusy}
@@ -196,13 +197,13 @@ export function UpdateModal({
           )}
 
           {status.phase === 'preparing' && (
-            <p className="text-center text-sm text-on-surface">Preparing the download...</p>
+            <p className="text-center text-sm text-on-surface">Preparing the download…</p>
           )}
 
           {status.phase === 'downloading' && (
             <div>
               <div className="mb-2 flex justify-between text-xs text-on-surface-variant">
-                <span>Downloading...</span>
+                <span>Downloading…</span>
                 {status.progress !== null && <span>{Math.round(status.progress)}%</span>}
               </div>
               <div
@@ -234,7 +235,7 @@ export function UpdateModal({
 
           {status.phase === 'restarting' && (
             <p className="text-center text-sm text-on-surface">
-              Installing the update and restarting...
+              Installing the update and restarting…
             </p>
           )}
 
@@ -274,7 +275,7 @@ export function UpdateModal({
                   ref={primaryActionRef}
                   type="button"
                   onClick={() => exit(0)}
-                  className="dialog-pill-btn w-full px-4 py-2.5 text-sm font-semibold text-error hover:bg-error/10"
+                  className="dialog-pill-btn w-full px-4 py-2.5 text-sm font-semibold text-on-surface hover:bg-surface-container"
                 >
                   Quit
                 </button>
@@ -311,9 +312,9 @@ export function UpdateModal({
                   )}
                 >
                   {status.phase === 'available'
-                    ? 'Download Update'
+                    ? 'Download update'
                     : status.phase === 'ready'
-                      ? 'Restart Now'
+                      ? 'Restart now'
                       : 'Retry'}
                 </button>
                 <button
@@ -322,7 +323,7 @@ export function UpdateModal({
                   className={cn(
                     'dialog-pill-btn w-full px-4 py-2 text-sm hover:bg-surface-container',
                     isForced
-                      ? 'text-error hover:bg-error/10'
+                      ? 'text-on-surface'
                       : 'text-on-surface-variant hover:text-primary',
                   )}
                 >

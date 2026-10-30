@@ -51,7 +51,7 @@ describe('MeetingCalendarNaming', () => {
     await render();
     expect(calendar.getCalendarPermissionStatus).not.toHaveBeenCalled();
     expect(calendar.getMeetingCalendarEvents).not.toHaveBeenCalled();
-    await click('Name from calendar');
+    await click('Name from calendar…');
     expect(calendar.getMeetingCalendarEvents).toHaveBeenCalledWith('meeting-one');
     expect(calendar.requestCalendarPermission).not.toHaveBeenCalled();
     expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(count);
@@ -71,14 +71,14 @@ describe('MeetingCalendarNaming', () => {
     calendar.requestCalendarPermission.mockResolvedValue('denied');
     await render();
     expect(calendar.requestCalendarPermission).not.toHaveBeenCalled();
-    await click('Name from calendar');
+    await click('Name from calendar…');
     expect(calendar.requestCalendarPermission).toHaveBeenCalledOnce();
     expect(calendar.getMeetingCalendarEvents).not.toHaveBeenCalled();
     expect(onManualNaming).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Calendar access is not allowed');
-    await click('Open Calendar Settings');
+    await click('Open Calendar settings…');
     expect(calendar.openCalendarPreferences).toHaveBeenCalledOnce();
-    await click('Reset Calendar Access');
+    await click('Reset Calendar access…');
     expect(calendar.resetCalendarPermission).toHaveBeenCalledOnce();
     expect(calendar.requestCalendarPermission).toHaveBeenCalledOnce();
   });
@@ -86,7 +86,7 @@ describe('MeetingCalendarNaming', () => {
   it('discards private errors and exposes manual naming on lookup failure', async () => {
     calendar.getMeetingCalendarEvents.mockRejectedValue(new Error('PRIVATE_CALENDAR_SENTINEL'));
     await render();
-    await click('Name from calendar');
+    await click('Name from calendar…');
     expect(container.textContent).toContain('Calendar events could not be read');
     expect(container.textContent).not.toContain('PRIVATE_CALENDAR_SENTINEL');
     expect(onManualNaming).toHaveBeenCalledOnce();
@@ -97,7 +97,7 @@ describe('MeetingCalendarNaming', () => {
     let resolve: (events: CalendarEventCandidate[]) => void = () => {};
     calendar.getMeetingCalendarEvents.mockReturnValue(new Promise<CalendarEventCandidate[]>((done) => { resolve = done; }));
     await render();
-    await click('Name from calendar');
+    await click('Name from calendar…');
     await render('meeting-two');
     await act(async () => resolve([event]));
     expect(container.textContent).not.toContain(event.title);
@@ -108,17 +108,17 @@ describe('MeetingCalendarNaming', () => {
     let resolve: (permission: string) => void = () => {};
     calendar.getCalendarPermissionStatus.mockReturnValue(new Promise<string>((done) => { resolve = done; }));
     await render();
-    await click('Name from calendar');
+    await click('Name from calendar…');
     await render('meeting-one', true);
     await act(async () => resolve('granted'));
     expect(calendar.getMeetingCalendarEvents).not.toHaveBeenCalled();
-    expect(button('Name from calendar').disabled).toBe(true);
+    expect(button('Name from calendar…').disabled).toBe(true);
   });
 
   it('discards the candidate list when the selected event changes before apply', async () => {
     onApply.mockResolvedValue(false);
     await render();
-    await click('Name from calendar');
+    await click('Name from calendar…');
     const radio = container.querySelector<HTMLInputElement>('input[type="radio"]');
     if (!radio) throw new Error('Missing event');
     await act(async () => radio.click());

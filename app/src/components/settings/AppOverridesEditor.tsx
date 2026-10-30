@@ -1,4 +1,5 @@
 import { MiddleTruncate } from "../ui/middle-truncate";
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -245,7 +246,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                 const app = availableApps.find((candidate) => candidate.bundleId === selectedApp);
                 if (app) addProfile(app.bundleId, app.name);
               }}
-              className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-medium text-on-primary disabled:cursor-not-allowed disabled:opacity-50"
+              className="shrink-0 rounded-(--ui-radius-pill) border border-outline-variant/40 bg-surface-container-high px-3 py-2 text-xs font-medium text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
             >
               Add app
             </button>
@@ -271,7 +272,6 @@ export function AppOverridesEditor({ profiles, onChange }: {
                 type="text"
                 value={bundleId}
                 onChange={(event) => setBundleId(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') addProfile(bundleId, label); }}
                 placeholder="com.apple.Terminal"
                 autoComplete="off"
                 autoCorrect="off"
@@ -306,14 +306,12 @@ export function AppOverridesEditor({ profiles, onChange }: {
                     <h3 className="truncate text-sm font-medium text-on-surface">{appLabel}</h3>
                     <p className="truncate font-mono text-[11px] text-on-surface-variant">{profile.bundleId}</p>
                   </div>
-                  <button
+                  <ConfirmActionButton label="Remove" confirmLabel="Confirm remove"
                     type="button"
-                    onClick={() => onChange(profiles.filter((candidate) => candidate.bundleId !== profile.bundleId))}
+                    onConfirm={() => onChange(profiles.filter((candidate) => candidate.bundleId !== profile.bundleId))}
                     aria-label={`Remove override for ${appLabel}`}
                     className="rounded-md px-2 py-1 text-xs text-on-surface-variant hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    Remove
-                  </button>
+                   />
                 </div>
 
                 <div>
@@ -378,13 +376,13 @@ export function AppOverridesEditor({ profiles, onChange }: {
                           {profile.ideProjectRoots.map((root) => (
                             <li key={root} className="flex items-center gap-2 rounded-md bg-surface-container-lowest px-2 py-1.5">
                               <MiddleTruncate className="flex-1 font-mono text-xs text-on-surface" value={root} />
-                              <button type="button" onClick={() => updateProfile(profile.bundleId, { ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) })} className="shrink-0 text-xs text-on-surface-variant underline hover:text-error">Remove root</button>
+                              <ConfirmActionButton label="Remove root" confirmLabel="Confirm remove" onConfirm={() => updateProfile(profile.bundleId, { ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) })} className="shrink-0 text-xs text-on-surface-variant underline hover:text-error" />
                             </li>
                           ))}
                         </ul>
                       ) : <p className="text-xs text-on-surface-variant">No project roots configured.</p>}
                       <div className="flex flex-wrap gap-3">
-                        <button type="button" onClick={() => void addIdeRoot(profile.bundleId)} disabled={profile.ideProjectRoots.length >= 4} className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50">Add project root</button>
+                        <button type="button" onClick={() => void addIdeRoot(profile.bundleId)} disabled={profile.ideProjectRoots.length >= 4} className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50">Add project root…</button>
                         <button type="button" onClick={() => void refreshIdeIndex(profile.bundleId)} disabled={profile.ideProjectRoots.length === 0 || ideStatuses[profile.bundleId]?.state === 'scanning'} className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50">Refresh index</button>
                         <button type="button" onClick={() => void clearIdeIndex(profile.bundleId)} disabled={profile.ideProjectRoots.length === 0} className="text-xs font-medium text-on-surface-variant underline hover:text-error disabled:opacity-50">Clear index</button>
                       </div>

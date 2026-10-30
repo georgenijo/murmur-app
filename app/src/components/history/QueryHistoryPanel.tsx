@@ -173,7 +173,7 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
                 {history.search.trim()
                   ? 'No matches for your search'
                   : history.provider === 'all'
-                  ? 'No saved Voice Queries'
+                  ? 'No saved voice queries'
                   : `No saved ${providerLabel(history.provider)} queries`}
               </p>
               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">

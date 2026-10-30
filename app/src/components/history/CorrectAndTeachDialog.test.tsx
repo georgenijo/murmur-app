@@ -205,6 +205,7 @@ describe('CorrectAndTeachDialog', () => {
 
     await act(async () => setValue(container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement, 'useRecordingState'));
     await act(async () => button(container, 'Review correction').click());
+    await vi.waitFor(() => expect(document.activeElement?.tagName).toBe('H3'));
     const last = button(container, 'Remember correction');
     last.focus();
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', {

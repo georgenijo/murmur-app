@@ -34,7 +34,7 @@ describe('UpdateIndicator', () => {
     });
 
     const button = container.querySelector('button');
-    expect(button?.getAttribute('aria-label')).toBe('View Update. Murmur v0.23.0 is available');
+    expect(button?.getAttribute('aria-label')).toBe('View update. Murmur v0.23.0 is available');
     expect(button?.textContent).toBe('');
     await act(async () => button?.click());
     expect(onOpen).toHaveBeenCalledOnce();
@@ -53,7 +53,7 @@ describe('UpdateIndicator', () => {
         />,
       );
     });
-    expect(container.querySelector('[role="status"]')?.textContent).toBe('Checking for Updates…');
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Checking for updates…');
     expect(container.querySelector('button')?.getAttribute('aria-disabled')).toBe('true');
 
     await act(async () => {
@@ -111,7 +111,7 @@ describe('UpdateIndicator', () => {
       );
     });
 
-    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Update Needs Attention. Open the update dialog to continue.');
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Update needs attention. Open the update dialog to continue.');
     await act(async () => container.querySelector('button')?.click());
     expect(onOpen).toHaveBeenCalledOnce();
     expect(onRetryCheck).not.toHaveBeenCalled();
@@ -130,7 +130,7 @@ describe('UpdateIndicator', () => {
         />,
       );
     });
-    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Check for Updates');
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Check for updates');
     await act(async () => container.querySelector('button')?.click());
     expect(onRetryCheck).toHaveBeenCalledOnce();
   });

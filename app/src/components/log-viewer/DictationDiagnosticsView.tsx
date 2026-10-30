@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   armNextDictationCapture,
   deleteDictationCapture,
@@ -87,6 +88,9 @@ export function DictationDiagnosticsView({
 }: DictationDiagnosticsViewProps) {
   const [status, setStatus] = useState<DictationCaptureArmStatusV1>({ state: 'unarmed' });
   const [captures, setCaptures] = useState<DictationCaptureSummaryV1[]>([]);
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Pick<DictationCaptureSummaryV1, 'captureId' | 'recordingId'> | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<DictationCaptureV1 | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -165,21 +169,31 @@ export function DictationDiagnosticsView({
   };
 
   const remove = async (captureId: string) => {
-    if (!window.confirm('Delete this private local capture now? This cannot be undone.')) return;
+    if (deleting) return;
+    setDeleting(true);
     try {
       await deleteDictationCapture(captureId);
+      setDeleteTarget(null);
       if (selected?.captureId === captureId) setSelected(null);
       await refresh();
       setNotice('The local private capture was deleted.');
     } catch {
       setError('The private capture could not be deleted.');
+    } finally {
+      setDeleting(false);
     }
   };
+
+  const deletionDialog = deleteTarget && <ConfirmDialog title="Delete this private local capture?" confirmLabel="Delete local copy…" dangerous disabled={deleting} restoreFocus={() => listHeadingRef.current}
+    onCancel={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget.captureId)}>
+    This permanently removes the private local capture for recording {deleteTarget.recordingId}. This cannot be undone.
+  </ConfirmDialog>;
 
   if (selected) {
     const result = selected.result;
     return (
       <div className="space-y-4 p-4">
+        {deletionDialog}
         <button type="button" onClick={() => setSelected(null)} className="text-xs font-medium text-primary hover:underline">
           ← Back to private captures
         </button>
@@ -192,8 +206,8 @@ export function DictationDiagnosticsView({
             <button type="button" onClick={() => void upload(selected)} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary">
               Upload reviewed capture
             </button>
-            <button type="button" onClick={() => void remove(selected.captureId)} className="rounded-lg border border-error/20 px-3 py-1.5 text-xs font-medium text-error">
-              Delete local copy
+            <button type="button" onClick={() => setDeleteTarget(selected)} className="rounded-lg border border-error/20 px-3 py-1.5 text-xs font-medium text-error">
+              Delete local copy…
             </button>
           </div>
         </div>
@@ -220,9 +234,10 @@ export function DictationDiagnosticsView({
 
   return (
     <div className="space-y-4 p-4">
+      {deletionDialog}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-on-surface">Private dictation capture</h2>
+          <h2 ref={listHeadingRef} tabIndex={-1} className="text-sm font-semibold text-on-surface">Private dictation capture</h2>
           <p className="text-[11px] text-on-surface-variant">Normal diagnostics never contain transcript text. Arm exactly one live recording only when text is needed to diagnose it.</p>
         </div>
         <div className="flex items-center gap-2">

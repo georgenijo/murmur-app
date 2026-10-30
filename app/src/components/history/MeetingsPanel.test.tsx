@@ -170,7 +170,7 @@ describe('MeetingsPanel retained audio deletion', () => {
       await act(async () => button.click());
     };
     await click('Delete');
-    await click('Confirm Delete');
+    await click('Confirm delete…');
 
     expect(order).toEqual(['invalidate', 'remove']);
     expect(remove).toHaveBeenCalledWith('retained-meeting');

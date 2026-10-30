@@ -90,7 +90,7 @@ describe('PerformanceStoreHealthBanner', () => {
     });
 
     const button = Array.from(container.querySelectorAll('button'))
-      .find(candidate => candidate.textContent === 'Reinitialize Store…')!;
+      .find(candidate => candidate.textContent === 'Reinitialize store…')!;
     await act(async () => button.click());
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining(
       'This removes Performance runs and resource samples only',

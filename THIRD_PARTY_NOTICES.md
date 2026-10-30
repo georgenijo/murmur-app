@@ -379,6 +379,8 @@ commercial use, without a fee. Refer to the package when you modify the code.
 
 ## Hex
 
+Murmur’s UI copy and interaction rules follow Hex’s `docs/design-system.md:24–131` at `a07f994`.
+
 Murmur’s optional OpenCode color theme follows Hex’s theme integration at
 `a07f994`, with palette data from Rune.
 

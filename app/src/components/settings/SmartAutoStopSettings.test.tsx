@@ -42,11 +42,11 @@ it.each(['ready', 'notDownloaded'] as const)('refreshes a remounted in-flight do
   await act(async () => Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Download model')!.click());
   await act(async () => root.render(null));
   await act(async () => root.render(page));
-  expect(container.textContent).toContain('Downloading...');
+  expect(container.textContent).toContain('Downloading…');
   backend = finalState;
   await act(async () => finish());
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === (finalState === 'ready' ? 'Remove model' : 'Download model'));
+  const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === (finalState === 'ready' ? 'Remove model…' : 'Download model'));
   expect(button).toBeDefined();
   expect(button!.disabled).toBe(false);
   await act(async () => root.render(null));

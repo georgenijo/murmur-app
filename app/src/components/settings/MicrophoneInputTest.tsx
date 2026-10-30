@@ -192,7 +192,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
                 </label>
                 <label className="settings-microphone-choice">
                   <input ref={!smartAutoActive && microphone === 'system_default' ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} readOnly onClick={() => selectManual('system_default')} />
-                  <span><span className="block font-medium">Follow macOS Default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
+                  <span><span className="block font-medium">Follow macOS default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
                 </label>
                 {manualDevices.map((device) => (
                   <label key={`manual-${device.id}`} className="settings-microphone-choice">
@@ -682,7 +682,7 @@ export function MicrophoneInputTest({
       ? 'Loading available microphones…'
       : 'Microphone choices are temporarily unavailable.'
     : missingDevice
-      ? 'Selected device not found — choose an available microphone or Follow macOS Default.'
+      ? 'Selected device not found — choose an available microphone or Follow macOS default.'
       : null;
   const defaultDevice = devices.find((device) => device.id === defaultInputId) ?? null;
   const deviceOptions = audioDeviceSelectOptions(devices);

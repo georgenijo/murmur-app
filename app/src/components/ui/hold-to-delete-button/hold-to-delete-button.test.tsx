@@ -64,7 +64,7 @@ describe('HoldToDeleteButton input ownership', () => {
   it.each([1, 2])('ignores mouse button %s for both taps and a full hold', async (number) => {
     await pointer('pointerdown', 1, number);
     await pointer('pointerup', 1, number);
-    expect(status()).toBe('Delete history');
+    expect(status()).toBe('Delete history…');
     await pointer('pointerdown', 1, number);
     await act(async () => vi.advanceTimersByTime(1300));
     expect(onDelete).not.toHaveBeenCalled();
@@ -72,13 +72,13 @@ describe('HoldToDeleteButton input ownership', () => {
 
   it('ignores a non-primary pointer and does not mix keyboard and pointer ownership', async () => {
     await act(async () => button.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 3, button: 0, isPrimary: false, bubbles: true })));
-    expect(status()).toBe('Delete history');
+    expect(status()).toBe('Delete history…');
     await pointer('pointerdown', 7);
     await key('keydown', 'Enter');
     await key('keyup', 'Enter');
     expect(status()).toBe('Keep holding');
     await pointer('pointerup', 7);
-    expect(status()).toBe('Confirm deletion');
+    expect(status()).toBe('Confirm deletion…');
     expect(onDelete).not.toHaveBeenCalled();
   });
 
@@ -89,13 +89,13 @@ describe('HoldToDeleteButton input ownership', () => {
     await pointer('pointerup', 7, 2);
     expect(status()).toBe('Keep holding');
     await pointer('pointerup', 7);
-    expect(status()).toBe('Confirm deletion');
+    expect(status()).toBe('Confirm deletion…');
     expect(onDelete).not.toHaveBeenCalled();
   });
 
   it('supports two click-only assistive activations without pointer or key events', async () => {
     await click();
-    expect(status()).toBe('Confirm deletion');
+    expect(status()).toBe('Confirm deletion…');
     await click();
     await click();
     expect(onDelete).toHaveBeenCalledTimes(1);
@@ -103,18 +103,18 @@ describe('HoldToDeleteButton input ownership', () => {
 
   it('counts pointer release and its generated click once', async () => {
     await releaseClick();
-    expect(status()).toBe('Confirm deletion');
+    expect(status()).toBe('Confirm deletion…');
     expect(onDelete).not.toHaveBeenCalled();
     await releaseClick();
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['Enter', ' '])('retains %s arm/confirm and suppresses its generated click', async (value) => {
+  it.each([' '])('retains %s arm/confirm and suppresses its generated click', async (value) => {
     await key('keydown', value);
     await key('keydown', value, true);
     await key('keyup', value);
     await click();
-    expect(status()).toBe('Confirm deletion');
+    expect(status()).toBe('Confirm deletion…');
     expect(onDelete).not.toHaveBeenCalled();
     await key('keydown', value);
     await key('keyup', value);
@@ -128,7 +128,7 @@ describe('HoldToDeleteButton input ownership', () => {
     await pointer('pointerup');
     await click(1);
     await act(async () => vi.advanceTimersByTime(1300));
-    expect(status()).toBe('Delete history');
+    expect(status()).toBe('Delete history…');
     expect(onDelete).not.toHaveBeenCalled();
   });
 
@@ -145,7 +145,7 @@ describe('HoldToDeleteButton input ownership', () => {
   it('Escape disarms click-only confirmation and cancels keyboard holding', async () => {
     await click();
     await key('keydown', 'Escape');
-    expect(status()).toBe('Delete history');
+    expect(status()).toBe('Delete history…');
     await key('keydown', 'Enter');
     await key('keydown', 'Escape');
     await key('keyup', 'Enter');
@@ -157,10 +157,10 @@ describe('HoldToDeleteButton input ownership', () => {
   it('disarms after timeout, blur, and disabling during a hold', async () => {
     await click();
     await act(async () => vi.advanceTimersByTime(4000));
-    expect(status()).toBe('Delete history');
+    expect(status()).toBe('Delete history…');
     await click();
     await act(async () => button.dispatchEvent(new FocusEvent('focusout', { bubbles: true })));
-    expect(status()).toBe('Delete history');
+    expect(status()).toBe('Delete history…');
     await pointer('pointerdown');
     await act(async () => root.render(<HoldToDeleteButton label="Delete history" disabled onDelete={onDelete} />));
     await act(async () => vi.advanceTimersByTime(2500));

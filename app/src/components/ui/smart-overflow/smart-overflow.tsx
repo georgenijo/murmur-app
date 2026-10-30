@@ -350,6 +350,12 @@ export default function SmartOverflow({
                               <Menu.Item
                                 disabled={disabled || action.disabled}
                                 onClick={action.onSelect}
+                                onKeyDownCapture={(event) => {
+                                  if (action.destructive && event.key === "Enter") {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }
+                                }}
                                 data-slot="menu-item"
                                 data-variant={
                                   action.destructive ? "destructive" : undefined

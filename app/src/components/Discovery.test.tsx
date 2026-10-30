@@ -54,7 +54,7 @@ describe('discovery UI', () => {
   it('selects only synthetic practice text and explains missing setup', async () => {
     await act(async () => root.render(<TransformPractice transformHoldKey={null} modelReady />));
     expect((container.querySelector('button') as HTMLButtonElement).disabled).toBe(true);
-    expect(container.textContent).toContain('Enable the Transform shortcut above first.');
+    expect(container.textContent).toContain('Turn on the transform shortcut above first.');
 
     await act(async () => root.render(<TransformPractice transformHoldKey="alt_r" modelReady />));
     const textarea = container.querySelector('textarea') as HTMLTextAreaElement;

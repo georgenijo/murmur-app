@@ -46,10 +46,10 @@ describe('KeyboardShortcutsSettings', () => {
     expect(globalRows).toHaveLength(5);
     expect(globalRows.map((row) => row.textContent)).toEqual([
       expect.stringMatching(/Recording trigger.*On.*Hold ⇧ Left Shift.*Configure in Recording/),
-      expect.stringMatching(/Selected-text transform.*On.*Hold Right Option.*Configure in Selected-Text Rewrite/),
+      expect.stringMatching(/Selected-text transform.*On.*Hold Right Option.*Configure in Selected-text rewrite/),
       expect.stringMatching(/Voice Query.*On.*Double-tap Left Control.*Configure in Voice Query/),
-      expect.stringMatching(/Paste Last \/ Retry Delivery.*On.*⌘⌥V.*Configure in Delivery/),
-      expect.stringMatching(/Correct last dictation.*Off.*⌘⇧E.*Enable in Selected-Text Rewrite/),
+      expect.stringMatching(/Paste last or retry delivery.*On.*⌘⌥V.*Configure in Delivery/),
+      expect.stringMatching(/Correct last dictation.*Off.*⌘⇧E.*Enable in Selected-text rewrite/),
     ]);
 
     const windowRows = Array.from(container.querySelectorAll<HTMLLIElement>('[aria-label="Main-window shortcuts"] > li'));
@@ -57,7 +57,7 @@ describe('KeyboardShortcutsSettings', () => {
     expect(windowRows.map((row) => row.textContent)).toEqual([
       expect.stringMatching(/Command palette.*On.*⌘K/),
       expect.stringMatching(/Search transcripts.*On.*⌘F/),
-      expect.stringMatching(/Open Settings.*On.*⌘,/),
+      expect.stringMatching(/Open settings….*On.*⌘,/),
       expect.stringMatching(/Open Performance Lab.*On.*⌘L/),
     ]);
   });
@@ -85,11 +85,11 @@ describe('KeyboardShortcutsSettings', () => {
 
     const rowText = (id: string) => container.querySelector(`[data-shortcut-id="${id}"]`)?.textContent;
     expect(rowText('recording')).toMatch(/Paused.*Hold ⇧ Left Shift.*View in Recording/);
-    expect(rowText('transform')).toMatch(/Paused.*Hold Right Option.*View in Selected-Text Rewrite/);
+    expect(rowText('transform')).toMatch(/Paused.*Hold Right Option.*View in Selected-text rewrite/);
     expect(rowText('voice-query')).toMatch(/Paused.*Double-tap Left Control.*View in Voice Query/);
     expect(rowText('paste-last')).toMatch(/On.*⌘⌥V.*Configure in Delivery/);
-    expect(rowText('correction')).toMatch(/Paused.*⌘⇧E.*View in Selected-Text Rewrite/);
-    expect(container.querySelector('[role="status"]')?.textContent).toContain('Paste Last remains available');
+    expect(rowText('correction')).toMatch(/Paused.*⌘⇧E.*View in Selected-text rewrite/);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Paste last remains available');
   });
 
   it('routes each configurable row through its typed owner destination', async () => {

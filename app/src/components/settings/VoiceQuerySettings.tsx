@@ -40,7 +40,7 @@ export function VoiceQuerySettings({
   setupStatus,
 }: VoiceQuerySettingsProps) {
   return (
-    <SettingsSection pageId="ai-query" activePage={activePage} title="Voice Query" subtitle="Provider, privacy, shortcut, and response behavior">
+    <SettingsSection pageId="ai-query" activePage={activePage} title="Voice Query">
       <SettingsCallout tone="warning" title="You control where the question goes">
         Murmur transcribes your question locally, then gives it to the exact CLI executable below.
         That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.
@@ -162,7 +162,7 @@ export function VoiceQuerySettings({
               type="button"
               disabled={vm.queryTestBusy || !settings.queryExecutable.trim()}
               onClick={() => void vm.runQueryTest()}
-              className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-(--ui-radius-pill) border border-outline-variant/40 bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
               {vm.queryTestBusy ? 'Testing…' : 'Test'}
             </button>
@@ -290,7 +290,7 @@ export function VoiceQuerySettings({
       <div className="settings-field">
         <SettingToggle
           title="Keep Voice Query history on this Mac"
-          description="Off by default. When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
+          description="When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
           checked={settings.retainQueryHistory} defaultChecked={DEFAULT_SETTINGS.retainQueryHistory}
           onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
         />

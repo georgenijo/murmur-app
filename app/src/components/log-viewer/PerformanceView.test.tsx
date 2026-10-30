@@ -118,7 +118,7 @@ describe('PerformanceView', () => {
     const line = container.querySelector('[aria-label="Cold model loads"]');
     expect(line?.textContent).toContain('Cold model loads: 1 of 4 recent dictations (25%)');
     expect(line?.textContent).toContain('Median cold load 420 ms');
-    expect(line?.textContent).toContain('Release Model After Inactivity');
+    expect(line?.textContent).toContain('Release model after inactivity');
   });
 
   it('omits the cold model load line without run history', async () => {

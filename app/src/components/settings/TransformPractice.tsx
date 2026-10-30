@@ -32,14 +32,14 @@ export function TransformPractice({ transformHoldKey, modelReady }: TransformPra
       </div>
       <textarea ref={sampleRef} defaultValue={SAMPLE_TEXT} aria-label="Transform practice sample text" rows={3} />
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={selectSample} disabled={!ready} className="rounded-(--ui-radius-pill) bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary shadow-(--ui-shadow-accent) disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="button" onClick={selectSample} disabled={!ready} className="rounded-(--ui-radius-pill) bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface shadow-(--ui-shadow-accent) disabled:cursor-not-allowed disabled:opacity-50">
           Select sample text
         </button>
         <p role="status" aria-live="polite" className="text-xs text-on-surface-variant">
           {!modelReady
             ? 'Download the on-device model below first.'
             : transformHoldKey === null
-              ? 'Enable the Transform shortcut above first.'
+              ? 'Turn on the transform shortcut above first.'
               : selected
                 ? `Keep this text selected. Hold ${keyLabel}, say “make this shorter,” then release.`
                 : `Select the sample, then hold ${keyLabel} and speak a rewrite instruction.`}

@@ -19,14 +19,14 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRe
   const available = status.phase === 'available';
   const ready = status.phase === 'ready';
   const failed = status.phase === 'error';
-  const label = available ? (compact ? 'View Update' : 'Download Update')
-    : ready ? 'Restart Now'
-    : status.phase === 'checking' ? 'Checking for Updates…'
-    : status.phase === 'preparing' ? 'Preparing Update…'
-    : status.phase === 'downloading' ? (progress === null ? 'Downloading Update…' : `Downloading Update… ${progress}%`)
+  const label = available ? (compact ? 'View update' : 'Download update')
+    : ready ? 'Restart now'
+    : status.phase === 'checking' ? 'Checking for updates…'
+    : status.phase === 'preparing' ? 'Preparing update…'
+    : status.phase === 'downloading' ? (progress === null ? 'Downloading update…' : `Downloading update… ${progress}%`)
     : status.phase === 'restarting' ? 'Restarting Murmur…'
-    : failed ? (status.stage === 'check' ? 'Retry Update Check' : 'Update Needs Attention')
-    : 'Check for Updates';
+    : failed ? (status.stage === 'check' ? 'Retry update check' : 'Update needs attention')
+    : 'Check for updates';
   const detail = available ? `Murmur ${status.version} is available`
     : ready ? `Murmur ${status.version} is ready to install`
     : status.phase === 'up-to-date' ? 'You’re up to date.'

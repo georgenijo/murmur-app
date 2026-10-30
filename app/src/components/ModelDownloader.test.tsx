@@ -137,7 +137,7 @@ describe('ModelDownloadPanel', () => {
         repeatedRepair: true,
       },
     }));
-    expect(container.textContent).toContain('Repairing incomplete install again...');
+    expect(container.textContent).toContain('Repairing incomplete install again…');
 
     await act(async () => mocks.listener?.({
       payload: {
@@ -148,7 +148,7 @@ describe('ModelDownloadPanel', () => {
         phase: 'validating',
       },
     }));
-    expect(container.textContent).not.toContain('Validating installation...');
+    expect(container.textContent).not.toContain('Validating installation…');
 
     await act(async () => pending.resolve());
     await settle();
@@ -170,11 +170,11 @@ describe('ModelDownloadPanel', () => {
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('time limit');
-    expect(button('Retry Download').hasAttribute('disabled')).toBe(false);
-    expect(button('Use Whisper Base')).toBeDefined();
+    expect(button('Retry download').hasAttribute('disabled')).toBe(false);
+    expect(button('Use Whisper base')).toBeDefined();
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
 
-    await click('Use Whisper Base');
+    await click('Use Whisper base');
     await settle(20);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(document.activeElement?.id).toBe('download-model-base.en');
@@ -193,7 +193,7 @@ describe('ModelDownloadPanel', () => {
     expect(container.querySelector('[role="alert"]')?.textContent)
       .toContain('listener unavailable');
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
-    expect(button('Retry Download').hasAttribute('disabled')).toBe(false);
+    expect(button('Retry download').hasAttribute('disabled')).toBe(false);
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,5 @@
 import { AppSurface } from '../ui/AppSurface';
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   checkAccessibilityPermission,
@@ -359,7 +360,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   return (
-    <AppSurface surface="onboarding" className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+    <AppSurface data-default-scope onKeyDown={defaultButtonKeyDown} surface="onboarding" className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">
@@ -403,10 +404,10 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               Audio and Calendar access for meetings, and a one-time model download.
             </p>
             <button
-              onClick={goNext}
+              onClick={goNext} data-default-button
               className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-3 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter,transform] hover:brightness-105 active:scale-[0.98]"
             >
-              Get Started
+              Get started
             </button>
           </div>
         )}
@@ -414,7 +415,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         {step === 'microphone' && (
           <div>
             <StepHeading
-              title="Microphone Access"
+              title="Microphone access"
               granted={micGranted}
               subtitle="Murmur records from your microphone to transcribe your speech. Audio is processed locally and discarded after transcription."
             />
@@ -430,16 +431,16 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 </p>
                 <button
                   onClick={handleOpenMicSettings}
-                  className="dialog-pill-btn w-full border-error/30 bg-error/10 px-4 py-2 text-sm font-semibold text-error"
+                  className="dialog-pill-btn w-full px-4 py-2 text-sm font-semibold text-on-surface"
                 >
-                  Open System Settings
+                  Open System Settings…
                 </button>
                 <div>
                   <button
                     onClick={handleResetMic}
                     className="text-xs text-error underline hover:no-underline"
                   >
-                    Still not working? Reset the permission
+                    Reset permission…
                   </button>
                   <p className="mt-1 text-xs text-error">
                     Clears Murmur's stale Microphone entry so macOS can ask fresh —
@@ -453,7 +454,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   onClick={handleAllowMic}
                   className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105"
                 >
-                  Allow Microphone Access
+                  Allow microphone access…
                 </button>
                 {micRequested && (
                   <p className="mt-2 text-xs text-on-surface-variant text-center">
@@ -481,7 +482,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         {step === 'accessibility' && (
           <div>
             <StepHeading
-              title="Accessibility Access"
+              title="Accessibility access"
               granted={axGranted === true}
               subtitle="Needed for the global recording key (so it works while Murmur is in the background) and for auto-paste. Without it, recording only works from buttons inside the app."
             />
@@ -494,7 +495,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   onClick={handleGrantAx}
                   className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105"
                 >
-                  Grant Accessibility Access
+                  Grant accessibility access…
                 </button>
                 <p className="text-xs text-on-surface-variant text-center">
                   macOS opens System Settings — turn on <strong>Murmur</strong> in the
@@ -535,13 +536,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         {step === 'systemAudio' && (
           <div>
             <StepHeading
-              title="System Audio Access"
+              title="System audio access"
               granted={systemAudioStatus === 'granted'}
               subtitle="Optional for Meetings. It lets Murmur capture Mac playback as Them while your microphone remains Me. The permission check creates a short-lived native audio tap only when you press the button."
             />
 
             {systemAudioStatus === 'granted' ? (
-              <GrantedCard label="System Audio access granted" />
+              <GrantedCard label="System audio access granted" />
             ) : systemAudioStatus === 'unsupported' ? (
               <div className="dialog-card mb-6 border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
                 Meeting capture requires macOS 14.2 or newer. Dictation is still available.
@@ -554,7 +555,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   onClick={() => void handleRequestSystemAudio()}
                   className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105 disabled:cursor-wait disabled:opacity-60"
                 >
-                  {systemAudioBusy ? 'Waiting for macOS…' : systemAudioStatus === 'denied' ? 'Re-check System Audio Access' : 'Allow System Audio Access'}
+                  {systemAudioBusy ? 'Waiting for macOS…' : systemAudioStatus === 'denied' ? 'Re-check system audio access' : 'Allow system audio access'}
                 </button>
                 <p className="text-center text-xs leading-relaxed text-on-surface-variant">
                   macOS may show Murmur under Privacy &amp; Security → Screen &amp; System Audio Recording.
@@ -563,9 +564,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   <button
                     type="button"
                     onClick={() => void openSystemAudioPreferences()}
-                    className="dialog-pill-btn w-full border-error/30 bg-error/10 px-4 py-2 text-sm font-semibold text-error"
+                    className="dialog-pill-btn w-full px-4 py-2 text-sm font-semibold text-on-surface"
                   >
-                    Open System Settings
+                    Open System Settings…
                   </button>
                 )}
               </div>
@@ -578,7 +579,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               nextEnabled={systemAudioStatus === 'granted'}
               nextLabel="Continue"
               skippable={systemAudioStatus !== 'granted'}
-              skipLabel="Skip Meetings for now"
+              skipLabel="Skip meetings for now"
             />
           </div>
         )}
@@ -586,7 +587,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         {step === 'calendar' && (
           <div>
             <StepHeading
-              title="Calendar Access"
+              title="Calendar access"
               granted={calendarStatus === 'granted'}
               subtitle="Optional for Meetings. Murmur can read events that overlap a meeting and offer their names and attendees for you to confirm. It never changes your calendar or chooses an event automatically."
             />
@@ -601,9 +602,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 <button
                   type="button"
                   onClick={() => void handleOpenCalendarSettings()}
-                  className="dialog-pill-btn w-full border-error/30 bg-error/10 px-4 py-2 text-sm font-semibold text-error"
+                  className="dialog-pill-btn w-full px-4 py-2 text-sm font-semibold text-on-surface"
                 >
-                  Open System Settings
+                  Open System Settings…
                 </button>
                 <div>
                   <button
@@ -612,7 +613,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                     onClick={() => void handleResetCalendar()}
                     className="text-xs text-error underline hover:no-underline disabled:cursor-wait disabled:opacity-60"
                   >
-                    Reset Calendar permission
+                    Reset Calendar permission…
                   </button>
                   <p className="mt-1 text-xs text-error">
                     Clears Murmur's Calendar entry so macOS can ask again the next time you allow access.
@@ -629,7 +630,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   onClick={() => void handleOpenCalendarSettings()}
                   className="dialog-pill-btn w-full border-warning/30 bg-warning/10 px-4 py-2 text-sm font-semibold text-warning"
                 >
-                  Open System Settings
+                  Open System Settings…
                 </button>
               </div>
             ) : calendarStatus === 'unsupported' ? (
@@ -644,7 +645,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   onClick={() => void handleRequestCalendar()}
                   className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[filter] hover:brightness-105 disabled:cursor-wait disabled:opacity-60"
                 >
-                  {calendarBusy ? 'Waiting for macOS…' : 'Allow Calendar Access'}
+                  {calendarBusy ? 'Waiting for macOS…' : 'Allow Calendar access'}
                 </button>
                 <p className="text-center text-xs leading-relaxed text-on-surface-variant">
                   Murmur only reads Calendar when you ask to name a meeting. Calendar details stay on this Mac.
@@ -667,7 +668,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         {step === 'model' && (
           <div>
             <h1 className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
-              Transcription Model
+              Transcription model
             </h1>
             <p className="text-sm text-on-surface-variant mb-6">
               Murmur transcribes with a local model — downloaded once, then everything
@@ -714,18 +715,18 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         {step === 'hotkey' && (
           <div>
             <StepHeading
-              title="Recording Shortcut"
+              title="Recording shortcut"
               granted
-              subtitle="Choose how Murmur listens. You can change both options later in Dictation settings."
+              subtitle="Choose how Murmur listens. You can change both options later in Recording settings."
             />
 
             <div className="dialog-card mb-6 overflow-hidden p-0">
               <div className="border-b border-[var(--ui-hairline)] p-4">
-                <p className="mb-2 text-sm font-medium text-on-surface">Recording Trigger</p>
+                <p className="mb-2 text-sm font-medium text-on-surface">Recording trigger</p>
                 <div role="group" aria-label="Recording trigger" className="history-filter-track w-full">
                   {([
-                    ['hold_down', 'Hold Down'],
-                    ['double_tap', 'Double-Tap'],
+                    ['hold_down', 'Hold down'],
+                    ['double_tap', 'Double-tap'],
                     ['both', 'Both'],
                   ] as const).map(([value, label]) => (
                     <button
@@ -741,7 +742,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 </div>
               </div>
               <div className="p-4">
-                <label htmlFor="onboarding-trigger-key" className="mb-2 block text-sm font-medium text-on-surface">Trigger Key</label>
+                <label htmlFor="onboarding-trigger-key" className="mb-2 block text-sm font-medium text-on-surface">Trigger key</label>
                 <select
                   id="onboarding-trigger-key"
                   value={selectedTriggerKey}
@@ -789,8 +790,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             <div className="space-y-2 mb-6">
               <SummaryRow ok={micGranted} label="Microphone" okText="Granted" missingText="Not granted — grant later from the in-app banner or Settings" />
               <SummaryRow ok={axGranted === true} label="Accessibility" okText="Granted" missingText="Not granted — the recording key won't work outside the app" />
-              <SummaryRow ok={systemAudioStatus === 'granted'} label="System Audio" okText="Granted for Meetings" missingText="Optional — enable later from Meetings" />
-              <SummaryRow ok={calendarStatus === 'granted'} label="Calendar" okText="Granted for Meetings" missingText="Optional — name meetings manually or enable later" />
+              <SummaryRow ok={systemAudioStatus === 'granted'} label="System audio" okText="Granted for meetings" missingText="Optional — enable later from Meetings" />
+              <SummaryRow ok={calendarStatus === 'granted'} label="Calendar" okText="Granted for meetings" missingText="Optional — name meetings manually or enable later" />
               <SummaryRow ok={modelInstalled === true} label="Model" okText="Installed" missingText="Not verified — the app will ask again if it's missing" />
             </div>
 
@@ -816,7 +817,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               onBack={goBack}
               onNext={() => onComplete(installedModel, selectedRecordingMode, selectedTriggerKey)}
               nextEnabled
-              nextLabel="Start Using Murmur"
+              nextLabel="Start using Murmur"
             />
           </div>
         )}
@@ -910,9 +911,11 @@ function WizardNavigationRow({
         )}
         <button
           type="button"
-          onClick={onNext}
+          onClick={onNext} data-default-button
           disabled={!nextEnabled}
-          className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-5 py-2 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-[background-image] hover:bg-[linear-gradient(140deg,var(--murmur-primary-dim),var(--murmur-primary))] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+          className={`rounded-[var(--ui-radius-pill)] px-5 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${nextEnabled
+            ? 'bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] text-on-primary shadow-[var(--ui-shadow-accent)] transition-[background-image] hover:bg-[linear-gradient(140deg,var(--murmur-primary-dim),var(--murmur-primary))]'
+            : 'dialog-pill-btn text-on-surface'}`}
         >
           {nextLabel}
         </button>

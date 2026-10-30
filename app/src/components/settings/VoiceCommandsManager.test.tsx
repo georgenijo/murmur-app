@@ -90,23 +90,23 @@ describe('VoiceCommandsManager', () => {
     await act(async () => (container.querySelector('[role="switch"]') as HTMLButtonElement).click());
     expect(mocks.toggle).toHaveBeenCalledWith(ENTRY, false);
     await act(async () => button(container, 'Edit').click());
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Edit Voice Command');
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Edit voice command');
     await act(async () => button(container, 'Cancel').click());
-    await act(async () => button(container, 'Delete').click());
-    expect(button(container, 'Confirm delete')).not.toBeNull();
-    await act(async () => button(container, 'Confirm delete').click());
+    await act(async () => button(container, 'Delete…').click());
+    expect(button(container, 'Confirm delete…')).not.toBeNull();
+    await act(async () => button(container, 'Confirm delete…').click());
     expect(mocks.remove).toHaveBeenCalledWith(ENTRY);
   });
 
   it('creates an app-scoped multiline snippet with explicit clipboard permission and preview', async () => {
-    await act(async () => button(container, 'New command').click());
-    await act(async () => setValue(container.querySelector('[aria-label="Voice Command type"]') as HTMLSelectElement, 'snippet'));
-    await act(async () => setValue(container.querySelector('[aria-label="Voice Command scope"]') as HTMLSelectElement, 'app'));
-    await act(async () => setValue(container.querySelector('[aria-label="Voice Command phrase"]') as HTMLInputElement, 'mail signature'));
-    await act(async () => setValue(container.querySelector('[aria-label="Voice Command content"]') as HTMLTextAreaElement, 'Regards,\nGeorge\n{{clipboard}}'));
+    await act(async () => button(container, 'New command…').click());
+    await act(async () => setValue(container.querySelector('[aria-label="Voice command type"]') as HTMLSelectElement, 'snippet'));
+    await act(async () => setValue(container.querySelector('[aria-label="Voice command scope"]') as HTMLSelectElement, 'app'));
+    await act(async () => setValue(container.querySelector('[aria-label="Voice command phrase"]') as HTMLInputElement, 'mail signature'));
+    await act(async () => setValue(container.querySelector('[aria-label="Voice command content"]') as HTMLTextAreaElement, 'Regards,\nGeorge\n{{clipboard}}'));
     const permission = container.querySelector('[aria-label="Allow clipboard reading"]') as HTMLInputElement;
     await act(async () => permission.click());
-    await act(async () => setValue(container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement, 'mail signature'));
+    await act(async () => setValue(container.querySelector('[aria-label="Voice command test phrase"]') as HTMLTextAreaElement, 'mail signature'));
     await act(async () => button(container, 'Test').click());
     expect(mocks.preview).toHaveBeenCalledWith(expect.objectContaining({
       payload: { kind: 'snippet', trigger: 'mail signature', body: 'Regards,\nGeorge\n{{clipboard}}' },
@@ -126,13 +126,13 @@ describe('VoiceCommandsManager', () => {
     const sourceRow = Array.from(container.querySelectorAll('li')).find((row) => row.textContent?.includes('mail signature')) as HTMLLIElement;
     await act(async () => button(sourceRow, 'Duplicate').click());
 
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Duplicate Voice Command');
-    expect((container.querySelector('[aria-label="Voice Command type"]') as HTMLSelectElement).value).toBe('snippet');
-    expect((container.querySelector('[aria-label="Voice Command scope"]') as HTMLSelectElement).value).toBe('app');
-    expect((container.querySelector('[aria-label="Voice Command application"]') as HTMLSelectElement).value).toBe('com.apple.mail');
-    expect((container.querySelector('[aria-label="Voice Command phrase"]') as HTMLInputElement).value).toBe('');
-    expect((container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement).value).toBe('');
-    expect((container.querySelector('[aria-label="Voice Command content"]') as HTMLTextAreaElement).value).toBe('Regards,\nGeorge\n{{clipboard}}');
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Duplicate voice command');
+    expect((container.querySelector('[aria-label="Voice command type"]') as HTMLSelectElement).value).toBe('snippet');
+    expect((container.querySelector('[aria-label="Voice command scope"]') as HTMLSelectElement).value).toBe('app');
+    expect((container.querySelector('[aria-label="Voice command application"]') as HTMLSelectElement).value).toBe('com.apple.mail');
+    expect((container.querySelector('[aria-label="Voice command phrase"]') as HTMLInputElement).value).toBe('');
+    expect((container.querySelector('[aria-label="Voice command test phrase"]') as HTMLTextAreaElement).value).toBe('');
+    expect((container.querySelector('[aria-label="Voice command content"]') as HTMLTextAreaElement).value).toBe('Regards,\nGeorge\n{{clipboard}}');
     expect((container.querySelector('[aria-label="Allow clipboard reading"]') as HTMLInputElement).checked).toBe(true);
     expect((container.querySelector('input[type="checkbox"]:not([aria-label])') as HTMLInputElement).checked).toBe(false);
     expect(mocks.preview).not.toHaveBeenCalled();
@@ -142,11 +142,11 @@ describe('VoiceCommandsManager', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Enter a spoken phrase.');
     expect(mocks.upsert).not.toHaveBeenCalled();
 
-    const phrase = container.querySelector('[aria-label="Voice Command phrase"]') as HTMLInputElement;
+    const phrase = container.querySelector('[aria-label="Voice command phrase"]') as HTMLInputElement;
     for (const character of 'alternate mail signature') {
       await act(async () => setValue(phrase, `${phrase.value}${character}`));
     }
-    expect((container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement).value).toBe('alternate mail signature');
+    expect((container.querySelector('[aria-label="Voice command test phrase"]') as HTMLTextAreaElement).value).toBe('alternate mail signature');
     await act(async () => button(container, 'Test').click());
     expect(mocks.preview).toHaveBeenCalledWith({
       payload: { kind: 'snippet', trigger: 'alternate mail signature', body: 'Regards,\nGeorge\n{{clipboard}}' },
@@ -154,7 +154,7 @@ describe('VoiceCommandsManager', () => {
       scope: { kind: 'app', bundleId: 'com.apple.mail' },
       voiceCommand: { commandType: 'snippet', allowClipboardRead: true },
     }, 'alternate mail signature', false);
-    const previewPhrase = container.querySelector('[aria-label="Voice Command test phrase"]') as HTMLTextAreaElement;
+    const previewPhrase = container.querySelector('[aria-label="Voice command test phrase"]') as HTMLTextAreaElement;
     await act(async () => setValue(previewPhrase, 'custom preview phrase'));
     await act(async () => setValue(phrase, 'alternate mail signature two'));
     expect(previewPhrase.value).toBe('custom preview phrase');

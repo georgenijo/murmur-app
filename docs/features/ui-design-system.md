@@ -81,7 +81,7 @@ Use these before creating a feature-local control or surface.
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | 5px list gap; cards use an 8px vertical inset |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
-| Copy | The non-interactive card surface copies its full transcript; Enter and Space do the same when focused |
+| Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
 | Insights | Durable local analytics use the full content width; Voice Query totals/providers use fixed label/value columns and notes occupy separate rows |
 | Secondary pages | Insights, Notetaker, and Assistant use one page header with a visible Back action that returns focus to Home navigation; Assistant retains legacy query history in Previous queries |
@@ -254,3 +254,48 @@ in both modes. It complements the existing imported-theme contrast matrix and
 all-pane overflow audit. Goldens are kept separately for Darwin and Linux;
 Linux CI uses `mcr.microsoft.com/playwright:v1.62.1-noble`. These browser checks
 do not replace the lead's serial native WKWebView all-pane and Retina checks.
+
+## Copy and interaction
+
+Adapted from [Hex’s design system](https://github.com/anomalyco/hex/blob/a07f994/docs/design-system.md#rules)
+(lines 24–131, MIT). T3 Code remains the source for visual measurements;
+these rules govern Murmur’s copy and interactions.
+
+- Use sentence case for labels, buttons, titles, and section headings. Preserve
+  proper nouns (Murmur, macOS, Finder, Calendar, Open VSX, model/provider names)
+  and native macOS menu title case. Named features such as Voice Query and
+  Smart Auto retain their names; generic commands, modes, and settings do not.
+- Use one `…` character for progress and actions that open a further choice:
+  `Saving…`, `Choose folder…`, `Create knowledge…`. Use normal punctuation when
+  mentioning an action inside a sentence.
+- A row description is one direct phrase without a closing period. Necessary
+  multi-sentence instructions, permission disclosures, and error explanations
+  keep their grammar. Put help beside its control; omit page introductions,
+  repeated labels, and state words beside switches. A switch’s checked state
+  communicates on/off; its accessible name identifies the setting.
+- Each screen has at most one primary action. Ongoing recording, cancellation,
+  and update-available states use secondary actions; readiness is a status.
+  Danger styling is reserved for destructive actions and armed confirmations.
+- Show one to three common actions in a detail header. Move additional actions
+  into the existing overflow menu. Put destructive actions last, append `…`,
+  and require a second deliberate activation or confirmation. Preserve typed
+  confirmation for bulk deletion. Do not add “cannot be undone” warnings beside
+  an existing two-step confirmation. Editing an unsaved draft is recoverable.
+- Space activates the focused button. Plain Return activates only an explicitly
+  designated, enabled default confirming button in a dialog, setup step, or
+  temporary recoverable confirmation. A standing pane action and an irreversible
+  action are never defaults. Repeated/composing Return must not confirm. Textareas,
+  contenteditable fields, native selects, and menu/listbox selection keep their
+  own editing/selection keys. A destructive control still suppresses Return
+  inside a menu. Existing dedicated command shortcuts retain their contracts.
+- Use `defaultButtonKeyDown` on the interaction boundary. A recoverable dialog
+  uses `data-default-button` on its actual confirming button; an inline
+  confirmation also declares `data-default-scope`. Disabled buttons stay inert.
+  `ConfirmActionButton` and `noDefaultButtonKeyDown` protect destructive controls.
+  Verify actual Space/Return behavior in the browser and native app.
+- Hover feedback belongs to the interactive target, never a passive settings
+  row. Use shared controls and semantic colors; copy changes must not introduce
+  typography or theme tokens.
+
+See the [copy and interaction audit](../copy-interaction-audit.md) for the
+issue #850 checklist, coverage, and native verification handoff.

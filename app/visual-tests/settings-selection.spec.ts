@@ -12,8 +12,8 @@ const navigationLabels = [
   'Customize',
   'Delivery',
   'Meetings',
-  'Text & Vocabulary',
-  'AI & Models',
+  'Text & vocabulary',
+  'AI & models',
   'Modes',
   'Appearance',
 ] as const;
