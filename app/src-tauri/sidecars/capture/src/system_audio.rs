@@ -81,7 +81,10 @@ fn to_cfstring(value: &'static CStr) -> CFRetained<CFString> {
         .expect("Core Audio dictionary key is a valid CFString")
 }
 
-fn aggregate_properties(tap_uid: &NSString, aggregate_uid: &str) -> CFRetained<CFDictionary> {
+pub(super) fn aggregate_properties(
+    tap_uid: &NSString,
+    aggregate_uid: &str,
+) -> CFRetained<CFDictionary> {
     let tap_entry = unsafe {
         let dictionary = CFMutableDictionary::new(
             kCFAllocatorDefault,

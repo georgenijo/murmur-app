@@ -386,6 +386,9 @@ Parts of Murmur's dictation test harnesses are adapted from Hex at commit
 `app/src-tauri/src/release_tail_tests.rs`).
 
 - Source: https://github.com/anomalyco/hex
+- Browser media pause while dictating (`app/src-tauri/src/browser_media.rs`,
+  `app/src-tauri/sidecars/capture/src/browser_level.rs`) is adapted from Hex's
+  `src/browser_media.rs` and `src/microphone_activity.rs`.
 
 MIT License
 

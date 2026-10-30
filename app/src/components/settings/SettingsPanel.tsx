@@ -60,6 +60,7 @@ import { ModesManager } from './ModesManager';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
+import { PauseBrowserMediaSetting } from './PauseBrowserMediaSetting';
 import { MeetingDiarizationSettings } from './MeetingDiarizationSettings';
 import { SmartAutoStopSettings } from './SmartAutoStopSettings';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
@@ -1135,6 +1136,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               isRecording={isRecording}
               onEnabledChange={(smartAutoStopEnabled) => onUpdateSettings({ smartAutoStopEnabled })}
             />
+            <PauseBrowserMediaSetting enabled={settings.pauseBrowserMedia} onEnabledChange={(pauseBrowserMedia) => onUpdateSettings({ pauseBrowserMedia })} />
           </SettingsSection>
 
           <SettingsSection pageId="ai" activePage={activeCat} title="AI & Models" subtitle="Choose the engine that powers each Murmur feature">

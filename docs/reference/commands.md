@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 239 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 241 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -67,6 +67,8 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_meeting_status` | — | `MeetingRuntimeStatus` | Current generation, session, phase, elapsed time, per-channel activity, and stable failure code. |
 | `get_system_audio_permission_status` | — | `SystemAudioPermissionState` | Returns the cached `unknown` / `granted` / `denied` / `unsupported` state without creating a tap. |
 | `request_system_audio_permission` | — | `Result<SystemAudioPermissionState, String>` | Explicitly creates one short-lived tap probe, then tears it down and emits the resulting permission state. |
+| `get_browser_media_permission` | — | `BrowserMediaPermission` | Reads macOS System Audio Recording consent (`granted` / `denied` / `not_determined` / `unavailable`) without prompting or creating a tap. |
+| `request_browser_media_permission` | — | `BrowserMediaPermission` | Shows the System Audio Recording prompt when undecided (called only when the user turns on Pause Browser Media), then returns the resulting state. |
 | `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
 | `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches the title and finalized transcript text through FTS5. |
 | `get_meeting` | `id` | `Result<MeetingWorkspace, String>` | One session with optional title, title source, attendees, immutable Me/Them segments, display labels, revisioned generated/reviewed documents, and the Rust-resolved active document. |
