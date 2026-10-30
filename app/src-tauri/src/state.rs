@@ -437,6 +437,8 @@ pub struct AppState {
     pub recording_id: AtomicU64,
     /// Exact recording generation currently owning the single live partial decode.
     pub dictation_partial_in_flight_id: AtomicU64,
+    #[cfg(feature = "preview-decode-reuse")]
+    pub preview_reuse: Mutex<crate::preview_reuse::PreviewReuse>,
     /// Last generation with a nonempty display-only decode; contains no text.
     pub dictation_nonempty_preview_id: AtomicU64,
     /// Exactly-once producer guard for accepted live-dictation terminal events.
@@ -597,6 +599,8 @@ impl AppState {
             .is_some_and(|context| context.recording_id == recording_id)
         {
             *active = None;
+            #[cfg(feature = "preview-decode-reuse")]
+            self.preview_reuse.lock_or_recover().clear(recording_id);
             true
         } else {
             false
@@ -754,6 +758,8 @@ impl Default for AppState {
             idle_timeout_minutes: Mutex::new(5),
             recording_id: AtomicU64::new(0),
             dictation_partial_in_flight_id: AtomicU64::new(0),
+            #[cfg(feature = "preview-decode-reuse")]
+            preview_reuse: Mutex::new(crate::preview_reuse::PreviewReuse::default()),
             dictation_nonempty_preview_id: AtomicU64::new(0),
             dictation_telemetry: crate::dictation_telemetry::DictationTelemetry::default(),
             transcript_session_id: AtomicU64::new(0),

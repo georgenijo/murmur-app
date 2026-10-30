@@ -379,7 +379,7 @@ commercial use, without a fee. Refer to the package when you modify the code.
 
 ## Hex
 
-Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) are adapted from Hex at commit `a07f994`.
+Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) and the pause segmenter (`app/src-tauri/src/preview_pause.rs`) are adapted from Hex at commit `a07f994`.
 
 - Source: https://github.com/anomalyco/hex
 
