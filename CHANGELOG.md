@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-10-30
+
+### Added
+
+- Add the built-in OpenCode theme while preserving active imported themes during ID migration (#847).
+
+### Changed
+
+- Apply T3-inspired typography, menus, tooltips, control corners, focus treatment and motion rules (#853).
+- Unify settings row spacing, dividers, control sizes, reset actions and responsive layouts (#848).
+- Fold advanced settings and open detailed editors in sheets with reliable caller focus restoration (#849).
+- Refine copy, default and destructive keyboard actions, dialog validation, and modal focus handling (#850).
+- Restore native window bounds across displays, reveal windows after first paint, preserve traffic-light clearance when zooming, and add a collapsible, resizable Home sidebar (#854).
+
 ## [0.55.0] - 2026-10-30
 
 ### Added
