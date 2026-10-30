@@ -106,6 +106,7 @@ export interface ConfigureOptions {
   codeVocabFolder?: string;
   correctionEnabled?: boolean;
   correctionFuzzy?: boolean;
+  homophoneContextEnabled?: boolean;
 }
 
 // Settings sends full snapshots; other callers may send partial updates. Keep
@@ -175,6 +176,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     codeVocabFolder: s.codeVocabFolder,
     correctionEnabled: s.correctionEnabled,
     correctionFuzzy: s.correctionFuzzy,
+    homophoneContextEnabled: s.homophoneContextEnabled,
   };
 }
 

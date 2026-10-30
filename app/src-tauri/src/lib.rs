@@ -40,6 +40,7 @@ pub mod evaluation;
 mod file_output;
 mod frontmost;
 mod hang_diagnostics;
+mod homophone_context;
 mod hotkey_release;
 mod ide_context;
 mod injector;

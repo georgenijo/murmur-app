@@ -362,6 +362,8 @@ pub struct DictationState {
     /// Tier 2 phonetic / edit-distance "sounds-like" matching. Gated under
     /// `correction_enabled`.
     pub correction_fuzzy: bool,
+    /// Optional on-device homophone context tier. Off by default.
+    pub homophone_context_enabled: bool,
 }
 
 impl DictationState {
@@ -415,6 +417,7 @@ impl Default for DictationState {
             // actually work on the default Parakeet engine. No-op without vocab.
             correction_enabled: true,
             correction_fuzzy: true,
+            homophone_context_enabled: false,
         }
     }
 }

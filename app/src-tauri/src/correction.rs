@@ -428,6 +428,9 @@ pub struct CorrectionMatcher {
     /// learns from final text, where spoken numbers are already digits, so
     /// these are matched again after the spoken-numbers stage.
     numeric_aliases: Vec<ExplicitAlias>,
+    /// Single-word user vocabulary spellings, used only as sounds-like
+    /// targets by the optional homophone context pass.
+    homophone_terms: Vec<String>,
 }
 
 impl CorrectionMatcher {
@@ -585,7 +588,19 @@ impl CorrectionMatcher {
             terms,
             written_lower,
             numeric_aliases,
+            homophone_terms: Vec::new(),
         }
+    }
+
+    /// Attach the user vocabulary spellings the homophone context pass may
+    /// offer as sounds-like targets. Deterministic tiers never read them.
+    pub(crate) fn with_homophone_terms(mut self, terms: Vec<String>) -> Self {
+        self.homophone_terms = terms;
+        self
+    }
+
+    pub(crate) fn homophone_terms(&self) -> &[String] {
+        &self.homophone_terms
     }
 
     pub(crate) fn has_only_contextual_rules(&self) -> bool {

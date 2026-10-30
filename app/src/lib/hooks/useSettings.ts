@@ -360,7 +360,7 @@ export function useSettings() {
 
     if (probePolicyChanged) scheduleProbePolicyWrite();
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'pauseBrowserMedia' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'pauseBrowserMedia' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates || 'homophoneContextEnabled' in updates) {
       const version = ++configureVersionRef.current;
       const nativeModeVersion = nativeModeVersionRef.current;
       void configure(buildConfigureOptions(newSettings), {
@@ -401,6 +401,7 @@ export function useSettings() {
               codeVocabFolder: confirmed.codeVocabFolder,
               correctionEnabled: confirmed.correctionEnabled,
               correctionFuzzy: confirmed.correctionFuzzy,
+              homophoneContextEnabled: confirmed.homophoneContextEnabled,
             };
             settingsRef.current = reverted;
             setSettings(reverted);
